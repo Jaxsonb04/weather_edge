@@ -10,6 +10,8 @@ FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
 REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather-edge.git}"
 PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
+PUBLIC_MODE_RAW="${SFO_STRATEGY_LAB_PUBLIC_MODE:-1}"
+PUBLIC_MODE="$(printf '%s' "$PUBLIC_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
 
 ARTIFACTS=(
   index.html
@@ -21,7 +23,9 @@ ARTIFACTS=(
   weather_story_data.json
 )
 
-if [[ -n "${SFO_STRATEGY_LAB_PASSWORD:-}" ]]; then
+if [[ "$PUBLIC_MODE" != "0" && "$PUBLIC_MODE" != "false" && "$PUBLIC_MODE" != "no" && "$PUBLIC_MODE" != "off" ]]; then
+  ARTIFACTS+=(strategy_research.json)
+elif [[ -n "${SFO_STRATEGY_LAB_PASSWORD:-}" ]]; then
   ARTIFACTS+=(strategy_research.protected.json)
 else
   ARTIFACTS+=(strategy_research.json)
@@ -57,8 +61,8 @@ trap 'rm -rf "$publish_dir"' EXIT
 git init -b "$PAGES_BRANCH" "$publish_dir" >/dev/null
 cd "$publish_dir"
 git remote add origin "$REMOTE_URL"
-git config user.name "${SFO_PAGES_GIT_AUTHOR_NAME:-sfo-weather-bot}"
-git config user.email "${SFO_PAGES_GIT_AUTHOR_EMAIL:-sfo-weather-bot@users.noreply.github.com}"
+git config user.name "${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}"
+git config user.email "${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}"
 
 if git fetch origin "$PAGES_BRANCH" >/dev/null 2>&1; then
   git checkout -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH" >/dev/null

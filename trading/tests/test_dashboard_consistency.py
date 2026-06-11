@@ -51,6 +51,24 @@ def test_strategy_lab_reads_public_research_artifact():
     assert "Paper trading only" in html
 
 
+def test_strategy_lab_has_profile_controls_and_manual_refresh():
+    html = STRATEGY_TEMPLATE.read_text()
+
+    assert 'id="profileTabs"' in html
+    assert "default_profile" in html
+    assert "activeProfileKey" in html
+    assert "All profiles overview" in html
+    assert 'id="strategyLabRefreshButton"' in html
+    assert "setInterval" in html
+    assert "5 * 60 * 1000" in html
+
+
+def test_strategy_lab_fetches_artifact_with_cache_buster_on_each_load():
+    html = STRATEGY_TEMPLATE.read_text()
+
+    assert "fetch(`${artifact}?ts=${Date.now()}`)" in html
+
+
 def test_strategy_lab_supports_password_unlock_flow():
     html = STRATEGY_TEMPLATE.read_text()
 

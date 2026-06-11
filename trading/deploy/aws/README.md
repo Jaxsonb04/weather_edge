@@ -81,6 +81,8 @@ SFO_FORECASTER_GIT_REMOTE=git@github.com:Jaxsonb04/weather-edge.git
 SFO_FORECASTER_SOURCE_SUBDIR=forecaster
 SFO_PAGES_DEPLOY_KEY=/home/ubuntu/.ssh/sfo_weather_pages_deploy
 SFO_PAGES_BRANCH=gh-pages
+SFO_PAGES_GIT_AUTHOR_NAME=JaxsonB04
+SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com
 SFO_DATASET_DB=/opt/weatheredge/trading/data/paper_trading.db
 SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,kalshi-history
 SFO_DATASET_KALSHI_LOOKBACK_DAYS=90
@@ -90,7 +92,9 @@ SFO_TRADING_SIGNAL_TARGET_DATE=both
 SFO_TRADING_SIGNAL_SIDE=both
 SFO_TRADING_SIGNAL_CALIBRATION_SOURCE=lstm
 SFO_STRATEGY_RESEARCH_CALIBRATION_MIN_TRAIN=180
-# Optional: set a private value to password-protect Strategy Lab.
+# Temporary public Strategy Lab mode. Set to 0 and set the password below to
+# restore the protected browser-unlock flow.
+SFO_STRATEGY_LAB_PUBLIC_MODE=1
 # SFO_STRATEGY_LAB_PASSWORD=replace_with_private_strategy_lab_password
 SFO_STRATEGY_LAB_PBKDF2_ITERATIONS=210000
 # No PAPER_DAILY_BUDGET: paper exposure is risk-gated, not budget-capped.
@@ -101,13 +105,19 @@ PAPER_TAKE_PROFIT_PCT=35
 PAPER_STOP_LOSS_PCT=35
 ```
 
-Each forecast refresh now builds the public `trading_signal.json` and
-Strategy Lab research data before dashboard HTML, so GitHub Pages is published
-from the same AWS-side forecast DB, paper DB, and paper-research signal. When
-`SFO_STRATEGY_LAB_PASSWORD` is set, the publisher ships
-`strategy_research.protected.json` and omits plaintext `strategy_research.json`;
-the Strategy Lab page decrypts the protected artifact in the browser after the
-password is entered.
+Each forecast refresh builds the public `trading_signal.json` and Strategy Lab
+research data before dashboard HTML, so GitHub Pages is published from the same
+AWS-side forecast DB, paper DB, and paper-research signal. The
+`sfo-strategy-lab-refresh.timer` also runs every five minutes to rebuild
+`trading_signal.json`, `strategy_research.json`, `strategy-lab.html`, and the
+Pages branch without calling `google_weather_cache.py --refresh`.
+
+Strategy Lab is temporarily published as plaintext
+`strategy_research.json` while `SFO_STRATEGY_LAB_PUBLIC_MODE=1`. To restore the
+password gate, set `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and set
+`SFO_STRATEGY_LAB_PASSWORD`; the publisher then ships
+`strategy_research.protected.json` and omits plaintext Strategy Lab research
+data.
 
 AWS paper scanning is pinned to LSTM calibration during this deployment stage.
 If `PAPER_RISK_PROFILES` is a comma-list, the scan service runs each profile
@@ -152,7 +162,7 @@ gh-pages / root
 Then enable the timers:
 
 ```bash
-sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer
+sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer
 ```
 
 ## Check It
@@ -161,6 +171,7 @@ Run the services once:
 
 ```bash
 sudo systemctl start sfo-forecaster-refresh.service
+sudo systemctl start sfo-strategy-lab-refresh.service
 sudo systemctl start sfo-dataset-backfill.service
 sudo systemctl start sfo-kalshi-paper-scan.service
 sudo systemctl start sfo-kalshi-paper-monitor.service
@@ -171,6 +182,7 @@ See logs:
 
 ```bash
 journalctl -u sfo-forecaster-refresh.service -n 80 --no-pager
+journalctl -u sfo-strategy-lab-refresh.service -n 80 --no-pager
 journalctl -u sfo-dataset-backfill.service -n 80 --no-pager
 journalctl -u sfo-kalshi-paper-scan.service -n 80 --no-pager
 journalctl -u sfo-kalshi-paper-monitor.service -n 80 --no-pager
@@ -199,10 +211,11 @@ After syncing updated code, run on the server:
 cd /opt/weatheredge/trading
 bash deploy/aws/install_systemd.sh
 sudo systemctl restart sfo-forecaster-refresh.service
+sudo systemctl restart sfo-strategy-lab-refresh.service
 ```
 
 ## Stop Everything
 
 ```bash
-sudo systemctl disable --now sfo-forecaster-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer
+sudo systemctl disable --now sfo-forecaster-refresh.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer
 ```

@@ -301,6 +301,99 @@ def test_strategy_research_alerts_on_duplicate_open_positions():
         assert payload["paper_trading"]["summary"]["largest_duplicate_open_group"] == 2
 
 
+def test_strategy_research_builds_isolated_profile_views():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        today_date = datetime.now(UTC).astimezone(SFO_TZ).date()
+        today = today_date.isoformat()
+        tomorrow = (today_date + timedelta(days=1)).isoformat()
+        _write_settlement(root, target=today)
+
+        store = PaperStore(db_path)
+        balanced_win = _approved_decision()
+        fast_loss = replace(
+            _approved_decision(),
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            label="68 to 69",
+            floor_strike=68.0,
+            cap_strike=69.0,
+        )
+        fast_open = replace(
+            _approved_decision(),
+            ticker="KXHIGHTSFO-TEST-B65.5",
+            label="65 to 66",
+            floor_strike=65.0,
+            cap_strike=66.0,
+        )
+
+        store.record_decisions(today, [balanced_win], risk_profile="balanced")
+        store.record_decisions(tomorrow, [fast_open], risk_profile="fast-feedback")
+        store.record_paper_order(today, balanced_win, risk_profile="balanced")
+        store.record_paper_order(today, fast_loss, risk_profile="fast-feedback")
+        store.settle_paper_orders(today, 67.0)
+        open_order_id = store.record_paper_order(
+            tomorrow,
+            fast_open,
+            risk_profile="fast-feedback",
+        )
+        open_order = store.open_paper_order(open_order_id)
+        assert open_order is not None
+        store.record_monitor_snapshot(
+            open_order,
+            side="YES",
+            action="HOLD",
+            reason="inside exit bands",
+            market_status="active",
+            live_bid=0.42,
+            exit_fee_per_contract=0.01,
+            net_exit_per_contract=0.41,
+            unrealized_pnl=1.0,
+            unrealized_roi=0.32,
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        assert payload["default_profile"] == "balanced"
+        profiles = {row["risk_profile"]: row for row in payload["profiles"]}
+        assert set(profiles) == {"balanced", "fast-feedback"}
+
+        balanced = profiles["balanced"]
+        fast = profiles["fast-feedback"]
+        assert balanced["profile_type"] == "primary"
+        assert fast["profile_type"] == "experimental"
+
+        assert balanced["daily_summary"]["totals"]["realized_pnl"] > 0
+        assert balanced["daily_summary"]["totals"]["losses"] == 0
+        assert balanced["paper_trading"]["summary"]["open_risk"] == 0.0
+        assert {
+            row["risk_profile"]
+            for row in balanced["paper_trading"]["recent_monitor_actions"]
+        } == {"balanced"}
+        assert {
+            row["risk_profile"]
+            for row in balanced["signal_quality"]["latest_candidates"]
+        } == {"balanced"}
+
+        assert fast["daily_summary"]["totals"]["realized_pnl"] < 0
+        assert fast["daily_summary"]["totals"]["wins"] == 0
+        assert fast["paper_trading"]["summary"]["open_risk"] > 0
+        assert {
+            row["risk_profile"]
+            for row in fast["paper_trading"]["recent_monitor_actions"]
+        } == {"fast-feedback"}
+        assert {
+            row["risk_profile"]
+            for row in fast["signal_quality"]["latest_candidates"]
+        } == {"fast-feedback"}
+        assert any("fast-feedback" in note for note in fast["learnings"])
+
+
 def test_strategy_research_cli_writes_public_artifact():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"

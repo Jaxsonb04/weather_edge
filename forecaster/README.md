@@ -110,14 +110,16 @@ now automated end to end:
 3. **Scheduled jobs**: systemd timers refresh NWS ground truth, fetch Google
    Weather within the event budget, rebuild the blended forecast, and update
    `index.html`, `details.html`, `strategy-lab.html`, `trading_signal.json`,
-   and Strategy Lab research data. If `SFO_STRATEGY_LAB_PASSWORD` is set on
-   AWS, the Strategy Lab artifact is published as
-   `strategy_research.protected.json` instead of plaintext
-   `strategy_research.json`. The same server also runs the Kalshi
+   and Strategy Lab research data. A separate Strategy Lab refresh timer runs
+   every five minutes to rebuild trading results and republish the static site
+   without calling the paid Google Weather refresh path. Strategy Lab is
+   temporarily public by default with `SFO_STRATEGY_LAB_PUBLIC_MODE=1`; restore
+   protected mode by setting it to `0` and setting
+   `SFO_STRATEGY_LAB_PASSWORD`. The same server also runs the Kalshi
    paper-trading scanner and exit monitor from the companion trading repo.
 4. **Public website**: after each successful rebuild, the Lightsail server uses
    a GitHub deploy key with write access to commit and push the refreshed static
-   dashboard to `main`, which GitHub Pages serves at
+   dashboard to `gh-pages`, which GitHub Pages serves at
    `https://jaxsonb04.github.io/weather-edge/`.
 
 In short: AWS fetches the paid Google Weather data privately, the forecaster

@@ -267,6 +267,30 @@
       margin-bottom: 0.9rem;
     }
     .status-head h2 { font: 600 1rem var(--font-sans); color: var(--ink); }
+    .status-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.45rem;
+      flex-wrap: wrap;
+    }
+    .refresh-button {
+      min-height: 2.25rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--cold-deep);
+      cursor: pointer;
+      padding: 0 0.72rem;
+      font: 600 0.74rem var(--font-sans);
+      transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+    .refresh-button:hover { background: var(--cold-soft); }
+    .refresh-button:active { transform: translateY(1px); }
+    .refresh-button:disabled {
+      cursor: progress;
+      opacity: 0.68;
+    }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -440,6 +464,52 @@
       color: var(--ink-3);
       font: 500 0.74rem var(--font-mono);
       overflow-wrap: anywhere;
+    }
+
+    .profile-switch {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.85rem;
+      align-items: center;
+      padding: 0.78rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .profile-context {
+      min-width: 0;
+      color: var(--ink-2);
+      font-size: 0.9rem;
+    }
+    .profile-context b {
+      color: var(--ink);
+      font: 600 0.78rem var(--font-mono);
+      text-transform: uppercase;
+    }
+    .profile-tabs {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+    .profile-tab {
+      min-height: 2.45rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.68);
+      color: var(--ink-2);
+      cursor: pointer;
+      padding: 0 0.82rem;
+      font: 600 0.76rem var(--font-sans);
+      transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+    }
+    .profile-tab:hover {
+      background: var(--cold-soft);
+      color: var(--cold-deep);
+    }
+    .profile-tab[aria-selected="true"] {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: #fff;
     }
 
     main.wrap {
@@ -1038,6 +1108,8 @@
       .paper-dashboard { grid-template-columns: 1fr; }
       .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .notes-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .profile-switch { grid-template-columns: 1fr; }
+      .profile-tabs { justify-content: flex-start; }
     }
     @media (max-width: 720px) {
       .count-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1059,6 +1131,8 @@
       .metric-grid, .notes-grid { grid-template-columns: 1fr; }
       .lock-row { grid-template-columns: 1fr; gap: 0.15rem; }
       h1 { font-size: 2.65rem; }
+      .status-head { align-items: flex-start; flex-direction: column; }
+      .status-actions { justify-content: flex-start; }
       .password-row { grid-template-columns: 1fr; }
       .password-row button { width: 100%; }
     }
@@ -1120,7 +1194,10 @@
         <section class="status-board" aria-labelledby="statusTitle">
           <div class="status-head">
             <h2 id="statusTitle">Runtime status</h2>
-            <span class="pill good" id="runtimeMode">Paper only</span>
+            <div class="status-actions">
+              <span class="pill good" id="runtimeMode">Paper only</span>
+              <button class="refresh-button" id="strategyLabRefreshButton" type="button">Refresh</button>
+            </div>
           </div>
           <div class="metric-grid" id="statusMetrics" aria-live="polite"></div>
           <p class="warning-line" id="sampleWarning" aria-live="polite">Loading Strategy Lab diagnostics&hellip;</p>
@@ -1141,6 +1218,11 @@
   </header>
 
   <main class="wrap" id="main">
+    <section class="profile-switch" aria-label="Risk profile view">
+      <p class="profile-context" id="profileContext"><b>Balanced</b> headline metrics are isolated from experimental profile results.</p>
+      <div class="profile-tabs" id="profileTabs" role="tablist" aria-label="Strategy Lab risk profiles"></div>
+    </section>
+
     <section id="pnl">
       <h2 data-step="01">Book health &amp; 7-day P&amp;L</h2>
       <p class="sub">Daily and rolling 7-day paper results: realized and cumulative P&amp;L, hit rate, forecast error against the settled SFO high, what the system learned, and what should change next.</p>
@@ -1365,6 +1447,10 @@
       'unrealized-pnl': ['Unrealized P&L', 'Estimated profit or loss if the open position sold at the current scanned bid.']
     };
     let paperRowsById = new Map();
+    let labData = null;
+    let activeProfileKey = null;
+    let refreshInFlight = null;
+    const ALL_PROFILES_KEY = '__all__';
 
     function term(label, key) {
       if (!termDefinitions[key]) return htmlEscape(label);
@@ -1622,9 +1708,94 @@
         statusMetrics.splice(capIndex, 0, metric('Daily budget', money(status.daily_budget), 'daily-budget'));
       }
       $('statusMetrics').innerHTML = statusMetrics.join('');
-      const warning = status.sample_warning || data.reason || data.disclaimer || 'Diagnostics loaded.';
+      const warning = status.sample_warning || data.view_note || data.reason || data.disclaimer || 'Diagnostics loaded.';
       $('sampleWarning').textContent = warning;
       $('strategyAlerts').innerHTML = renderStrategyAlerts(status.alerts || []);
+    }
+
+    function profilesFor(data) {
+      return Array.isArray(data?.profiles) ? data.profiles : [];
+    }
+
+    function profileByKey(data, key) {
+      return profilesFor(data).find((row) => String(row.risk_profile) === String(key));
+    }
+
+    function bestDefaultProfile(data) {
+      const profiles = profilesFor(data);
+      if (!profiles.length) return ALL_PROFILES_KEY;
+      const preferred = data.default_profile || 'balanced';
+      return profileByKey(data, preferred) ? preferred : profiles[0].risk_profile;
+    }
+
+    function profileContextText(profile) {
+      if (!profile) return '<b>All profiles overview</b> combines every paper profile; switch back to Balanced for the clean headline record.';
+      const label = htmlEscape(profile.label || profileDisplayName(profile.risk_profile));
+      if (profile.profile_type === 'experimental') {
+        return `<b>${label}</b> is experimental paper-data collection and is isolated from the Balanced record.`;
+      }
+      return `<b>${label}</b> headline metrics exclude experimental and fast-feedback results.`;
+    }
+
+    function viewDataFor(data, key) {
+      if (!data) return null;
+      const profile = key === ALL_PROFILES_KEY ? null : profileByKey(data, key);
+      if (!profile) {
+        return {
+          ...data,
+          active_profile: null,
+          view_note: 'All profiles overview combines every risk profile. Balanced remains the default headline record.'
+        };
+      }
+      return {
+        ...data,
+        active_profile: profile,
+        daily_summary: profile.daily_summary || {},
+        signal_quality: profile.signal_quality || {},
+        paper_trading: profile.paper_trading || {},
+        status: {
+          ...(data.status || {}),
+          ...(profile.status || {}),
+          sample_warning: profile.profile_type === 'experimental'
+            ? `${profile.label || profile.risk_profile} is experimental paper-only data collection and does not affect Balanced headline metrics.`
+            : `${profile.label || profile.risk_profile} profile is the active headline view. Experimental results are hidden from these metrics.`
+        },
+        view_note: profile.profile_type === 'experimental'
+          ? `${profile.label || profile.risk_profile} is experimental paper-only data collection.`
+          : `${profile.label || profile.risk_profile} profile selected.`
+      };
+    }
+
+    function renderProfileControls(data) {
+      const tabs = $('profileTabs');
+      const context = $('profileContext');
+      if (!tabs || !context) return;
+      const profiles = profilesFor(data);
+      if (!activeProfileKey) activeProfileKey = bestDefaultProfile(data);
+      const rows = [
+        { key: ALL_PROFILES_KEY, label: 'All profiles overview' },
+        ...profiles.map((profile) => ({
+          key: profile.risk_profile,
+          label: profile.label || profileDisplayName(profile.risk_profile)
+        }))
+      ];
+      tabs.innerHTML = rows.map((row) => `
+        <button class="profile-tab" type="button" role="tab" data-profile-key="${htmlEscape(row.key)}" aria-selected="${row.key === activeProfileKey ? 'true' : 'false'}">${htmlEscape(row.label)}</button>
+      `).join('');
+      const activeProfile = activeProfileKey === ALL_PROFILES_KEY ? null : profileByKey(data, activeProfileKey);
+      context.innerHTML = profileContextText(activeProfile);
+      tabs.querySelectorAll('[data-profile-key]').forEach((button) => {
+        button.addEventListener('click', () => {
+          activeProfileKey = button.dataset.profileKey;
+          applyStrategyLabView();
+        });
+      });
+    }
+
+    function applyStrategyLabView() {
+      if (!labData) return;
+      renderProfileControls(labData);
+      renderResearch(viewDataFor(labData, activeProfileKey));
     }
 
     function renderCalibration(data) {
@@ -2137,11 +2308,19 @@
       };
     }
 
+    function drawChart(id, config) {
+      const canvas = $(id);
+      if (!canvas || !window.Chart) return null;
+      const existing = window.Chart.getChart ? window.Chart.getChart(canvas) : null;
+      if (existing) existing.destroy();
+      return new Chart(canvas, config);
+    }
+
     function barChart(id, labels, datasets) {
       const canvas = $(id);
       if (!canvas) return;
       if (!window.Chart) return fallbackBars(canvas, labels, datasets[0]?.data || []);
-      new Chart(canvas, { type: 'bar', data: { labels, datasets }, options: chartOptions() });
+      drawChart(id, { type: 'bar', data: { labels, datasets }, options: chartOptions() });
     }
 
     function pnlComboChart(id, labels, days) {
@@ -2171,7 +2350,7 @@
           order: 2
         }];
       }
-      new Chart(canvas, {
+      drawChart(id, {
         data: {
           labels,
           datasets: [
@@ -2206,7 +2385,7 @@
       const hits = days.map((row) => row.hit_rate == null ? null : Math.round(number(row.hit_rate) * 100));
       const errors = days.map((row) => row.forecast_error_f == null ? null : number(row.forecast_error_f));
       if (!window.Chart) return fallbackBars(canvas, labels, hits.map((value) => value || 0));
-      new Chart(canvas, {
+      drawChart(id, {
         type: 'line',
         data: {
           labels,
@@ -2254,7 +2433,7 @@
       const canvas = $(id);
       if (!canvas) return;
       if (!window.Chart) return fallbackScatter(canvas, points);
-      new Chart(canvas, {
+      drawChart(id, {
         type: 'bubble',
         data: {
           datasets: [{
@@ -2315,6 +2494,7 @@
     }
 
     function renderResearch(data) {
+      if (!data) return;
       renderStatus(data);
       renderDailySummary(data);
       renderPaper(data);
@@ -2329,6 +2509,7 @@
       return {
         mode: 'paper_research_only',
         live_orders_enabled: false,
+        default_profile: 'balanced',
         generated_at: new Date().toISOString(),
         reason: error.message,
         status: {
@@ -2372,8 +2553,50 @@
           closed_positions: [],
           recent_monitor_actions: []
         },
+        profiles: [],
         research_notes: []
       };
+    }
+
+    async function setRefreshState(loading) {
+      const button = $('strategyLabRefreshButton');
+      if (!button) return;
+      button.disabled = Boolean(loading);
+      button.textContent = loading ? 'Refreshing' : 'Refresh';
+    }
+
+    async function loadPublicStrategyLab() {
+      if (refreshInFlight) return refreshInFlight;
+      setRefreshState(true);
+      refreshInFlight = (async () => {
+        try {
+          labData = await fetchJsonArtifact(STRATEGY_LAB_PROTECTION.artifact || 'strategy_research.json');
+          if (!activeProfileKey || (activeProfileKey !== ALL_PROFILES_KEY && !profileByKey(labData, activeProfileKey))) {
+            activeProfileKey = bestDefaultProfile(labData);
+          }
+          applyStrategyLabView();
+        } catch (error) {
+          labData = fallbackResearch(error);
+          activeProfileKey = bestDefaultProfile(labData);
+          applyStrategyLabView();
+        } finally {
+          await setRefreshState(false);
+          refreshInFlight = null;
+        }
+      })();
+      return refreshInFlight;
+    }
+
+    function bindStrategyLabRefresh() {
+      const button = $('strategyLabRefreshButton');
+      if (!button) return;
+      button.addEventListener('click', () => {
+        if (STRATEGY_LAB_PROTECTION.enabled) {
+          window.location.reload();
+          return;
+        }
+        loadPublicStrategyLab();
+      });
     }
 
     function showTermPopover(button) {
@@ -2436,11 +2659,8 @@
 
     async function initPublicStrategyLab() {
       unlockStrategyLabContent();
-      try {
-        renderResearch(await fetchJsonArtifact(STRATEGY_LAB_PROTECTION.artifact || 'strategy_research.json'));
-      } catch (error) {
-        renderResearch(fallbackResearch(error));
-      }
+      await loadPublicStrategyLab();
+      setInterval(loadPublicStrategyLab, 5 * 60 * 1000);
     }
 
     function initProtectedStrategyLab() {
@@ -2471,7 +2691,9 @@
           const data = await decryptProtectedResearch(payload, password.value);
           password.value = '';
           unlockStrategyLabContent();
-          renderResearch(data);
+          labData = data;
+          activeProfileKey = bestDefaultProfile(labData);
+          applyStrategyLabView();
         } catch (error) {
           setAccessError(error.message || 'Strategy Lab could not be unlocked.');
           password.select();
@@ -2484,6 +2706,7 @@
 
     function init() {
       bindTermHelp();
+      bindStrategyLabRefresh();
       if (STRATEGY_LAB_PROTECTION.enabled) {
         initProtectedStrategyLab();
       } else {

@@ -36,10 +36,18 @@ The systemd installer remains in:
 ## Timers
 
 - `sfo-forecaster-refresh.timer`
+- `sfo-strategy-lab-refresh.timer` (every five minutes; rebuilds
+  `trading_signal.json`, `strategy_research.json`, dashboard HTML, and Pages
+  without paid Google Weather refresh calls)
 - `sfo-dataset-backfill.timer`
 - `sfo-kalshi-paper-scan.timer`
 - `sfo-kalshi-paper-monitor.timer`
 - `sfo-kalshi-paper-settle.timer`
+
+Strategy Lab is temporarily public when `SFO_STRATEGY_LAB_PUBLIC_MODE=1`, so
+AWS publishes plaintext `strategy_research.json`. To restore the password gate,
+set `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and set `SFO_STRATEGY_LAB_PASSWORD`; the
+publisher will ship `strategy_research.protected.json` instead.
 
 ## Safety
 

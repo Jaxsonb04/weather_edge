@@ -56,10 +56,14 @@ python -m sfo_kalshi_quant.cli --no-color strategy-research --output forecaster/
 This is read-only. It does not record snapshots, place paper orders, or expose
 private DB state. The generated `forecaster/trading_signal.json` and
 `forecaster/strategy_research.json` are optional dashboard inputs.
-When `SFO_STRATEGY_LAB_PASSWORD` is set for an AWS dashboard build,
-`forecaster/build_dashboard.py` also writes
+AWS temporarily publishes plaintext Strategy Lab data while
+`SFO_STRATEGY_LAB_PUBLIC_MODE=1`. Restore the password gate by setting
+`SFO_STRATEGY_LAB_PUBLIC_MODE=0` and `SFO_STRATEGY_LAB_PASSWORD`; then
+`forecaster/build_dashboard.py` writes
 `forecaster/strategy_research.protected.json`, and the publisher ships that
-protected artifact instead of plaintext Strategy Lab research data.
+protected artifact instead of plaintext Strategy Lab research data. The
+`sfo-strategy-lab-refresh.timer` refreshes this trading-results path every five
+minutes without calling the paid Google Weather refresh command.
 
 ## Paper Place
 

@@ -59,6 +59,7 @@ def _restore_env(old_values):
 def test_strategy_lab_password_writes_protected_research_artifact():
     old_values = _with_env(
         **{
+            build_dashboard.STRATEGY_LAB_PUBLIC_MODE_ENV: "0",
             build_dashboard.STRATEGY_LAB_PASSWORD_ENV: "unit-test-password",
             build_dashboard.STRATEGY_LAB_ITERATIONS_ENV: "100000",
         }
@@ -93,6 +94,33 @@ def test_strategy_lab_public_mode_removes_stale_protected_artifact():
             source = root / "strategy_research.json"
             target = root / "strategy_research.protected.json"
             source.write_text('{"available":false}\n')
+            target.write_text("stale")
+
+            config = build_dashboard.protect_strategy_research(source, target)
+
+            assert config == {
+                "enabled": False,
+                "artifact": "strategy_research.json",
+                "format": "public-json",
+            }
+            assert not target.exists()
+    finally:
+        _restore_env(old_values)
+
+
+def test_strategy_lab_temporary_public_mode_overrides_password():
+    old_values = _with_env(
+        **{
+            build_dashboard.STRATEGY_LAB_PUBLIC_MODE_ENV: "1",
+            build_dashboard.STRATEGY_LAB_PASSWORD_ENV: "unit-test-password",
+        }
+    )
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "strategy_research.json"
+            target = root / "strategy_research.protected.json"
+            source.write_text('{"available":true}\n')
             target.write_text("stale")
 
             config = build_dashboard.protect_strategy_research(source, target)

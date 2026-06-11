@@ -30,6 +30,22 @@ def test_forecaster_refresh_generates_signal_before_dashboard_publish():
     assert signal_idx < dashboard_idx < publish_idx
 
 
+def test_strategy_lab_refresh_timer_is_installed_and_avoids_google_refresh():
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    service = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.service.in")
+    timer = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.timer")
+
+    assert "sfo-strategy-lab-refresh.service.in" in installer
+    assert "sfo-strategy-lab-refresh.timer" in installer
+    assert "sfo-strategy-lab-refresh.timer" in installer
+    assert "build_public_trading_signal.sh" in service
+    assert "build_dashboard.py" in service
+    assert "publish_forecaster_pages.sh" in service
+    assert "google_weather_cache.py --refresh" not in service
+    assert "OnUnitActiveSec=5min" in timer
+    assert "Unit=sfo-strategy-lab-refresh.service" in timer
+
+
 def test_public_signal_builder_is_read_only_and_paper_only():
     text = _read(AWS_DIR / "build_public_trading_signal.sh")
     assert "daily-report" in text
@@ -108,6 +124,7 @@ def test_dataset_backfill_timer_is_lightsail_safe_and_installed():
 def test_pages_publish_includes_generated_detail_page():
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
+    example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
     assert "index.html" in publisher
     assert "details.html" in publisher
@@ -115,6 +132,12 @@ def test_pages_publish_includes_generated_detail_page():
     assert "strategy_research.json" in publisher
     assert "strategy_research.protected.json" in publisher
     assert "SFO_STRATEGY_LAB_PASSWORD" in publisher
+    assert "SFO_STRATEGY_LAB_PUBLIC_MODE" in publisher
+    assert "SFO_STRATEGY_LAB_PUBLIC_MODE=1" in example_env
+    assert "SFO_PAGES_GIT_AUTHOR_NAME=JaxsonB04" in example_env
+    assert "SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com" in example_env
+    assert '${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}' in publisher
+    assert '${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}' in publisher
     assert '--exclude "/index.html"' in syncer
     assert '--exclude "/details.html"' in syncer
     assert '--exclude "/strategy-lab.html"' in syncer

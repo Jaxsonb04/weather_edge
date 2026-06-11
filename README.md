@@ -122,6 +122,12 @@ python -m sfo_kalshi_quant.cli paper-settle --target-date YYYY-MM-DD --settlemen
 `daily-report` is read-only dashboard input; it does not record DB snapshots or
 place paper orders.
 
+Strategy Lab defaults to the balanced profile view, so experimental
+fast-feedback results do not contaminate the balanced headline P&L, hit rate,
+open risk, daily rows, signals, actions, or learnings. The AWS
+`sfo-strategy-lab-refresh.timer` republishes those trading results every five
+minutes without calling the paid Google Weather refresh path.
+
 `backtest-calibration --source clean-blend` validates the archived live blend on
 clean next-day forecasts only. It excludes same-day observed-high lock/floor
 rows.

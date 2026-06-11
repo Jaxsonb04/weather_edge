@@ -58,7 +58,9 @@ def build_paper_summary(
             day = per_day[opened_day]
             day["opened"] += 1
             day["opened_spend"] += spend
-            _day_profile(day, profile)["opened"] += 1
+            day_profile = _day_profile(day, profile)
+            day_profile["opened"] += 1
+            day_profile["opened_spend"] += spend
         if resolved_day in per_day and pnl is not None:
             day = per_day[resolved_day]
             day["realized_pnl"] += pnl
@@ -66,10 +68,13 @@ def build_paper_summary(
             day_profile = _day_profile(day, profile)
             day_profile["realized_pnl"] += pnl
             day_profile["resolved"] += 1
+            day_profile["resolved_spend"] += spend
             if order["closed_at"]:
                 day["closed"] += 1
+                day_profile["closed"] += 1
             else:
                 day["settled"] += 1
+                day_profile["settled"] += 1
             if pnl > 0:
                 day["wins"] += 1
                 day_profile["wins"] += 1
@@ -92,9 +97,24 @@ def build_paper_summary(
         day["realized_pnl"] = round(day["realized_pnl"], 2)
         day["opened_spend"] = round(day["opened_spend"], 2)
         day["resolved_spend"] = round(day["resolved_spend"], 2)
-        for profile_stats in day["profiles"].values():
-            profile_stats["realized_pnl"] = round(profile_stats["realized_pnl"], 2)
         stats = decision_stats["per_day"].get(key, {})
+        for name, profile_stats in (stats.get("profiles") or {}).items():
+            day_profile = _day_profile(day, name)
+            day_profile["signals"] = profile_stats.get("signals", 0)
+            day_profile["approved_signals"] = profile_stats.get("approved", 0)
+        for profile_stats in day["profiles"].values():
+            profile_resolved = int(profile_stats["closed"] + profile_stats["settled"])
+            profile_stats["hit_rate"] = (
+                profile_stats["wins"] / profile_resolved if profile_resolved else None
+            )
+            profile_stats["roi"] = (
+                profile_stats["realized_pnl"] / profile_stats["resolved_spend"]
+                if profile_stats["resolved_spend"] > 0
+                else None
+            )
+            profile_stats["realized_pnl"] = round(profile_stats["realized_pnl"], 2)
+            profile_stats["opened_spend"] = round(profile_stats["opened_spend"], 2)
+            profile_stats["resolved_spend"] = round(profile_stats["resolved_spend"], 2)
         day["signals"] = stats.get("signals", 0)
         day["approved_signals"] = stats.get("approved", 0)
         day["avg_model_probability"] = stats.get("avg_model_probability")
@@ -221,7 +241,21 @@ def _empty_day(key: str) -> dict[str, Any]:
 def _day_profile(day: dict[str, Any], profile: str) -> dict[str, Any]:
     return day["profiles"].setdefault(
         profile,
-        {"opened": 0, "resolved": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0},
+        {
+            "opened": 0,
+            "closed": 0,
+            "settled": 0,
+            "resolved": 0,
+            "wins": 0,
+            "losses": 0,
+            "realized_pnl": 0.0,
+            "opened_spend": 0.0,
+            "resolved_spend": 0.0,
+            "signals": 0,
+            "approved_signals": 0,
+            "hit_rate": None,
+            "roi": None,
+        },
     )
 
 
@@ -328,7 +362,16 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
 
 
 def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
-    empty = {"per_day": {}, "gate_behavior": {"approved": 0, "rejected": 0, "top_rejections": []}, "model_vs_market": {}}
+    empty = {
+        "per_day": {},
+        "gate_behavior": {
+            "approved": 0,
+            "rejected": 0,
+            "top_rejections": [],
+            "by_profile": [],
+        },
+        "model_vs_market": {},
+    }
     if not Path(db_path).exists():
         return empty
     with sqlite3.connect(db_path) as conn:
@@ -360,11 +403,24 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
         day = _local_day(row["created_at"])
         stats = per_day.setdefault(
             day,
-            {"signals": 0, "approved": 0, "model_p_sum": 0.0, "market_p_sum": 0.0, "p_count": 0},
+            {
+                "signals": 0,
+                "approved": 0,
+                "model_p_sum": 0.0,
+                "market_p_sum": 0.0,
+                "p_count": 0,
+                "profiles": {},
+            },
         )
+        day_profile = stats["profiles"].setdefault(
+            str(row["risk_profile"]),
+            {"signals": 0, "approved": 0},
+        )
+        day_profile["signals"] += 1
         stats["signals"] += 1
         if row["approved"]:
             stats["approved"] += 1
+            day_profile["approved"] += 1
             approved_total += 1
         else:
             reason = _primary_reason(row["reasons_json"])

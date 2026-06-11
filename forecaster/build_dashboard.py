@@ -19,6 +19,7 @@ from dashboard_payload import prepare_dashboard_context
 TEMPLATES = Path(__file__).parent / "templates"
 STRATEGY_RESEARCH_JSON = Path("strategy_research.json")
 PROTECTED_STRATEGY_RESEARCH_JSON = Path("strategy_research.protected.json")
+STRATEGY_LAB_PUBLIC_MODE_ENV = "SFO_STRATEGY_LAB_PUBLIC_MODE"
 STRATEGY_LAB_PASSWORD_ENV = "SFO_STRATEGY_LAB_PASSWORD"
 STRATEGY_LAB_ITERATIONS_ENV = "SFO_STRATEGY_LAB_PBKDF2_ITERATIONS"
 DEFAULT_STRATEGY_LAB_ITERATIONS = 210_000
@@ -38,8 +39,15 @@ def b64encode(data):
 
 
 def strategy_lab_password():
+    if strategy_lab_public_mode():
+        return None
     password = os.environ.get(STRATEGY_LAB_PASSWORD_ENV, "")
     return password if password else None
+
+
+def strategy_lab_public_mode():
+    raw = os.environ.get(STRATEGY_LAB_PUBLIC_MODE_ENV, "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def strategy_lab_iterations():
@@ -167,6 +175,7 @@ def write_strategy_research_placeholder(path):
     payload = {
         "schema_version": 1,
         "available": False,
+        "default_profile": "balanced",
         "local_runtime_placeholder": True,
         "mode": "paper_research_only",
         "live_orders_enabled": False,
@@ -275,7 +284,9 @@ def write_strategy_research_placeholder(path):
             "open_positions": [],
             "closed_positions": [],
             "recent_monitor_actions": [],
+            "profiles": [],
         },
+        "profiles": [],
         "research_notes": [
             {"term": "Backtest", "note": "Replay historical rows to score probabilities."},
             {"term": "Pre-resolution", "note": "A signal recorded before market close or observed-high lock."},
