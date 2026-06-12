@@ -336,6 +336,7 @@ def _profile_paper_payload(paper: dict[str, Any], name: str) -> dict[str, Any]:
         for row in paper.get("recent_monitor_actions") or []
         if _profile_key(row.get("risk_profile")) == name
     ]
+    monitor_action_rows = [row for row in action_rows if row.get("status") != "OPEN"]
     profile = _profile_row(paper.get("profiles") or [], name)
     open_positions = int(_to_float(profile.get("open_positions")))
     marked_open = [row for row in open_rows if row.get("unrealized_pnl") is not None]
@@ -357,7 +358,9 @@ def _profile_paper_payload(paper: dict[str, Any], name: str) -> dict[str, Any]:
         "largest_duplicate_open_group": 0,
         "unresolved_past_targets": [],
         "latest_opened_at": open_rows[0].get("created_at") if open_rows else None,
-        "latest_monitor_action_at": action_rows[0].get("time") if action_rows else None,
+        "latest_monitor_action_at": (
+            monitor_action_rows[0].get("time") if monitor_action_rows else None
+        ),
         "closed_positions": int(_to_float(profile.get("orders"))),
         "realized_pnl": _round(profile.get("realized_pnl"), 2),
         "unrealized_pnl": unrealized_pnl,
@@ -961,9 +964,10 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         for row in open_rows
     ]
     closed_positions = [_paper_row(row, None, monitor) for row in closed_rows]
-    action_rows = [_paper_monitor_snapshot_row(row) for row in monitor_rows] + [
+    monitor_action_rows = [_paper_monitor_snapshot_row(row) for row in monitor_rows] + [
         _paper_action_row(row) for row in closed_action_rows
     ]
+    action_rows = monitor_action_rows + [_paper_open_action_row(row) for row in open_rows]
     action_rows = sorted(action_rows, key=lambda row: str(row.get("time") or ""), reverse=True)[:12]
     duplicate_groups = [_duplicate_group_row(row) for row in duplicate_rows]
     today = settlement_today()
@@ -1005,7 +1009,9 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             ),
             "unresolved_past_targets": unresolved_past_targets,
             "latest_opened_at": open_rows[0]["created_at"] if open_rows else None,
-            "latest_monitor_action_at": action_rows[0].get("time") if action_rows else None,
+            "latest_monitor_action_at": (
+                monitor_action_rows[0].get("time") if monitor_action_rows else None
+            ),
             "closed_positions": int(summary["orders"]),
             "realized_pnl": _round(summary["realized_pnl"], 2),
             "unrealized_pnl": unrealized_pnl,
@@ -1844,6 +1850,34 @@ def _paper_action_row(row: sqlite3.Row) -> dict[str, Any]:
             else None
         ),
         "note": "closed by monitor" if row["closed_at"] else "settled against official high",
+    }
+
+
+def _paper_open_action_row(row: sqlite3.Row) -> dict[str, Any]:
+    contracts = _to_float(row["contracts"])
+    risk = contracts * _to_float(row["cost_per_contract"])
+    return {
+        "id": row["id"],
+        "time": row["created_at"],
+        "ticker": row["market_ticker"],
+        "label": row["label"],
+        "target_date": row["target_date"],
+        "side": row["side"],
+        "risk_profile": _row_risk_profile(row),
+        "contracts": _round(contracts, 4),
+        "status": "OPEN",
+        "entry_price": _round(
+            row["entry_price"] if row["entry_price"] is not None else row["yes_ask"],
+            4,
+        ),
+        "cost_per_contract": _round(row["cost_per_contract"], 4),
+        "initial_cost": _round(risk, 2),
+        "exit_price": None,
+        "exit_fee_per_contract": None,
+        "settlement_high_f": None,
+        "realized_pnl": None,
+        "realized_roi": None,
+        "note": "paper order opened",
     }
 
 

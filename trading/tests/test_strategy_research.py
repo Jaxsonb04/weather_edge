@@ -135,6 +135,11 @@ def test_strategy_research_reads_decisions_and_open_paper_positions():
         assert payload["paper_trading"]["summary"]["open_positions"] == 1
         assert payload["paper_trading"]["summary"]["marked_open_positions"] == 1
         assert payload["paper_trading"]["summary"]["unrealized_pnl"] < 0
+        assert payload["paper_trading"]["summary"]["latest_monitor_action_at"] is None
+        action = payload["paper_trading"]["recent_monitor_actions"][0]
+        assert action["status"] == "OPEN"
+        assert action["note"] == "paper order opened"
+        assert action["ticker"] == decision.ticker
         position = payload["paper_trading"]["open_positions"][0]
         assert position["why_good"]
         assert position["initial_cost"] == position["risk"]
@@ -387,6 +392,10 @@ def test_strategy_research_builds_isolated_profile_views():
             row["risk_profile"]
             for row in fast["paper_trading"]["recent_monitor_actions"]
         } == {"fast-feedback"}
+        assert {
+            row["status"]
+            for row in fast["paper_trading"]["recent_monitor_actions"]
+        } >= {"OPEN", "HOLD"}
         assert {
             row["risk_profile"]
             for row in fast["signal_quality"]["latest_candidates"]
