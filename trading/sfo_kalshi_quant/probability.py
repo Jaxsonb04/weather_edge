@@ -56,10 +56,11 @@ class ResidualCalibrator:
         self.global_residuals = [row.residual_f for row in self.outcomes]
         if len(self.global_residuals) < 30:
             raise ValueError("At least 30 forecast outcomes are required for calibration")
+        self._global_stats = self._stats(self.global_residuals, window_f=math.inf)
 
     @property
     def global_stats(self) -> ResidualStats:
-        return self._stats(self.global_residuals, window_f=math.inf)
+        return self._global_stats
 
     def conditional_stats(self, predicted_high_f: float) -> ResidualStats:
         for window in (2.0, 3.0, 5.0, 8.0, 12.0):

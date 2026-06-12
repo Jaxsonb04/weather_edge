@@ -599,6 +599,51 @@
       height: 220px;
       max-height: 240px;
     }
+    .replay-panel { margin-top: 1rem; }
+    .replay-table { margin-top: 0.85rem; }
+    .readiness-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin: 0.85rem 0;
+    }
+    .readiness-cell {
+      min-width: 0;
+      background: var(--surface-2);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      padding: 0.72rem;
+    }
+    .readiness-cell b {
+      display: block;
+      color: var(--cold-deep);
+      font: 600 1.06rem var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+    .readiness-cell span {
+      display: block;
+      margin-top: 0.25rem;
+      color: var(--ink-3);
+      font: 600 0.62rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .dataset-actions {
+      display: grid;
+      gap: 0.45rem;
+      margin: 0.75rem 0 0.9rem;
+      list-style: none;
+    }
+    .dataset-actions li {
+      color: var(--ink-2);
+      font-size: 0.88rem;
+      background: var(--surface-2);
+      border: 1px solid var(--line-2);
+      border-left: 3px solid var(--warm);
+      border-radius: 10px;
+      padding: 0.58rem 0.7rem;
+    }
     .empty {
       color: var(--ink-3);
       background: var(--surface-2);
@@ -991,6 +1036,13 @@
     .access-error[hidden] {
       display: none;
     }
+    .lab-content {
+      max-width: 100%;
+      overflow-x: clip;
+    }
+    @supports not (overflow: clip) {
+      .lab-content { overflow-x: hidden; }
+    }
     .lab-locked {
       overflow: hidden;
     }
@@ -1113,6 +1165,7 @@
     }
     @media (max-width: 720px) {
       .count-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .readiness-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .score-row { grid-template-columns: 1fr; }
       .trade-grid, .exit-strip, .rule-grid { grid-template-columns: 1fr; }
       .mark-lab { grid-template-columns: 1fr; }
@@ -1129,6 +1182,7 @@
       nav.top-links a[href="details.html"] { display: none; }
       .hero { grid-template-columns: 1fr; padding-top: 1.2rem; }
       .metric-grid, .notes-grid { grid-template-columns: 1fr; }
+      .readiness-grid { grid-template-columns: 1fr; }
       .lock-row { grid-template-columns: 1fr; gap: 0.15rem; }
       h1 { font-size: 2.65rem; }
       .status-head { align-items: flex-start; flex-direction: column; }
@@ -1322,6 +1376,15 @@
           <canvas id="calibrationChart" role="img" aria-label="Brier score and log loss comparison"></canvas>
         </div>
       </div>
+      <div class="panel replay-panel" id="predictionReplayPanel">
+        <div class="panel-head">
+          <h3>Historical prediction replay</h3>
+          <span class="pill warn" id="predictionReplayPill">Pending</span>
+        </div>
+        <p class="sub" id="predictionReplaySummary"></p>
+        <div class="score-row" id="predictionReplayScores"></div>
+        <div class="table-wrap replay-table" id="predictionReplayTable"></div>
+      </div>
       <div class="table-wrap" id="cohortTable"></div>
     </section>
 
@@ -1346,7 +1409,7 @@
       <h2 data-step="06">Plain-English research notes</h2>
       <p class="sub">Short definitions for the terms used in the strategy diagnostics.</p>
       <div class="panel" id="datasetResearchPanel">
-        <h3>Dataset research verdict</h3>
+        <h3>Dataset readiness &amp; trade-use plan</h3>
         <div id="datasetResearch"></div>
       </div>
       <div class="notes-grid" id="notesGrid"></div>
@@ -1822,6 +1885,68 @@
         { label: 'lstm', data: activeData, backgroundColor: colors.cold },
         { label: 'clean-blend/combined', data: challengerData, backgroundColor: colors.warm }
       ]);
+      renderPredictionReplay(data.prediction_replay || {});
+    }
+
+    function renderPredictionReplay(block) {
+      const pill = $('predictionReplayPill');
+      const summaryEl = $('predictionReplaySummary');
+      const scoresEl = $('predictionReplayScores');
+      const tableEl = $('predictionReplayTable');
+      if (!pill || !summaryEl || !scoresEl || !tableEl) return;
+      if (!block.available) {
+        pill.textContent = 'Not enough replay data';
+        pill.className = 'pill warn';
+        summaryEl.textContent = block.reason || 'Historical prediction replay is not available yet.';
+        scoresEl.innerHTML = '';
+        tableEl.innerHTML = '';
+        return;
+      }
+
+      const summary = block.summary || {};
+      const ridgeDelta = summary.ridge_vs_lstm || {};
+      const brierDelta = number(ridgeDelta.brier_delta);
+      const maeDelta = number(ridgeDelta.mae_delta_f);
+      pill.textContent = brierDelta !== null && brierDelta < 0 ? 'Ridge replay leads' : 'Research replay';
+      pill.className = brierDelta !== null && brierDelta < 0 ? 'pill good' : 'pill warn';
+      summaryEl.textContent = [
+        `Walk-forward replay from ${safe(summary.first_synthetic_date)} to ${safe(summary.last_synthetic_date)}.`,
+        `Each row trains on prior dates only, then predicts the next settled SFO high.`,
+        `Status: ${safe(block.status, 'research_only')}.`
+      ].join(' ');
+      scoresEl.innerHTML = [
+        score('Replay rows', fmt(summary.synthetic_rows || 0)),
+        score('Best point model', summary.best_point_model || '-'),
+        score('Best probability model', summary.best_probability_model || '-'),
+        score('Tuned alpha by Brier', summary.best_ridge_alpha_by_brier == null ? '-' : fmt(summary.best_ridge_alpha_by_brier, 1)),
+        score('Ridge MAE delta', maeDelta === null ? '-' : `${fmt(maeDelta, 2)}F`),
+        score('Ridge Brier delta', brierDelta === null ? '-' : fmt(brierDelta, 4), 'brier-score')
+      ].join('');
+
+      const models = block.models || {};
+      const rows = [
+        ['ridge_synthetic_blend', 'Ridge stack'],
+        ['lstm_same_window', 'LSTM same window'],
+        ['xgb_same_window', 'XGBoost same window']
+      ].map(([key, label]) => {
+        const model = models[key] || {};
+        const point = model.point || {};
+        const calibration = model.calibration || {};
+        return `<tr>
+          <td><b>${htmlEscape(label)}</b></td>
+          <td class="num">${fmt(point.n || 0)}</td>
+          <td class="num">${point.mae_f == null ? '-' : `${fmt(point.mae_f, 2)}F`}</td>
+          <td class="num">${point.rmse_f == null ? '-' : `${fmt(point.rmse_f, 2)}F`}</td>
+          <td class="num">${point.bias_f == null ? '-' : `${fmt(point.bias_f, 2)}F`}</td>
+          <td class="num">${calibration.brier_score == null ? '-' : fmt(calibration.brier_score, 4)}</td>
+          <td class="num">${calibration.log_loss == null ? '-' : fmt(calibration.log_loss, 4)}</td>
+          <td class="num">${calibration.top_bin_accuracy == null ? '-' : pct(calibration.top_bin_accuracy, 1)}</td>
+        </tr>`;
+      }).join('');
+      tableEl.innerHTML = `<table>
+        <thead><tr><th>Replay model</th><th>Point rows</th><th>MAE</th><th>RMSE</th><th>Bias</th><th>Brier</th><th>Log loss</th><th>Top-bin hit</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
     }
 
     function renderDailySummary(data) {
@@ -2277,7 +2402,16 @@
         target.innerHTML = `<p class="empty">${htmlEscape(block.reason || 'Dataset research has not been published yet.')}</p>`;
         return;
       }
-      const statusTone = block.status === 'promote' ? 'good' : 'warn';
+      const stack = block.dataset_stack || {};
+      const coverage = block.dataset_coverage || {};
+      const tables = coverage.tables || {};
+      const profitability = block.profitability_gate || {};
+      const marketHistory = profitability.market_history || {};
+      const hasLift = (number(block.accuracy_candidate_count) || 0) > 0 || stack.decision === 'research_candidate';
+      const statusTone = hasLift ? 'good' : 'warn';
+      const stackHoldout = stack.holdout || {};
+      const actionItems = Array.isArray(block.action_items) ? block.action_items : [];
+      const blockingGates = Array.isArray(block.blocking_gates) ? block.blocking_gates : [];
       const rows = (block.candidates || []).map((row) => `
         <tr>
           <td><b>${htmlEscape(row.dataset_key || '-')}</b></td>
@@ -2286,14 +2420,36 @@
           <td class="num">${row.dataset_mae_f == null ? '-' : `${fmt(row.dataset_mae_f, 2)}F`}</td>
           <td class="num">${row.baseline_mae_f == null ? '-' : `${fmt(row.baseline_mae_f, 2)}F`}</td>
           <td class="num">${row.mae_delta_vs_baseline_f == null ? '-' : `${fmt(row.mae_delta_vs_baseline_f, 2)}F`}</td>
+          <td>${htmlEscape(row.next_use || row.reason || '-')}</td>
         </tr>`).join('');
+      const actionHtml = actionItems.length
+        ? `<ul class="dataset-actions">${actionItems.map((item) => `<li>${htmlEscape(item)}</li>`).join('')}</ul>`
+        : '';
+      const gateHtml = blockingGates.length
+        ? `<p class="muted">${htmlEscape(`Blocking gates: ${blockingGates.join('; ')}`)}</p>`
+        : '';
+      const stackText = stack.available
+        ? `${safe(stack.decision)} / ${stack.scored_rows || 0} scored rows / holdout delta ${stackHoldout.mae_delta_vs_baseline_f == null ? '-' : `${fmt(stackHoldout.mae_delta_vs_baseline_f, 2)}F`}`
+        : safe(stack.reason, 'Combined dataset stack is waiting for matched rows.');
       target.innerHTML = `
         <p><span class="pill ${statusTone}">${htmlEscape(block.status || 'pending')}</span>
-          ${htmlEscape(`${fmt(block.candidate_count || 0)} dataset feature(s) evaluated against the live calibration baseline.`)}
+          ${htmlEscape(block.headline || `${fmt(block.candidate_count || 0)} dataset feature(s) evaluated against the live calibration baseline.`)}
           <span class="muted">${htmlEscape(block.promotion_rule || '')}</span></p>
+        <div class="readiness-grid">
+          ${readinessCell('Baseline rows', fmt((block.baseline || {}).outcome_count || 0))}
+          ${readinessCell('Forecast features', fmt(tables.dataset_forecast_features || 0))}
+          ${readinessCell('Kalshi trades', fmt(marketHistory.trades || 0))}
+          ${readinessCell('Combined stack', stackText)}
+        </div>
+        ${gateHtml}
+        ${actionHtml}
         ${rows ? `<div class="table-wrap"><table>
-          <thead><tr><th>Dataset feature</th><th>Decision</th><th>Matched</th><th>Dataset MAE</th><th>Baseline MAE</th><th>Delta</th></tr></thead>
+          <thead><tr><th>Dataset feature</th><th>Decision</th><th>Matched</th><th>Dataset MAE</th><th>Baseline MAE</th><th>Delta</th><th>Next use</th></tr></thead>
           <tbody>${rows}</tbody></table></div>` : '<p class="empty">No matched dataset candidates yet; collection continues nightly.</p>'}`;
+    }
+
+    function readinessCell(label, value) {
+      return `<div class="readiness-cell"><b>${htmlEscape(value)}</b><span>${htmlEscape(label)}</span></div>`;
     }
 
     function chartOptions() {

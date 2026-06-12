@@ -15,6 +15,7 @@ from .models import ForecastOutcome
 DEFAULT_STACK_MIN_TRAIN = 120
 DEFAULT_CALIBRATION_MIN_TRAIN = 120
 DEFAULT_RIDGE_ALPHA = 10.0
+DEFAULT_RIDGE_ALPHA_GRID = (0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0)
 SYNTHETIC_FEATURES = (
     "lstm_high_f",
     "xgb_high_f",
@@ -74,6 +75,7 @@ def build_synthetic_blend_calibration(
     stack_min_train: int = DEFAULT_STACK_MIN_TRAIN,
     calibration_min_train: int = DEFAULT_CALIBRATION_MIN_TRAIN,
     ridge_alpha: float = DEFAULT_RIDGE_ALPHA,
+    ridge_alpha_grid: tuple[float, ...] | list[float] | None = DEFAULT_RIDGE_ALPHA_GRID,
 ) -> dict[str, Any]:
     """Build a walk-forward synthetic blend calibration experiment.
 
@@ -99,9 +101,22 @@ def build_synthetic_blend_calibration(
         name: _model_payload(outcomes, config=config, calibration_min_train=calibration_min_train)
         for name, outcomes in model_outcomes.items()
     }
+    alpha_sweep = _ridge_alpha_sweep(
+        rows,
+        config=config,
+        stack_min_train=stack_min_train,
+        calibration_min_train=calibration_min_train,
+        ridge_alphas=ridge_alpha_grid,
+    )
     prediction_rows = _prediction_rows(model_outcomes)
     best_point = min(models, key=lambda name: models[name]["point"]["mae_f"])
     best_probability = min(models, key=lambda name: models[name]["calibration"]["brier_score"])
+    best_alpha_by_brier = alpha_sweep[0]["ridge_alpha"] if alpha_sweep else ridge_alpha
+    best_alpha_by_mae = (
+        min(alpha_sweep, key=lambda row: row["point"]["mae_f"])["ridge_alpha"]
+        if alpha_sweep
+        else ridge_alpha
+    )
     ridge = models["ridge_synthetic_blend"]
     lstm = models["lstm_same_window"]
     return {
@@ -113,6 +128,7 @@ def build_synthetic_blend_calibration(
             "stack_min_train": stack_min_train,
             "calibration_min_train": calibration_min_train,
             "ridge_alpha": ridge_alpha,
+            "ridge_alpha_grid": [row["ridge_alpha"] for row in alpha_sweep],
             "features": list(SYNTHETIC_FEATURES),
             "target": "next-day SFO high temperature",
             "kalshi_settlement": "actual highs are rounded before bin calibration",
@@ -124,6 +140,8 @@ def build_synthetic_blend_calibration(
             "last_synthetic_date": next(iter(model_outcomes.values()))[-1].local_date.isoformat(),
             "best_point_model": best_point,
             "best_probability_model": best_probability,
+            "best_ridge_alpha_by_brier": best_alpha_by_brier,
+            "best_ridge_alpha_by_mae": best_alpha_by_mae,
             "ridge_vs_lstm": {
                 "mae_delta_f": round(
                     ridge["point"]["mae_f"] - lstm["point"]["mae_f"],
@@ -140,6 +158,7 @@ def build_synthetic_blend_calibration(
             },
         },
         "models": models,
+        "ridge_alpha_sweep": alpha_sweep,
         "recent_predictions": prediction_rows[-10:],
         "warnings": [
             "This is not yet the live landing-page blend history; it is a synthetic point-in-time proxy built from the historical LSTM/XGBoost comparison.",
@@ -170,7 +189,7 @@ def load_ab_test_daily_rows(ab_test_path: Path) -> list[SyntheticBlendRow]:
         row = SyntheticBlendRow(
             local_date=date.fromisoformat(raw["date"]),
             actual_high_f=actual,
-            settlement_high_f=float(round(actual)),
+            settlement_high_f=float(math.floor(actual + 0.5)),
             lstm_high_f=lstm,
             xgb_high_f=float(raw["xgb"]),
             yesterday_high_f=previous_actual if previous_actual is not None else lstm,
@@ -299,6 +318,51 @@ def _model_payload(
         "point": _point_metrics(outcomes),
         "calibration": _calibration_payload(calibration),
     }
+
+
+def _ridge_alpha_sweep(
+    rows: list[SyntheticBlendRow],
+    *,
+    config: StrategyConfig | None,
+    stack_min_train: int,
+    calibration_min_train: int,
+    ridge_alphas: tuple[float, ...] | list[float] | None,
+) -> list[dict[str, Any]]:
+    if not ridge_alphas:
+        return []
+    seen: set[float] = set()
+    sweep_rows = []
+    for alpha in ridge_alphas:
+        alpha = float(alpha)
+        if alpha <= 0.0 or alpha in seen:
+            continue
+        seen.add(alpha)
+        outcomes = build_walk_forward_outcomes(
+            rows,
+            stack_min_train=stack_min_train,
+            ridge_alpha=alpha,
+        )["ridge_synthetic_blend"]
+        payload = _model_payload(
+            outcomes,
+            config=config,
+            calibration_min_train=calibration_min_train,
+        )
+        sweep_rows.append(
+            {
+                "ridge_alpha": alpha,
+                "point": payload["point"],
+                "calibration": payload["calibration"],
+            }
+        )
+    sweep_rows.sort(
+        key=lambda row: (
+            row["calibration"]["brier_score"],
+            row["calibration"]["log_loss"],
+            row["point"]["mae_f"],
+            row["ridge_alpha"],
+        )
+    )
+    return sweep_rows
 
 
 def _point_metrics(outcomes: list[ForecastOutcome]) -> dict[str, Any]:

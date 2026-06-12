@@ -51,6 +51,11 @@ def test_dataset_research_promotes_only_sources_that_improve_heldout_accuracy():
     assert good["holdout"]["mae_delta_vs_baseline_f"] < -0.25
     assert bad["decision"] == "collect_only"
     assert "does not beat baseline" in bad["reason"]
+    assert payload["dataset_stack"]["available"] is True
+    assert payload["dataset_stack"]["decision"] == "research_candidate"
+    assert payload["dataset_stack"]["holdout"]["mae_delta_vs_baseline_f"] < -0.25
+    assert payload["summary"]["combined_stack_candidate"] is True
+    assert payload["summary"]["action_items"]
     assert payload["profitability_gate"]["decision"] == "collect_only"
     assert "after-cost" in payload["profitability_gate"]["reason"]
 

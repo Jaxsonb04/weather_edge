@@ -38,6 +38,11 @@ def test_synthetic_blend_calibration_reports_fair_window_comparison():
     assert ridge["calibration"]["n"] == lstm["calibration"]["n"] == 60
     assert ridge["point"]["mae_f"] < lstm["point"]["mae_f"]
     assert payload["summary"]["best_point_model"] == "ridge_synthetic_blend"
+    assert payload["ridge_alpha_sweep"]
+    assert payload["summary"]["best_ridge_alpha_by_brier"] == payload["ridge_alpha_sweep"][0]["ridge_alpha"]
+    assert {
+        row["ridge_alpha"] for row in payload["ridge_alpha_sweep"]
+    } >= {0.1, 1.0, 10.0}
 
 
 def test_synthetic_blend_loader_sorts_rows_and_uses_prior_actual():

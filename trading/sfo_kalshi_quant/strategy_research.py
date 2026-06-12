@@ -11,10 +11,12 @@ from typing import Any
 from .backtest import run_walk_forward_calibration_backtest
 from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, SFO_TZ, StrategyConfig, strategy_config_for_profile
 from .db import PaperStore
+from .dataset_research import build_dataset_research as build_dataset_research_payload
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .settlement_day import settlement_today
 from .summary import build_paper_summary
+from .synthetic_blend import build_synthetic_blend_calibration
 
 
 ACTIVE_CALIBRATION_SOURCE = "lstm"
@@ -45,7 +47,10 @@ def build_strategy_research(
     cfg = config or strategy_config_for_profile(None)
     adapter = SfoForecasterAdapter(forecaster_root)
     trading_signal = _load_json_optional(forecaster_root / "trading_signal.json")
-    dataset_research = _load_json_optional(forecaster_root / "dataset_research.json")
+    dataset_research = _load_or_build_dataset_research(
+        forecaster_root=forecaster_root,
+        db_path=db_path,
+    )
 
     active_calibration = _calibration_payload(
         adapter,
@@ -62,6 +67,7 @@ def build_strategy_research(
         min_train=calibration_min_train,
     )
     comparison = _comparison_summary(active_calibration, challenger_calibration)
+    prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
     backtest = _signal_backtest_payload(adapter, db_path)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
@@ -99,6 +105,7 @@ def build_strategy_research(
             "challenger": challenger_calibration,
             "comparison": comparison,
         },
+        "prediction_replay": prediction_replay,
         "signal_quality": signal_quality,
         "backtest_summary": backtest,
         "paper_trading": paper,
@@ -134,6 +141,22 @@ def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_or_build_dataset_research(*, forecaster_root: Path, db_path: Path) -> dict[str, Any] | None:
+    published = _load_json_optional(forecaster_root / "dataset_research.json")
+    if published:
+        return published
+    try:
+        return build_dataset_research_payload(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+        )
+    except Exception as exc:  # diagnostics artifact must not fail Strategy Lab
+        return {
+            "available": False,
+            "reason": f"dataset research unavailable: {type(exc).__name__}: {exc}",
+        }
 
 
 def _profile_views(
@@ -645,6 +668,39 @@ def _comparison_summary(active: dict[str, Any], challenger: dict[str, Any]) -> d
     }
 
 
+def _prediction_replay_payload(forecaster_root: Path, config: StrategyConfig) -> dict[str, Any]:
+    """Run the tracked historical LSTM/XGBoost replay as a Strategy Lab diagnostic."""
+
+    ab_test_path = Path(forecaster_root) / "ab_test_results.json"
+    if not ab_test_path.exists():
+        return {
+            "available": False,
+            "reason": f"Historical replay input not found: {ab_test_path}",
+        }
+    try:
+        payload = build_synthetic_blend_calibration(
+            ab_test_path,
+            config=config,
+        )
+    except (KeyError, ValueError, OSError, json.JSONDecodeError) as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "available": True,
+        "source": payload.get("source"),
+        "mode": payload.get("mode"),
+        "status": payload.get("status"),
+        "configuration": payload.get("configuration") or {},
+        "summary": payload.get("summary") or {},
+        "models": payload.get("models") or {},
+        "ridge_alpha_sweep": (payload.get("ridge_alpha_sweep") or [])[:8],
+        "recent_predictions": payload.get("recent_predictions") or [],
+        "warnings": payload.get("warnings") or [],
+    }
+
+
 def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:
     empty = {
         "available": False,
@@ -1044,17 +1100,26 @@ def _dataset_research_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
         for row in candidate_rows[:6]
         if isinstance(row, dict)
     ]
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    accuracy_candidates = accuracy_gate.get(
+        "accuracy_candidate_count", payload.get("accuracy_candidate_count")
+    )
     return {
         "available": True,
         "generated_at": payload.get("generated_at"),
         "status": payload.get("status"),
+        "headline": summary.get("headline"),
         "promotion_rule": payload.get("promotion_rule"),
         "candidate_count": accuracy_gate.get(
             "candidate_count", payload.get("candidate_count", len(candidate_rows))
         ),
-        "accuracy_candidate_count": accuracy_gate.get(
-            "accuracy_candidate_count", payload.get("accuracy_candidate_count")
-        ),
+        "accuracy_candidate_count": accuracy_candidates,
+        "blocking_gates": summary.get("blocking_gates") or [],
+        "action_items": summary.get("action_items") or [],
+        "baseline": payload.get("baseline") or {},
+        "dataset_coverage": payload.get("dataset_coverage") or {},
+        "dataset_stack": payload.get("dataset_stack") or {},
+        "profitability_gate": payload.get("profitability_gate") or {},
         "candidates": top,
     }
 
@@ -1065,6 +1130,8 @@ def _dataset_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "dataset_key": row.get("dataset_key"),
         "decision": row.get("decision"),
+        "reason": row.get("reason"),
+        "next_use": row.get("next_use"),
         "matched_rows": row.get("matched_rows"),
         "dataset_mae_f": metrics.get("dataset_mae_f"),
         "baseline_mae_f": metrics.get("baseline_mae_f"),

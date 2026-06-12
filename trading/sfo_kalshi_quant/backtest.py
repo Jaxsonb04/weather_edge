@@ -71,7 +71,9 @@ def run_walk_forward_calibration_backtest(
         entropy = 0.0
         for market in ladder:
             probability = probs[market.ticker].probability
-            outcome = 1.0 if market.resolves_yes(round(test.actual_high_f)) else 0.0
+            # Half-up to the integer settlement value, matching the NWS/Kalshi
+            # convention used by the forecast adapters (never banker's rounding).
+            outcome = 1.0 if market.resolves_yes(math.floor(test.actual_high_f + 0.5)) else 0.0
             calibration_samples.append((probability, outcome))
             brier += (probability - outcome) ** 2
             entropy -= probability * math.log(max(probability, 1e-12))
