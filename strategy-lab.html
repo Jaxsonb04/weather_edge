@@ -2407,6 +2407,8 @@
       const tables = coverage.tables || {};
       const profitability = block.profitability_gate || {};
       const marketHistory = profitability.market_history || {};
+      const featureRows = number(tables.dataset_forecast_features);
+      const datasetViews = `${fmt(block.candidate_count || 0)}${featureRows ? ` / ${fmt(featureRows)} rows` : ''}`;
       const hasLift = (number(block.accuracy_candidate_count) || 0) > 0 || stack.decision === 'research_candidate';
       const statusTone = hasLift ? 'good' : 'warn';
       const stackHoldout = stack.holdout || {};
@@ -2437,7 +2439,7 @@
           <span class="muted">${htmlEscape(block.promotion_rule || '')}</span></p>
         <div class="readiness-grid">
           ${readinessCell('Baseline rows', fmt((block.baseline || {}).outcome_count || 0))}
-          ${readinessCell('Forecast features', fmt(tables.dataset_forecast_features || 0))}
+          ${readinessCell('Dataset views', datasetViews)}
           ${readinessCell('Kalshi trades', fmt(marketHistory.trades || 0))}
           ${readinessCell('Combined stack', stackText)}
         </div>

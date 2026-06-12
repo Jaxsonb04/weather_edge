@@ -610,7 +610,7 @@
         }
       ]
     },
-    "generated_at": "2026-06-12T01:03:17.308899+00:00",
+    "generated_at": "2026-06-12T01:06:42.224213+00:00",
     "learnings": [
       "NO side: 0/2 won, net $-0.95 this window.",
       "YES side: 0/1 won, net $-0.05 this window.",
@@ -673,14 +673,21 @@
   },
   "dataset_research": {
     "accuracy_candidate_count": 0,
-    "action_items": [],
+    "action_items": [
+      "Keep nightly dataset backfill running until each candidate has 30 matched settled highs.",
+      "Backfill or enable Kalshi trade history before using datasets for trading weight.",
+      "Keep live AWS execution pinned to LSTM until both accuracy and market gates pass."
+    ],
     "available": true,
     "baseline": {
       "outcome_count": 475,
       "settlement": "rounded SFO high temperature",
       "source": "lstm"
     },
-    "blocking_gates": [],
+    "blocking_gates": [
+      "accuracy gate: best dataset feature has 0 matched settlement rows; needs 30",
+      "market gate: 0 after-cost trade rows; needs 30"
+    ],
     "candidate_count": 9,
     "candidates": [
       {
@@ -690,7 +697,7 @@
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
         "matched_rows": 0,
-        "next_use": null,
+        "next_use": "Keep collecting; needs at least 30 matched settlement rows; has 0",
         "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
@@ -700,7 +707,7 @@
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
         "matched_rows": 0,
-        "next_use": null,
+        "next_use": "Keep collecting; needs at least 30 matched settlement rows; has 0",
         "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
@@ -710,7 +717,7 @@
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
         "matched_rows": 0,
-        "next_use": null,
+        "next_use": "Keep collecting; needs at least 30 matched settlement rows; has 0",
         "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
@@ -720,7 +727,7 @@
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
         "matched_rows": 0,
-        "next_use": null,
+        "next_use": "Keep collecting; needs at least 30 matched settlement rows; has 0",
         "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
@@ -730,7 +737,7 @@
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
         "matched_rows": 0,
-        "next_use": null,
+        "next_use": "Keep collecting; needs at least 30 matched settlement rows; has 0",
         "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
@@ -740,14 +747,21 @@
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
         "matched_rows": 0,
-        "next_use": null,
+        "next_use": "Keep collecting; needs at least 30 matched settlement rows; has 0",
         "reason": "needs at least 30 matched settlement rows; has 0"
       }
     ],
     "dataset_coverage": {},
-    "dataset_stack": {},
+    "dataset_stack": {
+      "available": false,
+      "decision": "collect_only",
+      "feature_keys": [],
+      "max_matched_rows": 0,
+      "minimum_matched_rows": 30,
+      "reason": "Combined dataset stack is waiting for matched settlement rows; best published feature has 0 and needs 30."
+    },
     "generated_at": "2026-06-11T09:25:08.547438+00:00",
-    "headline": null,
+    "headline": "Dataset collection is live, but forecast features are not yet matched to settled SFO highs.",
     "profitability_gate": {
       "decision": "collect_only",
       "market_history": {
@@ -763,7 +777,7 @@
   },
   "default_profile": "balanced",
   "disclaimer": "Paper-trading research only. The active AWS execution calibration remains pinned to lstm; this artifact does not place live orders.",
-  "generated_at": "2026-06-12T01:03:17.313343+00:00",
+  "generated_at": "2026-06-12T01:06:42.288929+00:00",
   "live_orders_enabled": false,
   "mode": "paper_research_only",
   "paper_trading": {
@@ -2836,7 +2850,7 @@
           "rejected": 2664,
           "top_rejections": []
         },
-        "generated_at": "2026-06-12T01:03:17.308899+00:00",
+        "generated_at": "2026-06-12T01:06:42.224213+00:00",
         "learnings": [
           "balanced has no resolved trades in this window yet."
         ],
@@ -3214,7 +3228,7 @@
           "rejected": 1885,
           "top_rejections": []
         },
-        "generated_at": "2026-06-12T01:03:17.308899+00:00",
+        "generated_at": "2026-06-12T01:06:42.224213+00:00",
         "learnings": [
           "fast-feedback resolved 3 trade(s): 0W / 3L, net $-1.00.",
           "fast-feedback currently has $2.72 of paper open risk.",
@@ -5981,7 +5995,7 @@
     "deduped_signal_count": 72,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-06-12T01:03:17.313317+00:00",
+    "last_updated": "2026-06-12T01:06:42.288900+00:00",
     "latest_signal_targets": [
       "2026-06-10",
       "2026-06-11",
