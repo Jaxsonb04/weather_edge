@@ -330,7 +330,7 @@
       "decision_snapshots": 4568,
       "forecast_snapshots": 272,
       "market_snapshots": 243,
-      "paper_monitor_snapshots": 559,
+      "paper_monitor_snapshots": 560,
       "paper_orders": 4,
       "probability_snapshots": 1632
     },
@@ -610,7 +610,7 @@
         }
       ]
     },
-    "generated_at": "2026-06-12T00:47:25.097618+00:00",
+    "generated_at": "2026-06-12T00:52:16.782300+00:00",
     "learnings": [
       "NO side: 0/2 won, net $-0.95 this window.",
       "YES side: 0/1 won, net $-0.05 this window.",
@@ -673,7 +673,14 @@
   },
   "dataset_research": {
     "accuracy_candidate_count": 0,
+    "action_items": [],
     "available": true,
+    "baseline": {
+      "outcome_count": 475,
+      "settlement": "rounded SFO high temperature",
+      "source": "lstm"
+    },
+    "blocking_gates": [],
     "candidate_count": 9,
     "candidates": [
       {
@@ -682,7 +689,9 @@
         "dataset_mae_f": null,
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
-        "matched_rows": 0
+        "matched_rows": 0,
+        "next_use": null,
+        "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
         "baseline_mae_f": null,
@@ -690,7 +699,9 @@
         "dataset_mae_f": null,
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
-        "matched_rows": 0
+        "matched_rows": 0,
+        "next_use": null,
+        "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
         "baseline_mae_f": null,
@@ -698,7 +709,9 @@
         "dataset_mae_f": null,
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
-        "matched_rows": 0
+        "matched_rows": 0,
+        "next_use": null,
+        "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
         "baseline_mae_f": null,
@@ -706,7 +719,9 @@
         "dataset_mae_f": null,
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
-        "matched_rows": 0
+        "matched_rows": 0,
+        "next_use": null,
+        "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
         "baseline_mae_f": null,
@@ -714,7 +729,9 @@
         "dataset_mae_f": null,
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
-        "matched_rows": 0
+        "matched_rows": 0,
+        "next_use": null,
+        "reason": "needs at least 30 matched settlement rows; has 0"
       },
       {
         "baseline_mae_f": null,
@@ -722,16 +739,31 @@
         "dataset_mae_f": null,
         "decision": "collect_only",
         "mae_delta_vs_baseline_f": null,
-        "matched_rows": 0
+        "matched_rows": 0,
+        "next_use": null,
+        "reason": "needs at least 30 matched settlement rows; has 0"
       }
     ],
+    "dataset_coverage": {},
+    "dataset_stack": {},
     "generated_at": "2026-06-11T09:25:08.547438+00:00",
+    "headline": null,
+    "profitability_gate": {
+      "decision": "collect_only",
+      "market_history": {
+        "candles": 365,
+        "markets": 180,
+        "trades": 0
+      },
+      "minimum_after_cost_trades": 30,
+      "reason": "No dataset source gets live trading weight until it has an after-cost market backtest with at least 30 matched trades. Current collected trade rows: 0."
+    },
     "promotion_rule": "Collect broadly, but do not give a new source live model weight or loosen paper-trading gates until it improves held-out forecast error and then survives an after-cost market backtest with enough trades.",
     "status": "collect_only"
   },
   "default_profile": "balanced",
   "disclaimer": "Paper-trading research only. The active AWS execution calibration remains pinned to lstm; this artifact does not place live orders.",
-  "generated_at": "2026-06-12T00:47:25.101960+00:00",
+  "generated_at": "2026-06-12T00:52:16.846761+00:00",
   "live_orders_enabled": false,
   "mode": "paper_research_only",
   "paper_trading": {
@@ -925,7 +957,7 @@
         "current_exit_fee_per_contract": 0.0033,
         "current_market_probability": null,
         "current_net_exit": 0.9867,
-        "current_snapshot_at": "2026-06-12T00:47:18.759715+00:00",
+        "current_snapshot_at": "2026-06-12T00:52:00.527620+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 2.96,
@@ -1000,6 +1032,26 @@
       }
     ],
     "recent_monitor_actions": [
+      {
+        "contracts": null,
+        "cost_per_contract": null,
+        "entry_price": null,
+        "exit_fee_per_contract": 0.0033,
+        "exit_price": 0.99,
+        "id": 4,
+        "initial_cost": null,
+        "label": "88\u00b0 to 89\u00b0",
+        "note": "inside exit bands",
+        "realized_pnl": 0.24,
+        "realized_roi": 0.0882,
+        "risk_profile": "fast-feedback",
+        "settlement_high_f": null,
+        "side": "NO",
+        "status": "HOLD",
+        "target_date": "2026-06-11",
+        "ticker": "KXHIGHTSFO-26JUN11-B88.5",
+        "time": "2026-06-12T00:52:00.527620+00:00"
+      },
       {
         "contracts": null,
         "cost_per_contract": null,
@@ -1219,26 +1271,6 @@
         "target_date": "2026-06-11",
         "ticker": "KXHIGHTSFO-26JUN11-B88.5",
         "time": "2026-06-11T23:57:11.917416+00:00"
-      },
-      {
-        "contracts": null,
-        "cost_per_contract": null,
-        "entry_price": null,
-        "exit_fee_per_contract": 0.0033,
-        "exit_price": 0.99,
-        "id": 4,
-        "initial_cost": null,
-        "label": "88\u00b0 to 89\u00b0",
-        "note": "inside exit bands",
-        "realized_pnl": 0.24,
-        "realized_roi": 0.0882,
-        "risk_profile": "fast-feedback",
-        "settlement_high_f": null,
-        "side": "NO",
-        "status": "HOLD",
-        "target_date": "2026-06-11",
-        "ticker": "KXHIGHTSFO-26JUN11-B88.5",
-        "time": "2026-06-11T23:52:18.766219+00:00"
       }
     ],
     "summary": {
@@ -1248,7 +1280,7 @@
       "hidden_open_positions": 0,
       "hit_rate": 0.0,
       "largest_duplicate_open_group": 0,
-      "latest_monitor_action_at": "2026-06-12T00:47:18.759715+00:00",
+      "latest_monitor_action_at": "2026-06-12T00:52:00.527620+00:00",
       "latest_opened_at": "2026-06-10T22:00:06.565210+00:00",
       "loss_count": 3,
       "marked_open_positions": 1,
@@ -1263,6 +1295,1378 @@
       "win_count": 0
     }
   },
+  "prediction_replay": {
+    "available": true,
+    "configuration": {
+      "calibration_min_train": 120,
+      "features": [
+        "lstm_high_f",
+        "xgb_high_f",
+        "model_spread_f",
+        "season_sin",
+        "season_cos",
+        "yesterday_high_f"
+      ],
+      "kalshi_settlement": "actual highs are rounded before bin calibration",
+      "ridge_alpha": 10.0,
+      "ridge_alpha_grid": [
+        30.0,
+        10.0,
+        1.0,
+        3.0,
+        0.1,
+        0.3,
+        100.0
+      ],
+      "stack_min_train": 120,
+      "target": "next-day SFO high temperature"
+    },
+    "mode": "synthetic_historical_blend_calibration",
+    "models": {
+      "lstm_same_window": {
+        "calibration": {
+          "avg_entropy": 0.9286,
+          "avg_winning_probability": 0.5304,
+          "brier_score": 0.5035,
+          "buckets": [
+            {
+              "avg_probability": 0.0265,
+              "brier_score": 0.0373,
+              "count": 830,
+              "observed_frequency": 0.0398,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1456,
+              "brier_score": 0.1386,
+              "count": 260,
+              "observed_frequency": 0.1654,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2432,
+              "brier_score": 0.1759,
+              "count": 130,
+              "observed_frequency": 0.2308,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3498,
+              "brier_score": 0.1943,
+              "count": 17,
+              "observed_frequency": 0.2353,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4553,
+              "brier_score": 0.2464,
+              "count": 19,
+              "observed_frequency": 0.3684,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5456,
+              "brier_score": 0.2778,
+              "count": 22,
+              "observed_frequency": 0.2273,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6503,
+              "brier_score": 0.2658,
+              "count": 16,
+              "observed_frequency": 0.5,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7408,
+              "brier_score": 0.1113,
+              "count": 12,
+              "observed_frequency": 0.9167,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8534,
+              "brier_score": 0.112,
+              "count": 21,
+              "observed_frequency": 0.8571,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9605,
+              "brier_score": 0.0769,
+              "count": 83,
+              "observed_frequency": 0.9157,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9441,
+              "brier_score": 0.013,
+              "count": 55,
+              "log_loss": 0.0632,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5441,
+              "brier_score": 0.4736,
+              "count": 116,
+              "log_loss": 0.9559,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6466
+            },
+            {
+              "avg_winning_probability": 0.1536,
+              "brier_score": 0.9811,
+              "count": 55,
+              "log_loss": 2.2422,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.1818
+            },
+            {
+              "avg_winning_probability": 0.1288,
+              "brier_score": 0.9666,
+              "count": 9,
+              "log_loss": 2.1416,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.1111
+            }
+          ],
+          "log_loss": 1.0934,
+          "n": 235,
+          "top_bin_accuracy": 0.6
+        },
+        "point": {
+          "bias_f": -0.3934,
+          "mae_f": 3.3208,
+          "n": 355,
+          "rmse_f": 4.543
+        }
+      },
+      "ridge_synthetic_blend": {
+        "calibration": {
+          "avg_entropy": 0.9422,
+          "avg_winning_probability": 0.5373,
+          "brier_score": 0.4796,
+          "buckets": [
+            {
+              "avg_probability": 0.0246,
+              "brier_score": 0.0255,
+              "count": 806,
+              "observed_frequency": 0.0261,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1425,
+              "brier_score": 0.1459,
+              "count": 244,
+              "observed_frequency": 0.1762,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2346,
+              "brier_score": 0.1744,
+              "count": 174,
+              "observed_frequency": 0.2241,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3474,
+              "brier_score": 0.2007,
+              "count": 21,
+              "observed_frequency": 0.2381,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4507,
+              "brier_score": 0.2495,
+              "count": 17,
+              "observed_frequency": 0.3529,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5431,
+              "brier_score": 0.2635,
+              "count": 19,
+              "observed_frequency": 0.4737,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6288,
+              "brier_score": 0.295,
+              "count": 8,
+              "observed_frequency": 0.375,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7536,
+              "brier_score": 0.1527,
+              "count": 23,
+              "observed_frequency": 0.8261,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8474,
+              "brier_score": 0.1732,
+              "count": 18,
+              "observed_frequency": 0.7778,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9585,
+              "brier_score": 0.0471,
+              "count": 80,
+              "observed_frequency": 0.95,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.941,
+              "brier_score": 0.0126,
+              "count": 55,
+              "log_loss": 0.065,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5247,
+              "brier_score": 0.4828,
+              "count": 116,
+              "log_loss": 1.0111,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1867,
+              "brier_score": 0.9336,
+              "count": 55,
+              "log_loss": 2.0361,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2545
+            },
+            {
+              "avg_winning_probability": 0.3763,
+              "brier_score": 0.5177,
+              "count": 9,
+              "log_loss": 1.0564,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.7778
+            }
+          ],
+          "log_loss": 1.0313,
+          "n": 235,
+          "top_bin_accuracy": 0.6213
+        },
+        "point": {
+          "bias_f": -0.2539,
+          "mae_f": 3.1192,
+          "n": 355,
+          "rmse_f": 4.1144
+        }
+      },
+      "xgb_same_window": {
+        "calibration": {
+          "avg_entropy": 0.9495,
+          "avg_winning_probability": 0.5156,
+          "brier_score": 0.5231,
+          "buckets": [
+            {
+              "avg_probability": 0.0281,
+              "brier_score": 0.0401,
+              "count": 817,
+              "observed_frequency": 0.0428,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1436,
+              "brier_score": 0.1436,
+              "count": 280,
+              "observed_frequency": 0.175,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2226,
+              "brier_score": 0.1554,
+              "count": 122,
+              "observed_frequency": 0.1885,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3495,
+              "brier_score": 0.2384,
+              "count": 8,
+              "observed_frequency": 0.375,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4416,
+              "brier_score": 0.2349,
+              "count": 17,
+              "observed_frequency": 0.2353,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5447,
+              "brier_score": 0.2771,
+              "count": 20,
+              "observed_frequency": 0.2,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6536,
+              "brier_score": 0.2721,
+              "count": 24,
+              "observed_frequency": 0.5,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.745,
+              "brier_score": 0.2016,
+              "count": 31,
+              "observed_frequency": 0.7097,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8492,
+              "brier_score": 0.1942,
+              "count": 25,
+              "observed_frequency": 0.76,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9614,
+              "brier_score": 0.0289,
+              "count": 66,
+              "observed_frequency": 0.9697,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9212,
+              "brier_score": 0.0175,
+              "count": 55,
+              "log_loss": 0.0863,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5191,
+              "brier_score": 0.5139,
+              "count": 116,
+              "log_loss": 1.0402,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1619,
+              "brier_score": 0.9741,
+              "count": 55,
+              "log_loss": 2.2145,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.1636
+            },
+            {
+              "avg_winning_probability": 0.1521,
+              "brier_score": 0.9765,
+              "count": 9,
+              "log_loss": 2.2106,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.2222
+            }
+          ],
+          "log_loss": 1.1366,
+          "n": 235,
+          "top_bin_accuracy": 0.5787
+        },
+        "point": {
+          "bias_f": 1.6614,
+          "mae_f": 4.0397,
+          "n": 355,
+          "rmse_f": 5.0227
+        }
+      }
+    },
+    "recent_predictions": [
+      {
+        "actual_high_f": 64.0,
+        "date": "2026-05-10",
+        "lstm_abs_error_f": 2.64,
+        "lstm_f": 66.64,
+        "ridge_abs_error_f": 0.17,
+        "ridge_synthetic_blend_f": 64.17,
+        "xgb_f": 65.69
+      },
+      {
+        "actual_high_f": 62.0,
+        "date": "2026-05-12",
+        "lstm_abs_error_f": 4.02,
+        "lstm_f": 66.02,
+        "ridge_abs_error_f": 3.78,
+        "ridge_synthetic_blend_f": 65.78,
+        "xgb_f": 69.44
+      },
+      {
+        "actual_high_f": 65.0,
+        "date": "2026-05-13",
+        "lstm_abs_error_f": 0.4,
+        "lstm_f": 64.6,
+        "ridge_abs_error_f": 1.42,
+        "ridge_synthetic_blend_f": 63.58,
+        "xgb_f": 65.98
+      },
+      {
+        "actual_high_f": 66.0,
+        "date": "2026-05-14",
+        "lstm_abs_error_f": 0.67,
+        "lstm_f": 65.33,
+        "ridge_abs_error_f": 0.74,
+        "ridge_synthetic_blend_f": 65.26,
+        "xgb_f": 67.59
+      },
+      {
+        "actual_high_f": 65.0,
+        "date": "2026-05-15",
+        "lstm_abs_error_f": 1.16,
+        "lstm_f": 66.16,
+        "ridge_abs_error_f": 1.25,
+        "ridge_synthetic_blend_f": 66.25,
+        "xgb_f": 67.96
+      },
+      {
+        "actual_high_f": 66.0,
+        "date": "2026-05-16",
+        "lstm_abs_error_f": 0.1,
+        "lstm_f": 66.1,
+        "ridge_abs_error_f": 0.18,
+        "ridge_synthetic_blend_f": 65.82,
+        "xgb_f": 68.07
+      },
+      {
+        "actual_high_f": 72.0,
+        "date": "2026-05-17",
+        "lstm_abs_error_f": 6.78,
+        "lstm_f": 65.22,
+        "ridge_abs_error_f": 6.54,
+        "ridge_synthetic_blend_f": 65.46,
+        "xgb_f": 67.81
+      },
+      {
+        "actual_high_f": 79.0,
+        "date": "2026-05-18",
+        "lstm_abs_error_f": 12.16,
+        "lstm_f": 66.84,
+        "ridge_abs_error_f": 10.19,
+        "ridge_synthetic_blend_f": 68.81,
+        "xgb_f": 68.95
+      },
+      {
+        "actual_high_f": 72.0,
+        "date": "2026-05-20",
+        "lstm_abs_error_f": 3.63,
+        "lstm_f": 68.37,
+        "ridge_abs_error_f": 1.03,
+        "ridge_synthetic_blend_f": 73.03,
+        "xgb_f": 74.26
+      },
+      {
+        "actual_high_f": 69.0,
+        "date": "2026-05-21",
+        "lstm_abs_error_f": 0.91,
+        "lstm_f": 68.09,
+        "ridge_abs_error_f": 0.99,
+        "ridge_synthetic_blend_f": 69.99,
+        "xgb_f": 71.2
+      }
+    ],
+    "ridge_alpha_sweep": [
+      {
+        "calibration": {
+          "avg_entropy": 0.9525,
+          "avg_winning_probability": 0.5355,
+          "brier_score": 0.4793,
+          "buckets": [
+            {
+              "avg_probability": 0.0251,
+              "brier_score": 0.0246,
+              "count": 802,
+              "observed_frequency": 0.0249,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1427,
+              "brier_score": 0.145,
+              "count": 247,
+              "observed_frequency": 0.1741,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2341,
+              "brier_score": 0.1774,
+              "count": 176,
+              "observed_frequency": 0.233,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3509,
+              "brier_score": 0.2066,
+              "count": 22,
+              "observed_frequency": 0.2727,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4577,
+              "brier_score": 0.2475,
+              "count": 21,
+              "observed_frequency": 0.381,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5587,
+              "brier_score": 0.267,
+              "count": 15,
+              "observed_frequency": 0.4,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6559,
+              "brier_score": 0.2549,
+              "count": 10,
+              "observed_frequency": 0.5,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7511,
+              "brier_score": 0.1578,
+              "count": 17,
+              "observed_frequency": 0.8235,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8427,
+              "brier_score": 0.151,
+              "count": 21,
+              "observed_frequency": 0.8095,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9582,
+              "brier_score": 0.0476,
+              "count": 79,
+              "observed_frequency": 0.9494,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9402,
+              "brier_score": 0.0124,
+              "count": 55,
+              "log_loss": 0.0656,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5231,
+              "brier_score": 0.4836,
+              "count": 116,
+              "log_loss": 1.0105,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1873,
+              "brier_score": 0.9252,
+              "count": 55,
+              "log_loss": 2.0204,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2364
+            },
+            {
+              "avg_winning_probability": 0.3489,
+              "brier_score": 0.5522,
+              "count": 9,
+              "log_loss": 1.1217,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.7778
+            }
+          ],
+          "log_loss": 1.03,
+          "n": 235,
+          "top_bin_accuracy": 0.617
+        },
+        "point": {
+          "bias_f": -0.3289,
+          "mae_f": 3.1292,
+          "n": 355,
+          "rmse_f": 4.1507
+        },
+        "ridge_alpha": 30.0
+      },
+      {
+        "calibration": {
+          "avg_entropy": 0.9422,
+          "avg_winning_probability": 0.5373,
+          "brier_score": 0.4796,
+          "buckets": [
+            {
+              "avg_probability": 0.0246,
+              "brier_score": 0.0255,
+              "count": 806,
+              "observed_frequency": 0.0261,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1425,
+              "brier_score": 0.1459,
+              "count": 244,
+              "observed_frequency": 0.1762,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2346,
+              "brier_score": 0.1744,
+              "count": 174,
+              "observed_frequency": 0.2241,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3474,
+              "brier_score": 0.2007,
+              "count": 21,
+              "observed_frequency": 0.2381,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4507,
+              "brier_score": 0.2495,
+              "count": 17,
+              "observed_frequency": 0.3529,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5431,
+              "brier_score": 0.2635,
+              "count": 19,
+              "observed_frequency": 0.4737,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6288,
+              "brier_score": 0.295,
+              "count": 8,
+              "observed_frequency": 0.375,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7536,
+              "brier_score": 0.1527,
+              "count": 23,
+              "observed_frequency": 0.8261,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8474,
+              "brier_score": 0.1732,
+              "count": 18,
+              "observed_frequency": 0.7778,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9585,
+              "brier_score": 0.0471,
+              "count": 80,
+              "observed_frequency": 0.95,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.941,
+              "brier_score": 0.0126,
+              "count": 55,
+              "log_loss": 0.065,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5247,
+              "brier_score": 0.4828,
+              "count": 116,
+              "log_loss": 1.0111,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1867,
+              "brier_score": 0.9336,
+              "count": 55,
+              "log_loss": 2.0361,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2545
+            },
+            {
+              "avg_winning_probability": 0.3763,
+              "brier_score": 0.5177,
+              "count": 9,
+              "log_loss": 1.0564,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.7778
+            }
+          ],
+          "log_loss": 1.0313,
+          "n": 235,
+          "top_bin_accuracy": 0.6213
+        },
+        "point": {
+          "bias_f": -0.2539,
+          "mae_f": 3.1192,
+          "n": 355,
+          "rmse_f": 4.1144
+        },
+        "ridge_alpha": 10.0
+      },
+      {
+        "calibration": {
+          "avg_entropy": 0.9371,
+          "avg_winning_probability": 0.5381,
+          "brier_score": 0.4798,
+          "buckets": [
+            {
+              "avg_probability": 0.0253,
+              "brier_score": 0.0293,
+              "count": 818,
+              "observed_frequency": 0.0306,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1448,
+              "brier_score": 0.1369,
+              "count": 240,
+              "observed_frequency": 0.1667,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.239,
+              "brier_score": 0.1776,
+              "count": 165,
+              "observed_frequency": 0.2303,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3442,
+              "brier_score": 0.1959,
+              "count": 21,
+              "observed_frequency": 0.2381,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4513,
+              "brier_score": 0.2453,
+              "count": 19,
+              "observed_frequency": 0.3684,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.546,
+              "brier_score": 0.254,
+              "count": 17,
+              "observed_frequency": 0.4706,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6446,
+              "brier_score": 0.2526,
+              "count": 8,
+              "observed_frequency": 0.5,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7525,
+              "brier_score": 0.1648,
+              "count": 24,
+              "observed_frequency": 0.7917,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8512,
+              "brier_score": 0.1822,
+              "count": 21,
+              "observed_frequency": 0.7619,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9607,
+              "brier_score": 0.0486,
+              "count": 77,
+              "observed_frequency": 0.9481,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9413,
+              "brier_score": 0.0125,
+              "count": 55,
+              "log_loss": 0.0646,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5226,
+              "brier_score": 0.4847,
+              "count": 116,
+              "log_loss": 1.0155,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1917,
+              "brier_score": 0.9337,
+              "count": 55,
+              "log_loss": 2.0027,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2182
+            },
+            {
+              "avg_winning_probability": 0.3896,
+              "brier_score": 0.4978,
+              "count": 9,
+              "log_loss": 1.0156,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.7778
+            }
+          ],
+          "log_loss": 1.024,
+          "n": 235,
+          "top_bin_accuracy": 0.6128
+        },
+        "point": {
+          "bias_f": -0.2216,
+          "mae_f": 3.1259,
+          "n": 355,
+          "rmse_f": 4.1064
+        },
+        "ridge_alpha": 1.0
+      },
+      {
+        "calibration": {
+          "avg_entropy": 0.9381,
+          "avg_winning_probability": 0.5379,
+          "brier_score": 0.4799,
+          "buckets": [
+            {
+              "avg_probability": 0.025,
+              "brier_score": 0.0273,
+              "count": 814,
+              "observed_frequency": 0.0283,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1441,
+              "brier_score": 0.1399,
+              "count": 243,
+              "observed_frequency": 0.1687,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2375,
+              "brier_score": 0.1813,
+              "count": 165,
+              "observed_frequency": 0.2364,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3428,
+              "brier_score": 0.1885,
+              "count": 23,
+              "observed_frequency": 0.2174,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4583,
+              "brier_score": 0.2505,
+              "count": 19,
+              "observed_frequency": 0.3684,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5482,
+              "brier_score": 0.255,
+              "count": 16,
+              "observed_frequency": 0.5,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6443,
+              "brier_score": 0.2742,
+              "count": 9,
+              "observed_frequency": 0.4444,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7599,
+              "brier_score": 0.1627,
+              "count": 25,
+              "observed_frequency": 0.8,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8569,
+              "brier_score": 0.1651,
+              "count": 19,
+              "observed_frequency": 0.7895,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9608,
+              "brier_score": 0.0488,
+              "count": 77,
+              "observed_frequency": 0.9481,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9412,
+              "brier_score": 0.0126,
+              "count": 55,
+              "log_loss": 0.0647,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5231,
+              "brier_score": 0.485,
+              "count": 116,
+              "log_loss": 1.0142,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1906,
+              "brier_score": 0.933,
+              "count": 55,
+              "log_loss": 2.0105,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2182
+            },
+            {
+              "avg_winning_probability": 0.3877,
+              "brier_score": 0.5001,
+              "count": 9,
+              "log_loss": 1.0207,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.7778
+            }
+          ],
+          "log_loss": 1.0254,
+          "n": 235,
+          "top_bin_accuracy": 0.6128
+        },
+        "point": {
+          "bias_f": -0.2285,
+          "mae_f": 3.1229,
+          "n": 355,
+          "rmse_f": 4.1063
+        },
+        "ridge_alpha": 3.0
+      },
+      {
+        "calibration": {
+          "avg_entropy": 0.9369,
+          "avg_winning_probability": 0.5376,
+          "brier_score": 0.4805,
+          "buckets": [
+            {
+              "avg_probability": 0.025,
+              "brier_score": 0.0304,
+              "count": 816,
+              "observed_frequency": 0.0319,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1446,
+              "brier_score": 0.1308,
+              "count": 241,
+              "observed_frequency": 0.1577,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2397,
+              "brier_score": 0.1791,
+              "count": 168,
+              "observed_frequency": 0.2321,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3525,
+              "brier_score": 0.2039,
+              "count": 20,
+              "observed_frequency": 0.25,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.446,
+              "brier_score": 0.2514,
+              "count": 16,
+              "observed_frequency": 0.4375,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5411,
+              "brier_score": 0.2542,
+              "count": 19,
+              "observed_frequency": 0.4211,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6441,
+              "brier_score": 0.2522,
+              "count": 8,
+              "observed_frequency": 0.5,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7532,
+              "brier_score": 0.1602,
+              "count": 25,
+              "observed_frequency": 0.8,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8566,
+              "brier_score": 0.1818,
+              "count": 21,
+              "observed_frequency": 0.7619,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9614,
+              "brier_score": 0.0492,
+              "count": 76,
+              "observed_frequency": 0.9474,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9408,
+              "brier_score": 0.0127,
+              "count": 55,
+              "log_loss": 0.0652,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5221,
+              "brier_score": 0.4855,
+              "count": 116,
+              "log_loss": 1.0189,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.5948
+            },
+            {
+              "avg_winning_probability": 0.1922,
+              "brier_score": 0.9336,
+              "count": 55,
+              "log_loss": 2.0087,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2182
+            },
+            {
+              "avg_winning_probability": 0.3859,
+              "brier_score": 0.5053,
+              "count": 9,
+              "log_loss": 1.0269,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.6667
+            }
+          ],
+          "log_loss": 1.0276,
+          "n": 235,
+          "top_bin_accuracy": 0.6043
+        },
+        "point": {
+          "bias_f": -0.2185,
+          "mae_f": 3.1279,
+          "n": 355,
+          "rmse_f": 4.1072
+        },
+        "ridge_alpha": 0.1
+      },
+      {
+        "calibration": {
+          "avg_entropy": 0.9369,
+          "avg_winning_probability": 0.5376,
+          "brier_score": 0.4807,
+          "buckets": [
+            {
+              "avg_probability": 0.0253,
+              "brier_score": 0.0303,
+              "count": 819,
+              "observed_frequency": 0.0317,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1451,
+              "brier_score": 0.1325,
+              "count": 238,
+              "observed_frequency": 0.1597,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2393,
+              "brier_score": 0.1798,
+              "count": 167,
+              "observed_frequency": 0.2335,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3499,
+              "brier_score": 0.1992,
+              "count": 21,
+              "observed_frequency": 0.2381,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4463,
+              "brier_score": 0.2512,
+              "count": 16,
+              "observed_frequency": 0.4375,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5407,
+              "brier_score": 0.2544,
+              "count": 19,
+              "observed_frequency": 0.4211,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6431,
+              "brier_score": 0.2523,
+              "count": 8,
+              "observed_frequency": 0.5,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7494,
+              "brier_score": 0.1698,
+              "count": 23,
+              "observed_frequency": 0.7826,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8496,
+              "brier_score": 0.176,
+              "count": 22,
+              "observed_frequency": 0.7727,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9607,
+              "brier_score": 0.0486,
+              "count": 77,
+              "observed_frequency": 0.9481,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9408,
+              "brier_score": 0.0127,
+              "count": 55,
+              "log_loss": 0.0652,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5223,
+              "brier_score": 0.4853,
+              "count": 116,
+              "log_loss": 1.0185,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.5948
+            },
+            {
+              "avg_winning_probability": 0.1916,
+              "brier_score": 0.9346,
+              "count": 55,
+              "log_loss": 2.0097,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2
+            },
+            {
+              "avg_winning_probability": 0.3849,
+              "brier_score": 0.5059,
+              "count": 9,
+              "log_loss": 1.0285,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.6667
+            }
+          ],
+          "log_loss": 1.0277,
+          "n": 235,
+          "top_bin_accuracy": 0.6
+        },
+        "point": {
+          "bias_f": -0.2192,
+          "mae_f": 3.1275,
+          "n": 355,
+          "rmse_f": 4.107
+        },
+        "ridge_alpha": 0.3
+      },
+      {
+        "calibration": {
+          "avg_entropy": 0.9862,
+          "avg_winning_probability": 0.527,
+          "brier_score": 0.4812,
+          "buckets": [
+            {
+              "avg_probability": 0.027,
+              "brier_score": 0.0289,
+              "count": 793,
+              "observed_frequency": 0.0303,
+              "range": "0.0-0.1"
+            },
+            {
+              "avg_probability": 0.1425,
+              "brier_score": 0.1294,
+              "count": 246,
+              "observed_frequency": 0.1545,
+              "range": "0.1-0.2"
+            },
+            {
+              "avg_probability": 0.2323,
+              "brier_score": 0.1724,
+              "count": 187,
+              "observed_frequency": 0.2246,
+              "range": "0.2-0.3"
+            },
+            {
+              "avg_probability": 0.3398,
+              "brier_score": 0.2607,
+              "count": 25,
+              "observed_frequency": 0.48,
+              "range": "0.3-0.4"
+            },
+            {
+              "avg_probability": 0.4474,
+              "brier_score": 0.2103,
+              "count": 21,
+              "observed_frequency": 0.1429,
+              "range": "0.4-0.5"
+            },
+            {
+              "avg_probability": 0.5414,
+              "brier_score": 0.2656,
+              "count": 11,
+              "observed_frequency": 0.4545,
+              "range": "0.5-0.6"
+            },
+            {
+              "avg_probability": 0.6667,
+              "brier_score": 0.2538,
+              "count": 16,
+              "observed_frequency": 0.5625,
+              "range": "0.6-0.7"
+            },
+            {
+              "avg_probability": 0.7578,
+              "brier_score": 0.0912,
+              "count": 15,
+              "observed_frequency": 0.9333,
+              "range": "0.7-0.8"
+            },
+            {
+              "avg_probability": 0.8608,
+              "brier_score": 0.149,
+              "count": 27,
+              "observed_frequency": 0.8148,
+              "range": "0.8-0.9"
+            },
+            {
+              "avg_probability": 0.9565,
+              "brier_score": 0.0412,
+              "count": 69,
+              "observed_frequency": 0.9565,
+              "range": "0.9-1.0"
+            }
+          ],
+          "cohorts": [
+            {
+              "avg_winning_probability": 0.9297,
+              "brier_score": 0.0148,
+              "count": 55,
+              "log_loss": 0.0773,
+              "name": "cold_below_60f",
+              "top_bin_accuracy": 1.0
+            },
+            {
+              "avg_winning_probability": 0.5158,
+              "brier_score": 0.4841,
+              "count": 116,
+              "log_loss": 1.0064,
+              "name": "normal_60_69f",
+              "top_bin_accuracy": 0.6034
+            },
+            {
+              "avg_winning_probability": 0.1852,
+              "brier_score": 0.9183,
+              "count": 55,
+              "log_loss": 2.0114,
+              "name": "warm_70_79f",
+              "top_bin_accuracy": 0.2545
+            },
+            {
+              "avg_winning_probability": 0.3004,
+              "brier_score": 0.6234,
+              "count": 9,
+              "log_loss": 1.2586,
+              "name": "hot_80f_plus",
+              "top_bin_accuracy": 0.7778
+            }
+          ],
+          "log_loss": 1.0338,
+          "n": 235,
+          "top_bin_accuracy": 0.6213
+        },
+        "point": {
+          "bias_f": -0.5545,
+          "mae_f": 3.1756,
+          "n": 355,
+          "rmse_f": 4.2756
+        },
+        "ridge_alpha": 100.0
+      }
+    ],
+    "source": "/opt/weatheredge/forecaster/ab_test_results.json",
+    "status": "research_only",
+    "summary": {
+      "best_point_model": "ridge_synthetic_blend",
+      "best_probability_model": "ridge_synthetic_blend",
+      "best_ridge_alpha_by_brier": 30.0,
+      "best_ridge_alpha_by_mae": 10.0,
+      "first_synthetic_date": "2025-04-18",
+      "input_rows": 475,
+      "last_synthetic_date": "2026-05-21",
+      "ridge_vs_lstm": {
+        "brier_delta": -0.0239,
+        "log_loss_delta": -0.0621,
+        "mae_delta_f": -0.2016
+      },
+      "synthetic_rows": 355
+    },
+    "warnings": [
+      "This is not yet the live landing-page blend history; it is a synthetic point-in-time proxy built from the historical LSTM/XGBoost comparison.",
+      "Use this to research calibration before switching live trading probabilities."
+    ]
+  },
   "profiles": [
     {
       "daily_summary": {
@@ -1274,7 +2678,7 @@
           "decision_snapshots": 4568,
           "forecast_snapshots": 272,
           "market_snapshots": 243,
-          "paper_monitor_snapshots": 559,
+          "paper_monitor_snapshots": 560,
           "paper_orders": 4,
           "probability_snapshots": 1632
         },
@@ -1432,7 +2836,7 @@
           "rejected": 2650,
           "top_rejections": []
         },
-        "generated_at": "2026-06-12T00:47:25.097618+00:00",
+        "generated_at": "2026-06-12T00:52:16.782300+00:00",
         "learnings": [
           "balanced has no resolved trades in this window yet."
         ],
@@ -1652,7 +3056,7 @@
           "decision_snapshots": 4568,
           "forecast_snapshots": 272,
           "market_snapshots": 243,
-          "paper_monitor_snapshots": 559,
+          "paper_monitor_snapshots": 560,
           "paper_orders": 4,
           "probability_snapshots": 1632
         },
@@ -1810,7 +3214,7 @@
           "rejected": 1871,
           "top_rejections": []
         },
-        "generated_at": "2026-06-12T00:47:25.097618+00:00",
+        "generated_at": "2026-06-12T00:52:16.782300+00:00",
         "learnings": [
           "fast-feedback resolved 3 trade(s): 0W / 3L, net $-1.00.",
           "fast-feedback currently has $2.72 of paper open risk.",
@@ -2058,7 +3462,7 @@
             "current_exit_fee_per_contract": 0.0033,
             "current_market_probability": null,
             "current_net_exit": 0.9867,
-            "current_snapshot_at": "2026-06-12T00:47:18.759715+00:00",
+            "current_snapshot_at": "2026-06-12T00:52:00.527620+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 2.96,
@@ -2121,6 +3525,26 @@
           }
         ],
         "recent_monitor_actions": [
+          {
+            "contracts": null,
+            "cost_per_contract": null,
+            "entry_price": null,
+            "exit_fee_per_contract": 0.0033,
+            "exit_price": 0.99,
+            "id": 4,
+            "initial_cost": null,
+            "label": "88\u00b0 to 89\u00b0",
+            "note": "inside exit bands",
+            "realized_pnl": 0.24,
+            "realized_roi": 0.0882,
+            "risk_profile": "fast-feedback",
+            "settlement_high_f": null,
+            "side": "NO",
+            "status": "HOLD",
+            "target_date": "2026-06-11",
+            "ticker": "KXHIGHTSFO-26JUN11-B88.5",
+            "time": "2026-06-12T00:52:00.527620+00:00"
+          },
           {
             "contracts": null,
             "cost_per_contract": null,
@@ -2340,26 +3764,6 @@
             "target_date": "2026-06-11",
             "ticker": "KXHIGHTSFO-26JUN11-B88.5",
             "time": "2026-06-11T23:57:11.917416+00:00"
-          },
-          {
-            "contracts": null,
-            "cost_per_contract": null,
-            "entry_price": null,
-            "exit_fee_per_contract": 0.0033,
-            "exit_price": 0.99,
-            "id": 4,
-            "initial_cost": null,
-            "label": "88\u00b0 to 89\u00b0",
-            "note": "inside exit bands",
-            "realized_pnl": 0.24,
-            "realized_roi": 0.0882,
-            "risk_profile": "fast-feedback",
-            "settlement_high_f": null,
-            "side": "NO",
-            "status": "HOLD",
-            "target_date": "2026-06-11",
-            "ticker": "KXHIGHTSFO-26JUN11-B88.5",
-            "time": "2026-06-11T23:52:18.766219+00:00"
           }
         ],
         "summary": {
@@ -2369,7 +3773,7 @@
           "hidden_open_positions": 0,
           "hit_rate": 0.0,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-06-12T00:47:18.759715+00:00",
+          "latest_monitor_action_at": "2026-06-12T00:52:00.527620+00:00",
           "latest_opened_at": "2026-06-10T22:00:06.565210+00:00",
           "loss_count": 3,
           "marked_open_positions": 1,
@@ -4575,7 +5979,7 @@
     "deduped_signal_count": 72,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-06-12T00:47:25.101934+00:00",
+    "last_updated": "2026-06-12T00:52:16.846735+00:00",
     "latest_signal_targets": [
       "2026-06-10",
       "2026-06-11",
