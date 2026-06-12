@@ -344,7 +344,7 @@
       "decision_snapshots": 5548,
       "forecast_snapshots": 307,
       "market_snapshots": 278,
-      "paper_monitor_snapshots": 952,
+      "paper_monitor_snapshots": 961,
       "paper_orders": 9,
       "probability_snapshots": 1842
     },
@@ -655,7 +655,7 @@
         }
       ]
     },
-    "generated_at": "2026-06-12T09:20:36.390780+00:00",
+    "generated_at": "2026-06-12T09:25:47.468216+00:00",
     "learnings": [
       "NO side: 1/3 won, net $-0.67 this window.",
       "YES side: 0/3 won, net $-0.59 this window.",
@@ -720,9 +720,7 @@
   "dataset_research": {
     "accuracy_candidate_count": 0,
     "action_items": [
-      "Keep nightly dataset backfill running until each candidate has 30 matched settled highs.",
-      "Backfill or enable Kalshi trade history before using datasets for trading weight.",
-      "Keep live AWS execution pinned to LSTM until both accuracy and market gates pass."
+      "Backfill or collect Kalshi trades/candles until at least 30 after-cost rows exist; current trade rows: 0."
     ],
     "available": true,
     "baseline": {
@@ -731,8 +729,8 @@
       "source": "lstm"
     },
     "blocking_gates": [
-      "accuracy gate: best dataset feature has 0 matched settlement rows; needs 30",
-      "market gate: 0 after-cost trade rows; needs 30"
+      "accuracy gate: no held-out MAE lift versus baseline",
+      "profitability gate: insufficient after-cost market rows"
     ],
     "candidate_count": 9,
     "candidates": [
@@ -797,22 +795,114 @@
         "reason": "needs at least 30 matched settlement rows; has 0"
       }
     ],
-    "dataset_coverage": {},
+    "dataset_coverage": {
+      "available": true,
+      "forecast_feature_sources": [
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-historical-forecast",
+          "target_dates": 13,
+          "variable": "temperature_2m_max"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day1"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day2"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day3"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day4"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day5"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day6"
+        },
+        {
+          "first_target_date": "2026-05-31",
+          "last_target_date": "2026-06-12",
+          "model": "best_match",
+          "rows": 23,
+          "source": "open-meteo-previous-runs",
+          "target_dates": 13,
+          "variable": "temperature_2m_max_previous_day7"
+        }
+      ],
+      "tables": {
+        "dataset_forecast_features": 207,
+        "dataset_kalshi_candles": 365,
+        "dataset_kalshi_markets": 186,
+        "dataset_kalshi_trades": 0,
+        "dataset_runs": 24,
+        "dataset_station_observations": 3605
+      }
+    },
     "dataset_stack": {
       "available": false,
       "decision": "collect_only",
       "feature_keys": [],
-      "max_matched_rows": 0,
       "minimum_matched_rows": 30,
-      "reason": "Combined dataset stack is waiting for matched settlement rows; best published feature has 0 and needs 30."
+      "reason": "No dataset forecast feature has enough matched settlement rows for a combined stack yet; need at least 30."
     },
-    "generated_at": "2026-06-11T09:25:08.547438+00:00",
-    "headline": "Dataset collection is live, but forecast features are not yet matched to settled SFO highs.",
+    "generated_at": "2026-06-12T09:25:09.215583+00:00",
+    "headline": "Collected dataset features have not beaten the active LSTM baseline on holdout yet.",
     "profitability_gate": {
       "decision": "collect_only",
       "market_history": {
         "candles": 365,
-        "markets": 180,
+        "markets": 186,
         "trades": 0
       },
       "minimum_after_cost_trades": 30,
@@ -823,7 +913,7 @@
   },
   "default_profile": "balanced",
   "disclaimer": "Paper-trading research only. The active AWS execution calibration remains pinned to lstm; this artifact does not place live orders.",
-  "generated_at": "2026-06-12T09:20:36.395825+00:00",
+  "generated_at": "2026-06-12T09:25:47.472968+00:00",
   "live_orders_enabled": false,
   "mode": "paper_research_only",
   "paper_trading": {
@@ -1194,7 +1284,7 @@
         "current_exit_fee_per_contract": 0.01,
         "current_market_probability": null,
         "current_net_exit": 0.82,
-        "current_snapshot_at": "2026-06-12T09:19:07.817396+00:00",
+        "current_snapshot_at": "2026-06-12T09:25:01.969127+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 0.82,
@@ -1251,7 +1341,7 @@
         "current_exit_fee_per_contract": 0.018,
         "current_market_probability": null,
         "current_net_exit": 0.352,
-        "current_snapshot_at": "2026-06-12T09:19:07.972987+00:00",
+        "current_snapshot_at": "2026-06-12T09:25:02.195112+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 1.76,
@@ -1304,14 +1394,14 @@
         "cost_per_contract": 0.8033,
         "created_at": "2026-06-12T03:52:47.990857+00:00",
         "current_ask": null,
-        "current_bid": 0.81,
+        "current_bid": 0.8,
         "current_exit_fee_per_contract": 0.0133,
         "current_market_probability": null,
-        "current_net_exit": 0.7967,
-        "current_snapshot_at": "2026-06-12T09:19:08.149880+00:00",
+        "current_net_exit": 0.7867,
+        "current_snapshot_at": "2026-06-12T09:25:02.357622+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
-        "current_value": 2.39,
+        "current_value": 2.36,
         "edge": 0.0412,
         "edge_lcb": -0.1075,
         "entry_fee_per_contract": 0.0133,
@@ -1351,8 +1441,8 @@
         "take_profit_pnl": 0.84,
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-        "unrealized_pnl": -0.02,
-        "unrealized_roi": -0.0083,
+        "unrealized_pnl": -0.05,
+        "unrealized_roi": -0.0207,
         "why_good": "Paper position passed gates with p=0.851, edge=0.041, edge_lcb=-0.108."
       }
     ],
@@ -1388,20 +1478,20 @@
         "cost_per_contract": null,
         "entry_price": null,
         "exit_fee_per_contract": 0.0133,
-        "exit_price": 0.81,
+        "exit_price": 0.8,
         "id": 6,
         "initial_cost": null,
         "label": "80\u00b0 to 81\u00b0",
         "note": "inside exit bands",
-        "realized_pnl": -0.02,
-        "realized_roi": -0.0083,
+        "realized_pnl": -0.05,
+        "realized_roi": -0.0207,
         "risk_profile": "fast-feedback",
         "settlement_high_f": null,
         "side": "NO",
         "status": "HOLD",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-        "time": "2026-06-12T09:19:08.149880+00:00"
+        "time": "2026-06-12T09:25:02.357622+00:00"
       },
       {
         "contracts": null,
@@ -1421,7 +1511,7 @@
         "status": "HOLD_MODEL_VETO",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-T81",
-        "time": "2026-06-12T09:19:07.972987+00:00"
+        "time": "2026-06-12T09:25:02.195112+00:00"
       },
       {
         "contracts": null,
@@ -1441,27 +1531,27 @@
         "status": "HOLD",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B78.5",
-        "time": "2026-06-12T09:19:07.817396+00:00"
+        "time": "2026-06-12T09:25:01.969127+00:00"
       },
       {
         "contracts": null,
         "cost_per_contract": null,
         "entry_price": null,
         "exit_fee_per_contract": 0.0133,
-        "exit_price": 0.82,
+        "exit_price": 0.8,
         "id": 6,
         "initial_cost": null,
         "label": "80\u00b0 to 81\u00b0",
         "note": "inside exit bands",
-        "realized_pnl": 0.01,
-        "realized_roi": 0.0041,
+        "realized_pnl": -0.05,
+        "realized_roi": -0.0207,
         "risk_profile": "fast-feedback",
         "settlement_high_f": null,
         "side": "NO",
         "status": "HOLD",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-        "time": "2026-06-12T09:17:12.229812+00:00"
+        "time": "2026-06-12T09:23:16.712773+00:00"
       },
       {
         "contracts": null,
@@ -1481,7 +1571,7 @@
         "status": "HOLD_MODEL_VETO",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-T81",
-        "time": "2026-06-12T09:17:12.080028+00:00"
+        "time": "2026-06-12T09:23:16.549349+00:00"
       },
       {
         "contracts": null,
@@ -1501,47 +1591,47 @@
         "status": "HOLD",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B78.5",
-        "time": "2026-06-12T09:17:11.916142+00:00"
+        "time": "2026-06-12T09:23:16.376912+00:00"
       },
       {
         "contracts": null,
         "cost_per_contract": null,
         "entry_price": null,
         "exit_fee_per_contract": 0.0133,
-        "exit_price": 0.82,
+        "exit_price": 0.79,
         "id": 6,
         "initial_cost": null,
         "label": "80\u00b0 to 81\u00b0",
         "note": "inside exit bands",
-        "realized_pnl": 0.01,
-        "realized_roi": 0.0041,
+        "realized_pnl": -0.08,
+        "realized_roi": -0.0332,
         "risk_profile": "fast-feedback",
         "settlement_high_f": null,
         "side": "NO",
         "status": "HOLD",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-        "time": "2026-06-12T09:15:19.228269+00:00"
+        "time": "2026-06-12T09:21:19.078925+00:00"
       },
       {
         "contracts": null,
         "cost_per_contract": null,
         "entry_price": null,
         "exit_fee_per_contract": 0.018,
-        "exit_price": 0.36,
+        "exit_price": 0.37,
         "id": 8,
         "initial_cost": null,
         "label": "82\u00b0 or above",
-        "note": "stop-loss vetoed: model p=0.67 at settlement beats net exit 0.34 + 0.08 buffer",
-        "realized_pnl": -1.03,
-        "realized_roi": -0.3759,
+        "note": "stop-loss vetoed: model p=0.58 at settlement beats net exit 0.35 + 0.08 buffer",
+        "realized_pnl": -0.98,
+        "realized_roi": -0.3577,
         "risk_profile": "fast-feedback",
         "settlement_high_f": null,
         "side": "NO",
         "status": "HOLD_MODEL_VETO",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-T81",
-        "time": "2026-06-12T09:15:19.072243+00:00"
+        "time": "2026-06-12T09:21:18.913018+00:00"
       },
       {
         "contracts": null,
@@ -1561,7 +1651,7 @@
         "status": "HOLD",
         "target_date": "2026-06-12",
         "ticker": "KXHIGHTSFO-26JUN12-B78.5",
-        "time": "2026-06-12T09:15:18.915209+00:00"
+        "time": "2026-06-12T09:21:18.745510+00:00"
       },
       {
         "contracts": 1.0,
@@ -1631,17 +1721,17 @@
       "hidden_open_positions": 0,
       "hit_rate": 0.1667,
       "largest_duplicate_open_group": 0,
-      "latest_monitor_action_at": "2026-06-12T09:19:08.149880+00:00",
+      "latest_monitor_action_at": "2026-06-12T09:25:02.357622+00:00",
       "latest_opened_at": "2026-06-12T04:15:25.390623+00:00",
       "loss_count": 5,
       "marked_open_positions": 3,
       "open_positions": 3,
       "open_risk": 5.99,
-      "open_value": 4.97,
+      "open_value": 4.94,
       "published_open_positions": 3,
       "realized_pnl": -1.26,
       "roi": -0.2368,
-      "unrealized_pnl": -1.02,
+      "unrealized_pnl": -1.05,
       "unresolved_past_targets": [],
       "win_count": 1
     }
@@ -3029,7 +3119,7 @@
           "decision_snapshots": 5548,
           "forecast_snapshots": 307,
           "market_snapshots": 278,
-          "paper_monitor_snapshots": 952,
+          "paper_monitor_snapshots": 961,
           "paper_orders": 9,
           "probability_snapshots": 1842
         },
@@ -3187,7 +3277,7 @@
           "rejected": 3140,
           "top_rejections": []
         },
-        "generated_at": "2026-06-12T09:20:36.390780+00:00",
+        "generated_at": "2026-06-12T09:25:47.468216+00:00",
         "learnings": [
           "balanced has no resolved trades in this window yet."
         ],
@@ -3427,7 +3517,7 @@
           "decision_snapshots": 5548,
           "forecast_snapshots": 307,
           "market_snapshots": 278,
-          "paper_monitor_snapshots": 952,
+          "paper_monitor_snapshots": 961,
           "paper_orders": 9,
           "probability_snapshots": 1842
         },
@@ -3585,7 +3675,7 @@
           "rejected": 2310,
           "top_rejections": []
         },
-        "generated_at": "2026-06-12T09:20:36.390780+00:00",
+        "generated_at": "2026-06-12T09:25:47.468216+00:00",
         "learnings": [
           "fast-feedback resolved 6 trade(s): 1W / 5L, net $-1.26.",
           "fast-feedback currently has $5.99 of paper open risk.",
@@ -4010,7 +4100,7 @@
             "current_exit_fee_per_contract": 0.01,
             "current_market_probability": null,
             "current_net_exit": 0.82,
-            "current_snapshot_at": "2026-06-12T09:19:07.817396+00:00",
+            "current_snapshot_at": "2026-06-12T09:25:01.969127+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 0.82,
@@ -4067,7 +4157,7 @@
             "current_exit_fee_per_contract": 0.018,
             "current_market_probability": null,
             "current_net_exit": 0.352,
-            "current_snapshot_at": "2026-06-12T09:19:07.972987+00:00",
+            "current_snapshot_at": "2026-06-12T09:25:02.195112+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 1.76,
@@ -4120,14 +4210,14 @@
             "cost_per_contract": 0.8033,
             "created_at": "2026-06-12T03:52:47.990857+00:00",
             "current_ask": null,
-            "current_bid": 0.81,
+            "current_bid": 0.8,
             "current_exit_fee_per_contract": 0.0133,
             "current_market_probability": null,
-            "current_net_exit": 0.7967,
-            "current_snapshot_at": "2026-06-12T09:19:08.149880+00:00",
+            "current_net_exit": 0.7867,
+            "current_snapshot_at": "2026-06-12T09:25:02.357622+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
-            "current_value": 2.39,
+            "current_value": 2.36,
             "edge": 0.0412,
             "edge_lcb": -0.1075,
             "entry_fee_per_contract": 0.0133,
@@ -4167,8 +4257,8 @@
             "take_profit_pnl": 0.84,
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-            "unrealized_pnl": -0.02,
-            "unrealized_roi": -0.0083,
+            "unrealized_pnl": -0.05,
+            "unrealized_roi": -0.0207,
             "why_good": "Paper position passed gates with p=0.851, edge=0.041, edge_lcb=-0.108."
           }
         ],
@@ -4192,20 +4282,20 @@
             "cost_per_contract": null,
             "entry_price": null,
             "exit_fee_per_contract": 0.0133,
-            "exit_price": 0.81,
+            "exit_price": 0.8,
             "id": 6,
             "initial_cost": null,
             "label": "80\u00b0 to 81\u00b0",
             "note": "inside exit bands",
-            "realized_pnl": -0.02,
-            "realized_roi": -0.0083,
+            "realized_pnl": -0.05,
+            "realized_roi": -0.0207,
             "risk_profile": "fast-feedback",
             "settlement_high_f": null,
             "side": "NO",
             "status": "HOLD",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-            "time": "2026-06-12T09:19:08.149880+00:00"
+            "time": "2026-06-12T09:25:02.357622+00:00"
           },
           {
             "contracts": null,
@@ -4225,7 +4315,7 @@
             "status": "HOLD_MODEL_VETO",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-T81",
-            "time": "2026-06-12T09:19:07.972987+00:00"
+            "time": "2026-06-12T09:25:02.195112+00:00"
           },
           {
             "contracts": null,
@@ -4245,27 +4335,27 @@
             "status": "HOLD",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B78.5",
-            "time": "2026-06-12T09:19:07.817396+00:00"
+            "time": "2026-06-12T09:25:01.969127+00:00"
           },
           {
             "contracts": null,
             "cost_per_contract": null,
             "entry_price": null,
             "exit_fee_per_contract": 0.0133,
-            "exit_price": 0.82,
+            "exit_price": 0.8,
             "id": 6,
             "initial_cost": null,
             "label": "80\u00b0 to 81\u00b0",
             "note": "inside exit bands",
-            "realized_pnl": 0.01,
-            "realized_roi": 0.0041,
+            "realized_pnl": -0.05,
+            "realized_roi": -0.0207,
             "risk_profile": "fast-feedback",
             "settlement_high_f": null,
             "side": "NO",
             "status": "HOLD",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-            "time": "2026-06-12T09:17:12.229812+00:00"
+            "time": "2026-06-12T09:23:16.712773+00:00"
           },
           {
             "contracts": null,
@@ -4285,7 +4375,7 @@
             "status": "HOLD_MODEL_VETO",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-T81",
-            "time": "2026-06-12T09:17:12.080028+00:00"
+            "time": "2026-06-12T09:23:16.549349+00:00"
           },
           {
             "contracts": null,
@@ -4305,47 +4395,47 @@
             "status": "HOLD",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B78.5",
-            "time": "2026-06-12T09:17:11.916142+00:00"
+            "time": "2026-06-12T09:23:16.376912+00:00"
           },
           {
             "contracts": null,
             "cost_per_contract": null,
             "entry_price": null,
             "exit_fee_per_contract": 0.0133,
-            "exit_price": 0.82,
+            "exit_price": 0.79,
             "id": 6,
             "initial_cost": null,
             "label": "80\u00b0 to 81\u00b0",
             "note": "inside exit bands",
-            "realized_pnl": 0.01,
-            "realized_roi": 0.0041,
+            "realized_pnl": -0.08,
+            "realized_roi": -0.0332,
             "risk_profile": "fast-feedback",
             "settlement_high_f": null,
             "side": "NO",
             "status": "HOLD",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B80.5",
-            "time": "2026-06-12T09:15:19.228269+00:00"
+            "time": "2026-06-12T09:21:19.078925+00:00"
           },
           {
             "contracts": null,
             "cost_per_contract": null,
             "entry_price": null,
             "exit_fee_per_contract": 0.018,
-            "exit_price": 0.36,
+            "exit_price": 0.37,
             "id": 8,
             "initial_cost": null,
             "label": "82\u00b0 or above",
-            "note": "stop-loss vetoed: model p=0.67 at settlement beats net exit 0.34 + 0.08 buffer",
-            "realized_pnl": -1.03,
-            "realized_roi": -0.3759,
+            "note": "stop-loss vetoed: model p=0.58 at settlement beats net exit 0.35 + 0.08 buffer",
+            "realized_pnl": -0.98,
+            "realized_roi": -0.3577,
             "risk_profile": "fast-feedback",
             "settlement_high_f": null,
             "side": "NO",
             "status": "HOLD_MODEL_VETO",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-T81",
-            "time": "2026-06-12T09:15:19.072243+00:00"
+            "time": "2026-06-12T09:21:18.913018+00:00"
           },
           {
             "contracts": null,
@@ -4365,7 +4455,7 @@
             "status": "HOLD",
             "target_date": "2026-06-12",
             "ticker": "KXHIGHTSFO-26JUN12-B78.5",
-            "time": "2026-06-12T09:15:18.915209+00:00"
+            "time": "2026-06-12T09:21:18.745510+00:00"
           },
           {
             "contracts": 1.0,
@@ -4435,17 +4525,17 @@
           "hidden_open_positions": 0,
           "hit_rate": 0.1667,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-06-12T09:19:08.149880+00:00",
+          "latest_monitor_action_at": "2026-06-12T09:25:02.357622+00:00",
           "latest_opened_at": "2026-06-12T04:15:25.390623+00:00",
           "loss_count": 5,
           "marked_open_positions": 3,
           "open_positions": 3,
           "open_risk": 5.99,
-          "open_value": 4.97,
+          "open_value": 4.94,
           "published_open_positions": 3,
           "realized_pnl": -1.26,
           "roi": -0.2368,
-          "unrealized_pnl": -1.02,
+          "unrealized_pnl": -1.05,
           "unresolved_past_targets": [],
           "win_count": 1
         }
@@ -6655,7 +6745,7 @@
     "deduped_signal_count": 72,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-06-12T09:20:36.395799+00:00",
+    "last_updated": "2026-06-12T09:25:47.472943+00:00",
     "latest_signal_targets": [
       "2026-06-10",
       "2026-06-11",
