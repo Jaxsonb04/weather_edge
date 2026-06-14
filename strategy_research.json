@@ -10,7 +10,7 @@
       "excluded_post_resolution_signals": 0,
       "pre_resolution_signals": 12672,
       "raw_signals": 12672,
-      "settled_signals": 72
+      "settled_signals": 84
     },
     "dedupe_explanation": "Repeated 15-minute AWS scans are counted once per target, market, and side by default, using the latest pre-resolution row.",
     "metrics": {
@@ -19,13 +19,13 @@
       "approved_hit_rate": 0.0,
       "approved_paper_pnl": 0.0,
       "approved_roi": 0.0,
-      "avg_edge": -0.1743,
-      "avg_edge_lcb": -0.2192,
+      "avg_edge": -0.1518,
+      "avg_edge_lcb": -0.2085,
       "avg_probability": 0.5,
-      "avg_quality": 27.5,
-      "brier_score": 0.0471,
+      "avg_quality": 29.1,
+      "brier_score": 0.0459,
       "hit_rate": 0.5,
-      "log_loss": 0.1495
+      "log_loss": 0.1496
     },
     "metrics_available": true,
     "pre_resolution_only": true,
@@ -44,21 +44,21 @@
         "approved": 0.0,
         "approved_pnl": 0,
         "approved_roi": 0.0,
-        "avg_probability": 0.4681,
-        "brier_score": 0.0711,
-        "count": 10.0,
+        "avg_probability": 0.4141,
+        "brier_score": 0.0555,
+        "count": 17.0,
         "range": "20-40",
-        "win_rate": 0.6
+        "win_rate": 0.5294
       },
       {
         "approved": 0.0,
         "approved_pnl": 0,
         "approved_roi": 0.0,
-        "avg_probability": 0.8365,
-        "brier_score": 0.0615,
-        "count": 11.0,
+        "avg_probability": 0.8027,
+        "brier_score": 0.0565,
+        "count": 16.0,
         "range": "40-60",
-        "win_rate": 0.7273
+        "win_rate": 0.6875
       },
       {
         "approved": 0.0,
@@ -269,8 +269,8 @@
         }
       ],
       "minimum_train_rows": 180,
-      "outcome_count": 10,
-      "reason": "clean-blend/combined has 10 outcome rows; needs more than 180 rows for this walk-forward comparison.",
+      "outcome_count": 11,
+      "reason": "clean-blend/combined has 11 outcome rows; needs more than 180 rows for this walk-forward comparison.",
       "role": "Challenger research calibration",
       "sample_size": 0,
       "source": "clean-blend/combined"
@@ -601,9 +601,9 @@
         "closed": 0,
         "cumulative_realized": 0.48,
         "date": "2026-06-13",
-        "forecast_actual_high_f": null,
-        "forecast_error_f": null,
-        "forecast_predicted_high_f": null,
+        "forecast_actual_high_f": 72.0,
+        "forecast_error_f": 2.64,
+        "forecast_predicted_high_f": 74.64,
         "hit_rate": 1.0,
         "losses": 0,
         "opened": 2,
@@ -743,12 +743,12 @@
         }
       ]
     },
-    "generated_at": "2026-06-14T08:39:16.487657+00:00",
+    "generated_at": "2026-06-14T08:40:47.284496+00:00",
     "learnings": [
       "NO side: 4/6 won, net $+1.07 this window.",
       "YES side: 0/3 won, net $-0.59 this window.",
       "Most frequent gate rejections: spread (8468x); basket guardrail: no tail NO leg passed the norm (1208x).",
-      "Clean next-day forecast error averaged 3.84F across 5 settled day(s) in this window."
+      "Clean next-day forecast error averaged 3.64F across 6 settled day(s) in this window."
     ],
     "model_vs_market": {
       "max_abs_gap": 0.9444,
@@ -783,7 +783,7 @@
     ],
     "recommended_changes": [
       "Sample is small (9 resolved trades); treat window ROI as noise and wait for at least 15 resolved trades before changing gates.",
-      "Mean absolute forecast error is 3.84F; review source weights and recent Google/NWS disagreement before trusting tail bins."
+      "Mean absolute forecast error is 3.64F; review source weights and recent Google/NWS disagreement before trusting tail bins."
     ],
     "schema_version": 1,
     "totals": {
@@ -791,7 +791,7 @@
       "cumulative_realized_pnl": 0.48,
       "hit_rate": 0.4444,
       "losses": 5,
-      "mean_abs_forecast_error_f": 3.84,
+      "mean_abs_forecast_error_f": 3.64,
       "open_positions": 2,
       "open_risk": 2.53,
       "realized_pnl": 0.48,
@@ -1001,7 +1001,7 @@
   },
   "default_profile": "balanced",
   "disclaimer": "Paper-trading research only. The active AWS execution calibration remains pinned to lstm; this artifact does not place live orders.",
-  "generated_at": "2026-06-14T08:39:16.620508+00:00",
+  "generated_at": "2026-06-14T08:40:47.417770+00:00",
   "live_orders_enabled": false,
   "mode": "paper_research_only",
   "paper_trading": {
@@ -3431,9 +3431,9 @@
             "closed": 0,
             "cumulative_realized": 0.0,
             "date": "2026-06-13",
-            "forecast_actual_high_f": null,
-            "forecast_error_f": null,
-            "forecast_predicted_high_f": null,
+            "forecast_actual_high_f": 72.0,
+            "forecast_error_f": 2.64,
+            "forecast_predicted_high_f": 74.64,
             "hit_rate": null,
             "losses": 0,
             "opened": 0,
@@ -3479,7 +3479,7 @@
           "rejected": 6702,
           "top_rejections": []
         },
-        "generated_at": "2026-06-14T08:39:16.487657+00:00",
+        "generated_at": "2026-06-14T08:40:47.284496+00:00",
         "learnings": [
           "balanced has no resolved trades in this window yet."
         ],
@@ -3512,7 +3512,7 @@
           "cumulative_realized_pnl": 0.0,
           "hit_rate": null,
           "losses": 0,
-          "mean_abs_forecast_error_f": 3.84,
+          "mean_abs_forecast_error_f": 3.64,
           "open_positions": 0,
           "open_risk": 0.0,
           "realized_pnl": 0.0,
@@ -3855,9 +3855,9 @@
             "closed": 0,
             "cumulative_realized": 0.48,
             "date": "2026-06-13",
-            "forecast_actual_high_f": null,
-            "forecast_error_f": null,
-            "forecast_predicted_high_f": null,
+            "forecast_actual_high_f": 72.0,
+            "forecast_error_f": 2.64,
+            "forecast_predicted_high_f": 74.64,
             "hit_rate": 1.0,
             "losses": 0,
             "opened": 2,
@@ -3903,7 +3903,7 @@
           "rejected": 5858,
           "top_rejections": []
         },
-        "generated_at": "2026-06-14T08:39:16.487657+00:00",
+        "generated_at": "2026-06-14T08:40:47.284496+00:00",
         "learnings": [
           "fast-feedback resolved 9 trade(s): 4W / 5L, net $+0.48.",
           "fast-feedback currently has $2.53 of paper open risk.",
@@ -3939,7 +3939,7 @@
           "cumulative_realized_pnl": 0.48,
           "hit_rate": 0.4444,
           "losses": 5,
-          "mean_abs_forecast_error_f": 3.84,
+          "mean_abs_forecast_error_f": 3.64,
           "open_positions": 2,
           "open_risk": 2.53,
           "realized_pnl": 0.48,
@@ -7111,7 +7111,7 @@
     "deduped_signal_count": 96,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-06-14T08:39:16.620481+00:00",
+    "last_updated": "2026-06-14T08:40:47.417743+00:00",
     "latest_signal_targets": [
       "2026-06-12",
       "2026-06-13",
