@@ -142,6 +142,7 @@ class PaperTrader:
         exposure_remaining = self._target_exposure_remaining(target_date, bankroll)
         order_ids = []
         for decision in decisions:
+            order_ids.extend(self._fill_crossed_resting_limits(target_date, decision))
             adjusted = self.with_paper_stake(decision, stake_dollars)
             if not adjusted.approved or adjusted.recommended_contracts <= 0:
                 continue
@@ -195,6 +196,28 @@ class PaperTrader:
             if exposure_remaining is not None:
                 exposure_remaining -= adjusted.recommended_contracts * adjusted.cost_per_contract
         return order_ids
+
+    def _fill_crossed_resting_limits(self, target_date: str, decision: TradeDecision) -> list[int]:
+        if self.entry_mode != "limit":
+            return []
+        ask = float(decision.ask)
+        if ask <= 0.0 or ask >= 1.0:
+            return []
+        filled: list[int] = []
+        for row in self.store.resting_limit_orders(
+            target_date,
+            decision.ticker,
+            decision.side,
+            risk_profile=self.risk_profile,
+        ):
+            limit_price = row["limit_price"] if row["limit_price"] is not None else row["entry_price"]
+            if limit_price is None:
+                continue
+            if ask <= float(limit_price) + 1e-12:
+                updated = self.store.fill_resting_limit_order(int(row["id"]))
+                if updated is not None and updated["status"] == "PAPER_FILLED":
+                    filled.append(int(row["id"]))
+        return filled
 
     def place_arbitrage(
         self,

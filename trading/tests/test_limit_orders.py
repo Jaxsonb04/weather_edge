@@ -105,6 +105,37 @@ def test_paper_limit_mode_fills_when_limit_crosses_visible_ask():
         assert len(store.open_paper_orders(10)) == 1
 
 
+def test_paper_limit_mode_fills_resting_order_on_later_scan():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(
+            store,
+            StrategyConfig(limit_price_edge_lcb_buffer=0.02),
+            entry_mode="limit",
+        )
+        first_scan = _decision(probability_lcb=0.81, entry_bid=0.73, entry_ask=0.75)
+        order_ids = trader.place_approved("2026-06-15", [first_scan])
+        assert len(order_ids) == 1
+        order_id = order_ids[0]
+        assert store.paper_order(order_id)["status"] == "PAPER_LIMIT_RESTING"
+
+        later_scan = _decision(
+            approved=False,
+            probability_lcb=0.65,
+            entry_bid=0.72,
+            entry_ask=0.74,
+            reasons=["edge below min"],
+        )
+        filled_ids = trader.place_approved("2026-06-15", [later_scan])
+
+        assert filled_ids == [order_id]
+        row = store.paper_order(order_id)
+        assert row is not None
+        assert row["status"] == "PAPER_FILLED"
+        assert row["limit_price"] == 0.74
+        assert len(store.open_paper_orders(10)) == 1
+
+
 def test_with_buy_limit_exposes_limit_math_on_decision_for_reporting():
     limited = with_buy_limit(
         _decision(probability_lcb=0.81, entry_bid=0.73, entry_ask=0.75),

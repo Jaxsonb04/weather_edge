@@ -767,6 +767,51 @@ class PaperStore:
             ).fetchone()
         return row is not None
 
+    def resting_limit_orders(
+        self,
+        target_date: str,
+        market_ticker: str,
+        side: str,
+        *,
+        risk_profile: str | None = None,
+    ) -> list[sqlite3.Row]:
+        filters = [
+            "target_date = ?",
+            "market_ticker = ?",
+            "UPPER(COALESCE(side, 'YES')) = ?",
+            "status = 'PAPER_LIMIT_RESTING'",
+            "settled_at IS NULL",
+            "closed_at IS NULL",
+        ]
+        params: list[object] = [target_date, market_ticker, side.upper()]
+        if risk_profile is not None:
+            filters.append("COALESCE(risk_profile, 'balanced') = ?")
+            params.append(normalize_risk_profile_name(risk_profile))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"""
+                SELECT *
+                FROM paper_orders
+                WHERE {' AND '.join(filters)}
+                ORDER BY created_at, id
+                """,
+                params,
+            ).fetchall()
+
+    def fill_resting_limit_order(self, order_id: int) -> sqlite3.Row | None:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                UPDATE paper_orders
+                SET status = 'PAPER_FILLED'
+                WHERE id = ? AND status = 'PAPER_LIMIT_RESTING'
+                """,
+                (order_id,),
+            )
+        return self._order(order_id)
+
     def record_monitor_snapshot(
         self,
         order: sqlite3.Row,
