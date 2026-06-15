@@ -893,6 +893,24 @@
       gap: 0.9rem;
       margin: 1rem 0;
     }
+    .trade-list-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.85rem;
+      min-width: 0;
+      padding: 0 0.15rem;
+    }
+    .trade-list-head h3 {
+      color: var(--ink);
+      font: 600 0.95rem var(--font-sans);
+    }
+    .trade-list-head p {
+      max-width: 56ch;
+      color: var(--ink-3);
+      font-size: 0.84rem;
+      text-align: right;
+    }
     .trade-card {
       min-width: 0;
       background: var(--surface);
@@ -1141,6 +1159,8 @@
       .readiness-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .score-row { grid-template-columns: 1fr; }
       .trade-grid, .exit-strip, .rule-grid { grid-template-columns: 1fr; }
+      .trade-list-head { align-items: flex-start; flex-direction: column; }
+      .trade-list-head p { text-align: left; }
       .chart-card { min-height: 250px; }
       .chart-card canvas { height: 200px; }
     }
@@ -1292,6 +1312,7 @@
       <div class="paper-dashboard" id="paperDashboard"></div>
       <div class="profile-strip" id="paperProfiles"></div>
       <div class="count-strip" id="paperCounts"></div>
+      <div class="trade-list" id="pendingLimitCards"></div>
       <div class="trade-list" id="openPaperCards"></div>
       <div class="grid-2">
         <div class="panel">
@@ -1469,6 +1490,7 @@
       'open-position': ['Open position', 'A paper trade still held. Its P&L can move until it is sold or settled.'],
       'open-risk': ['Open risk', 'Simulated money currently tied up in open positions.'],
       'paper-trading': ['Paper trading', 'Simulated trading using recorded prices. No real Kalshi order is placed.'],
+      'pending-limit': ['Pending limit', 'A paper buy-limit order recorded below the visible ask. It is not a filled position yet.'],
       'pre-resolution': ['Pre-resolution', 'A signal recorded before market close or official outcome lock.'],
       'quality-score': ['Quality score', '0-100 score combining edge, spread, liquidity, model agreement, and safety gates.'],
       'realized-pnl': ['Realized P&L', 'Profit or loss after a position has been sold or settled.'],
@@ -1981,7 +2003,7 @@
         <table>
           <thead><tr>
             <th>Date</th><th>Opened</th><th>Closed</th><th>Settled</th><th>W/L</th>
-            <th>${term('Realized', 'realized-pnl')}</th><th>Cumulative</th><th>Forecast vs actual</th>
+            <th>${term('Realized', 'realized-pnl')}</th><th>Daily %</th><th>Cumulative</th><th>Forecast vs actual</th>
           </tr></thead>
           <tbody>
             ${days.map((row) => {
@@ -1996,6 +2018,7 @@
                 <td class="num">${fmt(row.settled)}</td>
                 <td class="num">${fmt(row.wins)} / ${fmt(row.losses)}</td>
                 <td class="num ${toneText(tone)}">${signedMoney(row.realized_pnl)}</td>
+                <td class="num ${toneText(toneForValue(row.roi))}">${signedPct(row.roi)}</td>
                 <td class="num ${toneText(toneForValue(row.cumulative_realized))}">${signedMoney(row.cumulative_realized)}</td>
                 <td class="num">${forecast}</td>
               </tr>`;
@@ -2099,9 +2122,13 @@
       const paper = data.paper_trading || {};
       const summary = paper.summary || {};
       const openRows = paper.open_positions || [];
+      const pendingRows = paper.pending_limit_orders || [];
       const closedRows = paper.closed_positions || [];
       const publishedOpen = number(summary.published_open_positions) ?? openRows.length;
       const hiddenOpen = number(summary.hidden_open_positions) || 0;
+      const pendingCount = number(summary.pending_limit_orders) || 0;
+      const publishedPending = number(summary.published_pending_limit_orders) ?? pendingRows.length;
+      const hiddenPending = number(summary.hidden_pending_limit_orders) || 0;
       const unrealizedTone = toneForValue(summary.unrealized_pnl);
       const realizedTone = toneForValue(summary.realized_pnl || 0);
       $('paperDashboard').innerHTML = paperDashboard(paper, summary);
@@ -2111,12 +2138,16 @@
       );
       $('paperCounts').innerHTML = [
         countCard('Open positions', hiddenOpen ? `${fmt(summary.open_positions)} (${fmt(publishedOpen)} shown)` : fmt(summary.open_positions), 'open-position'),
+        countCard('Pending limits', hiddenPending ? `${fmt(pendingCount)} (${fmt(publishedPending)} shown)` : fmt(pendingCount), 'pending-limit', pendingCount ? 'warn' : ''),
         countCard('Marked open positions', `${fmt(summary.marked_open_positions || 0)} / ${fmt(summary.open_positions || 0)}`, 'unrealized-pnl', (summary.open_positions || 0) && !(summary.marked_open_positions || 0) ? 'warn' : ''),
         countCard('Open marked P&L', summary.unrealized_pnl == null ? '-' : signedMoney(summary.unrealized_pnl), 'unrealized-pnl', unrealizedTone),
         countCard('Realized P&L', signedMoney(summary.realized_pnl || 0), 'realized-pnl', realizedTone),
         countCard('Open risk', money(summary.open_risk || 0), 'open-risk'),
         countCard('Closed W/L', `${fmt(summary.win_count)} / ${fmt(summary.loss_count)}`, 'hit-rate')
       ].join('');
+      $('pendingLimitCards').innerHTML = pendingRows.length
+        ? `<div class="trade-list-head"><h3>Pending limit orders</h3><p>These are paper buy limits resting below the visible ask. They are not filled positions until the limit crosses the market.</p></div>${pendingRows.map(paperLimitCard).join('')}`
+        : '<p class="empty">No pending limit orders are resting.</p>';
       $('openPaperCards').innerHTML = openRows.length
         ? openRows.map(paperPositionCard).join('')
         : '<p class="empty">No open paper positions are published.</p>';
@@ -2127,24 +2158,33 @@
     function paperDashboard(paper, summary) {
       const monitor = paper.monitor || {};
       const openCount = number(summary.open_positions) || 0;
+      const pendingCount = number(summary.pending_limit_orders) || 0;
       const markedCount = number(summary.marked_open_positions) || 0;
       const hiddenCount = number(summary.hidden_open_positions) || 0;
+      const hiddenPending = number(summary.hidden_pending_limit_orders) || 0;
       const unrealized = number(summary.unrealized_pnl);
       const tone = openCount === 0 ? 'warn' : toneForValue(unrealized);
       const label = openCount === 0
-        ? 'No open positions'
+        ? pendingCount
+          ? 'Limit orders pending'
+          : 'No open positions'
         : unrealized === null
           ? 'Mark pending'
           : unrealized >= 0
             ? 'Open book winning'
             : 'Open book losing';
-      const value = unrealized === null ? money(summary.open_risk || 0) : signedMoney(unrealized);
+      const value = openCount === 0 && pendingCount
+        ? money(summary.pending_limit_risk || 0)
+        : unrealized === null ? money(summary.open_risk || 0) : signedMoney(unrealized);
       const markText = openCount === 0
-        ? 'No simulated money is currently tied up.'
+        ? pendingCount
+          ? `${fmt(pendingCount)} paper buy-limit order(s) are resting; no contracts are filled until the visible ask reaches the limit.`
+          : 'No simulated money is currently tied up.'
         : markedCount
           ? `${fmt(markedCount)} of ${fmt(openCount)} open positions have a latest scanned sell bid.`
           : 'Open positions need a latest scanned sell bid before unrealized P&L can be marked.';
       const publishText = hiddenCount ? ` ${fmt(hiddenCount)} additional open positions are summarized but not listed below.` : '';
+      const pendingText = hiddenPending ? ` ${fmt(hiddenPending)} additional pending limit order(s) are summarized but not listed below.` : '';
       return `
         <article class="paper-state ${tone}">
           <h3>Paper book status</h3>
@@ -2152,7 +2192,7 @@
             <b>${htmlEscape(value)}</b>
             <span class="pill ${tone}">${htmlEscape(label)}</span>
           </div>
-          <p>${htmlEscape(markText + publishText)}</p>
+          <p>${htmlEscape(markText + publishText + pendingText)}</p>
         </article>
         <article class="paper-exit-rules">
           <h3>Exit monitor</h3>
@@ -2161,6 +2201,7 @@
             <div class="rule-tile"><b>+${fmt(monitor.yes_take_profit_pct ?? 50, 1)}% / -${fmt(monitor.yes_stop_loss_pct ?? 25, 1)}%</b><span>YES exits</span></div>
             <div class="rule-tile"><b>+${fmt(monitor.no_take_profit_pct ?? 35, 1)}% / -${fmt(monitor.no_stop_loss_pct ?? 35, 1)}%</b><span>NO exits</span></div>
             <div class="rule-tile"><b>${money(summary.open_risk || 0)}</b><span>${term('Open risk', 'open-risk')}</span></div>
+            <div class="rule-tile"><b>${money(summary.pending_limit_risk || 0)}</b><span>${term('Pending limits', 'pending-limit')}</span></div>
             <div class="rule-tile"><b>${summary.open_value == null ? '-' : money(summary.open_value)}</b><span>Marked value</span></div>
           </div>
         </article>`;
@@ -2232,6 +2273,33 @@
             ${tradeStat('Quality score', fmt(row.quality_score, 1), 'quality-score')}
           </div>
           <p class="trade-reason"><b>Why it passed:</b> ${htmlEscape(row.why_good || '-')}</p>
+        </article>`;
+    }
+
+    function paperLimitCard(row) {
+      const limitPrice = row.limit_price ?? row.entry_price;
+      const risk = row.initial_cost ?? row.risk;
+      const limitDetail = `Fills only if the paper-visible ask reaches ${price(limitPrice)} or lower; until then this is not an open position.`;
+      const costDetail = `${price(row.limit_fee_per_contract ?? row.entry_fee_per_contract)} estimated fee; ${price(row.limit_cost_per_contract ?? row.cost_per_contract)} all-in per contract.`;
+      return `
+        <article class="trade-card warn" data-order-id="${htmlEscape(row.id)}">
+          <div class="trade-card-head">
+            <h3>${htmlEscape(row.label || row.ticker || 'Pending limit')}<span>#${htmlEscape(row.id)} - ${htmlEscape(row.target_date || '-')} - ${htmlEscape(row.side || '-')}</span></h3>
+            <div class="trade-badges">${profilePill(row.risk_profile)} <span class="pill warn">Limit pending</span></div>
+          </div>
+          <div class="trade-grid">
+            ${tradeStat('Limit price', price(limitPrice), 'pending-limit', 'warn', limitDetail)}
+            ${tradeStat('Reserved risk', money(risk || 0), 'initial-cost', null, `${fmt(row.contracts, 2)} contract(s) if filled.`)}
+            ${tradeStat('All-in limit cost', price(row.limit_cost_per_contract ?? row.cost_per_contract), 'cost-per-contract', null, costDetail)}
+            ${tradeStat('Contracts', fmt(row.contracts, 2), 'contract', null, 'Paper quantity reserved for this limit.')}
+          </div>
+          <div class="trade-grid trade-metrics">
+            ${tradeStat('Model probability', pct(row.probability, 1), 'model-probability')}
+            ${tradeStat('Limit edge', pct(row.limit_edge ?? row.edge, 1), 'edge', number(row.limit_edge ?? row.edge) >= 0 ? 'good' : 'bad')}
+            ${tradeStat('Limit edge LCB', pct(row.limit_edge_lcb ?? row.edge_lcb, 1), 'lower-confidence-edge', number(row.limit_edge_lcb ?? row.edge_lcb) >= 0 ? 'good' : 'bad')}
+            ${tradeStat('Quality score', fmt(row.quality_score, 1), 'quality-score')}
+          </div>
+          <p class="trade-reason"><b>Why it is pending:</b> ${htmlEscape(row.why_good || 'Paper buy-limit is resting below the current visible ask.')}</p>
         </article>`;
     }
 
