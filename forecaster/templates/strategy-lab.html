@@ -36,13 +36,53 @@
       --danger-soft: #f8dfda;
       --shadow: 0 24px 54px -34px rgba(11, 38, 74, 0.5);
       --shadow-soft: 0 10px 24px -18px rgba(11, 38, 74, 0.38);
+      --chart-grid: rgba(21, 35, 63, 0.07);
+      --grid-overlay: rgba(21, 35, 63, 0.034);
       --font-display: "Fraunces", Georgia, "Times New Roman", serif;
       --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
       --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
       --r: 12px;
     }
+    /* Dark "instrument at night": keeps the cold-blue / warm-amber identity on a
+       deep cool navy instead of inverting to flat black. Only the design tokens
+       change, so every surface, chart, and pill stays coherent. */
+    [data-theme="dark"] {
+      --ink: #e7edf7;
+      --ink-2: #aebbd2;
+      --ink-3: #8493ad;
+      --paper: #0b1220;
+      --surface: #131d30;
+      --surface-2: #182336;
+      --surface-3: rgba(255, 255, 255, 0.055);
+      --line: rgba(255, 255, 255, 0.13);
+      --line-2: rgba(255, 255, 255, 0.07);
+      --cold: #5aa6ea;
+      --cold-deep: #8ec7f6;
+      --cold-soft: rgba(90, 166, 234, 0.17);
+      --warm: #eaa052;
+      --warm-deep: #f3bd78;
+      --warm-soft: rgba(234, 160, 82, 0.16);
+      --mint: #45c79a;
+      --mint-soft: rgba(69, 199, 154, 0.17);
+      --danger: #ec6555;
+      --danger-soft: rgba(236, 101, 85, 0.18);
+      --shadow: 0 26px 56px -32px rgba(0, 0, 0, 0.68);
+      --shadow-soft: 0 12px 26px -18px rgba(0, 0, 0, 0.55);
+      --chart-grid: rgba(255, 255, 255, 0.09);
+      --grid-overlay: rgba(255, 255, 255, 0.028);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
+    html {
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      color-scheme: light;
+    }
+    html[data-theme="dark"] { color-scheme: dark; }
+    /* Updating numbers (counters, prices, table cells) should not reflow. */
+    .num, .count-card b, .metric b, .score b, .prov-chip b, table td.num, .price, .pill { font-variant-numeric: tabular-nums; }
+    h1, h2, h3 { text-wrap: balance; }
+    p, .sub, .trade-reason, figcaption { text-wrap: pretty; }
     body {
       min-height: 100dvh;
       font-family: var(--font-sans);
@@ -71,8 +111,8 @@
       pointer-events: none;
       opacity: 0.44;
       background-image:
-        repeating-linear-gradient(0deg, rgba(21, 35, 63, 0.034) 0 1px, transparent 1px 36px),
-        repeating-linear-gradient(90deg, rgba(21, 35, 63, 0.034) 0 1px, transparent 1px 36px);
+        repeating-linear-gradient(0deg, var(--grid-overlay) 0 1px, transparent 1px 36px),
+        repeating-linear-gradient(90deg, var(--grid-overlay) 0 1px, transparent 1px 36px);
       -webkit-mask-image: radial-gradient(120% 100% at 50% 22%, #000 34%, transparent 86%);
               mask-image: radial-gradient(120% 100% at 50% 22%, #000 34%, transparent 86%);
     }
@@ -286,7 +326,39 @@
       transition: background 160ms ease, color 160ms ease, transform 160ms ease;
     }
     .refresh-button:hover { background: var(--cold-soft); }
-    .refresh-button:active { transform: translateY(1px); }
+    .refresh-button:active { transform: scale(0.97) translateY(1px); }
+    .icon-button {
+      min-height: 2.25rem;
+      min-width: 2.25rem;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--ink-2);
+      cursor: pointer;
+      font-size: 0.98rem;
+      line-height: 1;
+      transition-property: background-color, border-color, color, transform;
+      transition-duration: 150ms;
+      transition-timing-function: ease;
+    }
+    .icon-button:hover { background: var(--surface-2); color: var(--ink); }
+    .icon-button:active { transform: scale(0.93); }
+    /* Smooth the light/dark flip on the main surfaces. Explicit properties only
+       (never `transition: all`); auto-disabled by the reduced-motion block. */
+    body, .panel, .metric, .score, table, .subnav, .alert-strip, .provenance-strip {
+      transition-property: background-color, border-color, color;
+      transition-duration: 260ms;
+      transition-timing-function: ease;
+    }
+    .count-card, .trade-card {
+      transition-property: background-color, border-color, color, transform, box-shadow;
+      transition-duration: 220ms;
+      transition-timing-function: ease;
+      will-change: transform;
+    }
+    .trade-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-soft); }
     .refresh-button:disabled {
       cursor: progress;
       opacity: 0.68;
@@ -1210,6 +1282,18 @@
       *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
     }
   </style>
+  <script>
+    // Set the theme before first paint to avoid a flash: a saved choice wins,
+    // otherwise follow the OS preference.
+    (function () {
+      try {
+        var saved = localStorage.getItem('weatheredge-theme');
+        var dark = saved ? saved === 'dark'
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.setAttribute('data-theme', 'dark');
+      } catch (e) { /* storage blocked: stay light */ }
+    })();
+  </script>
 </head>
 <body class="__STRATEGY_LAB_BODY_CLASS__">
   <section class="access-gate" id="strategyLabGate" aria-labelledby="strategyLabAccessTitle" __STRATEGY_LAB_GATE_ATTRS__>
@@ -1265,6 +1349,7 @@
             <h2 id="statusTitle">Runtime status</h2>
             <div class="status-actions">
               <span class="pill good" id="runtimeMode">Paper only</span>
+              <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
               <button class="refresh-button" id="strategyLabRefreshButton" type="button">Refresh</button>
             </div>
           </div>
@@ -1446,15 +1531,23 @@
 
   <script>
     const STRATEGY_LAB_PROTECTION = __STRATEGY_LAB_PROTECTION__;
+    // Read live design tokens so charts inherit the active (light/dark) theme.
+    // Getters re-read on each access, so a theme toggle + re-render recolors
+    // every chart with no hardcoded palette to keep in sync.
+    const cssVar = (name, fallback) => {
+      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return value || fallback;
+    };
     const colors = {
-      ink: '#15233f',
-      muted: '#5c6a83',
-      cold: '#1c63a9',
-      coldDeep: '#0d3f70',
-      warm: '#d8792a',
-      mint: '#1c8a6c',
-      danger: '#bd3a2b',
-      line: 'rgba(21,35,63,0.13)'
+      get ink() { return cssVar('--ink', '#15233f'); },
+      get muted() { return cssVar('--ink-3', '#5c6a83'); },
+      get cold() { return cssVar('--cold', '#1c63a9'); },
+      get coldDeep() { return cssVar('--cold-deep', '#0d3f70'); },
+      get warm() { return cssVar('--warm', '#d8792a'); },
+      get mint() { return cssVar('--mint', '#1c8a6c'); },
+      get danger() { return cssVar('--danger', '#bd3a2b'); },
+      get line() { return cssVar('--line', 'rgba(21,35,63,0.13)'); },
+      get grid() { return cssVar('--chart-grid', 'rgba(21,35,63,0.07)'); }
     };
 
     const $ = (id) => document.getElementById(id);
@@ -2568,8 +2661,8 @@
         maintainAspectRatio: false,
         plugins: { legend: { labels: { color: colors.ink, boxWidth: 10 } } },
         scales: {
-          x: { ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
-          y: { ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } }
+          x: { ticks: { color: colors.muted }, grid: { color: colors.grid } },
+          y: { ticks: { color: colors.muted }, grid: { color: colors.grid } }
         }
       };
     }
@@ -2637,8 +2730,8 @@
           ? {
               ...chartOptions(),
               scales: {
-                x: { stacked: true, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
-                y: { stacked: true, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } }
+                x: { stacked: true, ticks: { color: colors.muted }, grid: { color: colors.grid } },
+                y: { stacked: true, ticks: { color: colors.muted }, grid: { color: colors.grid } }
               }
             }
           : chartOptions()
@@ -2681,8 +2774,8 @@
         options: {
           ...chartOptions(),
           scales: {
-            x: { ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
-            y: { min: 0, max: 100, title: { display: true, text: 'hit rate %' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
+            x: { ticks: { color: colors.muted }, grid: { color: colors.grid } },
+            y: { min: 0, max: 100, title: { display: true, text: 'hit rate %' }, ticks: { color: colors.muted }, grid: { color: colors.grid } },
             y1: { min: 0, position: 'right', title: { display: true, text: 'abs error F' }, ticks: { color: colors.muted }, grid: { drawOnChartArea: false } }
           }
         }
@@ -2742,8 +2835,8 @@
         options: {
           ...chartOptions(),
           scales: {
-            x: { min: 0, max: 1, title: { display: true, text: 'stated probability' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
-            y: { min: 0, max: 1, title: { display: true, text: 'observed frequency' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } }
+            x: { min: 0, max: 1, title: { display: true, text: 'stated probability' }, ticks: { color: colors.muted }, grid: { color: colors.grid } },
+            y: { min: 0, max: 1, title: { display: true, text: 'observed frequency' }, ticks: { color: colors.muted }, grid: { color: colors.grid } }
           }
         }
       });
@@ -2766,8 +2859,8 @@
         options: {
           ...chartOptions(),
           scales: {
-            x: { min: 0, max: 1, title: { display: true, text: 'market probability' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
-            y: { min: 0, max: 1, title: { display: true, text: 'model probability' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } }
+            x: { min: 0, max: 1, title: { display: true, text: 'market probability' }, ticks: { color: colors.muted }, grid: { color: colors.grid } },
+            y: { min: 0, max: 1, title: { display: true, text: 'model probability' }, ticks: { color: colors.muted }, grid: { color: colors.grid } }
           }
         }
       });
@@ -3038,9 +3131,35 @@
       });
     }
 
+    function setThemeIcon() {
+      const button = $('themeToggle');
+      if (!button) return;
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      button.textContent = dark ? '☀' : '☾';
+      button.setAttribute('aria-pressed', String(dark));
+      button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    }
+
+    function bindThemeToggle() {
+      setThemeIcon();
+      const button = $('themeToggle');
+      if (!button) return;
+      button.addEventListener('click', () => {
+        const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        if (dark) document.documentElement.removeAttribute('data-theme');
+        else document.documentElement.setAttribute('data-theme', 'dark');
+        try { localStorage.setItem('weatheredge-theme', dark ? 'light' : 'dark'); } catch (e) { /* ignore */ }
+        setThemeIcon();
+        // Charts read CSS tokens at draw time, so re-render to recolor them.
+        if (window.Chart) Chart.defaults.color = colors.ink;
+        if (typeof labData !== 'undefined' && labData) applyStrategyLabView();
+      });
+    }
+
     function init() {
       bindTermHelp();
       bindStrategyLabRefresh();
+      bindThemeToggle();
       if (STRATEGY_LAB_PROTECTION.enabled) {
         initProtectedStrategyLab();
       } else {
