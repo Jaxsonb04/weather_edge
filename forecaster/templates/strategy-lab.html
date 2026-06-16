@@ -22,6 +22,7 @@
       --surface: #ffffff;
       --surface-2: #f6f9fc;
       --surface-3: rgba(21, 35, 63, 0.07);
+      --chip: rgba(255, 255, 255, 0.62);
       --line: rgba(21, 35, 63, 0.13);
       --line-2: rgba(21, 35, 63, 0.07);
       --cold: #1c63a9;
@@ -54,6 +55,7 @@
       --surface: #131d30;
       --surface-2: #182336;
       --surface-3: rgba(255, 255, 255, 0.055);
+      --chip: rgba(255, 255, 255, 0.06);
       --line: rgba(255, 255, 255, 0.13);
       --line-2: rgba(255, 255, 255, 0.07);
       --cold: #5aa6ea;
@@ -115,6 +117,30 @@
         repeating-linear-gradient(90deg, var(--grid-overlay) 0 1px, transparent 1px 36px);
       -webkit-mask-image: radial-gradient(120% 100% at 50% 22%, #000 34%, transparent 86%);
               mask-image: radial-gradient(120% 100% at 50% 22%, #000 34%, transparent 86%);
+    }
+    /* The atmosphere layer is a full-viewport base, so its light gradient must
+       go dark too or the page's transparent gaps (the masthead) stay light. */
+    [data-theme="dark"] body::before {
+      background:
+        radial-gradient(105% 62% at 88% -8%, rgba(234, 160, 82, 0.10), transparent 46%),
+        radial-gradient(110% 70% at 0% 4%, rgba(90, 166, 234, 0.13), transparent 44%),
+        linear-gradient(180deg, #0f1828 0%, #0b1220 60%, #0c1422 100%);
+    }
+    /* The sticky section nav and the focus-only skip link carry their own light
+       frosted / inverted backgrounds; give them dark equivalents. */
+    [data-theme="dark"] .subnav { background: rgba(12, 19, 33, 0.82); }
+    [data-theme="dark"] .skip-link { background: var(--surface-2); }
+    /* Tone count-cards use a white-based gradient in light mode; invert to the
+       dark surface with a faint tone tint so they don't glare in dark mode. */
+    [data-theme="dark"] .count-card.good { background: linear-gradient(180deg, var(--surface), rgba(69, 199, 154, 0.10)); }
+    [data-theme="dark"] .count-card.bad { background: linear-gradient(180deg, var(--surface), rgba(236, 101, 85, 0.11)); }
+    [data-theme="dark"] .count-card.warn { background: linear-gradient(180deg, var(--surface), rgba(234, 160, 82, 0.10)); }
+    /* The selected tab inverts to --ink (dark navy) in light mode; in dark mode
+       that is a light fill, so use the cold accent with dark text instead. */
+    [data-theme="dark"] .profile-tab[aria-selected="true"] {
+      background: var(--cold);
+      border-color: var(--cold);
+      color: #08111c;
     }
     .skip-link {
       position: absolute;
@@ -240,7 +266,7 @@
       color: var(--cold-deep);
       padding: 0.32rem 0.7rem;
       border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.62);
+      background: var(--chip);
       border-radius: 999px;
     }
     .eyebrow::before {
@@ -372,7 +398,7 @@
       border-radius: 999px;
       border: 1px solid var(--line);
       color: var(--ink-2);
-      background: rgba(255, 255, 255, 0.7);
+      background: var(--chip);
       font: 600 0.7rem var(--font-mono);
       text-transform: uppercase;
       letter-spacing: 0;
@@ -590,7 +616,7 @@
       min-height: 2.45rem;
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.68);
+      background: var(--chip);
       color: var(--ink-2);
       cursor: pointer;
       padding: 0 0.82rem;
