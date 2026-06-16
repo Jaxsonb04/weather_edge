@@ -1378,6 +1378,11 @@
         <div class="score-row" id="predictionReplayScores"></div>
         <div class="table-wrap replay-table" id="predictionReplayTable"></div>
       </div>
+      <div class="panel chart-card">
+        <h3>Reliability &mdash; stated probability vs observed frequency</h3>
+        <canvas id="reliabilityChart" role="img" aria-label="Calibration reliability: stated probability versus observed frequency against the ideal 45-degree line"></canvas>
+        <p class="sub">Each point is a probability bin (sized by sample count). On the dashed line is perfectly calibrated; below it is overconfident.</p>
+      </div>
       <div class="table-wrap" id="cohortTable"></div>
     </section>
 
@@ -1462,6 +1467,26 @@
         month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
         timeZone: 'America/Los_Angeles', timeZoneName: 'short'
       });
+    };
+    const relativeAge = (iso) => {
+      if (!iso) return '';
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return '';
+      const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.round(mins / 60);
+      if (hrs < 48) return `${hrs}h ago`;
+      return `${Math.round(hrs / 24)}d ago`;
+    };
+    // A money-facing page must make stale data obvious: past the threshold the
+    // freshness reads "STALE", so a frozen AWS pipeline never looks live.
+    const freshnessLabel = (iso) => {
+      if (!iso) return 'not loaded';
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return 'not loaded';
+      const mins = (Date.now() - t) / 60000;
+      const age = relativeAge(iso);
+      return mins > 180 ? `STALE · ${age}` : age;
     };
     const htmlEscape = (value) => String(safe(value, '')).replace(/[&<>"']/g, (char) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -1736,7 +1761,10 @@
       const summaryTotals = (data.daily_summary || {}).totals || {};
       const statusMetrics = [
         metric('Alert level', status.alert_level || 'ok'),
-        metric('Updated', dt(status.last_updated || data.generated_at)),
+        metric('Updated', (() => {
+          const iso = status.last_updated || data.generated_at;
+          return iso ? `${dt(iso)} · ${freshnessLabel(iso)}` : 'not loaded';
+        })()),
         metric('Target', status.latest_target_date || '-', 'target-date'),
         metric('Paper status', status.paper_trading_status || '-'),
         metric('Entry scanner', status.entry_scanner_status || '-'),
@@ -1867,6 +1895,11 @@
         { label: 'lstm', data: activeData, backgroundColor: colors.cold },
         { label: 'clean-blend/combined', data: challengerData, backgroundColor: colors.warm }
       ]);
+      // The per-bin reliability curve is the calibration artifact a quant reads
+      // first; the engine already computes it (active.buckets) but nothing drew
+      // it before. Falls back to the challenger buckets if the active model has
+      // none yet.
+      reliabilityChart('reliabilityChart', active.buckets || challenger.buckets || []);
       renderPredictionReplay(data.prediction_replay || {});
     }
 
@@ -2603,6 +2636,60 @@
       const labels = rows.map((row) => row[labelKey]);
       const values = rows.map((row) => Number(row[valueKey]) || 0);
       barChart(id, labels, [{ label: valueKey.replaceAll('_', ' '), data: values, backgroundColor: color }]);
+    }
+
+    function reliabilityChart(id, buckets) {
+      const canvas = $(id);
+      if (!canvas) return;
+      const rows = (Array.isArray(buckets) ? buckets : []).filter((b) => Number(b.count) > 0);
+      if (!window.Chart || !rows.length) {
+        if (canvas.getContext) {
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#6b7a93';
+          ctx.font = '13px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Collecting calibration samples…', canvas.width / 2, canvas.height / 2);
+        }
+        return;
+      }
+      const points = rows.map((b) => ({
+        x: Number(b.avg_probability) || 0,
+        y: Number(b.observed_frequency) || 0,
+        n: Number(b.count) || 0
+      }));
+      drawChart(id, {
+        data: {
+          datasets: [
+            {
+              type: 'line',
+              label: 'perfectly calibrated',
+              data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+              borderColor: colors.muted,
+              borderDash: [6, 4],
+              pointRadius: 0,
+              fill: false,
+              order: 2
+            },
+            {
+              type: 'scatter',
+              label: 'observed',
+              data: points,
+              backgroundColor: colors.cold,
+              borderColor: colors.coldDeep,
+              pointRadius: points.map((p) => Math.min(13, 3 + Math.sqrt(p.n))),
+              order: 1
+            }
+          ]
+        },
+        options: {
+          ...chartOptions(),
+          scales: {
+            x: { min: 0, max: 1, title: { display: true, text: 'stated probability' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
+            y: { min: 0, max: 1, title: { display: true, text: 'observed frequency' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } }
+          }
+        }
+      });
     }
 
     function scatterChart(id, points) {
