@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -43,7 +44,13 @@ from .forecast import (
     parse_target_dates,
 )
 from .kalshi import KalshiPublicClient, load_event_snapshots
-from .models import EnsembleSnapshot, EventSnapshot, IntradaySnapshot, target_date_from_event_ticker
+from .models import (
+    EnsembleSnapshot,
+    EventSnapshot,
+    IntradaySnapshot,
+    format_event_date_token,
+    target_date_from_event_ticker,
+)
 from .paper import PaperTrader
 from .probability import ResidualCalibrator
 from .report import build_daily_report, write_report
@@ -911,7 +918,7 @@ def _analyze_one_target(
         try:
             client = kalshi_client or KalshiPublicClient()
             event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
-        except URLError as exc:
+        except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
             event = None
 
@@ -919,7 +926,7 @@ def _analyze_one_target(
         markets = event.active_markets or event.markets
         event_title = event.title
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{target.strftime('%y%b%d').upper()}-PAPER")
+        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
     probabilities = calibrator.bucket_probabilities(
@@ -1042,7 +1049,7 @@ def _arbitrage_one_target(
         try:
             client = kalshi_client or KalshiPublicClient()
             event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
-        except URLError as exc:
+        except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); no active ladder available"), file=sys.stderr)
             event = None
 
@@ -1051,7 +1058,7 @@ def _arbitrage_one_target(
         event_title = event.title
         market_available = True
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{target.strftime('%y%b%d').upper()}-PAPER")
+        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; arbitrage scan is research-only"
         market_available = False
 
@@ -1148,7 +1155,7 @@ def _tail_basket_one_target(
         try:
             client = kalshi_client or KalshiPublicClient()
             event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
-        except URLError as exc:
+        except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
             event = None
 
@@ -1156,7 +1163,7 @@ def _tail_basket_one_target(
         markets = event.active_markets or event.markets
         event_title = event.title
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{target.strftime('%y%b%d').upper()}-PAPER")
+        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
     probabilities = calibrator.bucket_probabilities(
@@ -1229,11 +1236,15 @@ def _tail_basket_one_target(
     order_ids = []
     if args.place_paper and entry_allowed and basket.approved:
         paper_trader = PaperTrader(store, config, risk_profile=risk_profile)
+        # A tail basket is a worst-case-bounded structure meant to be held to
+        # settlement. Tag its legs as one group so the monitor never closes a
+        # single leg on an intraday take-profit/stop-loss and breaks the bound.
         order_ids = paper_trader.place_approved(
             target.isoformat(),
             basket.decisions,
             daily_budget=None,
             bankroll=config.paper_bankroll,
+            group_id=f"BASKET-{uuid.uuid4().hex[:12]}",
         )
 
     _print_tail_basket(
@@ -1301,6 +1312,15 @@ def _paper_entry_gate_for_target(
     *,
     now: datetime | None = None,
 ) -> tuple[bool, str | None]:
+    # A single-source forecast (Google-cache fallback when the multi-source
+    # blend is unavailable) reports a 0.0 source spread, which silently passes
+    # the disagreement gate and skips sigma widening. Refuse to open paper
+    # positions on an uncorroborated point forecast on any target date.
+    if forecast is not None and getattr(forecast, "source_count", 2) < 2:
+        return False, (
+            "paper entry disabled: single-source forecast (no multi-source "
+            "corroboration); disagreement gate and sigma widening cannot engage"
+        )
     local_now = settlement_clock(now)
     if target != local_now.date():
         return True, None
@@ -1350,7 +1370,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         forecast = adapter.latest_blend(target)
         try:
             event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
-        except URLError as exc:
+        except (URLError, OSError) as exc:
             print(f"warning: live Kalshi lookup failed for {target.isoformat()} ({exc})", file=sys.stderr)
             event = None
         forecast_id = store.record_forecast(forecast)
@@ -1871,6 +1891,23 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
     for row in rows:
         inspected += 1
         side = str(row["side"] or ("NO" if "NO" in str(row["action"]).upper() else "YES")).upper()
+        group_id = row["group_id"] if "group_id" in row.keys() else None
+        if group_id:
+            # Legs of an arbitrage box/ladder or a tail basket form a single
+            # guaranteed/worst-case-bounded payoff. Closing one leg early
+            # converts the structure into naked directional risk, so hold every
+            # grouped leg to settlement instead of applying intraday exits.
+            store.record_monitor_snapshot(
+                row,
+                side=side,
+                action="HOLD_GUARANTEED_LEG",
+                reason=f"leg of guaranteed-payoff group {group_id}; held to settlement",
+            )
+            print(
+                f"HOLD order {row['id']} {row['market_ticker']} {side}: "
+                f"guaranteed-payoff group {group_id} (held to settlement)"
+            )
+            continue
         take_profit_pct, stop_loss_pct = _monitor_thresholds_for_side(args, side)
         take_profit = take_profit_pct / 100.0
         stop_loss = stop_loss_pct / 100.0
@@ -1914,10 +1951,13 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
         pnl_dollars = contracts * (net_exit - entry_cost)
 
         reason = None
+        exit_kind = None
         if pnl_pct >= take_profit:
             reason = f"{side} take-profit {pnl_pct * 100:.1f}% >= {take_profit_pct:.1f}%"
+            exit_kind = "TAKE_PROFIT"
         elif pnl_pct <= -stop_loss:
             reason = f"{side} stop-loss {pnl_pct * 100:.1f}% <= -{stop_loss_pct:.1f}%"
+            exit_kind = "STOP_LOSS"
             allow_model_veto = side == "NO" and pnl_pct > -model_veto_max_loss
             # Daily-settlement binaries reprice violently intraday; a pure
             # price stop converts that noise into realized losses (June 2026
@@ -2002,7 +2042,7 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             )
             continue
 
-        action = "CLOSE_TAKE_PROFIT" if reason.startswith("take-profit") else "CLOSE_STOP_LOSS"
+        action = "CLOSE_TAKE_PROFIT" if exit_kind == "TAKE_PROFIT" else "CLOSE_STOP_LOSS"
         store.record_monitor_snapshot(
             row,
             side=side,
@@ -2015,7 +2055,19 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             unrealized_pnl=pnl_dollars,
             unrealized_roi=pnl_pct,
         )
-        closed_row = store.close_paper_order(int(row["id"]), live_bid)
+        try:
+            closed_row = store.close_paper_order(int(row["id"]), live_bid)
+        except (ValueError, RuntimeError) as exc:
+            # A concurrent settle/close can win the race for this row. Log and
+            # keep inspecting the rest of the book instead of aborting the run.
+            print(
+                color.yellow(
+                    f"skip order {row['id']} {row['market_ticker']} {side}: "
+                    f"close failed ({type(exc).__name__}: {exc})"
+                ),
+                file=sys.stderr,
+            )
+            continue
         closed += 1
         pnl = f"${closed_row['realized_pnl']:.2f}"
         pnl = color.green(pnl) if closed_row["realized_pnl"] >= 0 else color.red(pnl)

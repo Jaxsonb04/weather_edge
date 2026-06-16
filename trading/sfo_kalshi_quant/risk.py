@@ -59,6 +59,11 @@ class TradeEvaluator:
                 reasons.append(
                     f"{side} bid size {bid_size:.2f} below min {self.config.min_yes_bid_size:.2f}"
                 )
+            if 0.0 < ask < 1.0 and ask_size < self.config.min_ask_size:
+                reasons.append(
+                    f"{side} ask size {ask_size:.2f} below min {self.config.min_ask_size:.2f}; "
+                    f"no displayed entry liquidity"
+                )
         if spread > self.config.max_spread + 1e-9:
             reasons.append(f"spread {spread:.2f} exceeds max {self.config.max_spread:.2f}")
         if 0.0 < ask < 1.0 and spread / ask > self.config.max_spread_fraction_of_cost + 1e-9:

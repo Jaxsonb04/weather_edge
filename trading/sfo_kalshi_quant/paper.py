@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 
 from .arbitrage import ArbitrageOpportunity
@@ -126,6 +127,7 @@ class PaperTrader:
         stake_dollars: float | None = None,
         daily_budget: float | None = None,
         bankroll: float | None = None,
+        group_id: str | None = None,
     ) -> list[int]:
         if stake_dollars is not None and daily_budget is not None:
             raise ValueError("use either paper stake or daily budget, not both")
@@ -191,6 +193,7 @@ class PaperTrader:
                     risk_profile=self.risk_profile,
                     status=status,
                     entry_mode=entry_mode,
+                    group_id=group_id,
                 )
             )
             if exposure_remaining is not None:
@@ -278,6 +281,11 @@ class PaperTrader:
         if normalized is None:
             return []
 
+        # Tag every leg with one group id so the monitor treats the portfolio
+        # as a single guaranteed-payoff structure: it must hold all legs to
+        # settlement instead of closing one leg on an intraday take-profit /
+        # stop-loss, which would convert the locked payout into naked risk.
+        group_id = f"ARB-{uuid.uuid4().hex[:12]}"
         order_ids: list[int] = []
         try:
             for decision in normalized.decisions:
@@ -286,6 +294,7 @@ class PaperTrader:
                         target_date,
                         decision,
                         risk_profile=self.risk_profile,
+                        group_id=group_id,
                     )
                 )
         except Exception:

@@ -1454,7 +1454,14 @@
       if (!value) return '-';
       const parsed = new Date(value);
       if (Number.isNaN(parsed.getTime())) return String(value);
-      return parsed.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      // Render in the SFO operating timezone with an explicit label so a remote
+      // viewer never reads these against their own local clock. The settlement
+      // day math runs on a fixed-PST clock; America/Los_Angeles only differs in
+      // the 00:00-01:00 DST window and carries the PT label automatically.
+      return parsed.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+        timeZone: 'America/Los_Angeles', timeZoneName: 'short'
+      });
     };
     const htmlEscape = (value) => String(safe(value, '')).replace(/[&<>"']/g, (char) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -1839,7 +1846,10 @@
       const challenger = block.challenger || {};
       const comparison = block.comparison || {};
       $('winnerPill').textContent = comparison.label || 'Pending';
-      $('winnerPill').className = comparison.winner === 'challenger' ? 'pill good' : 'pill warn';
+      // The pinned-lstm state (active leading, or challenger not yet proven) is
+      // healthy and must read neutral, not as an amber warning. Only an actual
+      // challenger win is highlighted; nothing here is an alarm.
+      $('winnerPill').className = comparison.winner === 'challenger' ? 'pill good' : 'pill';
       $('calibrationRecommendation').textContent = comparison.recommendation || 'Keep AWS execution pinned to lstm.';
       $('calibrationScores').innerHTML = [
         score('lstm sample', active.available ? fmt(active.sample_size) : `0 / ${fmt(active.outcome_count || 0)} rows`),
@@ -2662,11 +2672,16 @@
         mode: 'paper_research_only',
         live_orders_enabled: false,
         default_profile: 'balanced',
-        generated_at: new Date().toISOString(),
+        // Do NOT stamp the current time here: a failed/stale load must never
+        // render as fresh. Leaving generated_at null makes the "Updated"
+        // readout show that the artifact could not be loaded.
+        generated_at: null,
+        load_failed: true,
         reason: error.message,
         status: {
           active_calibration_source: 'lstm',
           challenger_calibration_source: 'clean-blend/combined',
+          last_updated: null,
           sample_warning: `Strategy Lab artifact could not be loaded: ${error.message}`,
           raw_signal_count: 0,
           pre_resolution_signal_count: 0,

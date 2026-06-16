@@ -346,12 +346,37 @@ class TradeDecision:
         return self.entry_ask_size
 
 
+_MONTH_ABBRS = (
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+)
+_MONTH_INDEX = {abbr: i + 1 for i, abbr in enumerate(_MONTH_ABBRS)}
+
+
+def format_event_date_token(target_date: date) -> str:
+    """Build the Kalshi ``YYMONDD`` date token with English month abbreviations.
+
+    Kalshi tickers always use uppercase English month abbreviations, so this
+    avoids ``strftime('%b')``, which is locale-sensitive and would corrupt the
+    ticker under a non-English ``LC_TIME``.
+    """
+
+    return f"{target_date.year % 100:02d}{_MONTH_ABBRS[target_date.month - 1]}{target_date.day:02d}"
+
+
 def target_date_from_event_ticker(event_ticker: str) -> date | None:
     parts = event_ticker.split("-")
     if len(parts) < 2:
         return None
-    token = parts[-1]
+    token = parts[-1].upper()
+    if len(token) != 7:
+        return None
+    month = _MONTH_INDEX.get(token[2:5])
+    if month is None:
+        return None
     try:
-        return datetime.strptime(token, "%y%b%d").date()
+        year = 2000 + int(token[0:2])
+        day = int(token[5:7])
+        return date(year, month, day)
     except ValueError:
         return None

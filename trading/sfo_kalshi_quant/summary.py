@@ -390,6 +390,8 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
 
     per_day: dict[str, dict[str, Any]] = {}
     rejection_counts: dict[str, int] = {}
+    rejection_counts_all: dict[str, int] = {}
+    category_counts: dict[str, int] = {"no_data": 0, "edge": 0, "other": 0}
     approved_total = 0
     gaps: list[float] = []
     by_profile: dict[str, dict[str, int]] = {}
@@ -426,6 +428,21 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
             reason = _primary_reason(row["reasons_json"])
             if reason:
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            # Tally every reason on the row, not just the first, so a gate that
+            # is always appended after source-spread is still visible. Bucket
+            # the row by its most fundamental blocker (no_data > edge) so the
+            # dashboard can separate "correctly idle" from "rejected real edge".
+            row_reasons = _all_reasons(row["reasons_json"])
+            seen: set[str] = set()
+            row_category = "other"
+            for normalized in row_reasons:
+                if normalized not in seen:
+                    rejection_counts_all[normalized] = rejection_counts_all.get(normalized, 0) + 1
+                    seen.add(normalized)
+                category = _reason_category(normalized)
+                if category == "no_data" or (category == "edge" and row_category != "no_data"):
+                    row_category = category
+            category_counts[row_category] = category_counts.get(row_category, 0) + 1
         model_p = row["model_probability"]
         market_p = row["market_probability"]
         if model_p is not None and market_p is not None:
@@ -442,6 +459,9 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
         stats["avg_market_probability"] = round(market_sum / count, 4) if count else None
 
     top_rejections = sorted(rejection_counts.items(), key=lambda item: item[1], reverse=True)[:6]
+    top_rejections_all = sorted(
+        rejection_counts_all.items(), key=lambda item: item[1], reverse=True
+    )[:8]
     return {
         "per_day": per_day,
         "gate_behavior": {
@@ -450,6 +470,16 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
             "top_rejections": [
                 {"reason": reason, "count": count} for reason, count in top_rejections
             ],
+            # Every gate that fired (a row can trip several), so a gate appended
+            # after source-spread is not hidden by the primary-reason count.
+            "top_rejections_all": [
+                {"reason": reason, "count": count} for reason, count in top_rejections_all
+            ],
+            # Rows bucketed by their most fundamental blocker: no_data means the
+            # engine was correctly idle (bad inputs); edge means a live market
+            # failed a price/edge gate. This is the number to read before
+            # loosening any gate to "trade more".
+            "rejection_categories": dict(category_counts),
             "by_profile": [
                 {"risk_profile": name, **stats}
                 for name, stats in sorted(by_profile.items())
@@ -641,15 +671,65 @@ def _primary_reason(reasons_json: object) -> str | None:
     return None
 
 
-def _normalize_reason(reason: str) -> str:
-    for marker in (
+# Reasons grouped by what is actually blocking the trade. "no_data" means the
+# inputs are unusable (no market, sources disagree, single source), so the
+# engine is correctly idle rather than rejecting a real edge; "edge" means a
+# live, well-formed market failed an edge/price gate. Keeping these separate is
+# what makes under-trading diagnosable (a high-spread day floods the counts with
+# source-spread blocks that otherwise masquerade as edge rejections).
+_NO_DATA_REASONS = frozenset(
+    {
+        "source spread",
+        "single-source forecast",
+        "market status",
+        "no live market",
+        "same-day entry disabled",
+    }
+)
+_EDGE_REASONS = frozenset(
+    {
         "edge_lcb",
         "lower-bound edge",
         "edge",
         "spread",
+        "spread fraction",
         "posterior probability",
         "model/market gap",
         "bid size",
+        "bid",
+        "ask size",
+        "no displayed entry liquidity",
+        "1c/2c tail requires exceptional support",
+        "cheap tail",
+        "all-in cost",
+        "no exit support",
+        "risk sizing produced zero contracts",
+    }
+)
+
+
+def _reason_category(reason: str) -> str:
+    if reason in _NO_DATA_REASONS:
+        return "no_data"
+    if reason in _EDGE_REASONS:
+        return "edge"
+    return "other"
+
+
+def _normalize_reason(reason: str) -> str:
+    for marker in (
+        "source spread",
+        "single-source forecast",
+        "edge_lcb",
+        "lower-bound edge",
+        "edge",
+        "spread fraction",
+        "spread",
+        "posterior probability",
+        "model/market gap",
+        "bid size",
+        "ask size",
+        "no displayed entry liquidity",
         "bid",
         "1c/2c tail requires exceptional support",
         "cheap tail",
@@ -662,6 +742,16 @@ def _normalize_reason(reason: str) -> str:
         if marker in reason:
             return marker
     return reason[:48]
+
+
+def _all_reasons(reasons_json: object) -> list[str]:
+    try:
+        payload = json.loads(str(reasons_json))
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if isinstance(payload, list):
+        return [_normalize_reason(str(item)) for item in payload if item]
+    return []
 
 
 def _local_day(timestamp: object) -> str:

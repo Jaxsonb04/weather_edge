@@ -5,13 +5,25 @@ from sfo_kalshi_quant.config import SFO_TZ
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot
 
 
-def _forecast(target: date, raw=None) -> ForecastSnapshot:
+def _forecast(target: date, raw=None, *, source_count: int = 4) -> ForecastSnapshot:
     return ForecastSnapshot(
         target_date=target,
         predicted_high_f=67.0,
         fetched_at="2026-06-08T18:00:00+00:00",
+        source_count=source_count,
         raw=raw or {},
     )
+
+
+def test_single_source_forecast_blocks_paper_entry():
+    target = date(2026, 6, 9)
+    now = datetime(2026, 6, 8, 12, 0, tzinfo=SFO_TZ)
+    allowed, reason = _paper_entry_gate_for_target(
+        target, _forecast(target, source_count=1), None, now=now
+    )
+    assert allowed is False
+    assert reason is not None
+    assert "single-source forecast" in reason
 
 
 def test_same_day_entry_gate_blocks_after_peak_window():

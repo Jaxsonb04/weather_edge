@@ -35,6 +35,11 @@ class StrategyConfig:
     max_spread_fraction_of_cost: float = 0.35
     min_yes_bid: float = 0.01
     min_yes_bid_size: float = 1.0
+    # Entry-liquidity floor mirroring min_yes_bid_size on the exit side. Live
+    # market payloads carry top-of-book ask depth (yes_ask_size_fp); a zero or
+    # thin displayed ask means the assumed entry price cannot actually be
+    # filled, so sizing off it would overstate reachable size and PnL.
+    min_ask_size: float = 1.0
     max_model_market_gap: float = 0.12
     min_posterior_probability: float = 0.06
     fractional_kelly: float = 0.15

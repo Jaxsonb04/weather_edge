@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     label TEXT NOT NULL,
     action TEXT NOT NULL,
     risk_profile TEXT,
+    group_id TEXT,
     side TEXT NOT NULL DEFAULT 'YES',
     contracts REAL NOT NULL,
     yes_ask REAL NOT NULL,
@@ -167,6 +168,23 @@ CREATE TABLE IF NOT EXISTS paper_monitor_snapshots (
 );
 """
 
+# Created after column migrations in init() so they can reference late-added
+# columns (e.g. group_id) on databases that predate them.
+INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_paper_orders_market_side
+    ON paper_orders (target_date, market_ticker, side, status);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_lifecycle
+    ON paper_orders (status, settled_at, closed_at);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_group
+    ON paper_orders (group_id);
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market
+    ON decision_snapshots (target_date, market_ticker, created_at);
+CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
+    ON probability_snapshots (target_date, market_ticker, created_at);
+CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
+    ON paper_monitor_snapshots (order_id, created_at);
+"""
+
 PAPER_ORDER_AUDIT_COLUMNS = {
     "settled_at": "TEXT",
     "settlement_high_f": "REAL",
@@ -191,6 +209,7 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     "limit_edge": "REAL",
     "limit_edge_lcb": "REAL",
     "risk_profile": "TEXT",
+    "group_id": "TEXT",
 }
 
 PROBABILITY_AUDIT_COLUMNS = {
@@ -236,7 +255,19 @@ class PaperStore:
             self.init()
 
     def connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        # Five+ systemd units (scan, monitor, settle, strategy-lab, forecaster)
+        # touch this database concurrently. WAL plus a real busy_timeout lets
+        # readers and a single writer coexist instead of failing fast with
+        # "database is locked" on the default 5s rollback-journal connection.
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+        except sqlite3.DatabaseError:
+            # Non-file databases (e.g. :memory:) ignore WAL; never block init.
+            pass
+        return conn
 
     def init(self) -> None:
         with self.connect() as conn:
@@ -262,6 +293,7 @@ class PaperStore:
             for column, column_type in DECISION_AUDIT_COLUMNS.items():
                 if column not in existing_decision:
                     conn.execute(f"ALTER TABLE decision_snapshots ADD COLUMN {column} {column_type}")
+            conn.executescript(INDEXES)
 
     def record_forecast(self, forecast: ForecastSnapshot) -> int:
         created_at = _now()
@@ -360,16 +392,20 @@ class PaperStore:
         *,
         max_age_minutes: float = 90.0,
     ) -> float | None:
-        """Most recent blended YES probability for a market, or None if stale.
+        """Most recent pure weather-model YES probability, or None if stale.
 
         The paper monitor uses this to veto stop-loss exits that the model
         still expects to win at settlement; a stale snapshot must not veto.
+        This intentionally reads the model_probability column (the weather
+        model alone), not the market-blended posterior, so the veto reflects
+        the model's own conviction rather than the book it is trying to beat.
+        Older rows that predate model_probability fall back to the blend.
         """
 
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT created_at, probability
+                SELECT created_at, COALESCE(model_probability, probability)
                 FROM probability_snapshots
                 WHERE target_date = ? AND market_ticker = ?
                 ORDER BY created_at DESC, id DESC
@@ -496,6 +532,7 @@ class PaperStore:
         risk_profile: str | None = None,
         status: str | None = None,
         entry_mode: str = "market",
+        group_id: str | None = None,
     ) -> int:
         contracts = float(decision.recommended_contracts)
         entry_price = float(decision.limit_price if decision.limit_price is not None else decision.ask)
@@ -519,6 +556,7 @@ class PaperStore:
                 """
                 INSERT INTO paper_orders (
                     created_at, target_date, market_ticker, label, action, risk_profile,
+                    group_id,
                     side, contracts, yes_ask, entry_price, entry_bid, entry_bid_size, entry_ask_size,
                     strike_type, floor_strike, cap_strike, entry_mode,
                     limit_price, limit_fee_per_contract, limit_cost_per_contract, limit_edge, limit_edge_lcb,
@@ -526,7 +564,7 @@ class PaperStore:
                     probability_lcb, edge, edge_lcb, trade_quality_score,
                     expected_profit, status, reasons_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _now(),
@@ -535,6 +573,7 @@ class PaperStore:
                     decision.label,
                     decision.action,
                     profile,
+                    group_id,
                     decision.side,
                     contracts,
                     entry_price,
@@ -891,21 +930,50 @@ class PaperStore:
                     row["id"],
                 )
             )
+        settled = 0
         with self.connect() as conn:
-            conn.executemany(
+            # Resting limit orders that never crossed before this target
+            # resolved can never fill now. Expire them (zero PnL) so they stop
+            # consuming the per-target exposure cap, blocking re-entry, and
+            # showing as perpetual pending exposure on the dashboard.
+            conn.execute(
                 """
                 UPDATE paper_orders
-                SET
+                SET status = 'PAPER_EXPIRED',
                     settled_at = ?,
                     settlement_high_f = ?,
-                    resolved_yes = ?,
-                    realized_pnl = ?,
-                    status = 'PAPER_SETTLED'
-                WHERE id = ?
+                    realized_pnl = 0.0
+                WHERE target_date = ?
+                  AND status = 'PAPER_LIMIT_RESTING'
+                  AND settled_at IS NULL
+                  AND closed_at IS NULL
                 """,
-                updates,
+                (settled_at, settlement_high_f, target_date),
             )
-        return len(updates)
+            for params in updates:
+                # Guard against the settle/monitor race: the monitor (every 2
+                # minutes) can close a position between this read and write. The
+                # status/closed_at guard makes settlement a no-op on a row the
+                # monitor already closed, instead of silently overwriting its
+                # realized_pnl. Count real row changes, not the read size.
+                cursor = conn.execute(
+                    """
+                    UPDATE paper_orders
+                    SET
+                        settled_at = ?,
+                        settlement_high_f = ?,
+                        resolved_yes = ?,
+                        realized_pnl = ?,
+                        status = 'PAPER_SETTLED'
+                    WHERE id = ?
+                      AND status = 'PAPER_FILLED'
+                      AND settled_at IS NULL
+                      AND closed_at IS NULL
+                    """,
+                    params,
+                )
+                settled += cursor.rowcount
+        return settled
 
     def close_paper_order(self, order_id: int, exit_price: float) -> sqlite3.Row:
         if exit_price <= 0 or exit_price >= 1:

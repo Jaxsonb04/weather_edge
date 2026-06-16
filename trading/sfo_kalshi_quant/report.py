@@ -17,7 +17,14 @@ from .forecast import (
     parse_target_date,
 )
 from .kalshi import KalshiPublicClient, load_event_snapshots
-from .models import EnsembleSnapshot, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .models import (
+    EnsembleSnapshot,
+    EventSnapshot,
+    ForecastSnapshot,
+    IntradaySnapshot,
+    TradeDecision,
+    format_event_date_token,
+)
 from .probability import ResidualCalibrator
 from .risk import TradeEvaluator
 from .standard_bins import standard_sfo_bins
@@ -115,7 +122,7 @@ def build_target_report(
         event_title = event.title
         market_available = True
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{target.strftime('%y%b%d').upper()}-PAPER")
+        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
         market_available = False
 
@@ -154,7 +161,29 @@ def calibration_diagnostics(
     config: StrategyConfig,
     min_train: int = 180,
 ) -> dict[str, Any]:
-    result = run_walk_forward_calibration_backtest(outcomes, config=config, min_train=min_train)
+    try:
+        result = run_walk_forward_calibration_backtest(outcomes, config=config, min_train=min_train)
+    except ValueError as exc:
+        # Below min_train the walk-forward backtest raises. Emit an empty but
+        # well-formed calibration block so the whole daily-report artifact still
+        # renders instead of aborting on a thin clean-blend history.
+        return {
+            "source": outcomes[0].model_name if outcomes else "unknown",
+            "n": 0,
+            "available": False,
+            "reason": "insufficient_history",
+            "detail": str(exc),
+            "min_train": min_train,
+            "outcomes": len(outcomes),
+            "brier_score": None,
+            "log_loss": None,
+            "top_bin_accuracy": None,
+            "avg_winning_probability": None,
+            "avg_entropy": None,
+            "buckets": [],
+            "cohorts": [],
+            "warnings": [],
+        }
     buckets = [
         {
             "range": f"{bucket.lower:.1f}-{bucket.upper:.1f}",

@@ -351,7 +351,6 @@ def prepare_dashboard_context():
     model_compare = load_json_optional("model_compare_results.json", {})
     weather_story = load_json_optional("weather_story_data.json", {})
     google_forecast = load_json_optional("google_weather_cache.json", {"available": False})
-    trading_signal = load_json_optional("trading_signal.json", {"available": False})
     forecast_success = load_forecast_success()
     nws_ground_truth = load_nws_ground_truth()
     ab_daily = ab["target_daily_high_next_day"]
@@ -366,7 +365,6 @@ def prepare_dashboard_context():
     const errCounts = {js([int(v) for v in bucket_counts.values])};
     const FORECAST = {js(forecast)};
     let GOOGLE_FORECAST = {js(google_forecast)};
-    const TRADING_SIGNAL = {js(trading_signal)};
     window.CHART_DATA = {js({
         "abDailyHigh": ab_daily.get("chart", {}),
         "dailyHighImportance": model_compare.get(
@@ -375,7 +373,6 @@ def prepare_dashboard_context():
         "weatherStory": weather_story,
         "forecastSuccess": forecast_success,
         "nwsGroundTruth": nws_ground_truth,
-        "tradingSignal": trading_signal,
     })};
     const CHART_DATA = window.CHART_DATA;
 """
@@ -397,6 +394,5 @@ def prepare_dashboard_context():
         "__SPOT_CI_HI__": f"{ab_spot['ci_high']:.2f}",
         "__SPOT_P__": p_value(ab_spot["p_ttest"]),
         "__N_YEARS__": f"{forecast['n_years']}",
-        "__SIGMA__": f"{forecast['lstm_sigma']:.1f}",
     }
     return {"data_vars": data_vars, "replacements": replacements}
