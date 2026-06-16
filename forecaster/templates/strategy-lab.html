@@ -417,6 +417,29 @@
       gap: 0.55rem;
       margin-top: 0.65rem;
     }
+    .provenance-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem 0.55rem;
+      margin-top: 0.65rem;
+    }
+    .provenance-strip:empty { display: none; }
+    .prov-label {
+      font: 600 0.66rem var(--font-mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+    .prov-chip {
+      font: 500 0.72rem var(--font-mono);
+      color: var(--ink-2);
+      background: var(--surface-3);
+      border: 1px solid var(--line-2);
+      border-radius: 999px;
+      padding: 0.16rem 0.55rem;
+    }
+    .prov-chip b { color: var(--ink); font-weight: 600; }
     .strategy-alert {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
@@ -1247,6 +1270,7 @@
           </div>
           <div class="metric-grid" id="statusMetrics" aria-live="polite"></div>
           <p class="warning-line" id="sampleWarning" aria-live="polite">Loading Strategy Lab diagnostics&hellip;</p>
+          <div class="provenance-strip" id="dataProvenance" aria-label="Pipeline data collected this window"></div>
           <div class="alert-strip" id="strategyAlerts" aria-live="polite"></div>
         </section>
       </div>
@@ -1780,7 +1804,26 @@
       $('statusMetrics').innerHTML = statusMetrics.join('');
       const warning = status.sample_warning || data.view_note || data.reason || data.disclaimer || 'Diagnostics loaded.';
       $('sampleWarning').textContent = warning;
+      $('dataProvenance').innerHTML = renderProvenance((data.daily_summary || {}).data_collected || {});
       $('strategyAlerts').innerHTML = renderStrategyAlerts(status.alerts || []);
+    }
+
+    // Cheap credibility: show that every pipeline stage is actually writing
+    // snapshots this window, so a silently-dead timer is visible at a glance.
+    function renderProvenance(counts) {
+      const items = [
+        ['decisions', counts.decision_snapshots],
+        ['probabilities', counts.probability_snapshots],
+        ['forecasts', counts.forecast_snapshots],
+        ['markets', counts.market_snapshots],
+        ['monitor checks', counts.paper_monitor_snapshots],
+        ['paper orders', counts.paper_orders]
+      ].filter(([, value]) => value != null);
+      if (!items.length) return '';
+      const chips = items
+        .map(([label, value]) => `<span class="prov-chip"><b>${htmlEscape(fmt(value))}</b> ${htmlEscape(label)}</span>`)
+        .join('');
+      return `<span class="prov-label">Pipeline this window</span>${chips}`;
     }
 
     function profilesFor(data) {
