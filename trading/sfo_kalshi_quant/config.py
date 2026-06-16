@@ -71,6 +71,23 @@ class StrategyConfig:
     ensemble_weight: float = 0.30
     ensemble_min_members: int = 10
     ensemble_disagreement_lcb_penalty: float = 0.20
+    # Flow-dependent sharpening: blend today's GFS ensemble spread into the
+    # static residual sigma so the model gets sharper on calm, predictable days
+    # and wider on blow-up days. Floored at a fraction of the residual sigma
+    # because GFS ensembles are under-dispersive and must not collapse sigma.
+    ensemble_sigma_weight: float = 0.30
+    ensemble_sigma_floor_frac: float = 0.6
+    # Smoothing bandwidth (F) applied to the empirical residual histogram so a
+    # ~35-sample window stops emitting spurious 0.0 tail bins. 0 disables it
+    # (raw histogram counts).
+    empirical_kernel_bandwidth_f: float = 1.0
+    # When True, the edge/edge_lcb gate is measured against the pure weather
+    # model probability instead of the market-blended posterior, so a liquid
+    # market does not erase the model's disagreement (its edge source) before
+    # the gate sees it. Sizing still uses the blended, LCB-weighted probability.
+    # Off for the trading-intent profiles pending a walk-forward backtest; on
+    # for the research profiles that exist to collect samples.
+    edge_gate_uses_model_probability: bool = False
     intraday_probability_weight: float = 0.65
     intraday_boundary_watch_f: float = 0.35
     intraday_boundary_weight_boost: float = 0.15
@@ -145,6 +162,7 @@ EXPLORATORY_PROFILE_OVERRIDES = {
     "max_source_spread_f": 8.0,
     "cheap_tail_min_probability_lcb": 0.10,
     "cheap_tail_min_edge_lcb": 0.04,
+    "edge_gate_uses_model_probability": True,
 }
 
 
@@ -177,6 +195,7 @@ FAST_FEEDBACK_PROFILE_OVERRIDES = {
     "cheap_tail_min_edge_lcb": 0.02,
     "cheap_tail_max_model_market_gap": 0.12,
     "cheap_tail_min_ensemble_probability": 0.06,
+    "edge_gate_uses_model_probability": True,
 }
 
 

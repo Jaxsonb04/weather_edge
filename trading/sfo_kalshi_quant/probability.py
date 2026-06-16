@@ -22,11 +22,27 @@ def interval_probability_normal(mu: float, sigma: float, lo: float, hi: float) -
     return max(0.0, min(1.0, upper - lower))
 
 
-def interval_probability_empirical(mu: float, residuals: list[float], lo: float, hi: float) -> float:
+def interval_probability_empirical(
+    mu: float,
+    residuals: list[float],
+    lo: float,
+    hi: float,
+    bandwidth: float = 0.0,
+) -> float:
     if not residuals:
         return 0.0
-    hits = sum(1 for residual in residuals if lo <= mu + residual < hi)
-    return hits / len(residuals)
+    if bandwidth <= 0.0:
+        hits = sum(1 for residual in residuals if lo <= mu + residual < hi)
+        return hits / len(residuals)
+    # Kernel-smoothed histogram: each residual contributes a small Gaussian
+    # mass over [lo, hi] instead of a hard 0/1 hit. A ~35-sample window then
+    # stops emitting spurious exact-0.0 tail bins (1/35 discretization), giving
+    # smoother, better-calibrated tail mass. normal_cdf handles +/-inf bounds.
+    total = 0.0
+    for residual in residuals:
+        center = mu + residual
+        total += normal_cdf(hi, center, bandwidth) - normal_cdf(lo, center, bandwidth)
+    return total / len(residuals)
 
 
 @dataclass(frozen=True)
@@ -97,12 +113,29 @@ class ResidualCalibrator:
         if source_spread_f > 3.0:
             sigma *= 1.0 + min(0.35, (source_spread_f - 3.0) * 0.04)
 
+        # Flow-dependent sharpening: blend in today's GFS ensemble spread so the
+        # model sharpens on calm days and widens on volatile ones, instead of
+        # carrying the same static historical sigma every day. Floored at a
+        # fraction of the residual sigma because GFS ensembles are
+        # under-dispersive and must not be trusted to collapse uncertainty.
+        if (
+            ensemble is not None
+            and ensemble.member_count >= self.config.ensemble_min_members
+            and self.config.ensemble_sigma_weight > 0.0
+        ):
+            sigma_ens = max(0.0, ensemble.station_std_high_f)
+            if sigma_ens > 0.0:
+                w = self.config.ensemble_sigma_weight
+                blended = math.sqrt((1.0 - w) * sigma * sigma + w * sigma_ens * sigma_ens)
+                sigma = max(blended, self.config.ensemble_sigma_floor_frac * sigma)
+
         results: dict[str, BucketProbability] = {}
         raw_probs = []
         for market in markets:
             lo, hi = market.continuous_interval()
-            p_cond = interval_probability_empirical(predicted_high_f, cond.residuals, lo, hi)
-            p_glob = interval_probability_empirical(predicted_high_f, glob.residuals, lo, hi)
+            kernel_bw = self.config.empirical_kernel_bandwidth_f
+            p_cond = interval_probability_empirical(predicted_high_f, cond.residuals, lo, hi, kernel_bw)
+            p_glob = interval_probability_empirical(predicted_high_f, glob.residuals, lo, hi, kernel_bw)
             p_emp = (cond_weight * p_cond) + ((1.0 - cond_weight) * p_glob)
             p_norm = interval_probability_normal(predicted_high_f + bias, sigma, lo, hi)
             p = (self.config.empirical_weight * p_emp) + ((1.0 - self.config.empirical_weight) * p_norm)
@@ -165,6 +198,14 @@ class ResidualCalibrator:
             )
             market_probs = {market.ticker: p for market, p, _, _ in conditioned_market}
         effective_n = (cond_weight * cond.n) + ((1.0 - cond_weight) * glob.n)
+        # The lower-confidence band must reflect the precision of the estimate
+        # that actually carries the conditioning, which rests on the conditional
+        # window (cond.n), not the much larger global count that dominates the
+        # blended effective_n. Using effective_n understated the SE ~3x exactly
+        # when the conditional window was sparse, weakening the edge_lcb gate
+        # that is the primary real-money defense. Cap the SE sample size at the
+        # conditional support so the band widens when conditioning is thin.
+        se_sample_n = min(cond.n, effective_n)
         model_risk_penalty = min(0.08, max(0.0, source_spread_f - 3.0) * 0.0075)
         residual_by_ticker = {market.ticker: p for market, p, _, _ in residual_probs}
         for market, model_p, p_emp, p_norm, ensemble_p in weather_probs:
@@ -192,7 +233,7 @@ class ResidualCalibrator:
                     abs(residual_p - ensemble_p) * self.config.ensemble_disagreement_lcb_penalty
                 )
             p = max(0.0, min(1.0, p))
-            standard_error = math.sqrt(max(0.0, p * (1.0 - p)) / max(1.0, effective_n))
+            standard_error = math.sqrt(max(0.0, p * (1.0 - p)) / max(1.0, se_sample_n))
             lower_confidence = max(
                 0.0,
                 p
@@ -297,10 +338,15 @@ def _intraday_probability_model(
 
     local_hour = _local_decimal_hour(intraday.latest_observed_at)
     climatology_upside_f = _climatological_remaining_heat_f(local_hour)
+    # Center on the forecast-based estimates (the model's actual expectation for
+    # the day's high), with observed-so-far as a hard lower bound. The old code
+    # additionally lifted the mean by 0.35*climatology_upside, which stacked a
+    # directional push on top of a right-truncated normal and over-priced
+    # high-temp tails (modeled 8.7% vs realized 1.9%). The remaining-rise
+    # uncertainty now lives only in sigma, not in a mean lift.
     mean_final_high_f = max(observed_high_f, predicted_high_f)
     if intraday.remaining_forecast_high_f is not None:
         mean_final_high_f = max(mean_final_high_f, intraday.remaining_forecast_high_f)
-    mean_final_high_f = max(mean_final_high_f, observed_high_f + 0.35 * climatology_upside_f)
 
     sigma_f = _intraday_sigma_f(local_hour, climatology_upside_f, config)
     probabilities = _conditioned_normal_final_high_probabilities(
@@ -524,9 +570,13 @@ def _market_implied_yes_value(market: MarketBin) -> float | None:
     upper = min(upper_bounds) if upper_bounds else None
     if lower is not None and upper is not None:
         return _clamp_probability((lower + upper) / 2.0)
+    # One-sided book: assume the true value is uniform between the known bound
+    # and the far edge. Ask-only -> midpoint of [0, ask]; bid-only -> midpoint
+    # of [bid, 1] (the previous code returned the bare bid, an asymmetry that
+    # understated the implied probability on bid-only books).
     if upper is not None:
         return _clamp_probability(upper / 2.0)
-    return _clamp_probability(lower or 0.0)
+    return _clamp_probability((lower + 1.0) / 2.0)
 
 
 def _clamp_probability(value: float) -> float:

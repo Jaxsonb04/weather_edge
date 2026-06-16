@@ -93,7 +93,21 @@ class TradeEvaluator:
         cost = ask + fee
         if cost >= 1.0:
             reasons.append(f"all-in cost {cost:.2f} meets or exceeds the $1 contract payout")
-        edge = expected_profit_per_yes_contract(side_probability, ask, fee)
+        # By default the point edge sees the market-blended posterior, which on
+        # a liquid market is dragged toward the book and erases the model's
+        # disagreement (its edge source) before the gate measures it. When
+        # enabled (research profiles), measure the POINT edge against the pure
+        # model probability so liquid-market disagreement is not self-cancelled.
+        # The lower-bound edge gate intentionally stays on the conservative
+        # blended LCB: that is the proven floor against model overconfidence
+        # (the 3/190 failure mode), so a deep-negative-LCB trade is still
+        # blocked even when the model is bullish. Sizing also stays on the
+        # blended, LCB-weighted probability below.
+        if self.config.edge_gate_uses_model_probability and model_probability is not None:
+            edge_probability = model_probability
+        else:
+            edge_probability = side_probability
+        edge = expected_profit_per_yes_contract(edge_probability, ask, fee)
         edge_lcb = side_probability_lcb - cost
 
         if edge < self.config.min_edge:

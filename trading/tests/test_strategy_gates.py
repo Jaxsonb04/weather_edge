@@ -148,6 +148,39 @@ def test_balanced_admits_mid_ladder_cheap_tail_that_conservative_rejects():
     assert balanced.evaluate_market(market, probability, bankroll=350).approved
 
 
+def test_edge_gate_can_measure_point_edge_against_model_probability():
+    # On a liquid market the blended posterior is dragged toward the book, which
+    # erases the model's disagreement before the point-edge gate sees it. With
+    # edge_gate_uses_model_probability the point edge is measured against the
+    # model probability instead, so the disagreement survives; the lower-bound
+    # edge stays on the conservative blended band either way.
+    market = _bin(
+        "66° to 67°",
+        yes_bid=0.14,
+        yes_ask=0.15,
+        yes_bid_size=50.0,
+        yes_ask_size=50.0,
+    )
+    probability = BucketProbability(
+        ticker=market.ticker,
+        label=market.yes_sub_title,
+        probability=0.18,
+        lower_confidence=0.12,
+        empirical_probability=0.18,
+        normal_probability=0.18,
+        effective_n=250,
+        model_probability=0.30,
+        market_probability=0.10,
+    )
+    blended = TradeEvaluator(StrategyConfig(edge_gate_uses_model_probability=False))
+    on_model = TradeEvaluator(StrategyConfig(edge_gate_uses_model_probability=True))
+    d_blended = blended.evaluate_market(market, probability, bankroll=350)
+    d_model = on_model.evaluate_market(market, probability, bankroll=350)
+    assert d_model.edge > d_blended.edge
+    # Lower-bound edge (the safety floor) is unchanged by the flag.
+    assert abs(d_model.edge_lcb - d_blended.edge_lcb) < 1e-9
+
+
 def test_balanced_still_rejects_negative_lower_bound_edge():
     # The loosening must not reopen the proven failure mode: a trade whose
     # lower-confidence edge is negative is still refused under balanced.
