@@ -18,6 +18,7 @@ from forecast_scoring import is_clean_next_day_forecast
 from settlement_calendar import (
     integer_settlement_high_f,
     local_standard_date,
+    today_local_standard,
     utc_window_for_local_standard_date,
 )
 
@@ -609,10 +610,22 @@ def now_sfo():
 
 def target_date(now=None):
     now = now or now_sfo()
-    return (now.date() + timedelta(days=1)).isoformat()
+    # Settlement "tomorrow" on the fixed-PST clock (the NWS/Kalshi report date
+    # the trader settles on), not the civil calendar day. During the DST
+    # 00:00-01:00 window these disagree, and the forecaster-refresh timer fires
+    # at 00:40 every summer night, which previously filed the snapshot under the
+    # wrong settlement day so the trader found no matching blend.
+    return (local_standard_date(now) + timedelta(days=1)).isoformat()
+
+
+def settlement_today_iso(now=None):
+    """Today's NWS/Kalshi settlement date (fixed-PST), as an ISO string."""
+    return today_local_standard(now).isoformat()
 
 
 def local_usage_date(now=None):
+    # Google event-budget window stays on civil local time (billing boundary),
+    # deliberately separate from the settlement clock used for target dates.
     return (now or now_sfo()).date().isoformat()
 
 
@@ -1593,7 +1606,9 @@ def load_nws_observed_high(target_iso):
 
 
 def observed_high_decision(target_iso, sources):
-    if target_iso != local_usage_date():
+    # Same-day check on the settlement clock, so the observed-high lock/floor
+    # applies to the right Kalshi day during the DST 00:00-01:00 window.
+    if target_iso != settlement_today_iso():
         return None
 
     observed = load_nws_observed_high(target_iso)
@@ -1643,7 +1658,7 @@ def observed_high_decision(target_iso, sources):
 
 def blend_targets(summary, primary_target_iso):
     targets = []
-    today = local_usage_date()
+    today = settlement_today_iso()
     for row in summary.get("daily_highs") or []:
         target_iso = row.get("target_date")
         if target_iso in {today, primary_target_iso} and target_iso not in targets:
