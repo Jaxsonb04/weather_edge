@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from sfo_kalshi_quant.cli import build_parser
 from sfo_kalshi_quant.config import StrategyConfig
@@ -147,9 +149,10 @@ def test_with_buy_limit_exposes_limit_math_on_decision_for_reporting():
     assert limited.limit_edge_lcb >= 0.02
 
 
-def test_analyze_entry_mode_defaults_from_environment(monkeypatch):
-    monkeypatch.setenv("PAPER_ENTRY_MODE", "limit")
-
-    args = build_parser().parse_args(["analyze"])
+def test_analyze_entry_mode_defaults_from_environment():
+    # Fixture-free so it runs under both pytest and the no-arg run_tests.py
+    # runner used by verify_project.sh / CI.
+    with patch.dict(os.environ, {"PAPER_ENTRY_MODE": "limit"}):
+        args = build_parser().parse_args(["analyze"])
 
     assert args.paper_entry_mode == "limit"
