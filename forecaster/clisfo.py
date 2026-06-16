@@ -1,0 +1,91 @@
+"""Forecaster-side CLISFO (SFO Daily Climate Report) settlement parser.
+
+The Kalshi market settles on the NWS Daily Climate Report MAXIMUM for San
+Francisco Airport, not on the max of hourly station observations. This module
+fetches and parses that report so the forecaster can score and learn against the
+same ground truth the trader settles on. It mirrors
+``trading/sfo_kalshi_quant/settlement.py`` (the project deliberately duplicates
+small cross-module utilities, like ``settlement_calendar``) and adds
+temperature-section anchoring so a stray "MAXIMUM" elsewhere in the product
+cannot be misread as the daily high.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date, datetime
+from urllib.request import Request, urlopen
+
+
+CLISFO_URL = "https://forecast.weather.gov/product.php?site=MTR&product=CLI&issuedby=SFO&format=txt"
+CLISFO_VERSION_URL = CLISFO_URL + "&version={version}"
+
+
+def fetch_recent_clisfo_settlements(*, timeout: int = 20, versions: int = 10) -> dict[date, int]:
+    """Return settlement-high (F) by report date across recent CLISFO versions."""
+
+    settlements: dict[date, int] = {}
+    for url in _recent_clisfo_urls(versions):
+        try:
+            report_date, max_temperature = _fetch_clisfo_url(url, timeout=timeout)
+        except OSError:
+            continue
+        if report_date is None or max_temperature is None:
+            continue
+        settlements.setdefault(report_date, max_temperature)
+    return settlements
+
+
+def parse_clisfo(text: str) -> tuple[date | None, int | None]:
+    return _parse_report_date(text), _parse_max_temperature(text)
+
+
+def _fetch_clisfo_url(url: str, *, timeout: int) -> tuple[date | None, int | None]:
+    request = Request(url, headers={"user-agent": "sfo-weatheredge-forecaster/0.1"})
+    with urlopen(request, timeout=timeout) as response:
+        text = response.read().decode("utf-8", errors="replace")
+    return parse_clisfo(text)
+
+
+def _recent_clisfo_urls(versions: int) -> list[str]:
+    if versions <= 1:
+        return [CLISFO_URL]
+    return [CLISFO_URL, *[CLISFO_VERSION_URL.format(version=v) for v in range(2, versions + 1)]]
+
+
+def _parse_report_date(text: str) -> date | None:
+    for pattern in (
+        r"CLIMATE SUMMARY FOR\s+(\w+\s+\d{1,2}\s+\d{4})",
+        r"SUMMARY FOR\s+(\w+\s+\d{1,2}\s+\d{4})",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        token = match.group(1).title()
+        for fmt in ("%B %d %Y", "%b %d %Y"):
+            try:
+                return datetime.strptime(token, fmt).date()
+            except ValueError:
+                pass
+    return None
+
+
+def _parse_max_temperature(text: str) -> int | None:
+    # Anchor to the TEMPERATURE (F) section first so an unrelated "MAXIMUM"
+    # elsewhere in the product cannot be mistaken for the daily high. The
+    # canonical row is "MAXIMUM   67   12:29 PM ...".
+    temp_header = re.search(r"TEMPERATURE\s*\(F\)", text, flags=re.IGNORECASE)
+    if temp_header:
+        window = text[temp_header.end(): temp_header.end() + 600]
+        anchored = re.search(r"MAXIMUM\s+(-?\d{1,3})\b", window, flags=re.IGNORECASE)
+        if anchored:
+            return int(anchored.group(1))
+    for pattern in (
+        r"MAXIMUM\s+(\d{2,3})\b",
+        r"MAX TEMP(?:ERATURE)?\s+(\d{2,3})\b",
+        r"\bMAX\s+(\d{2,3})\b",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None

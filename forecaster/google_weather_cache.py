@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from clisfo import fetch_recent_clisfo_settlements
 from forecast_scoring import is_clean_next_day_forecast
 from settlement_calendar import (
     integer_settlement_high_f,
@@ -243,6 +244,15 @@ def hourly_archive_columns(conn):
 def init_archive(conn):
     migrate_daily_archive(conn)
     create_blend_archive_table(conn)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clisfo_settlements (
+            local_date TEXT PRIMARY KEY,
+            max_temperature_f INTEGER,
+            fetched_at TEXT
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS forecast_google_hourly (
@@ -518,13 +528,62 @@ def update_scores_for_table(conn, table_name):
     return scored
 
 
+def refresh_clisfo_settlements(conn):
+    """Fetch recent CLISFO settlement highs and upsert them.
+
+    Network failures must not break scoring, so this swallows fetch errors and
+    leaves the table as-is. Disable with SFO_DISABLE_CLISFO=1.
+    """
+
+    if os.getenv("SFO_DISABLE_CLISFO", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return 0
+    try:
+        settlements = fetch_recent_clisfo_settlements()
+    except Exception:
+        return 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    stored = 0
+    for report_date, max_temperature_f in settlements.items():
+        conn.execute(
+            """
+            INSERT INTO clisfo_settlements (local_date, max_temperature_f, fetched_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(local_date) DO UPDATE SET
+                max_temperature_f = excluded.max_temperature_f,
+                fetched_at = excluded.fetched_at
+            """,
+            (report_date.isoformat(), int(max_temperature_f), now_iso),
+        )
+        stored += 1
+    return stored
+
+
+def clisfo_high_for(conn, target_iso):
+    if not table_exists(conn, "clisfo_settlements"):
+        return None
+    row = conn.execute(
+        "SELECT max_temperature_f FROM clisfo_settlements WHERE local_date = ? AND max_temperature_f IS NOT NULL",
+        (target_iso,),
+    ).fetchone()
+    return integer_settlement_high_f(row[0]) if row else None
+
+
 def update_scores(conn):
+    refresh_clisfo_settlements(conn)
     scored = update_scores_for_table(conn, "forecast_google_daily_high")
     scored += update_scores_for_table(conn, "forecast_blend_daily_high")
     return scored
 
 
 def actual_high_from_ground_truth(conn, target_iso):
+    # Prefer the CLISFO Daily Climate Report MAXIMUM -- the same settlement
+    # truth the trader resolves on -- so forecast skill and the learned source
+    # weights are scored against the real Kalshi outcome, not the max of hourly
+    # observations (which can differ by ~1F and flip an integer-bin membership).
+    clisfo_high = clisfo_high_for(conn, target_iso)
+    if clisfo_high is not None:
+        return clisfo_high
+
     if not table_exists(conn, "nws_daily_high_ground_truth"):
         return None
 
