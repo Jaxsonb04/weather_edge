@@ -1378,6 +1378,11 @@
         <div class="score-row" id="predictionReplayScores"></div>
         <div class="table-wrap replay-table" id="predictionReplayTable"></div>
       </div>
+      <div class="panel chart-card">
+        <h3>Reliability &mdash; stated probability vs observed frequency</h3>
+        <canvas id="reliabilityChart" role="img" aria-label="Calibration reliability: stated probability versus observed frequency against the ideal 45-degree line"></canvas>
+        <p class="sub">Each point is a probability bin (sized by sample count). On the dashed line is perfectly calibrated; below it is overconfident.</p>
+      </div>
       <div class="table-wrap" id="cohortTable"></div>
     </section>
 
@@ -1454,7 +1459,34 @@
       if (!value) return '-';
       const parsed = new Date(value);
       if (Number.isNaN(parsed.getTime())) return String(value);
-      return parsed.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      // Render in the SFO operating timezone with an explicit label so a remote
+      // viewer never reads these against their own local clock. The settlement
+      // day math runs on a fixed-PST clock; America/Los_Angeles only differs in
+      // the 00:00-01:00 DST window and carries the PT label automatically.
+      return parsed.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+        timeZone: 'America/Los_Angeles', timeZoneName: 'short'
+      });
+    };
+    const relativeAge = (iso) => {
+      if (!iso) return '';
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return '';
+      const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.round(mins / 60);
+      if (hrs < 48) return `${hrs}h ago`;
+      return `${Math.round(hrs / 24)}d ago`;
+    };
+    // A money-facing page must make stale data obvious: past the threshold the
+    // freshness reads "STALE", so a frozen AWS pipeline never looks live.
+    const freshnessLabel = (iso) => {
+      if (!iso) return 'not loaded';
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return 'not loaded';
+      const mins = (Date.now() - t) / 60000;
+      const age = relativeAge(iso);
+      return mins > 180 ? `STALE · ${age}` : age;
     };
     const htmlEscape = (value) => String(safe(value, '')).replace(/[&<>"']/g, (char) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -1729,7 +1761,10 @@
       const summaryTotals = (data.daily_summary || {}).totals || {};
       const statusMetrics = [
         metric('Alert level', status.alert_level || 'ok'),
-        metric('Updated', dt(status.last_updated || data.generated_at)),
+        metric('Updated', (() => {
+          const iso = status.last_updated || data.generated_at;
+          return iso ? `${dt(iso)} · ${freshnessLabel(iso)}` : 'not loaded';
+        })()),
         metric('Target', status.latest_target_date || '-', 'target-date'),
         metric('Paper status', status.paper_trading_status || '-'),
         metric('Entry scanner', status.entry_scanner_status || '-'),
@@ -1839,7 +1874,10 @@
       const challenger = block.challenger || {};
       const comparison = block.comparison || {};
       $('winnerPill').textContent = comparison.label || 'Pending';
-      $('winnerPill').className = comparison.winner === 'challenger' ? 'pill good' : 'pill warn';
+      // The pinned-lstm state (active leading, or challenger not yet proven) is
+      // healthy and must read neutral, not as an amber warning. Only an actual
+      // challenger win is highlighted; nothing here is an alarm.
+      $('winnerPill').className = comparison.winner === 'challenger' ? 'pill good' : 'pill';
       $('calibrationRecommendation').textContent = comparison.recommendation || 'Keep AWS execution pinned to lstm.';
       $('calibrationScores').innerHTML = [
         score('lstm sample', active.available ? fmt(active.sample_size) : `0 / ${fmt(active.outcome_count || 0)} rows`),
@@ -1857,6 +1895,11 @@
         { label: 'lstm', data: activeData, backgroundColor: colors.cold },
         { label: 'clean-blend/combined', data: challengerData, backgroundColor: colors.warm }
       ]);
+      // The per-bin reliability curve is the calibration artifact a quant reads
+      // first; the engine already computes it (active.buckets) but nothing drew
+      // it before. Falls back to the challenger buckets if the active model has
+      // none yet.
+      reliabilityChart('reliabilityChart', active.buckets || challenger.buckets || []);
       renderPredictionReplay(data.prediction_replay || {});
     }
 
@@ -1929,7 +1972,15 @@
       $('summaryCounts').innerHTML = [
         countCard(`Realized P&L (${fmt(summary.window_days ?? 7)}d)`, totals.realized_pnl == null ? '-' : signedMoney(totals.realized_pnl), 'realized-pnl', realizedTone),
         countCard('Cumulative P&L', totals.cumulative_realized_pnl == null ? '-' : signedMoney(totals.cumulative_realized_pnl), 'realized-pnl', toneForValue(totals.cumulative_realized_pnl)),
-        countCard('Hit rate', totals.hit_rate == null ? '-' : pct(totals.hit_rate, 1), 'hit-rate', totals.hit_rate == null ? '' : totals.hit_rate >= 0.5 ? 'good' : 'warn'),
+        (() => {
+          // A rate is meaningless without its denominator, and a single-digit
+          // sample must not read as authoritative (the 3/190 lesson). Show the
+          // resolved count and suppress the good/warn tone below 10 resolved.
+          const resolved = (Number(totals.wins) || 0) + (Number(totals.losses) || 0);
+          const label = resolved > 0 ? `Hit rate · ${resolved} resolved` : 'Hit rate';
+          const tone = (totals.hit_rate == null || resolved < 10) ? '' : (totals.hit_rate >= 0.5 ? 'good' : 'warn');
+          return countCard(label, totals.hit_rate == null ? '-' : pct(totals.hit_rate, 1), 'hit-rate', tone);
+        })(),
         countCard('ROI', totals.roi == null ? '-' : pct(totals.roi, 1), 'roi', totals.roi == null ? '' : toneForValue(totals.roi)),
         countCard('Open risk', money(totals.open_risk || 0), 'open-risk'),
         countCard('Forecast MAE', totals.mean_abs_forecast_error_f == null ? '-' : `${fmt(totals.mean_abs_forecast_error_f, 2)}F`)
@@ -2111,6 +2162,12 @@
         score('Brier score', metrics.brier_score == null ? '-' : fmt(metrics.brier_score, 4), 'brier-score'),
         score('Log loss', metrics.log_loss == null ? '-' : fmt(metrics.log_loss, 4), 'log-loss'),
         score('Hit rate', metrics.hit_rate == null ? '-' : pct(metrics.hit_rate, 1), 'hit-rate'),
+        score('Approval rate', metrics.approval_rate == null ? '-' : pct(metrics.approval_rate, 2)),
+        // Avg lower-bound edge of approved signals: the metric that corroborates
+        // the documented negative-LCB failure (approvals with edge_lcb < 0 won
+        // only 3/190). Surfacing it lets a reader verify the gate is honest.
+        score('Avg edge LCB', metrics.avg_edge_lcb == null ? '-' : fmt(metrics.avg_edge_lcb, 3), 'lower-confidence-edge'),
+        score('Approved hit rate', metrics.approved_hit_rate == null ? '-' : pct(metrics.approved_hit_rate, 1), 'hit-rate'),
         score('Approved ROI', metrics.approved_roi == null ? '-' : pct(metrics.approved_roi, 1)),
         score('Approved P&L', metrics.approved_paper_pnl == null ? '-' : money(metrics.approved_paper_pnl)),
         score('Avg quality', metrics.avg_quality == null ? '-' : fmt(metrics.avg_quality, 1), 'quality-score')
@@ -2581,6 +2638,60 @@
       barChart(id, labels, [{ label: valueKey.replaceAll('_', ' '), data: values, backgroundColor: color }]);
     }
 
+    function reliabilityChart(id, buckets) {
+      const canvas = $(id);
+      if (!canvas) return;
+      const rows = (Array.isArray(buckets) ? buckets : []).filter((b) => Number(b.count) > 0);
+      if (!window.Chart || !rows.length) {
+        if (canvas.getContext) {
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#6b7a93';
+          ctx.font = '13px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Collecting calibration samples…', canvas.width / 2, canvas.height / 2);
+        }
+        return;
+      }
+      const points = rows.map((b) => ({
+        x: Number(b.avg_probability) || 0,
+        y: Number(b.observed_frequency) || 0,
+        n: Number(b.count) || 0
+      }));
+      drawChart(id, {
+        data: {
+          datasets: [
+            {
+              type: 'line',
+              label: 'perfectly calibrated',
+              data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+              borderColor: colors.muted,
+              borderDash: [6, 4],
+              pointRadius: 0,
+              fill: false,
+              order: 2
+            },
+            {
+              type: 'scatter',
+              label: 'observed',
+              data: points,
+              backgroundColor: colors.cold,
+              borderColor: colors.coldDeep,
+              pointRadius: points.map((p) => Math.min(13, 3 + Math.sqrt(p.n))),
+              order: 1
+            }
+          ]
+        },
+        options: {
+          ...chartOptions(),
+          scales: {
+            x: { min: 0, max: 1, title: { display: true, text: 'stated probability' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } },
+            y: { min: 0, max: 1, title: { display: true, text: 'observed frequency' }, ticks: { color: colors.muted }, grid: { color: 'rgba(21,35,63,0.07)' } }
+          }
+        }
+      });
+    }
+
     function scatterChart(id, points) {
       const canvas = $(id);
       if (!canvas) return;
@@ -2662,11 +2773,16 @@
         mode: 'paper_research_only',
         live_orders_enabled: false,
         default_profile: 'balanced',
-        generated_at: new Date().toISOString(),
+        // Do NOT stamp the current time here: a failed/stale load must never
+        // render as fresh. Leaving generated_at null makes the "Updated"
+        // readout show that the artifact could not be loaded.
+        generated_at: null,
+        load_failed: true,
         reason: error.message,
         status: {
           active_calibration_source: 'lstm',
           challenger_calibration_source: 'clean-blend/combined',
+          last_updated: null,
           sample_warning: `Strategy Lab artifact could not be loaded: ${error.message}`,
           raw_signal_count: 0,
           pre_resolution_signal_count: 0,
