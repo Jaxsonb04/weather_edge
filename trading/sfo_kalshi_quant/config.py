@@ -118,6 +118,15 @@ class StrategyConfig:
     cheap_tail_min_edge_lcb: float = 0.07
     cheap_tail_max_model_market_gap: float = 0.08
     cheap_tail_min_ensemble_probability: float = 0.08
+    # YES-side case-by-case sizing. YES longshots are fee-dominated (a 0.09 ask
+    # pays ~25% round-trip in fees) and were the live loss source (0/3). When
+    # enabled, YES is sized off the conservative lower bound, shrunk for
+    # estimation error (Baker-McHale: any probability uncertainty puts the
+    # growth-optimal bet strictly below naive Kelly), scaled down by payout, and
+    # hard-capped; plus a positive-lower-bound-edge gate and an EV cushion on
+    # sub-0.15 YES. Off on the conservative baseline.
+    yes_estimation_shrink: bool = False
+    yes_max_position_risk_pct: float = 0.005
 
 
 BALANCED_PROFILE_OVERRIDES = {
@@ -140,6 +149,11 @@ BALANCED_PROFILE_OVERRIDES = {
     # PENDING: validate with a walk-forward, after-fee backtest before treating
     # these as final for real money (see docs/codebase_audit_2026-06-15.md).
     "min_posterior_probability": 0.07,
+    # Raise the cheap-tail scrutiny ceiling so the 0.08-0.12 YES longshots that
+    # lost live actually get tail-grade gating (the old 0.05 ceiling let them
+    # through ungated), and size YES case-by-case off the lower bound.
+    "cheap_tail_max_ask": 0.15,
+    "yes_estimation_shrink": True,
     "cheap_tail_min_yes_bid_size": 10.0,
     "cheap_tail_min_probability_lcb": 0.09,
     "cheap_tail_min_edge_lcb": 0.03,
@@ -192,6 +206,9 @@ EXPLORATORY_PROFILE_OVERRIDES = {
     # deliberately tiny and frozen-notional, so keep the flag explicit here
     # rather than letting it leak in via the spread above.
     "size_against_live_equity": False,
+    # The explorer collects raw/marginal YES to learn whether YES can work; the
+    # strict YES gates belong on balanced (the exploiter), not here.
+    "yes_estimation_shrink": False,
     "min_edge": 0.01,
     "min_edge_lcb": -0.01,
     "max_spread": 0.08,
@@ -218,6 +235,8 @@ FAST_FEEDBACK_PROFILE_OVERRIDES = {
     # Don't inherit balanced's live-equity sizing: fast-feedback stays tiny and
     # frozen-notional so a bad research idea can't compound; keep it explicit.
     "size_against_live_equity": False,
+    # Explorer collects raw/marginal YES; the strict YES gates are balanced-only.
+    "yes_estimation_shrink": False,
     "min_edge": 0.005,
     # Frequency retune (2026-06-16, see docs/trading_engine_diagnosis_2026-06-16.md).
     # The lower-bound-edge floor was the single most-binding gate: it rejected

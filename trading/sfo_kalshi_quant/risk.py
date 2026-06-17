@@ -128,6 +128,15 @@ class TradeEvaluator:
             config=self.config,
         )
         reasons.extend(cheap_tail_reasons)
+        reasons.extend(
+            _yes_tail_rejection_reasons(
+                side=side,
+                cost=cost,
+                probability=side_probability,
+                edge_lcb=edge_lcb,
+                config=self.config,
+            )
+        )
 
         trade_quality_score = _trade_quality_score(
             market,
@@ -154,12 +163,26 @@ class TradeEvaluator:
         kelly *= self.config.fractional_kelly
         risk_budget = bankroll * self.config.max_position_risk_pct
         kelly_budget = bankroll * kelly
-        spend_budget = min(risk_budget, kelly_budget)
+        if kelly_budget <= risk_budget:
+            spend_budget, budget_label = kelly_budget, "kelly_budget"
+        else:
+            spend_budget, budget_label = risk_budget, "position_risk_cap"
+        if self.config.yes_estimation_shrink and side == "YES":
+            # Size YES off the conservative lower bound, shrunk for estimation
+            # error and scaled by payout, then hard-capped at the tighter YES cap.
+            yes_kelly = (
+                kelly_fraction_spent(side_probability_lcb, cost) * self.config.fractional_kelly
+            )
+            yes_spend = bankroll * yes_kelly * _yes_sizing_factor(
+                side_probability, side_probability_lcb, cost, self.config
+            )
+            yes_budget = min(yes_spend, bankroll * self.config.yes_max_position_risk_pct)
+            if yes_budget < spend_budget:
+                spend_budget, budget_label = yes_budget, "yes_estimation_shrink"
 
         contracts = 0.0
         binding_constraint: str | None = None
         if cost > 0 and not reasons:
-            budget_label = "kelly_budget" if kelly_budget < risk_budget else "position_risk_cap"
             allowances: dict[str, float] = {
                 budget_label: spend_budget / cost,
                 "max_contracts_per_market": float(self.config.max_contracts_per_market),
@@ -314,6 +337,57 @@ def _cheap_tail_rejection_reasons(
     if not failures:
         return []
     return [f"1c/2c tail requires exceptional support ({side}): " + ", ".join(failures)]
+
+
+def _yes_tail_rejection_reasons(
+    *,
+    side: str,
+    cost: float,
+    probability: float,
+    edge_lcb: float,
+    config: StrategyConfig,
+) -> list[str]:
+    """Extra YES-side gates: a positive lower-bound edge, and an EV cushion on
+    cheap (fee-dominated) YES. YES longshots were the live loss source; these are
+    a deliberately conservative prior on the side the engine is worst at."""
+
+    if not (config.yes_estimation_shrink and side.upper() == "YES"):
+        return []
+    failures: list[str] = []
+    if edge_lcb <= 0.0:
+        failures.append(f"YES lower-bound edge {edge_lcb:.3f} is not positive")
+    if cost < 0.15 and probability < 2.0 * cost:
+        failures.append(
+            f"cheap YES (cost {cost:.2f}) needs point probability >= 2x cost "
+            f"({2.0 * cost:.2f}); have {probability:.2f}"
+        )
+    return failures
+
+
+def _yes_sizing_factor(
+    probability: float,
+    probability_lcb: float,
+    cost: float,
+    config: StrategyConfig,
+) -> float:
+    """Baker-McHale estimation-error shrink times payout scale for YES tails.
+
+    Any probability uncertainty makes the growth-optimal bet strictly below naive
+    Kelly; the shrink is quadratic in the implied sigma (Baker & McHale, 2013).
+    The payout scale (``cost``) sizes a cheap longshot proportionally smaller -- a
+    5c YES at ~1/20th of an even-money bet -- which is exactly where the
+    favorite-longshot bias and fee drag bite hardest.
+    """
+
+    if cost <= 0 or cost >= 1:
+        return 0.0
+    edge_e = (probability - cost) / cost
+    if edge_e <= 0:
+        return 0.0
+    sigma = max(0.0, (probability - probability_lcb) / config.confidence_z)
+    k_shrink = edge_e**2 / (edge_e**2 + (sigma / (1.0 - cost)) ** 2)
+    payout_scale = cost
+    return k_shrink * payout_scale
 
 
 def _trade_quality_score(
