@@ -2169,7 +2169,10 @@
           const sp = summary.side_performance || {};
           const sideCard = (name) => {
             const b = sp[name] || {};
-            if (!b.trades) return countCard(`${name} side`, 'no trades');
+            // side_performance is an aggregate-only field; in a single-profile
+            // view it is absent, so render nothing rather than a misleading
+            // "no trades" (the real split shows in the All-profiles overview).
+            if (!b.trades) return '';
             const detail = `${b.wins || 0}W/${b.losses || 0}L · ${b.realized_pnl == null ? '-' : signedMoney(b.realized_pnl)}${b.roi == null ? '' : ' (' + pct(b.roi, 1) + ')'}`;
             return countCard(`${name} side`, detail, 'realized-pnl', toneForValue(b.realized_pnl));
           };
