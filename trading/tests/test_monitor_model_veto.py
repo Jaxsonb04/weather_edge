@@ -132,6 +132,80 @@ class _FakeNoStopClient(_FakeKalshiClient):
     cap_strike = None
 
 
+class _FakeNoConvergedClient(_FakeKalshiClient):
+    """A NO favorite whose price has converged up to the model's fair value."""
+
+    yes_bid = 0.04
+    yes_ask = 0.06
+    no_bid = 0.94
+    no_ask = 0.96
+    yes_sub_title = "82° or above"
+    strike_type = "above"
+    floor_strike = 82.0
+    cap_strike = None
+
+
+def test_monitor_edge_based_take_profit_banks_a_converged_no_favorite():
+    """A NO favorite bought at 0.80 whose price has converged to the model's fair
+    value (0.93) is banked. The old %-of-cost take-profit targeted 0.80*1.35=1.08,
+    which is unreachable, so the favorite silently rode to settlement instead."""
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order("2026-06-12", _stopped_no_decision())
+        # Model YES probability 0.07 -> NO fair value 0.93; the live NO bid 0.94
+        # nets just above fair value, so the convergence take-profit fires.
+        store.record_probabilities(
+            "2026-06-12",
+            [_probability("KXHIGHTSFO-TEST-B82.5", 0.07)],
+        )
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoConvergedClient), redirect_stdout(out):
+            code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
+
+        assert code == 0
+        row = store.paper_orders(1)[0]
+        assert row["id"] == order_id
+        assert row["status"] == "PAPER_CLOSED"
+        assert row["realized_pnl"] > 0
+        with store.connect() as conn:
+            action = conn.execute(
+                """
+                SELECT action FROM paper_monitor_snapshots
+                WHERE order_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()[0]
+        assert action == "CLOSE_TAKE_PROFIT"
+
+
+def test_monitor_holds_a_still_mispriced_no_favorite_instead_of_riding_blind():
+    """The same favorite, but the price has NOT yet reached fair value (NO bid
+    0.84 nets below 0.93): hold for further convergence rather than scalp early."""
+
+    class _BelowFairValueClient(_FakeNoConvergedClient):
+        no_bid = 0.84
+        no_ask = 0.86
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order("2026-06-12", _stopped_no_decision())
+        store.record_probabilities(
+            "2026-06-12",
+            [_probability("KXHIGHTSFO-TEST-B82.5", 0.07)],
+        )
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _BelowFairValueClient), redirect_stdout(out):
+            code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
+
+        assert code == 0
+        row = store.paper_orders(1)[0]
+        assert row["status"] == "PAPER_FILLED"  # held open
+
+
 def test_latest_model_probability_returns_fresh_snapshot():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
