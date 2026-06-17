@@ -61,7 +61,14 @@ def build_paper_summary(
             day_profile = _day_profile(day, profile)
             day_profile["opened"] += 1
             day_profile["opened_spend"] += spend
-        if resolved_day in per_day and pnl is not None:
+        # PAPER_EXPIRED rows are resting limits that never filled (realized_pnl
+        # 0.0); they resolved no position, so they must not inflate the settled
+        # count or the hit-rate denominator as phantom non-wins.
+        if (
+            resolved_day in per_day
+            and pnl is not None
+            and order["status"] != "PAPER_EXPIRED"
+        ):
             day = per_day[resolved_day]
             day["realized_pnl"] += pnl
             day["resolved_spend"] += spend
@@ -150,7 +157,14 @@ def build_paper_summary(
         "window_days": days,
         "window_start": window_start.isoformat(),
         "window_end": today.isoformat(),
+        # `bankroll` is the static STARTING notional (kept for backward compat
+        # and aliased as starting_bankroll). `current_equity` is the honest live
+        # number: starting notional + all-time realized PnL. The dashboard should
+        # lead with current_equity so a static $1000 is never mistaken for the
+        # live book value.
         "bankroll": round(cfg.paper_bankroll, 2),
+        "starting_bankroll": round(cfg.paper_bankroll, 2),
+        "current_equity": round(cfg.paper_bankroll + total_realized_all_time, 2),
         "days": days_out,
         "totals": {
             "trades_opened": sum(day["opened"] for day in days_out),

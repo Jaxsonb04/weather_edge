@@ -16,6 +16,14 @@ from .dataset_research import (
     DEFAULT_MIN_MATCHED_ROWS,
     build_dataset_research as build_dataset_research_payload,
 )
+from .exits import (
+    DEFAULT_NO_STOP_LOSS_PCT,
+    DEFAULT_NO_TAKE_PROFIT_PCT,
+    DEFAULT_STOP_LOSS_PCT,
+    DEFAULT_TAKE_PROFIT_PCT,
+    DEFAULT_YES_STOP_LOSS_PCT,
+    DEFAULT_YES_TAKE_PROFIT_PCT,
+)
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .settlement_day import settlement_today
@@ -26,12 +34,8 @@ from .synthetic_blend import build_synthetic_blend_calibration
 ACTIVE_CALIBRATION_SOURCE = "lstm"
 CHALLENGER_CALIBRATION_SOURCE = "clean-blend/combined"
 MIN_CLEAN_WINNER_SAMPLE = 60
-DEFAULT_TAKE_PROFIT_PCT = 40.0
-DEFAULT_STOP_LOSS_PCT = 35.0
-DEFAULT_YES_TAKE_PROFIT_PCT = 50.0
-DEFAULT_YES_STOP_LOSS_PCT = 25.0
-DEFAULT_NO_TAKE_PROFIT_PCT = 35.0
-DEFAULT_NO_STOP_LOSS_PCT = 35.0
+# Exit-threshold percentage defaults are owned by exits.py (the single source
+# shared with the live monitor); imported above.
 DEFAULT_MODEL_VETO_MAX_LOSS_PCT = 60.0
 DEFAULT_MODEL_VETO_BUFFER = 0.08
 PRIMARY_PROFILE = "balanced"

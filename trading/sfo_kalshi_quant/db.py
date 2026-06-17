@@ -1071,7 +1071,15 @@ class PaperStore:
                 f"SELECT * FROM paper_orders {where}",
                 params,
             ).fetchall()
-        realized_rows = [row for row in rows if row["realized_pnl"] is not None]
+        # PAPER_EXPIRED rows are resting limits that never filled; they carry
+        # realized_pnl=0.0 but deployed no capital and resolved no position, so
+        # they must not count as orders, dilute the capital/ROI denominator, or
+        # drag the hit-rate denominator as phantom losses.
+        realized_rows = [
+            row
+            for row in rows
+            if row["realized_pnl"] is not None and row["status"] != "PAPER_EXPIRED"
+        ]
         open_rows = [
             row
             for row in rows
@@ -1100,7 +1108,9 @@ class PaperStore:
             "capital_at_risk": capital,
             "realized_pnl": pnl,
             "roi": pnl / capital if capital else 0.0,
-            "hit_rate": hits / len(realized_rows) if hits else 0.0,
+            # realized_rows is non-empty here (guarded above); a 0-for-N losing
+            # streak must report 0.0, not be masked by an `if hits` short-circuit.
+            "hit_rate": hits / len(realized_rows),
             "avg_edge": sum(float(row["edge"]) for row in realized_rows) / len(realized_rows),
             "open_orders": float(len(open_rows)),
             "open_capital_at_risk": open_capital,
@@ -1123,6 +1133,7 @@ class PaperStore:
                 FROM paper_orders
                 WHERE realized_pnl IS NOT NULL
                   AND status != 'REJECTED'
+                  AND status != 'PAPER_EXPIRED'
                   {profile_filter}
                 """,
                 tuple(profile_params),
@@ -1180,6 +1191,7 @@ class PaperStore:
                 FROM paper_orders
                 WHERE realized_pnl IS NOT NULL
                   AND status != 'REJECTED'
+                  AND status != 'PAPER_EXPIRED'
                   AND COALESCE(risk_profile, 'balanced') = ?
                   AND COALESCE(closed_at, settled_at) >= ?
                 """,
@@ -1191,6 +1203,7 @@ class PaperStore:
                 FROM paper_orders
                 WHERE realized_pnl IS NOT NULL
                   AND status != 'REJECTED'
+                  AND status != 'PAPER_EXPIRED'
                   AND COALESCE(risk_profile, 'balanced') = ?
                   AND COALESCE(closed_at, settled_at) >= ?
                 """,

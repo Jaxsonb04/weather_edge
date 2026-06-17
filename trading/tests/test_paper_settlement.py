@@ -231,6 +231,91 @@ def test_signal_backtest_excludes_post_resolution_rows_by_default():
         assert included["signals"] == 1.0
 
 
+def test_market_summary_excludes_expired_resting_orders_from_outcomes():
+    """A resting limit that expires never deployed capital, so it must NOT count
+    as a settled loss. It should be excluded from the order count, the hit-rate
+    denominator, and the capital-at-risk ROI denominator. Regression for the
+    PAPER_EXPIRED (realized_pnl=0.0) pollution bug."""
+
+    from sfo_kalshi_quant.config import StrategyConfig
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        # A real filled NO favorite that settles as a WIN (high 67 -> 68/69 NO).
+        won = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            label="68° to 69°",
+            action="BUY_NO",
+            side="NO",
+            approved=True,
+            probability=0.80,
+            probability_lcb=0.70,
+            yes_bid=0.20,
+            yes_ask=0.22,
+            spread=0.02,
+            fee_per_contract=0.01,
+            cost_per_contract=0.24,
+            edge=0.56,
+            edge_lcb=0.46,
+            kelly_fraction=0.01,
+            recommended_contracts=10.0,
+            expected_profit=5.6,
+            reasons=[],
+            entry_bid=0.76,
+            entry_ask=0.23,
+        )
+        store.record_paper_order("2026-06-03", won)
+
+        # A resting limit order on a different market that never fills and expires
+        # at settlement (proven resting config from test_limit_orders).
+        limit_trader = PaperTrader(
+            store,
+            StrategyConfig(limit_price_edge_lcb_buffer=0.02),
+            entry_mode="limit",
+        )
+        resting = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B74.5",
+            label="74° to 75°",
+            action="BUY_NO",
+            side="NO",
+            approved=True,
+            probability=0.85,
+            probability_lcb=0.81,
+            yes_bid=0.22,
+            yes_ask=0.24,
+            spread=0.03,
+            fee_per_contract=0.02,
+            cost_per_contract=0.77,
+            edge=0.05,
+            edge_lcb=0.01,
+            kelly_fraction=0.01,
+            recommended_contracts=2.0,
+            expected_profit=0.1,
+            reasons=[],
+            entry_bid=0.73,
+            entry_ask=0.75,
+            entry_bid_size=10.0,
+            entry_ask_size=10.0,
+        )
+        assert limit_trader.place_approved("2026-06-03", [resting])
+
+        store.settle_paper_orders("2026-06-03", 67)
+        rows = {row["market_ticker"]: row for row in store.paper_orders(10)}
+        assert rows["KXHIGHTSFO-TEST-B74.5"]["status"] == "PAPER_EXPIRED"
+        assert rows["KXHIGHTSFO-TEST-B68.5"]["status"] == "PAPER_SETTLED"
+
+        summary = store.market_backtest_summary()
+        # One real outcome (a clean win); the expired non-fill is excluded from
+        # every denominator, so hit-rate is 1.0 and capital is the filled stake
+        # only, not diluted by the resting limit's notional.
+        won_row = rows["KXHIGHTSFO-TEST-B68.5"]
+        expected_capital = float(won_row["contracts"]) * float(won_row["cost_per_contract"])
+        assert summary["orders"] == 1
+        assert summary["hit_rate"] == 1.0
+        assert round(summary["capital_at_risk"], 4) == round(expected_capital, 4)
+
+
 def test_settle_paper_orders_pays_buy_no_when_bucket_resolves_no():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

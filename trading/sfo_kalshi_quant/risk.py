@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from .config import StrategyConfig
+from .config import StrategyConfig, temperature_cohort
 from .fees import (
     expected_profit_per_yes_contract,
     kelly_fraction_spent,
@@ -24,6 +24,7 @@ class TradeEvaluator:
         bankroll: float,
         side: str = "YES",
         source_spread_f: float | None = None,
+        forecast_high_f: float | None = None,
     ) -> TradeDecision:
         side = _normalize_side(side)
         reasons: list[str] = []
@@ -42,6 +43,16 @@ class TradeEvaluator:
 
         if market.status != "active":
             reasons.append(f"market status is {market.status}, not active")
+        if (
+            forecast_high_f is not None
+            and self.config.blocked_forecast_cohorts
+            and temperature_cohort(forecast_high_f) in self.config.blocked_forecast_cohorts
+        ):
+            reasons.append(
+                f"forecast high {forecast_high_f:.1f}F is in the "
+                f"{temperature_cohort(forecast_high_f)} regime, blocked for this "
+                f"profile (forecaster anti-calibrated there pending recalibration)"
+            )
         if (
             source_spread_f is not None
             and source_spread_f > self.config.max_source_spread_f + 1e-9
@@ -128,6 +139,15 @@ class TradeEvaluator:
             config=self.config,
         )
         reasons.extend(cheap_tail_reasons)
+        reasons.extend(
+            _yes_tail_rejection_reasons(
+                side=side,
+                cost=cost,
+                probability=side_probability,
+                edge_lcb=edge_lcb,
+                config=self.config,
+            )
+        )
 
         trade_quality_score = _trade_quality_score(
             market,
@@ -154,18 +174,57 @@ class TradeEvaluator:
         kelly *= self.config.fractional_kelly
         risk_budget = bankroll * self.config.max_position_risk_pct
         kelly_budget = bankroll * kelly
-        spend_budget = min(risk_budget, kelly_budget)
+        if kelly_budget <= risk_budget:
+            spend_budget, budget_label = kelly_budget, "kelly_budget"
+        else:
+            spend_budget, budget_label = risk_budget, "position_risk_cap"
+        if self.config.yes_estimation_shrink and side == "YES":
+            # Size YES off the conservative lower bound, shrunk for estimation
+            # error and scaled by payout, then hard-capped at the tighter YES cap.
+            yes_kelly = (
+                kelly_fraction_spent(side_probability_lcb, cost) * self.config.fractional_kelly
+            )
+            yes_spend = bankroll * yes_kelly * _yes_sizing_factor(
+                side_probability, side_probability_lcb, cost, self.config
+            )
+            yes_budget = min(yes_spend, bankroll * self.config.yes_max_position_risk_pct)
+            if yes_budget < spend_budget:
+                spend_budget, budget_label = yes_budget, "yes_estimation_shrink"
 
         contracts = 0.0
+        binding_constraint: str | None = None
         if cost > 0 and not reasons:
-            contracts = spend_budget / cost
-            contracts = min(contracts, self.config.max_contracts_per_market)
+            allowances: dict[str, float] = {
+                budget_label: spend_budget / cost,
+                "max_contracts_per_market": float(self.config.max_contracts_per_market),
+            }
             if ask_size > 0:
-                contracts = min(contracts, ask_size)
+                allowances["ask_size"] = float(ask_size)
+            # The lever with the fewest allowed contracts is what actually caps
+            # the size; surface it so the dashboard can distinguish a thin-edge
+            # (kelly) throttle from a thin-book (ask_size) or a configured cap.
+            binding_constraint = min(allowances, key=allowances.__getitem__)
+            contracts = min(allowances.values())
             if not self.config.allow_fractional_contracts:
-                contracts = float(int(contracts))
+                # round() instead of int() (truncation) so a raw 1.7 sizes to 2,
+                # not 1; int() systematically under-stakes by 13-41%.
+                contracts = float(
+                    round(contracts) if self.config.round_contracts else int(contracts)
+                )
             if contracts <= 0:
-                reasons.append("risk sizing produced zero contracts")
+                # Distinguish a genuine Kelly-zero (the blended sizing
+                # probability has no positive edge over cost -- the intentional
+                # gate/sizing split on research profiles) from a budget/cap that
+                # merely rounded to zero, so the reason is not misleading.
+                if kelly <= 0.0:
+                    reasons.append(
+                        f"Kelly fraction is zero: blended sizing probability "
+                        f"{sizing_probability:.4f} does not exceed all-in cost "
+                        f"{cost:.4f}; no positive lower-bound edge to size"
+                    )
+                else:
+                    reasons.append("risk sizing produced zero contracts")
+                binding_constraint = None
 
         expected_profit = edge * contracts
         return TradeDecision(
@@ -202,6 +261,7 @@ class TradeEvaluator:
             intraday_probability=intraday_probability,
             remaining_heat_risk=probability.remaining_heat_risk,
             trade_quality_score=trade_quality_score,
+            binding_constraint=binding_constraint,
         )
 
     def rank(
@@ -212,6 +272,7 @@ class TradeEvaluator:
         bankroll: float,
         sides: tuple[str, ...] = ("YES",),
         source_spread_f: float | None = None,
+        forecast_high_f: float | None = None,
     ) -> list[TradeDecision]:
         normalized_sides = tuple(_normalize_side(side) for side in sides)
         decisions = []
@@ -226,6 +287,7 @@ class TradeEvaluator:
                         bankroll=bankroll,
                         side=side,
                         source_spread_f=source_spread_f,
+                        forecast_high_f=forecast_high_f,
                     )
                 )
         decisions.sort(
@@ -288,6 +350,57 @@ def _cheap_tail_rejection_reasons(
     if not failures:
         return []
     return [f"1c/2c tail requires exceptional support ({side}): " + ", ".join(failures)]
+
+
+def _yes_tail_rejection_reasons(
+    *,
+    side: str,
+    cost: float,
+    probability: float,
+    edge_lcb: float,
+    config: StrategyConfig,
+) -> list[str]:
+    """Extra YES-side gates: a positive lower-bound edge, and an EV cushion on
+    cheap (fee-dominated) YES. YES longshots were the live loss source; these are
+    a deliberately conservative prior on the side the engine is worst at."""
+
+    if not (config.yes_estimation_shrink and side.upper() == "YES"):
+        return []
+    failures: list[str] = []
+    if edge_lcb <= 0.0:
+        failures.append(f"YES lower-bound edge {edge_lcb:.3f} is not positive")
+    if cost < 0.15 and probability < 2.0 * cost:
+        failures.append(
+            f"cheap YES (cost {cost:.2f}) needs point probability >= 2x cost "
+            f"({2.0 * cost:.2f}); have {probability:.2f}"
+        )
+    return failures
+
+
+def _yes_sizing_factor(
+    probability: float,
+    probability_lcb: float,
+    cost: float,
+    config: StrategyConfig,
+) -> float:
+    """Baker-McHale estimation-error shrink times payout scale for YES tails.
+
+    Any probability uncertainty makes the growth-optimal bet strictly below naive
+    Kelly; the shrink is quadratic in the implied sigma (Baker & McHale, 2013).
+    The payout scale (``cost``) sizes a cheap longshot proportionally smaller -- a
+    5c YES at ~1/20th of an even-money bet -- which is exactly where the
+    favorite-longshot bias and fee drag bite hardest.
+    """
+
+    if cost <= 0 or cost >= 1:
+        return 0.0
+    edge_e = (probability - cost) / cost
+    if edge_e <= 0:
+        return 0.0
+    sigma = max(0.0, (probability - probability_lcb) / config.confidence_z)
+    k_shrink = edge_e**2 / (edge_e**2 + (sigma / (1.0 - cost)) ** 2)
+    payout_scale = cost
+    return k_shrink * payout_scale
 
 
 def _trade_quality_score(

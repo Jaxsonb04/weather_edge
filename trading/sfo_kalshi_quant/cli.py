@@ -8,7 +8,7 @@ import uuid
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from .backtest import run_walk_forward_calibration_backtest
 from .arbitrage import ArbitrageOpportunity, build_arbitrage_opportunities
@@ -35,6 +35,15 @@ from .datasets import (
     backfill_open_meteo_previous_runs,
 )
 from .ensemble import OpenMeteoEnsembleError, SfoEnsembleClient
+from .exits import (
+    DEFAULT_NO_STOP_LOSS_PCT,
+    DEFAULT_NO_TAKE_PROFIT_PCT,
+    DEFAULT_STOP_LOSS_PCT,
+    DEFAULT_TAKE_PROFIT_PCT,
+    DEFAULT_YES_STOP_LOSS_PCT,
+    DEFAULT_YES_TAKE_PROFIT_PCT,
+    decide_exit,
+)
 from .fees import quadratic_fee_average_per_contract
 from .forecast import (
     ForecastDataError,
@@ -43,7 +52,7 @@ from .forecast import (
     parse_target_date,
     parse_target_dates,
 )
-from .kalshi import KalshiPublicClient, load_event_snapshots
+from .kalshi import KalshiPublicClient, KalshiUnavailable, load_event_snapshots
 from .models import (
     EnsembleSnapshot,
     EventSnapshot,
@@ -69,12 +78,6 @@ from .tail_basket import TailBasket, build_tail_basket
 # settlement-day unification (and one hour earlier in winter, which only
 # tightens the gate).
 DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
-DEFAULT_TAKE_PROFIT_PCT = 40.0
-DEFAULT_STOP_LOSS_PCT = 35.0
-DEFAULT_YES_TAKE_PROFIT_PCT = 50.0
-DEFAULT_YES_STOP_LOSS_PCT = 25.0
-DEFAULT_NO_TAKE_PROFIT_PCT = 35.0
-DEFAULT_NO_STOP_LOSS_PCT = 35.0
 DEFAULT_MODEL_VETO_MAX_LOSS_PCT = 60.0
 DEFAULT_MODEL_VETO_BUFFER = 0.08
 
@@ -865,15 +868,30 @@ def _resolve_analysis_targets(
     return clock_targets, {}
 
 
+def _clamp_sizing_equity(equity: float, starting_bankroll: float) -> float:
+    """Bound compounding to [0.5x, 2x] of the starting notional.
+
+    Kelly sizes off current wealth, so a winning book should stake more and a
+    losing one less. But on a tiny, noisy paper sample an early lucky (or unlucky)
+    run would balloon (or zero) stakes off pure variance. Clamp the equity used
+    for sizing so a drawdown cannot collapse stakes to nothing and a hot streak
+    cannot run away before the sample is meaningful.
+    """
+
+    return min(max(equity, 0.5 * starting_bankroll), 2.0 * starting_bankroll)
+
+
 def _sizing_bankroll(store: PaperStore, config: StrategyConfig, risk_profile: str | None) -> float:
     """Bankroll used for Kelly and the risk caps.
 
     Frozen notional by default (reproducible paper runs); live realized equity
-    when size_against_live_equity is set, so sizing fractions current wealth.
+    (clamped) when size_against_live_equity is set, so sizing fractions current
+    wealth without letting a noisy early sample run away with the stake.
     """
 
     if config.size_against_live_equity:
-        return store.paper_equity(config.paper_bankroll, risk_profile=risk_profile)
+        equity = store.paper_equity(config.paper_bankroll, risk_profile=risk_profile)
+        return _clamp_sizing_equity(equity, config.paper_bankroll)
     return config.paper_bankroll
 
 
@@ -972,6 +990,7 @@ def _analyze_one_target(
         bankroll=paper_bankroll,
         sides=_analysis_sides(args.side),
         source_spread_f=forecast.source_spread_f,
+        forecast_high_f=forecast.predicted_high_f,
     )
     entry_allowed = True
     entry_block_reason = None
@@ -1942,7 +1961,21 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
         stop_loss = stop_loss_pct / 100.0
         try:
             market = client.get_market(row["market_ticker"])
-        except Exception as exc:
+        except HTTPError as exc:
+            # An expired/invalid API key (401/403) must NOT be masked as a benign
+            # transient HOLD -- that would silently leave every open position
+            # unmanaged. Surface it loudly by re-raising; transient 4xx (e.g. a
+            # 404 on a delisted market) stay a per-order FETCH_FAILED.
+            if exc.code in (401, 403):
+                raise
+            reason = f"market fetch failed (HTTP {exc.code})"
+            store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
+            print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
+            continue
+        except (KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+            # Genuinely transient network failures: hold this position and move on.
+            # Non-network exceptions (e.g. a programming bug) now propagate instead
+            # of being swallowed into a phantom HOLD across the whole book.
             reason = f"market fetch failed ({type(exc).__name__})"
             store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
@@ -1979,64 +2012,40 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
         pnl_pct = (net_exit - entry_cost) / entry_cost if entry_cost > 0 else 0.0
         pnl_dollars = contracts * (net_exit - entry_cost)
 
-        reason = None
-        exit_kind = None
-        if pnl_pct >= take_profit:
-            reason = f"{side} take-profit {pnl_pct * 100:.1f}% >= {take_profit_pct:.1f}%"
-            exit_kind = "TAKE_PROFIT"
-        elif pnl_pct <= -stop_loss:
-            reason = f"{side} stop-loss {pnl_pct * 100:.1f}% <= -{stop_loss_pct:.1f}%"
-            exit_kind = "STOP_LOSS"
-            allow_model_veto = side == "NO" and pnl_pct > -model_veto_max_loss
-            # Daily-settlement binaries reprice violently intraday; a pure
-            # price stop converts that noise into realized losses (June 2026
-            # failure mode, and again on 2026-06-10 when a stopped NO position
-            # was on track to win at settlement). If a fresh model snapshot
-            # says holding a NO to settlement still clears entry cost and the
-            # stop exit, hold instead of selling noise. Cheap YES buckets have
-            # been the live failure mode, so YES stop-losses close instead of
-            # using this veto. Once any loss crosses the hard floor, discipline
-            # wins too.
-            model_yes_p = (
-                store.latest_model_probability(
-                    str(row["target_date"]),
-                    str(row["market_ticker"]),
-                )
-                if allow_model_veto
-                else None
-            )
-            if model_yes_p is not None:
-                side_p = model_yes_p if side == "YES" else 1.0 - model_yes_p
-                veto_floor = max(entry_cost, net_exit + args.model_veto_buffer)
-                if side_p >= veto_floor:
-                    veto_reason = (
-                        f"stop-loss vetoed: model p={side_p:.2f} at settlement is above "
-                        f"entry cost {entry_cost:.2f} and net exit {net_exit:.2f} + "
-                        f"{args.model_veto_buffer:.2f} buffer"
-                    )
-                    store.record_monitor_snapshot(
-                        row,
-                        side=side,
-                        action="HOLD_MODEL_VETO",
-                        reason=veto_reason,
-                        market_status=market.status,
-                        live_bid=live_bid,
-                        exit_fee_per_contract=exit_fee,
-                        net_exit_per_contract=net_exit,
-                        unrealized_pnl=pnl_dollars,
-                        unrealized_roi=pnl_pct,
-                    )
-                    print(
-                        f"HOLD order {row['id']} {row['market_ticker']} {side}: {veto_reason}"
-                    )
-                    continue
+        # Edge-based exit decision, shared with the dashboard mirror via exits.py.
+        # Take-profit fires when the net exit reaches the model's fair value for
+        # the side -- always reachable, unlike the old %-of-cost target that
+        # exceeded $1 for any favorite (cost > ~0.74) and silently rode every
+        # favorite to settlement. When no fresh model read exists, the legacy
+        # %-of-cost target is the reachable-for-cheap-positions fallback. The
+        # stop-loss is the reachable downside price floor with the NO-side model
+        # veto preserved (do not sell intraday noise the model still expects to win).
+        model_yes_p = store.latest_model_probability(
+            str(row["target_date"]), str(row["market_ticker"])
+        )
+        model_side_p = (
+            (model_yes_p if side == "YES" else 1.0 - model_yes_p)
+            if model_yes_p is not None
+            else None
+        )
+        signal = decide_exit(
+            side=side,
+            entry_cost=entry_cost,
+            net_exit=net_exit,
+            stop_loss_net=entry_cost * (1.0 - stop_loss),
+            model_side_probability=model_side_p,
+            model_veto_buffer=args.model_veto_buffer,
+            model_veto_max_loss_roi=model_veto_max_loss,
+            legacy_take_profit_net=entry_cost * (1.0 + take_profit),
+            stop_loss_pct=stop_loss_pct,
+        )
 
-        if reason is None:
+        if signal.action in ("HOLD", "HOLD_MODEL_VETO"):
             store.record_monitor_snapshot(
                 row,
                 side=side,
-                action="HOLD",
-                reason="inside exit bands",
+                action=signal.action,
+                reason=signal.reason,
                 market_status=market.status,
                 live_bid=live_bid,
                 exit_fee_per_contract=exit_fee,
@@ -2047,9 +2056,12 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             print(
                 f"HOLD order {row['id']} {row['market_ticker']} {side}: "
                 f"bid={live_bid:.2f} net={net_exit:.2f} unrealized={pnl_pct * 100:.1f}% "
-                f"(${pnl_dollars:.2f})"
+                f"(${pnl_dollars:.2f}); {signal.reason}"
             )
             continue
+
+        reason = signal.reason
+        exit_kind = signal.action  # "TAKE_PROFIT" | "STOP_LOSS"
 
         if args.dry_run:
             store.record_monitor_snapshot(
