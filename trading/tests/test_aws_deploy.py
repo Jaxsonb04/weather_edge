@@ -74,10 +74,10 @@ def test_paper_scan_pins_calibration_source():
     assert "tail-basket" in runner
     assert "--max-worst-case-loss" in runner
     assert "PAPER_RISK_PROFILES=balanced,fast-feedback" in example_env
-    # The deployment example opts into maker/limit entry (commit "Document paper
-    # limit mode for AWS") to capture spread instead of crossing it; the runner
-    # still falls back to market when PAPER_ENTRY_MODE is unset (asserted above).
-    assert "PAPER_ENTRY_MODE=limit" in example_env
+    # The deployment example uses market entry (2026-06-17) so approved scans
+    # fill immediately at the ask instead of resting as limit orders that expire
+    # unfilled; the runner also defaults to market when unset (asserted above).
+    assert "PAPER_ENTRY_MODE=market" in example_env
     assert "SFO_PAPER_SCAN_TAIL_BASKET_ENABLED=1" in example_env
     assert "SFO_TAIL_BASKET_TAIL_STAKE=5" in example_env
     assert "SFO_TAIL_BASKET_CENTER_STAKE=1" in example_env

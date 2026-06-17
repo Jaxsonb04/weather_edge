@@ -460,7 +460,10 @@ def test_fast_feedback_can_collect_raw_edge_trade_rejected_by_balanced_lcb():
     assert not balanced.approved
     assert any("lower-bound edge" in reason for reason in balanced.reasons)
     assert fast.approved
-    assert 1.0 <= fast.recommended_contracts <= 3.0
+    # Meaningful-stake retune (2026-06-17): fast-feedback is no longer pocket
+    # change. It still sizes below balanced (cap 25 contracts) but takes a real
+    # position rather than ~1-3 contracts.
+    assert 1.0 <= fast.recommended_contracts <= 25.0
 
 
 def test_fast_feedback_collects_tiny_trade_on_moderate_source_disagreement():
@@ -496,7 +499,9 @@ def test_fast_feedback_collects_tiny_trade_on_moderate_source_disagreement():
     )
 
     assert decision.approved, decision.reasons
-    assert decision.recommended_contracts <= 3.0
+    # Bounded by fast-feedback's per-position cap (25 contracts), not the old
+    # ~3-contract pocket-change size (2026-06-17 meaningful-stake retune).
+    assert decision.recommended_contracts <= 25.0
 
 
 def test_fast_feedback_blocks_deep_negative_lcb_research_trade():
@@ -689,3 +694,60 @@ def test_balanced_blocks_trade_when_forecast_sources_disagree():
     assert research.approved, research.reasons
     extreme = fast.evaluate_market(market, probability, bankroll=1000, source_spread_f=10.1)
     assert not extreme.approved
+
+
+def test_explorer_profiles_allow_reentry_while_balanced_is_one_and_done():
+    # Frequency retune (2026-06-17): the explorer profiles allow re-entry after a
+    # close (lifetime cap 3) to raise paper-trade turnover; the real-money-intent
+    # profiles stay one-and-done so a closed position is never re-bought.
+    assert strategy_config_for_profile("balanced").max_entries_per_market_side == 1
+    assert strategy_config_for_profile("conservative").max_entries_per_market_side == 1
+    assert strategy_config_for_profile("fast-feedback").max_entries_per_market_side == 3
+    assert strategy_config_for_profile("exploratory").max_entries_per_market_side == 3
+
+
+def test_balanced_regime_gate_and_strict_floors_unchanged_by_frequency_retune():
+    # The frequency work must not touch the real-money-intent profile.
+    balanced = strategy_config_for_profile("balanced")
+    assert balanced.blocked_forecast_cohorts  # warm/hot still blocked
+    assert balanced.min_edge_lcb == 0.0  # proven LCB floor intact
+    assert balanced.max_spread == 0.07
+
+
+def test_balanced_deploys_meaningful_stake_not_pocket_change():
+    # Meaningful-stake retune (2026-06-17): on a $1000 paper book the engine must
+    # deploy a real Kelly-sized fraction per favorite (~5%/position), not the
+    # ~$2-20 pocket change that left the equity inert. Locks the retune against a
+    # regression back to cents.
+    market = _bin(
+        "66° to 67°",
+        yes_bid=0.12,
+        yes_ask=0.14,
+        no_bid=0.86,
+        no_ask=0.88,
+        yes_bid_size=200.0,
+        yes_ask_size=200.0,
+    )
+    probability = BucketProbability(
+        ticker=market.ticker,
+        label=market.yes_sub_title,
+        probability=0.06,
+        lower_confidence=0.045,
+        empirical_probability=0.06,
+        normal_probability=0.06,
+        effective_n=180,
+        residual_probability=0.06,
+        ensemble_probability=0.06,
+        model_probability=0.06,
+        market_probability=0.12,
+    )
+    cfg = strategy_config_for_profile("balanced")
+    decision = TradeEvaluator(cfg).evaluate_market(
+        market, probability, bankroll=1000.0, side="NO"
+    )
+    assert decision.approved, decision.reasons
+    spend = decision.recommended_contracts * decision.cost_per_contract
+    # A meaningful stake, not pocket change.
+    assert spend >= 30.0
+    # ...but still bounded by the per-position risk budget (~$50 = 5% of $1000).
+    assert spend <= 1000 * cfg.max_position_risk_pct + decision.cost_per_contract

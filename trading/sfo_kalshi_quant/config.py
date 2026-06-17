@@ -190,7 +190,14 @@ BALANCED_PROFILE_OVERRIDES = {
     "cheap_tail_min_yes_bid_size": 10.0,
     "cheap_tail_min_probability_lcb": 0.09,
     "cheap_tail_min_edge_lcb": 0.03,
-    "fractional_kelly": 0.10,
+    # Quarter-Kelly (2026-06-17). Kelly is the growth-optimal bet finder: the
+    # per-trade size is fractional_kelly x full_Kelly(edge, cost) x live equity,
+    # so it scales with BOTH the edge and the current bankroll -- never a hardcoded
+    # dollar. 0.10 was so conservative that, combined with the old $20 per-position
+    # cap, the book deployed pocket change on a $1000 bankroll. Quarter-Kelly
+    # (MacLean/Thorp/Ziemba 2010: ~half-Kelly's growth at far lower drawdown) lets
+    # size actually track edge. Conservative base stays at the strict 0.15/1.0.
+    "fractional_kelly": 0.25,
     # Size off a less-pessimistic blend of the point estimate and its lower
     # bound rather than the pure LCB. kelly_lcb_weight=1.0 sized off the LCB
     # alone, which on a typical favorite (point ~0.94 vs LCB ~0.89) cut the Kelly
@@ -201,23 +208,23 @@ BALANCED_PROFILE_OVERRIDES = {
     "kelly_lcb_weight": 0.6,
     # Realistic paper stake (see round_contracts above).
     "round_contracts": True,
-    # Sizing retune (2026-06-16, see docs/trading_engine_diagnosis_2026-06-16.md).
-    # The diagnosis proved the per-position dollar cap, NOT fractional_kelly, was
-    # the binding throttle: Kelly's spend budget on a typical favorite (~$44-67)
-    # is ~9x the old $5 cap, so the bot flat-bet ~1% of full Kelly and profit was
-    # bounded by stake, not edge (combined realized PnL was ~-$0.17 on $1000).
-    # Raising the cap to $20 makes the cap a tail guard rather than the throttle:
-    # effective Kelly fraction k ~= $20/$444 ~= 0.045 (under half-Kelly), which
-    # MacLean/Thorp/Ziemba (2010) put at ~9% of full-Kelly growth with
-    # P(50% drawdown) < 0.1% -- a deliberately safe fraction. Kept to the
-    # balanced (positive-ROI) profile only; fast-feedback stays tiny so a bad
-    # research idea cannot scale a loss. NOTE: validate the +15.6% with a
-    # walk-forward, after-fee backtest before treating this as real-money-ready.
-    "max_position_risk_pct": 0.02,
-    "max_event_risk_pct": 0.04,
-    "max_target_exposure_pct": 0.06,
+    # Meaningful-stake retune (2026-06-17). The point: on a $1000 paper book,
+    # deploying cents/trade makes the equity inert -- it cannot fluctuate or show
+    # whether the edge is real. These caps frame a per-day RISK BUDGET (~12% of
+    # live equity) that Kelly fills opportunistically; on a $1000 equity that is
+    # up to ~$50/position and ~$120/day, fluctuating with edge and compounding off
+    # realized PnL. It is NOT a forced daily spend: on a day with no qualifying
+    # edge (e.g. the warm/hot regime balanced blocks) it correctly deploys little,
+    # which is the EV-right way to protect the bankroll. max_contracts is lifted
+    # to 100 so the DOLLAR caps bind, not an arbitrary contract count.
+    # Paper-realism only; the real-money gate (walk-forward, after-fee, per-cohort
+    # validation over >=30 independent days) is UNCHANGED. Conservative base stays
+    # frozen-notional and strict as the reproducible control.
+    "max_position_risk_pct": 0.05,
+    "max_event_risk_pct": 0.08,
+    "max_target_exposure_pct": 0.12,
     "max_forecast_age_hours": 12.0,
-    "max_contracts_per_market": 40.0,
+    "max_contracts_per_market": 100.0,
     "max_source_spread_f": 7.0,
     # Size against live paper equity (bankroll + realized PnL) so sizing
     # compounds correctly once the bigger caps let PnL accumulate -- Kelly
@@ -231,30 +238,45 @@ BALANCED_PROFILE_OVERRIDES = {
 
 EXPLORATORY_PROFILE_OVERRIDES = {
     # Paper-data collection mode for sparse markets. This should never be used
-    # as a live-money profile; it trades a slightly looser statistical bar for
-    # much smaller size. Structural gates (relative spread, re-entry cap,
-    # target exposure) stay identical to balanced.
+    # as a live-money profile; it trades a looser statistical bar for much
+    # smaller size. Tuned (2026-06-17) to be a genuine SECOND high-volume
+    # collector alongside fast-feedback: same tiny size, but its own paper book
+    # (orders are risk_profile-scoped, so it holds positions independently),
+    # which roughly doubles paper-trade throughput on the same opportunity set.
     **BALANCED_PROFILE_OVERRIDES,
-    # Don't inherit balanced's live-equity sizing: this paper-data profile is
-    # deliberately tiny and frozen-notional, so keep the flag explicit here
-    # rather than letting it leak in via the spread above.
-    "size_against_live_equity": False,
+    # Size off live equity so this book compounds and fluctuates like the others;
+    # its per-day risk budget below keeps it well under balanced.
+    "size_against_live_equity": True,
     # The explorer collects raw/marginal YES to learn whether YES can work; the
     # strict YES gates belong on balanced (the exploiter), not here.
     "yes_estimation_shrink": False,
     # The explorer trades the warm/hot regime to collect the very calibration
     # data recalibration needs; the regime block is balanced-only.
     "blocked_forecast_cohorts": (),
-    "min_edge": 0.01,
-    "min_edge_lcb": -0.01,
-    "max_spread": 0.08,
+    # Frequency retune (2026-06-17): loosen the POINT-edge gates so exploratory
+    # approves more distinct market/sides than before (0.01 -> 0.008 min_edge,
+    # 0.08 -> 0.06 posterior), while staying a notch stricter than fast-feedback
+    # (which remains the most-active profile). The lower-bound-edge floor stays
+    # bounded (-0.05, tighter than fast-feedback's -0.07) -- the LCB floor is the
+    # EV guardrail, so it is loosened far less than the point gates.
+    "min_edge": 0.008,
+    "min_edge_lcb": -0.05,
+    "max_spread": 0.10,
     "max_model_market_gap": 0.20,
-    "min_posterior_probability": 0.08,
-    "fractional_kelly": 0.05,
-    "max_position_risk_pct": 0.003,
-    "max_event_risk_pct": 0.0075,
-    "max_target_exposure_pct": 0.015,
-    "max_contracts_per_market": 5.0,
+    "min_posterior_probability": 0.06,
+    # Meaningful-stake retune (2026-06-17): a real (~quarter-Kelly) research book,
+    # ~$20/position and ~6%/day on a $1000 equity -- no longer pocket change, but
+    # held below balanced so an unproven explorer idea cannot scale a large loss.
+    "fractional_kelly": 0.15,
+    "max_position_risk_pct": 0.02,
+    "max_event_risk_pct": 0.04,
+    "max_target_exposure_pct": 0.06,
+    "max_contracts_per_market": 30.0,
+    # Allow re-entry after a close (lifetime cap 3) instead of one-and-done per
+    # market/side. has_active_paper_entry still blocks concurrent double-holding,
+    # so this only lets a closed position be re-entered when the edge returns --
+    # more turnover, not more simultaneous risk. Explorer-only; balanced stays 1.
+    "max_entries_per_market_side": 3,
     "max_source_spread_f": 8.0,
     "cheap_tail_min_probability_lcb": 0.10,
     "cheap_tail_min_edge_lcb": 0.04,
@@ -268,9 +290,9 @@ FAST_FEEDBACK_PROFILE_OVERRIDES = {
     # while position size is capped hard enough that bad research ideas stay
     # small in the paper journal.
     **BALANCED_PROFILE_OVERRIDES,
-    # Don't inherit balanced's live-equity sizing: fast-feedback stays tiny and
-    # frozen-notional so a bad research idea can't compound; keep it explicit.
-    "size_against_live_equity": False,
+    # Size off live equity so this book compounds and fluctuates; the small
+    # per-day risk budget below keeps a bad research idea bounded.
+    "size_against_live_equity": True,
     # Explorer collects raw/marginal YES; the strict YES gates are balanced-only.
     "yes_estimation_shrink": False,
     # Explorer trades the warm/hot regime to collect calibration data.
@@ -287,18 +309,29 @@ FAST_FEEDBACK_PROFILE_OVERRIDES = {
     # at ~$2/trade. The proven edge_lcb >= 0 floor on balanced/conservative that
     # fenced off the documented 3/190 negative-LCB failure is left UNCHANGED.
     "min_edge_lcb": -0.07,
-    "max_spread": 0.08,
+    # Frequency retune (2026-06-17): widen the spread ceiling a touch so a few
+    # more wider-book markets clear at tiny size, and allow re-entry after a
+    # close (lifetime cap 3, guarded by has_active_paper_entry against concurrent
+    # holding) so a closed position can be re-bought when the edge returns. The
+    # proven edge_lcb >= 0 floor on balanced/conservative is left UNCHANGED.
+    "max_spread": 0.10,
     "max_spread_fraction_of_cost": 0.50,
+    "max_entries_per_market_side": 3,
     "min_yes_bid": 0.01,
     "min_yes_bid_size": 1.0,
     "max_model_market_gap": 0.25,
     "min_posterior_probability": 0.05,
-    "fractional_kelly": 0.02,
+    # Meaningful-stake retune (2026-06-17): the most-active research book, lifted
+    # from ~$2/position pocket change to ~$15/position and ~5%/day on a $1000
+    # equity. Stays the smallest live profile (< exploratory < balanced) so the
+    # loosest gates never scale a large loss; downside per trade is now ~$15, not
+    # ~$2, which is the point -- the book has to move to teach us anything.
+    "fractional_kelly": 0.12,
     "kelly_lcb_weight": 0.5,
-    "max_position_risk_pct": 0.002,
-    "max_event_risk_pct": 0.005,
-    "max_target_exposure_pct": 0.010,
-    "max_contracts_per_market": 3.0,
+    "max_position_risk_pct": 0.015,
+    "max_event_risk_pct": 0.03,
+    "max_target_exposure_pct": 0.05,
+    "max_contracts_per_market": 25.0,
     # Paper feedback can tolerate moderate source disagreement, but not the
     # 2026-06-10/12 regime where models were separated by double-digit F.
     "max_source_spread_f": 10.0,

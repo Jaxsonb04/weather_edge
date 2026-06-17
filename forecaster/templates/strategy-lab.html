@@ -1551,6 +1551,20 @@
           <p class="sub" id="dedupeNote"></p>
         </div>
       </div>
+
+      <h3 id="rescoreTitle" style="margin-top:1.5rem;">Config rescore <span class="sub" id="rescoreProfileLabel" style="font-weight:400;"></span></h3>
+      <p class="sub" id="rescoreNote">Re-scores recorded decisions under each profile's current gates and Kelly sizing, then settles vs the official highs. Unlike the signal replay above, this re-decides from scratch, so it answers: how would today's config have performed on real history?</p>
+      <div class="count-strip" id="rescoreCounts"></div>
+      <div class="grid-2">
+        <div class="panel">
+          <h3>Candidate vs recorded book</h3>
+          <div class="score-row" id="rescoreMetrics"></div>
+        </div>
+        <div class="panel">
+          <h3>By settled-high cohort</h3>
+          <div class="table-wrap" id="rescoreCohortTable"></div>
+        </div>
+      </div>
     </section>
 
     <section id="notes">
@@ -2380,6 +2394,59 @@
       $('dedupeNote').textContent = backtest.dedupe_explanation || 'Repeated 15-minute AWS scans are deduped by default.';
     }
 
+    function renderRescore(data) {
+      const rescore = data.config_rescore || {};
+      const byProfile = rescore.by_profile || {};
+      // Show the active profile tab's rescore; the overview falls back to the
+      // balanced (real-money-intent) book.
+      const profileKey = (data.active_profile && data.active_profile.risk_profile) || 'balanced';
+      const result = byProfile[profileKey] || byProfile.balanced || {};
+      $('rescoreProfileLabel').textContent =
+        rescore.available ? `— ${profileKey} · ${result.counts ? result.counts.independent_days : 0} independent days, ${rescore.settlement_days || 0} settled` : '';
+
+      if (!rescore.available || !result.counts) {
+        $('rescoreCounts').innerHTML = '';
+        $('rescoreMetrics').innerHTML = '';
+        $('rescoreCohortTable').innerHTML = `<p class="empty">${rescore.reason || 'No rescore published yet.'}</p>`;
+        return;
+      }
+
+      const c = result.counts;
+      const cand = result.candidate || {};
+      const rec = result.recorded_config_own_book || {};
+      const ci = cand.roi_ci95_day_clustered;
+      $('rescoreCounts').innerHTML = [
+        countCard('Approved (this config)', `${fmt(c.approved_under_candidate_config)} of ${fmt(c.considered)}`),
+        countCard('Approved (as recorded)', fmt(c.approved_under_recorded_config)),
+        countCard('Settled decisions', `${fmt(c.settled_decisions)} · ${fmt(c.independent_days)} days`),
+        countCard('Candidate equity', cand.ending_equity == null ? '-' : money(cand.ending_equity),
+          'realized-pnl', toneForValue((cand.ending_equity || 0) - (data.daily_summary && data.daily_summary.starting_bankroll || 1000))),
+      ].join('');
+
+      $('rescoreMetrics').innerHTML = [
+        score('Candidate P&L', cand.realized_pnl == null ? '-' : money(cand.realized_pnl), 'realized-pnl'),
+        score('Candidate ROI', cand.roi == null ? '-' : pct(cand.roi, 1)),
+        score('Hit rate', cand.hit_rate_per_trade == null ? '-' : pct(cand.hit_rate_per_trade, 1), 'hit-rate'),
+        score('Log-growth / day', cand.log_growth_per_independent_day == null ? '-' : fmt(cand.log_growth_per_independent_day, 4)),
+        score('ROI CI (day-clustered)', ci ? `${pct(ci[0], 1)} … ${pct(ci[1], 1)}` : 'n/a'),
+        score('Capital at risk', cand.capital_at_risk == null ? '-' : money(cand.capital_at_risk)),
+        score('Recorded P&L', rec.realized_pnl == null ? '-' : money(rec.realized_pnl), 'realized-pnl'),
+        score('Recorded ROI', rec.roi == null ? '-' : pct(rec.roi, 1)),
+      ].join('');
+
+      const cohorts = result.by_cohort || {};
+      const cohortNames = Object.keys(cohorts);
+      if (!cohortNames.length) {
+        $('rescoreCohortTable').innerHTML = '<p class="empty">No settled cohorts under this config yet.</p>';
+        return;
+      }
+      const rows = cohortNames.map((name) => {
+        const b = cohorts[name];
+        return `<tr><td>${htmlEscape(name)}</td><td>${fmt(b.trades)}</td><td>${fmt(b.independent_days)}</td><td>${b.realized_pnl == null ? '-' : money(b.realized_pnl)}</td><td>${b.roi == null ? '-' : pct(b.roi, 1)}</td><td>${b.hit_rate == null ? '-' : pct(b.hit_rate, 1)}</td></tr>`;
+      }).join('');
+      $('rescoreCohortTable').innerHTML = `<table><thead><tr><th>cohort (settled high)</th><th>trades</th><th>days</th><th>P&amp;L</th><th>ROI</th><th>hit</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
     function renderPaper(data) {
       const paper = data.paper_trading || {};
       const summary = paper.summary || {};
@@ -2994,6 +3061,7 @@
       renderCalibration(data);
       renderCohorts(data);
       renderBacktest(data);
+      renderRescore(data);
       renderNotes(data);
     }
 

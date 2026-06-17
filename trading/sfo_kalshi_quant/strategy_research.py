@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .backtest import run_walk_forward_calibration_backtest
+from .backtest_rescore import run_rescore
 from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, SFO_TZ, StrategyConfig, strategy_config_for_profile
 from .db import PaperStore
 from .dataset_research import (
@@ -83,6 +84,7 @@ def build_strategy_research(
     comparison = _comparison_summary(active_calibration, challenger_calibration)
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
     backtest = _signal_backtest_payload(adapter, db_path)
+    config_rescore = _config_rescore_payload(adapter, db_path)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
     daily_summary = _daily_summary_payload(
@@ -122,6 +124,7 @@ def build_strategy_research(
         "prediction_replay": prediction_replay,
         "signal_quality": signal_quality,
         "backtest_summary": backtest,
+        "config_rescore": config_rescore,
         "paper_trading": paper,
         "profiles": profiles,
         "dataset_research": _dataset_research_summary(dataset_research),
@@ -778,6 +781,52 @@ def _prediction_replay_payload(forecaster_root: Path, config: StrategyConfig) ->
         "recent_predictions": payload.get("recent_predictions") or [],
         "warnings": payload.get("warnings") or [],
     }
+
+
+def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:
+    """Re-score recorded decision snapshots under each scanning profile's CURRENT
+    config and settle vs the official integer KSFO highs.
+
+    This is the counterfactual the validation report needed and the signal
+    backtest cannot give: signal_backtest replays the OLD config's recorded
+    approve/size flags, while this re-runs every gate + Kelly sizing from scratch
+    under today's StrategyConfig (see backtest_rescore.run_rescore). Diagnostic
+    only -- never places, closes, or settles orders. Keyed by profile so the card
+    can show the rescore for the active profile tab.
+    """
+
+    empty = {"available": False, "by_profile": {}, "settlement_days": 0, "sampled_snapshots": 0}
+    if not db_path.exists():
+        return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
+    if not _db_table_exists(db_path, "decision_snapshots"):
+        return {**empty, "reason": "decision_snapshots table is not available yet."}
+    try:
+        settlements = adapter.load_ksfo_daily_highs()
+        store = PaperStore(db_path, init=False)
+        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        by_profile: dict[str, Any] = {}
+        for name in ("balanced", "fast-feedback", "exploratory"):
+            cfg = strategy_config_for_profile(name)
+            result = run_rescore(
+                rows,
+                settlements,
+                cfg,
+                bankroll=cfg.paper_bankroll,
+                bootstrap_samples=1000,
+            )
+            # Drop the per-day list from the published artifact: the card shows
+            # rollups (candidate vs recorded, per-side, per-cohort, CI), and
+            # three profiles' worth of daily rows would bloat the JSON.
+            result.pop("per_day", None)
+            by_profile[name] = result
+        return {
+            "available": True,
+            "settlement_days": len(settlements),
+            "sampled_snapshots": len(rows),
+            "by_profile": by_profile,
+        }
+    except Exception as exc:  # diagnostics artifact must not fail the refresh
+        return {**empty, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:

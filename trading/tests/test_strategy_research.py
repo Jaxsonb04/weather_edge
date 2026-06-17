@@ -538,6 +538,34 @@ def test_strategy_research_builds_isolated_profile_views():
         assert b_summary["exit_reasons"]["held_to_settlement"] == 1
 
 
+def test_strategy_research_includes_config_rescore():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        _write_settlement(root, target="2026-06-03", high=70.0)
+
+        store = PaperStore(db_path)
+        decision = _approved_decision()
+        store.record_decisions(
+            "2026-06-03", [decision], event=pre_resolution_event([decision])
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        rescore = payload["config_rescore"]
+        assert rescore["available"] is True, rescore.get("reason")
+        assert set(rescore["by_profile"]) == {"balanced", "fast-feedback", "exploratory"}
+        for result in rescore["by_profile"].values():
+            assert {"counts", "candidate", "recorded_config_own_book"} <= set(result)
+            # per_day is trimmed from the published artifact to keep it lean.
+            assert "per_day" not in result
+
+
 def test_strategy_research_cli_writes_public_artifact():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
