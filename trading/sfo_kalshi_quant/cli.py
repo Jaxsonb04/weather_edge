@@ -990,6 +990,7 @@ def _analyze_one_target(
         bankroll=paper_bankroll,
         sides=_analysis_sides(args.side),
         source_spread_f=forecast.source_spread_f,
+        forecast_high_f=forecast.predicted_high_f,
     )
     entry_allowed = True
     entry_block_reason = None

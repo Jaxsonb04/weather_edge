@@ -10,6 +10,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SFO_TZ = ZoneInfo("America/Los_Angeles")
 SERIES_TICKER = "KXHIGHTSFO"
 
+COLD_COHORT = "cold_below_60f"
+NORMAL_COHORT = "normal_60_69f"
+WARM_COHORT = "warm_70_79f"
+HOT_COHORT = "hot_80f_plus"
+
+
+def temperature_cohort(high_f: float) -> str:
+    """Temperature regime a forecast/settlement high falls in.
+
+    Boundaries match the calibration cohorts in backtest.py so a per-cohort
+    Brier score maps 1:1 to the regime gate. The forecaster is anti-calibrated on
+    warm/hot SFO days (cohort Brier ~0.96, worse than a coin flip), so balanced
+    blocks those cohorts until recalibration earns them back.
+    """
+
+    if high_f < 60.0:
+        return COLD_COHORT
+    if high_f < 70.0:
+        return NORMAL_COHORT
+    if high_f < 80.0:
+        return WARM_COHORT
+    return HOT_COHORT
+
 
 def _default_forecaster_root() -> Path:
     return PROJECT_ROOT.parent / "forecaster"
@@ -127,6 +150,11 @@ class StrategyConfig:
     # sub-0.15 YES. Off on the conservative baseline.
     yes_estimation_shrink: bool = False
     yes_max_position_risk_pct: float = 0.005
+    # Forecast temperature cohorts to block entirely (the forecaster is
+    # anti-calibrated on them). Empty = no regime gate. Tuple of cohort names
+    # from temperature_cohort(). The explorer profiles keep these empty so they
+    # collect the cohort data recalibration needs.
+    blocked_forecast_cohorts: tuple[str, ...] = ()
 
 
 BALANCED_PROFILE_OVERRIDES = {
@@ -154,6 +182,11 @@ BALANCED_PROFILE_OVERRIDES = {
     # through ungated), and size YES case-by-case off the lower bound.
     "cheap_tail_max_ask": 0.15,
     "yes_estimation_shrink": True,
+    # Block the warm/hot regime where the forecaster is anti-calibrated (cohort
+    # Brier ~0.96). Self-clears by editing this list once recalibration earns the
+    # cohort back. Scoped to balanced; the explorer profiles still trade them to
+    # collect the data that recalibration needs.
+    "blocked_forecast_cohorts": (WARM_COHORT, HOT_COHORT),
     "cheap_tail_min_yes_bid_size": 10.0,
     "cheap_tail_min_probability_lcb": 0.09,
     "cheap_tail_min_edge_lcb": 0.03,
@@ -209,6 +242,9 @@ EXPLORATORY_PROFILE_OVERRIDES = {
     # The explorer collects raw/marginal YES to learn whether YES can work; the
     # strict YES gates belong on balanced (the exploiter), not here.
     "yes_estimation_shrink": False,
+    # The explorer trades the warm/hot regime to collect the very calibration
+    # data recalibration needs; the regime block is balanced-only.
+    "blocked_forecast_cohorts": (),
     "min_edge": 0.01,
     "min_edge_lcb": -0.01,
     "max_spread": 0.08,
@@ -237,6 +273,8 @@ FAST_FEEDBACK_PROFILE_OVERRIDES = {
     "size_against_live_equity": False,
     # Explorer collects raw/marginal YES; the strict YES gates are balanced-only.
     "yes_estimation_shrink": False,
+    # Explorer trades the warm/hot regime to collect calibration data.
+    "blocked_forecast_cohorts": (),
     "min_edge": 0.005,
     # Frequency retune (2026-06-16, see docs/trading_engine_diagnosis_2026-06-16.md).
     # The lower-bound-edge floor was the single most-binding gate: it rejected

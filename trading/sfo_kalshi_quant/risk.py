@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from .config import StrategyConfig
+from .config import StrategyConfig, temperature_cohort
 from .fees import (
     expected_profit_per_yes_contract,
     kelly_fraction_spent,
@@ -24,6 +24,7 @@ class TradeEvaluator:
         bankroll: float,
         side: str = "YES",
         source_spread_f: float | None = None,
+        forecast_high_f: float | None = None,
     ) -> TradeDecision:
         side = _normalize_side(side)
         reasons: list[str] = []
@@ -42,6 +43,16 @@ class TradeEvaluator:
 
         if market.status != "active":
             reasons.append(f"market status is {market.status}, not active")
+        if (
+            forecast_high_f is not None
+            and self.config.blocked_forecast_cohorts
+            and temperature_cohort(forecast_high_f) in self.config.blocked_forecast_cohorts
+        ):
+            reasons.append(
+                f"forecast high {forecast_high_f:.1f}F is in the "
+                f"{temperature_cohort(forecast_high_f)} regime, blocked for this "
+                f"profile (forecaster anti-calibrated there pending recalibration)"
+            )
         if (
             source_spread_f is not None
             and source_spread_f > self.config.max_source_spread_f + 1e-9
@@ -261,6 +272,7 @@ class TradeEvaluator:
         bankroll: float,
         sides: tuple[str, ...] = ("YES",),
         source_spread_f: float | None = None,
+        forecast_high_f: float | None = None,
     ) -> list[TradeDecision]:
         normalized_sides = tuple(_normalize_side(side) for side in sides)
         decisions = []
@@ -275,6 +287,7 @@ class TradeEvaluator:
                         bankroll=bankroll,
                         side=side,
                         source_spread_f=source_spread_f,
+                        forecast_high_f=forecast_high_f,
                     )
                 )
         decisions.sort(
