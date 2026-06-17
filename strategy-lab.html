@@ -44,34 +44,35 @@
       --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
       --r: 12px;
     }
-    /* Dark "instrument at night": keeps the cold-blue / warm-amber identity on a
-       deep cool navy instead of inverting to flat black. Only the design tokens
-       change, so every surface, chart, and pill stays coherent. */
+    /* Dark "graphite observatory": a warm neutral-graphite ground with no blue
+       in it, so the cold-blue / warm-amber identity reads as instrument SIGNAL
+       on the scope rather than the wall behind it. Only design tokens change, so
+       every surface, chart, and pill stays coherent. */
     [data-theme="dark"] {
-      --ink: #e7edf7;
-      --ink-2: #aebbd2;
-      --ink-3: #8493ad;
-      --paper: #0b1220;
-      --surface: #131d30;
-      --surface-2: #182336;
-      --surface-3: rgba(255, 255, 255, 0.055);
-      --chip: rgba(255, 255, 255, 0.06);
-      --line: rgba(255, 255, 255, 0.13);
-      --line-2: rgba(255, 255, 255, 0.07);
+      --ink: #ece9e3;
+      --ink-2: #b3b0a8;
+      --ink-3: #84817a;
+      --paper: #0d0d0f;
+      --surface: #17171b;
+      --surface-2: #1f1f25;
+      --surface-3: rgba(255, 255, 255, 0.05);
+      --chip: rgba(255, 255, 255, 0.055);
+      --line: rgba(236, 233, 227, 0.14);
+      --line-2: rgba(236, 233, 227, 0.07);
       --cold: #5aa6ea;
       --cold-deep: #8ec7f6;
-      --cold-soft: rgba(90, 166, 234, 0.17);
+      --cold-soft: rgba(90, 166, 234, 0.16);
       --warm: #eaa052;
       --warm-deep: #f3bd78;
-      --warm-soft: rgba(234, 160, 82, 0.16);
+      --warm-soft: rgba(234, 160, 82, 0.15);
       --mint: #45c79a;
-      --mint-soft: rgba(69, 199, 154, 0.17);
+      --mint-soft: rgba(69, 199, 154, 0.16);
       --danger: #ec6555;
-      --danger-soft: rgba(236, 101, 85, 0.18);
-      --shadow: 0 26px 56px -32px rgba(0, 0, 0, 0.68);
-      --shadow-soft: 0 12px 26px -18px rgba(0, 0, 0, 0.55);
-      --chart-grid: rgba(255, 255, 255, 0.09);
-      --grid-overlay: rgba(255, 255, 255, 0.028);
+      --danger-soft: rgba(236, 101, 85, 0.17);
+      --shadow: 0 26px 56px -32px rgba(0, 0, 0, 0.72);
+      --shadow-soft: 0 12px 26px -18px rgba(0, 0, 0, 0.6);
+      --chart-grid: rgba(236, 233, 227, 0.085);
+      --grid-overlay: rgba(236, 233, 227, 0.03);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html {
@@ -122,13 +123,13 @@
        go dark too or the page's transparent gaps (the masthead) stay light. */
     [data-theme="dark"] body::before {
       background:
-        radial-gradient(105% 62% at 88% -8%, rgba(234, 160, 82, 0.10), transparent 46%),
-        radial-gradient(110% 70% at 0% 4%, rgba(90, 166, 234, 0.13), transparent 44%),
-        linear-gradient(180deg, #0f1828 0%, #0b1220 60%, #0c1422 100%);
+        radial-gradient(105% 62% at 88% -8%, rgba(234, 160, 82, 0.085), transparent 48%),
+        radial-gradient(110% 70% at 0% 4%, rgba(90, 166, 234, 0.10), transparent 46%),
+        linear-gradient(180deg, #141416 0%, #0d0d0f 58%, #100f12 100%);
     }
     /* The sticky section nav and the focus-only skip link carry their own light
        frosted / inverted backgrounds; give them dark equivalents. */
-    [data-theme="dark"] .subnav { background: rgba(12, 19, 33, 0.82); }
+    [data-theme="dark"] .subnav { background: rgba(16, 16, 19, 0.82); }
     [data-theme="dark"] .skip-link { background: var(--surface-2); }
     /* Tone count-cards use a white-based gradient in light mode; invert to the
        dark surface with a faint tone tint so they don't glare in dark mode. */
@@ -140,7 +141,7 @@
     [data-theme="dark"] .profile-tab[aria-selected="true"] {
       background: var(--cold);
       border-color: var(--cold);
-      color: #08111c;
+      color: #0d0d0f;
     }
     .skip-link {
       position: absolute;
@@ -2462,12 +2463,22 @@
       const currentValueDetail = row.current_value == null
         ? 'No marked value yet.'
         : `Marked value ${money(row.current_value)} vs cost ${money(row.initial_cost ?? row.risk)}.`;
-      const profitTarget = row.take_profit_bid == null
-        ? 'Not reachable before 99c'
-        : `${price(row.take_profit_bid)} or higher`;
+      // The take-profit is a forward-looking SELL RULE, not a realized result.
+      // For an expensive favorite the +X% target can exceed the 99c exit ceiling
+      // (1.35*cost > 1.00), so it can never fire intraday and the position rides
+      // to $1.00 settlement -- say so plainly instead of implying every trade
+      // books +35%. See docs/trading_engine_diagnosis_2026-06-16.md (Finding 2/5).
+      const takeProfitReachable = row.take_profit_bid != null;
+      const profitTarget = takeProfitReachable
+        ? `${price(row.take_profit_bid)} or higher`
+        : 'Rides to settlement';
       const stopTarget = row.stop_loss_bid == null ? '-' : `${price(row.stop_loss_bid)} or lower`;
-      const takeProfitDetail = row.take_profit_pct == null ? '' : `+${fmt(row.take_profit_pct, 1)}% ROI after exit fee.`;
-      const stopLossDetail = row.stop_loss_pct == null ? '' : `-${fmt(row.stop_loss_pct, 1)}% ROI after exit fee.`;
+      const takeProfitDetail = row.take_profit_pct == null
+        ? ''
+        : takeProfitReachable
+          ? `Sell rule: exit if the bid reaches +${fmt(row.take_profit_pct, 1)}% after fees.`
+          : `The +${fmt(row.take_profit_pct, 1)}% target sits above the 99c exit ceiling, so this favorite is held to $1.00 settlement.`;
+      const stopLossDetail = row.stop_loss_pct == null ? '' : `Sell rule: exit if the loss reaches -${fmt(row.stop_loss_pct, 1)}% after fees.`;
       return `
         <article class="trade-card ${tone}" data-order-id="${htmlEscape(row.id)}">
           <div class="trade-card-head">
@@ -2481,8 +2492,8 @@
             ${tradeStat('Contracts', fmt(row.contracts, 2), 'contract', null, `${price(row.cost_per_contract)} cost per contract.`)}
           </div>
           <div class="exit-strip">
-            ${exitStat('Take profit bid', profitTarget, 'take-profit', 'good', takeProfitDetail)}
-            ${exitStat('Stop loss bid', stopTarget, 'stop-loss', 'bad', stopLossDetail)}
+            ${exitStat('Take-profit rule', profitTarget, 'take-profit', 'good', takeProfitDetail)}
+            ${exitStat('Stop-loss rule', stopTarget, 'stop-loss', 'bad', stopLossDetail)}
             ${exitStat('Max profit / loss', `${money(row.max_profit)} / -${money(row.max_loss)}`, 'max-profit', null, 'If held to settlement.')}
           </div>
           <div class="trade-grid trade-metrics">
@@ -2574,9 +2585,9 @@
                 <td class="num">${dt(row.time)}</td>
                 <td><b>${htmlEscape(row.label || row.ticker || '-')}</b><br><span class="muted">${htmlEscape(row.target_date || '')}</span></td>
                 <td class="num">${htmlEscape(row.side || '-')}</td>
-                <td>${htmlEscape(row.status || '-')}</td>
-                <td class="num ${toneText(toneForValue(row.realized_pnl))}">${signedMoney(row.realized_pnl)}<br><span class="muted">${signedPct(row.realized_roi)}</span></td>
-                <td class="num">${row.exit_price == null ? '-' : price(row.exit_price)}${row.settlement_high_f == null ? '' : `<br><span class="muted">${fmt(row.settlement_high_f, 1)}F</span>`}</td>
+                <td>${htmlEscape(row.status || '-')}${row.unrealized ? ' <span class="pill warn">open</span>' : ''}</td>
+                <td class="num ${toneText(toneForValue(row.realized_pnl))}">${signedMoney(row.realized_pnl)}<br><span class="muted">${row.unrealized ? 'unrealized mark' : signedPct(row.realized_roi)}</span></td>
+                <td class="num">${row.exit_price == null ? '-' : price(row.exit_price)}${row.unrealized ? '<br><span class="muted">live bid</span>' : (row.settlement_high_f == null ? '' : `<br><span class="muted">${fmt(row.settlement_high_f, 1)}F</span>`)}</td>
                 <td>${htmlEscape(row.note || '-')}</td>
               </tr>
             `).join('')}
@@ -3158,9 +3169,11 @@
     }
 
     function setThemeIcon() {
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', dark ? '#0d0d0f' : '#e7ebf1');
       const button = $('themeToggle');
       if (!button) return;
-      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
       button.textContent = dark ? '☀' : '☾';
       button.setAttribute('aria-pressed', String(dark));
       button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';

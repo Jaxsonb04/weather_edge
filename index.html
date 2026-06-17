@@ -37,8 +37,40 @@
       --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
       --r: 18px;
     }
+    /* Dark "graphite observatory": a warm neutral-graphite ground with zero blue
+       in it, so the cold-blue / warm-amber identity reads as instrument SIGNAL on
+       the scope rather than the wall behind it. Tokens carry most of the flip;
+       a few literal light surfaces get explicit dark overrides further down. */
+    [data-theme="dark"] {
+      --ink: #ece9e3;
+      --ink-2: #b3b0a8;
+      --ink-3: #84817a;
+      --paper: #0d0d0f;
+      --paper-2: #100f12;
+      --surface: #17171b;
+      --surface-2: #1f1f25;
+      --surface-3: rgba(255, 255, 255, 0.05);
+      --chip: rgba(255, 255, 255, 0.055);
+      --line: rgba(236, 233, 227, 0.14);
+      --line-2: rgba(236, 233, 227, 0.07);
+      --cold: #5aa6ea;
+      --cold-deep: #8ec7f6;
+      --cold-soft: rgba(90, 166, 234, 0.16);
+      --warm: #eaa052;
+      --warm-deep: #f3bd78;
+      --warm-soft: rgba(234, 160, 82, 0.15);
+      --mint: #45c79a;
+      --mint-soft: rgba(69, 199, 154, 0.16);
+      --danger: #ec6555;
+      --danger-soft: rgba(236, 101, 85, 0.17);
+      --shadow: 0 26px 56px -32px rgba(0, 0, 0, 0.72);
+      --shadow-soft: 0 12px 26px -18px rgba(0, 0, 0, 0.6);
+      --chart-grid: rgba(236, 233, 227, 0.085);
+      --grid-overlay: rgba(236, 233, 227, 0.03);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html { scroll-behavior: smooth; }
+    html[data-theme="dark"] { color-scheme: dark; }
     body {
       min-height: 100dvh;
       font-family: var(--font-sans);
@@ -73,6 +105,32 @@
         repeating-linear-gradient(90deg, rgba(21, 35, 63, 0.035) 0 1px, transparent 1px 38px);
       -webkit-mask-image: radial-gradient(130% 100% at 50% 30%, #000 35%, transparent 86%);
               mask-image: radial-gradient(130% 100% at 50% 30%, #000 35%, transparent 86%);
+    }
+    /* ---------- Dark "graphite observatory" overrides ---------- */
+    /* The atmosphere is a full-viewport base, so its light linear-gradient must go
+       graphite too; the two radial glows stay (lower alpha) so the warm sun /
+       cool basin read as faint signal against the wall, not part of it. */
+    [data-theme="dark"] body::before {
+      background:
+        radial-gradient(120% 80% at 88% -8%, rgba(234, 160, 82, 0.085), transparent 46%),
+        radial-gradient(120% 90% at 4% 108%, rgba(90, 166, 234, 0.10), transparent 52%),
+        linear-gradient(180deg, #141416 0%, #0d0d0f 58%, #100f12 100%);
+    }
+    /* --ink flips to a light tone in dark mode, so the literal `color: #fff` on
+       these inverted pills would vanish; use --paper (dark) text to keep the
+       light-fill + dark-text inversion that mirrors light mode. */
+    [data-theme="dark"] .skip-link,
+    [data-theme="dark"] .cta { color: var(--paper); }
+    /* Frosted light panels use literal white rgba fills; on graphite they glare,
+       so swap to faint light-on-dark glass while borders keep using tokens. */
+    [data-theme="dark"] .eyebrow,
+    [data-theme="dark"] .chip,
+    [data-theme="dark"] .confidence-chip { background: var(--chip); }
+    [data-theme="dark"] .instrument { border-color: var(--line); }
+    [data-theme="dark"] .segment { background: var(--surface-3); }
+    [data-theme="dark"] .rangebar-band {
+      background: rgba(255, 255, 255, 0.10);
+      border-color: rgba(255, 255, 255, 0.32);
     }
     .skip-link {
       position: absolute; left: 1rem; top: -4rem; z-index: 20;
@@ -321,6 +379,25 @@
     }
     footer a { color: var(--cold-deep); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
+    /* Theme toggle */
+    .icon-button {
+      min-height: 2.25rem;
+      min-width: 2.25rem;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--ink-2);
+      cursor: pointer;
+      font-size: 0.98rem;
+      line-height: 1;
+      transition-property: background-color, border-color, color, transform;
+      transition-duration: 150ms;
+      transition-timing-function: ease;
+    }
+    .icon-button:hover { background: var(--surface-2); color: var(--ink); }
+    .icon-button:active { transform: scale(0.93); }
     @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes tempSwap { 0% { opacity: 0.25; transform: translateY(12px) scale(0.96); } 70% { transform: translateY(-2px) scale(1.01); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
@@ -349,6 +426,18 @@
       *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
     }
   </style>
+  <script>
+    // Set the theme before first paint to avoid a flash: a saved choice wins,
+    // otherwise follow the OS preference.
+    (function () {
+      try {
+        var saved = localStorage.getItem('weatheredge-theme');
+        var dark = saved ? saved === 'dark'
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.setAttribute('data-theme', 'dark');
+      } catch (e) { /* storage blocked: stay light */ }
+    })();
+  </script>
 </head>
 <body>
   <a class="skip-link" href="#forecast">Skip to forecast</a>
@@ -361,6 +450,7 @@
         <a href="details.html">Methodology</a>
         <a href="details.html#track-record">Track record</a>
         <a href="strategy-lab.html">Strategy Lab</a>
+        <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
       </nav>
     </header>
 
@@ -704,6 +794,33 @@
     render('tomorrow');
     refreshGoogleForecastCache().then(() => render(selectedState.day));
     setInterval(pollGoogleRefreshCache, 60000);
+  </script>
+  <script>
+    // Theme toggle: persists to the shared 'weatheredge-theme' key so the choice
+    // carries across pages, and keeps the browser chrome color in sync.
+    (function () {
+      function setThemeIcon() {
+        var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#0d0d0f' : '#e7ebf1');
+        var button = document.getElementById('themeToggle');
+        if (!button) return;
+        button.textContent = dark ? '☀' : '☾';
+        button.setAttribute('aria-pressed', String(dark));
+        button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+      }
+      var button = document.getElementById('themeToggle');
+      if (button) {
+        button.addEventListener('click', function () {
+          var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+          if (dark) document.documentElement.removeAttribute('data-theme');
+          else document.documentElement.setAttribute('data-theme', 'dark');
+          try { localStorage.setItem('weatheredge-theme', dark ? 'light' : 'dark'); } catch (e) { /* ignore */ }
+          setThemeIcon();
+        });
+      }
+      setThemeIcon();
+    })();
   </script>
 </body>
 </html>
