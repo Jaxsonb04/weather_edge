@@ -157,15 +157,40 @@ class TradeEvaluator:
         spend_budget = min(risk_budget, kelly_budget)
 
         contracts = 0.0
+        binding_constraint: str | None = None
         if cost > 0 and not reasons:
-            contracts = spend_budget / cost
-            contracts = min(contracts, self.config.max_contracts_per_market)
+            budget_label = "kelly_budget" if kelly_budget < risk_budget else "position_risk_cap"
+            allowances: dict[str, float] = {
+                budget_label: spend_budget / cost,
+                "max_contracts_per_market": float(self.config.max_contracts_per_market),
+            }
             if ask_size > 0:
-                contracts = min(contracts, ask_size)
+                allowances["ask_size"] = float(ask_size)
+            # The lever with the fewest allowed contracts is what actually caps
+            # the size; surface it so the dashboard can distinguish a thin-edge
+            # (kelly) throttle from a thin-book (ask_size) or a configured cap.
+            binding_constraint = min(allowances, key=allowances.__getitem__)
+            contracts = min(allowances.values())
             if not self.config.allow_fractional_contracts:
-                contracts = float(int(contracts))
+                # round() instead of int() (truncation) so a raw 1.7 sizes to 2,
+                # not 1; int() systematically under-stakes by 13-41%.
+                contracts = float(
+                    round(contracts) if self.config.round_contracts else int(contracts)
+                )
             if contracts <= 0:
-                reasons.append("risk sizing produced zero contracts")
+                # Distinguish a genuine Kelly-zero (the blended sizing
+                # probability has no positive edge over cost -- the intentional
+                # gate/sizing split on research profiles) from a budget/cap that
+                # merely rounded to zero, so the reason is not misleading.
+                if kelly <= 0.0:
+                    reasons.append(
+                        f"Kelly fraction is zero: blended sizing probability "
+                        f"{sizing_probability:.4f} does not exceed all-in cost "
+                        f"{cost:.4f}; no positive lower-bound edge to size"
+                    )
+                else:
+                    reasons.append("risk sizing produced zero contracts")
+                binding_constraint = None
 
         expected_profit = edge * contracts
         return TradeDecision(
@@ -202,6 +227,7 @@ class TradeEvaluator:
             intraday_probability=intraday_probability,
             remaining_heat_risk=probability.remaining_heat_risk,
             trade_quality_score=trade_quality_score,
+            binding_constraint=binding_constraint,
         )
 
     def rank(

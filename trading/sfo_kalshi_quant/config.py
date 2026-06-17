@@ -56,6 +56,12 @@ class StrategyConfig:
     max_contracts_per_market: float = 25.0
     max_forecast_age_hours: float = 30.0
     allow_fractional_contracts: bool = False
+    # Round integer contracts to nearest instead of truncating with int().
+    # Truncation systematically under-sizes (raw 1.7 -> 1 is a 41% stake cut),
+    # making the paper journal a pessimistic record of what would actually be
+    # risked. Off on the frozen conservative baseline for reproducible tests; on
+    # for the research profiles where realistic stake matters.
+    round_contracts: bool = False
     taker_fee_rate: float = 0.07
     maker_fee_rate: float = 0.0175
     fee_multiplier: float = 1.0
@@ -138,7 +144,16 @@ BALANCED_PROFILE_OVERRIDES = {
     "cheap_tail_min_probability_lcb": 0.09,
     "cheap_tail_min_edge_lcb": 0.03,
     "fractional_kelly": 0.10,
-    "kelly_lcb_weight": 1.0,
+    # Size off a less-pessimistic blend of the point estimate and its lower
+    # bound rather than the pure LCB. kelly_lcb_weight=1.0 sized off the LCB
+    # alone, which on a typical favorite (point ~0.94 vs LCB ~0.89) cut the Kelly
+    # spend ~4x AND double-counted the same uncertainty already enforced by the
+    # edge_lcb>=0 approval gate. 0.6 keeps a conservative tilt toward the lower
+    # bound while letting size track the actual edge. Held to the balanced
+    # (real-trading-intent) profile; conservative base stays at the strict 1.0.
+    "kelly_lcb_weight": 0.6,
+    # Realistic paper stake (see round_contracts above).
+    "round_contracts": True,
     # Sizing retune (2026-06-16, see docs/trading_engine_diagnosis_2026-06-16.md).
     # The diagnosis proved the per-position dollar cap, NOT fractional_kelly, was
     # the binding throttle: Kelly's spend budget on a typical favorite (~$44-67)

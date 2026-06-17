@@ -326,6 +326,11 @@ class TradeDecision:
     limit_cost_per_contract: float | None = None
     limit_edge: float | None = None
     limit_edge_lcb: float | None = None
+    # Diagnostic: which lever actually bounded the recommended size
+    # (kelly_budget / position_risk_cap / max_contracts_per_market / ask_size).
+    # Lets the dashboard explain why a position is small -- thin edge (kelly),
+    # thin book (ask_size), or a configured cap -- rather than guessing.
+    binding_constraint: str | None = None
 
     @property
     def bid(self) -> float:
