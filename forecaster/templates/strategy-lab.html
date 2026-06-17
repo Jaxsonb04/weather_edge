@@ -1926,7 +1926,8 @@
         metric('Target', status.latest_target_date || '-', 'target-date'),
         metric('Paper status', status.paper_trading_status || '-'),
         metric('Entry scanner', status.entry_scanner_status || '-'),
-        metric('Bankroll', status.bankroll == null ? '-' : money(status.bankroll), 'bankroll'),
+        metric('Starting bankroll', status.bankroll == null ? '-' : money(status.bankroll), 'bankroll'),
+        metric('Current equity', (data.daily_summary || {}).current_equity == null ? '-' : money((data.daily_summary || {}).current_equity)),
         metric('Per-target cap', status.target_exposure_cap == null ? '-' : money(status.target_exposure_cap), 'target-exposure-cap'),
         metric('Open risk', money(status.open_risk || 0), 'open-risk'),
         metric('7d realized', summaryTotals.realized_pnl == null ? '-' : signedMoney(summaryTotals.realized_pnl), 'realized-pnl')
@@ -2160,7 +2161,29 @@
         })(),
         countCard('ROI', totals.roi == null ? '-' : pct(totals.roi, 1), 'roi', totals.roi == null ? '' : toneForValue(totals.roi)),
         countCard('Open risk', money(totals.open_risk || 0), 'open-risk'),
-        countCard('Forecast MAE', totals.mean_abs_forecast_error_f == null ? '-' : `${fmt(totals.mean_abs_forecast_error_f, 2)}F`)
+        countCard('Current equity', summary.current_equity == null ? '-' : money(summary.current_equity), 'realized-pnl', toneForValue((summary.current_equity || 0) - (summary.starting_bankroll || 0))),
+        countCard('Forecast MAE', totals.mean_abs_forecast_error_f == null ? '-' : `${fmt(totals.mean_abs_forecast_error_f, 2)}F`),
+        (() => {
+          // Surface the structural YES-vs-NO gap: the book makes money on NO
+          // favorites and loses on cheap YES longshots.
+          const sp = summary.side_performance || {};
+          const sideCard = (name) => {
+            const b = sp[name] || {};
+            if (!b.trades) return countCard(`${name} side`, 'no trades');
+            const detail = `${b.wins || 0}W/${b.losses || 0}L · ${b.realized_pnl == null ? '-' : signedMoney(b.realized_pnl)}${b.roi == null ? '' : ' (' + pct(b.roi, 1) + ')'}`;
+            return countCard(`${name} side`, detail, 'realized-pnl', toneForValue(b.realized_pnl));
+          };
+          return sideCard('NO') + sideCard('YES');
+        })(),
+        (() => {
+          // How positions actually leave the book -- the headline check on the
+          // reachable-exit fix (favorites no longer only ever hold to settlement).
+          const ex = summary.exit_reasons || {};
+          const total = (ex.held_to_settlement || 0) + (ex.closed_take_profit || 0) + (ex.closed_stop_loss || 0) + (ex.expired_unfilled || 0);
+          if (!total) return '';
+          const detail = `${ex.held_to_settlement || 0} settle · ${ex.closed_take_profit || 0} TP · ${ex.closed_stop_loss || 0} SL · ${ex.expired_unfilled || 0} exp`;
+          return countCard('Exit reasons', detail);
+        })()
       ].join('');
 
       $('profileSummary').innerHTML = profileCardsHtml(
