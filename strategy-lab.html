@@ -51,7 +51,7 @@
     [data-theme="dark"] {
       --ink: #ece9e3;
       --ink-2: #b3b0a8;
-      --ink-3: #84817a;
+      --ink-3: #9a968d;
       --paper: #0d0d0f;
       --surface: #17171b;
       --surface-2: #1f1f25;
@@ -143,6 +143,20 @@
       border-color: var(--cold);
       color: #0d0d0f;
     }
+    /* Tone text colours (good/bad/warn/balanced) are hardcoded dark values tuned
+       for light-mode pills; on the graphite ground they drop to ~2:1, so remap
+       them to the bright dark-theme tokens to keep winners, losers, and warnings
+       legible (WCAG AA). The pill/soft backgrounds already adapt via tokens. */
+    [data-theme="dark"] .pill.good,
+    [data-theme="dark"] .good-text,
+    [data-theme="dark"] .paper-state.good .paper-state-value b,
+    [data-theme="dark"] .trade-stat b.good-text,
+    [data-theme="dark"] .exit-stat b.good-text,
+    [data-theme="dark"] .rule-tile b.good-text { color: var(--mint); }
+    [data-theme="dark"] .pill.bad,
+    [data-theme="dark"] .access-error { color: var(--danger); }
+    [data-theme="dark"] .pill.profile-balanced { color: var(--cold-deep); }
+    [data-theme="dark"] .warning-line { color: var(--warm-deep); }
     .skip-link {
       position: absolute;
       left: 1rem;

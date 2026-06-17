@@ -50,7 +50,7 @@
     [data-theme="dark"] {
       --ink: #ece9e3;
       --ink-2: #b3b0a8;
-      --ink-3: #84817a;
+      --ink-3: #9a968d;
       --paper: #0d0d0f;
       --surface: #17171b;
       --surface-2: #1f1f25;
@@ -137,8 +137,13 @@
     /* In dark mode --ink is a light tone, so the white text on var(--ink) fills
        (.skip-link and the global button) would vanish — flip the text to --paper
        to mirror the light-mode inversion. */
+    /* Only the default (var(--ink)-background) buttons need dark text in dark
+       mode. forecast-tab and icon-button reset their own background/colour from
+       tokens, so excluding them keeps their text readable -- without :not(),
+       this blanket rule painted the Today/Tomorrow tabs and the theme toggle
+       glyph #0d0d0f-on-dark (invisible). */
     [data-theme="dark"] .skip-link,
-    [data-theme="dark"] button { color: var(--paper); }
+    [data-theme="dark"] button:not(.forecast-tab):not(.icon-button) { color: var(--paper); }
     a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
       outline: 2.5px solid var(--cold); outline-offset: 2px; border-radius: 6px;
     }
@@ -715,33 +720,35 @@
     const themedChart = (ctx, config) => {
       const chart = new Chart(ctx, config);
       charts.push(chart);
-      applyChartTheme(chart);
       return chart;
     };
-    // Pull tick text + gridline colors from CSS vars onto a chart's scales.
-    function applyChartTheme(chart) {
+    // Re-apply token colors to every chart and repaint (used on theme toggle).
+    //
+    // IMPORTANT: mutate chart.config.options (the raw input config), never
+    // chart.options (the resolved-options PROXY in Chart.js v4). Reassigning a
+    // proxy sub-object onto itself there recurses through Chart's internal `set`
+    // trap and throws "Maximum call stack size exceeded" -- the bug that
+    // previously killed every chart after the first on initial load. Charts get
+    // their starting colors from Chart.defaults plus the cssVar() grid colors
+    // baked into each config at build time, so this runs only on a theme toggle.
+    function retintCharts() {
       const tick = cssVar('--ink-3', '#5c6a83');
       const grid = cssVar('--chart-grid', 'rgba(21, 35, 63, 0.08)');
-      const scales = chart.options?.scales || {};
-      for (const key of Object.keys(scales)) {
-        const scale = scales[key];
-        if (!scale) continue;
-        scale.ticks = scale.ticks || {};
-        scale.ticks.color = tick;
-        if (scale.title) scale.title.color = tick;
-        // Respect axes that intentionally hide their grid (grid.display === false).
-        if (scale.grid && scale.grid.display !== false) scale.grid.color = grid;
-        if (scale.border) scale.border.color = grid;
-      }
-    }
-    // Re-apply token colors to every chart and repaint (used on theme toggle).
-    function retintCharts() {
       if (window.Chart) {
-        Chart.defaults.color = cssVar('--ink-3', '#5c6a83');
-        Chart.defaults.borderColor = cssVar('--chart-grid', 'rgba(21, 35, 63, 0.08)');
+        Chart.defaults.color = tick;
+        Chart.defaults.borderColor = grid;
       }
       for (const chart of charts) {
-        applyChartTheme(chart);
+        const scales = (chart.config && chart.config.options && chart.config.options.scales) || {};
+        for (const key of Object.keys(scales)) {
+          const scale = scales[key];
+          if (!scale) continue;
+          if (scale.ticks) scale.ticks.color = tick;
+          if (scale.title) scale.title.color = tick;
+          // Respect axes that intentionally hide their grid (grid.display === false).
+          if (scale.grid && scale.grid.display !== false) scale.grid.color = grid;
+          if (scale.border) scale.border.color = grid;
+        }
         chart.update('none');
       }
     }
