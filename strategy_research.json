@@ -10,7 +10,7 @@
       "excluded_post_resolution_signals": 0,
       "pre_resolution_signals": 23580,
       "raw_signals": 23580,
-      "settled_signals": 108
+      "settled_signals": 120
     },
     "dedupe_explanation": "Repeated 15-minute AWS scans are counted once per target, market, and side by default, using the latest pre-resolution row.",
     "metrics": {
@@ -19,13 +19,13 @@
       "approved_hit_rate": 0.0,
       "approved_paper_pnl": 0.0,
       "approved_roi": 0.0,
-      "avg_edge": -0.1228,
-      "avg_edge_lcb": -0.1877,
+      "avg_edge": -0.1119,
+      "avg_edge_lcb": -0.1776,
       "avg_probability": 0.5,
-      "avg_quality": 30.9,
-      "brier_score": 0.0403,
+      "avg_quality": 31.4,
+      "brier_score": 0.0372,
       "hit_rate": 0.5,
-      "log_loss": 0.141
+      "log_loss": 0.1333
     },
     "metrics_available": true,
     "pre_resolution_only": true,
@@ -34,31 +34,31 @@
         "approved": 0.0,
         "approved_pnl": 0,
         "approved_roi": 0.0,
-        "avg_probability": 0.2885,
-        "brier_score": 0.0478,
-        "count": 42.0,
+        "avg_probability": 0.2754,
+        "brier_score": 0.0456,
+        "count": 44.0,
         "range": "0-20",
-        "win_rate": 0.2857
+        "win_rate": 0.2727
       },
       {
         "approved": 0.0,
         "approved_pnl": 0,
         "approved_roi": 0.0,
-        "avg_probability": 0.3868,
-        "brier_score": 0.0385,
-        "count": 31.0,
+        "avg_probability": 0.3917,
+        "brier_score": 0.0356,
+        "count": 35.0,
         "range": "20-40",
-        "win_rate": 0.4516
+        "win_rate": 0.4571
       },
       {
         "approved": 0.0,
         "approved_pnl": 0,
         "approved_roi": 0.0,
-        "avg_probability": 0.7956,
-        "brier_score": 0.0463,
-        "count": 25.0,
+        "avg_probability": 0.7798,
+        "brier_score": 0.039,
+        "count": 31.0,
         "range": "40-60",
-        "win_rate": 0.72
+        "win_rate": 0.7097
       },
       {
         "approved": 0.0,
@@ -828,7 +828,7 @@
         }
       ]
     },
-    "generated_at": "2026-06-17T08:39:50.721794+00:00",
+    "generated_at": "2026-06-17T08:40:55.481515+00:00",
     "learnings": [
       "Lower-bound edge split: edge_lcb<0 trades netted $+1.71 (8 trades) vs edge_lcb>=0 at $+0.34 (12 trades).",
       "NO side: 14/18 won, net $+2.59 this window.",
@@ -1088,7 +1088,7 @@
   },
   "default_profile": "balanced",
   "disclaimer": "Paper-trading research only. The active AWS execution calibration remains pinned to lstm; this artifact does not place live orders.",
-  "generated_at": "2026-06-17T08:39:50.847760+00:00",
+  "generated_at": "2026-06-17T08:40:55.489109+00:00",
   "live_orders_enabled": false,
   "mode": "paper_research_only",
   "paper_trading": {
@@ -4414,7 +4414,7 @@
           "rejected": 10354,
           "top_rejections": []
         },
-        "generated_at": "2026-06-17T08:39:50.721794+00:00",
+        "generated_at": "2026-06-17T08:40:55.481515+00:00",
         "learnings": [
           "balanced resolved 3 trade(s): 3W / 0L, net $+0.92."
         ],
@@ -5159,7 +5159,7 @@
           "rejected": 10163,
           "top_rejections": []
         },
-        "generated_at": "2026-06-17T08:39:50.721794+00:00",
+        "generated_at": "2026-06-17T08:40:55.481515+00:00",
         "learnings": [
           "fast-feedback resolved 16 trade(s): 11W / 5L, net $+1.13.",
           "fast-feedback has 24 current signal candidate(s) in the latest artifact.",
@@ -8875,7 +8875,7 @@
     "deduped_signal_count": 132,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-06-17T08:39:50.847737+00:00",
+    "last_updated": "2026-06-17T08:40:55.489087+00:00",
     "latest_signal_targets": [
       "2026-06-15",
       "2026-06-16",
