@@ -765,6 +765,111 @@
       text-transform: uppercase;
       letter-spacing: 0;
     }
+    .consensus-panel { margin-bottom: 1rem; }
+    .consensus-panel .panel-head { align-items: center; }
+    .consensus-target {
+      font: 600 0.66rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      margin-left: 0.4rem;
+    }
+    .consensus-readout {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin: 0.4rem 0 0.95rem;
+    }
+    .consensus-stat {
+      min-width: 0;
+      background: var(--surface-2);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      padding: 0.78rem 0.85rem;
+    }
+    /* The headline stat is the model-minus-market gap: give it a wider, accented
+       slab so the "who is warmer" read lands first. */
+    .consensus-stat.gap {
+      grid-column: span 1;
+      border-color: var(--cold-soft);
+      background: linear-gradient(180deg, var(--cold-soft), var(--surface-2));
+    }
+    .consensus-stat b {
+      display: block;
+      color: var(--cold-deep);
+      font: 700 1.5rem var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.05;
+    }
+    .consensus-stat.gap b.warmer { color: var(--warm-deep); }
+    .consensus-stat.gap b.cooler { color: var(--cold-deep); }
+    .consensus-stat span {
+      display: block;
+      margin-top: 0.3rem;
+      color: var(--ink-3);
+      font: 600 0.62rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .consensus-body {
+      display: grid;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 1rem;
+      align-items: stretch;
+    }
+    .consensus-chart-card { min-height: 270px; }
+    .consensus-chart-card h4 {
+      font: 600 0.86rem var(--font-sans);
+      color: var(--ink);
+      margin-bottom: 0.55rem;
+    }
+    .consensus-chart-card canvas { width: 100%; height: 220px; max-height: 240px; }
+    .consensus-percentiles {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      background: var(--surface-2);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      padding: 0.85rem 0.95rem;
+    }
+    .consensus-percentiles .pctl-head {
+      font: 600 0.62rem var(--font-mono);
+      text-transform: uppercase;
+      color: var(--ink-3);
+      margin-bottom: 0.1rem;
+    }
+    .consensus-pctl-row {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+    }
+    .consensus-pctl-row .label {
+      flex: 0 0 2.6rem;
+      font: 600 0.7rem var(--font-mono);
+      color: var(--ink-3);
+    }
+    .consensus-pctl-row .track {
+      flex: 1;
+      height: 0.42rem;
+      background: var(--surface-3);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .consensus-pctl-row .fill {
+      display: block;
+      height: 100%;
+      background: var(--cold);
+      border-radius: 999px;
+    }
+    .consensus-pctl-row .val {
+      flex: 0 0 3.3rem;
+      text-align: right;
+      font: 600 0.78rem var(--font-mono);
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+    .consensus-pctl-row.median .fill { background: var(--cold-deep); }
+    .consensus-pctl-row.median .val { color: var(--cold-deep); }
     .dataset-actions {
       display: grid;
       gap: 0.45rem;
@@ -1299,8 +1404,10 @@
       .trade-list-head p { text-align: left; }
       .chart-card { min-height: 250px; }
       .chart-card canvas { height: 200px; }
+      .consensus-body { grid-template-columns: 1fr; }
     }
     @media (max-width: 580px) {
+      .consensus-readout { grid-template-columns: 1fr; }
       .wrap { width: calc(100% - 1.7rem); }
       .topbar { gap: 0.45rem; }
       .wordmark { font-size: 0.9rem; letter-spacing: 0; gap: 0.4rem; }
@@ -1479,6 +1586,21 @@
     <section id="signals">
       <h2 data-step="03">Signal quality &amp; gate behavior</h2>
       <p class="sub">Current YES/NO candidates with edge, lower-confidence edge, market and model probability, spread, and the recorded decision reason, plus which gates rejected everything else in the last 7 days.</p>
+      <div class="panel consensus-panel" id="marketConsensusPanel" hidden>
+        <div class="panel-head">
+          <h3>What Kalshi thinks <span class="muted consensus-target" id="consensusTarget"></span></h3>
+          <span class="pill" id="consensusGapPill">&mdash;</span>
+        </div>
+        <p class="sub">Kalshi prints a headline &ldquo;forecast&rdquo; on each market &mdash; the market-implied high, volume-weighted toward the last trade. We rebuild that exact number from the ladder and compare it against our model, overlaying the two distributions bin by bin.</p>
+        <div class="consensus-readout" id="consensusReadout"></div>
+        <div class="consensus-body">
+          <div class="panel chart-card consensus-chart-card">
+            <h4>Implied vs model probability per bin</h4>
+            <canvas id="consensusChart" role="img" aria-label="Market implied probability versus model probability per temperature bin"></canvas>
+          </div>
+          <div class="consensus-percentiles" id="consensusPercentiles"></div>
+        </div>
+      </div>
       <div class="grid-2">
         <div class="panel chart-card">
           <h3>Model vs market probability</h3>
@@ -1603,6 +1725,7 @@
       get cold() { return cssVar('--cold', '#1c63a9'); },
       get coldDeep() { return cssVar('--cold-deep', '#0d3f70'); },
       get warm() { return cssVar('--warm', '#d8792a'); },
+      get warmDeep() { return cssVar('--warm-deep', '#a94f14'); },
       get mint() { return cssVar('--mint', '#1c8a6c'); },
       get danger() { return cssVar('--danger', '#bd3a2b'); },
       get line() { return cssVar('--line', 'rgba(21,35,63,0.13)'); },
@@ -2321,6 +2444,7 @@
     function renderSignals(data) {
       const signal = data.signal_quality || {};
       const rows = signal.latest_candidates || [];
+      renderMarketConsensus(signal.market_consensus);
       scatterChart('probabilityMarketChart', signal.charts?.probability_vs_market || []);
       simpleBarChart('edgeBucketChart', signal.charts?.edge_by_market_bucket || [], 'range', 'avg_edge', colors.warm);
       simpleBarChart('qualityChart', signal.charts?.quality_distribution || [], 'range', 'count', colors.cold);
@@ -2359,6 +2483,119 @@
             `).join('')}
           </tbody>
         </table>`;
+    }
+
+    // "F" temperature formatter: keeps one decimal and the degree glyph so the
+    // consensus readout matches the implied-high precision from the engine.
+    function degF(value, digits = 1) {
+      const parsed = number(value);
+      return parsed === null ? 'n/a' : `${parsed.toFixed(digits)}°F`;
+    }
+
+    function renderMarketConsensus(consensus) {
+      const panel = $('marketConsensusPanel');
+      if (!panel) return;
+      const data = consensus || {};
+      // Gracefully hide the whole panel when there is no recent stored ladder.
+      if (!data.available) {
+        panel.hidden = true;
+        const existing = window.Chart?.getChart?.($('consensusChart'));
+        if (existing) existing.destroy();
+        return;
+      }
+      panel.hidden = false;
+
+      $('consensusTarget').textContent = data.target_date ? `settles ${data.target_date}` : '';
+
+      // Signed model-minus-market gap is the headline: positive => our model is
+      // warmer than the crowd. Frame it in plain language and tone the pill.
+      const gap = number(data.model_minus_market_f);
+      const pill = $('consensusGapPill');
+      if (gap === null) {
+        pill.textContent = 'gap n/a';
+        pill.className = 'pill';
+      } else if (Math.abs(gap) < 0.05) {
+        pill.textContent = 'model ≈ market';
+        pill.className = 'pill good';
+      } else if (gap > 0) {
+        pill.textContent = `model +${gap.toFixed(1)}°F warmer`;
+        pill.className = 'pill warn';
+      } else {
+        pill.textContent = `model ${gap.toFixed(1)}°F cooler`;
+        pill.className = 'pill';
+      }
+
+      const gapClass = gap === null ? '' : (gap > 0 ? 'warmer' : 'cooler');
+      const gapText = gap === null ? 'n/a' : `${gap > 0 ? '+' : ''}${gap.toFixed(1)}°F`;
+      $('consensusReadout').innerHTML = [
+        `<div class="consensus-stat gap"><b class="${gapClass}">${gapText}</b><span>Model minus market</span></div>`,
+        `<div class="consensus-stat"><b>${degF(data.implied_high_f)}</b><span>Kalshi forecast</span></div>`,
+        `<div class="consensus-stat"><b>${degF(data.model_high_f)}</b><span>Our model high</span></div>`,
+        `<div class="consensus-stat"><b>${htmlEscape(safe(data.modal_bin_label))}</b><span>Most-backed bin · ${pct(data.modal_probability, 0)}</span></div>`,
+        `<div class="consensus-stat"><b>±${degF(data.implied_stdev_f)}</b><span>Implied spread (1σ)</span></div>`,
+        `<div class="consensus-stat"><b>${degF(data.p10_f)} – ${degF(data.p90_f)}</b><span>Implied P10–P90 band</span></div>`
+      ].join('');
+
+      renderConsensusPercentiles(data);
+      consensusBarChart('consensusChart', data.distribution || []);
+    }
+
+    function renderConsensusPercentiles(data) {
+      const target = $('consensusPercentiles');
+      if (!target) return;
+      const rows = [
+        { label: 'P10', value: data.p10_f },
+        { label: 'P25', value: data.p25_f },
+        { label: 'P50', value: data.median_f, median: true },
+        { label: 'P75', value: data.p75_f },
+        { label: 'P90', value: data.p90_f }
+      ];
+      const values = rows.map((row) => number(row.value)).filter((v) => v !== null);
+      const lo = values.length ? Math.min(...values) : 0;
+      const hi = values.length ? Math.max(...values) : 1;
+      const span = hi - lo || 1;
+      target.innerHTML = `<div class="pctl-head">Market implied percentiles (°F)</div>` + rows.map((row) => {
+        const v = number(row.value);
+        const fillPct = v === null ? 0 : Math.round(((v - lo) / span) * 100);
+        return `<div class="consensus-pctl-row${row.median ? ' median' : ''}">
+          <span class="label">${row.label}</span>
+          <span class="track"><span class="fill" style="width:${Math.max(4, fillPct)}%;"></span></span>
+          <span class="val">${degF(v)}</span>
+        </div>`;
+      }).join('');
+    }
+
+    function consensusBarChart(id, distribution) {
+      const canvas = $(id);
+      if (!canvas) return;
+      // Only bins the market actually quotes; an all-zero implied bin is noise on
+      // the overlay. Sort by bin center so the curve reads cold -> warm.
+      const bins = (Array.isArray(distribution) ? distribution : [])
+        .filter((row) => number(row.center_f) !== null)
+        .sort((a, b) => (number(a.center_f) || 0) - (number(b.center_f) || 0));
+      const labels = bins.map((row) => row.label || (row.center_f != null ? `${row.center_f}°` : '-'));
+      const market = bins.map((row) => (number(row.implied_probability) || 0) * 100);
+      const model = bins.map((row) => row.model_probability == null ? null : (number(row.model_probability) || 0) * 100);
+      if (!window.Chart) {
+        return fallbackBars(canvas, labels, market);
+      }
+      drawChart(id, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label: 'market implied %', data: market, backgroundColor: colors.cold, borderColor: colors.coldDeep, borderWidth: 1 },
+            { label: 'model %', data: model, backgroundColor: colors.warm, borderColor: colors.warmDeep || colors.warm, borderWidth: 1 }
+          ]
+        },
+        options: {
+          ...chartOptions(),
+          scales: {
+            x: { ticks: { color: colors.muted, maxRotation: 0, autoSkip: true }, grid: { color: colors.grid } },
+            y: { beginAtZero: true, ticks: { color: colors.muted, callback: (v) => `${v}%` }, grid: { color: colors.grid }, title: { display: true, text: 'probability', color: colors.muted } }
+          }
+        }
+      });
     }
 
     function renderBacktest(data) {
