@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from clisfo import fetch_recent_clisfo_settlements
-from forecast_scoring import is_clean_next_day_forecast
+from forecast_scoring import is_clean_next_day_forecast, parse_details_json
 from settlement_calendar import (
     integer_settlement_high_f,
     local_standard_date,
@@ -93,6 +93,15 @@ ADAPTIVE_SOURCE_COLUMNS = {
     "open_meteo": "open_meteo_high_f",
     "history": "history_high_f",
 }
+# Post-hoc rolling residual de-bias on the final blend (lowers the clean miss
+# without touching source weights). Cohort-aware and capped so a noisy week
+# cannot blow up the forecast; gated on a walk-forward holdout like the weights.
+ENABLE_ROLLING_BLEND_BIAS = env_bool("ENABLE_ROLLING_BLEND_BIAS", True)
+ROLLING_BIAS_MIN_SCORED_DAYS = ADAPTIVE_WEIGHT_MIN_SCORED_DAYS
+ROLLING_BIAS_WINDOW_DAYS = 45
+ROLLING_BIAS_CAP_F = 1.5
+ROLLING_BIAS_COHORT_SHRINK_K = 10.0
+ROLLING_BIAS_HOLDOUT_MIN_DAYS = ADAPTIVE_WEIGHT_HOLDOUT_MIN_DAYS
 AIRPORT_STATIONS = ("KSFO", "KOAK", "KSJC", "KSQL", "KPAO", "KHAF")
 DURATION_RE = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$")
 
@@ -119,6 +128,13 @@ def table_exists(conn, table_name):
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def table_columns(conn, table_name: str) -> dict:
+    if not table_exists(conn, table_name):
+        return {}
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row[1]: row for row in rows}
 
 
 def daily_archive_columns(conn):
@@ -150,6 +166,7 @@ def create_daily_archive_table(conn):
             actual_high_f REAL,
             abs_error_f REAL,
             scored_at TEXT,
+            truth_source TEXT,
             PRIMARY KEY (fetched_at, target_date)
         )
         """
@@ -183,6 +200,7 @@ def create_blend_archive_table(conn):
             actual_high_f REAL,
             abs_error_f REAL,
             scored_at TEXT,
+            truth_source TEXT,
             PRIMARY KEY (fetched_at, target_date)
         )
         """
@@ -272,6 +290,11 @@ def init_archive(conn):
     hourly_columns = hourly_archive_columns(conn)
     if "lead_hours" not in hourly_columns:
         conn.execute("ALTER TABLE forecast_google_hourly ADD COLUMN lead_hours REAL")
+    # Track which ground-truth source set each score so a late-arriving CLISFO
+    # settlement can re-score rows first scored against the NWS fallback.
+    for archive_table in ("forecast_blend_daily_high", "forecast_google_daily_high"):
+        if "truth_source" not in table_columns(conn, archive_table):
+            conn.execute(f"ALTER TABLE {archive_table} ADD COLUMN truth_source TEXT")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_google_daily_target
@@ -487,43 +510,81 @@ def archive_hourly_rows(conn, payload, summary):
 
 
 def update_scores_for_table(conn, table_name):
-    rows = conn.execute(
-        f"""
-        SELECT fetched_at, target_date, predicted_high_f
-        FROM {table_name}
-        WHERE actual_high_f IS NULL
-        """
-    ).fetchall()
+    has_truth_source = "truth_source" in table_columns(conn, table_name)
+    if has_truth_source:
+        # Re-select rows that are unscored OR were scored against a non-CLISFO
+        # fallback, so a late-arriving CLISFO settlement can correct them.
+        rows = conn.execute(
+            f"""
+            SELECT fetched_at, target_date, predicted_high_f, actual_high_f, truth_source
+            FROM {table_name}
+            WHERE actual_high_f IS NULL
+               OR truth_source IS NULL
+               OR truth_source != 'clisfo'
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT fetched_at, target_date, predicted_high_f, actual_high_f, NULL AS truth_source
+            FROM {table_name}
+            WHERE actual_high_f IS NULL
+            """
+        ).fetchall()
     scored = 0
 
-    for fetched_at, target_iso, predicted_high_f in rows:
-        actual = actual_high_from_ground_truth(conn, target_iso)
-        if actual is None:
-            actual = actual_high_from_history(conn, target_iso)
+    for fetched_at, target_iso, predicted_high_f, existing_actual, existing_source in rows:
+        actual, source = actual_high_with_source(conn, target_iso)
         if actual is None:
             continue
         settlement_actual = integer_settlement_high_f(actual)
         if settlement_actual is None:
             continue
 
-        conn.execute(
-            f"""
-            UPDATE {table_name}
-            SET actual_high_f = ?,
-                abs_error_f = ?,
-                scored_at = ?
-            WHERE fetched_at = ?
-              AND target_date = ?
-            """,
-            (
-                settlement_actual,
-                round(abs(float(predicted_high_f) - settlement_actual), 2),
-                datetime.now(timezone.utc).isoformat(),
-                fetched_at,
-                target_iso,
-            ),
-        )
-        scored += 1
+        is_unscored = existing_actual is None
+        is_clisfo_upgrade = source == "clisfo" and existing_source != "clisfo"
+        # Legacy rows predate the truth_source column. Stamp them as "legacy"
+        # WITHOUT rewriting the stored value -- only a first-time score or a
+        # CLISFO upgrade may change actual_high_f/abs_error_f, so a label
+        # backfill can never silently corrupt historical error records.
+        needs_stamp = has_truth_source and existing_source is None and not is_unscored
+
+        if is_unscored or is_clisfo_upgrade:
+            abs_error = round(abs(float(predicted_high_f) - settlement_actual), 2)
+            scored_at = datetime.now(timezone.utc).isoformat()
+            if has_truth_source:
+                conn.execute(
+                    f"""
+                    UPDATE {table_name}
+                    SET actual_high_f = ?,
+                        abs_error_f = ?,
+                        scored_at = ?,
+                        truth_source = ?
+                    WHERE fetched_at = ?
+                      AND target_date = ?
+                    """,
+                    (settlement_actual, abs_error, scored_at, source, fetched_at, target_iso),
+                )
+            else:
+                conn.execute(
+                    f"""
+                    UPDATE {table_name}
+                    SET actual_high_f = ?,
+                        abs_error_f = ?,
+                        scored_at = ?
+                    WHERE fetched_at = ?
+                      AND target_date = ?
+                    """,
+                    (settlement_actual, abs_error, scored_at, fetched_at, target_iso),
+                )
+            scored += 1
+        elif needs_stamp:
+            conn.execute(
+                f"UPDATE {table_name} SET truth_source = 'legacy' "
+                "WHERE fetched_at = ? AND target_date = ?",
+                (fetched_at, target_iso),
+            )
+            scored += 1
 
     return scored
 
@@ -575,15 +636,7 @@ def update_scores(conn):
     return scored
 
 
-def actual_high_from_ground_truth(conn, target_iso):
-    # Prefer the CLISFO Daily Climate Report MAXIMUM -- the same settlement
-    # truth the trader resolves on -- so forecast skill and the learned source
-    # weights are scored against the real Kalshi outcome, not the max of hourly
-    # observations (which can differ by ~1F and flip an integer-bin membership).
-    clisfo_high = clisfo_high_for(conn, target_iso)
-    if clisfo_high is not None:
-        return clisfo_high
-
+def nws_daily_complete_high(conn, target_iso: str) -> float | None:
     if not table_exists(conn, "nws_daily_high_ground_truth"):
         return None
 
@@ -599,6 +652,39 @@ def actual_high_from_ground_truth(conn, target_iso):
         (target_iso,),
     ).fetchone()
     return integer_settlement_high_f(row[0]) if row else None
+
+
+def actual_high_from_ground_truth(conn, target_iso):
+    # Prefer the CLISFO Daily Climate Report MAXIMUM -- the same settlement
+    # truth the trader resolves on -- so forecast skill and the learned source
+    # weights are scored against the real Kalshi outcome, not the max of hourly
+    # observations (which can differ by ~1F and flip an integer-bin membership).
+    clisfo_high = clisfo_high_for(conn, target_iso)
+    if clisfo_high is not None:
+        return clisfo_high
+    return nws_daily_complete_high(conn, target_iso)
+
+
+def actual_high_with_source(conn, target_iso: str) -> tuple[float | None, str | None]:
+    """Settlement high plus the truth source it came from.
+
+    Returns ``(value, source)`` where source is ``"clisfo"`` (the real Kalshi
+    settlement), ``"nws_daily"`` (completed NWS daily report), or
+    ``"nws_hourly_fallback"`` (max of archived hourly observations). The source
+    lets a late-arriving CLISFO settlement re-score rows first scored against a
+    fallback -- the fallback can diverge from CLISFO by ~1F and flip a bin.
+    """
+
+    clisfo_high = clisfo_high_for(conn, target_iso)
+    if clisfo_high is not None:
+        return clisfo_high, "clisfo"
+    nws_daily = nws_daily_complete_high(conn, target_iso)
+    if nws_daily is not None:
+        return nws_daily, "nws_daily"
+    history = actual_high_from_history(conn, target_iso)
+    if history is not None:
+        return history, "nws_hourly_fallback"
+    return None, None
 
 
 def actual_high_from_history(conn, target_iso):
@@ -1270,18 +1356,43 @@ def latest_scored_blend_rows():
         with sqlite3.connect(DB_PATH) as conn:
             if not table_exists(conn, "forecast_blend_daily_high"):
                 return []
+            has_clisfo = table_exists(conn, "clisfo_settlements")
+            has_truth_source = "truth_source" in table_columns(conn, "forecast_blend_daily_high")
             conn.row_factory = sqlite3.Row
+
+            stored_source = "b.truth_source" if has_truth_source else "NULL"
+            if has_clisfo:
+                # Prefer the CLISFO settlement directly so learned weights track
+                # the real Kalshi outcome even when a row's stored actual_high_f
+                # predates the late CLISFO arrival.
+                actual_expr = "COALESCE(c.max_temperature_f, b.actual_high_f)"
+                effective_source_expr = (
+                    f"CASE WHEN c.max_temperature_f IS NOT NULL THEN 'clisfo' "
+                    f"ELSE {stored_source} END"
+                )
+                join_clause = (
+                    "LEFT JOIN clisfo_settlements c "
+                    "ON c.local_date = b.target_date AND c.max_temperature_f IS NOT NULL"
+                )
+            else:
+                actual_expr = "b.actual_high_f"
+                effective_source_expr = stored_source
+                join_clause = ""
+
             rows = conn.execute(
-                """
+                f"""
                 SELECT b.target_date,
-                       b.actual_high_f,
+                       {actual_expr} AS actual_high_f,
+                       b.predicted_high_f,
                        b.google_high_f,
                        b.nws_high_f,
                        b.open_meteo_high_f,
                        b.history_high_f,
                        b.fetched_at,
-                       b.details_json
+                       b.details_json,
+                       {effective_source_expr} AS effective_truth_source
                 FROM forecast_blend_daily_high b
+                {join_clause}
                 WHERE b.actual_high_f IS NOT NULL
                   AND b.abs_error_f IS NOT NULL
                 ORDER BY b.target_date, b.fetched_at
@@ -1314,6 +1425,10 @@ def adaptive_blend_weights():
     base = dict(BLEND_WEIGHTS)
     rows = latest_scored_blend_rows()
     scored_days = len({row["target_date"] for row in rows})
+    truth_source_counts = {}
+    for row in rows:
+        key = (row["effective_truth_source"] if "effective_truth_source" in row.keys() else None) or "unknown"
+        truth_source_counts[key] = truth_source_counts.get(key, 0) + 1
     metadata = {
         "mode": "base",
         "reason": (
@@ -1322,6 +1437,7 @@ def adaptive_blend_weights():
         ),
         "scored_days": scored_days,
         "eligibility": "last pre-midnight SFO snapshot from the day before target; excludes observed lock/floor rows",
+        "truth_source_counts": truth_source_counts,
         "base_weights": base,
         "weights": base,
         "source_mae_f": {},
@@ -1486,6 +1602,207 @@ def blended_mae(rows, weights):
     return sum(errors) / len(errors)
 
 
+def cap_magnitude(value: float, cap: float) -> float:
+    return max(-cap, min(cap, value))
+
+
+def predicted_temperature_cohort(high_f: object) -> str:
+    """Temperature band of a predicted high, matching the trading cohorts.
+
+    The blend is anti-calibrated on warm/hot SFO days, so the de-bias is learned
+    per band and a sparse band (hot) shrinks toward the global correction.
+    """
+
+    if high_f is None or not finite(high_f):
+        return "unknown"
+    high_f = float(high_f)
+    if high_f < 60.0:
+        return "cold"
+    if high_f < 70.0:
+        return "normal"
+    if high_f < 80.0:
+        return "warm"
+    return "hot"
+
+
+def _bias_residual_records(rows):
+    """Signed residuals of the *raw* (pre-de-bias) blend over scored rows.
+
+    Learning against the raw weighted prediction (stored as
+    ``raw_weighted_prediction_f``) keeps the estimator stable once the de-bias
+    ships -- otherwise it would chase its own correction.
+    """
+
+    records = []
+    for row in rows:
+        actual = row["actual_high_f"]
+        if not finite(actual):
+            continue
+        details = parse_details_json(row["details_json"])
+        raw_pred = details.get("raw_weighted_prediction_f")
+        if not finite(raw_pred):
+            raw_pred = row["predicted_high_f"]
+        if not finite(raw_pred):
+            continue
+        raw_pred = float(raw_pred)
+        actual = float(actual)
+        records.append(
+            {
+                "target_date": row["target_date"],
+                "raw_pred": raw_pred,
+                "actual": actual,
+                "residual": actual - raw_pred,
+                "cohort": predicted_temperature_cohort(raw_pred),
+            }
+        )
+    return records
+
+
+def _cohort_bias_corrections(records):
+    """Per-cohort mean residual shrunk toward the global mean residual."""
+
+    if not records:
+        return {}, 0.0
+    global_mean = sum(r["residual"] for r in records) / len(records)
+    by_cohort = {}
+    for record in records:
+        by_cohort.setdefault(record["cohort"], []).append(record["residual"])
+    corrections = {}
+    for cohort, residuals in by_cohort.items():
+        count = len(residuals)
+        cohort_mean = sum(residuals) / count
+        weight = count / (count + ROLLING_BIAS_COHORT_SHRINK_K)
+        shrunk = weight * cohort_mean + (1.0 - weight) * global_mean
+        corrections[cohort] = cap_magnitude(shrunk, ROLLING_BIAS_CAP_F)
+    return corrections, cap_magnitude(global_mean, ROLLING_BIAS_CAP_F)
+
+
+def _correction_for(cohort, corrections, global_correction):
+    value = corrections.get(cohort)
+    if value is None:
+        value = global_correction
+    return cap_magnitude(value, ROLLING_BIAS_CAP_F)
+
+
+def _bias_holdout_mae(records, corrections, global_correction):
+    """(raw MAE, corrected MAE) on holdout records, or (None, None) if empty."""
+
+    raw_errors = []
+    corrected_errors = []
+    for record in records:
+        raw_errors.append(abs(record["actual"] - record["raw_pred"]))
+        correction = _correction_for(record["cohort"], corrections, global_correction)
+        corrected_errors.append(abs(record["actual"] - (record["raw_pred"] + correction)))
+    if not raw_errors:
+        return None, None
+    return (
+        sum(raw_errors) / len(raw_errors),
+        sum(corrected_errors) / len(corrected_errors),
+    )
+
+
+DISABLED_BIAS_TABLE = {"global_correction": 0.0, "cohort_corrections": {}, "enabled": False}
+
+
+def rolling_blend_residual_bias() -> tuple[dict, dict]:
+    """Cohort-aware rolling de-bias for the final blend, gated on a holdout.
+
+    Returns ``(bias_table, metadata)``. ``bias_table`` feeds ``blend_bias_for``;
+    it stays disabled (zero correction) until there are enough clean CLISFO-scored
+    days and the correction beats the raw blend on a walk-forward holdout.
+    """
+
+    cached = getattr(rolling_blend_residual_bias, "_cached", None)
+    if cached is not None:
+        return cached
+
+    metadata = {
+        "mode": "disabled",
+        "reason": "",
+        "scored_days": 0,
+        "window_days": ROLLING_BIAS_WINDOW_DAYS,
+        "cap_f": ROLLING_BIAS_CAP_F,
+    }
+
+    def _disabled(reason):
+        metadata["reason"] = reason
+        result = (dict(DISABLED_BIAS_TABLE), dict(metadata))
+        rolling_blend_residual_bias._cached = result
+        return result
+
+    if not ENABLE_ROLLING_BLEND_BIAS:
+        return _disabled("rolling blend de-bias disabled via ENABLE_ROLLING_BLEND_BIAS")
+
+    records = _bias_residual_records(latest_scored_blend_rows())
+    scored_days = len({record["target_date"] for record in records})
+    metadata["scored_days"] = scored_days
+    if scored_days < ROLLING_BIAS_MIN_SCORED_DAYS:
+        return _disabled(
+            f"collecting clean next-day scored blend days; need {ROLLING_BIAS_MIN_SCORED_DAYS}, "
+            f"have {scored_days}"
+        )
+
+    records.sort(key=lambda record: record["target_date"])
+    window = records[-ROLLING_BIAS_WINDOW_DAYS:]
+    ordered_days = sorted({record["target_date"] for record in window})
+    holdout_count = max(ROLLING_BIAS_HOLDOUT_MIN_DAYS, len(ordered_days) // 3)
+    holdout_days = set(ordered_days[-holdout_count:])
+    train = [record for record in window if record["target_date"] not in holdout_days]
+    holdout = [record for record in window if record["target_date"] in holdout_days]
+
+    train_corrections, train_global = _cohort_bias_corrections(train)
+    raw_mae, corrected_mae = _bias_holdout_mae(holdout, train_corrections, train_global)
+    holdout_report = {
+        "holdout_days": holdout_count,
+        "raw_mae_f": None if raw_mae is None else round(raw_mae, 3),
+        "corrected_mae_f": None if corrected_mae is None else round(corrected_mae, 3),
+    }
+    metadata["holdout"] = holdout_report
+    if raw_mae is None or corrected_mae is None or corrected_mae >= raw_mae:
+        metadata["mode"] = "base"
+        return _disabled(
+            "rolling de-bias did not beat the raw blend on a walk-forward holdout; "
+            "applying zero correction"
+        )
+
+    # Survived the holdout; refit on the full window for the live corrections.
+    corrections, global_correction = _cohort_bias_corrections(window)
+    cohort_counts = {}
+    for record in window:
+        cohort_counts[record["cohort"]] = cohort_counts.get(record["cohort"], 0) + 1
+    table = {
+        "global_correction": global_correction,
+        "cohort_corrections": corrections,
+        "enabled": True,
+    }
+    metadata.update(
+        {
+            "mode": "adaptive",
+            "reason": "rolling residual de-bias beat the raw blend on a walk-forward holdout",
+            "window_days_used": len(window),
+            "cohort_counts": cohort_counts,
+            "cohort_corrections_f": {key: round(value, 3) for key, value in corrections.items()},
+            "global_correction_f": round(global_correction, 3),
+        }
+    )
+    result = (table, dict(metadata))
+    rolling_blend_residual_bias._cached = result
+    return result
+
+
+def blend_bias_for(raw_predicted: object, bias_table: dict) -> float:
+    """Capped rolling de-bias to add to a raw blended prediction (0 if disabled)."""
+
+    if not bias_table or not bias_table.get("enabled") or not finite(raw_predicted):
+        return 0.0
+    cohort = predicted_temperature_cohort(float(raw_predicted))
+    corrections = bias_table.get("cohort_corrections") or {}
+    value = corrections.get(cohort)
+    if value is None:
+        value = bias_table.get("global_correction", 0.0)
+    return cap_magnitude(float(value), ROLLING_BIAS_CAP_F)
+
+
 def target_summary(summary, target_iso):
     for row in summary.get("daily_highs") or []:
         if row.get("target_date") == target_iso:
@@ -1575,16 +1892,23 @@ def build_blend_snapshot(summary, target_iso):
     }
     weighted_high = sum(sources[key]["highF"] * normalized_weights[key] for key in available)
     raw_predicted = weighted_high + adjustment["value"]
+    bias_table, bias_metadata = rolling_blend_residual_bias()
+    bias_value = blend_bias_for(raw_predicted, bias_table)
+    # Apply the de-bias before the observed-high decision so a same-day lock/floor
+    # still operates on the calibrated number.
+    calibrated_predicted = raw_predicted + bias_value
     observed_decision = observed_high_decision(target_iso, sources)
-    predicted = raw_predicted
+    predicted = calibrated_predicted
     method = "weighted Google + NWS + Open-Meteo + SFO history with capped station adjustment"
+    if bias_value:
+        method += " and rolling residual de-bias"
     if observed_decision:
         observed_high = observed_decision["highF"]
         if observed_decision["mode"] == "lock":
             predicted = observed_high
             method = f"official NWS observed high ({observed_decision['reason']})"
         else:
-            predicted = max(raw_predicted, observed_high)
+            predicted = max(calibrated_predicted, observed_high)
             method = "weighted blend floored by NWS observed high-so-far"
 
     return {
@@ -1623,6 +1947,12 @@ def build_blend_snapshot(summary, target_iso):
             "base_weights": BLEND_WEIGHTS,
             "blend_weighting": weight_metadata,
             "raw_weighted_prediction_f": round(raw_predicted, 2),
+            "calibrated_prediction_f": round(calibrated_predicted, 2),
+            "rolling_bias": {
+                "value": round(bias_value, 3),
+                "cohort": predicted_temperature_cohort(raw_predicted),
+                "metadata": bias_metadata,
+            },
             "observed_high_decision": observed_decision,
         },
     }
