@@ -80,15 +80,19 @@ for raw_profile in "${profiles[@]}"; do
       --min-profit "$ARBITRAGE_MIN_PROFIT"
       --place-paper
     )
-    if (( skip_context > 0 )); then
-      arbitrage_args+=(--skip-context-snapshots)
-    fi
+    # Arbitrage records ONLY market_snapshots -- never the forecast/probability
+    # ladder (it works off raw Kalshi YES+NO box prices, with no forecast). So it
+    # must NEVER be the per-tick context writer: letting a successful arbitrage run
+    # flip skip_context=1 made the full-context commands below skip, which silently
+    # starved forecast_snapshots + probability_snapshots from 2026-06-16 (blinding
+    # the dashboard calibration and the legacy stop-loss model-veto that read them).
+    # Always skip context here; ownership stays with the full-context commands
+    # (tail-basket, else the always-run analyzer).
+    arbitrage_args+=(--skip-context-snapshots)
 
     echo "running arbitrage scan profile=$profile db=$DB_PATH"
     if ! "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${arbitrage_args[@]}"; then
       echo "warning: arbitrage scan failed for profile=$profile; continuing with broad scan" >&2
-    else
-      skip_context=1
     fi
   fi
 
