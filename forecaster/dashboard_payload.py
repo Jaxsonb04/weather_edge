@@ -47,6 +47,11 @@ def table_exists(conn, table_name):
     return row is not None
 
 
+def has_column(conn, table_name, column):
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
 def local_label(timestamp):
     try:
         dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -88,6 +93,12 @@ def load_forecast_success(path=DB_PATH):
         "pendingCount": 0,
         "pendingTotalCount": 0,
         "excludedOperationalCount": 0,
+        "truthSource": {
+            "available": False,
+            "byDay": {},
+            "clisfoDays": 0,
+            "fallbackDays": 0,
+        },
         "snapshotMae": None,
         "snapshotSuccessRate": None,
         "dailyMae": None,
@@ -114,6 +125,7 @@ def load_forecast_success(path=DB_PATH):
             if not table_exists(conn, "forecast_blend_daily_high"):
                 data["reason"] = "Blended forecast snapshots have not been archived yet."
                 return data
+            has_truth_source = has_column(conn, "forecast_blend_daily_high", "truth_source")
             pending_rows = conn.execute(
                 """
                 SELECT target_date,
@@ -133,8 +145,9 @@ def load_forecast_success(path=DB_PATH):
                     row["details_json"],
                 )
             )
+            truth_source_select = "truth_source" if has_truth_source else "NULL AS truth_source"
             rows = conn.execute(
-                """
+                f"""
                 SELECT fetched_at,
                        target_date,
                        predicted_high_f,
@@ -144,7 +157,8 @@ def load_forecast_success(path=DB_PATH):
                        source_count,
                        fresh_station_count,
                        station_adjustment_f,
-                       details_json
+                       details_json,
+                       {truth_source_select}
                 FROM forecast_blend_daily_high
                 WHERE actual_high_f IS NOT NULL
                   AND abs_error_f IS NOT NULL
@@ -191,6 +205,7 @@ def load_forecast_success(path=DB_PATH):
                 "sourceCount": row["source_count"],
                 "freshStationCount": row["fresh_station_count"],
                 "stationAdjustment": row["station_adjustment_f"],
+                "truthSource": row["truth_source"],
                 "scoreCategory": forecast_score_category(
                     row["target_date"],
                     row["fetched_at"],
@@ -224,6 +239,17 @@ def load_forecast_success(path=DB_PATH):
     daily_rows = sorted(latest_by_day.values(), key=lambda row: row["targetDate"])
     snapshot_errors = [row["error"] for row in clean_rows]
     daily_errors = [row["error"] for row in daily_rows]
+
+    truth_counts = {}
+    for row in daily_rows:
+        key = row.get("truthSource") or "unknown"
+        truth_counts[key] = truth_counts.get(key, 0) + 1
+    data["truthSource"] = {
+        "available": has_truth_source,
+        "byDay": truth_counts,
+        "clisfoDays": truth_counts.get("clisfo", 0),
+        "fallbackDays": sum(count for key, count in truth_counts.items() if key != "clisfo"),
+    }
     data.update(
         {
             "available": True,
