@@ -11,6 +11,17 @@ FEATURES_OUT = "weather_features.csv"
 SFO_TZ       = "America/Los_Angeles"
 SFO_STATION_ID = "USW00023234"
 
+# Marine-layer / sea-breeze regime is the dominant driver of the SFO daily high
+# and exactly where the blend is weakest (the warm/hot tail). SFO heat is an
+# offshore, easterly, light-wind regime; cool days are the onshore WSW sea breeze
+# through the Golden Gate. ~70 deg (ENE) is the warm offshore bearing; the cool
+# onshore flow sits ~180 deg opposite. Approximate -- the model learns the
+# response; this just supplies a continuous regime signal.
+SFO_OFFSHORE_BEARING_DEG = 70.0
+# Dew-point depression (F) at/below which low stratus/fog becomes increasingly
+# likely -- a near-saturated, cloudy morning caps the afternoon high.
+MARINE_LAYER_DEPRESSION_F = 10.0
+
 
 def load_data(db_path=DB_PATH, station_id=SFO_STATION_ID):
     """Load raw hourly weather from SQLite on a regular UTC hourly index."""
@@ -118,6 +129,26 @@ def engineer_features(df):
             * (100 - df["humidity"]) / 100
             * np.maximum(0, 15 - df["wind_speed_mph"]) / 15
         )
+
+    # --- Marine-layer / sea-breeze regime (dominant driver of SFO highs) ---
+    # All point-in-time (current hour or past lags only) -> no target leakage.
+    if "wind_dir" in df.columns:
+        # +1 = offshore/easterly (warm), -1 = onshore/WSW sea breeze (cool).
+        offshore = np.cos(np.radians(df["wind_dir"] - SFO_OFFSHORE_BEARING_DEG))
+        df["offshore_flow"] = offshore
+        if "wind_speed_mph" in df.columns:
+            # Signed by regime, scaled by wind speed: strong offshore -> hottest,
+            # strong onshore -> coolest, calm -> near zero either way.
+            df["offshore_flow_strength"] = offshore * df["wind_speed_mph"]
+            df["offshore_flow_strength_lag_24h"] = df["offshore_flow_strength"].shift(24)
+
+    # Marine layer (stratus/fog): near-saturation + cloudy -> capped, cool high.
+    if "dewpoint_depression" in df.columns and "cloud_cover_pct" in df.columns:
+        near_saturation = np.maximum(
+            0.0, 1.0 - df["dewpoint_depression"] / MARINE_LAYER_DEPRESSION_F
+        )
+        df["marine_layer_index"] = near_saturation * (df["cloud_cover_pct"] / 100.0)
+        df["marine_layer_index_lag_24h"] = df["marine_layer_index"].shift(24)
 
     # heat momentum: how much warmer than the same hour N days ago
     df["temp_vs_24h_ago"]  = df["temp_f"] - df["temp_lag_24h"]
