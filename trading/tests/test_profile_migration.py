@@ -5,8 +5,6 @@ SQL filters keep matching the accumulated AWS paper books."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pytest
-
 from sfo_kalshi_quant.config import (
     StrategyConfig,
     normalize_risk_profile_name as N,
@@ -64,9 +62,8 @@ def _decision(ticker: str) -> TradeDecision:
     )
 
 
-@pytest.mark.parametrize(
-    "name,expected",
-    [
+def test_normalize_aliases_legacy_names():
+    cases = [
         ("", "live"),
         ("live", "live"),
         ("balanced", "live"),
@@ -79,15 +76,18 @@ def _decision(ticker: str) -> TradeDecision:
         ("collector", "research"),
         ("FAST_FEEDBACK", "research"),  # case + underscore normalization
         ("  Balanced  ", "live"),
-    ],
-)
-def test_normalize_aliases_legacy_names(name, expected):
-    assert N(name) == expected
+    ]
+    for name, expected in cases:
+        assert N(name) == expected, f"{name!r} -> {N(name)!r}, expected {expected!r}"
 
 
 def test_normalize_rejects_unknown_profile():
-    with pytest.raises(ValueError):
+    try:
         N("definitely-not-a-profile")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for an unknown profile name")
 
 
 def test_legacy_stored_profile_names_are_migrated_on_init():
