@@ -2039,6 +2039,13 @@ __DATA_VARS__
         return;
       }
 
+      const truth = data.truthSource || {};
+      const clisfoDays = Number.isFinite(truth.clisfoDays) ? truth.clisfoDays : null;
+      const fallbackDays = Number.isFinite(truth.fallbackDays) ? truth.fallbackDays : 0;
+      const truthLine = clisfoDays !== null
+        ? `<p><strong>${clisfoDays}</strong> of ${data.scoredDays} scored day(s) settled on the official CLISFO report${fallbackDays ? ` &middot; <strong>${fallbackDays}</strong> still on a provisional high` : ''}.</p>`
+        : '';
+
       metrics.innerHTML = `
         <div class="accuracy-summary">
           <div class="accuracy-hero">
@@ -2049,6 +2056,7 @@ __DATA_VARS__
           <div class="accuracy-note">
             <p><strong>${data.scoredDays}</strong> clean scored day(s), with <strong>${data.scoredCount}</strong> clean archived refresh snapshot(s).</p>
             <p><strong>${data.dailySuccessRate}%</strong> of clean daily finals landed within 3&deg;F. This is early history, not a guarantee.</p>
+            ${truthLine}
             <p><strong>${pending}</strong> clean snapshot(s) are still waiting for final NWS highs.</p>
             <p><strong>${excluded}</strong> same-day lock/floor snapshot(s) are kept out of this score.</p>
           </div>
