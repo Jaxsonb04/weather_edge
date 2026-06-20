@@ -194,6 +194,14 @@ class StrategyConfig:
     # from temperature_cohort(). The explorer profiles keep these empty so they
     # collect the cohort data recalibration needs.
     blocked_forecast_cohorts: tuple[str, ...] = ()
+    # When True, the regime block above also considers the market-implied
+    # consensus high, blocking on the WARMER of the model forecast and the crowd's
+    # implied high. The forecaster UNDER-predicts warm days (it forecasts ~67F on
+    # days that hit 75F), so a model-only cohort check never fires on the
+    # disguised-warm days that drove the 2026-06 NO-bet losses; the crowd is
+    # better-calibrated warm and prices money, so it is the actual-warm signal.
+    # Inert unless blocked_forecast_cohorts is non-empty AND a consensus is passed.
+    regime_block_uses_market_implied_high: bool = True
     # --- Comfortable far-tail NO entry (the "edge" idea) ---------------------
     # When True, NO bets are gated and sized by how far the market bin sits from
     # the point forecast. Bins comfortably out in the tail -- where a forecast

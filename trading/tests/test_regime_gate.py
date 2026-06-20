@@ -10,9 +10,15 @@ from sfo_kalshi_quant.config import (
     strategy_config_for_profile,
     temperature_cohort,
 )
+from sfo_kalshi_quant.consensus import _EMPTY_CONSENSUS
 from sfo_kalshi_quant.models import BucketProbability
 from sfo_kalshi_quant.risk import TradeEvaluator
 from sfo_kalshi_quant.standard_bins import standard_sfo_bins
+
+
+def _consensus_high(implied_high_f):
+    # The regime gate reads only `available` and `implied_high_f`.
+    return replace(_EMPTY_CONSENSUS, available=True, implied_high_f=implied_high_f)
 
 
 def _no_favorite():
@@ -87,6 +93,48 @@ def test_research_also_blocks_warm_and_hot_forecast_cohorts():
     assert not warm.approved
     assert any("regime" in r for r in warm.reasons)
     assert not hot.approved
+
+
+def test_block_fires_on_market_implied_warm_when_model_forecasts_normal():
+    # The disguised-warm case that drove the losses: the model forecasts a NORMAL
+    # ~67F while the crowd's implied high is warm (74F). The block must fire on the
+    # warmer market-implied high even though the model cohort alone is "normal".
+    market, probability = _no_favorite()
+    evaluator = TradeEvaluator(strategy_config_for_profile("live"))
+    decision = evaluator.evaluate_market(
+        market, probability, bankroll=1000, side="NO",
+        forecast_high_f=67.0, market_consensus=_consensus_high(74.0),
+    )
+    assert not decision.approved
+    assert any("market-implied" in r and "regime" in r for r in decision.reasons)
+
+
+def test_block_does_not_fire_when_model_and_market_are_both_normal():
+    # Don't over-block: a normal model forecast next to a normal (or cooler) crowd
+    # must NOT raise the regime reason.
+    market, probability = _no_favorite()
+    evaluator = TradeEvaluator(strategy_config_for_profile("live"))
+    decision = evaluator.evaluate_market(
+        market, probability, bankroll=1000, side="NO",
+        forecast_high_f=66.0, market_consensus=_consensus_high(66.0),
+    )
+    assert not any("regime" in r for r in decision.reasons)
+
+
+def test_market_implied_block_respects_the_disable_flag():
+    # With the market-high lever off, only the model forecast cohort is considered,
+    # so a warm crowd does not block a normal model forecast.
+    from dataclasses import replace as _replace
+
+    market, probability = _no_favorite()
+    config = _replace(
+        strategy_config_for_profile("live"), regime_block_uses_market_implied_high=False
+    )
+    decision = TradeEvaluator(config).evaluate_market(
+        market, probability, bankroll=1000, side="NO",
+        forecast_high_f=67.0, market_consensus=_consensus_high(74.0),
+    )
+    assert not any("regime" in r for r in decision.reasons)
 
 
 def test_regime_gate_is_inert_without_a_forecast_high():

@@ -61,16 +61,33 @@ class TradeEvaluator:
 
         if market.status != "active":
             reasons.append(f"market status is {market.status}, not active")
-        if (
-            forecast_high_f is not None
-            and self.config.blocked_forecast_cohorts
-            and temperature_cohort(forecast_high_f) in self.config.blocked_forecast_cohorts
-        ):
-            reasons.append(
-                f"forecast high {forecast_high_f:.1f}F is in the "
-                f"{temperature_cohort(forecast_high_f)} regime, blocked for this "
-                f"profile (forecaster anti-calibrated there pending recalibration)"
-            )
+        if self.config.blocked_forecast_cohorts:
+            # The model is anti-calibrated warm AND under-predicts there (it
+            # forecasts ~67F on days that actually hit 75F), so a model-only cohort
+            # check never fires on the disguised-warm days that drive the losses.
+            # Block on the WARMER of the model forecast and the market-implied
+            # consensus high (the crowd is better-calibrated warm and prices money),
+            # so genuinely-warm days the model disguises as normal still get fenced
+            # off. Falls back to model-only when no usable consensus is present.
+            candidate_highs: list[tuple[str, float]] = []
+            if forecast_high_f is not None:
+                candidate_highs.append(("forecast", forecast_high_f))
+            if (
+                self.config.regime_block_uses_market_implied_high
+                and market_consensus is not None
+                and market_consensus.available
+                and market_consensus.implied_high_f is not None
+            ):
+                candidate_highs.append(("market-implied", market_consensus.implied_high_f))
+            if candidate_highs:
+                regime_source, effective_high = max(candidate_highs, key=lambda pair: pair[1])
+                effective_cohort = temperature_cohort(effective_high)
+                if effective_cohort in self.config.blocked_forecast_cohorts:
+                    reasons.append(
+                        f"{regime_source} high {effective_high:.1f}F is in the "
+                        f"{effective_cohort} regime, blocked for this profile "
+                        f"(forecaster anti-calibrated there pending recalibration)"
+                    )
         if (
             source_spread_f is not None
             and source_spread_f > self.config.max_source_spread_f + 1e-9
