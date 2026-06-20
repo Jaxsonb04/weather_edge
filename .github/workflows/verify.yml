@@ -27,7 +27,7 @@ jobs:
           cache: pip
 
       - name: Install verification tools
-        run: python -m pip install --upgrade semgrep certifi pandas
+        run: python -m pip install --upgrade semgrep certifi pandas pytest
 
       - name: Run verification gate
         run: bash scripts/verify_project.sh

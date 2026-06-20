@@ -22,6 +22,12 @@ def test_systemd_units_use_rendered_weatheredge_env_file():
         assert "/etc/sfo-weather.env" not in text
 
 
+def test_github_verify_workflow_installs_test_import_dependencies():
+    workflow = _read(ROOT / ".github" / "workflows" / "verify.yml")
+
+    assert "pytest" in workflow
+
+
 def test_forecaster_refresh_generates_signal_before_dashboard_publish():
     text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
     signal_idx = text.index("build_public_trading_signal.sh")
