@@ -2,10 +2,11 @@
 set -euo pipefail
 
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
-REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather-edge.git}"
+REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
 BRANCH="${SFO_FORECASTER_GIT_BRANCH:-main}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
 SOURCE_CACHE_DIR="${SFO_FORECASTER_SOURCE_CACHE:-/opt/weatheredge/.cache/main}"
+SOURCE_LOCK="${SFO_FORECASTER_SOURCE_LOCK:-/opt/weatheredge/.locks/source-cache-main.lock}"
 SOURCE_SUBDIR="${SFO_FORECASTER_SOURCE_SUBDIR:-forecaster}"
 
 if [[ "$REMOTE_URL" == git@* && ! -f "$DEPLOY_KEY" ]]; then
@@ -18,6 +19,10 @@ if [[ "$REMOTE_URL" == git@* ]]; then
 fi
 
 mkdir -p "$(dirname "$SOURCE_CACHE_DIR")" "$FORECASTER_DIR"
+mkdir -p "$(dirname "$SOURCE_LOCK")"
+
+exec 9>"$SOURCE_LOCK"
+flock 9
 
 if [[ ! -d "$SOURCE_CACHE_DIR/.git" ]]; then
   rm -rf "$SOURCE_CACHE_DIR"

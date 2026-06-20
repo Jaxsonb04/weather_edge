@@ -3054,7 +3054,15 @@ def _print_portfolio_scan(
     if entry_block_reason:
         print(color.yellow(entry_block_reason))
 
-    status = color.green(color.bold("APPROVED")) if plan.approved else color.red(color.bold("REJECTED"))
+    if entry_block_reason:
+        blocked_label = (
+            "BLOCKED_BY_PAUSE"
+            if "paused" in entry_block_reason.lower()
+            else "BLOCKED"
+        )
+        status = color.yellow(color.bold(blocked_label))
+    else:
+        status = color.green(color.bold("APPROVED")) if plan.approved else color.red(color.bold("REJECTED"))
     print("")
     print(
         f"portfolio={status} run={plan.run_id} "

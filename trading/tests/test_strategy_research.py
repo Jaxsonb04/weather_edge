@@ -13,6 +13,7 @@ from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, TradeDecision
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
+from sfo_kalshi_quant.exits import convergence_take_profit_net, exit_bid_for_net, net_exit_per_contract
 from sfo_kalshi_quant.strategy_research import (
     _dataset_research_summary,
     _entry_block_reason,
@@ -97,6 +98,39 @@ def _approved_decision() -> TradeDecision:
     )
 
 
+def _no_favorite_decision() -> TradeDecision:
+    return TradeDecision(
+        ticker="KXHIGHTSFO-TEST-B71.5",
+        label="71 to 72",
+        action="BUY_NO",
+        approved=True,
+        probability=0.97,
+        probability_lcb=0.91,
+        yes_bid=0.12,
+        yes_ask=0.14,
+        spread=0.03,
+        fee_per_contract=0.01,
+        cost_per_contract=0.87,
+        edge=0.11,
+        edge_lcb=0.05,
+        kelly_fraction=0.02,
+        recommended_contracts=5.0,
+        expected_profit=0.55,
+        reasons=[],
+        side="NO",
+        entry_bid=0.84,
+        entry_ask=0.86,
+        entry_bid_size=40.0,
+        entry_ask_size=40.0,
+        trade_quality_score=81.0,
+        strike_type="between",
+        floor_strike=71.0,
+        cap_strike=72.0,
+        model_probability=0.97,
+        market_probability=0.86,
+    )
+
+
 def test_strategy_research_does_not_create_missing_paper_db():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
@@ -159,6 +193,84 @@ def test_strategy_research_reads_decisions_and_open_paper_positions():
         assert payload["signal_quality"]["charts"]["probability_vs_market"]
         alert_codes = {alert["code"] for alert in payload["status"]["alerts"]}
         assert "settlement-backlog" in alert_codes
+
+
+def test_strategy_research_exit_targets_match_edge_based_monitor_logic():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+
+        store = PaperStore(db_path)
+        decision = _no_favorite_decision()
+        store.record_decisions("2026-06-20", [decision])
+        order_id = store.record_paper_order("2026-06-20", decision)
+        assert order_id is not None
+        order = store.paper_order(order_id)
+        assert order is not None
+        contracts = float(order["contracts"])
+        live_bid = 0.94
+        net_exit = net_exit_per_contract(live_bid, contracts)
+        store.record_monitor_snapshot(
+            order,
+            side="NO",
+            action="HOLD",
+            reason="inside exit bands",
+            market_status="active",
+            live_bid=live_bid,
+            exit_fee_per_contract=live_bid - net_exit,
+            net_exit_per_contract=net_exit,
+            unrealized_pnl=contracts * (net_exit - float(order["cost_per_contract"])),
+            unrealized_roi=(net_exit - float(order["cost_per_contract"])) / float(order["cost_per_contract"]),
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        position = payload["paper_trading"]["open_positions"][0]
+        expected_net = convergence_take_profit_net(decision.model_probability)
+        assert position["take_profit_basis"] == "model_fair_value"
+        assert position["take_profit_net_exit"] == expected_net
+        assert position["take_profit_bid"] == exit_bid_for_net(expected_net, contracts)
+        assert position["monitor_action"] == "HOLD"
+
+
+def test_signal_quality_prefers_newest_target_before_old_approved_candidates():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+
+        store = PaperStore(db_path)
+        old_approved = replace(
+            _approved_decision(),
+            ticker="KXHIGHTSFO-26JUN18-B66.5",
+            trade_quality_score=95.0,
+        )
+        current_blocked = replace(
+            _approved_decision(),
+            ticker="KXHIGHTSFO-26JUN20-B68.5",
+            label="68 to 69",
+            approved=False,
+            trade_quality_score=20.0,
+            reasons=["research paused: daily loss cap reached"],
+        )
+        store.record_decisions("2026-06-18", [old_approved])
+        store.record_decisions("2026-06-20", [current_blocked])
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        candidates = payload["signal_quality"]["latest_candidates"]
+        assert candidates[0]["target_date"] == "2026-06-20"
+        assert candidates[0]["approved"] is False
+        assert payload["status"]["latest_target_date"] == "2026-06-20"
 
 
 def test_strategy_research_surfaces_resting_limit_orders():

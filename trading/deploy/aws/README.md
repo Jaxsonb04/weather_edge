@@ -80,7 +80,7 @@ Set at least:
 ```bash
 GOOGLE_WEATHER_API_KEY=replace_with_google_weather_key
 SFO_PUBLISH_PAGES=1
-SFO_FORECASTER_GIT_REMOTE=git@github.com:Jaxsonb04/weather-edge.git
+SFO_FORECASTER_GIT_REMOTE=git@github.com:Jaxsonb04/weather_edge.git
 SFO_FORECASTER_SOURCE_SUBDIR=forecaster
 SFO_PAGES_DEPLOY_KEY=/home/ubuntu/.ssh/sfo_weather_pages_deploy
 SFO_PAGES_BRANCH=gh-pages

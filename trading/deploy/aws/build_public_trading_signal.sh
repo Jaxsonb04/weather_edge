@@ -49,11 +49,11 @@ if [[ "${SFO_TRADING_SIGNAL_DISABLE_ENSEMBLE:-0}" == "1" ]]; then
 fi
 
 cd "$TRADING_DIR"
-"$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}"
+"$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}" >/dev/null
 "$PYTHON_BIN" -m sfo_kalshi_quant.cli \
   --no-color \
   --forecaster-root "$FORECASTER_DIR" \
   --db-path "$DB_PATH" \
   strategy-research \
   --calibration-min-train "$CALIBRATION_MIN_TRAIN" \
-  --output "$RESEARCH_OUTPUT_PATH"
+  --output "$RESEARCH_OUTPUT_PATH" >/dev/null

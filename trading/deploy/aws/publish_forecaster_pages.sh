@@ -7,7 +7,7 @@ if [[ "${SFO_PUBLISH_PAGES:-0}" != "1" ]]; then
 fi
 
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
-REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather-edge.git}"
+REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
 PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
 PUBLIC_MODE_RAW="${SFO_STRATEGY_LAB_PUBLIC_MODE:-1}"

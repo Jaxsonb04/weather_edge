@@ -57,12 +57,15 @@ def test_public_signal_builder_is_read_only_and_paper_only():
     assert "--output" in text
     assert "--place-paper" not in text
     assert "paper-buy" not in text
+    assert '"$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}" >/dev/null' in text
+    assert '--output "$RESEARCH_OUTPUT_PATH" >/dev/null' in text
 
 
 def test_paper_scan_pins_calibration_source():
     service = _read(AWS_DIR / "systemd" / "sfo-kalshi-paper-scan.service.in")
     runner = _read(AWS_DIR / "run_paper_scan_profiles.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
+    readme = _read(AWS_DIR / "README.md")
 
     assert "run_paper_scan_profiles.sh" in service
     assert "portfolio-scan" in runner
@@ -80,6 +83,8 @@ def test_paper_scan_pins_calibration_source():
     assert "PAPER_ENTRY_MODE=market" in example_env
     assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
     assert "SFO_PORTFOLIO_MIN_PROFIT=0.01" in example_env
+    assert "balanced,fast-feedback,exploratory" not in example_env
+    assert "balanced,fast-feedback,exploratory" not in readme
 
 
 def test_paper_trading_timers_run_around_the_clock_and_auto_settle():
@@ -177,6 +182,25 @@ def test_pages_deploy_key_path_matches_lightsail_setup_docs():
     assert expected in syncer
     assert expected in readme
     assert "weatheredge_pages_deploy" not in example_env + publisher + syncer + readme
+
+
+def test_source_sync_serializes_shared_git_cache_and_uses_current_remote():
+    syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
+    example_env = _read(AWS_DIR / "sfo-weather.env.example")
+    readme = _read(AWS_DIR / "README.md")
+
+    assert "weather_edge.git" in syncer
+    assert "weather-edge.git" not in syncer
+    assert "weather_edge.git" in example_env
+    assert "weather-edge.git" not in example_env
+    assert "weather_edge.git" in readme
+    assert "weather-edge.git" not in readme
+    assert "SFO_FORECASTER_SOURCE_LOCK" in syncer
+    assert "/opt/weatheredge/.locks/source-cache-main.lock" in syncer
+    assert 'mkdir -p "$(dirname "$SOURCE_LOCK")"' in syncer
+    assert "flock" in syncer
+    assert "exec 9>" in syncer
+    assert "git remote set-url origin" in syncer
 
 
 def test_pages_publish_is_race_safe():

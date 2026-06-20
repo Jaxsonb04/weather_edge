@@ -24,6 +24,9 @@ from .exits import (
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_YES_STOP_LOSS_PCT,
     DEFAULT_YES_TAKE_PROFIT_PCT,
+    convergence_take_profit_net,
+    decide_exit,
+    exit_bid_for_net,
 )
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
@@ -1045,8 +1048,15 @@ def _signal_quality_payload(db_path: Path, trading_signal: dict[str, Any] | None
     decisions = [row for row in decisions if _is_live_candidate(row)]
     stale_filtered = pre_filter_count - len(decisions)
 
+    latest_target = max(
+        (str(row.get("target_date")) for row in decisions if row.get("target_date")),
+        default=None,
+    )
+
     decisions.sort(
         key=lambda row: (
+            str(row.get("target_date") or ""),
+            str(row.get("created_at") or ""),
             bool(row.get("approved")),
             _to_float(row.get("quality_score")),
             _to_float(row.get("edge_lcb")),
@@ -1059,6 +1069,7 @@ def _signal_quality_payload(db_path: Path, trading_signal: dict[str, Any] | None
         "available": bool(decisions),
         "source": source,
         "stale_candidates_filtered": stale_filtered,
+        "latest_target_date": latest_target,
         "latest_candidates": decisions,
         "market_consensus": _market_consensus_payload(db_path),
         "charts": {
@@ -1266,12 +1277,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         ).fetchall()
 
     open_positions = [
-        _paper_row(
-            row,
-            monitor_marks.get(int(row["id"]))
-            or decision_marks.get((row["market_ticker"], _side_from_row(row))),
-            monitor,
-        )
+        _paper_row(row, _position_mark_for(row, monitor_marks, decision_marks), monitor)
         for row in open_rows
     ]
     # Mark resting limit orders with the latest scanned bid/ask too, so the
@@ -1716,7 +1722,7 @@ def _status_payload(
     for row in paper.get("open_positions", []):
         if row.get("target_date") and not _is_probability_only_ticker(row.get("ticker")):
             latest_targets.append(str(row["target_date"]))
-    latest_target = _status_target_date(
+    latest_target = signal_quality.get("latest_target_date") or _status_target_date(
         latest_targets,
         entry_block_reason=entry_block_reason,
     ) or _target_from_signal(trading_signal)
@@ -1937,13 +1943,15 @@ def _latest_position_marks(db_path: Path) -> dict[tuple[str, str], dict[str, Any
             """
             SELECT id, created_at, market_ticker, side, yes_bid, yes_ask,
                    entry_bid, entry_ask, entry_bid_size, entry_ask_size,
-                   spread, market_probability, trade_quality_score
+                   spread, probability, model_probability, market_probability,
+                   trade_quality_score
             FROM decision_snapshots
             ORDER BY created_at DESC, id DESC
             LIMIT 5000
             """
         ).fetchall()
 
+    now = datetime.now(UTC)
     for row in rows:
         side = _side_from_row(row)
         key = (row["market_ticker"], side)
@@ -1964,9 +1972,38 @@ def _latest_position_marks(db_path: Path) -> dict[tuple[str, str], dict[str, Any
             "ask_size": _round(row["entry_ask_size"], 4),
             "spread": _round(row["spread"], 4),
             "market_probability": _round(row["market_probability"], 4),
+            "model_side_probability": _fresh_model_side_probability(row, now),
             "quality_score": _round(row["trade_quality_score"], 1),
         }
     return marks
+
+
+def _fresh_model_side_probability(row: sqlite3.Row, now: datetime) -> float | None:
+    created_at = _parse_timestamp(row["created_at"])
+    if created_at is None or now - created_at > timedelta(minutes=90):
+        return None
+    value = row["model_probability"] if row["model_probability"] is not None else row["probability"]
+    if value is None:
+        return None
+    parsed = _to_float(value, default=math.nan)
+    if not math.isfinite(parsed):
+        return None
+    return max(0.0, min(1.0, parsed))
+
+
+def _position_mark_for(
+    row: sqlite3.Row,
+    monitor_marks: dict[int, dict[str, Any]],
+    decision_marks: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any] | None:
+    side = _side_from_row(row)
+    decision_mark = decision_marks.get((row["market_ticker"], side))
+    monitor_mark = monitor_marks.get(int(row["id"]))
+    if monitor_mark is None:
+        return decision_mark
+    if decision_mark is None:
+        return monitor_mark
+    return {**decision_mark, **monitor_mark}
 
 
 def _side_from_row(row: sqlite3.Row) -> str:
@@ -2028,30 +2065,6 @@ def _monitor_thresholds_for_side(monitor: dict[str, Any], side: str) -> tuple[fl
         _to_float(monitor.get("take_profit_pct"), DEFAULT_TAKE_PROFIT_PCT),
         _to_float(monitor.get("stop_loss_pct"), DEFAULT_STOP_LOSS_PCT),
     )
-
-
-def _net_exit_per_contract(bid: float, contracts: float) -> float:
-    if bid <= 0 or bid >= 1 or contracts <= 0:
-        return 0.0
-    return bid - quadratic_fee_average_per_contract(bid, contracts)
-
-
-def _exit_bid_for_net(target_net: float, contracts: float) -> float | None:
-    if contracts <= 0:
-        return None
-    if target_net <= _net_exit_per_contract(0.01, contracts):
-        return _round(0.01, 4)
-    if target_net > _net_exit_per_contract(0.99, contracts):
-        return None
-    lo = 0.01
-    hi = 0.99
-    for _ in range(48):
-        mid = (lo + hi) / 2.0
-        if _net_exit_per_contract(mid, contracts) >= target_net:
-            hi = mid
-        else:
-            lo = mid
-    return _round(hi, 4)
 
 
 def _position_mark_status(
@@ -2143,9 +2156,38 @@ def _paper_row(
     take_profit_pct, stop_loss_pct = _monitor_thresholds_for_side(monitor, side)
     take_profit = take_profit_pct / 100.0
     stop_loss = stop_loss_pct / 100.0
-    take_profit_net = cost_per_contract * (1.0 + take_profit)
+    legacy_take_profit_net = cost_per_contract * (1.0 + take_profit)
     stop_loss_net = max(0.0, cost_per_contract * (1.0 - stop_loss))
+    model_side_probability = _to_float(mark.get("model_side_probability"), None) if mark else None
+    model_take_profit_net = convergence_take_profit_net(model_side_probability)
+    if model_take_profit_net is not None:
+        take_profit_net = model_take_profit_net
+        take_profit_basis = "model_fair_value"
+    else:
+        take_profit_net = legacy_take_profit_net
+        take_profit_basis = "legacy_percent"
     mark_status = _position_mark_status(unrealized_pnl, unrealized_roi, monitor, side)
+    exit_rule_reason = None
+    if current_net_exit is not None:
+        signal = decide_exit(
+            side=side,
+            entry_cost=cost_per_contract,
+            net_exit=current_net_exit,
+            stop_loss_net=stop_loss_net,
+            model_side_probability=model_side_probability,
+            model_veto_buffer=_to_float(monitor.get("model_veto_buffer"), DEFAULT_MODEL_VETO_BUFFER),
+            model_veto_max_loss_roi=(
+                _to_float(
+                    monitor.get("model_veto_max_loss_pct"),
+                    DEFAULT_MODEL_VETO_MAX_LOSS_PCT,
+                )
+                / 100.0
+            ),
+            legacy_take_profit_net=legacy_take_profit_net,
+            stop_loss_pct=stop_loss_pct,
+        )
+        exit_rule_reason = signal.reason
+        mark_status = {**mark_status, "monitor_action": signal.action}
     if row["status"] == "PAPER_LIMIT_RESTING":
         mark_status = {
             "status": "LIMIT_RESTING",
@@ -2200,6 +2242,7 @@ def _paper_row(
         "current_market_probability": _round(mark.get("market_probability"), 4) if mark else None,
         "current_snapshot_at": mark.get("created_at") if mark else None,
         "current_source": mark.get("source") if mark else None,
+        "model_side_probability": _round(model_side_probability, 4),
         "current_exit_fee_per_contract": _round(current_exit_fee, 4),
         "current_net_exit": _round(current_net_exit, 4),
         "current_value": _round(current_value, 2),
@@ -2211,12 +2254,15 @@ def _paper_row(
         "monitor_action": mark_status["monitor_action"],
         "take_profit_pct": _round(take_profit_pct, 2),
         "stop_loss_pct": _round(stop_loss_pct, 2),
+        "take_profit_basis": take_profit_basis,
+        "stop_loss_basis": "legacy_percent_floor",
+        "exit_rule_reason": exit_rule_reason,
         "take_profit_pnl": _round(risk * take_profit, 2),
         "stop_loss_pnl": _round(-(risk * stop_loss), 2),
         "take_profit_net_exit": _round(take_profit_net, 4),
         "stop_loss_net_exit": _round(stop_loss_net, 4),
-        "take_profit_bid": _exit_bid_for_net(take_profit_net, contracts),
-        "stop_loss_bid": _exit_bid_for_net(stop_loss_net, contracts),
+        "take_profit_bid": exit_bid_for_net(take_profit_net, contracts),
+        "stop_loss_bid": exit_bid_for_net(stop_loss_net, contracts),
         "settlement_high_f": _round(row["settlement_high_f"], 1),
         "resolved_yes": row["resolved_yes"],
         "exit_price": _round(row["exit_price"], 4),

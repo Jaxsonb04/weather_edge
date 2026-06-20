@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from sfo_kalshi_quant.cli import build_parser, cmd_portfolio_scan
+import io
+from contextlib import redirect_stdout
+from datetime import date
+
+from sfo_kalshi_quant.cli import _print_portfolio_scan, build_parser, cmd_portfolio_scan
+from sfo_kalshi_quant.colors import Color
+from sfo_kalshi_quant.models import ForecastSnapshot
+from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
 
 
 def test_portfolio_scan_parser_is_paper_only_by_default() -> None:
@@ -50,3 +57,47 @@ def test_portfolio_scan_parser_keeps_diagnostics_flags_available() -> None:
     assert args.min_profit == 0.05
     assert args.paper_entry_mode == "limit"
     assert args.place_paper is True
+
+
+def test_portfolio_scan_prints_blocked_status_when_pause_prevents_placement() -> None:
+    plan = PortfolioPlan(
+        run_id="PF-test",
+        risk_profile="research",
+        approved=True,
+        legs=[],
+        arbitrage_opportunities=[],
+        total_spend=12.34,
+        worst_case_loss=12.34,
+        expected_profit=1.23,
+        reasons=[],
+        limits=PortfolioLimits(
+            risk_profile="research",
+            bankroll=1000.0,
+            max_daily_loss=250.0,
+            yes_sleeve=50.0,
+            explore_sleeve=12.5,
+        ),
+    )
+    forecast = ForecastSnapshot(
+        target_date=date(2026, 6, 20),
+        predicted_high_f=68.0,
+        method="fixture",
+    )
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        _print_portfolio_scan(
+            "fixture event",
+            forecast,
+            plan,
+            [],
+            placed_ids=[],
+            market_available=True,
+            color=Color.from_no_color(True),
+            entry_block_reason="research paused: daily loss cap reached",
+        )
+
+    text = out.getvalue()
+    assert "research paused: daily loss cap reached" in text
+    assert "portfolio=BLOCKED_BY_PAUSE" in text
+    assert "portfolio=APPROVED" not in text
