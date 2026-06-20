@@ -113,9 +113,8 @@ PAPER_NO_TAKE_PROFIT_PCT=35
 PAPER_NO_STOP_LOSS_PCT=35
 PAPER_MODEL_VETO_MAX_LOSS_PCT=60
 PAPER_MODEL_VETO_BUFFER=0.08
-SFO_PAPER_SCAN_ARBITRAGE_ENABLED=1
-SFO_ARBITRAGE_MAX_SPEND=12
-SFO_ARBITRAGE_MIN_PROFIT=0.01
+SFO_PORTFOLIO_MAX_ARB_SPEND=12
+SFO_PORTFOLIO_MIN_PROFIT=0.01
 ```
 
 Each forecast refresh builds the public `trading_signal.json` and Strategy Lab
@@ -136,12 +135,11 @@ AWS paper scanning is pinned to LSTM calibration during this deployment stage.
 If `PAPER_RISK_PROFILES` is a comma-list, the scan service runs each profile
 back to back in the same paper DB. Orders are tagged by `risk_profile`, so the
 `live` paper book and `research` paper book do not block each other.
-Each paper scan first runs the paper-only `arbitrage` command when
-`SFO_PAPER_SCAN_ARBITRAGE_ENABLED=1`. It scans all active bins for same-bin
-YES+NO boxes and complete-ladder YES/NO portfolios, then places only grouped
-paper legs whose guaranteed payout exceeds all-in cost after rounded fees.
-Set `SFO_PAPER_SCAN_ARBITRAGE_ENABLED=0` to disable this scanner without
-changing the broad analyzer.
+Scheduled paper placement runs through `portfolio-scan`: guaranteed arbitrage
+is funded first, then high-confidence NO core, capped YES convex sleeve, and
+research exploration when the profile allows it. The standalone `arbitrage`,
+`tail-basket`, and `analyze` commands remain diagnostics, but the timer no
+longer places from independent paths with separate budgets.
 The public signal builder can be switched later with
 `SFO_TRADING_SIGNAL_CALIBRATION_SOURCE=clean-blend` after the server has enough
 clean next-day blend rows. Keeping this explicit avoids a silent source change

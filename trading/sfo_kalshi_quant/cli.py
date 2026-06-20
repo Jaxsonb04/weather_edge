@@ -63,6 +63,7 @@ from .models import (
     target_date_from_event_ticker,
 )
 from .paper import PaperTrader
+from .portfolio import PortfolioPlan, allocate_portfolio
 from .probability import ResidualCalibrator
 from .report import build_daily_report, write_report
 from .risk import TradeEvaluator
@@ -352,6 +353,76 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum guaranteed paper profit per arbitrage portfolio. Default: 0.01.",
     )
     arbitrage.set_defaults(func=cmd_arbitrage)
+
+    portfolio = sub.add_parser(
+        "portfolio-scan",
+        help="Run the shared portfolio allocator for AWS paper placement",
+    )
+    portfolio.add_argument(
+        "--target-date",
+        default="rolling",
+        help=(
+            "today, tomorrow, both, rolling, comma-list, or YYYY-MM-DD. "
+            "Default rolling waits for the next active Kalshi events."
+        ),
+    )
+    portfolio.add_argument(
+        "--side",
+        choices=("yes", "no", "both"),
+        default="both",
+        help="Directional sides to consider after arbitrage funding. Default: both.",
+    )
+    portfolio.add_argument("--offline-events", type=Path, help="Saved Kalshi events JSON")
+    portfolio.add_argument(
+        "--observed-high",
+        type=float,
+        help="Override today's observed high-so-far in F.",
+    )
+    portfolio.add_argument("--place-paper", action="store_true", help="Record approved paper portfolio orders")
+    portfolio.add_argument(
+        "--paper-entry-mode",
+        choices=("market", "limit"),
+        default=_default_paper_entry_mode(),
+        help="How --place-paper books approved directional entries. Default: PAPER_ENTRY_MODE or market.",
+    )
+    portfolio.add_argument(
+        "--skip-context-snapshots",
+        action="store_true",
+        help="Skip forecast/probability/market snapshot writes; decision snapshots are still recorded.",
+    )
+    portfolio.add_argument(
+        "--max-arb-spend",
+        type=float,
+        default=12.0,
+        help="Maximum paper dollars to spend per arbitrage portfolio. Default: 12.",
+    )
+    portfolio.add_argument(
+        "--min-profit",
+        type=float,
+        default=0.01,
+        help="Minimum guaranteed paper profit per arbitrage portfolio. Default: 0.01.",
+    )
+    portfolio.add_argument(
+        "--no-ensemble",
+        action="store_true",
+        help="Disable Open-Meteo GFS ensemble shape input and use residual calibration only.",
+    )
+    portfolio.add_argument(
+        "--calibration-source",
+        choices=("auto", "lstm", "clean-blend"),
+        default=_default_calibration_source(),
+        help=(
+            "Residual source for trading probabilities. Defaults to "
+            "SFO_TRADING_SIGNAL_CALIBRATION_SOURCE or lstm, matching the AWS deploy."
+        ),
+    )
+    portfolio.add_argument(
+        "--ensemble-timeout",
+        type=float,
+        default=12.0,
+        help="Seconds to wait for the station-aligned Open-Meteo ensemble fetch.",
+    )
+    portfolio.set_defaults(func=cmd_portfolio_scan)
 
     collect = sub.add_parser("collect", help="Fetch and store live Kalshi event plus forecast snapshot")
     collect.add_argument("--target-date", default="today", help="today, tomorrow, both, comma-list, or YYYY-MM-DD")
@@ -880,6 +951,39 @@ def cmd_arbitrage(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_portfolio_scan(args: argparse.Namespace) -> int:
+    color = Color.from_no_color(args.no_color)
+    config = _config(args)
+    kalshi_client = KalshiPublicClient()
+    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client)
+    if not targets:
+        print(color.yellow("no eligible target dates found"))
+        return 0
+    adapter = SfoForecasterAdapter(args.forecaster_root)
+    outcomes = adapter.load_calibration_outcomes(args.calibration_source)
+    calibrator = ResidualCalibrator(outcomes, config)
+    store = PaperStore(args.db_path)
+
+    for idx, target in enumerate(targets):
+        if idx:
+            print("")
+            print("=" * 92)
+            print("")
+        _portfolio_scan_one_target(
+            args,
+            target,
+            adapter,
+            calibrator,
+            config,
+            store,
+            color,
+            event_hint=live_events_by_target.get(target),
+            event_lookup_done=target in live_events_by_target,
+            kalshi_client=kalshi_client,
+        )
+    return 0
+
+
 def _resolve_analysis_targets(
     args: argparse.Namespace,
     color: Color,
@@ -1116,6 +1220,7 @@ def _analyze_one_target(
         forecast=forecast,
         intraday=intraday,
         event=event,
+        market_consensus=consensus,
         risk_profile=risk_profile,
         bankroll=paper_bankroll,
     )
@@ -1140,6 +1245,172 @@ def _analyze_one_target(
         paper_stake=args.paper_stake,
         daily_budget=args.daily_budget,
         daily_budget_remaining=daily_budget_remaining,
+        intraday=intraday,
+        ensemble=ensemble,
+        entry_block_reason=entry_block_reason,
+        consensus=consensus,
+    )
+
+
+def _portfolio_scan_one_target(
+    args: argparse.Namespace,
+    target,
+    adapter: SfoForecasterAdapter,
+    calibrator: ResidualCalibrator,
+    config: StrategyConfig,
+    store: PaperStore,
+    color: Color,
+    *,
+    event_hint: EventSnapshot | None = None,
+    event_lookup_done: bool = False,
+    kalshi_client: KalshiPublicClient | None = None,
+) -> None:
+    forecast = adapter.latest_blend(target)
+    _enforce_live_forecast_freshness(forecast, config)
+    intraday = _intraday_for_target(args, target, adapter)
+    observed_high_f = intraday.observed_high_f if intraday else None
+    if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
+        forecast = adapter.apply_intraday_update(forecast, intraday)
+    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color)
+    event = event_hint
+    if event_lookup_done:
+        pass
+    elif args.offline_events:
+        events = load_event_snapshots(args.offline_events, target)
+        event = events[0] if events else None
+    else:
+        try:
+            client = kalshi_client or KalshiPublicClient()
+            event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
+        except (URLError, OSError) as exc:
+            print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
+            event = None
+
+    if event:
+        markets = event.active_markets or event.markets
+        event_title = event.title
+        market_available = True
+    else:
+        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
+        event_title = "No live Kalshi event found; portfolio scan is research-only"
+        market_available = False
+
+    probabilities = calibrator.bucket_probabilities(
+        markets,
+        forecast.predicted_high_f,
+        source_spread_f=forecast.source_spread_f,
+        observed_high_f=observed_high_f,
+        ensemble=ensemble,
+        intraday=intraday,
+    )
+    consensus = build_market_consensus(markets)
+    risk_profile = _risk_profile_name(args)
+    paper_bankroll = _sizing_bankroll(store, config, risk_profile)
+    evaluator = TradeEvaluator(config)
+    decisions = evaluator.rank(
+        markets,
+        probabilities,
+        bankroll=paper_bankroll,
+        sides=_analysis_sides(args.side),
+        source_spread_f=forecast.source_spread_f,
+        forecast_high_f=forecast.predicted_high_f,
+        forecast_sigma_f=forecast.source_spread_f,
+        market_consensus=consensus,
+    )
+    opportunities = build_arbitrage_opportunities(
+        markets,
+        config=config,
+        bankroll=paper_bankroll,
+        max_spend=args.max_arb_spend,
+        min_profit=args.min_profit,
+    )
+    plan = allocate_portfolio(
+        decisions,
+        arbitrage_opportunities=opportunities,
+        bankroll=paper_bankroll,
+        risk_profile=risk_profile,
+    )
+
+    entry_allowed = True
+    entry_block_reason = None
+    if args.place_paper:
+        if event is None:
+            entry_allowed = False
+            entry_block_reason = (
+                "paper portfolio disabled: target date is not listed as a live Kalshi event yet"
+            )
+        elif not event.active_markets:
+            entry_allowed = False
+            entry_block_reason = "paper portfolio disabled: Kalshi event has no active markets"
+        else:
+            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(target, forecast, intraday)
+    paper_trader = PaperTrader(
+        store,
+        config,
+        risk_profile=risk_profile,
+        entry_mode=args.paper_entry_mode,
+    )
+    if args.place_paper and entry_allowed:
+        pause_reason = store.paper_entry_pause_reason(
+            risk_profile,
+            bankroll=paper_bankroll,
+            target_date=target.isoformat(),
+        )
+        if pause_reason is not None:
+            entry_allowed = False
+            entry_block_reason = pause_reason
+
+    decisions_to_record = _portfolio_decisions_for_recording(decisions, plan)
+    if not entry_allowed and entry_block_reason:
+        decisions_to_record = _block_entry_decisions(decisions_to_record, entry_block_reason)
+
+    if not getattr(args, "skip_context_snapshots", False):
+        store.record_forecast(forecast)
+        if event:
+            store.record_market(event)
+        store.record_probabilities(target.isoformat(), probabilities.values())
+    store.record_decisions(
+        target.isoformat(),
+        decisions_to_record,
+        forecast=forecast,
+        intraday=intraday,
+        event=event,
+        market_consensus=consensus,
+        risk_profile=risk_profile,
+        bankroll=paper_bankroll,
+    )
+
+    placed_ids: list[int] = []
+    if args.place_paper and entry_allowed and plan.approved:
+        for opportunity in plan.arbitrage_opportunities:
+            placed_ids.extend(
+                paper_trader.place_arbitrage(
+                    target.isoformat(),
+                    opportunity,
+                    bankroll=paper_bankroll,
+                )
+            )
+        directional = [
+            leg.decision
+            for leg in plan.legs
+            if leg.sleeve != "arbitrage"
+        ]
+        placed_ids.extend(
+            paper_trader.place_approved(
+                target.isoformat(),
+                directional,
+                bankroll=paper_bankroll,
+            )
+        )
+
+    _print_portfolio_scan(
+        event_title,
+        forecast,
+        plan,
+        decisions_to_record,
+        placed_ids=placed_ids,
+        market_available=market_available,
+        color=color,
         intraday=intraday,
         ensemble=ensemble,
         entry_block_reason=entry_block_reason,
@@ -1473,6 +1744,43 @@ def _block_entry_decisions(decisions, reason: str):
         )
         for decision in decisions
     ]
+
+
+def _portfolio_decisions_for_recording(decisions, plan: PortfolioPlan):
+    selected_by_key = {
+        _portfolio_decision_key(leg.decision): leg.decision
+        for leg in plan.legs
+    }
+    recorded = []
+    seen: set[tuple[str, str]] = set()
+    for decision in decisions:
+        key = _portfolio_decision_key(decision)
+        seen.add(key)
+        selected = selected_by_key.get(key)
+        if selected is not None:
+            recorded.append(selected)
+        elif decision.approved:
+            recorded.append(
+                replace(
+                    decision,
+                    approved=False,
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                    reasons=[*decision.reasons, "portfolio not allocated by shared risk budget"],
+                )
+            )
+        else:
+            recorded.append(decision)
+    for leg in plan.legs:
+        key = _portfolio_decision_key(leg.decision)
+        if key not in seen:
+            recorded.append(leg.decision)
+            seen.add(key)
+    return recorded
+
+
+def _portfolio_decision_key(decision) -> tuple[str, str]:
+    return (str(decision.ticker), str(decision.side).upper())
 
 
 def _same_day_entry_cutoff_hour() -> int:
@@ -2435,6 +2743,11 @@ def cmd_backtest_rescore(args: argparse.Namespace) -> int:
         "  geometric_growth_per_independent_day: "
         f"{_fmt_opt(cand['geometric_growth_per_independent_day'], '{:.3%}')}"
     )
+    portfolio = result.get("portfolio") or {}
+    if portfolio:
+        print(f"  portfolio_day_hit_rate: {_fmt_opt(portfolio.get('hit_rate_per_day'), '{:.3f}')}")
+        print(f"  max_drawdown: ${float(portfolio.get('max_drawdown') or 0.0):.2f}")
+        print(f"  max_drawdown_pct: {_fmt_opt(portfolio.get('max_drawdown_pct'), '{:.3%}')}")
     ci = cand["roi_ci95_day_clustered"]
     if ci is not None:
         print(f"  roi_ci95_day_clustered: [{ci[0]:.3%}, {ci[1]:.3%}]")
@@ -2461,6 +2774,18 @@ def cmd_backtest_rescore(args: argparse.Namespace) -> int:
                 continue
             print(
                 f"{name:>4s} {bucket['trades']:6d} {bucket['independent_days']:4d} "
+                f"${bucket['realized_pnl']:8.2f} {_fmt_opt(bucket['roi'], '{:7.3%}')} "
+                f"{_fmt_opt(bucket['hit_rate'], '{:.3f}')}"
+            )
+
+    by_sleeve = (result.get("portfolio") or {}).get("by_sleeve") or {}
+    if by_sleeve:
+        print("")
+        print(color.gray("sleeve              trades days  pnl       roi      hit_rate"))
+        print(color.gray("-" * 64))
+        for name, bucket in by_sleeve.items():
+            print(
+                f"{name[:18]:>18s} {bucket['trades']:6d} {bucket['independent_days']:4d} "
                 f"${bucket['realized_pnl']:8.2f} {_fmt_opt(bucket['roi'], '{:7.3%}')} "
                 f"{_fmt_opt(bucket['hit_rate'], '{:.3f}')}"
             )
@@ -2679,6 +3004,93 @@ def _print_analysis(
     if placed_ids:
         print("")
         print(color.green(f"recorded paper orders: {', '.join(str(order_id) for order_id in placed_ids)}"))
+
+
+def _print_portfolio_scan(
+    event_title,
+    forecast,
+    plan: PortfolioPlan,
+    decisions,
+    *,
+    placed_ids: list[int],
+    market_available: bool,
+    color: Color,
+    intraday: IntradaySnapshot | None = None,
+    ensemble: EnsembleSnapshot | None = None,
+    entry_block_reason: str | None = None,
+    consensus: MarketConsensus | None = None,
+) -> None:
+    print(color.cyan(color.bold(event_title)))
+    print(
+        f"{color.bold('portfolio scan')} {forecast.target_date.isoformat()}: "
+        f"forecast={forecast.predicted_high_f:.2f}F "
+        f"source_spread={forecast.source_spread_f:.2f}F method={forecast.method} "
+        f"profile={plan.risk_profile}"
+    )
+    _print_consensus_line(consensus, forecast.predicted_high_f, color)
+    forecast_context = _forecast_context_pieces(forecast)
+    if forecast_context:
+        print(color.cyan("forecast context: " + "; ".join(forecast_context)))
+    if intraday is not None and intraday.observed_high_f is not None:
+        pieces = [f"observed_high_so_far={intraday.observed_high_f:.1f}F"]
+        if intraday.is_complete:
+            pieces.append("complete_daily_high")
+        if intraday.latest_temp_f is not None:
+            pieces.append(f"latest_temp={intraday.latest_temp_f:.1f}F")
+        print(color.cyan("intraday: " + "; ".join(pieces)))
+    if ensemble is not None:
+        print(
+            color.cyan(
+                "ensemble: "
+                f"station_mean={ensemble.station_mean_high_f:.2f}F "
+                f"station_std={ensemble.station_std_high_f:.2f}F "
+                f"members={ensemble.member_count}"
+            )
+        )
+        if ensemble.warning:
+            print(color.yellow(f"ensemble warning: {ensemble.warning}"))
+    if not market_available:
+        print(color.yellow("no active Kalshi market; portfolio placement is disabled"))
+    if entry_block_reason:
+        print(color.yellow(entry_block_reason))
+
+    status = color.green(color.bold("APPROVED")) if plan.approved else color.red(color.bold("REJECTED"))
+    print("")
+    print(
+        f"portfolio={status} run={plan.run_id} "
+        f"spend=${plan.total_spend:.2f} expected=${plan.expected_profit:.2f} "
+        f"worst_loss=${plan.worst_case_loss:.2f} "
+        f"loss_cap=${plan.limits.max_daily_loss:.2f} "
+        f"yes_sleeve=${plan.limits.yes_sleeve:.2f} "
+        f"explore_sleeve=${plan.limits.explore_sleeve:.2f}"
+    )
+    for reason in plan.reasons:
+        print(color.yellow(f"allocator: {reason}"))
+
+    print("")
+    print(color.gray("sleeve            side label          bid   ask    p   p_lcb  edge edge_lcb q     contracts spend    decision"))
+    print(color.gray("-" * 124))
+    sleeve_by_key = {
+        _portfolio_decision_key(leg.decision): leg.sleeve
+        for leg in plan.legs
+    }
+    for decision in decisions:
+        sleeve = sleeve_by_key.get(_portfolio_decision_key(decision), "-")
+        status_text = color.green("TRADE") if decision.approved else color.red("NO")
+        reason = "" if decision.approved else color.gray("; ".join(decision.reasons[:2]))
+        spend = decision.recommended_contracts * decision.cost_per_contract
+        print(
+            f"{sleeve[:16]:16s} {decision.side:4s} {decision.label[:13]:13s} "
+            f"{decision.bid:5.2f} {decision.ask:5.2f} "
+            f"{_color_prob(color, decision.probability)} {_color_prob(color, decision.probability_lcb)} "
+            f"{_color_edge(color, decision.edge)} {_color_edge(color, decision.edge_lcb)} "
+            f"{decision.trade_quality_score:5.1f} "
+            f"{decision.recommended_contracts:9.4f} ${spend:7.2f} {status_text} {reason}"
+        )
+
+    if placed_ids:
+        print("")
+        print(color.green(f"recorded paper portfolio orders: {', '.join(str(order_id) for order_id in placed_ids)}"))
 
 
 def _print_tail_basket(

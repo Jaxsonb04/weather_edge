@@ -27,6 +27,7 @@ from .exits import (
 )
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
+from .live_execution import LiveExecutionPolicy, readiness_status_from_checks
 from .settlement_day import settlement_today
 from .summary import build_paper_summary
 from .synthetic_blend import build_synthetic_blend_calibration
@@ -854,11 +855,18 @@ def _real_money_readiness_payload(
     if not config_rescore.get("available"):
         return {
             "available": False,
+            "status": "NOT_READY",
+            "status_reasons": [config_rescore.get("reason", "config rescore unavailable")],
             "reason": config_rescore.get("reason", "config rescore unavailable"),
         }
     live_rescore = (config_rescore.get("by_profile") or {}).get("live")
     if not live_rescore:
-        return {"available": False, "reason": "no live-profile rescore available"}
+        return {
+            "available": False,
+            "status": "NOT_READY",
+            "status_reasons": ["no live-profile rescore available"],
+            "reason": "no live-profile rescore available",
+        }
 
     cohort_brier = {
         row.get("name"): row.get("brier_score")
@@ -887,7 +895,36 @@ def _real_money_readiness_payload(
         calibration_cohort_brier_skill=cohort_brier_skill or None,
         max_abs_calibration_gap=max_gap,
     )
-    return {"available": True, "profile": "live", **readiness}
+    policy = LiveExecutionPolicy.from_env()
+    pilot_pnl_value = _env_float("SFO_LIVE_REALIZED_PILOT_PNL")
+    pilot_pnl = pilot_pnl_value if pilot_pnl_value is not None else 0.0
+    failed = [
+        str(check.get("label") or check.get("name"))
+        for check in readiness.get("checks", [])
+        if not check.get("passed")
+    ]
+    operational = readiness_status_from_checks(
+        evidence_passed=bool(readiness.get("ready")),
+        software_passed=True,
+        paper_ready=True,
+        pilot_loss_remaining=policy.pilot_max_loss + pilot_pnl,
+        failing_checks=failed,
+    )
+    return {
+        "available": True,
+        "profile": "live",
+        **readiness,
+        "status": operational.status,
+        "status_reasons": operational.failing_checks,
+        "pilot_loss_remaining": round(max(0.0, policy.pilot_max_loss + pilot_pnl), 2),
+        "live_policy": {
+            "enabled": policy.enabled,
+            "dry_run": policy.dry_run,
+            "pilot_max_loss": policy.pilot_max_loss,
+            "daily_loss": policy.daily_loss,
+            "per_trade_risk": policy.per_trade_risk,
+        },
+    }
 
 
 def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:

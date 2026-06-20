@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.models import BucketProbability
+from sfo_kalshi_quant.portfolio import allocate_portfolio, portfolio_limits_for_profile
 from sfo_kalshi_quant.risk import TradeEvaluator, _comfort_edge_assessment
 from sfo_kalshi_quant.standard_bins import standard_sfo_bins
 
@@ -130,6 +131,32 @@ def test_research_collector_does_not_block_near_forecast_no_bet():
     )
     assert decision.approved
     assert not any("comfort-edge" in r for r in decision.reasons)
+
+
+def test_june_17_19_near_forecast_no_failure_mode_is_live_blocked_research_capped():
+    # The post-June-16 loss pattern was NO bets too close to the forecasted high.
+    # Live must sit those out; research may keep collecting examples, but the
+    # shared allocator still caps total paper loss by profile.
+    market, probability = _no_favorite()
+    live = TradeEvaluator(strategy_config_for_profile("live"))
+    research = TradeEvaluator(strategy_config_for_profile("research"))
+
+    research_decisions = []
+    for target in ("2026-06-17", "2026-06-18", "2026-06-19"):
+        live_decision = live.evaluate_market(
+            market, probability, bankroll=1000, side="NO", forecast_high_f=66.0
+        )
+        assert not live_decision.approved, target
+        assert any("comfort-edge" in reason for reason in live_decision.reasons)
+
+        research_decision = research.evaluate_market(
+            market, probability, bankroll=1000, side="NO", forecast_high_f=66.0
+        )
+        assert research_decision.approved, target
+        research_decisions.append(research_decision)
+
+    plan = allocate_portfolio(research_decisions, bankroll=1000, risk_profile="research")
+    assert plan.worst_case_loss <= portfolio_limits_for_profile("research", 1000).max_daily_loss
 
 
 def test_far_tail_no_is_sized_up_versus_no_boost():

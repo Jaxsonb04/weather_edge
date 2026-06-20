@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Iterable
 
 from .config import normalize_risk_profile_name
+from .consensus import MarketConsensus
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
     quadratic_fee_per_contract,
 )
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .prediction_features import build_prediction_feature_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +108,7 @@ CREATE TABLE IF NOT EXISTS decision_snapshots (
     intraday_latest_observed_at TEXT,
     intraday_is_complete INTEGER NOT NULL DEFAULT 0,
     intraday_observed_high_source TEXT,
+    prediction_features_json TEXT,
     reasons_json TEXT NOT NULL
 );
 
@@ -290,6 +293,7 @@ DECISION_AUDIT_COLUMNS = {
     "forecast_lead_hours": "REAL",
     "risk_profile": "TEXT",
     "bankroll": "REAL",
+    "prediction_features_json": "TEXT",
 }
 
 
@@ -611,6 +615,7 @@ class PaperStore:
         forecast: ForecastSnapshot | None = None,
         intraday: IntradaySnapshot | None = None,
         event: EventSnapshot | None = None,
+        market_consensus: MarketConsensus | None = None,
         risk_profile: str | None = None,
         bankroll: float | None = None,
     ) -> None:
@@ -620,6 +625,14 @@ class PaperStore:
         if event is not None:
             markets_by_ticker = {market.ticker: market for market in event.markets}
         observed_high_mode = _forecast_observed_high_mode(forecast)
+        prediction_features_json = json.dumps(
+            build_prediction_feature_snapshot(
+                forecast,
+                market_consensus=market_consensus,
+                intraday=intraday,
+            ),
+            sort_keys=True,
+        )
         for decision in decisions:
             spend = decision.recommended_contracts * decision.cost_per_contract
             market = markets_by_ticker.get(decision.ticker)
@@ -674,6 +687,7 @@ class PaperStore:
                     forecast.lead_hours if forecast is not None else None,
                     risk_profile,
                     bankroll,
+                    prediction_features_json,
                     json.dumps(decision.reasons),
                 )
             )
@@ -694,9 +708,10 @@ class PaperStore:
                     intraday_observed_high_f, intraday_latest_observed_at,
                     intraday_is_complete, intraday_observed_high_source,
                     forecast_predicted_high_f, forecast_source_spread_f,
-                    forecast_lead_hours, risk_profile, bankroll, reasons_json
+                    forecast_lead_hours, risk_profile, bankroll,
+                    prediction_features_json, reasons_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

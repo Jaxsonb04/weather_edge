@@ -193,6 +193,48 @@ def test_run_rescore_floors_fractional_high_to_integer_settlement():
     assert cand["realized_pnl"] < 0
 
 
+def test_run_rescore_reports_portfolio_drawdown_and_sleeve_attribution():
+    config = StrategyConfig()
+    base = TradeEvaluator(config).evaluate_market(
+        _no_favorite_market(), _no_favorite_probability(), bankroll=1000.0, side="NO"
+    )
+    assert base.approved
+    no_core = replace(
+        base,
+        reasons=[*base.reasons, "portfolio PF-TEST: sleeve=no_core, growth=0.001000"],
+    )
+    arb_leg = replace(
+        base,
+        action="ARBITRAGE_BUY_NO",
+        reasons=[*base.reasons, "portfolio PF-TEST: sleeve=arbitrage, growth=0.000100"],
+    )
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03", [no_core], event=pre_resolution_event([no_core])
+        )
+        store.record_decisions(
+            "2026-06-04", [arb_leg], event=pre_resolution_event([arb_leg])
+        )
+        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        result = run_rescore(
+            rows,
+            {"2026-06-03": 70.0, "2026-06-04": 67.4},
+            config,
+            bankroll=1000.0,
+        )
+
+    portfolio = result["portfolio"]
+    assert portfolio["independent_days"] == 2
+    assert portfolio["hit_rate_per_day"] == 0.5
+    assert portfolio["max_drawdown"] > 0
+    assert portfolio["max_drawdown_pct"] > 0
+    assert portfolio["by_sleeve"]["no_core"]["trades"] == 1
+    assert portfolio["by_sleeve"]["arbitrage"]["trades"] == 1
+    assert portfolio["by_side"]["NO"]["trades"] == 2
+
+
 def test_run_rescore_counterfactual_rejects_under_tighter_config():
     # The recorded entry approves under conservative; a config whose minimum
     # posterior exceeds the trade's probability rejects it. That proves the

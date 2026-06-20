@@ -65,22 +65,21 @@ def test_paper_scan_pins_calibration_source():
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
     assert "run_paper_scan_profiles.sh" in service
+    assert "portfolio-scan" in runner
     assert 'CALIBRATION_SOURCE="${SFO_TRADING_SIGNAL_CALIBRATION_SOURCE:-lstm}"' in runner
     assert 'PAPER_ENTRY_MODE="${PAPER_ENTRY_MODE:-market}"' in runner
     assert '--calibration-source "$CALIBRATION_SOURCE"' in runner
     assert '--paper-entry-mode "$PAPER_ENTRY_MODE"' in runner
     assert 'TARGET_DATE="${SFO_PAPER_SCAN_TARGET_DATE:-rolling}"' in runner
-    assert 'TAIL_BASKET_ENABLED="${SFO_PAPER_SCAN_TAIL_BASKET_ENABLED:-1}"' in runner
-    assert "tail-basket" in runner
-    assert "--max-worst-case-loss" in runner
+    assert 'PORTFOLIO_MAX_ARB_SPEND="${SFO_PORTFOLIO_MAX_ARB_SPEND:-12}"' in runner
+    assert 'PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"' in runner
     assert "PAPER_RISK_PROFILES=live,research" in example_env
     # The deployment example uses market entry (2026-06-17) so approved scans
     # fill immediately at the ask instead of resting as limit orders that expire
     # unfilled; the runner also defaults to market when unset (asserted above).
     assert "PAPER_ENTRY_MODE=market" in example_env
-    assert "SFO_PAPER_SCAN_TAIL_BASKET_ENABLED=1" in example_env
-    assert "SFO_TAIL_BASKET_TAIL_STAKE=5" in example_env
-    assert "SFO_TAIL_BASKET_CENTER_STAKE=1" in example_env
+    assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
+    assert "SFO_PORTFOLIO_MIN_PROFIT=0.01" in example_env
 
 
 def test_paper_trading_timers_run_around_the_clock_and_auto_settle():
@@ -190,17 +189,18 @@ def test_pages_publish_is_race_safe():
     assert "re-fetching" in publisher  # the retry path re-fetches the fresh tip
 
 
-def test_paper_scan_is_overlap_guarded_and_kelly_sized():
+def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():
     runner = _read(AWS_DIR / "run_paper_scan_profiles.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
     # Overlap guard: a slow scan must not be double-run by the 5-minute timer.
     assert "SFO_PAPER_SCAN_LOCK" in runner
     assert "flock -n" in runner
-    # Kelly-sized tail-basket legs (the fix for the inert "$1-2" P&L).
-    assert 'TAIL_BASKET_SIZING="${SFO_TAIL_BASKET_SIZING:-kelly}"' in runner
-    assert '--basket-sizing "$TAIL_BASKET_SIZING"' in runner
-    assert "SFO_TAIL_BASKET_SIZING=kelly" in example_env
+    assert runner.count("    portfolio-scan") == 1
+    assert "tail-basket" not in runner
+    assert " arbitrage" not in runner
+    assert " analyze" not in runner
+    assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
 
 
 def test_pull_paper_db_script_exists_for_offline_rescore():

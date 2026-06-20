@@ -582,6 +582,8 @@ def test_strategy_research_includes_config_rescore():
         readiness = payload["real_money_readiness"]
         assert readiness["available"] is True, readiness.get("reason")
         assert readiness["profile"] == "live"
+        assert readiness["status"] == "PAPER_READY"
+        assert readiness["status_reasons"]
         assert 0.0 <= readiness["readiness_pct"] <= 100.0
         assert readiness["ready"] is False  # a one-day fixture cannot be ready
         assert readiness["checks"] and all("progress" in c for c in readiness["checks"])

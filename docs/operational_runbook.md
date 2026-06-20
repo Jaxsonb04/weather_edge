@@ -51,7 +51,27 @@ To simulate conservative paper buy limits instead of immediate paper fills:
 PAPER_ENTRY_MODE=limit python -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --place-paper
 ```
 
-## Paper Arbitrage Scan
+## Portfolio Paper Scan
+
+Scheduled AWS paper placement uses the shared allocator:
+
+```bash
+cd /path/to/WeatherEdge/trading
+python -m sfo_kalshi_quant.cli --no-color portfolio-scan --target-date rolling --side both
+```
+
+To record approved paper portfolio orders:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color portfolio-scan --target-date rolling --side both --place-paper
+```
+
+The allocator funds guaranteed arbitrage first, then high-confidence NO core,
+capped YES convex exposure, and research-only exploration when the profile
+allows it. The commands below are diagnostics and should not replace the
+scheduled portfolio path.
+
+## Paper Arbitrage Diagnostic
 
 ```bash
 cd /path/to/WeatherEdge

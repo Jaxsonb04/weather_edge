@@ -1,16 +1,13 @@
 """The 5-min paper scan must record forecast+probability context every tick.
 
-Regression guard for the 2026-06-16 data outage: the scan runs arbitrage first,
-but ``_arbitrage_one_target`` records ONLY market_snapshots (no forecast /
-probability ladder). When a successful arbitrage run flipped the per-tick
-"context already written" flag, the full-context commands (tail-basket / analyze)
-were told to ``--skip-context-snapshots`` and wrote nothing -- silently starving
-forecast_snapshots + probability_snapshots (and the dashboard calibration + the
-legacy stop-loss model-veto that read them).
+Regression guard for the 2026-06-16 data outage and the 2026-06-20 portfolio
+allocator migration: the scheduled scanner must have one full-context owner per
+tick. Independent arbitrage/tail/analyze placement paths are diagnostics only;
+AWS paper placement flows through ``portfolio-scan``.
 
 This drives the REAL deploy script (run_paper_scan_profiles.sh) with a stubbed CLI
-and asserts the invariant: arbitrage never owns context, and exactly one
-full-context command writes it per tick.
+and asserts the invariant: exactly one ``portfolio-scan`` writes full context
+per tick.
 """
 
 import os
@@ -27,7 +24,7 @@ _STUB = """#!/usr/bin/env bash
 sub="?"; skip="no"
 for a in "$@"; do
   case "$a" in
-    arbitrage|tail-basket|analyze) sub="$a" ;;
+    portfolio-scan|arbitrage|tail-basket|analyze) sub="$a" ;;
     --skip-context-snapshots) skip="yes" ;;
   esac
 done
@@ -63,37 +60,27 @@ def _run_scan(tmp: Path, **env_overrides) -> list[tuple[str, bool]]:
     return calls
 
 
-def test_arbitrage_never_owns_context_and_full_context_is_written_once():
+def test_portfolio_scan_owns_context_and_old_placement_paths_do_not_run():
     if shutil.which("bash") is None:  # pragma: no cover - bash is present on CI/dev
         return
     with TemporaryDirectory() as t:
-        calls = _run_scan(
-            Path(t),
-            SFO_PAPER_SCAN_ARBITRAGE_ENABLED="1",
-            SFO_PAPER_SCAN_TAIL_BASKET_ENABLED="1",
-        )
+        calls = _run_scan(Path(t))
 
     assert calls, "scan invoked no commands"
-    # Arbitrage records only market_snapshots, so it must ALWAYS skip context.
-    for sub, skipped in calls:
-        if sub == "arbitrage":
-            assert skipped, "arbitrage must never be the per-tick context writer"
-    # Exactly one full-context command writes context this tick, and it is not arbitrage.
+    assert {sub for sub, _ in calls} == {"portfolio-scan"}
     owners = [sub for sub, skipped in calls if not skipped]
-    assert len(owners) == 1, f"expected exactly one context writer, got {owners}"
-    assert owners[0] in ("tail-basket", "analyze")
+    assert owners == ["portfolio-scan"]
 
 
-def test_analyzer_owns_context_when_tail_basket_is_disabled():
-    """The always-run analyzer is the fallback owner if the basket is off."""
+def test_second_profile_skips_duplicate_context():
     if shutil.which("bash") is None:  # pragma: no cover
         return
     with TemporaryDirectory() as t:
         calls = _run_scan(
             Path(t),
-            SFO_PAPER_SCAN_ARBITRAGE_ENABLED="1",
-            SFO_PAPER_SCAN_TAIL_BASKET_ENABLED="0",
+            PAPER_RISK_PROFILES="live,research",
         )
 
     owners = [sub for sub, skipped in calls if not skipped]
-    assert owners == ["analyze"], f"expected analyze to own context, got {owners}"
+    assert owners == ["portfolio-scan"], f"expected one context owner, got {owners}"
+    assert calls == [("portfolio-scan", False), ("portfolio-scan", True)]

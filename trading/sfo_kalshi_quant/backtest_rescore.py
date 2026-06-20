@@ -35,6 +35,7 @@ the verdict.
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from dataclasses import dataclass
@@ -265,6 +266,7 @@ class _Scored:
     capital: float
     pnl: float
     won: bool
+    sleeve: str
 
 
 def _integer_settlement_high_f(high: float) -> float:
@@ -450,6 +452,7 @@ def run_rescore(
                     capital=capital,
                     pnl=pnl,
                     won=won,
+                    sleeve=_sleeve_from_row(row, side),
                 )
             )
 
@@ -536,6 +539,9 @@ def _summarize(
     sides: dict[str, list[_Scored]] = {}
     for r in settled:
         sides.setdefault(r.side, []).append(r)
+    sleeves: dict[str, list[_Scored]] = {}
+    for r in settled:
+        sleeves.setdefault(r.sleeve, []).append(r)
 
     wins = sum(1 for r in settled if r.won)
     settled_trades = len(settled)
@@ -571,6 +577,13 @@ def _summarize(
                 [round(ci[0], 6), round(ci[1], 6)] if ci is not None else None
             ),
         },
+        "portfolio": _portfolio_summary(
+            settled,
+            per_day,
+            sides,
+            sleeves,
+            starting_bankroll=starting_bankroll,
+        ),
         "recorded_config_own_book": {
             "realized_pnl": round(recorded_pnl, 4),
             "capital_at_risk": round(recorded_capital, 4),
@@ -604,6 +617,81 @@ def _summarize(
             }
             for day in independent_days
         ],
+    }
+
+
+def _row_reasons(row: sqlite3.Row) -> list[str]:
+    raw = _row_value(row, "reasons_json", "[]")
+    try:
+        parsed = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(value) for value in parsed]
+
+
+def _sleeve_from_row(row: sqlite3.Row, side: str) -> str:
+    try:
+        action = str(row["action"]).upper()
+    except (IndexError, KeyError):
+        action = ""
+    if "ARBITRAGE" in action:
+        return "arbitrage"
+    for reason in _row_reasons(row):
+        marker = "sleeve="
+        if marker not in reason:
+            continue
+        value = reason.split(marker, 1)[1].split(",", 1)[0].split(" ", 1)[0].strip()
+        if value:
+            return value
+    return "yes_convex" if side == "YES" else "no_core"
+
+
+def _portfolio_summary(
+    settled: list[_Scored],
+    per_day: dict[str, dict[str, float]],
+    sides: dict[str, list[_Scored]],
+    sleeves: dict[str, list[_Scored]],
+    *,
+    starting_bankroll: float,
+) -> dict[str, object]:
+    equity = starting_bankroll
+    peak = starting_bankroll
+    max_drawdown = 0.0
+    days_with_capital = 0
+    winning_days = 0
+    equity_curve: list[dict[str, object]] = []
+    for day in sorted(per_day):
+        pnl = per_day[day]["pnl"]
+        capital = per_day[day]["capital"]
+        if capital > 0:
+            days_with_capital += 1
+            if pnl > 0:
+                winning_days += 1
+        equity += pnl
+        peak = max(peak, equity)
+        drawdown = max(0.0, peak - equity)
+        max_drawdown = max(max_drawdown, drawdown)
+        equity_curve.append(
+            {
+                "target_date": day,
+                "ending_equity": round(equity, 4),
+                "day_pnl": round(pnl, 4),
+                "drawdown": round(drawdown, 4),
+            }
+        )
+    return {
+        "independent_days": days_with_capital,
+        "trades": len(settled),
+        "ending_equity": round(equity, 4),
+        "growth_multiple": round(equity / starting_bankroll, 6) if starting_bankroll > 0 else None,
+        "hit_rate_per_day": round(winning_days / days_with_capital, 4) if days_with_capital else None,
+        "max_drawdown": round(max_drawdown, 4),
+        "max_drawdown_pct": round(max_drawdown / starting_bankroll, 6) if starting_bankroll > 0 else None,
+        "by_side": {name: _bucket(rows) for name, rows in sorted(sides.items())},
+        "by_sleeve": {name: _bucket(rows) for name, rows in sorted(sleeves.items())},
+        "equity_curve": equity_curve,
     }
 
 
