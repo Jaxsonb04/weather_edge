@@ -636,6 +636,7 @@ def compute_real_money_readiness(
     calibration_cohort_brier: dict[str, float] | None = None,
     calibration_cohort_brier_skill: dict[str, float] | None = None,
     max_abs_calibration_gap: float | None = None,
+    weighted_calibration_ece: float | None = None,
     thresholds: ReadinessThresholds | None = None,
 ) -> dict[str, object]:
     """Collapse the LIVE-profile rescore (+ calibration) into a go/no-go verdict.
@@ -784,15 +785,24 @@ def compute_real_money_readiness(
             )
         )
 
+    # The gate stays the worst single-bucket gap (fail-closed), but the
+    # sample-weighted ECE is surfaced beside it because the max-gap is noisy when
+    # the driving bucket is sparse (a 14-sample mid-confidence bucket can swing the
+    # gap +/-0.15 on resampling). ECE is the stable companion signal; it is
+    # reported, NOT used to loosen the gate.
+    if max_abs_calibration_gap is None:
+        gap_detail = "calibration gap unavailable"
+    else:
+        gap_detail = f"max bucket gap {max_abs_calibration_gap:.3f}"
+        if weighted_calibration_ece is not None:
+            gap_detail += f" (sample-weighted ECE {weighted_calibration_ece:.3f})"
     checks.append(
         _readiness_check(
             "calibration_gap",
             f"Calibration gap < {thresholds.max_calibration_gap:g}",
             max_abs_calibration_gap is not None
             and max_abs_calibration_gap < thresholds.max_calibration_gap,
-            f"max bucket gap {max_abs_calibration_gap:.3f}"
-            if max_abs_calibration_gap is not None
-            else "calibration gap unavailable",
+            gap_detail,
         )
     )
 

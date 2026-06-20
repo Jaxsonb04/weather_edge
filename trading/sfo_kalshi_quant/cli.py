@@ -1109,7 +1109,12 @@ def _analyze_one_target(
         store.record_forecast(forecast)
         if event:
             store.record_market(event)
-        store.record_probabilities(target.isoformat(), probabilities.values())
+            # Only record the probability stream when there is a live Kalshi event.
+            # On a fetch-failure / no-event tick the ladder is the synthetic
+            # standard_sfo_bins fallback with no market prices, so recording it
+            # pollutes the signal-tracking / calibration stream with rows that have
+            # no real market to score against (paper entry is already blocked here).
+            store.record_probabilities(target.isoformat(), probabilities.values())
     store.record_decisions(
         target.isoformat(),
         display_decisions,
@@ -1345,7 +1350,12 @@ def _tail_basket_one_target(
         store.record_forecast(forecast)
         if event:
             store.record_market(event)
-        store.record_probabilities(target.isoformat(), probabilities.values())
+            # Only record the probability stream when there is a live Kalshi event.
+            # On a fetch-failure / no-event tick the ladder is the synthetic
+            # standard_sfo_bins fallback with no market prices, so recording it
+            # pollutes the signal-tracking / calibration stream with rows that have
+            # no real market to score against (paper entry is already blocked here).
+            store.record_probabilities(target.isoformat(), probabilities.values())
     store.record_decisions(
         target.isoformat(),
         decisions_to_record,

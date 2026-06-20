@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from .backtest import run_walk_forward_calibration_backtest
 from .backtest_rescore import compute_real_money_readiness, run_rescore
@@ -152,6 +155,9 @@ def _daily_summary_payload(
             days=7,
         )
     except Exception as exc:  # diagnostics artifact must not fail the refresh
+        # Swallowed so the refresh still publishes, but log the traceback first --
+        # otherwise a real bug here reads as benign "data unavailable" forever.
+        logger.exception("paper summary payload failed; marking unavailable")
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
     return {"available": True, **payload}
 
@@ -180,6 +186,7 @@ def _load_or_build_dataset_research(*, forecaster_root: Path, db_path: Path) -> 
             forecaster_root=forecaster_root,
         )
     except Exception as exc:  # diagnostics artifact must not fail Strategy Lab
+        logger.exception("dataset research payload failed; marking unavailable")
         return {
             "available": False,
             "reason": f"dataset research unavailable: {type(exc).__name__}: {exc}",
@@ -836,6 +843,7 @@ def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dic
             "by_profile": by_profile,
         }
     except Exception as exc:  # diagnostics artifact must not fail the refresh
+        logger.exception("config rescore payload failed; marking unavailable")
         return {**empty, "reason": f"{type(exc).__name__}: {exc}"}
 
 
@@ -880,14 +888,42 @@ def _real_money_readiness_payload(
         if bucket.get("calibration_gap") is not None
     ]
     max_gap = max(gaps) if gaps else None
+    # Sample-weighted ECE: the stable companion to the noisy single-bucket max-gap.
+    # Weighting each bucket's |gap| by its sample count stops a sparse mid-band
+    # bucket from dominating the read. Surfaced for transparency; the gate itself
+    # stays the conservative max-gap (fail-closed).
+    weighted_ece = _weighted_calibration_ece(active_calibration.get("buckets") or [])
 
     readiness = compute_real_money_readiness(
         live_rescore,
         calibration_cohort_brier=cohort_brier or None,
         calibration_cohort_brier_skill=cohort_brier_skill or None,
         max_abs_calibration_gap=max_gap,
+        weighted_calibration_ece=weighted_ece,
     )
-    return {"available": True, "profile": "live", **readiness}
+    return {
+        "available": True,
+        "profile": "live",
+        "calibration_weighted_ece": _round(weighted_ece, 4) if weighted_ece is not None else None,
+        **readiness,
+    }
+
+
+def _weighted_calibration_ece(buckets: list[dict[str, Any]]) -> float | None:
+    """Sample-count-weighted mean of |observed - predicted| across buckets."""
+
+    total_n = 0
+    acc = 0.0
+    for bucket in buckets:
+        gap = bucket.get("calibration_gap")
+        count = bucket.get("count")
+        if gap is None or not count:
+            continue
+        total_n += count
+        acc += count * abs(gap)
+    if total_n == 0:
+        return None
+    return acc / total_n
 
 
 def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:

@@ -59,6 +59,37 @@ def test_ready_when_every_threshold_is_cleared():
     assert result["checks_passed"] == result["checks_total"]
 
 
+def test_weighted_ece_is_surfaced_but_does_not_loosen_the_gate():
+    # The gate stays the worst single-bucket gap (fail-closed). A noisy 0.21 gap
+    # still FAILS even when the stable sample-weighted ECE is tiny; the ECE is only
+    # reported beside it for context, never used to pass.
+    result = compute_real_money_readiness(
+        _passing_rescore(),
+        calibration_cohort_brier=_good_calibration(),
+        calibration_cohort_brier_skill=_good_skill(),
+        max_abs_calibration_gap=0.21,
+        weighted_calibration_ece=0.02,
+    )
+    cal = next(c for c in result["checks"] if c["name"] == "calibration_gap")
+    assert cal["passed"] is False
+    assert "max bucket gap 0.210" in cal["detail"]
+    assert "sample-weighted ECE 0.020" in cal["detail"]
+    assert result["ready"] is False
+
+
+def test_weighted_calibration_ece_weights_by_sample_count():
+    from sfo_kalshi_quant.strategy_research import _weighted_calibration_ece
+
+    buckets = [
+        {"calibration_gap": 0.21, "count": 14},   # sparse, big gap
+        {"calibration_gap": 0.01, "count": 810},  # dense, tiny gap
+    ]
+    expected = (14 * 0.21 + 810 * 0.01) / 824
+    assert abs(_weighted_calibration_ece(buckets) - expected) < 1e-9
+    assert _weighted_calibration_ece([]) is None
+    assert _weighted_calibration_ece([{"calibration_gap": None, "count": 5}]) is None
+
+
 def test_not_ready_and_percentage_reflects_partial_progress():
     rescore = _passing_rescore()
     rescore["counts"]["independent_days"] = 15  # half of 30
