@@ -19,6 +19,25 @@ def test_parse_maximum_temperature_from_clisfo_like_text():
     assert report.max_temperature_f == 67
 
 
+def test_parse_max_temperature_anchors_to_temperature_section():
+    # A stray "MAXIMUM" in an earlier section (wind, records) must NOT be read as
+    # the daily high; the TEMPERATURE (F) section anchor wins. Without the anchor,
+    # the broad pattern would return the first MAXIMUM (95) and mis-settle the book.
+    text = """
+    CLIMATE REPORT
+    ...THE SAN FRANCISCO AIRPORT CLIMATE SUMMARY FOR JUNE 7 2026...
+
+    WIND (MPH)
+     MAXIMUM         95  02:00 PM
+
+    TEMPERATURE (F)
+     MAXIMUM         67  12:29 PM
+     MINIMUM         52
+    """
+    report = parse_clisfo(text)
+    assert report.max_temperature_f == 67
+
+
 def test_parse_report_date_uses_climate_summary_title_not_tomorrow_normals():
     text = """
     CLIMATE REPORT

@@ -355,6 +355,42 @@ def test_settle_paper_orders_pays_buy_no_when_bucket_resolves_no():
         assert round(summary["realized_pnl"], 2) == 7.57
 
 
+def test_settle_paper_orders_floors_fractional_high_to_integer_grid():
+    # Kalshi settles on the integer NWS Daily Climate Report maximum. A fractional
+    # 73.4 must floor to 73 BEFORE resolving bins. The 72-73 bin contains 73, so a
+    # BUY_NO loses (Kalshi-correct). Without flooring, 73.4 falls outside [72,73]
+    # and the NO would wrongly win -- the borderline-bin flip this guards against.
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B72.5",
+            label="72° to 73°",
+            action="BUY_NO",
+            side="NO",
+            approved=True,
+            probability=0.80,
+            probability_lcb=0.70,
+            yes_bid=0.20,
+            yes_ask=0.22,
+            spread=0.02,
+            fee_per_contract=0.01,
+            cost_per_contract=0.24,
+            edge=0.56,
+            edge_lcb=0.46,
+            kelly_fraction=0.01,
+            recommended_contracts=10.0,
+            expected_profit=5.6,
+            reasons=[],
+            entry_bid=0.76,
+            entry_ask=0.23,
+        )
+        store.record_paper_order("2026-06-03", decision)
+        assert store.settle_paper_orders("2026-06-03", 73.4) == 1
+        row = store.paper_orders(1)[0]
+        assert row["settlement_high_f"] == 73.0  # floored from 73.4
+        assert row["realized_pnl"] < 0  # NO loses because 73 is inside the 72-73 bin
+
+
 def test_settle_paper_orders_prefers_structured_strikes_over_labels():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

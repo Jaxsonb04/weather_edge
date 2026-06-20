@@ -384,18 +384,50 @@ class SfoForecasterAdapter:
         return outcomes
 
     def load_ksfo_daily_highs(self) -> dict[date, float]:
+        """Daily settlement highs by date, on the integer grid Kalshi settles on.
+
+        Kalshi settles every SFO daily-high market on the NWS Daily Climate Report
+        (CLISFO) *integer* maximum, not on the fractional station observation. The
+        raw ``nws_daily_high_ground_truth`` high is a Celsius->Fahrenheit station
+        reading that is almost always fractional and runs ~1F below the CLISFO
+        value, so resolving bins against it flips borderline days (e.g. NWS 71.6
+        floors to 71 while CLISFO settled 71 -> different bin than 72). Prefer the
+        CLISFO integer when present and fall back to the half-up-floored NWS high
+        otherwise, so every backtest/settle path that reads this resolves against
+        the same truth as the live CLISFO settle path (db.settle_paper_orders).
+        """
         if not self.weather_db.exists():
             return {}
-        query = """
-            SELECT local_date, high_f
-            FROM nws_daily_high_ground_truth
-            WHERE high_f IS NOT NULL AND is_complete = 1
-        """
         with sqlite3.connect(self.weather_db) as conn:
             if not _table_exists(conn, "nws_daily_high_ground_truth"):
                 return {}
-            rows = conn.execute(query).fetchall()
-        return {date.fromisoformat(local_date): float(high_f) for local_date, high_f in rows}
+            if _table_exists(conn, "clisfo_settlements"):
+                rows = conn.execute(
+                    """
+                    SELECT g.local_date, g.high_f, s.max_temperature_f
+                    FROM nws_daily_high_ground_truth g
+                    LEFT JOIN clisfo_settlements s ON s.local_date = g.local_date
+                    WHERE g.high_f IS NOT NULL AND g.is_complete = 1
+                    """
+                ).fetchall()
+            else:
+                rows = [
+                    (local_date, high_f, None)
+                    for local_date, high_f in conn.execute(
+                        """
+                        SELECT local_date, high_f
+                        FROM nws_daily_high_ground_truth
+                        WHERE high_f IS NOT NULL AND is_complete = 1
+                        """
+                    ).fetchall()
+                ]
+        settlements: dict[date, float] = {}
+        for local_date, nws_high, clisfo_high in rows:
+            if clisfo_high is not None:
+                settlements[date.fromisoformat(local_date)] = float(clisfo_high)
+            else:
+                settlements[date.fromisoformat(local_date)] = _integer_settlement_high_f(nws_high)
+        return settlements
 
 
 def _maybe_float(value: object) -> float | None:
