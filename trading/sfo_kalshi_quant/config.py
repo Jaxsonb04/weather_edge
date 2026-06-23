@@ -236,6 +236,28 @@ class StrategyConfig:
     # after-fee edge_lcb floor, so it only leans harder into far tails that
     # already clear the gates -- it never manufactures a bet that was not there.
     comfort_edge_max_size_boost: float = 2.0
+    # --- Calibration-edge scaffolding (Phase 0 plumbing; INERT at defaults) ---
+    # Identity/no-op defaults so live behavior is unchanged until each phase wires
+    # and walk-forward-validates its knob. See docs/calibration_edge_plan_2026-06-22.md.
+    # Phase 2: market-implied recalibration p* = sigmoid(theta * logit(p)).
+    # theta=1.0 is the identity transform (no de-extreming).
+    theta_recalibration: float = 1.0
+    # Phase 1: synoptic-regime-conditional Tmax de-bias (offshore-flow / pressure-
+    # tendency regimes), each regime's residual correction shrunk toward the global
+    # mean and capped. Off by default; wired forecaster-side in Phase 1.
+    regime_bias_enabled: bool = False
+    regime_bias_shrink_k: float = 30.0
+    regime_bias_cap_f: float = 1.5
+    # Phase 3: per-cohort fractional-Kelly multipliers as (cohort_name, multiplier)
+    # pairs; empty tuple = identity (no cohort-conditioned shrink).
+    cohort_kelly_multipliers: tuple[tuple[str, float], ...] = ()
+    # Phase 3: side-agnostic Baker-McHale uncertainty shrink on Kelly. Generalizes
+    # the YES-only _yes_sizing_factor's variance shrink to BOTH sides so NO favorites
+    # get the same estimation-error discipline -- sized down in proportion to the
+    # win-prob's lower-bound gap (p - p_lcb), sharpest on expensive favorites.
+    # Complements min_probability_uncertainty (the degenerate p==p_lcb==1.0 clamp).
+    # off = identity (no size change), never increases size.
+    uncertainty_kelly_enabled: bool = False
 
 
 LIVE_PROFILE_OVERRIDES = {

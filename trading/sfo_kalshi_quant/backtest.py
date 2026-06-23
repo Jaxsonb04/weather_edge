@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .config import StrategyConfig
@@ -56,22 +57,30 @@ def run_walk_forward_calibration_backtest(
     config: StrategyConfig | None = None,
     min_train: int = 180,
     markets: list[MarketBin] | None = None,
+    calibrator_factory: Callable[[list[ForecastOutcome], StrategyConfig], ResidualCalibrator]
+    | None = None,
 ) -> CalibrationBacktestResult:
     """Walk-forward probability backtest using historical forecast outcomes.
 
     This tests the model's probability calibration independent of Kalshi prices.
     Market-PnL backtests require archived entry-time quotes, which the collector
     stores going forward.
+
+    ``calibrator_factory`` is the A/B seam: it builds the per-step calibrator from
+    ``(train, cfg)`` and defaults to ``ResidualCalibrator`` (bit-identical to the
+    prior hardcoded behavior), so a variant calibrator can be swapped in without
+    forking the harness.
     """
 
     cfg = config or StrategyConfig()
+    factory = calibrator_factory or ResidualCalibrator
     ladder = markets or standard_sfo_bins("KXHIGHTSFO-BACKTEST")
     scored = []
     calibration_samples: list[tuple[float, float]] = []
     for idx in range(min_train, len(outcomes)):
         train = outcomes[:idx]
         test = outcomes[idx]
-        calibrator = ResidualCalibrator(train, cfg)
+        calibrator = factory(train, cfg)
         probs = calibrator.bucket_probabilities(ladder, test.predicted_high_f)
         # Climatological prior: each bin's marginal YES-frequency over the
         # training window, independent of the forecast. It is the no-skill

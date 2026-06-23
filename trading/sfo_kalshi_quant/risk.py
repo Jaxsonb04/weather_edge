@@ -233,6 +233,19 @@ class TradeEvaluator:
                 1.0 - uncertainty_floor, max(uncertainty_floor, sizing_probability)
             )
         kelly = kelly_fraction_spent(sizing_probability, cost)
+        if self.config.uncertainty_kelly_enabled:
+            # Baker-McHale (2013): the growth-optimal bet is strictly below naive
+            # Kelly under win-probability uncertainty. Extends the YES-only
+            # _yes_sizing_factor's variance shrink to BOTH sides, so a NO favorite
+            # gets the same estimation-error discipline YES already has -- sized
+            # down in proportion to its lower-bound gap (p - p_lcb), most sharply on
+            # expensive favorites (small edge_e). Complements min_probability_
+            # uncertainty (which clamps the degenerate p == p_lcb == 1.0 case).
+            # Identity (x1.0) when side_probability == side_probability_lcb; never
+            # increases size. Off on the frozen baseline.
+            kelly *= _confidence_shrink(
+                side_probability, side_probability_lcb, cost, self.config
+            )
         kelly *= self.config.fractional_kelly
         risk_budget = bankroll * self.config.max_position_risk_pct
         kelly_budget = bankroll * kelly
@@ -472,19 +485,19 @@ def _yes_tail_rejection_reasons(
     return failures
 
 
-def _yes_sizing_factor(
+def _confidence_shrink(
     probability: float,
     probability_lcb: float,
     cost: float,
     config: StrategyConfig,
 ) -> float:
-    """Baker-McHale estimation-error shrink times payout scale for YES tails.
+    """Baker-McHale estimation-error shrink in [0, 1] -- SIDE-AGNOSTIC.
 
-    Any probability uncertainty makes the growth-optimal bet strictly below naive
-    Kelly; the shrink is quadratic in the implied sigma (Baker & McHale, 2013).
-    The payout scale (``cost``) sizes a cheap longshot proportionally smaller -- a
-    5c YES at ~1/20th of an even-money bet -- which is exactly where the
-    favorite-longshot bias and fee drag bite hardest.
+    The growth-optimal bet is strictly below naive Kelly under any uncertainty in
+    the win probability; the shrink is quadratic in the implied sigma (Baker &
+    McHale, 2013). Returns 1.0 when the win-prob is known exactly (p == p_lcb) and
+    decays toward 0 as the uncertainty (p - p_lcb) grows. Returns 0.0 on a
+    non-tradeable cost or non-positive edge (matching the prior YES helper).
     """
 
     if cost <= 0 or cost >= 1:
@@ -493,9 +506,24 @@ def _yes_sizing_factor(
     if edge_e <= 0:
         return 0.0
     sigma = max(0.0, (probability - probability_lcb) / config.confidence_z)
-    k_shrink = edge_e**2 / (edge_e**2 + (sigma / (1.0 - cost)) ** 2)
-    payout_scale = cost
-    return k_shrink * payout_scale
+    return edge_e**2 / (edge_e**2 + (sigma / (1.0 - cost)) ** 2)
+
+
+def _yes_sizing_factor(
+    probability: float,
+    probability_lcb: float,
+    cost: float,
+    config: StrategyConfig,
+) -> float:
+    """The side-agnostic Baker-McHale shrink times a YES-longshot payout scale.
+
+    ``payout_scale = cost`` sizes a cheap longshot proportionally smaller -- a 5c
+    YES at ~1/20th of an even-money bet -- which is exactly where the
+    favorite-longshot bias and fee drag bite hardest. Equals
+    ``_confidence_shrink(...) * cost`` (bit-identical to the prior implementation).
+    """
+
+    return _confidence_shrink(probability, probability_lcb, cost, config) * cost
 
 
 def _trade_quality_score(
