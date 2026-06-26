@@ -56,12 +56,19 @@ def run_walk_forward_calibration_backtest(
     config: StrategyConfig | None = None,
     min_train: int = 180,
     markets: list[MarketBin] | None = None,
+    emos_lookup: dict | None = None,
 ) -> CalibrationBacktestResult:
     """Walk-forward probability backtest using historical forecast outcomes.
 
     This tests the model's probability calibration independent of Kalshi prices.
     Market-PnL backtests require archived entry-time quotes, which the collector
     stores going forward.
+
+    ``emos_lookup`` (target_date -> (mu, sigma)) feeds the trained EMOS Gaussian
+    into the calibrator; combined with ``config.emos_distribution_enabled`` it
+    scores the EMOS-distribution path head-to-head against the residual-calibrated
+    path on the same days. The EMOS (mu, sigma) values are already out-of-sample
+    (rolling-origin), so the comparison stays leakage-safe.
     """
 
     cfg = config or StrategyConfig()
@@ -72,7 +79,10 @@ def run_walk_forward_calibration_backtest(
         train = outcomes[:idx]
         test = outcomes[idx]
         calibrator = ResidualCalibrator(train, cfg)
-        probs = calibrator.bucket_probabilities(ladder, test.predicted_high_f)
+        emos_mu_sigma = emos_lookup.get(test.local_date) if emos_lookup else None
+        probs = calibrator.bucket_probabilities(
+            ladder, test.predicted_high_f, emos_mu_sigma=emos_mu_sigma
+        )
         # Climatological prior: each bin's marginal YES-frequency over the
         # training window, independent of the forecast. It is the no-skill
         # baseline a useful forecaster must beat; per-bin Brier vs this prior

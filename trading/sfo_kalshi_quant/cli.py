@@ -1139,6 +1139,7 @@ def _analyze_one_target(
         markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
+    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1146,6 +1147,7 @@ def _analyze_one_target(
         observed_high_f=observed_high_f,
         ensemble=ensemble,
         intraday=intraday,
+        emos_mu_sigma=emos_lookup.get(target),
     )
     # The market's de-vigged bin ladder distilled into a consensus forecast
     # (implied high, distribution, confidence). Surfaced below and, when the
@@ -1295,6 +1297,7 @@ def _portfolio_scan_one_target(
         event_title = "No live Kalshi event found; portfolio scan is research-only"
         market_available = False
 
+    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1302,6 +1305,7 @@ def _portfolio_scan_one_target(
         observed_high_f=observed_high_f,
         ensemble=ensemble,
         intraday=intraday,
+        emos_mu_sigma=emos_lookup.get(target),
     )
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
@@ -1557,6 +1561,7 @@ def _tail_basket_one_target(
         markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
+    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1564,6 +1569,7 @@ def _tail_basket_one_target(
         observed_high_f=observed_high_f,
         ensemble=ensemble,
         intraday=intraday,
+        emos_mu_sigma=emos_lookup.get(target),
     )
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)

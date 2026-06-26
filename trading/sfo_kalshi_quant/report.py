@@ -128,6 +128,7 @@ def build_target_report(
         event_title = "No live Kalshi event found; probability-only fallback ladder"
         market_available = False
 
+    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -135,6 +136,7 @@ def build_target_report(
         observed_high_f=observed_high_f,
         ensemble=ensemble,
         intraday=intraday,
+        emos_mu_sigma=emos_lookup.get(target),
     )
     decisions = TradeEvaluator(config).rank(
         markets,

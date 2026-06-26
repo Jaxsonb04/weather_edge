@@ -98,10 +98,22 @@ class ResidualCalibrator:
         observed_high_f: float | None = None,
         ensemble: EnsembleSnapshot | None = None,
         intraday: IntradaySnapshot | None = None,
+        emos_mu_sigma: tuple[float, float] | None = None,
     ) -> dict[str, BucketProbability]:
         if observed_high_f is None and intraday is not None:
             observed_high_f = intraday.observed_high_f
-        cond = self.conditional_stats(predicted_high_f)
+
+        # Resolve the EMOS override up front so the residual conditioning window
+        # -- which sizes effective_n and the edge_lcb band below -- is centered
+        # where the EMOS distribution actually lives, not the stale blend point.
+        emos_active = self.config.emos_distribution_enabled and emos_mu_sigma is not None
+        emos_mu = emos_sigma = None
+        if emos_active:
+            emos_mu, emos_sigma = emos_mu_sigma
+            if not (math.isfinite(emos_mu) and math.isfinite(emos_sigma)):
+                emos_active = False  # malformed artifact -> keep the residual path
+
+        cond = self.conditional_stats(emos_mu if emos_active else predicted_high_f)
         glob = self.global_stats
         cond_weight = cond.n / (cond.n + self.config.shrinkage_samples)
 
@@ -129,15 +141,30 @@ class ResidualCalibrator:
                 blended = math.sqrt((1.0 - w) * sigma * sigma + w * sigma_ens * sigma_ens)
                 sigma = max(blended, self.config.ensemble_sigma_floor_frac * sigma)
 
+        # EMOS distribution override: drive the normal component directly from the
+        # calibrated EMOS Gaussian. Re-center via `bias` so
+        # `predicted_high_f + bias == emos_mu` at the per-bin integral below, and
+        # replace `sigma`. The conditioning window above is already centered on
+        # emos_mu so effective_n / the edge_lcb band reflect the EMOS estimate.
+        # Identity (bit-identical) when disabled or no EMOS forecast is available.
+        if emos_active:
+            bias = emos_mu - predicted_high_f
+            sigma = max(emos_sigma, 0.1)  # mirror the residual-path sigma floor (_stats)
+
         results: dict[str, BucketProbability] = {}
         raw_probs = []
         for market in markets:
             lo, hi = market.continuous_interval()
-            kernel_bw = self.config.empirical_kernel_bandwidth_f
-            p_cond = interval_probability_empirical(predicted_high_f, cond.residuals, lo, hi, kernel_bw)
-            p_glob = interval_probability_empirical(predicted_high_f, glob.residuals, lo, hi, kernel_bw)
-            p_emp = (cond_weight * p_cond) + ((1.0 - cond_weight) * p_glob)
             p_norm = interval_probability_normal(predicted_high_f + bias, sigma, lo, hi)
+            if emos_active:
+                # The calibrated EMOS Gaussian IS the weather distribution; the
+                # blend's empirical residual shape is fully superseded (no dead compute).
+                p_emp = p_norm
+            else:
+                kernel_bw = self.config.empirical_kernel_bandwidth_f
+                p_cond = interval_probability_empirical(predicted_high_f, cond.residuals, lo, hi, kernel_bw)
+                p_glob = interval_probability_empirical(predicted_high_f, glob.residuals, lo, hi, kernel_bw)
+                p_emp = (cond_weight * p_cond) + ((1.0 - cond_weight) * p_glob)
             p = (self.config.empirical_weight * p_emp) + ((1.0 - self.config.empirical_weight) * p_norm)
             raw_probs.append((market, p, p_emp, p_norm))
 
@@ -167,9 +194,13 @@ class ResidualCalibrator:
                 )
             weather_probs.append((market, max(0.0, min(1.0, weather_p)), p_emp, p_norm, ensemble_p))
 
+        # Center the intraday model on the EMOS mean when active (predicted_high_f
+        # + bias == mu_emos), so the afternoon intraday blend does not drag the
+        # EMOS distribution back toward the stale blend point. Identity otherwise.
+        intraday_center = (predicted_high_f + bias) if emos_active else predicted_high_f
         intraday_model = _intraday_probability_model(
             markets,
-            predicted_high_f,
+            intraday_center,
             intraday,
             config=self.config,
         )
