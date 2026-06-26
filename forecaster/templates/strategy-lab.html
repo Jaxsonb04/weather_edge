@@ -152,6 +152,7 @@
     [data-theme="dark"] .paper-state.good .paper-state-value b,
     [data-theme="dark"] .trade-stat b.good-text,
     [data-theme="dark"] .exit-stat b.good-text,
+    [data-theme="dark"] .history-pnl b.good-text,
     [data-theme="dark"] .rule-tile b.good-text { color: var(--mint); }
     [data-theme="dark"] .pill.bad,
     [data-theme="dark"] .access-error { color: var(--danger); }
@@ -925,6 +926,120 @@
     .good-text { color: #0b684f; }
     .bad-text { color: var(--danger); }
     .muted { color: var(--ink-3); }
+    /* Paper history (closed positions + recent actions): result-forward rows.
+       Replaces the wide horizontal-scroll tables so the realized result reads
+       immediately at any width, with a 5-row collapse for long histories. */
+    .history-stack { display: grid; gap: 1rem; }
+    .history-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.62rem;
+    }
+    .history-head h3 { margin-bottom: 0; }
+    .history-count {
+      color: var(--ink-3);
+      font: 600 0.66rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .history-list { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+    .history-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.85rem;
+      padding: 0.68rem 0.8rem;
+      background: var(--surface);
+      border: 1px solid var(--line-2);
+      border-left: 3px solid var(--line);
+      border-radius: 10px;
+    }
+    .history-row.good { border-left-color: var(--mint); }
+    .history-row.bad { border-left-color: var(--danger); }
+    .history-row.warn { border-left-color: var(--warm); }
+    .history-row.is-hidden { display: none; }
+    .history-main { flex: 1 1 auto; min-width: 0; }
+    .history-title {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      color: var(--ink);
+      font: 600 0.92rem var(--font-sans);
+    }
+    .history-meta {
+      margin-top: 0.26rem;
+      color: var(--ink-3);
+      font-size: 0.77rem;
+      line-height: 1.45;
+    }
+    .history-meta .sep { padding: 0 0.16rem; opacity: 0.55; }
+    .history-pnl {
+      flex: 0 0 auto;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .history-pnl b {
+      display: block;
+      color: var(--ink);
+      font: 600 1.12rem var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .history-pnl b.good-text { color: #0b684f; }
+    .history-pnl b.bad-text { color: var(--danger); }
+    .history-pnl span {
+      display: block;
+      margin-top: 0.16rem;
+      color: var(--ink-3);
+      font: 600 0.74rem var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .history-state {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.5rem;
+      padding: 0.16rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--chip);
+      color: var(--ink-2);
+      font: 600 0.66rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .side-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.35rem;
+      padding: 0.1rem 0.44rem;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      font: 600 0.64rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .side-pill.side-yes { color: var(--cold-deep); background: var(--cold-soft); border-color: rgba(28, 99, 169, 0.22); }
+    .side-pill.side-no { color: var(--warm-deep); background: var(--warm-soft); border-color: rgba(216, 121, 42, 0.25); }
+    .row-collapse {
+      appearance: none;
+      width: 100%;
+      margin-top: 0.55rem;
+      padding: 0.52rem 0.75rem;
+      background: var(--surface-2);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      color: var(--ink-2);
+      font: 600 0.72rem var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .row-collapse:hover { background: var(--surface-3); border-color: var(--line); color: var(--ink); }
+    .row-collapse:focus-visible { outline: 2.5px solid var(--cold); outline-offset: 2px; }
     .count-strip {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1484,12 +1599,12 @@
           <div>
             <span class="eyebrow">Paper trading diagnostics</span>
             <h1>Strategy <em>Lab</em></h1>
-            <p>Public diagnostics for the SFO high <button class="term" type="button" data-term="paper-trading">paper-trading</button> workflow: <button class="term" type="button" data-term="calibration">calibration</button>, signal quality, <button class="term" type="button" data-term="backtest">backtest</button> hygiene, and open paper risk. Execution remains pinned to lstm.</p>
+            <p>Public diagnostics for the SFO high <button class="term" type="button" data-term="paper-trading">paper-trading</button> workflow: <button class="term" type="button" data-term="calibration">calibration</button>, signal quality, <button class="term" type="button" data-term="backtest">backtest</button> hygiene, and open paper risk. Execution stays pinned to lstm.</p>
           </div>
           <div class="calibration-lock">
             <div class="lock-row"><b>Active</b><span id="activeCalibration">lstm = Active execution calibration</span></div>
             <div class="lock-row"><b>Challenger</b><span id="challengerCalibration">clean-blend/combined = Challenger research calibration</span></div>
-            <div class="lock-row"><b>Safety</b><span id="paperOnly">Paper trading only - no live order placement on this page.</span></div>
+            <div class="lock-row"><b>Safety</b><span id="paperOnly">Paper trading only.</span></div>
           </div>
         </div>
         <section class="status-board" aria-labelledby="statusTitle">
@@ -1565,20 +1680,26 @@
 
     <section id="paper">
       <h2 data-step="02"><button class="term" type="button" data-term="paper-trading">Paper trading</button> book</h2>
-      <p class="sub">Open positions show what was bought initially, target sell levels, current scanned mark when available, and whether the paper book is winning or losing. This is simulated research, not live money trading.</p>
+      <p class="sub">Open positions show what was bought initially, target sell levels, current scanned mark when available, and whether the paper book is winning or losing. All positions are simulated.</p>
       <div class="paper-dashboard" id="paperDashboard"></div>
       <div class="profile-strip" id="paperProfiles"></div>
       <div class="count-strip" id="paperCounts"></div>
       <div class="trade-list" id="pendingLimitCards"></div>
       <div class="trade-list" id="openPaperCards"></div>
-      <div class="grid-2">
+      <div class="history-stack">
         <div class="panel">
-          <h3>Closed paper positions</h3>
-          <div class="table-wrap" id="closedPaperTable"></div>
+          <div class="history-head">
+            <h3>Closed paper positions</h3>
+            <span class="history-count" id="closedPaperCount"></span>
+          </div>
+          <div id="closedPaperTable"></div>
         </div>
         <div class="panel">
-          <h3>Recent paper actions</h3>
-          <div class="table-wrap" id="paperActionTable"></div>
+          <div class="history-head">
+            <h3>Recent paper actions</h3>
+            <span class="history-count" id="paperActionCount"></span>
+          </div>
+          <div id="paperActionTable"></div>
         </div>
       </div>
     </section>
@@ -1591,7 +1712,7 @@
           <h3>What Kalshi thinks <span class="muted consensus-target" id="consensusTarget"></span></h3>
           <span class="pill" id="consensusGapPill">&mdash;</span>
         </div>
-        <p class="sub">Kalshi prints a headline &ldquo;forecast&rdquo; on each market &mdash; the market-implied high, volume-weighted toward the last trade. We rebuild that exact number from the ladder and compare it against our model, overlaying the two distributions bin by bin.</p>
+        <p class="sub">Kalshi prints a headline &ldquo;forecast&rdquo; on each market &mdash; the market-implied high, volume-weighted toward the last trade. The lab rebuilds that number from the ladder and compares it against the model, overlaying the two distributions bin by bin.</p>
         <div class="consensus-readout" id="consensusReadout"></div>
         <div class="consensus-body">
           <div class="panel chart-card consensus-chart-card">
@@ -1626,7 +1747,7 @@
 
     <section id="calibration">
       <h2 data-step="04">Forecast accuracy &amp; calibration</h2>
-      <p class="sub">lstm is the active execution calibration. clean-blend/combined is shown as challenger research only and is not used to switch AWS execution automatically. Cohorts split calibration by temperature regime; sparse cohorts are diagnostics, not proof.</p>
+      <p class="sub">lstm is the active execution calibration. clean-blend/combined is shown as challenger research only. Cohorts split calibration by temperature regime; sparse cohorts are diagnostics, not proof.</p>
       <div class="grid-2">
         <div class="panel">
           <div class="panel-head">
@@ -1675,7 +1796,7 @@
       </div>
 
       <h3 id="readinessTitle" style="margin-top:1.5rem;">Real-money readiness <span class="sub" style="font-weight:400;">— live profile</span></h3>
-      <p class="sub" id="readinessNote">How close the live (real-money-candidate) profile is to the documented go-live bar: positive after-fee day-clustered ROI and per-side/per-cohort ROI over &ge;30 independent settlement days, with every traded cohort beating its climatological baseline (Brier Skill Score &gt; 0). The research collector is never promoted to real money.</p>
+      <p class="sub" id="readinessNote">How close the live (real-money-candidate) profile is to the documented go-live bar: positive after-fee day-clustered ROI and per-side/per-cohort ROI over &ge;30 independent settlement days, with every traded cohort beating its climatological baseline (Brier Skill Score &gt; 0).</p>
       <div class="panel" id="readinessCard"></div>
 
       <h3 id="rescoreTitle" style="margin-top:1.5rem;">Config rescore <span class="sub" id="rescoreProfileLabel" style="font-weight:400;"></span></h3>
@@ -2043,7 +2164,7 @@
       const status = data.status || {};
       $('activeCalibration').textContent = status.active_calibration_label || 'lstm = Active execution calibration';
       $('challengerCalibration').textContent = status.challenger_calibration_label || 'clean-blend/combined = Challenger research calibration';
-      $('paperOnly').textContent = data.live_orders_enabled ? 'Unexpected live-order flag detected.' : 'Paper trading only - no live order placement on this page.';
+      $('paperOnly').textContent = data.live_orders_enabled ? 'Unexpected live-order flag detected.' : 'Paper trading only.';
       const alertLevel = String(status.alert_level || 'ok').toLowerCase();
       $('runtimeMode').textContent = data.live_orders_enabled
         ? 'Live flag detected'
@@ -2118,7 +2239,7 @@
     }
 
     function profileContextText(profile) {
-      if (!profile) return '<b>All profiles overview</b> combines every paper profile; switch back to Balanced for the clean headline record.';
+      if (!profile) return '<b>All profiles overview</b> combines every paper profile; switch back to Balanced for the headline record.';
       const label = htmlEscape(profile.label || profileDisplayName(profile.risk_profile));
       if (profile.profile_type === 'experimental') {
         return `<b>${label}</b> is experimental paper-data collection and is isolated from the Balanced record.`;
@@ -2133,7 +2254,7 @@
         return {
           ...data,
           active_profile: null,
-          view_note: 'All profiles overview combines every risk profile. Balanced remains the default headline record.'
+          view_note: 'All profiles overview combines every risk profile. Balanced is the default headline record.'
         };
       }
       return {
@@ -2530,7 +2651,7 @@
       $('consensusReadout').innerHTML = [
         `<div class="consensus-stat gap"><b class="${gapClass}">${gapText}</b><span>Model minus market</span></div>`,
         `<div class="consensus-stat"><b>${degF(data.implied_high_f)}</b><span>Kalshi forecast</span></div>`,
-        `<div class="consensus-stat"><b>${degF(data.model_high_f)}</b><span>Our model high</span></div>`,
+        `<div class="consensus-stat"><b>${degF(data.model_high_f)}</b><span>Model high</span></div>`,
         `<div class="consensus-stat"><b>${htmlEscape(safe(data.modal_bin_label))}</b><span>Most-backed bin · ${pct(data.modal_probability, 0)}</span></div>`,
         `<div class="consensus-stat"><b>±${degF(data.implied_stdev_f)}</b><span>Implied spread (1σ)</span></div>`,
         `<div class="consensus-stat"><b>${degF(data.p10_f)} – ${degF(data.p90_f)}</b><span>Implied P10–P90 band</span></div>`
@@ -2677,7 +2798,7 @@
               <span style="display:block;height:100%;width:${pctVal}%;background:${tone};transition:width .4s ease;"></span>
             </div>
             <p class="sub" style="margin-top:.5rem;">${htmlEscape(r.summary || '')}</p>
-            <p class="sub" style="margin-top:.35rem;">Pilot loss room: ${htmlEscape(pilotRoom)}. Live orders still require explicit flags and dry-run checks.</p>
+            <p class="sub" style="margin-top:.35rem;">Pilot loss room: ${htmlEscape(pilotRoom)}.</p>
           </div>
         </div>
         ${statusReasons.length ? `<ul style="margin:.85rem 0 0;padding-left:1.1rem;color:var(--ink-2);">${statusReasons.slice(0, 5).map((reason) => `<li>${htmlEscape(reason)}</li>`).join('')}</ul>` : ''}
@@ -2770,8 +2891,11 @@
       $('openPaperCards').innerHTML = openRows.length
         ? openRows.map(paperPositionCard).join('')
         : '<p class="empty">No open paper positions are published.</p>';
-      $('closedPaperTable').innerHTML = closedPaperTable(closedRows);
-      $('paperActionTable').innerHTML = actionTable(paper.recent_monitor_actions || []);
+      const actionRows = paper.recent_monitor_actions || [];
+      $('closedPaperCount').textContent = closedRows.length ? `${fmt(closedRows.length)} total` : '';
+      $('paperActionCount').textContent = actionRows.length ? `${fmt(actionRows.length)} total` : '';
+      $('closedPaperTable').innerHTML = closedHistoryList(closedRows);
+      $('paperActionTable').innerHTML = actionHistoryList(actionRows);
     }
 
     function paperDashboard(paper, summary) {
@@ -2944,52 +3068,124 @@
         </article>`;
     }
 
-    function closedPaperTable(rows) {
-      if (!rows.length) return '<p class="empty">No closed paper positions are published yet.</p>';
-      return `
-        <table>
-          <thead><tr><th>ID</th><th>Market</th><th>${term('Bought', 'initial-cost')}</th><th>Exit / ${term('Settlement', 'settlement')}</th><th>${term('Realized P&L', 'realized-pnl')}</th></tr></thead>
-          <tbody>
-            ${rows.map((row) => {
-              const tone = toneForValue(row.realized_pnl);
-              const exit = row.exit_price != null
-                ? `${price(row.exit_price)} sold`
-                : row.settlement_high_f != null
-                  ? `${fmt(row.settlement_high_f, 1)}F settled`
-                  : '-';
-              return `
-                <tr>
-                  <td class="num">${htmlEscape(row.id)}</td>
-                  <td><b>${htmlEscape(row.label || row.ticker || '-')}</b><br><span class="muted">${htmlEscape(row.target_date || '')} - ${htmlEscape(row.side || '-')}</span> ${profilePill(row.risk_profile)}</td>
-                  <td class="num">${money(row.initial_cost ?? row.risk)}<br><span class="muted">${fmt(row.contracts, 2)} @ ${price(row.entry_price)}</span></td>
-                  <td>${htmlEscape(exit)}<br><span class="muted">${htmlEscape(row.status || '-')}</span></td>
-                  <td class="num ${toneText(tone)}">${signedMoney(row.realized_pnl)}<br><span class="muted">${signedPct(row.realized_roi)}</span></td>
-                </tr>`;
-            }).join('')}
-          </tbody>
-        </table>`;
+    // Paper history is shown as result-forward rows (realized P&L pinned right,
+    // always on-screen) instead of wide horizontal-scroll tables. Long lists
+    // collapse to the most recent HISTORY_VISIBLE rows behind a toggle.
+    const HISTORY_VISIBLE = 5;
+    const HISTORY_SEP = '<span class="sep" aria-hidden="true">·</span>';
+
+    function sidePill(side) {
+      const s = String(side || '').toUpperCase();
+      if (s !== 'YES' && s !== 'NO') return '';
+      return `<span class="side-pill side-${s.toLowerCase()}">${s}</span>`;
     }
 
-    function actionTable(rows) {
-      if (!rows.length) return '<p class="empty">No monitor inspections, closes, or settlement actions are published yet.</p>';
+    function humanActionStatus(status) {
+      const map = {
+        HOLD: 'Hold', OPEN: 'Opened', LIMIT_RESTING: 'Resting',
+        PAPER_CLOSED: 'Sold', PAPER_SETTLED: 'Settled', CLOSE: 'Closed', SETTLE: 'Settled'
+      };
+      if (!status) return '';
+      return map[status] || String(status).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function historyList(rows, renderRow, opts) {
+      if (!rows.length) return `<p class="empty">${htmlEscape(opts.emptyText)}</p>`;
+      const collapses = rows.length > HISTORY_VISIBLE;
+      const body = rows.map((row, i) => renderRow(row, i, collapses && i >= HISTORY_VISIBLE)).join('');
+      const listId = opts.id;
+      const toggle = collapses
+        ? `<button type="button" class="row-collapse" aria-expanded="false" aria-controls="${htmlEscape(listId)}" data-noun="${htmlEscape(opts.noun)}">Show all ${fmt(rows.length)} ${htmlEscape(opts.noun)} ▾</button>`
+        : '';
+      return `<ul class="history-list" role="list" id="${htmlEscape(listId)}">${body}</ul>${toggle}`;
+    }
+
+    function closedHistoryRow(row, index, hidden) {
+      const tone = number(row.realized_pnl) === null ? '' : toneForValue(row.realized_pnl);
+      const exit = row.exit_price != null
+        ? `sold ${price(row.exit_price)}`
+        : row.settlement_high_f != null
+          ? `settled ${fmt(row.settlement_high_f, 1)}F`
+          : 'closed';
+      const lot = row.contracts != null && row.entry_price != null
+        ? `${fmt(row.contracts, 2)} @ ${price(row.entry_price)}`
+        : '';
+      const lead = [
+        `#${htmlEscape(row.id)}`,
+        htmlEscape(row.target_date || ''),
+        `bought ${money(row.initial_cost ?? row.risk)}`,
+        lot
+      ].filter(Boolean).join(HISTORY_SEP);
       return `
-        <table>
-          <thead><tr><th>ID</th><th>Time</th><th>Market</th><th>${term('Side', 'side')}</th><th>Status</th><th>P&L / ROI</th><th>Exit</th><th>Note</th></tr></thead>
-          <tbody>
-            ${rows.map((row) => `
-              <tr>
-                <td class="num">${htmlEscape(row.id)}</td>
-                <td class="num">${dt(row.time)}</td>
-                <td><b>${htmlEscape(row.label || row.ticker || '-')}</b><br><span class="muted">${htmlEscape(row.target_date || '')}</span></td>
-                <td class="num">${htmlEscape(row.side || '-')}</td>
-                <td>${htmlEscape(row.status || '-')}${row.unrealized ? ' <span class="pill warn">open</span>' : ''}</td>
-                <td class="num ${toneText(toneForValue(row.realized_pnl))}">${signedMoney(row.realized_pnl)}<br><span class="muted">${row.unrealized ? 'unrealized mark' : signedPct(row.realized_roi)}</span></td>
-                <td class="num">${row.exit_price == null ? '-' : price(row.exit_price)}${row.unrealized ? '<br><span class="muted">live bid</span>' : (row.settlement_high_f == null ? '' : `<br><span class="muted">${fmt(row.settlement_high_f, 1)}F</span>`)}</td>
-                <td>${htmlEscape(row.note || '-')}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>`;
+        <li class="history-row ${tone}${hidden ? ' is-hidden' : ''}">
+          <div class="history-main">
+            <div class="history-title">${sidePill(row.side)}<span>${htmlEscape(row.label || row.ticker || '-')}</span>${profilePill(row.risk_profile)}</div>
+            <div class="history-meta">${lead}<span class="sep" aria-hidden="true">→</span>${htmlEscape(exit)}</div>
+          </div>
+          <div class="history-pnl">
+            <b class="${toneText(tone)}">${signedMoney(row.realized_pnl)}</b>
+            <span>${signedPct(row.realized_roi)}</span>
+          </div>
+        </li>`;
+    }
+
+    function actionHistoryRow(row, index, hidden) {
+      const status = String(row.status || '').toUpperCase();
+      // Lifecycle actions (a new order opening, a limit resting) have no result
+      // yet, so show their status instead of a misleading $0.00.
+      const lifecycle = status === 'OPEN' || status === 'LIMIT_RESTING' || status === 'CANCELLED' || status === 'EXPIRED';
+      const hasPnl = !lifecycle && number(row.realized_pnl) !== null;
+      const tone = hasPnl ? toneForValue(row.realized_pnl) : 'warn';
+      const statusLabel = humanActionStatus(row.status);
+      const meta = [`#${htmlEscape(row.id)}`, htmlEscape(dt(row.time)), htmlEscape(row.note || '')]
+        .filter(Boolean).join(HISTORY_SEP);
+      const result = hasPnl
+        ? `<b class="${toneText(tone)}">${signedMoney(row.realized_pnl)}</b><span>${row.unrealized ? 'open mark' : signedPct(row.realized_roi)}</span>`
+        : `<span class="history-state">${htmlEscape(statusLabel || 'pending')}</span>`;
+      const titleState = hasPnl && statusLabel
+        ? `<span class="history-state">${htmlEscape(statusLabel)}${row.unrealized ? ' · open' : ''}</span>`
+        : '';
+      return `
+        <li class="history-row ${tone}${hidden ? ' is-hidden' : ''}">
+          <div class="history-main">
+            <div class="history-title">${sidePill(row.side)}<span>${htmlEscape(row.label || row.ticker || '-')}</span>${titleState}</div>
+            <div class="history-meta">${meta}</div>
+          </div>
+          <div class="history-pnl">${result}</div>
+        </li>`;
+    }
+
+    function closedHistoryList(rows) {
+      return historyList(rows, closedHistoryRow, {
+        id: 'closedHistoryItems',
+        emptyText: 'No closed paper positions are published yet.',
+        noun: 'closed positions'
+      });
+    }
+
+    function actionHistoryList(rows) {
+      return historyList(rows, actionHistoryRow, {
+        id: 'actionHistoryItems',
+        emptyText: 'No monitor inspections, closes, or settlement actions are published yet.',
+        noun: 'actions'
+      });
+    }
+
+    function bindHistoryCollapse() {
+      document.addEventListener('click', (event) => {
+        const btn = event.target.closest?.('.row-collapse');
+        if (!btn) return;
+        const list = btn.previousElementSibling;
+        if (!list || !list.classList.contains('history-list')) return;
+        const nowExpanded = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(nowExpanded));
+        list.querySelectorAll('.history-row').forEach((el, i) => {
+          if (i >= HISTORY_VISIBLE) el.classList.toggle('is-hidden', !nowExpanded);
+        });
+        const noun = btn.getAttribute('data-noun') || 'rows';
+        const total = list.querySelectorAll('.history-row').length;
+        btn.textContent = nowExpanded ? 'Show less ▴' : `Show all ${total} ${noun} ▾`;
+      });
     }
 
     function renderCohorts(data) {
@@ -3598,6 +3794,7 @@
       bindTermHelp();
       bindStrategyLabRefresh();
       bindThemeToggle();
+      bindHistoryCollapse();
       if (STRATEGY_LAB_PROTECTION.enabled) {
         initProtectedStrategyLab();
       } else {

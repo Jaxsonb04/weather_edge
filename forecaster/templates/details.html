@@ -564,16 +564,16 @@
       </details>
     </section>
     <section class="journey" id="approach">
-      <h2>How I built it</h2>
-      <p class="sub">This started as a simple question: can I use machine learning to predict tomorrow's weather at SFO?</p>
+      <h2>How it was built</h2>
+      <p class="sub">A machine-learning approach to predicting tomorrow's daily high at SFO, from a single concrete question.</p>
       <div class="journey-list">
-        <div class="journey-step"><b>Question</b><p>I wanted to put the ML concepts I learned at Berkeley into a real project, so I chose a target that was concrete, measurable, and easy to explain: tomorrow's highest temperature.</p></div>
-        <div class="journey-step"><b>Experiment</b><p>I cleaned NOAA station history, built features, trained XGBoost and LSTM models, tuned them, and compared them on held-out dates instead of relying on one good-looking chart.</p></div>
-        <div class="journey-step"><b>Result</b><p>The LSTM performed better for daily highs because it can learn the recent weather sequence, but the final predictor still respects live forecasts from professional weather stations.</p></div>
+        <div class="journey-step"><b>Question</b><p>Apply machine-learning methods to a target that is concrete, measurable, and easy to explain: tomorrow's highest temperature.</p></div>
+        <div class="journey-step"><b>Experiment</b><p>Cleaned NOAA station history, engineered features, trained and tuned XGBoost and LSTM models, and compared them on held-out dates.</p></div>
+        <div class="journey-step"><b>Result</b><p>The LSTM performed better for daily highs because it learns the recent weather sequence; the final predictor still incorporates live professional forecasts.</p></div>
         <div class="journey-step"><b>Automation</b><p>The project now runs on AWS Lightsail. A small Ubuntu server refreshes Google Weather, NWS, Open-Meteo, and KSFO observations on a schedule, rebuilds this page, and pushes the static site to GitHub Pages.</p></div>
       </div>
-      <p class="body"><b>Hardest part:</b> defining the target correctly. Predicting a random timestamp is different from predicting the next local calendar-day high, and getting that alignment right made the evaluation honest.</p>
-      <p class="body"><b>Automation stack:</b> Lightsail systemd timers fetch the paid Google Weather API within a strict event budget, update the local SQLite archive, run the blend/scoring scripts, and publish the latest dashboard through a GitHub deploy key. The Mac no longer has to stay awake for the forecast to update.</p>
+      <p class="body"><b>Key challenge:</b> defining the target correctly. Predicting a random timestamp differs from predicting the next local calendar-day high, and that alignment is what keeps the evaluation valid.</p>
+      <p class="body"><b>Automation stack:</b> Lightsail systemd timers fetch the paid Google Weather API within a strict event budget, update the local SQLite archive, run the blend/scoring scripts, and publish the latest dashboard through a GitHub deploy key. Forecast updates run unattended on the server.</p>
       <p class="body"><b>Future work:</b> collect more scored refreshes, add more Bay Area station history, and tune the blend weights only after the archive shows which sources are consistently closest to the NWS high.</p>
     </section>
     <section class="model-compare" id="proof">
@@ -595,7 +595,7 @@
         <div class="metric"><b>__WIN_RATE__%</b><span>Days LSTM closer</span></div>
         <div class="metric"><b>__P_VALUE__</b><span>Paired t-test p-value</span></div>
       </div>
-      <p class="body">The confidence interval stays above zero, so the improvement is statistically significant, not just a lucky split. Spot temperature 24 hours ahead is included as a sanity check because that easier target does not clearly favor the LSTM.</p>
+      <p class="body">The confidence interval stays above zero, so the improvement is statistically significant. Spot temperature 24 hours ahead is included as a sanity check: that easier target does not clearly favor the LSTM.</p>
       <table>
         <thead><tr><th>Target</th><th>LSTM MAE</th><th>XGBoost MAE</th><th>95% CI on gain</th><th>Verdict</th></tr></thead>
         <tbody>
@@ -608,7 +608,7 @@
       <h2>Held-Out Forecasts</h2>
       <p class="sub">Daily-high predictions on dates the model did not see during training.</p>
       <div class="chart"><canvas id="predictionChart"></canvas></div>
-      <p class="body">The model is strongest on ordinary SFO weather and weakest on rare hot days. That failure mode is useful because it points directly to the next improvement: more hot-day examples or stronger extreme-day weighting.</p>
+      <p class="body">The model is strongest on ordinary SFO weather and weakest on rare hot days. That failure mode points to the next improvement: more hot-day examples or stronger extreme-day weighting.</p>
     </section>
     <section>
       <h2>Error by Temperature Range</h2>
@@ -687,7 +687,7 @@
   <footer class="site-footer">
     <div class="wrap">
       <span>WeatherEdge &middot; an automated SFO daily-high forecaster.</span>
-      <span>Research and paper trading only &middot; not investment advice &middot; no live orders are placed.</span>
+      <span>Research and paper trading only &middot; not investment advice.</span>
       <span>Data: NOAA GHCNh &middot; Google Weather &middot; NWS &middot; Open-Meteo &middot; <a href="https://github.com/Jaxsonb04/weather-edge" target="_blank" rel="noopener">GitHub</a></span>
     </div>
   </footer>
@@ -2025,7 +2025,7 @@ __DATA_VARS__
             </div>
             <div class="accuracy-note">
               <p><strong>${pending}</strong> clean next-day snapshot(s) are waiting to be scored.</p>
-              <p>The track record will become more useful after more completed SFO days.</p>
+              <p>The track record builds as more SFO days complete.</p>
             </div>
           </div>
         `;
@@ -2055,7 +2055,7 @@ __DATA_VARS__
           </div>
           <div class="accuracy-note">
             <p><strong>${data.scoredDays}</strong> clean scored day(s), with <strong>${data.scoredCount}</strong> clean archived refresh snapshot(s).</p>
-            <p><strong>${data.dailySuccessRate}%</strong> of clean daily finals landed within 3&deg;F. This is early history, not a guarantee.</p>
+            <p><strong>${data.dailySuccessRate}%</strong> of clean daily finals landed within 3&deg;F.</p>
             ${truthLine}
             <p><strong>${pending}</strong> clean snapshot(s) are still waiting for final NWS highs.</p>
             <p><strong>${excluded}</strong> same-day lock/floor snapshot(s) are kept out of this score.</p>

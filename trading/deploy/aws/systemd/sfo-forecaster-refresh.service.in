@@ -12,6 +12,10 @@ ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 ExecStart=__FORECASTER_DIR__/.venv/bin/python nws_ground_truth.py --days 14
 ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --refresh
 ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py
+# EMOS (paper/research): keep the NWP archive current and serve the rolling
+# window. '-' prefix => a fetch/compute hiccup never fails the refresh pipeline.
+ExecStart=-__FORECASTER_DIR__/.venv/bin/python nwp_archive.py --daily
+ExecStart=-__FORECASTER_DIR__/.venv/bin/python emos_forecast.py --serve-rolling
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/build_public_trading_signal.sh
 ExecStart=__FORECASTER_DIR__/.venv/bin/python build_dashboard.py
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/publish_forecaster_pages.sh
