@@ -3,18 +3,18 @@
   "backtest_summary": {
     "available": true,
     "counts": {
-      "approved_pre_resolution_signals": 1124,
-      "approved_raw_signals": 1124,
-      "approved_signals": 45,
+      "approved_pre_resolution_signals": 1125,
+      "approved_raw_signals": 1125,
+      "approved_signals": 46,
       "deduped_signals": 216,
       "excluded_post_resolution_signals": 348,
-      "pre_resolution_signals": 94556,
-      "raw_signals": 94904,
+      "pre_resolution_signals": 94580,
+      "raw_signals": 94928,
       "settled_signals": 192
     },
     "dedupe_explanation": "Repeated 15-minute AWS scans are counted once per target, market, and side, using the first approved (entry) snapshot so approved metrics reflect trades actually taken, not the decayed last scan.",
     "metrics": {
-      "approval_rate": 0.2083,
+      "approval_rate": 0.213,
       "approved_capital_at_risk": 135.88,
       "approved_hit_rate": 0.814,
       "approved_paper_pnl": 11.12,
@@ -321,7 +321,7 @@
         "config_basis": "paper-realism, not real-money validated",
         "counts": {
           "approved_under_candidate_config": 0,
-          "approved_under_recorded_config": 45,
+          "approved_under_recorded_config": 46,
           "approved_without_settlement": 0,
           "considered": 216,
           "independent_days": 0,
@@ -434,9 +434,9 @@
         },
         "config_basis": "paper-realism, not real-money validated",
         "counts": {
-          "approved_under_candidate_config": 36,
-          "approved_under_recorded_config": 45,
-          "approved_without_settlement": 2,
+          "approved_under_candidate_config": 37,
+          "approved_under_recorded_config": 46,
+          "approved_without_settlement": 3,
           "considered": 216,
           "independent_days": 11,
           "settled_decisions": 34
@@ -674,12 +674,12 @@
     ],
     "current_equity": 966.43,
     "data_collected": {
-      "decision_snapshots": 61041,
-      "forecast_snapshots": 2332,
-      "market_snapshots": 2420,
-      "paper_monitor_snapshots": 11069,
-      "paper_orders": 27,
-      "probability_snapshots": 13992
+      "decision_snapshots": 61065,
+      "forecast_snapshots": 2333,
+      "market_snapshots": 2421,
+      "paper_monitor_snapshots": 11070,
+      "paper_orders": 28,
+      "probability_snapshots": 13998
     },
     "days": [
       {
@@ -1001,7 +1001,7 @@
         "wins": 1
       },
       {
-        "approved_signals": 50,
+        "approved_signals": 51,
         "avg_market_probability": 0.5,
         "avg_model_probability": 0.5,
         "closed": 3,
@@ -1012,8 +1012,8 @@
         "forecast_predicted_high_f": 66.37,
         "hit_rate": 0.75,
         "losses": 1,
-        "opened": 2,
-        "opened_spend": 4.21,
+        "opened": 3,
+        "opened_spend": 8.6,
         "profiles": {
           "live": {
             "approved_signals": 0,
@@ -1027,22 +1027,22 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 4068,
+            "signals": 4080,
             "wins": 0
           },
           "research": {
-            "approved_signals": 50,
+            "approved_signals": 51,
             "closed": 3,
             "hit_rate": 0.75,
             "losses": 1,
-            "opened": 2,
-            "opened_spend": 4.21,
+            "opened": 3,
+            "opened_spend": 8.6,
             "realized_pnl": 2.06,
             "resolved": 4,
             "resolved_spend": 21.7,
             "roi": 0.09493087557603694,
             "settled": 1,
-            "signals": 4068,
+            "signals": 4080,
             "wins": 3
           }
         },
@@ -1050,7 +1050,7 @@
         "resolved_spend": 21.7,
         "roi": 0.09493087557603694,
         "settled": 1,
-        "signals": 8136,
+        "signals": 8160,
         "wins": 3
       }
     ],
@@ -1078,22 +1078,22 @@
       }
     },
     "gate_behavior": {
-      "approved": 676,
+      "approved": 677,
       "by_profile": [
         {
           "approved": 0,
           "risk_profile": "live",
-          "signals": 29347
+          "signals": 29359
         },
         {
-          "approved": 676,
+          "approved": 677,
           "risk_profile": "research",
-          "signals": 31694
+          "signals": 31706
         }
       ],
-      "rejected": 60365,
+      "rejected": 60388,
       "rejection_categories": {
-        "edge": 41484,
+        "edge": 41507,
         "no_data": 18792,
         "other": 89
       },
@@ -1103,19 +1103,19 @@
           "reason": "source spread"
         },
         {
-          "count": 13217,
+          "count": 13224,
           "reason": "edge"
         },
         {
-          "count": 6147,
+          "count": 6151,
           "reason": "lower-bound edge"
         },
         {
-          "count": 5861,
+          "count": 5867,
           "reason": "model/market gap"
         },
         {
-          "count": 2859,
+          "count": 2860,
           "reason": "spread"
         },
         {
@@ -1125,11 +1125,11 @@
       ],
       "top_rejections_all": [
         {
-          "count": 50541,
+          "count": 50561,
           "reason": "lower-bound edge"
         },
         {
-          "count": 48728,
+          "count": 48746,
           "reason": "edge"
         },
         {
@@ -1137,40 +1137,40 @@
           "reason": "source spread"
         },
         {
-          "count": 16283,
+          "count": 16291,
           "reason": "edge_lcb"
         },
         {
-          "count": 13325,
+          "count": 13331,
           "reason": "model/market gap"
         },
         {
-          "count": 9365,
+          "count": 9366,
           "reason": "spread"
         },
         {
-          "count": 7653,
+          "count": 7656,
           "reason": "posterior probability"
         },
         {
-          "count": 6668,
+          "count": 6670,
           "reason": "all-in cost"
         }
       ]
     },
-    "generated_at": "2026-06-26T03:13:45.430999+00:00",
+    "generated_at": "2026-06-26T03:18:46.555941+00:00",
     "learnings": [
       "Lower-bound edge split: edge_lcb<0 trades netted $-21.07 (23 trades) vs edge_lcb>=0 at $+3.71 (8 trades).",
       "NO side: 15/28 won, net $-19.31 this window.",
       "YES side: 1/3 won, net $+1.95 this window.",
       "Profile split: live 0/1 won ($-0.53); research 16/30 won ($-16.83). Judge each gate set on its own book; research-profile losses are expected data-collection cost.",
-      "Most frequent gate rejections: source spread (18792x); edge (13217x).",
+      "Most frequent gate rejections: source spread (18792x); edge (13224x).",
       "Clean next-day forecast error averaged 2.70F across 7 settled day(s) in this window."
     ],
     "model_vs_market": {
       "max_abs_gap": 0.7109,
       "mean_abs_gap": 0.1209,
-      "samples": 61038
+      "samples": 61062
     },
     "profiles": [
       {
@@ -1189,8 +1189,8 @@
         "capital_resolved": 131.85,
         "hit_rate": 0.5333,
         "losses": 14,
-        "open_positions": 0,
-        "open_risk": 0.0,
+        "open_positions": 1,
+        "open_risk": 4.39,
         "realized_pnl": -16.83,
         "resolved": 30,
         "risk_profile": "research",
@@ -1272,12 +1272,12 @@
       "hit_rate": 0.5161,
       "losses": 15,
       "mean_abs_forecast_error_f": 2.7,
-      "open_positions": 0,
-      "open_risk": 0,
+      "open_positions": 1,
+      "open_risk": 4.39,
       "realized_pnl": -17.36,
       "roi": -0.1308,
       "trades_closed": 29,
-      "trades_opened": 27,
+      "trades_opened": 28,
       "trades_settled": 2,
       "wins": 16
     },
@@ -1481,7 +1481,7 @@
   },
   "default_profile": "live",
   "disclaimer": "Paper-trading research only. The active AWS execution calibration remains pinned to lstm; this artifact does not place live orders.",
-  "generated_at": "2026-06-26T03:13:45.767462+00:00",
+  "generated_at": "2026-06-26T03:18:46.648089+00:00",
   "live_orders_enabled": false,
   "mode": "paper_research_only",
   "paper_trading": {
@@ -3559,7 +3559,77 @@
       "yes_stop_loss_pct": 25.0,
       "yes_take_profit_pct": 50.0
     },
-    "open_positions": [],
+    "open_positions": [
+      {
+        "closed_at": null,
+        "contracts": 5.0,
+        "cost_per_contract": 0.878,
+        "created_at": "2026-06-26T03:15:06.674523+00:00",
+        "current_ask": null,
+        "current_bid": 0.86,
+        "current_exit_fee_per_contract": 0.01,
+        "current_market_probability": null,
+        "current_net_exit": 0.85,
+        "current_snapshot_at": "2026-06-26T03:17:12.016375+00:00",
+        "current_source": "paper_monitor_snapshot",
+        "current_spread": null,
+        "current_value": 4.25,
+        "edge": 0.059,
+        "edge_lcb": -0.0243,
+        "entry_fee_per_contract": 0.008,
+        "entry_mode": "market",
+        "entry_price": 0.87,
+        "exit_fee_per_contract": null,
+        "exit_price": null,
+        "exit_rule_reason": "inside exit bands",
+        "expected_profit": 0.3,
+        "id": 68,
+        "initial_cost": 4.39,
+        "label": "70\u00b0 to 71\u00b0",
+        "limit_cost_per_contract": null,
+        "limit_edge": null,
+        "limit_edge_lcb": null,
+        "limit_fee_per_contract": null,
+        "limit_price": null,
+        "max_loss": 4.39,
+        "max_profit": 0.61,
+        "model_side_probability": 0.939,
+        "monitor_action": "HOLD",
+        "position_status": "LOSING",
+        "position_status_label": "Losing",
+        "position_status_tone": "bad",
+        "probability": 0.9279,
+        "probability_lcb": 0.8557,
+        "quality_score": 48.9,
+        "realized_pnl": null,
+        "realized_roi": null,
+        "reasons": [
+          "portfolio PF-e39b5bca2a66: sleeve=research_explore, growth=0.000246"
+        ],
+        "resolved_yes": null,
+        "risk": 4.39,
+        "risk_profile": "research",
+        "settled_at": null,
+        "settlement_high_f": null,
+        "side": "NO",
+        "status": "PAPER_FILLED",
+        "stop_loss_basis": "legacy_percent_floor",
+        "stop_loss_bid": 0.5887,
+        "stop_loss_net_exit": 0.5707,
+        "stop_loss_pct": 35.0,
+        "stop_loss_pnl": -1.54,
+        "take_profit_basis": "model_fair_value",
+        "take_profit_bid": 0.943,
+        "take_profit_net_exit": 0.939,
+        "take_profit_pct": 35.0,
+        "take_profit_pnl": 1.54,
+        "target_date": "2026-06-26",
+        "ticker": "KXHIGHTSFO-26JUN26-B70.5",
+        "unrealized_pnl": -0.14,
+        "unrealized_roi": -0.0319,
+        "why_good": "portfolio PF-e39b5bca2a66: sleeve=research_explore, growth=0.000246"
+      }
+    ],
     "pending_limit_orders": [],
     "profiles": [
       {
@@ -3579,9 +3649,9 @@
       {
         "hit_rate": 0.4667,
         "losses": 32,
-        "open_positions": 0,
-        "open_risk": 0.0,
-        "orders": 60,
+        "open_positions": 1,
+        "open_risk": 4.39,
+        "orders": 61,
         "pending_limit_orders": 0,
         "pending_limit_risk": 0.0,
         "realized_pnl": -32.08,
@@ -3592,6 +3662,47 @@
       }
     ],
     "recent_monitor_actions": [
+      {
+        "contracts": null,
+        "cost_per_contract": null,
+        "entry_price": null,
+        "exit_fee_per_contract": 0.01,
+        "exit_price": 0.86,
+        "id": 68,
+        "initial_cost": null,
+        "label": "70\u00b0 to 71\u00b0",
+        "note": "inside exit bands",
+        "realized_pnl": -0.14,
+        "realized_roi": -0.0319,
+        "risk_profile": "research",
+        "settlement_high_f": null,
+        "side": "NO",
+        "status": "HOLD",
+        "target_date": "2026-06-26",
+        "ticker": "KXHIGHTSFO-26JUN26-B70.5",
+        "time": "2026-06-26T03:17:12.016375+00:00",
+        "unrealized": true
+      },
+      {
+        "contracts": 5.0,
+        "cost_per_contract": 0.878,
+        "entry_price": 0.87,
+        "exit_fee_per_contract": null,
+        "exit_price": null,
+        "id": 68,
+        "initial_cost": 4.39,
+        "label": "70\u00b0 to 71\u00b0",
+        "note": "paper order opened",
+        "realized_pnl": null,
+        "realized_roi": null,
+        "risk_profile": "research",
+        "settlement_high_f": null,
+        "side": "NO",
+        "status": "OPEN",
+        "target_date": "2026-06-26",
+        "ticker": "KXHIGHTSFO-26JUN26-B70.5",
+        "time": "2026-06-26T03:15:06.674523+00:00"
+      },
       {
         "contracts": 5.0,
         "cost_per_contract": 0.666,
@@ -3796,47 +3907,6 @@
         "ticker": "KXHIGHTSFO-26JUN24-B72.5",
         "time": "2026-06-24T20:31:12.334445+00:00",
         "unrealized": true
-      },
-      {
-        "contracts": 5.0,
-        "cost_per_contract": 0.764,
-        "entry_price": 0.75,
-        "exit_fee_per_contract": 0.018,
-        "exit_price": 0.36,
-        "id": 59,
-        "initial_cost": 3.82,
-        "label": "70\u00b0 to 71\u00b0",
-        "note": "closed by monitor",
-        "realized_pnl": -2.11,
-        "realized_roi": -0.5524,
-        "risk_profile": "research",
-        "settlement_high_f": null,
-        "side": "NO",
-        "status": "PAPER_CLOSED",
-        "target_date": "2026-06-24",
-        "ticker": "KXHIGHTSFO-26JUN24-B70.5",
-        "time": "2026-06-24T19:47:19.003213+00:00"
-      },
-      {
-        "contracts": null,
-        "cost_per_contract": null,
-        "entry_price": null,
-        "exit_fee_per_contract": 0.018,
-        "exit_price": 0.36,
-        "id": 59,
-        "initial_cost": null,
-        "label": "70\u00b0 to 71\u00b0",
-        "note": "edge reversed: fair value 0.232 fell to/below net exit 0.342, under entry 0.764",
-        "realized_pnl": -2.11,
-        "realized_roi": -0.5524,
-        "risk_profile": "research",
-        "settlement_high_f": null,
-        "side": "NO",
-        "status": "CLOSE_STOP_LOSS",
-        "target_date": "2026-06-24",
-        "ticker": "KXHIGHTSFO-26JUN24-B70.5",
-        "time": "2026-06-24T19:47:19.002552+00:00",
-        "unrealized": true
       }
     ],
     "summary": {
@@ -3847,20 +3917,20 @@
       "hidden_pending_limit_orders": 0,
       "hit_rate": 0.4697,
       "largest_duplicate_open_group": 0,
-      "latest_monitor_action_at": "2026-06-25T19:47:18.850464+00:00",
-      "latest_opened_at": null,
+      "latest_monitor_action_at": "2026-06-26T03:17:12.016375+00:00",
+      "latest_opened_at": "2026-06-26T03:15:06.674523+00:00",
       "loss_count": 15,
-      "marked_open_positions": 0,
-      "open_positions": 0,
-      "open_risk": 0.0,
-      "open_value": null,
+      "marked_open_positions": 1,
+      "open_positions": 1,
+      "open_risk": 4.39,
+      "open_value": 4.25,
       "pending_limit_orders": 0,
       "pending_limit_risk": 0.0,
-      "published_open_positions": 0,
+      "published_open_positions": 1,
       "published_pending_limit_orders": 0,
       "realized_pnl": -33.57,
       "roi": -0.1516,
-      "unrealized_pnl": null,
+      "unrealized_pnl": -0.14,
       "unresolved_past_targets": [],
       "win_count": 15
     }
@@ -5246,12 +5316,12 @@
         "biggest_winners": [],
         "current_equity": 998.51,
         "data_collected": {
-          "decision_snapshots": 61041,
-          "forecast_snapshots": 2332,
-          "market_snapshots": 2420,
-          "paper_monitor_snapshots": 11069,
-          "paper_orders": 27,
-          "probability_snapshots": 13992
+          "decision_snapshots": 61065,
+          "forecast_snapshots": 2333,
+          "market_snapshots": 2421,
+          "paper_monitor_snapshots": 11070,
+          "paper_orders": 28,
+          "probability_snapshots": 13998
         },
         "days": [
           {
@@ -5391,7 +5461,7 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 4068,
+            "signals": 4080,
             "wins": 0
           }
         ],
@@ -5408,20 +5478,20 @@
             {
               "approved": 0,
               "risk_profile": "live",
-              "signals": 29347
+              "signals": 29359
             }
           ],
-          "rejected": 29347,
+          "rejected": 29359,
           "top_rejections": []
         },
-        "generated_at": "2026-06-26T03:13:45.430999+00:00",
+        "generated_at": "2026-06-26T03:18:46.555941+00:00",
         "learnings": [
           "live resolved 1 trade(s): 0W / 1L, net $-0.53."
         ],
         "model_vs_market": {
           "max_abs_gap": 0.7109,
           "mean_abs_gap": 0.1209,
-          "samples": 61038
+          "samples": 61062
         },
         "profiles": [
           {
@@ -5848,12 +5918,12 @@
         ],
         "current_equity": 967.92,
         "data_collected": {
-          "decision_snapshots": 61041,
-          "forecast_snapshots": 2332,
-          "market_snapshots": 2420,
-          "paper_monitor_snapshots": 11069,
-          "paper_orders": 27,
-          "probability_snapshots": 13992
+          "decision_snapshots": 61065,
+          "forecast_snapshots": 2333,
+          "market_snapshots": 2421,
+          "paper_monitor_snapshots": 11070,
+          "paper_orders": 28,
+          "probability_snapshots": 13998
         },
         "days": [
           {
@@ -5977,7 +6047,7 @@
             "wins": 1
           },
           {
-            "approved_signals": 50,
+            "approved_signals": 51,
             "closed": 3,
             "cumulative_realized": -16.83,
             "date": "2026-06-25",
@@ -5986,14 +6056,14 @@
             "forecast_predicted_high_f": 66.37,
             "hit_rate": 0.75,
             "losses": 1,
-            "opened": 2,
-            "opened_spend": 4.21,
+            "opened": 3,
+            "opened_spend": 8.6,
             "realized_pnl": 2.06,
             "resolved": 4,
             "resolved_spend": 21.7,
             "roi": 0.09493087557603694,
             "settled": 1,
-            "signals": 4068,
+            "signals": 4080,
             "wins": 3
           }
         ],
@@ -6005,35 +6075,36 @@
           "held_to_settlement": 2
         },
         "gate_behavior": {
-          "approved": 676,
+          "approved": 677,
           "by_profile": [
             {
-              "approved": 676,
+              "approved": 677,
               "risk_profile": "research",
-              "signals": 31694
+              "signals": 31706
             }
           ],
-          "rejected": 31018,
+          "rejected": 31029,
           "top_rejections": []
         },
-        "generated_at": "2026-06-26T03:13:45.430999+00:00",
+        "generated_at": "2026-06-26T03:18:46.555941+00:00",
         "learnings": [
           "research resolved 30 trade(s): 16W / 14L, net $-16.83.",
+          "research currently has $4.39 of paper open risk.",
           "research has 24 current signal candidate(s) in the latest artifact.",
           "research is experimental paper-data collection; its P&L is isolated from the balanced headline."
         ],
         "model_vs_market": {
           "max_abs_gap": 0.7109,
           "mean_abs_gap": 0.1209,
-          "samples": 61038
+          "samples": 61062
         },
         "profiles": [
           {
             "capital_resolved": 131.85,
             "hit_rate": 0.5333,
             "losses": 14,
-            "open_positions": 0,
-            "open_risk": 0.0,
+            "open_positions": 1,
+            "open_risk": 4.39,
             "realized_pnl": -16.83,
             "resolved": 30,
             "risk_profile": "research",
@@ -6073,12 +6144,12 @@
           "hit_rate": 0.5333,
           "losses": 14,
           "mean_abs_forecast_error_f": 2.7,
-          "open_positions": 0,
-          "open_risk": 0.0,
+          "open_positions": 1,
+          "open_risk": 4.39,
           "realized_pnl": -16.83,
           "roi": -0.1276,
           "trades_closed": 28,
-          "trades_opened": 27,
+          "trades_opened": 28,
           "trades_settled": 2,
           "wins": 16
         },
@@ -6089,6 +6160,7 @@
       "label": "Research (experimental)",
       "learnings": [
         "research resolved 30 trade(s): 16W / 14L, net $-16.83.",
+        "research currently has $4.39 of paper open risk.",
         "research has 24 current signal candidate(s) in the latest artifact.",
         "research is experimental paper-data collection; its P&L is isolated from the balanced headline."
       ],
@@ -8100,15 +8172,85 @@
           "yes_stop_loss_pct": 25.0,
           "yes_take_profit_pct": 50.0
         },
-        "open_positions": [],
+        "open_positions": [
+          {
+            "closed_at": null,
+            "contracts": 5.0,
+            "cost_per_contract": 0.878,
+            "created_at": "2026-06-26T03:15:06.674523+00:00",
+            "current_ask": null,
+            "current_bid": 0.86,
+            "current_exit_fee_per_contract": 0.01,
+            "current_market_probability": null,
+            "current_net_exit": 0.85,
+            "current_snapshot_at": "2026-06-26T03:17:12.016375+00:00",
+            "current_source": "paper_monitor_snapshot",
+            "current_spread": null,
+            "current_value": 4.25,
+            "edge": 0.059,
+            "edge_lcb": -0.0243,
+            "entry_fee_per_contract": 0.008,
+            "entry_mode": "market",
+            "entry_price": 0.87,
+            "exit_fee_per_contract": null,
+            "exit_price": null,
+            "exit_rule_reason": "inside exit bands",
+            "expected_profit": 0.3,
+            "id": 68,
+            "initial_cost": 4.39,
+            "label": "70\u00b0 to 71\u00b0",
+            "limit_cost_per_contract": null,
+            "limit_edge": null,
+            "limit_edge_lcb": null,
+            "limit_fee_per_contract": null,
+            "limit_price": null,
+            "max_loss": 4.39,
+            "max_profit": 0.61,
+            "model_side_probability": 0.939,
+            "monitor_action": "HOLD",
+            "position_status": "LOSING",
+            "position_status_label": "Losing",
+            "position_status_tone": "bad",
+            "probability": 0.9279,
+            "probability_lcb": 0.8557,
+            "quality_score": 48.9,
+            "realized_pnl": null,
+            "realized_roi": null,
+            "reasons": [
+              "portfolio PF-e39b5bca2a66: sleeve=research_explore, growth=0.000246"
+            ],
+            "resolved_yes": null,
+            "risk": 4.39,
+            "risk_profile": "research",
+            "settled_at": null,
+            "settlement_high_f": null,
+            "side": "NO",
+            "status": "PAPER_FILLED",
+            "stop_loss_basis": "legacy_percent_floor",
+            "stop_loss_bid": 0.5887,
+            "stop_loss_net_exit": 0.5707,
+            "stop_loss_pct": 35.0,
+            "stop_loss_pnl": -1.54,
+            "take_profit_basis": "model_fair_value",
+            "take_profit_bid": 0.943,
+            "take_profit_net_exit": 0.939,
+            "take_profit_pct": 35.0,
+            "take_profit_pnl": 1.54,
+            "target_date": "2026-06-26",
+            "ticker": "KXHIGHTSFO-26JUN26-B70.5",
+            "unrealized_pnl": -0.14,
+            "unrealized_roi": -0.0319,
+            "why_good": "portfolio PF-e39b5bca2a66: sleeve=research_explore, growth=0.000246"
+          }
+        ],
         "pending_limit_orders": [],
         "profiles": [
           {
             "hit_rate": 0.4667,
             "losses": 32,
-            "open_positions": 0,
-            "open_risk": 0.0,
-            "orders": 60,
+            "open_positions": 1,
+            "open_risk": 4.39,
+            "orders": 61,
             "pending_limit_orders": 0,
             "pending_limit_risk": 0.0,
             "realized_pnl": -32.08,
@@ -8119,6 +8261,47 @@
           }
         ],
         "recent_monitor_actions": [
+          {
+            "contracts": null,
+            "cost_per_contract": null,
+            "entry_price": null,
+            "exit_fee_per_contract": 0.01,
+            "exit_price": 0.86,
+            "id": 68,
+            "initial_cost": null,
+            "label": "70\u00b0 to 71\u00b0",
+            "note": "inside exit bands",
+            "realized_pnl": -0.14,
+            "realized_roi": -0.0319,
+            "risk_profile": "research",
+            "settlement_high_f": null,
+            "side": "NO",
+            "status": "HOLD",
+            "target_date": "2026-06-26",
+            "ticker": "KXHIGHTSFO-26JUN26-B70.5",
+            "time": "2026-06-26T03:17:12.016375+00:00",
+            "unrealized": true
+          },
+          {
+            "contracts": 5.0,
+            "cost_per_contract": 0.878,
+            "entry_price": 0.87,
+            "exit_fee_per_contract": null,
+            "exit_price": null,
+            "id": 68,
+            "initial_cost": 4.39,
+            "label": "70\u00b0 to 71\u00b0",
+            "note": "paper order opened",
+            "realized_pnl": null,
+            "realized_roi": null,
+            "risk_profile": "research",
+            "settlement_high_f": null,
+            "side": "NO",
+            "status": "OPEN",
+            "target_date": "2026-06-26",
+            "ticker": "KXHIGHTSFO-26JUN26-B70.5",
+            "time": "2026-06-26T03:15:06.674523+00:00"
+          },
           {
             "contracts": 5.0,
             "cost_per_contract": 0.666,
@@ -8323,71 +8506,30 @@
             "ticker": "KXHIGHTSFO-26JUN24-B72.5",
             "time": "2026-06-24T20:31:12.334445+00:00",
             "unrealized": true
-          },
-          {
-            "contracts": 5.0,
-            "cost_per_contract": 0.764,
-            "entry_price": 0.75,
-            "exit_fee_per_contract": 0.018,
-            "exit_price": 0.36,
-            "id": 59,
-            "initial_cost": 3.82,
-            "label": "70\u00b0 to 71\u00b0",
-            "note": "closed by monitor",
-            "realized_pnl": -2.11,
-            "realized_roi": -0.5524,
-            "risk_profile": "research",
-            "settlement_high_f": null,
-            "side": "NO",
-            "status": "PAPER_CLOSED",
-            "target_date": "2026-06-24",
-            "ticker": "KXHIGHTSFO-26JUN24-B70.5",
-            "time": "2026-06-24T19:47:19.003213+00:00"
-          },
-          {
-            "contracts": null,
-            "cost_per_contract": null,
-            "entry_price": null,
-            "exit_fee_per_contract": 0.018,
-            "exit_price": 0.36,
-            "id": 59,
-            "initial_cost": null,
-            "label": "70\u00b0 to 71\u00b0",
-            "note": "edge reversed: fair value 0.232 fell to/below net exit 0.342, under entry 0.764",
-            "realized_pnl": -2.11,
-            "realized_roi": -0.5524,
-            "risk_profile": "research",
-            "settlement_high_f": null,
-            "side": "NO",
-            "status": "CLOSE_STOP_LOSS",
-            "target_date": "2026-06-24",
-            "ticker": "KXHIGHTSFO-26JUN24-B70.5",
-            "time": "2026-06-24T19:47:19.002552+00:00",
-            "unrealized": true
           }
         ],
         "summary": {
           "capital_at_risk": null,
-          "closed_positions": 60,
+          "closed_positions": 61,
           "duplicate_open_groups": 0,
           "hidden_open_positions": 0,
           "hidden_pending_limit_orders": 0,
           "hit_rate": 0.4667,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-06-25T19:47:18.850464+00:00",
-          "latest_opened_at": null,
+          "latest_monitor_action_at": "2026-06-26T03:17:12.016375+00:00",
+          "latest_opened_at": "2026-06-26T03:15:06.674523+00:00",
           "loss_count": 32,
-          "marked_open_positions": 0,
-          "open_positions": 0,
-          "open_risk": 0.0,
-          "open_value": null,
+          "marked_open_positions": 1,
+          "open_positions": 1,
+          "open_risk": 4.39,
+          "open_value": 4.25,
           "pending_limit_orders": 0,
           "pending_limit_risk": 0.0,
-          "published_open_positions": 0,
+          "published_open_positions": 1,
           "published_pending_limit_orders": 0,
           "realized_pnl": -32.08,
           "roi": -0.1532,
-          "unrealized_pnl": null,
+          "unrealized_pnl": -0.14,
           "unresolved_past_targets": [],
           "win_count": 28
         }
@@ -8407,12 +8549,12 @@
               "range": "0-20"
             },
             {
-              "avg_edge": 0.0515,
+              "avg_edge": 0.0615,
               "count": 1,
               "range": "20-40"
             },
             {
-              "avg_edge": -0.025,
+              "avg_edge": -0.035,
               "count": 2,
               "range": "40-60"
             },
@@ -8429,27 +8571,27 @@
           ],
           "probability_vs_market": [
             {
-              "approved": false,
-              "label": "68\u00b0 to 69\u00b0",
-              "r": 6.92,
+              "approved": true,
+              "label": "70\u00b0 to 71\u00b0",
+              "r": 4.89,
               "side": "NO",
-              "x": 0.5314,
-              "y": 0.9046
+              "x": 0.8676,
+              "y": 0.939
             },
             {
               "approved": false,
-              "label": "70\u00b0 to 71\u00b0",
-              "r": 5.57,
-              "side": "NO",
-              "x": 0.8696,
-              "y": 0.939
+              "label": "66\u00b0 to 67\u00b0",
+              "r": 5.0600000000000005,
+              "side": "YES",
+              "x": 0.2598,
+              "y": 0.3515
             },
             {
               "approved": false,
               "label": "72\u00b0 or above",
               "r": 4.95,
               "side": "YES",
-              "x": 0.0145,
+              "x": 0.0147,
               "y": 0.0784
             },
             {
@@ -8457,39 +8599,39 @@
               "label": "64\u00b0 to 65\u00b0",
               "r": 4.87,
               "side": "YES",
-              "x": 0.0821,
+              "x": 0.0833,
               "y": 0.2189
-            },
-            {
-              "approved": false,
-              "label": "66\u00b0 to 67\u00b0",
-              "r": 4.82,
-              "side": "YES",
-              "x": 0.2609,
-              "y": 0.3515
             },
             {
               "approved": false,
               "label": "72\u00b0 or above",
               "r": 4.7700000000000005,
               "side": "NO",
-              "x": 0.9855,
+              "x": 0.9853,
               "y": 0.9216
+            },
+            {
+              "approved": false,
+              "label": "68\u00b0 to 69\u00b0",
+              "r": 4.66,
+              "side": "NO",
+              "x": 0.5343,
+              "y": 0.9046
             },
             {
               "approved": false,
               "label": "64\u00b0 to 65\u00b0",
               "r": 4.6,
               "side": "NO",
-              "x": 0.9179,
+              "x": 0.9167,
               "y": 0.7811
             },
             {
               "approved": false,
               "label": "63\u00b0 or below",
-              "r": 4.2700000000000005,
+              "r": 4.279999999999999,
               "side": "YES",
-              "x": 0.0435,
+              "x": 0.0441,
               "y": 0.1948
             },
             {
@@ -8497,15 +8639,23 @@
               "label": "63\u00b0 or below",
               "r": 4,
               "side": "NO",
-              "x": 0.9565,
+              "x": 0.9559,
               "y": 0.8052
+            },
+            {
+              "approved": false,
+              "label": "68\u00b0 to 69\u00b0",
+              "r": 4,
+              "side": "YES",
+              "x": 0.4657,
+              "y": 0.0954
             },
             {
               "approved": false,
               "label": "70\u00b0 to 71\u00b0",
               "r": 4,
               "side": "YES",
-              "x": 0.1304,
+              "x": 0.1324,
               "y": 0.061
             },
             {
@@ -8513,16 +8663,8 @@
               "label": "66\u00b0 to 67\u00b0",
               "r": 4,
               "side": "NO",
-              "x": 0.7391,
+              "x": 0.7402,
               "y": 0.6485
-            },
-            {
-              "approved": false,
-              "label": "68\u00b0 to 69\u00b0",
-              "r": 4,
-              "side": "YES",
-              "x": 0.4686,
-              "y": 0.0954
             },
             {
               "approved": false,
@@ -8627,15 +8769,15 @@
               "range": "0-20"
             },
             {
-              "count": 6,
+              "count": 5,
               "range": "20-40"
             },
             {
-              "count": 12,
+              "count": 14,
               "range": "40-60"
             },
             {
-              "count": 1,
+              "count": 0,
               "range": "60-80"
             },
             {
@@ -8646,61 +8788,29 @@
         },
         "latest_candidates": [
           {
-            "approved": false,
-            "ask": 0.52,
-            "bid": 0.51,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
-            "decision": "NO_TRADE",
-            "decision_reason": "model/market gap 0.373 exceeds max 0.250",
-            "edge": 0.3646,
-            "edge_lcb": 0.1606,
-            "ensemble_probability": 1.0,
-            "expected_profit": 0.0,
-            "intraday_probability": null,
-            "label": "68\u00b0 to 69\u00b0",
-            "market_available": true,
-            "market_probability": 0.5314,
-            "model_probability": 0.9046,
-            "probability": 0.8503,
-            "probability_lcb": 0.7006,
-            "quality_score": 69.2,
-            "reasons": [
-              "model/market gap 0.373 exceeds max 0.250"
-            ],
-            "recommended_contracts": 0.0,
-            "recommended_spend": 0.0,
-            "remaining_heat_risk": null,
-            "residual_probability": 0.8637,
-            "risk_profile": "research",
-            "side": "NO",
-            "spread": 0.01,
-            "target_date": "2026-06-26",
-            "ticker": "KXHIGHTSFO-26JUN26-B68.5"
-          },
-          {
-            "approved": false,
+            "approved": true,
             "ask": 0.87,
             "bid": 0.86,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
-            "decision": "NO_TRADE",
-            "decision_reason": "lower-bound edge -0.099 below min -0.070",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
+            "decision": "TRADE",
+            "decision_reason": "Passed risk gates with edge 0.059 and lower-bound edge -0.024.",
             "edge": 0.059,
-            "edge_lcb": -0.0992,
+            "edge_lcb": -0.0243,
             "ensemble_probability": 1.0,
-            "expected_profit": 0.0,
+            "expected_profit": 0.3,
             "intraday_probability": null,
             "label": "70\u00b0 to 71\u00b0",
             "market_available": true,
-            "market_probability": 0.8696,
+            "market_probability": 0.8676,
             "model_probability": 0.939,
-            "probability": 0.8904,
-            "probability_lcb": 0.7808,
-            "quality_score": 55.7,
+            "probability": 0.9279,
+            "probability_lcb": 0.8557,
+            "quality_score": 48.9,
             "reasons": [
-              "lower-bound edge -0.099 below min -0.070"
+              "portfolio PF-e39b5bca2a66: sleeve=research_explore, growth=0.000246"
             ],
-            "recommended_contracts": 0.0,
-            "recommended_spend": 0.0,
+            "recommended_contracts": 5.0,
+            "recommended_spend": 4.4,
             "remaining_heat_risk": null,
             "residual_probability": 0.9129,
             "risk_profile": "research",
@@ -8711,9 +8821,41 @@
           },
           {
             "approved": false,
+            "ask": 0.27,
+            "bid": 0.26,
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
+            "decision": "NO_TRADE",
+            "decision_reason": "lower-bound edge -0.257 below min -0.070",
+            "edge": 0.0615,
+            "edge_lcb": -0.2569,
+            "ensemble_probability": 0.7419,
+            "expected_profit": 0.0,
+            "intraday_probability": null,
+            "label": "66\u00b0 to 67\u00b0",
+            "market_available": true,
+            "market_probability": 0.2598,
+            "model_probability": 0.3515,
+            "probability": 0.2873,
+            "probability_lcb": 0.0331,
+            "quality_score": 50.6,
+            "reasons": [
+              "lower-bound edge -0.257 below min -0.070"
+            ],
+            "recommended_contracts": 0.0,
+            "recommended_spend": 0.0,
+            "remaining_heat_risk": null,
+            "residual_probability": 0.1842,
+            "risk_profile": "research",
+            "side": "YES",
+            "spread": 0.01,
+            "target_date": "2026-06-26",
+            "ticker": "KXHIGHTSFO-26JUN26-B66.5"
+          },
+          {
+            "approved": false,
             "ask": 0.02,
             "bid": 0.01,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "posterior probability 0.034 below min 0.050",
             "edge": 0.0484,
@@ -8723,9 +8865,9 @@
             "intraday_probability": null,
             "label": "72\u00b0 or above",
             "market_available": true,
-            "market_probability": 0.0145,
+            "market_probability": 0.0147,
             "model_probability": 0.0784,
-            "probability": 0.0337,
+            "probability": 0.0338,
             "probability_lcb": 0.0,
             "quality_score": 49.5,
             "reasons": [
@@ -8746,7 +8888,7 @@
             "approved": false,
             "ask": 0.09,
             "bid": 0.08,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "lower-bound edge -0.100 below min -0.070",
             "edge": 0.1189,
@@ -8756,14 +8898,14 @@
             "intraday_probability": null,
             "label": "64\u00b0 to 65\u00b0",
             "market_available": true,
-            "market_probability": 0.0821,
+            "market_probability": 0.0833,
             "model_probability": 0.2189,
-            "probability": 0.1231,
+            "probability": 0.124,
             "probability_lcb": 0.0,
             "quality_score": 48.7,
             "reasons": [
               "lower-bound edge -0.100 below min -0.070",
-              "1c/2c tail requires exceptional support (YES): bid size 1.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.100<0.020, model/market gap 0.137>0.120"
+              "1c/2c tail requires exceptional support (YES): bid size 1.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.100<0.020, model/market gap 0.136>0.120"
             ],
             "recommended_contracts": 0.0,
             "recommended_spend": 0.0,
@@ -8777,54 +8919,22 @@
           },
           {
             "approved": false,
-            "ask": 0.28,
-            "bid": 0.26,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
-            "decision": "NO_TRADE",
-            "decision_reason": "lower-bound edge -0.266 below min -0.070",
-            "edge": 0.0515,
-            "edge_lcb": -0.2658,
-            "ensemble_probability": 0.7419,
-            "expected_profit": 0.0,
-            "intraday_probability": null,
-            "label": "66\u00b0 to 67\u00b0",
-            "market_available": true,
-            "market_probability": 0.2609,
-            "model_probability": 0.3515,
-            "probability": 0.2881,
-            "probability_lcb": 0.0342,
-            "quality_score": 48.2,
-            "reasons": [
-              "lower-bound edge -0.266 below min -0.070"
-            ],
-            "recommended_contracts": 0.0,
-            "recommended_spend": 0.0,
-            "remaining_heat_risk": null,
-            "residual_probability": 0.1842,
-            "risk_profile": "research",
-            "side": "YES",
-            "spread": 0.02,
-            "target_date": "2026-06-26",
-            "ticker": "KXHIGHTSFO-26JUN26-B66.5"
-          },
-          {
-            "approved": false,
             "ask": 0.99,
             "bid": 0.98,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "all-in cost 1.00 meets or exceeds the $1 contract payout",
             "edge": -0.0784,
-            "edge_lcb": -0.0673,
+            "edge_lcb": -0.0676,
             "ensemble_probability": 1.0,
             "expected_profit": 0.0,
             "intraday_probability": null,
             "label": "72\u00b0 or above",
             "market_available": true,
-            "market_probability": 0.9855,
+            "market_probability": 0.9853,
             "model_probability": 0.9216,
-            "probability": 0.9663,
-            "probability_lcb": 0.9327,
+            "probability": 0.9662,
+            "probability_lcb": 0.9324,
             "quality_score": 47.7,
             "reasons": [
               "all-in cost 1.00 meets or exceeds the $1 contract payout",
@@ -8842,26 +8952,59 @@
           },
           {
             "approved": false,
+            "ask": 0.54,
+            "bid": 0.51,
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
+            "decision": "NO_TRADE",
+            "decision_reason": "model/market gap 0.370 exceeds max 0.250",
+            "edge": 0.3446,
+            "edge_lcb": -0.1693,
+            "ensemble_probability": 1.0,
+            "expected_profit": 0.0,
+            "intraday_probability": null,
+            "label": "68\u00b0 to 69\u00b0",
+            "market_available": true,
+            "market_probability": 0.5343,
+            "model_probability": 0.9046,
+            "probability": 0.662,
+            "probability_lcb": 0.3907,
+            "quality_score": 46.6,
+            "reasons": [
+              "model/market gap 0.370 exceeds max 0.250",
+              "lower-bound edge -0.169 below min -0.070"
+            ],
+            "recommended_contracts": 0.0,
+            "recommended_spend": 0.0,
+            "remaining_heat_risk": null,
+            "residual_probability": 0.8637,
+            "risk_profile": "research",
+            "side": "NO",
+            "spread": 0.03,
+            "target_date": "2026-06-26",
+            "ticker": "KXHIGHTSFO-26JUN26-B68.5"
+          },
+          {
+            "approved": false,
             "ask": 0.92,
             "bid": 0.91,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.149 below min 0.005",
             "edge": -0.1489,
-            "edge_lcb": -0.1763,
+            "edge_lcb": -0.178,
             "ensemble_probability": 0.7419,
             "expected_profit": 0.0,
             "intraday_probability": null,
             "label": "64\u00b0 to 65\u00b0",
             "market_available": true,
-            "market_probability": 0.9179,
+            "market_probability": 0.9167,
             "model_probability": 0.7811,
-            "probability": 0.8769,
-            "probability_lcb": 0.7537,
+            "probability": 0.876,
+            "probability_lcb": 0.752,
             "quality_score": 46.0,
             "reasons": [
               "edge -0.149 below min 0.005",
-              "lower-bound edge -0.176 below min -0.070"
+              "lower-bound edge -0.178 below min -0.070"
             ],
             "recommended_contracts": 0.0,
             "recommended_spend": 0.0,
@@ -8877,7 +9020,7 @@
             "approved": false,
             "ask": 0.05,
             "bid": 0.04,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "1c/2c tail requires exceptional support (YES): bid size 2.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.060<0.020, model/market gap 0.151>0.120, ensemble p 0.000<0.060",
             "edge": 0.1348,
@@ -8887,11 +9030,11 @@
             "intraday_probability": null,
             "label": "63\u00b0 or below",
             "market_available": true,
-            "market_probability": 0.0435,
+            "market_probability": 0.0441,
             "model_probability": 0.1948,
-            "probability": 0.0889,
+            "probability": 0.0893,
             "probability_lcb": 0.0,
-            "quality_score": 42.7,
+            "quality_score": 42.8,
             "reasons": [
               "1c/2c tail requires exceptional support (YES): bid size 2.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.060<0.020, model/market gap 0.151>0.120, ensemble p 0.000<0.060"
             ],
@@ -8909,24 +9052,24 @@
             "approved": false,
             "ask": 0.96,
             "bid": 0.95,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.165 below min 0.005",
             "edge": -0.1648,
-            "edge_lcb": -0.1478,
+            "edge_lcb": -0.1487,
             "ensemble_probability": 1.0,
             "expected_profit": 0.0,
             "intraday_probability": null,
             "label": "63\u00b0 or below",
             "market_available": true,
-            "market_probability": 0.9565,
+            "market_probability": 0.9559,
             "model_probability": 0.8052,
-            "probability": 0.9111,
-            "probability_lcb": 0.8222,
-            "quality_score": 39.9,
+            "probability": 0.9107,
+            "probability_lcb": 0.8213,
+            "quality_score": 40.0,
             "reasons": [
               "edge -0.165 below min 0.005",
-              "lower-bound edge -0.148 below min -0.070"
+              "lower-bound edge -0.149 below min -0.070"
             ],
             "recommended_contracts": 0.0,
             "recommended_spend": 0.0,
@@ -8940,9 +9083,43 @@
           },
           {
             "approved": false,
+            "ask": 0.49,
+            "bid": 0.46,
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
+            "decision": "NO_TRADE",
+            "decision_reason": "model/market gap 0.370 exceeds max 0.250",
+            "edge": -0.4146,
+            "edge_lcb": -0.4433,
+            "ensemble_probability": 0.0,
+            "expected_profit": 0.0,
+            "intraday_probability": null,
+            "label": "68\u00b0 to 69\u00b0",
+            "market_available": true,
+            "market_probability": 0.4657,
+            "model_probability": 0.0954,
+            "probability": 0.338,
+            "probability_lcb": 0.0667,
+            "quality_score": 37.2,
+            "reasons": [
+              "model/market gap 0.370 exceeds max 0.250",
+              "edge -0.415 below min 0.005",
+              "lower-bound edge -0.443 below min -0.070"
+            ],
+            "recommended_contracts": 0.0,
+            "recommended_spend": 0.0,
+            "remaining_heat_risk": null,
+            "residual_probability": 0.1363,
+            "risk_profile": "research",
+            "side": "YES",
+            "spread": 0.03,
+            "target_date": "2026-06-26",
+            "ticker": "KXHIGHTSFO-26JUN26-B68.5"
+          },
+          {
+            "approved": false,
             "ask": 0.14,
             "bid": 0.13,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.089 below min 0.005",
             "edge": -0.089,
@@ -8952,9 +9129,9 @@
             "intraday_probability": null,
             "label": "70\u00b0 to 71\u00b0",
             "market_available": true,
-            "market_probability": 0.1304,
+            "market_probability": 0.1324,
             "model_probability": 0.061,
-            "probability": 0.1096,
+            "probability": 0.0721,
             "probability_lcb": 0.0,
             "quality_score": 35.0,
             "reasons": [
@@ -8975,22 +9152,22 @@
           {
             "approved": false,
             "ask": 0.74,
-            "bid": 0.72,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
+            "bid": 0.73,
+            "created_at": "2026-06-26T03:15:06.667372+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.112 below min 0.005",
             "edge": -0.1115,
-            "edge_lcb": -0.302,
+            "edge_lcb": -0.3015,
             "ensemble_probability": 0.2581,
             "expected_profit": 0.0,
             "intraday_probability": null,
             "label": "66\u00b0 to 67\u00b0",
             "market_available": true,
-            "market_probability": 0.7391,
+            "market_probability": 0.7402,
             "model_probability": 0.6485,
-            "probability": 0.7119,
-            "probability_lcb": 0.458,
-            "quality_score": 28.2,
+            "probability": 0.7127,
+            "probability_lcb": 0.4585,
+            "quality_score": 28.3,
             "reasons": [
               "edge -0.112 below min 0.005",
               "lower-bound edge -0.302 below min -0.070"
@@ -9001,43 +9178,9 @@
             "residual_probability": 0.8158,
             "risk_profile": "research",
             "side": "NO",
-            "spread": 0.02,
-            "target_date": "2026-06-26",
-            "ticker": "KXHIGHTSFO-26JUN26-B66.5"
-          },
-          {
-            "approved": false,
-            "ask": 0.49,
-            "bid": 0.48,
-            "created_at": "2026-06-26T03:10:22.758550+00:00",
-            "decision": "NO_TRADE",
-            "decision_reason": "model/market gap 0.373 exceeds max 0.250",
-            "edge": -0.4146,
-            "edge_lcb": -0.51,
-            "ensemble_probability": 0.0,
-            "expected_profit": 0.0,
-            "intraday_probability": null,
-            "label": "68\u00b0 to 69\u00b0",
-            "market_available": true,
-            "market_probability": 0.4686,
-            "model_probability": 0.0954,
-            "probability": 0.1497,
-            "probability_lcb": 0.0,
-            "quality_score": 26.3,
-            "reasons": [
-              "model/market gap 0.373 exceeds max 0.250",
-              "edge -0.415 below min 0.005",
-              "lower-bound edge -0.510 below min -0.070"
-            ],
-            "recommended_contracts": 0.0,
-            "recommended_spend": 0.0,
-            "remaining_heat_risk": null,
-            "residual_probability": 0.1363,
-            "risk_profile": "research",
-            "side": "YES",
             "spread": 0.01,
             "target_date": "2026-06-26",
-            "ticker": "KXHIGHTSFO-26JUN26-B68.5"
+            "ticker": "KXHIGHTSFO-26JUN26-B66.5"
           },
           {
             "approved": false,
@@ -9541,8 +9684,8 @@
         "entry_scanner_reason": null,
         "hit_rate": 0.5333,
         "latest_signal_count": 24,
-        "open_risk": 0.0,
-        "paper_trading_status": "no open research paper positions",
+        "open_risk": 4.39,
+        "paper_trading_status": "1 open research paper position(s)",
         "pending_limit_risk": 0.0,
         "profile_label": "Research (experimental)",
         "profile_type": "experimental",
@@ -9682,12 +9825,12 @@
           "range": "0-20"
         },
         {
-          "avg_edge": 0.0515,
+          "avg_edge": 0.0615,
           "count": 1,
           "range": "20-40"
         },
         {
-          "avg_edge": -0.025,
+          "avg_edge": -0.035,
           "count": 2,
           "range": "40-60"
         },
@@ -9704,27 +9847,27 @@
       ],
       "probability_vs_market": [
         {
-          "approved": false,
-          "label": "68\u00b0 to 69\u00b0",
-          "r": 6.92,
+          "approved": true,
+          "label": "70\u00b0 to 71\u00b0",
+          "r": 4.89,
           "side": "NO",
-          "x": 0.5314,
-          "y": 0.9046
+          "x": 0.8676,
+          "y": 0.939
         },
         {
           "approved": false,
-          "label": "70\u00b0 to 71\u00b0",
-          "r": 5.57,
-          "side": "NO",
-          "x": 0.8696,
-          "y": 0.939
+          "label": "66\u00b0 to 67\u00b0",
+          "r": 5.0600000000000005,
+          "side": "YES",
+          "x": 0.2598,
+          "y": 0.3515
         },
         {
           "approved": false,
           "label": "72\u00b0 or above",
           "r": 4.95,
           "side": "YES",
-          "x": 0.0145,
+          "x": 0.0147,
           "y": 0.0784
         },
         {
@@ -9732,39 +9875,39 @@
           "label": "64\u00b0 to 65\u00b0",
           "r": 4.87,
           "side": "YES",
-          "x": 0.0821,
+          "x": 0.0833,
           "y": 0.2189
-        },
-        {
-          "approved": false,
-          "label": "66\u00b0 to 67\u00b0",
-          "r": 4.82,
-          "side": "YES",
-          "x": 0.2609,
-          "y": 0.3515
         },
         {
           "approved": false,
           "label": "72\u00b0 or above",
           "r": 4.7700000000000005,
           "side": "NO",
-          "x": 0.9855,
+          "x": 0.9853,
           "y": 0.9216
+        },
+        {
+          "approved": false,
+          "label": "68\u00b0 to 69\u00b0",
+          "r": 4.66,
+          "side": "NO",
+          "x": 0.5343,
+          "y": 0.9046
         },
         {
           "approved": false,
           "label": "64\u00b0 to 65\u00b0",
           "r": 4.6,
           "side": "NO",
-          "x": 0.9179,
+          "x": 0.9167,
           "y": 0.7811
         },
         {
           "approved": false,
           "label": "63\u00b0 or below",
-          "r": 4.2700000000000005,
+          "r": 4.279999999999999,
           "side": "YES",
-          "x": 0.0435,
+          "x": 0.0441,
           "y": 0.1948
         },
         {
@@ -9772,15 +9915,23 @@
           "label": "63\u00b0 or below",
           "r": 4,
           "side": "NO",
-          "x": 0.9565,
+          "x": 0.9559,
           "y": 0.8052
+        },
+        {
+          "approved": false,
+          "label": "68\u00b0 to 69\u00b0",
+          "r": 4,
+          "side": "YES",
+          "x": 0.4657,
+          "y": 0.0954
         },
         {
           "approved": false,
           "label": "70\u00b0 to 71\u00b0",
           "r": 4,
           "side": "YES",
-          "x": 0.1304,
+          "x": 0.1324,
           "y": 0.061
         },
         {
@@ -9788,16 +9939,8 @@
           "label": "66\u00b0 to 67\u00b0",
           "r": 4,
           "side": "NO",
-          "x": 0.7391,
+          "x": 0.7402,
           "y": 0.6485
-        },
-        {
-          "approved": false,
-          "label": "68\u00b0 to 69\u00b0",
-          "r": 4,
-          "side": "YES",
-          "x": 0.4686,
-          "y": 0.0954
         },
         {
           "approved": false,
@@ -9902,15 +10045,15 @@
           "range": "0-20"
         },
         {
-          "count": 6,
+          "count": 5,
           "range": "20-40"
         },
         {
-          "count": 12,
+          "count": 14,
           "range": "40-60"
         },
         {
-          "count": 1,
+          "count": 0,
           "range": "60-80"
         },
         {
@@ -9921,61 +10064,29 @@
     },
     "latest_candidates": [
       {
-        "approved": false,
-        "ask": 0.52,
-        "bid": 0.51,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
-        "decision": "NO_TRADE",
-        "decision_reason": "model/market gap 0.373 exceeds max 0.250",
-        "edge": 0.3646,
-        "edge_lcb": 0.1606,
-        "ensemble_probability": 1.0,
-        "expected_profit": 0.0,
-        "intraday_probability": null,
-        "label": "68\u00b0 to 69\u00b0",
-        "market_available": true,
-        "market_probability": 0.5314,
-        "model_probability": 0.9046,
-        "probability": 0.8503,
-        "probability_lcb": 0.7006,
-        "quality_score": 69.2,
-        "reasons": [
-          "model/market gap 0.373 exceeds max 0.250"
-        ],
-        "recommended_contracts": 0.0,
-        "recommended_spend": 0.0,
-        "remaining_heat_risk": null,
-        "residual_probability": 0.8637,
-        "risk_profile": "research",
-        "side": "NO",
-        "spread": 0.01,
-        "target_date": "2026-06-26",
-        "ticker": "KXHIGHTSFO-26JUN26-B68.5"
-      },
-      {
-        "approved": false,
+        "approved": true,
         "ask": 0.87,
         "bid": 0.86,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
-        "decision": "NO_TRADE",
-        "decision_reason": "lower-bound edge -0.099 below min -0.070",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
+        "decision": "TRADE",
+        "decision_reason": "Passed risk gates with edge 0.059 and lower-bound edge -0.024.",
         "edge": 0.059,
-        "edge_lcb": -0.0992,
+        "edge_lcb": -0.0243,
         "ensemble_probability": 1.0,
-        "expected_profit": 0.0,
+        "expected_profit": 0.3,
         "intraday_probability": null,
         "label": "70\u00b0 to 71\u00b0",
         "market_available": true,
-        "market_probability": 0.8696,
+        "market_probability": 0.8676,
         "model_probability": 0.939,
-        "probability": 0.8904,
-        "probability_lcb": 0.7808,
-        "quality_score": 55.7,
+        "probability": 0.9279,
+        "probability_lcb": 0.8557,
+        "quality_score": 48.9,
         "reasons": [
-          "lower-bound edge -0.099 below min -0.070"
+          "portfolio PF-e39b5bca2a66: sleeve=research_explore, growth=0.000246"
         ],
-        "recommended_contracts": 0.0,
-        "recommended_spend": 0.0,
+        "recommended_contracts": 5.0,
+        "recommended_spend": 4.4,
         "remaining_heat_risk": null,
         "residual_probability": 0.9129,
         "risk_profile": "research",
@@ -9986,9 +10097,41 @@
       },
       {
         "approved": false,
+        "ask": 0.27,
+        "bid": 0.26,
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
+        "decision": "NO_TRADE",
+        "decision_reason": "lower-bound edge -0.257 below min -0.070",
+        "edge": 0.0615,
+        "edge_lcb": -0.2569,
+        "ensemble_probability": 0.7419,
+        "expected_profit": 0.0,
+        "intraday_probability": null,
+        "label": "66\u00b0 to 67\u00b0",
+        "market_available": true,
+        "market_probability": 0.2598,
+        "model_probability": 0.3515,
+        "probability": 0.2873,
+        "probability_lcb": 0.0331,
+        "quality_score": 50.6,
+        "reasons": [
+          "lower-bound edge -0.257 below min -0.070"
+        ],
+        "recommended_contracts": 0.0,
+        "recommended_spend": 0.0,
+        "remaining_heat_risk": null,
+        "residual_probability": 0.1842,
+        "risk_profile": "research",
+        "side": "YES",
+        "spread": 0.01,
+        "target_date": "2026-06-26",
+        "ticker": "KXHIGHTSFO-26JUN26-B66.5"
+      },
+      {
+        "approved": false,
         "ask": 0.02,
         "bid": 0.01,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "posterior probability 0.034 below min 0.050",
         "edge": 0.0484,
@@ -9998,9 +10141,9 @@
         "intraday_probability": null,
         "label": "72\u00b0 or above",
         "market_available": true,
-        "market_probability": 0.0145,
+        "market_probability": 0.0147,
         "model_probability": 0.0784,
-        "probability": 0.0337,
+        "probability": 0.0338,
         "probability_lcb": 0.0,
         "quality_score": 49.5,
         "reasons": [
@@ -10021,7 +10164,7 @@
         "approved": false,
         "ask": 0.09,
         "bid": 0.08,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "lower-bound edge -0.100 below min -0.070",
         "edge": 0.1189,
@@ -10031,14 +10174,14 @@
         "intraday_probability": null,
         "label": "64\u00b0 to 65\u00b0",
         "market_available": true,
-        "market_probability": 0.0821,
+        "market_probability": 0.0833,
         "model_probability": 0.2189,
-        "probability": 0.1231,
+        "probability": 0.124,
         "probability_lcb": 0.0,
         "quality_score": 48.7,
         "reasons": [
           "lower-bound edge -0.100 below min -0.070",
-          "1c/2c tail requires exceptional support (YES): bid size 1.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.100<0.020, model/market gap 0.137>0.120"
+          "1c/2c tail requires exceptional support (YES): bid size 1.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.100<0.020, model/market gap 0.136>0.120"
         ],
         "recommended_contracts": 0.0,
         "recommended_spend": 0.0,
@@ -10052,54 +10195,22 @@
       },
       {
         "approved": false,
-        "ask": 0.28,
-        "bid": 0.26,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
-        "decision": "NO_TRADE",
-        "decision_reason": "lower-bound edge -0.266 below min -0.070",
-        "edge": 0.0515,
-        "edge_lcb": -0.2658,
-        "ensemble_probability": 0.7419,
-        "expected_profit": 0.0,
-        "intraday_probability": null,
-        "label": "66\u00b0 to 67\u00b0",
-        "market_available": true,
-        "market_probability": 0.2609,
-        "model_probability": 0.3515,
-        "probability": 0.2881,
-        "probability_lcb": 0.0342,
-        "quality_score": 48.2,
-        "reasons": [
-          "lower-bound edge -0.266 below min -0.070"
-        ],
-        "recommended_contracts": 0.0,
-        "recommended_spend": 0.0,
-        "remaining_heat_risk": null,
-        "residual_probability": 0.1842,
-        "risk_profile": "research",
-        "side": "YES",
-        "spread": 0.02,
-        "target_date": "2026-06-26",
-        "ticker": "KXHIGHTSFO-26JUN26-B66.5"
-      },
-      {
-        "approved": false,
         "ask": 0.99,
         "bid": 0.98,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "all-in cost 1.00 meets or exceeds the $1 contract payout",
         "edge": -0.0784,
-        "edge_lcb": -0.0673,
+        "edge_lcb": -0.0676,
         "ensemble_probability": 1.0,
         "expected_profit": 0.0,
         "intraday_probability": null,
         "label": "72\u00b0 or above",
         "market_available": true,
-        "market_probability": 0.9855,
+        "market_probability": 0.9853,
         "model_probability": 0.9216,
-        "probability": 0.9663,
-        "probability_lcb": 0.9327,
+        "probability": 0.9662,
+        "probability_lcb": 0.9324,
         "quality_score": 47.7,
         "reasons": [
           "all-in cost 1.00 meets or exceeds the $1 contract payout",
@@ -10117,26 +10228,59 @@
       },
       {
         "approved": false,
+        "ask": 0.54,
+        "bid": 0.51,
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
+        "decision": "NO_TRADE",
+        "decision_reason": "model/market gap 0.370 exceeds max 0.250",
+        "edge": 0.3446,
+        "edge_lcb": -0.1693,
+        "ensemble_probability": 1.0,
+        "expected_profit": 0.0,
+        "intraday_probability": null,
+        "label": "68\u00b0 to 69\u00b0",
+        "market_available": true,
+        "market_probability": 0.5343,
+        "model_probability": 0.9046,
+        "probability": 0.662,
+        "probability_lcb": 0.3907,
+        "quality_score": 46.6,
+        "reasons": [
+          "model/market gap 0.370 exceeds max 0.250",
+          "lower-bound edge -0.169 below min -0.070"
+        ],
+        "recommended_contracts": 0.0,
+        "recommended_spend": 0.0,
+        "remaining_heat_risk": null,
+        "residual_probability": 0.8637,
+        "risk_profile": "research",
+        "side": "NO",
+        "spread": 0.03,
+        "target_date": "2026-06-26",
+        "ticker": "KXHIGHTSFO-26JUN26-B68.5"
+      },
+      {
+        "approved": false,
         "ask": 0.92,
         "bid": 0.91,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.149 below min 0.005",
         "edge": -0.1489,
-        "edge_lcb": -0.1763,
+        "edge_lcb": -0.178,
         "ensemble_probability": 0.7419,
         "expected_profit": 0.0,
         "intraday_probability": null,
         "label": "64\u00b0 to 65\u00b0",
         "market_available": true,
-        "market_probability": 0.9179,
+        "market_probability": 0.9167,
         "model_probability": 0.7811,
-        "probability": 0.8769,
-        "probability_lcb": 0.7537,
+        "probability": 0.876,
+        "probability_lcb": 0.752,
         "quality_score": 46.0,
         "reasons": [
           "edge -0.149 below min 0.005",
-          "lower-bound edge -0.176 below min -0.070"
+          "lower-bound edge -0.178 below min -0.070"
         ],
         "recommended_contracts": 0.0,
         "recommended_spend": 0.0,
@@ -10152,7 +10296,7 @@
         "approved": false,
         "ask": 0.05,
         "bid": 0.04,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "1c/2c tail requires exceptional support (YES): bid size 2.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.060<0.020, model/market gap 0.151>0.120, ensemble p 0.000<0.060",
         "edge": 0.1348,
@@ -10162,11 +10306,11 @@
         "intraday_probability": null,
         "label": "63\u00b0 or below",
         "market_available": true,
-        "market_probability": 0.0435,
+        "market_probability": 0.0441,
         "model_probability": 0.1948,
-        "probability": 0.0889,
+        "probability": 0.0893,
         "probability_lcb": 0.0,
-        "quality_score": 42.7,
+        "quality_score": 42.8,
         "reasons": [
           "1c/2c tail requires exceptional support (YES): bid size 2.00<5.00, p_lcb 0.000<0.060, edge_lcb -0.060<0.020, model/market gap 0.151>0.120, ensemble p 0.000<0.060"
         ],
@@ -10184,24 +10328,24 @@
         "approved": false,
         "ask": 0.96,
         "bid": 0.95,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.165 below min 0.005",
         "edge": -0.1648,
-        "edge_lcb": -0.1478,
+        "edge_lcb": -0.1487,
         "ensemble_probability": 1.0,
         "expected_profit": 0.0,
         "intraday_probability": null,
         "label": "63\u00b0 or below",
         "market_available": true,
-        "market_probability": 0.9565,
+        "market_probability": 0.9559,
         "model_probability": 0.8052,
-        "probability": 0.9111,
-        "probability_lcb": 0.8222,
-        "quality_score": 39.9,
+        "probability": 0.9107,
+        "probability_lcb": 0.8213,
+        "quality_score": 40.0,
         "reasons": [
           "edge -0.165 below min 0.005",
-          "lower-bound edge -0.148 below min -0.070"
+          "lower-bound edge -0.149 below min -0.070"
         ],
         "recommended_contracts": 0.0,
         "recommended_spend": 0.0,
@@ -10215,9 +10359,43 @@
       },
       {
         "approved": false,
+        "ask": 0.49,
+        "bid": 0.46,
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
+        "decision": "NO_TRADE",
+        "decision_reason": "model/market gap 0.370 exceeds max 0.250",
+        "edge": -0.4146,
+        "edge_lcb": -0.4433,
+        "ensemble_probability": 0.0,
+        "expected_profit": 0.0,
+        "intraday_probability": null,
+        "label": "68\u00b0 to 69\u00b0",
+        "market_available": true,
+        "market_probability": 0.4657,
+        "model_probability": 0.0954,
+        "probability": 0.338,
+        "probability_lcb": 0.0667,
+        "quality_score": 37.2,
+        "reasons": [
+          "model/market gap 0.370 exceeds max 0.250",
+          "edge -0.415 below min 0.005",
+          "lower-bound edge -0.443 below min -0.070"
+        ],
+        "recommended_contracts": 0.0,
+        "recommended_spend": 0.0,
+        "remaining_heat_risk": null,
+        "residual_probability": 0.1363,
+        "risk_profile": "research",
+        "side": "YES",
+        "spread": 0.03,
+        "target_date": "2026-06-26",
+        "ticker": "KXHIGHTSFO-26JUN26-B68.5"
+      },
+      {
+        "approved": false,
         "ask": 0.14,
         "bid": 0.13,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.089 below min 0.005",
         "edge": -0.089,
@@ -10227,9 +10405,9 @@
         "intraday_probability": null,
         "label": "70\u00b0 to 71\u00b0",
         "market_available": true,
-        "market_probability": 0.1304,
+        "market_probability": 0.1324,
         "model_probability": 0.061,
-        "probability": 0.1096,
+        "probability": 0.0721,
         "probability_lcb": 0.0,
         "quality_score": 35.0,
         "reasons": [
@@ -10250,22 +10428,22 @@
       {
         "approved": false,
         "ask": 0.74,
-        "bid": 0.72,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
+        "bid": 0.73,
+        "created_at": "2026-06-26T03:15:06.667372+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.112 below min 0.005",
         "edge": -0.1115,
-        "edge_lcb": -0.302,
+        "edge_lcb": -0.3015,
         "ensemble_probability": 0.2581,
         "expected_profit": 0.0,
         "intraday_probability": null,
         "label": "66\u00b0 to 67\u00b0",
         "market_available": true,
-        "market_probability": 0.7391,
+        "market_probability": 0.7402,
         "model_probability": 0.6485,
-        "probability": 0.7119,
-        "probability_lcb": 0.458,
-        "quality_score": 28.2,
+        "probability": 0.7127,
+        "probability_lcb": 0.4585,
+        "quality_score": 28.3,
         "reasons": [
           "edge -0.112 below min 0.005",
           "lower-bound edge -0.302 below min -0.070"
@@ -10276,43 +10454,9 @@
         "residual_probability": 0.8158,
         "risk_profile": "research",
         "side": "NO",
-        "spread": 0.02,
-        "target_date": "2026-06-26",
-        "ticker": "KXHIGHTSFO-26JUN26-B66.5"
-      },
-      {
-        "approved": false,
-        "ask": 0.49,
-        "bid": 0.48,
-        "created_at": "2026-06-26T03:10:22.758550+00:00",
-        "decision": "NO_TRADE",
-        "decision_reason": "model/market gap 0.373 exceeds max 0.250",
-        "edge": -0.4146,
-        "edge_lcb": -0.51,
-        "ensemble_probability": 0.0,
-        "expected_profit": 0.0,
-        "intraday_probability": null,
-        "label": "68\u00b0 to 69\u00b0",
-        "market_available": true,
-        "market_probability": 0.4686,
-        "model_probability": 0.0954,
-        "probability": 0.1497,
-        "probability_lcb": 0.0,
-        "quality_score": 26.3,
-        "reasons": [
-          "model/market gap 0.373 exceeds max 0.250",
-          "edge -0.415 below min 0.005",
-          "lower-bound edge -0.510 below min -0.070"
-        ],
-        "recommended_contracts": 0.0,
-        "recommended_spend": 0.0,
-        "remaining_heat_risk": null,
-        "residual_probability": 0.1363,
-        "risk_profile": "research",
-        "side": "YES",
         "spread": 0.01,
         "target_date": "2026-06-26",
-        "ticker": "KXHIGHTSFO-26JUN26-B68.5"
+        "ticker": "KXHIGHTSFO-26JUN26-B66.5"
       },
       {
         "approved": false,
@@ -10827,7 +10971,7 @@
     "deduped_signal_count": 216,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-06-26T03:13:45.767437+00:00",
+    "last_updated": "2026-06-26T03:18:46.648065+00:00",
     "latest_signal_targets": [
       "2026-06-24",
       "2026-06-25",
@@ -10835,12 +10979,12 @@
     ],
     "latest_target_date": "2026-06-26",
     "max_entries_per_market_side": 1,
-    "open_risk": 0.0,
+    "open_risk": 4.39,
     "paper_only": true,
-    "paper_trading_status": "no open paper positions",
+    "paper_trading_status": "1 open paper position(s)",
     "post_resolution_excluded_count": 348,
-    "pre_resolution_signal_count": 94556,
-    "raw_signal_count": 94904,
+    "pre_resolution_signal_count": 94580,
+    "raw_signal_count": 94928,
     "sample_warning": "",
     "target_exposure_cap": 180.0
   }
