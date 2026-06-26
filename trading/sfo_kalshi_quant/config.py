@@ -375,9 +375,16 @@ RESEARCH_PROFILE_OVERRIDES = {
     # The collector records raw/marginal YES to learn whether YES can work; the
     # strict YES gates belong on live (the exploiter), not here.
     "yes_estimation_shrink": False,
-    # The collector trades the warm/hot regime to collect the calibration data
-    # recalibration needs; the regime block is live-only.
-    "blocked_forecast_cohorts": (),
+    # The warm/hot regime is blocked here too, same as live. The 2026-06-20 audit
+    # refuted the old "collect calibration data" rationale: the rolling de-bias
+    # learns from scored next-day FORECAST rows (written daily regardless of
+    # whether a trade is placed), so trading the anti-calibrated warm/hot cohort
+    # bought NO data benefit -- it was pure loss (research book -23.7% vs live
+    # -8.85%, every loser a NO bet on a 70-78F bin). NB this gate keys on the
+    # MODEL's forecast high, so it only fires when the model itself forecasts
+    # warm/hot; the disguised-warm case (model says ~67F, the day actually hits
+    # 75F) needs the market-implied-high "actual-warm" detector (deferred follow-up).
+    "blocked_forecast_cohorts": (WARM_COHORT, HOT_COHORT),
     # The collector records the FULL opportunity set (center bins included) so
     # the readiness rescore can prove the comfort-edge rule helps before live
     # adopts it; comfort gating/sizing is therefore off here.

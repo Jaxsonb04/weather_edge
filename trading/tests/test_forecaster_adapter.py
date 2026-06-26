@@ -186,6 +186,59 @@ def test_intraday_snapshot_prefers_official_daily_high_table():
         assert intraday.observed_high_source == "NWS KSFO observed daily high"
 
 
+def test_load_ksfo_daily_highs_prefers_clisfo_integer_and_floors_nws_fallback():
+    # Kalshi settles on the integer CLISFO maximum. load_ksfo_daily_highs must
+    # return the CLISFO integer when present and the half-up-floored NWS station
+    # high otherwise -- never the raw fractional station value, which runs ~1F
+    # below CLISFO and flips borderline bins.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        db_path = root / "weather.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE nws_daily_high_ground_truth (
+                    station_id TEXT NOT NULL,
+                    local_date TEXT NOT NULL,
+                    high_f REAL,
+                    observation_count INTEGER NOT NULL,
+                    is_complete INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (station_id, local_date)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE clisfo_settlements (
+                    local_date TEXT PRIMARY KEY,
+                    max_temperature_f INTEGER,
+                    fetched_at TEXT
+                )
+                """
+            )
+            # 2026-06-17: NWS 73.4 (floors to 73) but CLISFO settled 74 -> use 74.
+            # 2026-06-16: NWS 71.6, no CLISFO row -> floor to 72.
+            conn.executemany(
+                """
+                INSERT INTO nws_daily_high_ground_truth (
+                    station_id, local_date, high_f, observation_count,
+                    is_complete, updated_at, source
+                ) VALUES ('KSFO', ?, ?, 200, 1, '2026-06-18T00:00:00+00:00', 'NWS KSFO')
+                """,
+                [("2026-06-17", 73.4), ("2026-06-16", 71.6)],
+            )
+            conn.execute(
+                "INSERT INTO clisfo_settlements VALUES ('2026-06-17', 74, '2026-06-18T00:00:00+00:00')"
+            )
+
+        highs = SfoForecasterAdapter(root).load_ksfo_daily_highs()
+
+        assert highs[date(2026, 6, 17)] == 74.0  # CLISFO integer, not floor(73.4)=73
+        assert highs[date(2026, 6, 16)] == 72.0  # floored NWS fallback, not raw 71.6
+
+
 def test_live_forecast_freshness_rejects_stale_snapshot():
     stale_fetched_at = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
     target = datetime.now(SFO_TZ).date() + timedelta(days=1)

@@ -86,6 +86,17 @@ def _parse_report_date(text: str) -> date | None:
 
 
 def _parse_max_temperature(text: str) -> int | None:
+    # Anchor to the TEMPERATURE (F) section first so an unrelated "MAXIMUM"
+    # elsewhere in the product (wind, precipitation, historical records) cannot be
+    # mistaken for the daily high. The canonical row is
+    # "MAXIMUM   67   12:29 PM ...". Mirrors forecaster/clisfo.py so both CLISFO
+    # parsers settle on the same value; a wrong parse would mis-settle the book.
+    temp_header = re.search(r"TEMPERATURE\s*\(F\)", text, flags=re.IGNORECASE)
+    if temp_header:
+        window = text[temp_header.end(): temp_header.end() + 600]
+        anchored = re.search(r"MAXIMUM\s+(-?\d{1,3})\b", window, flags=re.IGNORECASE)
+        if anchored:
+            return int(anchored.group(1))
     patterns = [
         r"MAXIMUM\s+(\d{2,3})\b",
         r"MAX TEMP(?:ERATURE)?\s+(\d{2,3})\b",

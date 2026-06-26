@@ -1781,7 +1781,7 @@
 
     <section id="backtest">
       <h2 data-step="05">Backtest hygiene</h2>
-      <p class="sub">Recorded decision snapshots are scored against official completed highs. Repeated AWS scans are deduped by target, market, and side by default.</p>
+      <p class="sub"><strong>Counterfactual, not the realized book.</strong> These "approved" metrics replay recorded decision snapshots as if every approval were held to settlement, and they currently score against the raw NWS station high, which is <em>not</em> the integer value Kalshi settles on (the NWS daily climate report). They therefore overstate skill and do not match the realized paper P&amp;L in the Paper book panel above (shown again below for contrast). Repeated AWS scans are deduped by target, market, and side by default.</p>
       <div class="count-strip" id="backtestCounts"></div>
       <div class="grid-2">
         <div class="panel chart-card">
@@ -2737,18 +2737,28 @@
       ], 'label', 'value', colors.cold);
 
       const metrics = backtest.metrics || {};
+      // The realized book sits beside the counterfactual so the "Approved ROI"
+      // can never be read as money actually made. backtest_summary is whole-book
+      // (no profile carries its own), so pair it with the whole-book realized
+      // summary from labData -- not the profile-scoped data.paper_trading -- so
+      // both numbers describe the same book in every profile tab.
+      const realized = ((labData && labData.paper_trading) || {}).summary || {};
       $('backtestMetrics').innerHTML = [
-        score('Brier score', metrics.brier_score == null ? '-' : fmt(metrics.brier_score, 4), 'brier-score'),
-        score('Log loss', metrics.log_loss == null ? '-' : fmt(metrics.log_loss, 4), 'log-loss'),
-        score('Hit rate', metrics.hit_rate == null ? '-' : pct(metrics.hit_rate, 1), 'hit-rate'),
+        score('Brier score · counterfactual', metrics.brier_score == null ? '-' : fmt(metrics.brier_score, 4), 'brier-score'),
+        score('Log loss · counterfactual', metrics.log_loss == null ? '-' : fmt(metrics.log_loss, 4), 'log-loss'),
+        score('Hit rate · counterfactual', metrics.hit_rate == null ? '-' : pct(metrics.hit_rate, 1), 'hit-rate'),
         score('Approval rate', metrics.approval_rate == null ? '-' : pct(metrics.approval_rate, 2)),
         // Avg lower-bound edge of approved signals: the metric that corroborates
         // the documented negative-LCB failure (approvals with edge_lcb < 0 won
         // only 3/190). Surfacing it lets a reader verify the gate is honest.
         score('Avg edge LCB', metrics.avg_edge_lcb == null ? '-' : fmt(metrics.avg_edge_lcb, 3), 'lower-confidence-edge'),
-        score('Approved hit rate', metrics.approved_hit_rate == null ? '-' : pct(metrics.approved_hit_rate, 1), 'hit-rate'),
-        score('Approved ROI', metrics.approved_roi == null ? '-' : pct(metrics.approved_roi, 1)),
-        score('Approved P&L', metrics.approved_paper_pnl == null ? '-' : money(metrics.approved_paper_pnl)),
+        score('Approved hit rate · counterfactual', metrics.approved_hit_rate == null ? '-' : pct(metrics.approved_hit_rate, 1), 'hit-rate'),
+        score('Approved ROI · counterfactual', metrics.approved_roi == null ? '-' : pct(metrics.approved_roi, 1)),
+        score('Approved P&L · counterfactual', metrics.approved_paper_pnl == null ? '-' : money(metrics.approved_paper_pnl)),
+        // Realized book, for honest contrast with the hold-to-settlement counterfactual above.
+        score('Realized hit rate · book', realized.hit_rate == null ? '-' : pct(realized.hit_rate, 1), 'hit-rate'),
+        score('Realized ROI · book', realized.roi == null ? '-' : pct(realized.roi, 1)),
+        score('Realized P&L · book', realized.realized_pnl == null ? '-' : money(realized.realized_pnl), 'realized-pnl'),
         score('Avg quality', metrics.avg_quality == null ? '-' : fmt(metrics.avg_quality, 1), 'quality-score')
       ].join('');
       $('dedupeNote').textContent = backtest.dedupe_explanation || 'Repeated 15-minute AWS scans are deduped by default.';

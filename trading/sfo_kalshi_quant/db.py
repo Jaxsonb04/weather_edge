@@ -1328,6 +1328,14 @@ class PaperStore:
             ).fetchall()
 
     def settle_paper_orders(self, target_date: str, settlement_high_f: float) -> int:
+        # Kalshi settles on the integer NWS Daily Climate Report maximum, so
+        # normalize any caller's value onto that integer grid here -- the single
+        # settle chokepoint -- before it resolves bins or is stored. A fractional
+        # station reading or a manual `--settlement-high 73.4` would otherwise flip
+        # a borderline bin (73.4 resolves "72-73" NO as a win, but Kalshi floors to
+        # 73 and resolves it a loss). CLISFO callers already pass integers, so this
+        # is a no-op for them (floor(74.0 + 0.5) == 74).
+        settlement_high_f = float(math.floor(float(settlement_high_f) + 0.5))
         settled_at = _now()
         settled = 0
         with self.connect() as conn:

@@ -75,11 +75,18 @@ def test_live_does_not_regime_block_cold_and_normal_cohorts():
         assert not any("regime" in r for r in decision.reasons), high
 
 
-def test_research_still_explores_warm_days_to_collect_calibration_data():
+def test_research_also_blocks_warm_and_hot_forecast_cohorts():
+    # 2026-06-20 audit: research used to trade warm/hot to "collect calibration
+    # data", but the de-bias learns from scored forecast rows written daily
+    # regardless of trades, so that exposure was pure loss. Research now blocks
+    # the anti-calibrated cohorts, same as live.
     market, probability = _no_favorite()
     evaluator = TradeEvaluator(strategy_config_for_profile("research"))
     warm = evaluator.evaluate_market(market, probability, bankroll=1000, side="NO", forecast_high_f=75.0)
-    assert warm.approved
+    hot = evaluator.evaluate_market(market, probability, bankroll=1000, side="NO", forecast_high_f=85.0)
+    assert not warm.approved
+    assert any("regime" in r for r in warm.reasons)
+    assert not hot.approved
 
 
 def test_regime_gate_is_inert_without_a_forecast_high():
