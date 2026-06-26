@@ -509,7 +509,7 @@
 
     <footer>
       <span>WeatherEdge · automated on AWS Lightsail</span>
-      <span>Research and paper trading only · not investment advice · no live orders are placed</span>
+      <span>Research and paper trading only · not investment advice</span>
       <span>Data: NOAA GHCNh · Google Weather · NWS · Open-Meteo · <a href="https://github.com/Jaxsonb04/weather-edge" target="_blank" rel="noopener">GitHub</a></span>
     </footer>
   </div>
@@ -678,7 +678,7 @@
       return String(text || '').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
     }
     function summaryText(dayKey, forecast, confidence) {
-      if (forecast.high == null) return 'The forecast blend is still warming up. Check back after the next refresh.';
+      if (forecast.high == null) return 'Forecast blend is loading. The next refresh will populate it.';
       const condition = forecast.condition ? `${titleCase(forecast.condition)} skies. ` : '';
       const source = forecast.sourceCount
         ? `${confidence} confidence from the WeatherEdge blend across ${forecast.sourceCount} sources.`

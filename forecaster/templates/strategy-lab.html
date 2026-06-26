@@ -1599,12 +1599,12 @@
           <div>
             <span class="eyebrow">Paper trading diagnostics</span>
             <h1>Strategy <em>Lab</em></h1>
-            <p>Public diagnostics for the SFO high <button class="term" type="button" data-term="paper-trading">paper-trading</button> workflow: <button class="term" type="button" data-term="calibration">calibration</button>, signal quality, <button class="term" type="button" data-term="backtest">backtest</button> hygiene, and open paper risk. Execution remains pinned to lstm.</p>
+            <p>Public diagnostics for the SFO high <button class="term" type="button" data-term="paper-trading">paper-trading</button> workflow: <button class="term" type="button" data-term="calibration">calibration</button>, signal quality, <button class="term" type="button" data-term="backtest">backtest</button> hygiene, and open paper risk. Execution stays pinned to lstm.</p>
           </div>
           <div class="calibration-lock">
             <div class="lock-row"><b>Active</b><span id="activeCalibration">lstm = Active execution calibration</span></div>
             <div class="lock-row"><b>Challenger</b><span id="challengerCalibration">clean-blend/combined = Challenger research calibration</span></div>
-            <div class="lock-row"><b>Safety</b><span id="paperOnly">Paper trading only - no live order placement on this page.</span></div>
+            <div class="lock-row"><b>Safety</b><span id="paperOnly">Paper trading only.</span></div>
           </div>
         </div>
         <section class="status-board" aria-labelledby="statusTitle">
@@ -1680,7 +1680,7 @@
 
     <section id="paper">
       <h2 data-step="02"><button class="term" type="button" data-term="paper-trading">Paper trading</button> book</h2>
-      <p class="sub">Open positions show what was bought initially, target sell levels, current scanned mark when available, and whether the paper book is winning or losing. This is simulated research, not live money trading.</p>
+      <p class="sub">Open positions show what was bought initially, target sell levels, current scanned mark when available, and whether the paper book is winning or losing. All positions are simulated.</p>
       <div class="paper-dashboard" id="paperDashboard"></div>
       <div class="profile-strip" id="paperProfiles"></div>
       <div class="count-strip" id="paperCounts"></div>
@@ -1712,7 +1712,7 @@
           <h3>What Kalshi thinks <span class="muted consensus-target" id="consensusTarget"></span></h3>
           <span class="pill" id="consensusGapPill">&mdash;</span>
         </div>
-        <p class="sub">Kalshi prints a headline &ldquo;forecast&rdquo; on each market &mdash; the market-implied high, volume-weighted toward the last trade. We rebuild that exact number from the ladder and compare it against our model, overlaying the two distributions bin by bin.</p>
+        <p class="sub">Kalshi prints a headline &ldquo;forecast&rdquo; on each market &mdash; the market-implied high, volume-weighted toward the last trade. The lab rebuilds that number from the ladder and compares it against the model, overlaying the two distributions bin by bin.</p>
         <div class="consensus-readout" id="consensusReadout"></div>
         <div class="consensus-body">
           <div class="panel chart-card consensus-chart-card">
@@ -1747,7 +1747,7 @@
 
     <section id="calibration">
       <h2 data-step="04">Forecast accuracy &amp; calibration</h2>
-      <p class="sub">lstm is the active execution calibration. clean-blend/combined is shown as challenger research only and is not used to switch AWS execution automatically. Cohorts split calibration by temperature regime; sparse cohorts are diagnostics, not proof.</p>
+      <p class="sub">lstm is the active execution calibration. clean-blend/combined is shown as challenger research only. Cohorts split calibration by temperature regime; sparse cohorts are diagnostics, not proof.</p>
       <div class="grid-2">
         <div class="panel">
           <div class="panel-head">
@@ -1796,7 +1796,7 @@
       </div>
 
       <h3 id="readinessTitle" style="margin-top:1.5rem;">Real-money readiness <span class="sub" style="font-weight:400;">— live profile</span></h3>
-      <p class="sub" id="readinessNote">How close the live (real-money-candidate) profile is to the documented go-live bar: positive after-fee day-clustered ROI and per-side/per-cohort ROI over &ge;30 independent settlement days, with every traded cohort beating its climatological baseline (Brier Skill Score &gt; 0). The research collector is never promoted to real money.</p>
+      <p class="sub" id="readinessNote">How close the live (real-money-candidate) profile is to the documented go-live bar: positive after-fee day-clustered ROI and per-side/per-cohort ROI over &ge;30 independent settlement days, with every traded cohort beating its climatological baseline (Brier Skill Score &gt; 0).</p>
       <div class="panel" id="readinessCard"></div>
 
       <h3 id="rescoreTitle" style="margin-top:1.5rem;">Config rescore <span class="sub" id="rescoreProfileLabel" style="font-weight:400;"></span></h3>
@@ -2164,7 +2164,7 @@
       const status = data.status || {};
       $('activeCalibration').textContent = status.active_calibration_label || 'lstm = Active execution calibration';
       $('challengerCalibration').textContent = status.challenger_calibration_label || 'clean-blend/combined = Challenger research calibration';
-      $('paperOnly').textContent = data.live_orders_enabled ? 'Unexpected live-order flag detected.' : 'Paper trading only - no live order placement on this page.';
+      $('paperOnly').textContent = data.live_orders_enabled ? 'Unexpected live-order flag detected.' : 'Paper trading only.';
       const alertLevel = String(status.alert_level || 'ok').toLowerCase();
       $('runtimeMode').textContent = data.live_orders_enabled
         ? 'Live flag detected'
@@ -2239,7 +2239,7 @@
     }
 
     function profileContextText(profile) {
-      if (!profile) return '<b>All profiles overview</b> combines every paper profile; switch back to Balanced for the clean headline record.';
+      if (!profile) return '<b>All profiles overview</b> combines every paper profile; switch back to Balanced for the headline record.';
       const label = htmlEscape(profile.label || profileDisplayName(profile.risk_profile));
       if (profile.profile_type === 'experimental') {
         return `<b>${label}</b> is experimental paper-data collection and is isolated from the Balanced record.`;
@@ -2254,7 +2254,7 @@
         return {
           ...data,
           active_profile: null,
-          view_note: 'All profiles overview combines every risk profile. Balanced remains the default headline record.'
+          view_note: 'All profiles overview combines every risk profile. Balanced is the default headline record.'
         };
       }
       return {
@@ -2651,7 +2651,7 @@
       $('consensusReadout').innerHTML = [
         `<div class="consensus-stat gap"><b class="${gapClass}">${gapText}</b><span>Model minus market</span></div>`,
         `<div class="consensus-stat"><b>${degF(data.implied_high_f)}</b><span>Kalshi forecast</span></div>`,
-        `<div class="consensus-stat"><b>${degF(data.model_high_f)}</b><span>Our model high</span></div>`,
+        `<div class="consensus-stat"><b>${degF(data.model_high_f)}</b><span>Model high</span></div>`,
         `<div class="consensus-stat"><b>${htmlEscape(safe(data.modal_bin_label))}</b><span>Most-backed bin · ${pct(data.modal_probability, 0)}</span></div>`,
         `<div class="consensus-stat"><b>±${degF(data.implied_stdev_f)}</b><span>Implied spread (1σ)</span></div>`,
         `<div class="consensus-stat"><b>${degF(data.p10_f)} – ${degF(data.p90_f)}</b><span>Implied P10–P90 band</span></div>`
@@ -2798,7 +2798,7 @@
               <span style="display:block;height:100%;width:${pctVal}%;background:${tone};transition:width .4s ease;"></span>
             </div>
             <p class="sub" style="margin-top:.5rem;">${htmlEscape(r.summary || '')}</p>
-            <p class="sub" style="margin-top:.35rem;">Pilot loss room: ${htmlEscape(pilotRoom)}. Live orders still require explicit flags and dry-run checks.</p>
+            <p class="sub" style="margin-top:.35rem;">Pilot loss room: ${htmlEscape(pilotRoom)}.</p>
           </div>
         </div>
         ${statusReasons.length ? `<ul style="margin:.85rem 0 0;padding-left:1.1rem;color:var(--ink-2);">${statusReasons.slice(0, 5).map((reason) => `<li>${htmlEscape(reason)}</li>`).join('')}</ul>` : ''}
