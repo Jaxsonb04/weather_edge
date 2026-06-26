@@ -118,6 +118,28 @@ def test_debias_correction_is_capped():
     assert abs(predictor(new_row, history) - 67.5) < 1e-9  # 66 + capped 1.5
 
 
+def test_source_mos_predictor_learns_capped_per_source_bias_from_prior_days():
+    weights = {"google": 0.5, "nws": 0.5}
+    predictor = fb.make_source_mos_predictor(weights, min_history_days=30, cap=1.5)
+    history = [
+        _row(f"2026-04-{d:02d}", actual=72, google=70, nws=70)
+        for d in range(1, 36)
+    ]
+    new_row = _row("2026-06-01", actual=70, google=66, nws=68)
+
+    # Raw weighted blend is 67.0; both sources have a learned +2F residual, but
+    # the live MOS-style correction is capped at +1.5F.
+    assert abs(predictor(new_row, history) - 68.5) < 1e-9
+
+
+def test_source_mos_predictor_returns_raw_blend_below_minimum_history():
+    weights = {"google": 1.0}
+    predictor = fb.make_source_mos_predictor(weights, min_history_days=30, cap=1.5)
+    history = [_row(f"2026-04-{d:02d}", actual=75, google=65) for d in range(1, 20)]
+    new_row = _row("2026-06-01", actual=70, google=66)
+    assert abs(predictor(new_row, history) - 66.0) < 1e-9
+
+
 def test_production_debias_holdout_guard_flags_tail_cohort_regression():
     # The live activation path (google_weather_cache) must refuse a correction
     # that worsens a cohort's holdout MAE -- zero tolerance on the warm/hot tail.

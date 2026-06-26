@@ -4,7 +4,7 @@ set -euo pipefail
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB_PATH="${SFO_DATASET_DB:-${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}}"
-SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,kalshi-history}"
+SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"
 LOOKBACK_DAYS="${SFO_DATASET_LOOKBACK_DAYS:-10}"
 KALSHI_LOOKBACK_DAYS="${SFO_DATASET_KALSHI_LOOKBACK_DAYS:-90}"
 TIMEOUT="${SFO_DATASET_TIMEOUT:-30}"

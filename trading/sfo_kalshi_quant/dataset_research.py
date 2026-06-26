@@ -82,6 +82,7 @@ def build_dataset_research(
             "dataset_coverage": _dataset_coverage(db_path),
             "accuracy_gate": {"available": False, "candidates": []},
             "dataset_stack": {"available": False, "decision": "collect_only"},
+            "probabilistic_benchmarks": _probabilistic_benchmarks([]),
             "profitability_gate": _profitability_gate({}, min_after_cost_trades=min_after_cost_trades),
         }
 
@@ -144,6 +145,7 @@ def build_dataset_research(
             "candidates": accuracy_rows,
         },
         "dataset_stack": dataset_stack,
+        "probabilistic_benchmarks": _probabilistic_benchmarks(candidates),
         "profitability_gate": profitability_gate,
         "promotion_rule": (
             "Collect broadly, but do not give a new source live model weight or "
@@ -598,6 +600,35 @@ def _research_summary(
         "market_trade_rows": trades,
         "blocking_gates": blocking_gates,
         "action_items": action_items,
+    }
+
+
+def _probabilistic_benchmarks(candidates: list[_FeatureCandidate]) -> dict[str, Any]:
+    nbm_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.model == "ncep_nbm_conus" or candidate.source == "noaa-nbm"
+    ]
+    return {
+        "nbm": {
+            "available": bool(nbm_candidates),
+            "role": "calibrated_probabilistic_benchmark",
+            "source": "NOAA National Blend of Models / Open-Meteo ncep_nbm_conus",
+            "models": ["ncep_nbm_conus"],
+            "candidate_keys": [candidate.key for candidate in nbm_candidates],
+            "desired_fields": [
+                "percentile_temperature_fields",
+                "exceedance_probability_fields",
+            ],
+            "scoring": [
+                "brier_skill",
+                "ranked_probability_score",
+            ],
+            "next_use": (
+                "Use NBM as a distribution benchmark before giving it live trade "
+                "weight; compare by lead time and cohort against the active model."
+            ),
+        }
     }
 
 

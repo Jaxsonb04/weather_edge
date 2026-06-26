@@ -31,6 +31,7 @@ from .exits import (
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .live_execution import LiveExecutionPolicy, readiness_status_from_checks
+from .research_shadow import build_research_shadow_report
 from .settlement_day import settlement_today
 from .summary import build_paper_summary
 from .synthetic_blend import build_synthetic_blend_calibration
@@ -90,6 +91,7 @@ def build_strategy_research(
     backtest = _signal_backtest_payload(adapter, db_path)
     config_rescore = _config_rescore_payload(adapter, db_path)
     real_money_readiness = _real_money_readiness_payload(config_rescore, active_calibration)
+    research_shadow = _research_shadow_payload(adapter, db_path)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
     daily_summary = _daily_summary_payload(
@@ -131,6 +133,7 @@ def build_strategy_research(
         "backtest_summary": backtest,
         "config_rescore": config_rescore,
         "real_money_readiness": real_money_readiness,
+        "research_shadow": research_shadow,
         "paper_trading": paper,
         "profiles": profiles,
         "dataset_research": _dataset_research_summary(dataset_research),
@@ -696,6 +699,12 @@ def _calibration_payload(
         "brier_score": _round(result.brier_score, 4),
         "climatology_brier_score": _round(result.climatology_brier_score, 4),
         "brier_skill": _round(result.brier_skill, 4),
+        "ranked_probability_score": _round(result.ranked_probability_score, 4),
+        "climatology_ranked_probability_score": _round(
+            result.climatology_ranked_probability_score,
+            4,
+        ),
+        "ranked_probability_skill": _round(result.ranked_probability_skill, 4),
         "log_loss": _round(result.log_loss, 4),
         "top_bin_accuracy": _round(result.top_bin_accuracy, 4),
         "avg_winning_probability": _round(result.avg_winning_probability, 4),
@@ -840,6 +849,24 @@ def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dic
             "by_profile": by_profile,
         }
     except Exception as exc:  # diagnostics artifact must not fail the refresh
+        return {**empty, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _research_shadow_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:
+    empty = {
+        "available": False,
+        "summary": {},
+        "paper_executed": {},
+        "shadow_hold_to_settlement": {},
+        "shadow_current_exit_policy": {},
+    }
+    if not db_path.exists():
+        return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
+    try:
+        settlements = adapter.load_ksfo_daily_highs()
+        store = PaperStore(db_path, init=False)
+        return build_research_shadow_report(store, settlements=settlements)
+    except Exception as exc:  # diagnostics artifact must not fail Strategy Lab
         return {**empty, "reason": f"{type(exc).__name__}: {exc}"}
 
 
@@ -2418,6 +2445,12 @@ def _cohort_rows(cohorts) -> list[dict[str, Any]]:
             "brier_score": _round(cohort.brier_score, 4),
             "climatology_brier_score": _round(cohort.climatology_brier_score, 4),
             "brier_skill": _round(cohort.brier_skill, 4),
+            "ranked_probability_score": _round(cohort.ranked_probability_score, 4),
+            "climatology_ranked_probability_score": _round(
+                cohort.climatology_ranked_probability_score,
+                4,
+            ),
+            "ranked_probability_skill": _round(cohort.ranked_probability_skill, 4),
             "log_loss": _round(cohort.log_loss, 4),
             "top_bin_accuracy": _round(cohort.top_bin_accuracy, 4),
             "avg_winning_probability": _round(cohort.avg_winning_probability, 4),
@@ -2445,6 +2478,9 @@ def _empty_cohort(name: str) -> dict[str, Any]:
         "brier_score": None,
         "climatology_brier_score": None,
         "brier_skill": None,
+        "ranked_probability_score": None,
+        "climatology_ranked_probability_score": None,
+        "ranked_probability_skill": None,
         "log_loss": None,
         "top_bin_accuracy": None,
         "avg_winning_probability": None,

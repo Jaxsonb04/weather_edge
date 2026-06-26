@@ -294,6 +294,126 @@ def make_debias_predictor(
     return predictor
 
 
+def make_source_mos_predictor(
+    weights: dict[str, float] | None = None,
+    *,
+    window: int = ROLLING_BIAS_WINDOW_DAYS,
+    cap: float = ROLLING_BIAS_CAP_F,
+    shrink_k: float = ROLLING_BIAS_COHORT_SHRINK_K,
+    min_history_days: int = 30,
+) -> PredictorFn:
+    """Correct each source before blending, learned only from prior days.
+
+    This is the backtest mirror of a MOS-style live blend: each available source
+    receives a capped residual correction by predicted-temperature cohort, then
+    the corrected sources are blended with nonnegative weights.
+    """
+
+    frozen = dict(weights) if weights is not None else dict(BLEND_WEIGHTS)
+
+    def predictor(row: BlendRow, history: list[BlendRow]) -> float | None:
+        base_sources = row.source_highs()
+        if not base_sources:
+            return None
+        if len(history) < min_history_days:
+            return _weighted_high(row, frozen)
+        recent = history[-window:] if window else history
+        corrections = _source_mos_corrections(recent, frozen, shrink_k=shrink_k, cap=cap)
+        corrected = {}
+        for key, value in base_sources.items():
+            correction = _source_mos_correction_for(
+                key,
+                value,
+                corrections,
+                cap=cap,
+            )
+            corrected[key] = value + correction
+        return _weighted_source_values(corrected, frozen, row.station_adjustment_f)
+
+    return predictor
+
+
+def _weighted_source_values(
+    source_values: dict[str, float],
+    weights: dict[str, float],
+    station_adjustment_f: float,
+) -> float | None:
+    total = 0.0
+    weight_sum = 0.0
+    for key, value in source_values.items():
+        weight = weights.get(key, 0.0)
+        if weight > 0:
+            total += weight * value
+            weight_sum += weight
+    if weight_sum <= 0:
+        return None
+    return total / weight_sum + station_adjustment_f
+
+
+def _source_mos_corrections(
+    history: list[BlendRow],
+    weights: dict[str, float],
+    *,
+    shrink_k: float,
+    cap: float,
+) -> dict:
+    records: list[dict] = []
+    by_source: dict[str, list[dict]] = {}
+    for prior in history:
+        for key, value in prior.source_highs().items():
+            if weights.get(key, 0.0) <= 0:
+                continue
+            record = {
+                "source": key,
+                "cohort": predicted_temperature_cohort(value),
+                "residual": prior.actual_high_f - value,
+            }
+            records.append(record)
+            by_source.setdefault(key, []).append(record)
+    if not records:
+        return {"global": 0.0, "sources": {}}
+    global_mean = cap_magnitude(
+        sum(record["residual"] for record in records) / len(records),
+        cap,
+    )
+    source_tables = {}
+    for key, source_records in by_source.items():
+        source_mean = sum(record["residual"] for record in source_records) / len(source_records)
+        source_mean = cap_magnitude(source_mean, cap)
+        by_cohort: dict[str, list[float]] = {}
+        for record in source_records:
+            by_cohort.setdefault(record["cohort"], []).append(record["residual"])
+        cohorts = {}
+        for cohort, residuals in by_cohort.items():
+            count = len(residuals)
+            cohort_mean = sum(residuals) / count
+            weight = count / (count + shrink_k)
+            shrunk = weight * cohort_mean + (1.0 - weight) * source_mean
+            cohorts[cohort] = cap_magnitude(shrunk, cap)
+        source_tables[key] = {
+            "global": source_mean,
+            "cohorts": cohorts,
+        }
+    return {"global": global_mean, "sources": source_tables}
+
+
+def _source_mos_correction_for(
+    source: str,
+    value: float,
+    corrections: dict,
+    *,
+    cap: float,
+) -> float:
+    source_table = (corrections.get("sources") or {}).get(source)
+    if not source_table:
+        return cap_magnitude(float(corrections.get("global", 0.0)), cap)
+    cohort = predicted_temperature_cohort(value)
+    correction = (source_table.get("cohorts") or {}).get(cohort)
+    if correction is None:
+        correction = source_table.get("global", corrections.get("global", 0.0))
+    return cap_magnitude(float(correction), cap)
+
+
 def _cohort_corrections(records, shrink_k, cap):
     if not records:
         return {}, 0.0
@@ -863,11 +983,11 @@ def run_default_report(db_path: Path, *, samples: int, seed: int) -> dict:
         rows, make_production_predictor(), label="production_blend",
         climatology=climatology,
     )
-    # De-bias the real production blend, and score both arms' Brier with the
-    # production sigma so the calibration comparison is fair.
+    # Score the source-level MOS candidate against production with the same
+    # production sigma so calibration comparisons are fair.
     shared = cohort_sigmas(production["per_day"]) if production["per_day"] else None
     candidate = run_forecast_backtest(
-        rows, make_debias_predictor(base_fn=_stored_raw), label="rolling_debias",
+        rows, make_source_mos_predictor(BLEND_WEIGHTS), label="source_mos",
         climatology=climatology, shared_sigmas=shared,
     )
     paired = compare_forecasters(production, candidate, samples=samples, seed=seed)
@@ -903,7 +1023,7 @@ def _print_summary(report: dict) -> None:
     )
     print(f"  truth sources {diag['stored_truth_sources']}")
     print(f"  production blend   MAE {prod['mae']}  bias {prod['bias']}  within3 {prod['within3']}%")
-    print(f"  + rolling de-bias  MAE {cand['mae']}  bias {cand['bias']}  within3 {cand['within3']}%")
+    print(f"  + source MOS       MAE {cand['mae']}  bias {cand['bias']}  within3 {cand['within3']}%")
     print(
         f"  paired delta {paired['mean_delta_f']} "
         f"CI [{paired['ci_low']}, {paired['ci_high']}] DM p {paired['dm_p_value']}"

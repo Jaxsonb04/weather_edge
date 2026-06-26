@@ -228,6 +228,13 @@ class StrategyConfig:
     # after-fee edge_lcb floor, so it only leans harder into far tails that
     # already clear the gates -- it never manufactures a bet that was not there.
     comfort_edge_max_size_boost: float = 2.0
+    # Research shadow sampling: the research profile still records every
+    # point-positive exploration candidate, but only a deterministic sample becomes
+    # a real paper position. This keeps the learning set wide while preventing the
+    # paper PnL stream from being dominated by intentionally-uncertain trades.
+    research_shadow_sample_probability: float = 0.25
+    research_shadow_max_contracts: float = 1.0
+    research_shadow_daily_loss_pct: float = 0.0025
 
 
 LIVE_PROFILE_OVERRIDES = {

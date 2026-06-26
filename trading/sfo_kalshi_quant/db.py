@@ -172,6 +172,63 @@ CREATE TABLE IF NOT EXISTS paper_monitor_snapshots (
     unrealized_pnl REAL,
     unrealized_roi REAL
 );
+
+CREATE TABLE IF NOT EXISTS research_shadow_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    market_ticker TEXT NOT NULL,
+    label TEXT NOT NULL,
+    action TEXT NOT NULL,
+    risk_profile TEXT,
+    side TEXT NOT NULL DEFAULT 'YES',
+    contracts REAL NOT NULL,
+    yes_ask REAL NOT NULL,
+    entry_price REAL,
+    entry_bid REAL,
+    entry_bid_size REAL,
+    entry_ask_size REAL,
+    strike_type TEXT,
+    floor_strike REAL,
+    cap_strike REAL,
+    fee_per_contract REAL NOT NULL,
+    cost_per_contract REAL NOT NULL,
+    probability REAL NOT NULL,
+    probability_lcb REAL NOT NULL,
+    edge REAL NOT NULL,
+    edge_lcb REAL NOT NULL,
+    trade_quality_score REAL NOT NULL DEFAULT 0,
+    expected_profit REAL NOT NULL,
+    sample_probability REAL NOT NULL,
+    sampled INTEGER NOT NULL DEFAULT 0,
+    linked_paper_order_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'SHADOW_OPEN',
+    reasons_json TEXT NOT NULL,
+    settled_at TEXT,
+    settlement_high_f REAL,
+    resolved_yes INTEGER,
+    realized_pnl REAL,
+    closed_at TEXT,
+    exit_price REAL,
+    exit_fee_per_contract REAL
+);
+
+CREATE TABLE IF NOT EXISTS research_shadow_monitor_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    shadow_order_id INTEGER NOT NULL,
+    target_date TEXT NOT NULL,
+    market_ticker TEXT NOT NULL,
+    side TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT,
+    market_status TEXT,
+    live_bid REAL,
+    exit_fee_per_contract REAL,
+    net_exit_per_contract REAL,
+    unrealized_pnl REAL,
+    unrealized_roi REAL
+);
 """
 
 # Created after column migrations in init() so they can reference late-added
@@ -189,6 +246,12 @@ CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
     ON probability_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
     ON paper_monitor_snapshots (order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_target
+    ON research_shadow_orders (target_date, market_ticker, side, created_at);
+CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_link
+    ON research_shadow_orders (linked_paper_order_id);
+CREATE INDEX IF NOT EXISTS idx_research_shadow_monitor_order
+    ON research_shadow_monitor_snapshots (shadow_order_id, created_at);
 """
 
 # DB-level backstop for the application's concurrent-open guard
@@ -803,6 +866,156 @@ class PaperStore:
                 return None
             return int(cursor.lastrowid)
 
+    def record_research_shadow_order(
+        self,
+        target_date: str,
+        decision: TradeDecision,
+        *,
+        risk_profile: str | None,
+        sample_probability: float,
+        sampled: bool,
+        linked_paper_order_id: int | None = None,
+    ) -> int:
+        contracts = float(decision.recommended_contracts)
+        entry_price = float(decision.limit_price if decision.limit_price is not None else decision.ask)
+        fee_per_contract = (
+            float(decision.limit_fee_per_contract)
+            if decision.limit_fee_per_contract is not None
+            else quadratic_fee_average_per_contract(entry_price, contracts)
+        )
+        cost_per_contract = entry_price + fee_per_contract
+        edge = float(decision.limit_edge) if decision.limit_edge is not None else float(decision.edge)
+        edge_lcb = (
+            float(decision.limit_edge_lcb)
+            if decision.limit_edge_lcb is not None
+            else float(decision.edge_lcb)
+        )
+        expected_profit = edge * contracts
+        profile = normalize_risk_profile_name(risk_profile) if risk_profile else None
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO research_shadow_orders (
+                    created_at, target_date, market_ticker, label, action,
+                    risk_profile, side, contracts, yes_ask, entry_price,
+                    entry_bid, entry_bid_size, entry_ask_size, strike_type,
+                    floor_strike, cap_strike, fee_per_contract,
+                    cost_per_contract, probability, probability_lcb, edge,
+                    edge_lcb, trade_quality_score, expected_profit,
+                    sample_probability, sampled, linked_paper_order_id,
+                    status, reasons_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _now(),
+                    target_date,
+                    decision.ticker,
+                    decision.label,
+                    decision.action,
+                    profile,
+                    decision.side,
+                    contracts,
+                    decision.yes_ask,
+                    entry_price,
+                    decision.bid,
+                    decision.bid_size,
+                    decision.ask_size,
+                    decision.strike_type,
+                    decision.floor_strike,
+                    decision.cap_strike,
+                    fee_per_contract,
+                    cost_per_contract,
+                    decision.probability,
+                    decision.probability_lcb,
+                    edge,
+                    edge_lcb,
+                    decision.trade_quality_score,
+                    expected_profit,
+                    sample_probability,
+                    1 if sampled else 0,
+                    linked_paper_order_id,
+                    "SHADOW_OPEN",
+                    json.dumps(decision.reasons),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def link_research_shadow_order(self, shadow_order_id: int, paper_order_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE research_shadow_orders
+                SET linked_paper_order_id = ?, sampled = 1
+                WHERE id = ?
+                """,
+                (paper_order_id, shadow_order_id),
+            )
+
+    def research_shadow_orders(
+        self,
+        limit: int = 50,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[sqlite3.Row]:
+        filters, params = _date_filters(since, until)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"SELECT * FROM research_shadow_orders {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+
+    def research_shadow_sample_spend_for_target(
+        self,
+        target_date: str,
+        *,
+        risk_profile: str | None = None,
+    ) -> float:
+        profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(p.contracts * p.cost_per_contract), 0)
+                FROM research_shadow_orders s
+                JOIN paper_orders p ON p.id = s.linked_paper_order_id
+                WHERE s.target_date = ?
+                  AND s.sampled = 1
+                  AND p.status != 'REJECTED'
+                  {profile_filter.replace('COALESCE(risk_profile,', 'COALESCE(p.risk_profile,')}
+                """,
+                (target_date, *profile_params),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
+    def has_losing_closed_negative_lcb_research_entry(
+        self,
+        target_date: str,
+        market_ticker: str,
+        side: str,
+    ) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM paper_orders
+                WHERE target_date = ?
+                  AND market_ticker = ?
+                  AND UPPER(COALESCE(side, 'YES')) = ?
+                  AND COALESCE(risk_profile, 'live') = 'research'
+                  AND status = 'PAPER_CLOSED'
+                  AND settled_at IS NULL
+                  AND closed_at IS NOT NULL
+                  AND edge_lcb < 0
+                  AND COALESCE(realized_pnl, 0) < 0
+                LIMIT 1
+                """,
+                (target_date, market_ticker, side.upper()),
+            ).fetchone()
+        return row is not None
+
     def record_manual_buy(
         self,
         *,
@@ -1250,6 +1463,35 @@ class PaperStore:
                 LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+
+    def open_no_basket_orders(
+        self,
+        target_date: str,
+        *,
+        risk_profile: str | None = None,
+    ) -> list[sqlite3.Row]:
+        filters = [
+            "target_date = ?",
+            "status = 'PAPER_FILLED'",
+            "settled_at IS NULL",
+            "closed_at IS NULL",
+            "UPPER(COALESCE(side, 'YES')) = 'NO'",
+        ]
+        params: list[object] = [target_date]
+        if risk_profile is not None:
+            filters.append("COALESCE(risk_profile, 'live') = ?")
+            params.append(normalize_risk_profile_name(risk_profile))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"""
+                SELECT *
+                FROM paper_orders
+                WHERE {' AND '.join(filters)}
+                ORDER BY created_at, id
+                """,
+                params,
             ).fetchall()
 
     def open_paper_target_dates(self) -> list[str]:

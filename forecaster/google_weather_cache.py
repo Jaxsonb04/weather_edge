@@ -113,6 +113,12 @@ ROLLING_BIAS_COHORT_HOLDOUT_MIN_SAMPLES = 4
 # bot trades; they get a zero-tolerance no-regression guard, others a small one.
 ROLLING_BIAS_TAIL_COHORTS = ("warm", "hot")
 ROLLING_BIAS_COHORT_REGRESSION_TOL_F = 0.25
+ENABLE_SOURCE_MOS_CORRECTION = env_bool("ENABLE_SOURCE_MOS_CORRECTION", True)
+SOURCE_MOS_MIN_SCORED_DAYS = env_int("SFO_SOURCE_MOS_MIN_SCORED_DAYS", 30)
+SOURCE_MOS_HOLDOUT_MIN_DAYS = ADAPTIVE_WEIGHT_HOLDOUT_MIN_DAYS
+SOURCE_MOS_CAP_F = env_float("SFO_SOURCE_MOS_CAP_F", 1.5)
+SOURCE_MOS_COHORT_SHRINK_K = 10.0
+DATASET_GUIDANCE_WEIGHT = env_float("SFO_DATASET_GUIDANCE_WEIGHT", 0.12)
 AIRPORT_STATIONS = ("KSFO", "KOAK", "KSJC", "KSQL", "KPAO", "KHAF")
 DURATION_RE = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$")
 
@@ -1294,6 +1300,179 @@ def load_history_high(target_iso):
     }
 
 
+def load_promoted_dataset_guidance(target_iso, db_path=None, research_path=None):
+    """Latest promoted compact dataset high-temperature feature for a target day."""
+
+    raw_db_path = str(db_path) if db_path is not None else os.getenv("SFO_DATASET_DB")
+    resolved_db = Path(raw_db_path) if raw_db_path else None
+    resolved_research = (
+        Path(research_path)
+        if research_path is not None
+        else Path(os.getenv("SFO_DATASET_RESEARCH_PATH", "dataset_research.json"))
+    )
+    metadata = {
+        "mode": "collect_only",
+        "db_path": str(resolved_db) if resolved_db is not None else None,
+        "research_path": str(resolved_research),
+        "promoted_count": 0,
+        "available_unpromoted_count": 0,
+    }
+    if resolved_db is None or not resolved_db.exists():
+        metadata["reason"] = "dataset DB is unavailable"
+        return {"highF": None, "source": "Promoted dataset guidance", "metadata": metadata, "components": []}
+
+    promoted_keys = _promoted_dataset_keys(resolved_research)
+    metadata["promoted_count"] = len(promoted_keys)
+    rows = _latest_dataset_feature_rows(resolved_db, target_iso)
+    metadata["available_unpromoted_count"] = sum(
+        1 for row in rows if _dataset_feature_key(row) not in promoted_keys
+    )
+    if not promoted_keys:
+        metadata["reason"] = "no dataset source has passed the accuracy gate"
+        return {"highF": None, "source": "Promoted dataset guidance", "metadata": metadata, "components": []}
+
+    corrections = _dataset_guidance_corrections(resolved_db, target_iso, promoted_keys)
+    components = []
+    for row in rows:
+        key = _dataset_feature_key(row)
+        if key not in promoted_keys:
+            continue
+        correction = _dataset_correction_for(row, corrections)
+        corrected = float(row["value"]) + correction
+        components.append(
+            {
+                "dataset_key": key,
+                "raw_high_f": round(float(row["value"]), 2),
+                "correction_f": round(correction, 3),
+                "corrected_high_f": round(corrected, 2),
+                "issued_at": row["issued_at"],
+                "source_url": row["source_url"],
+            }
+        )
+    if not components:
+        metadata["reason"] = "no promoted dataset feature matched the target date"
+        return {"highF": None, "source": "Promoted dataset guidance", "metadata": metadata, "components": []}
+
+    high = sum(component["corrected_high_f"] for component in components) / len(components)
+    metadata.update(
+        {
+            "mode": "promoted",
+            "matched_promoted_count": len(components),
+            "correction": corrections.get("metadata", {}),
+        }
+    )
+    return {
+        "highF": round(high, 2),
+        "source": "Promoted dataset guidance",
+        "detail": ", ".join(component["dataset_key"] for component in components),
+        "components": components,
+        "metadata": metadata,
+    }
+
+
+def _promoted_dataset_keys(research_path):
+    if not research_path.exists():
+        return set()
+    payload = read_json(research_path, {})
+    rows = ((payload.get("accuracy_gate") or {}).get("candidates") or [])
+    return {
+        row.get("dataset_key")
+        for row in rows
+        if row.get("decision") == "accuracy_candidate" and row.get("dataset_key")
+    }
+
+
+def _latest_dataset_feature_rows(db_path, target_iso):
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if not table_exists(conn, "dataset_forecast_features"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT source, model, variable, lead_hours, target_date, value,
+                       issued_at, valid_time, units, source_url
+                FROM dataset_forecast_features
+                WHERE target_date = ?
+                  AND value IS NOT NULL
+                  AND variable LIKE '%temperature_2m_max%'
+                ORDER BY source, model, variable, lead_hours, target_date, issued_at
+                """,
+                (target_iso,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    latest = {}
+    for row in rows:
+        key = _dataset_feature_key(row)
+        current = latest.get(key)
+        if current is None or str(row["issued_at"]) > str(current["issued_at"]):
+            latest[key] = row
+    return list(latest.values())
+
+
+def _dataset_feature_key(row):
+    lead = row["lead_hours"] if "lead_hours" in row.keys() else None
+    lead_token = "none" if lead is None else f"{float(lead):g}h"
+    return f"{row['source']}/{row['model']}/{row['variable']}/{lead_token}"
+
+
+def _dataset_guidance_corrections(db_path, target_iso, promoted_keys):
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if not (
+                table_exists(conn, "dataset_forecast_features")
+                and table_exists(conn, "clisfo_settlements")
+            ):
+                return {"metadata": {"mode": "disabled", "reason": "no CLISFO settlement table"}}
+            rows = conn.execute(
+                """
+                SELECT f.source, f.model, f.variable, f.lead_hours, f.value, c.max_temperature_f
+                FROM dataset_forecast_features f
+                JOIN clisfo_settlements c ON c.local_date = f.target_date
+                WHERE f.target_date < ?
+                  AND f.value IS NOT NULL
+                  AND c.max_temperature_f IS NOT NULL
+                  AND f.variable LIKE '%temperature_2m_max%'
+                """,
+                (target_iso,),
+            ).fetchall()
+    except sqlite3.Error:
+        return {"metadata": {"mode": "disabled", "reason": "dataset correction query failed"}}
+
+    residuals = {}
+    for row in rows:
+        key = _dataset_feature_key(row)
+        if key not in promoted_keys:
+            continue
+        actual = integer_settlement_high_f(row["max_temperature_f"])
+        if actual is None or not finite(row["value"]):
+            continue
+        residuals.setdefault(key, []).append(float(actual) - float(row["value"]))
+    corrections = {}
+    for key, values in residuals.items():
+        if len(values) >= 10:
+            corrections[key] = cap_magnitude(sum(values) / len(values), SOURCE_MOS_CAP_F)
+    return {
+        "metadata": {
+            "mode": "dataset_source_mos" if corrections else "disabled",
+            "source_counts": {key: len(values) for key, values in residuals.items()},
+            "cap_f": SOURCE_MOS_CAP_F,
+        },
+        "corrections": corrections,
+    }
+
+
+def _dataset_correction_for(row, corrections):
+    key = _dataset_feature_key(row)
+    return cap_magnitude(
+        float((corrections.get("corrections") or {}).get(key, 0.0)),
+        SOURCE_MOS_CAP_F,
+    )
+
+
 def load_station_observation(station_id):
     data = read_nws_json(f"{NWS_API_URL}/stations/{station_id}/observations/latest")
     props = data.get("properties") or {}
@@ -1613,6 +1792,186 @@ def blended_mae(rows, weights):
     return sum(errors) / len(errors)
 
 
+def source_mos_corrections():
+    cached = getattr(source_mos_corrections, "_cached", None)
+    if cached is not None:
+        return cached
+
+    metadata = {
+        "mode": "disabled",
+        "reason": "",
+        "scored_days": 0,
+        "cap_f": SOURCE_MOS_CAP_F,
+        "eligibility": "clean next-day scored blend rows only",
+    }
+
+    def _disabled(reason):
+        metadata["reason"] = reason
+        result = ({}, dict(metadata))
+        source_mos_corrections._cached = result
+        return result
+
+    if not ENABLE_SOURCE_MOS_CORRECTION:
+        return _disabled("source MOS correction disabled via ENABLE_SOURCE_MOS_CORRECTION")
+
+    rows = latest_scored_blend_rows()
+    scored_days = len({row["target_date"] for row in rows})
+    metadata["scored_days"] = scored_days
+    if scored_days < SOURCE_MOS_MIN_SCORED_DAYS:
+        return _disabled(
+            f"collecting clean next-day scored blend days; need {SOURCE_MOS_MIN_SCORED_DAYS}, "
+            f"have {scored_days}"
+        )
+
+    ordered_days = sorted({row["target_date"] for row in rows})
+    holdout_count = max(SOURCE_MOS_HOLDOUT_MIN_DAYS, len(ordered_days) // 3)
+    holdout_days = set(ordered_days[-holdout_count:])
+    train = [row for row in rows if row["target_date"] not in holdout_days]
+    holdout = [row for row in rows if row["target_date"] in holdout_days]
+    train_corrections = _learn_source_mos_corrections(train)
+    raw_mae, corrected_mae = _source_mos_holdout_mae(holdout, train_corrections)
+    metadata["holdout"] = {
+        "holdout_days": holdout_count,
+        "raw_mae_f": None if raw_mae is None else round(raw_mae, 3),
+        "corrected_mae_f": None if corrected_mae is None else round(corrected_mae, 3),
+    }
+    if raw_mae is None or corrected_mae is None or corrected_mae >= raw_mae:
+        return _disabled("source MOS correction did not improve holdout MAE")
+
+    corrections = _learn_source_mos_corrections(rows)
+    metadata.update(
+        {
+            "mode": "adaptive",
+            "reason": "source MOS correction improved clean holdout MAE",
+            "source_corrections_f": _round_source_mos_corrections(corrections),
+        }
+    )
+    result = (corrections, dict(metadata))
+    source_mos_corrections._cached = result
+    return result
+
+
+def _learn_source_mos_corrections(rows):
+    by_source = {}
+    all_residuals = []
+    for row in rows:
+        actual = row["actual_high_f"]
+        if not finite(actual):
+            continue
+        for source_key, column in ADAPTIVE_SOURCE_COLUMNS.items():
+            value = row[column]
+            if not finite(value):
+                continue
+            residual = float(actual) - float(value)
+            all_residuals.append(residual)
+            cohort = predicted_temperature_cohort(value)
+            by_source.setdefault(source_key, {}).setdefault(cohort, []).append(residual)
+    global_mean = (
+        cap_magnitude(sum(all_residuals) / len(all_residuals), SOURCE_MOS_CAP_F)
+        if all_residuals
+        else 0.0
+    )
+    corrections = {"global": global_mean, "sources": {}}
+    for source_key, cohorts in by_source.items():
+        source_residuals = [value for values in cohorts.values() for value in values]
+        source_mean = cap_magnitude(
+            sum(source_residuals) / len(source_residuals),
+            SOURCE_MOS_CAP_F,
+        )
+        table = {"global": source_mean, "cohorts": {}}
+        for cohort, values in cohorts.items():
+            count = len(values)
+            cohort_mean = sum(values) / count
+            weight = count / (count + SOURCE_MOS_COHORT_SHRINK_K)
+            table["cohorts"][cohort] = cap_magnitude(
+                weight * cohort_mean + (1.0 - weight) * source_mean,
+                SOURCE_MOS_CAP_F,
+            )
+        corrections["sources"][source_key] = table
+    return corrections
+
+
+def _source_mos_holdout_mae(rows, corrections):
+    raw_errors = []
+    corrected_errors = []
+    for row in rows:
+        actual = row["actual_high_f"]
+        if not finite(actual):
+            continue
+        raw_pred = _weighted_sources_for_row(row, corrections=None)
+        corrected_pred = _weighted_sources_for_row(row, corrections=corrections)
+        if raw_pred is None or corrected_pred is None:
+            continue
+        raw_errors.append(abs(raw_pred - float(actual)))
+        corrected_errors.append(abs(corrected_pred - float(actual)))
+    if not raw_errors:
+        return None, None
+    return sum(raw_errors) / len(raw_errors), sum(corrected_errors) / len(corrected_errors)
+
+
+def _weighted_sources_for_row(row, corrections):
+    total = 0.0
+    weight_sum = 0.0
+    for source_key, column in ADAPTIVE_SOURCE_COLUMNS.items():
+        value = row[column]
+        weight = BLEND_WEIGHTS.get(source_key, 0.0)
+        if not finite(value) or weight <= 0:
+            continue
+        adjusted = float(value)
+        if corrections:
+            adjusted += _source_mos_correction_for(source_key, adjusted, corrections)
+        total += adjusted * weight
+        weight_sum += weight
+    if weight_sum <= 0:
+        return None
+    return total / weight_sum + float(row["station_adjustment_f"] or 0.0)
+
+
+def _source_mos_correction_for(source_key, value, corrections):
+    source_table = (corrections.get("sources") or {}).get(source_key)
+    if not source_table:
+        return cap_magnitude(float(corrections.get("global", 0.0)), SOURCE_MOS_CAP_F)
+    cohort = predicted_temperature_cohort(value)
+    correction = (source_table.get("cohorts") or {}).get(cohort)
+    if correction is None:
+        correction = source_table.get("global", corrections.get("global", 0.0))
+    return cap_magnitude(float(correction), SOURCE_MOS_CAP_F)
+
+
+def apply_source_mos(sources, corrections):
+    corrected = {}
+    report = {"enabled": bool(corrections), "corrected_sources": {}, "cap_f": SOURCE_MOS_CAP_F}
+    for key, row in sources.items():
+        corrected_row = dict(row)
+        value = row.get("highF")
+        correction = 0.0
+        if corrections and finite(value):
+            correction = _source_mos_correction_for(key, float(value), corrections)
+            corrected_row["highF"] = round(float(value) + correction, 2)
+            if finite(corrected_row.get("lockHighF")):
+                corrected_row["lockHighF"] = round(float(corrected_row["lockHighF"]) + correction, 2)
+        corrected[key] = corrected_row
+        report["corrected_sources"][key] = {
+            "raw_high_f": round(float(value), 2) if finite(value) else None,
+            "correction_f": round(correction, 3),
+            "corrected_high_f": corrected_row.get("highF"),
+        }
+    return corrected, report
+
+
+def _round_source_mos_corrections(corrections):
+    rounded = {}
+    for key, table in (corrections.get("sources") or {}).items():
+        rounded[key] = {
+            "global": round(table.get("global", 0.0), 3),
+            "cohorts": {
+                cohort: round(value, 3)
+                for cohort, value in (table.get("cohorts") or {}).items()
+            },
+        }
+    return rounded
+
+
 def cap_magnitude(value: float, cap: float) -> float:
     return max(-cap, min(cap, value))
 
@@ -1927,12 +2286,30 @@ def build_blend_snapshot(summary, target_iso):
         "open_meteo": safe_source(lambda: load_open_meteo_forecast_high(target_iso), "Open-Meteo"),
         "history": load_history_high(target_iso),
     }
+    dataset_guidance = load_promoted_dataset_guidance(target_iso)
+    if finite(dataset_guidance.get("highF")):
+        sources["dataset"] = {
+            "highF": dataset_guidance["highF"],
+            "lockHighF": dataset_guidance["highF"],
+            "source": dataset_guidance.get("source"),
+            "detail": dataset_guidance.get("detail"),
+            "components": dataset_guidance.get("components", []),
+        }
     adjustment = station_adjustment()
     blend_weights, weight_metadata = adaptive_blend_weights()
+    if "dataset" in sources:
+        blend_weights = normalize_weights({**blend_weights, "dataset": DATASET_GUIDANCE_WEIGHT})
+        weight_metadata = {
+            **weight_metadata,
+            "dataset_guidance_weight": DATASET_GUIDANCE_WEIGHT,
+            "weights": {key: round(value, 4) for key, value in blend_weights.items()},
+        }
+    source_mos_table, source_mos_metadata = source_mos_corrections()
+    effective_sources, source_mos_report = apply_source_mos(sources, source_mos_table)
 
     available = {
         key: row
-        for key, row in sources.items()
+        for key, row in effective_sources.items()
         if finite(row.get("highF")) and blend_weights.get(key, 0) > 0
     }
     if not available:
@@ -1941,17 +2318,17 @@ def build_blend_snapshot(summary, target_iso):
     total_weight = sum(blend_weights[key] for key in available)
     normalized_weights = {
         key: blend_weights[key] / total_weight
-        for key in sources
+        for key in effective_sources
         if key in available
     }
-    weighted_high = sum(sources[key]["highF"] * normalized_weights[key] for key in available)
+    weighted_high = sum(effective_sources[key]["highF"] * normalized_weights[key] for key in available)
     raw_predicted = weighted_high + adjustment["value"]
     bias_table, bias_metadata = rolling_blend_residual_bias()
     bias_value = blend_bias_for(raw_predicted, bias_table)
     # Apply the de-bias before the observed-high decision so a same-day lock/floor
     # still operates on the calibrated number.
     calibrated_predicted = raw_predicted + bias_value
-    observed_decision = observed_high_decision(target_iso, sources)
+    observed_decision = observed_high_decision(target_iso, effective_sources)
     predicted = calibrated_predicted
     method = "weighted Google + NWS + Open-Meteo + SFO history with capped station adjustment"
     if bias_value:
@@ -2000,6 +2377,12 @@ def build_blend_snapshot(summary, target_iso):
             "station_adjustment": adjustment,
             "base_weights": BLEND_WEIGHTS,
             "blend_weighting": weight_metadata,
+            "source_mos": source_mos_report,
+            "dataset_sources": dataset_guidance,
+            "postprocessor_metadata": {
+                "source_mos": source_mos_metadata,
+                "rolling_bias": bias_metadata,
+            },
             "raw_weighted_prediction_f": round(raw_predicted, 2),
             "calibrated_prediction_f": round(calibrated_predicted, 2),
             "rolling_bias": {

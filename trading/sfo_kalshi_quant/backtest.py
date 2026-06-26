@@ -34,6 +34,9 @@ class CalibrationCohort:
     # judges SKILL (model beats climatology -> skill > 0), not absolute Brier.
     climatology_brier_score: float
     brier_skill: float
+    ranked_probability_score: float
+    climatology_ranked_probability_score: float
+    ranked_probability_skill: float
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,9 @@ class CalibrationBacktestResult:
     avg_entropy: float
     climatology_brier_score: float
     brier_skill: float
+    ranked_probability_score: float
+    climatology_ranked_probability_score: float
+    ranked_probability_skill: float
     calibration_buckets: tuple[CalibrationBucket, ...]
     cohorts: tuple[CalibrationCohort, ...]
 
@@ -81,6 +87,9 @@ def run_walk_forward_calibration_backtest(
         clim_prior = _climatological_prior(ladder, train)
         brier = 0.0
         clim_brier = 0.0
+        probabilities: list[float] = []
+        outcomes_yes: list[float] = []
+        climatology_probabilities: list[float] = []
         winning_probability = 0.0
         top_ticker = max(probs.values(), key=lambda row: row.probability).ticker
         winning_ticker = None
@@ -93,6 +102,9 @@ def run_walk_forward_calibration_backtest(
             calibration_samples.append((probability, outcome))
             brier += (probability - outcome) ** 2
             clim_brier += (clim_prior[market.ticker] - outcome) ** 2
+            probabilities.append(probability)
+            outcomes_yes.append(outcome)
+            climatology_probabilities.append(clim_prior[market.ticker])
             entropy -= probability * math.log(max(probability, 1e-12))
             if outcome:
                 winning_probability = probability
@@ -101,6 +113,8 @@ def run_walk_forward_calibration_backtest(
             {
                 "brier": brier,
                 "clim_brier": clim_brier,
+                "rps": _ranked_probability_score(probabilities, outcomes_yes),
+                "clim_rps": _ranked_probability_score(climatology_probabilities, outcomes_yes),
                 "log_loss": -math.log(max(winning_probability, 1e-12)),
                 "top_hit": 1.0 if top_ticker == winning_ticker else 0.0,
                 "winning_probability": winning_probability,
@@ -113,6 +127,8 @@ def run_walk_forward_calibration_backtest(
     n = len(scored)
     model_brier = sum(row["brier"] for row in scored) / n
     clim_brier_overall = sum(row["clim_brier"] for row in scored) / n
+    model_rps = sum(row["rps"] for row in scored) / n
+    clim_rps = sum(row["clim_rps"] for row in scored) / n
     return CalibrationBacktestResult(
         n=n,
         brier_score=model_brier,
@@ -121,7 +137,10 @@ def run_walk_forward_calibration_backtest(
         avg_winning_probability=sum(row["winning_probability"] for row in scored) / n,
         avg_entropy=sum(row["entropy"] for row in scored) / n,
         climatology_brier_score=clim_brier_overall,
-        brier_skill=_brier_skill(model_brier, clim_brier_overall),
+        brier_skill=_skill_score(model_brier, clim_brier_overall),
+        ranked_probability_score=model_rps,
+        climatology_ranked_probability_score=clim_rps,
+        ranked_probability_skill=_skill_score(model_rps, clim_rps),
         calibration_buckets=_calibration_buckets(calibration_samples),
         cohorts=_calibration_cohorts(scored),
     )
@@ -142,12 +161,34 @@ def _climatological_prior(
     }
 
 
+def _skill_score(model_score: float, reference_score: float) -> float:
+    """Proper-score skill: 1 - model/reference. Positive beats the reference."""
+
+    if reference_score <= 0.0:
+        return 0.0
+    return 1.0 - (model_score / reference_score)
+
+
 def _brier_skill(model_brier: float, clim_brier: float) -> float:
     """Brier Skill Score: 1 - model/clim. > 0 means the model beats climatology."""
 
-    if clim_brier <= 0.0:
+    return _skill_score(model_brier, clim_brier)
+
+
+def _ranked_probability_score(probabilities: list[float], outcomes: list[float]) -> float:
+    """Ranked probability score over ordered, mutually exclusive temperature bins."""
+
+    if not probabilities or len(probabilities) != len(outcomes):
         return 0.0
-    return 1.0 - (model_brier / clim_brier)
+    cumulative_probability = 0.0
+    cumulative_outcome = 0.0
+    total = 0.0
+    for probability, outcome in zip(probabilities, outcomes):
+        cumulative_probability += probability
+        cumulative_outcome += outcome
+        total += (cumulative_probability - cumulative_outcome) ** 2
+    denominator = max(1, len(probabilities) - 1)
+    return total / denominator
 
 
 def _calibration_buckets(samples: list[tuple[float, float]]) -> tuple[CalibrationBucket, ...]:
@@ -195,6 +236,8 @@ def _calibration_cohorts(scored: list[dict[str, float]]) -> tuple[CalibrationCoh
         count = len(rows)
         cohort_brier = sum(row["brier"] for row in rows) / count
         cohort_clim_brier = sum(row["clim_brier"] for row in rows) / count
+        cohort_rps = sum(row["rps"] for row in rows) / count
+        cohort_clim_rps = sum(row["clim_rps"] for row in rows) / count
         cohorts.append(
             CalibrationCohort(
                 name=name,
@@ -205,6 +248,9 @@ def _calibration_cohorts(scored: list[dict[str, float]]) -> tuple[CalibrationCoh
                 avg_winning_probability=sum(row["winning_probability"] for row in rows) / count,
                 climatology_brier_score=cohort_clim_brier,
                 brier_skill=_brier_skill(cohort_brier, cohort_clim_brier),
+                ranked_probability_score=cohort_rps,
+                climatology_ranked_probability_score=cohort_clim_rps,
+                ranked_probability_skill=_skill_score(cohort_rps, cohort_clim_rps),
             )
         )
     return tuple(cohorts)

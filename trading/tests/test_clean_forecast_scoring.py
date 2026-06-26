@@ -25,6 +25,7 @@ from settlement_calendar import (
     local_standard_date,
     utc_window_for_local_standard_date,
 )
+from sfo_kalshi_quant.datasets import DatasetStore
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 
 
@@ -298,6 +299,150 @@ def test_adaptive_weights_rejected_when_holdout_does_not_improve():
         assert metadata["mode"] == "base"
         assert "holdout" in metadata
         assert weights == google_weather_cache.BLEND_WEIGHTS
+
+
+def _write_dataset_research(path: Path, keys: list[str]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "accuracy_gate": {
+                    "candidates": [
+                        {
+                            "dataset_key": key,
+                            "decision": "accuracy_candidate",
+                        }
+                        for key in keys
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _dataset_row(target: date, value: float, *, issued: str = "2026-06-25T18:00:00+00:00") -> dict[str, object]:
+    return {
+        "source": "noaa-lamp",
+        "model": "lamp",
+        "issued_at": issued,
+        "target_date": target.isoformat(),
+        "valid_time": target.isoformat(),
+        "lead_hours": 0.0,
+        "latitude": 37.62,
+        "longitude": -122.38,
+        "variable": "temperature_2m_max",
+        "value": value,
+        "units": "degF",
+        "source_url": "https://example.test/lamp",
+        "raw": {},
+    }
+
+
+def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        research_path = Path(tmp) / "dataset_research.json"
+        target = date(2026, 6, 26)
+        store = DatasetStore(db_path)
+        store.upsert_forecast_features(
+            [
+                _dataset_row(target, 68.0, issued="2026-06-25T12:00:00+00:00"),
+                _dataset_row(target, 71.0, issued="2026-06-25T18:00:00+00:00"),
+            ]
+        )
+        _write_dataset_research(
+            research_path,
+            ["noaa-lamp/lamp/temperature_2m_max/0h"],
+        )
+
+        result = google_weather_cache.load_promoted_dataset_guidance(
+            target.isoformat(),
+            db_path=db_path,
+            research_path=research_path,
+        )
+
+    assert result["highF"] == 71.0
+    assert result["source"] == "Promoted dataset guidance"
+    assert result["components"][0]["dataset_key"] == "noaa-lamp/lamp/temperature_2m_max/0h"
+    assert result["metadata"]["promoted_count"] == 1
+
+
+def test_unpromoted_dataset_guidance_is_reported_but_not_weighted():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        research_path = Path(tmp) / "dataset_research.json"
+        target = date(2026, 6, 26)
+        store = DatasetStore(db_path)
+        store.upsert_forecast_features([_dataset_row(target, 71.0)])
+        _write_dataset_research(research_path, [])
+
+        result = google_weather_cache.load_promoted_dataset_guidance(
+            target.isoformat(),
+            db_path=db_path,
+            research_path=research_path,
+        )
+
+    assert result["highF"] is None
+    assert result["metadata"]["mode"] == "collect_only"
+    assert result["metadata"]["available_unpromoted_count"] == 1
+
+
+def test_blend_snapshot_includes_promoted_dataset_source_and_postprocessor_metadata():
+    target = "2026-06-26"
+    old_nws = google_weather_cache.load_nws_forecast_high
+    old_open = google_weather_cache.load_open_meteo_forecast_high
+    old_history = google_weather_cache.load_history_high
+    old_station = google_weather_cache.station_adjustment
+    old_weights = google_weather_cache.adaptive_blend_weights
+    old_bias = google_weather_cache.rolling_blend_residual_bias
+    old_dataset = google_weather_cache.load_promoted_dataset_guidance
+    old_source_mos = google_weather_cache.source_mos_corrections
+    try:
+        google_weather_cache.load_nws_forecast_high = lambda target_iso: {"highF": 68.0, "source": "NWS"}
+        google_weather_cache.load_open_meteo_forecast_high = lambda target_iso: {"highF": 68.0, "source": "Open-Meteo"}
+        google_weather_cache.load_history_high = lambda target_iso: {"highF": 68.0, "source": "History"}
+        google_weather_cache.station_adjustment = lambda: {"value": 0.0, "fresh_station_count": 0}
+        google_weather_cache.adaptive_blend_weights = lambda: (dict(google_weather_cache.BLEND_WEIGHTS), {"mode": "base"})
+        google_weather_cache.rolling_blend_residual_bias = lambda: (dict(google_weather_cache.DISABLED_BIAS_TABLE), {"mode": "disabled"})
+        google_weather_cache.source_mos_corrections = lambda: ({}, {"mode": "disabled", "reason": "test"})
+        google_weather_cache.load_promoted_dataset_guidance = lambda target_iso: {
+            "highF": 76.0,
+            "source": "Promoted dataset guidance",
+            "detail": "noaa-lamp/lamp/temperature_2m_max/0h",
+            "components": [{"dataset_key": "noaa-lamp/lamp/temperature_2m_max/0h", "corrected_high_f": 76.0}],
+            "metadata": {"mode": "promoted", "promoted_count": 1},
+        }
+
+        blend = google_weather_cache.build_blend_snapshot(
+            {
+                "fetched_at": "2026-06-25T18:00:00+00:00",
+                "daily_highs": [
+                    {
+                        "target_date": target,
+                        "highF": 68.0,
+                        "fetched_at": "2026-06-25T18:00:00+00:00",
+                        "lead_hours": 14.0,
+                        "time_zone": "Etc/GMT+8",
+                    }
+                ],
+            },
+            target,
+        )
+    finally:
+        google_weather_cache.load_nws_forecast_high = old_nws
+        google_weather_cache.load_open_meteo_forecast_high = old_open
+        google_weather_cache.load_history_high = old_history
+        google_weather_cache.station_adjustment = old_station
+        google_weather_cache.adaptive_blend_weights = old_weights
+        google_weather_cache.rolling_blend_residual_bias = old_bias
+        google_weather_cache.load_promoted_dataset_guidance = old_dataset
+        google_weather_cache.source_mos_corrections = old_source_mos
+
+    assert blend["source_count"] == 5
+    assert blend["predicted_high_f"] > 68.0
+    assert blend["details"]["dataset_sources"]["metadata"]["mode"] == "promoted"
+    assert blend["details"]["postprocessor_metadata"]["source_mos"]["mode"] == "disabled"
+    assert blend["details"]["source_mos"]["corrected_sources"]
 
 
 def test_clean_blend_outcomes_are_point_in_time_last_prior_day_rows():

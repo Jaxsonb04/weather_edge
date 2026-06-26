@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import replace
 
@@ -153,6 +154,38 @@ class PaperTrader:
                 continue
             if adjusted.cost_per_contract >= 1.0 or adjusted.cost_per_contract <= 0:
                 continue
+            shadow_id: int | None = None
+            if _is_research_shadow_candidate(self.risk_profile, adjusted):
+                sample_probability = _clamp_probability(
+                    self.config.research_shadow_sample_probability
+                )
+                sampled = _deterministic_sample(
+                    target_date,
+                    adjusted,
+                    sample_probability=sample_probability,
+                )
+                shadow_id = self.store.record_research_shadow_order(
+                    target_date,
+                    adjusted,
+                    risk_profile=self.risk_profile,
+                    sample_probability=sample_probability,
+                    sampled=sampled,
+                )
+                if not sampled:
+                    continue
+                if self.store.has_losing_closed_negative_lcb_research_entry(
+                    target_date,
+                    adjusted.ticker,
+                    adjusted.side,
+                ):
+                    continue
+                adjusted = self._fit_research_shadow_sample(
+                    target_date,
+                    adjusted,
+                    bankroll,
+                )
+                if adjusted is None:
+                    continue
             # Deliberately side-agnostic: one open position per market. Holding
             # YES and NO on the same bucket locks in the combined entry costs
             # plus fees, so an open position blocks the opposite side too; the
@@ -200,6 +233,8 @@ class PaperTrader:
             if order_id is None:
                 continue
             order_ids.append(order_id)
+            if shadow_id is not None:
+                self.store.link_research_shadow_order(shadow_id, order_id)
             if exposure_remaining is not None:
                 exposure_remaining -= adjusted.recommended_contracts * adjusted.cost_per_contract
         return order_ids
@@ -372,6 +407,38 @@ class PaperTrader:
             expected_profit=decision.edge * contracts,
         )
 
+    def _fit_research_shadow_sample(
+        self,
+        target_date: str,
+        decision: TradeDecision,
+        bankroll: float | None,
+    ) -> TradeDecision | None:
+        contracts = min(
+            float(decision.recommended_contracts),
+            float(self.config.research_shadow_max_contracts),
+        )
+        if not self.config.allow_fractional_contracts:
+            contracts = float(int(contracts))
+        if contracts <= 0:
+            return None
+        adjusted = replace(
+            decision,
+            recommended_contracts=contracts,
+            expected_profit=decision.edge * contracts,
+        )
+        if bankroll is None or bankroll <= 0:
+            return adjusted
+        remaining = (
+            bankroll * self.config.research_shadow_daily_loss_pct
+            - self.store.research_shadow_sample_spend_for_target(
+                target_date,
+                risk_profile=self.risk_profile,
+            )
+        )
+        if remaining <= 0:
+            return None
+        return self._fit_to_exposure(adjusted, remaining)
+
     def _normalize_arbitrage_contracts(
         self,
         opportunity: ArbitrageOpportunity,
@@ -426,3 +493,32 @@ def _normalize_entry_mode(entry_mode: str) -> str:
 
 def _decision_key(decision: TradeDecision) -> tuple[str, str]:
     return (decision.ticker, decision.side)
+
+
+def _is_research_shadow_candidate(risk_profile: str | None, decision: TradeDecision) -> bool:
+    if (risk_profile or "").strip().lower().replace("_", "-") != "research":
+        return False
+    if not decision.approved or decision.edge <= 0.0 or decision.edge_lcb >= 0.0:
+        return False
+    return any("sleeve=research_explore" in reason for reason in decision.reasons)
+
+
+def _clamp_probability(value: float) -> float:
+    return min(1.0, max(0.0, float(value)))
+
+
+def _deterministic_sample(
+    target_date: str,
+    decision: TradeDecision,
+    *,
+    sample_probability: float,
+) -> bool:
+    probability = _clamp_probability(sample_probability)
+    if probability <= 0.0:
+        return False
+    if probability >= 1.0:
+        return True
+    key = f"{target_date}|{decision.ticker}|{decision.side.upper()}|{decision.action}"
+    raw = hashlib.sha256(key.encode("utf-8")).digest()[:8]
+    value = int.from_bytes(raw, "big") / float(2**64 - 1)
+    return value < probability

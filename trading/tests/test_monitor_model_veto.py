@@ -79,6 +79,42 @@ def _stopped_no_decision() -> TradeDecision:
     )
 
 
+def _between_no_decision(
+    ticker: str,
+    label: str,
+    *,
+    cost: float,
+    floor: float,
+    cap: float,
+) -> TradeDecision:
+    ask = cost - 0.02
+    return TradeDecision(
+        ticker=ticker,
+        label=label,
+        action="BUY_NO",
+        approved=True,
+        probability=0.72,
+        probability_lcb=0.60,
+        yes_bid=max(0.0, 1.0 - ask - 0.02),
+        yes_ask=max(0.0, 1.0 - ask),
+        spread=0.02,
+        fee_per_contract=0.02,
+        cost_per_contract=cost,
+        edge=0.10,
+        edge_lcb=-0.02,
+        kelly_fraction=0.01,
+        recommended_contracts=3.0,
+        expected_profit=0.30,
+        reasons=[],
+        side="NO",
+        entry_bid=max(0.0, ask - 0.03),
+        entry_ask=ask,
+        strike_type="between",
+        floor_strike=floor,
+        cap_strike=cap,
+    )
+
+
 class _FakeKalshiClient:
     yes_bid = 0.03
     yes_ask = 0.05
@@ -144,6 +180,38 @@ class _FakeNoConvergedClient(_FakeKalshiClient):
     strike_type = "above"
     floor_strike = 82.0
     cap_strike = None
+
+
+class _FakeNoBasketClient:
+    def get_market(self, ticker: str) -> MarketBin:
+        if ticker.endswith("B68.5"):
+            no_bid = 0.16
+            no_ask = 0.18
+            floor = 68.0
+            cap = 69.0
+            label = "68° to 69°"
+        else:
+            no_bid = 0.72
+            no_ask = 0.74
+            floor = 70.0
+            cap = 71.0
+            label = "70° to 71°"
+        return MarketBin(
+            ticker=ticker,
+            event_ticker="KXHIGHTSFO-TEST",
+            title="Highest temperature in San Francisco?",
+            yes_sub_title=label,
+            strike_type="between",
+            floor_strike=floor,
+            cap_strike=cap,
+            yes_bid=max(0.0, 1.0 - no_ask),
+            yes_ask=max(0.0, 1.0 - no_bid),
+            no_bid=no_bid,
+            no_ask=no_ask,
+            yes_bid_size=10.0,
+            yes_ask_size=10.0,
+            status="active",
+        )
 
 
 def test_monitor_edge_based_take_profit_banks_a_converged_no_favorite():
@@ -508,6 +576,94 @@ def test_paper_monitor_no_stop_loss_can_model_veto_before_hard_floor():
         assert action == "HOLD_MODEL_VETO"
         assert "above entry cost" in out.getvalue()
         assert "HOLD order" in out.getvalue()
+
+
+def test_same_day_no_basket_holds_catastrophic_stop_when_model_still_supports_leg():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        stopped_id = store.record_paper_order(
+            "2026-06-26",
+            _between_no_decision(
+                "KXHIGHTSFO-TEST-B68.5",
+                "68° to 69°",
+                cost=0.62,
+                floor=68.0,
+                cap=69.0,
+            ),
+            risk_profile="research",
+        )
+        store.record_paper_order(
+            "2026-06-26",
+            _between_no_decision(
+                "KXHIGHTSFO-TEST-B70.5",
+                "70° to 71°",
+                cost=0.84,
+                floor=70.0,
+                cap=71.0,
+            ),
+            risk_profile="research",
+        )
+        _record_decision_model_read(store, "2026-06-26", "KXHIGHTSFO-TEST-B68.5", "NO", 0.66)
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoBasketClient), redirect_stdout(out):
+            code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
+
+        assert code == 0
+        assert store.open_paper_order(stopped_id) is not None
+        with store.connect() as conn:
+            action = conn.execute(
+                """
+                SELECT action
+                FROM paper_monitor_snapshots
+                WHERE order_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (stopped_id,),
+            ).fetchone()[0]
+        assert action == "HOLD_NO_BASKET_VETO"
+        assert "same-day NO basket" in out.getvalue()
+
+
+def test_same_day_no_basket_closes_catastrophic_stop_when_model_thesis_dies():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        stopped_id = store.record_paper_order(
+            "2026-06-26",
+            _between_no_decision(
+                "KXHIGHTSFO-TEST-B68.5",
+                "68° to 69°",
+                cost=0.62,
+                floor=68.0,
+                cap=69.0,
+            ),
+            risk_profile="research",
+        )
+        store.record_paper_order(
+            "2026-06-26",
+            _between_no_decision(
+                "KXHIGHTSFO-TEST-B70.5",
+                "70° to 71°",
+                cost=0.84,
+                floor=70.0,
+                cap=71.0,
+            ),
+            risk_profile="research",
+        )
+        _record_decision_model_read(store, "2026-06-26", "KXHIGHTSFO-TEST-B68.5", "NO", 0.40)
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoBasketClient), redirect_stdout(out):
+            code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
+
+        assert code == 0
+        assert store.open_paper_order(stopped_id) is None
+        row = store.paper_orders(2)[-1]
+        assert row["id"] == stopped_id
+        assert row["status"] == "PAPER_CLOSED"
 
 
 def test_paper_monitor_no_veto_requires_model_to_cover_entry_cost():

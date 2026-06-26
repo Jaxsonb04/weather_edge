@@ -701,6 +701,50 @@ def test_strategy_research_includes_config_rescore():
         assert readiness["checks"] and all("progress" in c for c in readiness["checks"])
 
 
+def test_strategy_research_includes_research_shadow_comparison():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        _write_settlement(root, target="2026-06-03", high=70.0)
+
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            action="BUY_NO",
+            side="NO",
+            probability=0.78,
+            probability_lcb=0.58,
+            edge=0.16,
+            edge_lcb=-0.04,
+            reasons=["portfolio PF-test: sleeve=research_explore, growth=0.001"],
+            entry_bid=0.36,
+            entry_ask=0.40,
+            entry_bid_size=10.0,
+            entry_ask_size=10.0,
+        )
+        store.record_research_shadow_order(
+            "2026-06-03",
+            decision,
+            risk_profile="research",
+            sample_probability=0.25,
+            sampled=False,
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        shadow = payload["research_shadow"]
+        assert shadow["available"] is True, shadow.get("reason")
+        assert shadow["summary"]["shadow_orders"] == 1
+        assert shadow["paper_executed"]["trades"] == 0
+        assert shadow["shadow_hold_to_settlement"]["trades"] == 1
+        assert shadow["shadow_current_exit_policy"]["trades"] == 0
+
+
 def test_strategy_research_cli_writes_public_artifact():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"

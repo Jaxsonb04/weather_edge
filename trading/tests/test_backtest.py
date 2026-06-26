@@ -62,3 +62,34 @@ def test_walk_forward_backtest_reports_climatology_skill():
     for cohort in result.cohorts:
         assert cohort.climatology_brier_score is not None
         assert cohort.brier_skill is not None
+
+
+def test_walk_forward_backtest_reports_ranked_probability_score_across_bins():
+    start = date(2025, 1, 1)
+    outcomes = []
+    for idx in range(120):
+        pred = 66.0 + (idx % 8)
+        actual = pred + [-2, -1, 0, 1, 2, 1, -1, 0][idx % 8]
+        outcomes.append(
+            ForecastOutcome(
+                local_date=start + timedelta(days=idx),
+                predicted_high_f=pred,
+                actual_high_f=actual,
+            )
+        )
+
+    result = run_walk_forward_calibration_backtest(
+        outcomes,
+        config=StrategyConfig(min_conditional_samples=10),
+        min_train=60,
+    )
+
+    assert result.ranked_probability_score >= 0.0
+    assert result.climatology_ranked_probability_score > 0.0
+    expected_skill = 1.0 - (
+        result.ranked_probability_score / result.climatology_ranked_probability_score
+    )
+    assert abs(result.ranked_probability_skill - expected_skill) < 1e-9
+    for cohort in result.cohorts:
+        assert cohort.ranked_probability_score >= 0.0
+        assert cohort.ranked_probability_skill is not None

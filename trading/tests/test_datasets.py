@@ -10,10 +10,17 @@ from urllib.error import HTTPError
 
 from sfo_kalshi_quant.datasets import (
     DatasetStore,
+    OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS,
+    backfill_gfs_mos,
+    backfill_hrrr,
+    backfill_lamp,
+    backfill_open_meteo_previous_runs,
+    backfill_nbm,
     backfill_kalshi_history,
     fetch_noaa_isd_csv,
     open_meteo_daily_features,
     open_meteo_hourly_daily_high_features,
+    parse_noaa_station_guidance_text,
     parse_iem_asos_csv,
     parse_noaa_isd_row,
 )
@@ -111,6 +118,187 @@ def test_open_meteo_previous_runs_reduce_hourly_offsets_to_daily_high_features()
     assert values[("2026-06-02", "temperature_2m_max_previous_day1")]["value"] == 60.0
     assert values[("2026-06-02", "temperature_2m_max_previous_day1")]["lead_hours"] == 24.0
     assert values[("2026-06-02", "temperature_2m_max_previous_day1")]["issued_at"].startswith("2026-06-01")
+
+
+def test_open_meteo_previous_runs_research_preset_keeps_models_and_leads_separate():
+    payload = {
+        "latitude": 37.62612,
+        "longitude": -122.400154,
+        "hourly_units": {
+            "time": "iso8601",
+            "temperature_2m": "°F",
+            "temperature_2m_previous_day1": "°F",
+        },
+        "hourly": {
+            "time": ["2026-06-02T00:00", "2026-06-02T01:00"],
+            "temperature_2m": [55.0, 56.0],
+            "temperature_2m_previous_day1": [60.0, 58.0],
+        },
+    }
+    requested_urls = []
+
+    def fake_json(url: str, *, timeout: int = 30):
+        requested_urls.append(url)
+        return payload
+
+    with TemporaryDirectory() as tmp, patch("sfo_kalshi_quant.datasets._http_json", fake_json):
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        result = backfill_open_meteo_previous_runs(
+            store,
+            start=date(2026, 6, 2),
+            end=date(2026, 6, 2),
+            model="research_core",
+            previous_days=1,
+            timeout=1,
+        )
+
+        assert result.rows_written == len(OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS) * 2
+        assert len(requested_urls) == len(OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS)
+        assert all("models=" in url for url in requested_urls)
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT model, variable, lead_hours
+                FROM dataset_forecast_features
+                ORDER BY model, variable
+                """
+            ).fetchall()
+
+    assert {row[0] for row in rows} == set(OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS)
+    assert {row[2] for row in rows} == {0.0, 24.0}
+
+
+def test_parse_noaa_station_guidance_text_emits_hourly_and_daily_high_features():
+    text = """
+    FOUS11 KWNO 261230
+    KSFO   GFS LAMP GUIDANCE   6/26/2026  1230 UTC
+    HR     01 02 03 04 05
+    TMP    58 60 MM 63 61
+    """
+
+    rows = parse_noaa_station_guidance_text(
+        text,
+        source="noaa-lamp",
+        model="lamp",
+        source_url="https://example.test/lamp",
+        station_id="KSFO",
+    )
+
+    hourly = [row for row in rows if row["variable"] == "temperature_2m"]
+    daily = [row for row in rows if row["variable"] == "temperature_2m_max"]
+    assert [row["value"] for row in hourly] == [58.0, 60.0, 63.0, 61.0]
+    assert {row["lead_hours"] for row in hourly} == {1.0, 2.0, 4.0, 5.0}
+    assert daily == [
+        {
+            "source": "noaa-lamp",
+            "model": "lamp",
+            "issued_at": "2026-06-26T12:30:00+00:00",
+            "target_date": "2026-06-26",
+            "valid_time": "2026-06-26",
+            "lead_hours": 1.0,
+            "latitude": None,
+            "longitude": None,
+            "variable": "temperature_2m_max",
+            "value": 63.0,
+            "units": "degF",
+            "source_url": "https://example.test/lamp",
+            "raw": {
+                "station_id": "KSFO",
+                "aggregation": "local_date_max",
+                "n": 4,
+                "source_product": "station_guidance_text",
+            },
+        }
+    ]
+
+
+def test_parse_noaa_station_guidance_text_ignores_other_stations_and_bad_headers():
+    text = """
+    KOAK   GFS LAMP GUIDANCE   6/26/2026  1230 UTC
+    HR     01 02
+    TMP    70 71
+    KSFO   GUIDANCE WITHOUT ISSUE TIME
+    HR     01 02
+    TMP    58 59
+    """
+
+    rows = parse_noaa_station_guidance_text(
+        text,
+        source="noaa-lamp",
+        model="lamp",
+        station_id="KSFO",
+    )
+
+    assert rows == []
+
+
+def test_lamp_and_gfs_mos_backfills_store_station_guidance_features():
+    text = """
+    KSFO   GFS LAMP GUIDANCE   6/26/2026  1230 UTC
+    HR     01 02
+    TMP    58 61
+    """
+
+    def fake_text(url: str, *, timeout: int = 30):
+        return text
+
+    with TemporaryDirectory() as tmp, patch("sfo_kalshi_quant.datasets._http_text", fake_text):
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        lamp = backfill_lamp(store, start=date(2026, 6, 26), end=date(2026, 6, 26), timeout=1)
+        mos = backfill_gfs_mos(store, start=date(2026, 6, 26), end=date(2026, 6, 26), timeout=1)
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT source, model, variable, value
+                FROM dataset_forecast_features
+                ORDER BY source, variable
+                """
+            ).fetchall()
+
+    assert lamp.rows_written == 3
+    assert mos.rows_written == 3
+    assert {row[0] for row in rows} == {"noaa-lamp", "gfs-mos"}
+    assert ("noaa-lamp", "lamp", "temperature_2m_max", 61.0) in rows
+    assert ("gfs-mos", "gfs-mos", "temperature_2m_max", 61.0) in rows
+
+
+def test_nbm_and_hrrr_backfills_use_model_specific_previous_run_sources():
+    payload = {
+        "latitude": 37.62612,
+        "longitude": -122.400154,
+        "hourly_units": {"time": "iso8601", "temperature_2m": "°F"},
+        "hourly": {
+            "time": ["2026-06-02T00:00", "2026-06-02T01:00"],
+            "temperature_2m": [55.0, 56.0],
+        },
+    }
+    requested_urls = []
+
+    def fake_json(url: str, *, timeout: int = 30):
+        requested_urls.append(url)
+        return payload
+
+    with TemporaryDirectory() as tmp, patch("sfo_kalshi_quant.datasets._http_json", fake_json):
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        nbm = backfill_nbm(store, start=date(2026, 6, 2), end=date(2026, 6, 2), timeout=1)
+        hrrr = backfill_hrrr(store, start=date(2026, 6, 2), end=date(2026, 6, 2), timeout=1)
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT source, model, variable, value
+                FROM dataset_forecast_features
+                ORDER BY source
+                """
+            ).fetchall()
+
+    assert nbm.rows_written == 1
+    assert hrrr.rows_written == 1
+    assert any("models=ncep_nbm_conus" in url for url in requested_urls)
+    assert any("models=gfs_hrrr" in url for url in requested_urls)
+    assert rows == [
+        ("open-meteo-previous-runs", "gfs_hrrr", "temperature_2m_max", 56.0),
+        ("open-meteo-previous-runs", "ncep_nbm_conus", "temperature_2m_max", 56.0),
+    ]
 
 
 def test_open_meteo_daily_features_keep_source_and_model_provenance():

@@ -6,10 +6,11 @@ from datetime import date, timedelta
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.dataset_research import build_dataset_research
-from sfo_kalshi_quant.datasets import DatasetStore
+from sfo_kalshi_quant.datasets import DatasetResult, DatasetStore
 
 
 def test_dataset_research_promotes_only_sources_that_improve_heldout_accuracy():
@@ -58,6 +59,10 @@ def test_dataset_research_promotes_only_sources_that_improve_heldout_accuracy():
     assert payload["summary"]["action_items"]
     assert payload["profitability_gate"]["decision"] == "collect_only"
     assert "after-cost" in payload["profitability_gate"]["reason"]
+    nbm = payload["probabilistic_benchmarks"]["nbm"]
+    assert nbm["models"] == ["ncep_nbm_conus"]
+    assert "percentile_temperature_fields" in nbm["desired_fields"]
+    assert "ranked_probability_score" in nbm["scoring"]
 
 
 def test_dataset_research_keeps_small_samples_collect_only():
@@ -118,6 +123,37 @@ def test_dataset_research_cli_writes_collect_only_report():
     assert payload["status"] == "collect_only"
     assert payload["profitability_gate"]["decision"] == "collect_only"
     assert "collect_only" in buffer.getvalue()
+
+
+def test_dataset_backfill_cli_accepts_lamp_source_choice():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        calls = []
+
+        def fake_lamp(store, *, start, end, station_id="KSFO", timeout=30):
+            calls.append((store.db_path, start, end, station_id, timeout))
+            return DatasetResult("noaa-lamp", 0, "test")
+
+        buffer = StringIO()
+        with patch("sfo_kalshi_quant.cli.backfill_lamp", fake_lamp), redirect_stdout(buffer):
+            rc = main(
+                [
+                    "--no-color",
+                    "--db-path",
+                    str(db_path),
+                    "dataset-backfill",
+                    "--source",
+                    "lamp",
+                    "--start-date",
+                    "2026-06-26",
+                    "--timeout",
+                    "1",
+                ]
+            )
+
+    assert rc == 0
+    assert calls == [(db_path, date(2026, 6, 26), date(2026, 6, 26), "KSFO", 1)]
+    assert "noaa-lamp" in buffer.getvalue()
 
 
 def _feature_row(source: str, model: str, target: date, value: float) -> dict[str, object]:

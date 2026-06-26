@@ -30,8 +30,12 @@ from .datasets import (
     KSFO_ASOS_STATION,
     KSFO_ISD_STATION,
     DatasetStore,
+    backfill_gfs_mos,
+    backfill_hrrr,
     backfill_iem_asos,
     backfill_kalshi_history,
+    backfill_lamp,
+    backfill_nbm,
     backfill_noaa_isd,
     backfill_open_meteo_historical_forecast,
     backfill_open_meteo_previous_runs,
@@ -440,6 +444,10 @@ def build_parser() -> argparse.ArgumentParser:
             "iem-asos",
             "open-meteo-previous-runs",
             "open-meteo-historical-forecast",
+            "lamp",
+            "gfs-mos",
+            "nbm",
+            "hrrr",
             "kalshi-history",
         ),
         default="tier1",
@@ -1858,6 +1866,36 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
                     model=args.open_meteo_model,
                     timeout=args.timeout,
                 )
+            elif source == "lamp":
+                result = backfill_lamp(
+                    store,
+                    start=start,
+                    end=end,
+                    station_id="KSFO",
+                    timeout=args.timeout,
+                )
+            elif source == "gfs-mos":
+                result = backfill_gfs_mos(
+                    store,
+                    start=start,
+                    end=end,
+                    station_id="KSFO",
+                    timeout=args.timeout,
+                )
+            elif source == "nbm":
+                result = backfill_nbm(
+                    store,
+                    start=start,
+                    end=end,
+                    timeout=args.timeout,
+                )
+            elif source == "hrrr":
+                result = backfill_hrrr(
+                    store,
+                    start=start,
+                    end=end,
+                    timeout=args.timeout,
+                )
             elif source == "kalshi-history":
                 result = backfill_kalshi_history(
                     store,
@@ -1946,6 +1984,10 @@ def _dataset_sources(source: str) -> list[str]:
             "iem-asos",
             "open-meteo-previous-runs",
             "open-meteo-historical-forecast",
+            "lamp",
+            "gfs-mos",
+            "nbm",
+            "hrrr",
             "kalshi-history",
         ]
     return [source]
@@ -2305,6 +2347,38 @@ def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[f
     return float(args.take_profit_pct), float(args.stop_loss_pct)
 
 
+def _same_day_no_basket_veto_reason(
+    store: PaperStore,
+    row,
+    *,
+    side: str,
+    signal_action: str,
+    entry_cost: float,
+    net_exit: float,
+    model_side_probability: float | None,
+    model_veto_buffer: float,
+) -> str | None:
+    if signal_action != "STOP_LOSS" or side.upper() != "NO":
+        return None
+    risk_profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
+    if risk_profile != "research":
+        return None
+    if model_side_probability is None:
+        return None
+    basket_rows = store.open_no_basket_orders(str(row["target_date"]), risk_profile="research")
+    distinct_markets = {str(basket_row["market_ticker"]) for basket_row in basket_rows}
+    if len(distinct_markets) < 2:
+        return None
+    veto_floor = max(entry_cost, net_exit + model_veto_buffer)
+    if model_side_probability < veto_floor:
+        return None
+    return (
+        f"same-day NO basket veto: model p={model_side_probability:.2f} still clears "
+        f"hold floor {veto_floor:.2f} across {len(distinct_markets)} open NO legs; "
+        "holding basket instead of crystallizing one leg"
+    )
+
+
 def cmd_paper_monitor(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
@@ -2440,6 +2514,36 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
                 f"HOLD order {row['id']} {row['market_ticker']} {side}: "
                 f"bid={live_bid:.2f} net={net_exit:.2f} unrealized={pnl_pct * 100:.1f}% "
                 f"(${pnl_dollars:.2f}); {signal.reason}"
+            )
+            continue
+
+        basket_veto_reason = _same_day_no_basket_veto_reason(
+            store,
+            row,
+            side=side,
+            signal_action=signal.action,
+            entry_cost=entry_cost,
+            net_exit=net_exit,
+            model_side_probability=model_side_p,
+            model_veto_buffer=args.model_veto_buffer,
+        )
+        if basket_veto_reason is not None:
+            store.record_monitor_snapshot(
+                row,
+                side=side,
+                action="HOLD_NO_BASKET_VETO",
+                reason=basket_veto_reason,
+                market_status=market.status,
+                live_bid=live_bid,
+                exit_fee_per_contract=exit_fee,
+                net_exit_per_contract=net_exit,
+                unrealized_pnl=pnl_dollars,
+                unrealized_roi=pnl_pct,
+            )
+            print(
+                f"HOLD order {row['id']} {row['market_ticker']} {side}: "
+                f"bid={live_bid:.2f} net={net_exit:.2f} unrealized={pnl_pct * 100:.1f}% "
+                f"(${pnl_dollars:.2f}); {basket_veto_reason}"
             )
             continue
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -27,6 +28,18 @@ OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/fore
 OPEN_METEO_HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 NOAA_GLOBAL_HOURLY_BASE_URL = "https://www.ncei.noaa.gov/data/global-hourly/access"
 IEM_ASOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+NOAA_NOMADS_BASE_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
+OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS = (
+    "ncep_nbm_conus",
+    "gfs_hrrr",
+    "gfs_global",
+    "ecmwf_ifs",
+)
+OPEN_METEO_PREVIOUS_RUN_MODEL_PRESETS = {
+    "research_core": OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS,
+}
+NOAA_GUIDANCE_CYCLES_6H = (0, 6, 12, 18)
+NOAA_LAMP_CYCLES_3H = (0, 3, 6, 9, 12, 15, 18, 21)
 
 
 DATASET_SCHEMA = """
@@ -620,25 +633,48 @@ def backfill_open_meteo_previous_runs(
     previous_days: int = 7,
     timeout: int = 30,
 ) -> DatasetResult:
+    models = _open_meteo_previous_run_models(model)
     variables = ["temperature_2m", *[f"temperature_2m_previous_day{day}" for day in range(1, previous_days + 1)]]
-    params: dict[str, Any] = {
-        "latitude": KSFO_LATITUDE,
-        "longitude": KSFO_LONGITUDE,
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        "hourly": ",".join(variables),
-        "temperature_unit": "fahrenheit",
-        # Hourly rows are grouped into daily highs by their local date label,
-        # so the request timezone defines the settlement-day bucketing.
-        "timezone": IANA_FIXED_PST,
-    }
-    if model and model != "best_match":
-        params["models"] = model
-    url = f"{OPEN_METEO_PREVIOUS_RUNS_URL}?{urlencode(params)}"
-    payload = _http_json(url, timeout=timeout)
-    rows = open_meteo_hourly_daily_high_features(payload, source="open-meteo-previous-runs", model=model, source_url=url)
+    rows: list[dict[str, Any]] = []
+    for model_name in models:
+        params: dict[str, Any] = {
+            "latitude": KSFO_LATITUDE,
+            "longitude": KSFO_LONGITUDE,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "hourly": ",".join(variables),
+            "temperature_unit": "fahrenheit",
+            # Hourly rows are grouped into daily highs by their local date label,
+            # so the request timezone defines the settlement-day bucketing.
+            "timezone": IANA_FIXED_PST,
+        }
+        if model_name and model_name != "best_match":
+            params["models"] = model_name
+        url = f"{OPEN_METEO_PREVIOUS_RUNS_URL}?{urlencode(params)}"
+        payload = _http_json(url, timeout=timeout)
+        rows.extend(
+            open_meteo_hourly_daily_high_features(
+                payload,
+                source="open-meteo-previous-runs",
+                model=model_name,
+                source_url=url,
+            )
+        )
     written = store.upsert_forecast_features(rows)
-    return DatasetResult("open-meteo-previous-runs", written, f"{len(rows)} daily high feature rows")
+    return DatasetResult(
+        "open-meteo-previous-runs",
+        written,
+        f"{len(rows)} daily high feature rows from {len(models)} model(s)",
+    )
+
+
+def _open_meteo_previous_run_models(model: str) -> tuple[str, ...]:
+    normalized = (model or "best_match").strip()
+    preset = OPEN_METEO_PREVIOUS_RUN_MODEL_PRESETS.get(normalized)
+    if preset is not None:
+        return preset
+    models = tuple(item.strip() for item in normalized.split(",") if item.strip())
+    return models or ("best_match",)
 
 
 def backfill_open_meteo_historical_forecast(
@@ -771,6 +807,306 @@ def open_meteo_hourly_daily_high_features(
             }
         )
     return rows
+
+
+def backfill_lamp(
+    store: DatasetStore,
+    *,
+    start: date,
+    end: date,
+    station_id: str = "KSFO",
+    timeout: int = 30,
+) -> DatasetResult:
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for cycle_date in _date_range(start, end):
+        for cycle_hour in NOAA_LAMP_CYCLES_3H:
+            url = _lamp_text_url(cycle_date, cycle_hour)
+            try:
+                text = _http_text(url, timeout=timeout)
+            except HTTPError as exc:
+                if exc.code == 404:
+                    failures.append(f"{cycle_date.isoformat()}T{cycle_hour:02d}:30Z missing")
+                    continue
+                raise
+            rows.extend(
+                parse_noaa_station_guidance_text(
+                    text,
+                    source="noaa-lamp",
+                    model="lamp",
+                    source_url=url,
+                    station_id=station_id,
+                )
+            )
+    rows = _dedupe_feature_rows(rows)
+    written = store.upsert_forecast_features(rows)
+    detail = f"{len(rows)} station guidance feature rows for {station_id}"
+    if failures:
+        detail += f"; skipped {len(failures)} missing cycle(s)"
+    return DatasetResult("noaa-lamp", written, detail)
+
+
+def backfill_gfs_mos(
+    store: DatasetStore,
+    *,
+    start: date,
+    end: date,
+    station_id: str = "KSFO",
+    timeout: int = 30,
+) -> DatasetResult:
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for cycle_date in _date_range(start, end):
+        for cycle_hour in NOAA_GUIDANCE_CYCLES_6H:
+            url = _gfs_mos_text_url(cycle_date, cycle_hour)
+            try:
+                text = _http_text(url, timeout=timeout)
+            except HTTPError as exc:
+                if exc.code == 404:
+                    failures.append(f"{cycle_date.isoformat()}T{cycle_hour:02d}:00Z missing")
+                    continue
+                raise
+            rows.extend(
+                parse_noaa_station_guidance_text(
+                    text,
+                    source="gfs-mos",
+                    model="gfs-mos",
+                    source_url=url,
+                    station_id=station_id,
+                )
+            )
+    rows = _dedupe_feature_rows(rows)
+    written = store.upsert_forecast_features(rows)
+    detail = f"{len(rows)} station guidance feature rows for {station_id}"
+    if failures:
+        detail += f"; skipped {len(failures)} missing cycle(s)"
+    return DatasetResult("gfs-mos", written, detail)
+
+
+def backfill_nbm(
+    store: DatasetStore,
+    *,
+    start: date,
+    end: date,
+    timeout: int = 30,
+) -> DatasetResult:
+    return backfill_open_meteo_previous_runs(
+        store,
+        start=start,
+        end=end,
+        model="ncep_nbm_conus",
+        previous_days=0,
+        timeout=timeout,
+    )
+
+
+def backfill_hrrr(
+    store: DatasetStore,
+    *,
+    start: date,
+    end: date,
+    timeout: int = 30,
+) -> DatasetResult:
+    return backfill_open_meteo_previous_runs(
+        store,
+        start=start,
+        end=end,
+        model="gfs_hrrr",
+        previous_days=0,
+        timeout=timeout,
+    )
+
+
+def parse_noaa_station_guidance_text(
+    text: str,
+    *,
+    source: str,
+    model: str,
+    source_url: str | None = None,
+    station_id: str = "KSFO",
+) -> list[dict[str, Any]]:
+    """Parse NOAA station guidance text into hourly temperature and daily highs."""
+
+    block = _station_guidance_block(text, station_id)
+    if not block:
+        return []
+    issued_at = _guidance_issue_time(block[0])
+    if issued_at is None:
+        return []
+    forecast_hours: list[int] = []
+    temperatures: list[float | None] = []
+    for line in block[1:]:
+        tokens = line.strip().split()
+        if not tokens:
+            continue
+        label = tokens[0].upper()
+        if label == "HR":
+            forecast_hours = [
+                int(token)
+                for token in tokens[1:]
+                if re.fullmatch(r"-?\d+", token)
+            ]
+        elif label == "TMP":
+            temperatures = [_guidance_temp_value(token) for token in tokens[1:]]
+    if not forecast_hours or not temperatures:
+        return []
+
+    hourly_rows: list[dict[str, Any]] = []
+    for lead_hour, temp_f in zip(forecast_hours, temperatures):
+        if temp_f is None:
+            continue
+        valid_at = issued_at + timedelta(hours=lead_hour)
+        target = valid_at.astimezone(PACIFIC_STANDARD_TZ).date()
+        hourly_rows.append(
+            {
+                "source": source,
+                "model": model,
+                "issued_at": issued_at.isoformat(),
+                "target_date": target.isoformat(),
+                "valid_time": valid_at.isoformat(),
+                "lead_hours": float(lead_hour),
+                "latitude": None,
+                "longitude": None,
+                "variable": "temperature_2m",
+                "value": temp_f,
+                "units": "degF",
+                "source_url": source_url,
+                "raw": {
+                    "station_id": station_id,
+                    "forecast_hour": lead_hour,
+                    "source_product": "station_guidance_text",
+                },
+            }
+        )
+
+    daily_rows = _daily_high_rows_from_hourly(hourly_rows, source_url=source_url)
+    return [*hourly_rows, *daily_rows]
+
+
+def _station_guidance_block(text: str, station_id: str) -> list[str]:
+    station = station_id.upper()
+    block: list[str] = []
+    collecting = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.match(r"^K[A-Z0-9]{3}\b", stripped) and "GUIDANCE" in stripped.upper():
+            if stripped.upper().startswith(station):
+                block = [stripped]
+                collecting = True
+                continue
+            if collecting:
+                break
+        elif collecting:
+            block.append(stripped)
+    return block
+
+
+def _guidance_issue_time(header: str) -> datetime | None:
+    match = re.search(
+        r"(\d{1,2})/(\d{1,2})/(\d{2,4})\s+(\d{4})\s+UTC",
+        header,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    month, day, year, hhmm = match.groups()
+    year_num = int(year)
+    if year_num < 100:
+        year_num += 2000
+    return datetime(
+        year_num,
+        int(month),
+        int(day),
+        int(hhmm[:2]),
+        int(hhmm[2:]),
+        tzinfo=UTC,
+    )
+
+
+def _guidance_temp_value(token: str) -> float | None:
+    value = token.strip()
+    if value in {"", "M", "MM", "NA", "--"}:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _daily_high_rows_from_hourly(
+    hourly_rows: list[dict[str, Any]],
+    *,
+    source_url: str | None,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in hourly_rows:
+        grouped.setdefault(str(row["target_date"]), []).append(row)
+    daily: list[dict[str, Any]] = []
+    for target, rows in sorted(grouped.items()):
+        values = [float(row["value"]) for row in rows if _as_float(row.get("value"), None) is not None]
+        if not values:
+            continue
+        first = rows[0]
+        daily.append(
+            {
+                "source": first["source"],
+                "model": first["model"],
+                "issued_at": first["issued_at"],
+                "target_date": target,
+                "valid_time": target,
+                "lead_hours": min(float(row["lead_hours"]) for row in rows),
+                "latitude": None,
+                "longitude": None,
+                "variable": "temperature_2m_max",
+                "value": max(values),
+                "units": "degF",
+                "source_url": source_url,
+                "raw": {
+                    "station_id": (first.get("raw") or {}).get("station_id"),
+                    "aggregation": "local_date_max",
+                    "n": len(values),
+                    "source_product": "station_guidance_text",
+                },
+            }
+        )
+    return daily
+
+
+def _date_range(start: date, end: date) -> list[date]:
+    days = []
+    current = start
+    while current <= end:
+        days.append(current)
+        current += timedelta(days=1)
+    return days
+
+
+def _lamp_text_url(cycle_date: date, cycle_hour: int) -> str:
+    ymd = cycle_date.strftime("%Y%m%d")
+    return f"{NOAA_NOMADS_BASE_URL}/lamp/prod/lmp.{ymd}/lmp_lavtxt.t{cycle_hour:02d}30z"
+
+
+def _gfs_mos_text_url(cycle_date: date, cycle_hour: int) -> str:
+    ymd = cycle_date.strftime("%Y%m%d")
+    return f"{NOAA_NOMADS_BASE_URL}/gfs_mos/prod/gfs_mos.{ymd}/mdl_gfsmav.t{cycle_hour:02d}z"
+
+
+def _dedupe_feature_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[object, ...], dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            row["source"],
+            row["model"],
+            row["issued_at"],
+            row["target_date"],
+            row["valid_time"],
+            row["variable"],
+        )
+        deduped[key] = row
+    return list(deduped.values())
 
 
 def backfill_kalshi_history(

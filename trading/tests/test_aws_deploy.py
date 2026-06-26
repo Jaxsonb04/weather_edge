@@ -136,8 +136,8 @@ def test_dataset_backfill_timer_is_lightsail_safe_and_installed():
     assert "OnCalendar=*-*-* 02:25:00" in timer
     assert "Unit=sfo-dataset-backfill.service" in timer
 
-    assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,kalshi-history}"' in runner
-    default_sources = "SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,kalshi-history"
+    assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"' in runner
+    default_sources = "SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history"
     assert default_sources in example_env
     assert "dataset-backfill" in runner
     assert "--source noaa-isd" not in runner
