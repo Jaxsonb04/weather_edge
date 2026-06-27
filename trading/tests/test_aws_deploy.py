@@ -22,10 +22,17 @@ def test_systemd_units_use_rendered_weatheredge_env_file():
         assert "/etc/sfo-weather.env" not in text
 
 
+def test_installer_forecaster_venv_installs_runtime_dependencies():
+    installer = _read(AWS_DIR / "install_systemd.sh")
+
+    assert '"$FORECASTER_DIR/.venv/bin/python" -m pip install certifi numpy pandas' in installer
+
+
 def test_github_verify_workflow_installs_test_import_dependencies():
     workflow = _read(ROOT / ".github" / "workflows" / "verify.yml")
 
-    assert "pytest" in workflow
+    assert "python -m pip install -e '.[dev]'" in workflow
+    assert "semgrep" in workflow
 
 
 def test_forecaster_refresh_generates_signal_before_dashboard_publish():
@@ -166,7 +173,8 @@ def test_pages_publish_includes_generated_detail_page():
     assert "strategy_research.protected.json" in publisher
     assert "SFO_STRATEGY_LAB_PASSWORD" in publisher
     assert "SFO_STRATEGY_LAB_PUBLIC_MODE" in publisher
-    assert "SFO_STRATEGY_LAB_PUBLIC_MODE=1" in example_env
+    assert "SFO_STRATEGY_LAB_PUBLIC_MODE=0" in example_env
+    assert "Strategy Lab protected mode is enabled" in publisher
     assert "SFO_PAGES_GIT_AUTHOR_NAME=JaxsonB04" in example_env
     assert "SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com" in example_env
     assert '${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}' in publisher

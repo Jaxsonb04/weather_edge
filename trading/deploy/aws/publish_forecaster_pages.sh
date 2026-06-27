@@ -10,7 +10,7 @@ FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
 REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
 PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
-PUBLIC_MODE_RAW="${SFO_STRATEGY_LAB_PUBLIC_MODE:-1}"
+PUBLIC_MODE_RAW="${SFO_STRATEGY_LAB_PUBLIC_MODE:-0}"
 PUBLIC_MODE="$(printf '%s' "$PUBLIC_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
 
 ARTIFACTS=(
@@ -28,7 +28,8 @@ if [[ "$PUBLIC_MODE" != "0" && "$PUBLIC_MODE" != "false" && "$PUBLIC_MODE" != "n
 elif [[ -n "${SFO_STRATEGY_LAB_PASSWORD:-}" ]]; then
   ARTIFACTS+=(strategy_research.protected.json)
 else
-  ARTIFACTS+=(strategy_research.json)
+  echo "Strategy Lab protected mode is enabled but SFO_STRATEGY_LAB_PASSWORD is empty" >&2
+  exit 1
 fi
 
 if [[ ! -d "$FORECASTER_DIR" ]]; then

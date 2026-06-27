@@ -19,6 +19,17 @@ DEFAULT_HOLDOUT_FRACTION = 0.25
 DEFAULT_MIN_AFTER_COST_TRADES = 30
 DEFAULT_MAX_STACK_FEATURES = 8
 DEFAULT_STACK_RIDGE_ALPHA = 10.0
+EXPECTED_DATASET_SOURCES = (
+    "iem-asos",
+    "open-meteo-previous-runs",
+    "open-meteo-historical-forecast",
+    "lamp",
+    "gfs-mos",
+    "nbm",
+    "hrrr",
+    "kalshi-history",
+)
+DATASET_SOURCE_STALE_HOURS = 30.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,7 @@ def build_dataset_research(
                 "action_items": ["Restore or regenerate the forecaster outcome artifact before dataset scoring."],
             },
             "dataset_coverage": _dataset_coverage(db_path),
+            "source_health": _dataset_source_health(db_path),
             "accuracy_gate": {"available": False, "candidates": []},
             "dataset_stack": {"available": False, "decision": "collect_only"},
             "probabilistic_benchmarks": _probabilistic_benchmarks([]),
@@ -135,6 +147,7 @@ def build_dataset_research(
             "settlement": "rounded SFO high temperature",
         },
         "dataset_coverage": _dataset_coverage(db_path),
+        "source_health": _dataset_source_health(db_path),
         "accuracy_gate": {
             "available": True,
             "minimum_matched_rows": min_matched_rows,
@@ -670,6 +683,13 @@ def _dataset_coverage(db_path: Path) -> dict[str, Any]:
     return {
         "available": True,
         "tables": tables,
+        "market_history": {
+            "markets": tables["dataset_kalshi_markets"],
+            "candles": tables["dataset_kalshi_candles"],
+            "trades": tables["dataset_kalshi_trades"],
+            "minimum_after_cost_trades": DEFAULT_MIN_AFTER_COST_TRADES,
+            "trade_rows_ready": tables["dataset_kalshi_trades"] >= DEFAULT_MIN_AFTER_COST_TRADES,
+        },
         "forecast_feature_sources": [
             {
                 "source": row[0],
@@ -682,6 +702,78 @@ def _dataset_coverage(db_path: Path) -> dict[str, Any]:
             }
             for row in source_rows
         ],
+    }
+
+
+def _dataset_source_health(db_path: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    else:
+        current = current.astimezone(UTC)
+    empty = {
+        "available": False,
+        "expected_sources": list(EXPECTED_DATASET_SOURCES),
+        "stale_after_hours": DATASET_SOURCE_STALE_HOURS,
+        "latest_runs": [],
+        "warnings": [],
+    }
+    if not Path(db_path).exists():
+        return {**empty, "warnings": [_dataset_warning("dataset-db-missing", "Dataset DB missing")]}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if not _table_exists(conn, "dataset_runs"):
+                return {
+                    **empty,
+                    "warnings": [_dataset_warning("dataset-runs-missing", "dataset_runs table missing")],
+                }
+            rows = conn.execute(
+                """
+                SELECT r.source, r.status, r.rows_written, r.started_at, r.completed_at, r.message
+                FROM dataset_runs r
+                JOIN (
+                    SELECT source, MAX(id) AS max_id
+                    FROM dataset_runs
+                    GROUP BY source
+                ) latest ON latest.source = r.source AND latest.max_id = r.id
+                ORDER BY r.source
+                """
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return {**empty, "warnings": [_dataset_warning("dataset-runs-unreadable", f"{type(exc).__name__}: {exc}")]}
+
+    latest: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, str]] = []
+    for row in rows:
+        completed = _parse_timestamp(row["completed_at"]) or _parse_timestamp(row["started_at"])
+        age_hours = _age_hours(current, completed)
+        source = str(row["source"])
+        status = str(row["status"])
+        latest[source] = {
+            "source": source,
+            "status": status,
+            "rows_written": int(row["rows_written"] or 0),
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "age_hours": _round(age_hours),
+            "message": row["message"],
+        }
+        if status != "success":
+            warnings.append(_dataset_warning(f"{source}-latest-{status}", f"{source} latest run status is {status}"))
+        elif age_hours is not None and age_hours > DATASET_SOURCE_STALE_HOURS:
+            warnings.append(_dataset_warning(f"{source}-stale", f"{source} latest run is {age_hours:.1f} hours old"))
+
+    for source in EXPECTED_DATASET_SOURCES:
+        if source not in latest:
+            warnings.append(_dataset_warning(f"{source}-missing", f"{source} has no recorded dataset run"))
+
+    return {
+        "available": True,
+        "expected_sources": list(EXPECTED_DATASET_SOURCES),
+        "stale_after_hours": DATASET_SOURCE_STALE_HOURS,
+        "latest_runs": [latest[source] for source in sorted(latest)],
+        "warnings": warnings,
     }
 
 
@@ -708,6 +800,28 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _age_hours(now: datetime, timestamp: datetime | None) -> float | None:
+    if timestamp is None:
+        return None
+    return max(0.0, (now - timestamp).total_seconds() / 3600.0)
+
+
+def _dataset_warning(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
 
 
 def _maybe_float(value: Any) -> float | None:

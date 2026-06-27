@@ -20,7 +20,7 @@ It runs:
   the current Kalshi order books and makes paper-trade entries on fresh market
   data (it is not a dashboard rebuild), so a newly-listed bracket is acted on
   within ~5 minutes.
-- Paper exit monitor: every 5 minutes from 07:00 through 17:55 Pacific time.
+- Paper exit monitor: every 2 minutes around the clock.
 
 The services are paper-only. They do not contain a live-order path.
 
@@ -87,7 +87,7 @@ SFO_PAGES_BRANCH=gh-pages
 SFO_PAGES_GIT_AUTHOR_NAME=JaxsonB04
 SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com
 SFO_DATASET_DB=/opt/weatheredge/trading/data/paper_trading.db
-SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,kalshi-history
+SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history
 SFO_DATASET_KALSHI_LOOKBACK_DAYS=90
 SFO_DATASET_KALSHI_CANDLES=0
 SFO_DATASET_KALSHI_TRADES=0
@@ -95,16 +95,16 @@ SFO_TRADING_SIGNAL_TARGET_DATE=both
 SFO_TRADING_SIGNAL_SIDE=both
 SFO_TRADING_SIGNAL_CALIBRATION_SOURCE=lstm
 SFO_STRATEGY_RESEARCH_CALIBRATION_MIN_TRAIN=180
-# Temporary public Strategy Lab mode. Set to 0 and set the password below to
-# restore the protected browser-unlock flow.
-SFO_STRATEGY_LAB_PUBLIC_MODE=1
-# SFO_STRATEGY_LAB_PASSWORD=replace_with_private_strategy_lab_password
+# Protected Strategy Lab mode. Set to 1 only for a deliberate temporary
+# sharing window.
+SFO_STRATEGY_LAB_PUBLIC_MODE=0
+SFO_STRATEGY_LAB_PASSWORD=replace_with_private_strategy_lab_password
 SFO_STRATEGY_LAB_PBKDF2_ITERATIONS=210000
 # No PAPER_DAILY_BUDGET: paper exposure is risk-gated, not budget-capped.
 PAPER_BANKROLL=1000
 PAPER_RISK_PROFILE=live
 PAPER_RISK_PROFILES=live,research
-PAPER_ENTRY_MODE=limit
+PAPER_ENTRY_MODE=market
 PAPER_TAKE_PROFIT_PCT=40
 PAPER_STOP_LOSS_PCT=35
 PAPER_YES_TAKE_PROFIT_PCT=50
@@ -121,15 +121,13 @@ Each forecast refresh builds the public `trading_signal.json` and Strategy Lab
 research data before dashboard HTML, so GitHub Pages is published from the same
 AWS-side forecast DB, paper DB, and paper-research signal. The
 `sfo-strategy-lab-refresh.timer` also runs every five minutes to rebuild
-`trading_signal.json`, `strategy_research.json`, `strategy-lab.html`, and the
-Pages branch without calling `google_weather_cache.py --refresh`.
+`trading_signal.json`, `strategy_research.protected.json`, `strategy-lab.html`,
+and the Pages branch without calling `google_weather_cache.py --refresh`.
 
-Strategy Lab is temporarily published as plaintext
-`strategy_research.json` while `SFO_STRATEGY_LAB_PUBLIC_MODE=1`. To restore the
-password gate, set `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and set
-`SFO_STRATEGY_LAB_PASSWORD`; the publisher then ships
-`strategy_research.protected.json` and omits plaintext Strategy Lab research
-data.
+Strategy Lab is published as encrypted `strategy_research.protected.json` while
+`SFO_STRATEGY_LAB_PUBLIC_MODE=0`. If `SFO_STRATEGY_LAB_PUBLIC_MODE=1` is set for
+temporary sharing, the publisher ships plaintext `strategy_research.json`;
+otherwise protected mode fails closed when `SFO_STRATEGY_LAB_PASSWORD` is empty.
 
 AWS paper scanning is pinned to LSTM calibration during this deployment stage.
 If `PAPER_RISK_PROFILES` is a comma-list, the scan service runs each profile
@@ -147,7 +145,8 @@ mid-run.
 
 The compact dataset timer writes point-in-time feature tables into the paper DB
 by default. It intentionally starts with Iowa Mesonet ASOS, Open-Meteo forecast
-archives, and Kalshi market history. Historical Kalshi candles and trades are
+archives, NOAA LAMP/GFS MOS/NBM/HRRR guidance, and Kalshi market history.
+Historical Kalshi candles and trades are
 opt-in because a broad 90-day pull can hit API rate limits on the small
 Lightsail box; run those locally or as a narrow one-off backfill when needed.
 NOAA ISD stays out of the default scheduled source list until NCEI access is

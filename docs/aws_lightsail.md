@@ -47,10 +47,10 @@ The systemd installer remains in:
   positions)
 - `sfo-kalshi-paper-settle.timer`
 
-Strategy Lab is temporarily public when `SFO_STRATEGY_LAB_PUBLIC_MODE=1`, so
-AWS publishes plaintext `strategy_research.json`. To restore the password gate,
-set `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and set `SFO_STRATEGY_LAB_PASSWORD`; the
-publisher will ship `strategy_research.protected.json` instead.
+Strategy Lab is protected by default when `SFO_STRATEGY_LAB_PUBLIC_MODE=0`, so
+AWS publishes encrypted `strategy_research.protected.json`. Set
+`SFO_STRATEGY_LAB_PUBLIC_MODE=1` only for a deliberate temporary sharing window;
+protected mode fails closed if `SFO_STRATEGY_LAB_PASSWORD` is empty.
 
 ## Safety
 
@@ -59,3 +59,66 @@ publisher will ship `strategy_research.protected.json` instead.
   module with tests, kill switches, and separate credentials.
 - Do not harden SSH or change firewall/server settings from this project unless
   doing a dedicated server-hardening pass.
+
+## Staged Host Hardening
+
+Do these only after SSH is reachable and a recovery path is confirmed. Keep a
+second SSH session or the Lightsail browser SSH console open before changing the
+host firewall.
+
+Local checks:
+
+```bash
+source .local/lightsail.env
+nc -vz -w 5 "$LIGHTSAIL_IP" 22
+ssh -i "$LIGHTSAIL_KEY" -o BatchMode=yes -o ConnectTimeout=20 ubuntu@"$LIGHTSAIL_IP" 'date -u && uptime'
+```
+
+Before changing the host:
+
+- Confirm the Lightsail firewall allows only intended inbound ports.
+- Create or verify a recent Lightsail snapshot.
+- Confirm `/etc/weatheredge.env` has `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and a
+  non-empty `SFO_STRATEGY_LAB_PASSWORD`.
+- Remove any stray `nSFO_STRATEGY_LAB_PASSWORD` key from `/etc/weatheredge.env`.
+
+Server checks:
+
+```bash
+sudo systemctl --failed
+systemctl list-timers 'sfo-*' --all
+free -h
+df -h /
+sudo ufw status verbose
+ss -tulpn
+```
+
+Enable a modest swap file if memory headroom remains tight:
+
+```bash
+sudo fallocate -l 1G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+printf '/swapfile none swap sw 0 0\n' | sudo tee -a /etc/fstab
+free -h
+```
+
+Enable UFW only after the second-session/recovery check:
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw --force enable
+sudo ufw status verbose
+```
+
+Then rebuild and publish once to verify protected Strategy Lab output:
+
+```bash
+cd /opt/weatheredge/forecaster
+SFO_STRATEGY_LAB_PUBLIC_MODE=0 .venv/bin/python build_dashboard.py
+curl -I https://jaxsonb04.github.io/weather_edge/strategy_research.json
+curl -I https://jaxsonb04.github.io/weather_edge/strategy_research.protected.json
+```

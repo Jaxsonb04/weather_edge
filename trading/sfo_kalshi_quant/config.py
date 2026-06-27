@@ -154,13 +154,10 @@ class StrategyConfig:
     # weather distribution is built directly from the EMOS Gaussian (Phase 1
     # proved it beats climatology and the heuristic blend on CRPS) instead of the
     # residual-calibrated point + bolted-on sigma. Off for live pending a
-    # walk-forward rescore; on for the research collector. Identity (bit-identical)
-    # when disabled OR when no EMOS forecast is available for the target day.
-    # SCOPE: currently only run_walk_forward_calibration_backtest threads an EMOS
-    # (mu, sigma) (offline research validation: +21.9% Brier). The live/CLI/report
-    # trade path does not yet pass emos_mu_sigma, so this flag is inert end-to-end
-    # except in the backtest. Live wiring (cli/report calibrator calls + centering
-    # the intraday model on mu_emos instead of the blend point) is a Phase 3 step.
+    # walk-forward rescore; on for the research collector. Identity when disabled
+    # OR when no EMOS forecast is available for the target day, in which case the
+    # CLI/report path degrades to residual calibration and Strategy Lab health
+    # should show the missing live EMOS target.
     emos_distribution_enabled: bool = False
     # Smoothing bandwidth (F) applied to the empirical residual histogram so a
     # ~35-sample window stops emitting spurious 0.0 tail bins. 0 disables it

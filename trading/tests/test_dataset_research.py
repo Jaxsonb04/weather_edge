@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import redirect_stdout
 from datetime import date, timedelta
 from io import StringIO
@@ -88,6 +89,42 @@ def test_dataset_research_keeps_small_samples_collect_only():
     candidate = payload["accuracy_gate"]["candidates"][0]
     assert candidate["decision"] == "collect_only"
     assert "needs at least 30" in candidate["reason"]
+
+
+def test_dataset_research_surfaces_source_health_and_market_history():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir()
+        db_path = Path(tmp) / "paper.db"
+        _write_ab_test_fixture(root / "ab_test_results.json", row_count=12)
+        store = DatasetStore(db_path)
+        run_id = store.start_run("iem-asos", {"source": "iem-asos"})
+        store.finish_run(run_id, status="success", rows_written=3, message="ok")
+        failed_id = store.start_run("kalshi-history", {"source": "kalshi-history"})
+        store.finish_run(failed_id, status="failed", rows_written=0, message="HTTP 429")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO dataset_kalshi_trades (
+                    trade_id, ticker, created_time, count, yes_price, no_price,
+                    is_block_trade, raw_json, fetched_at
+                )
+                VALUES ('t1', 'KXHIGHTSFO-TEST', '2026-01-01T00:00:00Z', 1,
+                        0.2, 0.8, 0, '{}', '2026-01-01T00:00:00Z')
+                """
+            )
+
+        payload = build_dataset_research(
+            db_path=db_path,
+            forecaster_root=root,
+            min_matched_rows=30,
+        )
+
+    warnings = {row["code"]: row["message"] for row in payload["source_health"]["warnings"]}
+    assert payload["dataset_coverage"]["market_history"]["trades"] == 1
+    assert payload["dataset_coverage"]["market_history"]["trade_rows_ready"] is False
+    assert "kalshi-history-latest-failed" in warnings
+    assert "lamp-missing" in warnings
 
 
 def test_dataset_research_cli_writes_collect_only_report():

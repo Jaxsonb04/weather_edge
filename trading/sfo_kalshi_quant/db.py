@@ -1545,6 +1545,8 @@ class PaperStore:
                 "realized_pnl": 0.0,
                 "roi": 0.0,
                 "hit_rate": 0.0,
+                "wins": 0.0,
+                "losses": 0.0,
                 "avg_edge": 0.0,
                 "open_orders": float(len(open_rows)),
                 "open_capital_at_risk": open_capital,
@@ -1558,6 +1560,7 @@ class PaperStore:
         # the way the old realized_pnl > 0 fallback did.
         decided_rows = [row for row in realized_rows if _row_position_decided(row)]
         hits = sum(1 for row in decided_rows if _row_position_won(row))
+        losses = len(decided_rows) - hits
         return {
             "orders": float(len(realized_rows)),
             "contracts": contracts,
@@ -1567,6 +1570,8 @@ class PaperStore:
             # decided_rows excludes undecided break-evens; a 0-for-N losing
             # streak still reports 0.0 (hits=0 over a non-empty denominator).
             "hit_rate": hits / len(decided_rows) if decided_rows else 0.0,
+            "wins": float(hits),
+            "losses": float(losses),
             "avg_edge": sum(float(row["edge"]) for row in realized_rows) / len(realized_rows),
             "open_orders": float(len(open_rows)),
             "open_capital_at_risk": open_capital,

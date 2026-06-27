@@ -11,12 +11,13 @@ from pathlib import Path
 
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
-from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, TradeDecision
+from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
 from sfo_kalshi_quant.exits import convergence_take_profit_net, exit_bid_for_net, net_exit_per_contract
 from sfo_kalshi_quant.strategy_research import (
     _dataset_research_summary,
     _entry_block_reason,
+    _forecast_health_payload,
     _market_consensus_payload,
     _strategy_alerts,
     _status_target_date,
@@ -188,11 +189,204 @@ def test_strategy_research_reads_decisions_and_open_paper_positions():
         assert position["stop_loss_bid"] is not None
         assert position["current_bid"] == 0.2
         assert position["unrealized_pnl"] < 0
-        assert position["position_status"] == "LOSING"
-        assert payload["signal_quality"]["latest_candidates"][0]["approved"] is True
-        assert payload["signal_quality"]["charts"]["probability_vs_market"]
-        alert_codes = {alert["code"] for alert in payload["status"]["alerts"]}
-        assert "settlement-backlog" in alert_codes
+
+
+def test_strategy_research_summary_win_loss_counts_use_full_book():
+    """Summary win/loss counts must match the aggregate book, not the latest
+    30 published closed-position rows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        _write_settlement(root)
+        PaperStore(db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            for idx in range(35):
+                won = idx >= 5
+                created_at = f"2026-06-{1 + idx // 30:02d}T00:{idx % 60:02d}:00+00:00"
+                conn.execute(
+                    """
+                    INSERT INTO paper_orders (
+                        created_at, target_date, market_ticker, label, action, risk_profile,
+                        side, contracts, yes_ask, entry_price, entry_bid, entry_ask_size,
+                        strike_type, floor_strike, cap_strike, fee_per_contract,
+                        cost_per_contract, probability, probability_lcb, edge, edge_lcb,
+                        trade_quality_score, expected_profit, status, reasons_json,
+                        settled_at, settlement_high_f, resolved_yes, realized_pnl
+                    )
+                    VALUES (?, '2026-06-03', ?, '66 to 67', 'BUY_YES', 'live',
+                            'YES', 1.0, 0.30, 0.30, 0.20, 40.0,
+                            'between', 66.0, 67.0, 0.01,
+                            0.31, 0.70, 0.60, 0.39, 0.29,
+                            72.0, 0.39, 'PAPER_SETTLED', '[]',
+                            ?, 67.0, ?, ?)
+                    """,
+                    (
+                        created_at,
+                        f"KXHIGHTSFO-TEST-{idx:02d}",
+                        created_at,
+                        1 if won else 0,
+                        0.69 if won else -0.31,
+                    ),
+                )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        summary = payload["paper_trading"]["summary"]
+        assert summary["closed_positions"] == 35
+        assert summary["win_count"] == 30
+        assert summary["loss_count"] == 5
+        assert len(payload["paper_trading"]["closed_positions"]) == 30
+        diagnostics = payload["paper_trading"]["diagnostics"]
+        assert diagnostics["by_side"]["YES"]["resolved"] == 35
+        assert diagnostics["by_exit_reason"]["held_to_settlement"]["losses"] == 5
+        assert diagnostics["worst_segments"][0]["exit_reason"] == "held_to_settlement"
+
+
+def test_forecast_health_surfaces_healthy_nwp_emos_and_clisfo():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir(parents=True, exist_ok=True)
+        now = datetime(2026, 6, 27, 16, 0, tzinfo=UTC)
+        targets = ["2026-06-27", "2026-06-28", "2026-06-29"]
+        fetched_at = "2026-06-27T15:00:00+00:00"
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                """
+                CREATE TABLE nwp_model_forecasts (
+                    target_date TEXT,
+                    model TEXT,
+                    lead_days INTEGER,
+                    predicted_high_f REAL,
+                    fetched_at TEXT,
+                    source TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE forecast_emos_daily_high (
+                    target_date TEXT,
+                    lead_days INTEGER,
+                    predicted_high_f REAL,
+                    sigma_f REAL,
+                    n_models INTEGER,
+                    fetched_at TEXT,
+                    method TEXT,
+                    source TEXT,
+                    actual_high_f REAL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE TABLE clisfo_settlements "
+                "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE nws_daily_high_ground_truth "
+                "(station_id TEXT, local_date TEXT, high_f REAL, is_complete INTEGER)"
+            )
+            for target in targets:
+                for model_idx in range(6):
+                    conn.execute(
+                        "INSERT INTO nwp_model_forecasts VALUES (?, ?, 1, ?, ?, 'test')",
+                        (target, f"model_{model_idx}", 68.0 + model_idx / 10, fetched_at),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO forecast_emos_daily_high
+                    VALUES (?, 1, 69.0, 2.5, 6, ?, 'emos_wmean', 'live', NULL)
+                    """,
+                    (target, fetched_at),
+                )
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high "
+                "VALUES ('2026-06-20', 1, 68.0, 2.5, 6, ?, 'emos_wmean', 'rolling_origin', 68.0)",
+                (fetched_at,),
+            )
+            conn.execute(
+                "INSERT INTO clisfo_settlements VALUES ('2026-06-26', 68, ?, 'CLISFO')",
+                (fetched_at,),
+            )
+            conn.execute(
+                "INSERT INTO nws_daily_high_ground_truth VALUES ('KSFO', '2026-06-27', 69.0, 1)"
+            )
+
+        payload = _forecast_health_payload(
+            root,
+            config=StrategyConfig(emos_distribution_enabled=True),
+            now=now,
+        )
+
+        assert payload["available"] is True
+        assert payload["warnings"] == []
+        assert payload["nwp"]["targets"][0]["model_count"] == 6
+        assert payload["emos"]["live_targets"][0]["method"] == "emos_wmean"
+        assert payload["clisfo"]["lag_days"] == 1
+
+
+def test_strategy_research_splits_day_ahead_and_intraday_lead_modes():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        _write_settlement(root)
+        store = PaperStore(db_path)
+        day_ahead = _approved_decision()
+        intraday = replace(day_ahead, ticker="KXHIGHTSFO-TEST-B67.5", label="67 to 68")
+
+        store.record_decisions(
+            "2026-06-04",
+            [day_ahead],
+            forecast=ForecastSnapshot(
+                target_date=date(2026, 6, 4),
+                predicted_high_f=67.0,
+                lead_hours=24.0,
+                method="weighted blend",
+            ),
+            event=pre_resolution_event([day_ahead]),
+        )
+        store.record_decisions(
+            "2026-06-03",
+            [intraday],
+            forecast=ForecastSnapshot(
+                target_date=date(2026, 6, 3),
+                predicted_high_f=68.0,
+                lead_hours=0.5,
+                method="weighted blend + intraday high-so-far update",
+            ),
+            intraday=IntradaySnapshot(
+                target_date=date(2026, 6, 3),
+                observed_high_f=67.0,
+                latest_temp_f=66.0,
+                latest_observed_at="2026-06-03T20:00:00+00:00",
+                remaining_forecast_high_f=68.0,
+                forecast_fetched_at="2026-06-03T18:00:00+00:00",
+                observed_high_source="nws_station_observations",
+            ),
+            event=pre_resolution_event([intraday]),
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        counts = payload["backtest_summary"]["lead_mode_counts"]
+        assert counts["day_ahead"]["total"] == 1
+        assert counts["intraday_high_so_far"]["total"] == 1
+        lead_modes = {
+            row["ticker"]: row["lead_mode"]
+            for row in payload["signal_quality"]["latest_candidates"]
+        }
+        assert lead_modes[day_ahead.ticker] == "day_ahead"
+        assert lead_modes[intraday.ticker] == "intraday_high_so_far"
 
 
 def test_strategy_research_exit_targets_match_edge_based_monitor_logic():

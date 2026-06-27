@@ -34,7 +34,7 @@ if [[ ! -d "$FORECASTER_DIR/.venv" ]]; then
   python3 -m venv "$FORECASTER_DIR/.venv"
 fi
 "$FORECASTER_DIR/.venv/bin/python" -m pip install --upgrade pip
-"$FORECASTER_DIR/.venv/bin/python" -m pip install pandas
+"$FORECASTER_DIR/.venv/bin/python" -m pip install certifi numpy pandas
 
 if [[ ! -f "$ENV_FILE" ]]; then
   sudo install -m 600 "$SCRIPT_DIR/sfo-weather.env.example" "$ENV_FILE"

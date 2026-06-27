@@ -113,9 +113,9 @@ now automated end to end:
    and Strategy Lab research data. A separate Strategy Lab refresh timer runs
    every five minutes to rebuild trading results and republish the static site
    without calling the paid Google Weather refresh path. Strategy Lab is
-   temporarily public by default with `SFO_STRATEGY_LAB_PUBLIC_MODE=1`; restore
-   protected mode by setting it to `0` and setting
-   `SFO_STRATEGY_LAB_PASSWORD`. The same server also runs the Kalshi
+   protected by default with `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and
+   `SFO_STRATEGY_LAB_PASSWORD`; set public mode to `1` only for a deliberate
+   temporary sharing window. The same server also runs the Kalshi
    paper-trading scanner and exit monitor from the companion trading repo.
 4. **Public website**: after each successful rebuild, the Lightsail server uses
    a GitHub deploy key with write access to commit and push the refreshed static

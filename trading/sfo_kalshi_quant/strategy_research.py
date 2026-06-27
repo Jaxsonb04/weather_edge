@@ -46,6 +46,18 @@ DEFAULT_MODEL_VETO_MAX_LOSS_PCT = 60.0
 DEFAULT_MODEL_VETO_BUFFER = 0.08
 PRIMARY_PROFILE = "live"
 EXPERIMENTAL_PROFILES = {"research"}
+FORECAST_HEALTH_ROLLING_DAYS = 3
+FORECAST_HEALTH_MIN_NWP_MODELS = 6
+FORECAST_HEALTH_MAX_NWP_AGE = timedelta(hours=36)
+FORECAST_HEALTH_MAX_EMOS_AGE = timedelta(hours=6)
+FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS = 2
+FORECAST_LEAD_MODE_LABELS = {
+    "day_ahead": "Day-ahead forecast",
+    "same_day_prelock": "Same-day pre-lock forecast",
+    "intraday_high_so_far": "Intraday observed-high edge",
+    "post_resolution_excluded": "Post-resolution excluded",
+    "unknown": "Unknown lead mode",
+}
 
 
 def build_strategy_research(
@@ -94,6 +106,7 @@ def build_strategy_research(
     research_shadow = _research_shadow_payload(adapter, db_path)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
+    forecast_health = _forecast_health_payload(forecaster_root, config=cfg)
     daily_summary = _daily_summary_payload(
         db_path=db_path,
         forecaster_root=forecaster_root,
@@ -111,6 +124,7 @@ def build_strategy_research(
         backtest=backtest,
         signal_quality=signal_quality,
         paper=paper,
+        forecast_health=forecast_health,
     )
 
     return {
@@ -129,6 +143,7 @@ def build_strategy_research(
             "comparison": comparison,
         },
         "prediction_replay": prediction_replay,
+        "forecast_health": forecast_health,
         "signal_quality": signal_quality,
         "backtest_summary": backtest,
         "config_rescore": config_rescore,
@@ -1033,6 +1048,7 @@ def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
             "approved_roi": metric(summary["approved_roi"], 4),
             "approved_hit_rate": metric(summary["approved_hit_rate"], 4),
         },
+        "lead_mode_counts": _decision_lead_mode_counts(db_path),
         "quality_buckets": [_round_dict(bucket) for bucket in summary["quality_buckets"]],
     }
 
@@ -1098,6 +1114,7 @@ def _signal_quality_payload(db_path: Path, trading_signal: dict[str, Any] | None
         "stale_candidates_filtered": stale_filtered,
         "latest_target_date": latest_target,
         "latest_candidates": decisions,
+        "lead_mode_counts": _lead_mode_counts(decisions),
         "market_consensus": _market_consensus_payload(db_path),
         "charts": {
             "probability_vs_market": _probability_market_points(decisions),
@@ -1137,6 +1154,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "pending_limit_orders": [],
         "closed_positions": [],
         "recent_monitor_actions": [],
+        "diagnostics": _empty_paper_diagnostics(),
         "profiles": [],
     }
     if not db_path.exists():
@@ -1361,8 +1379,8 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         if marked_open_positions
         else None
     )
-    win_count = sum(1 for row in closed_rows if _to_float(row["realized_pnl"]) > 0)
-    loss_count = sum(1 for row in closed_rows if _to_float(row["realized_pnl"]) < 0)
+    win_count = int(_to_float(summary.get("wins"), default=0.0))
+    loss_count = int(_to_float(summary.get("losses"), default=0.0))
     pending_limit_count = int(pending_limit_summary["pending_orders"] or 0) if pending_limit_summary else 0
     pending_limit_risk = _to_float(pending_limit_summary["pending_risk"]) if pending_limit_summary else 0.0
     return {
@@ -1403,11 +1421,126 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "closed_positions": closed_positions,
         "recent_monitor_actions": action_rows,
         "duplicate_open_groups": duplicate_groups,
+        "diagnostics": _paper_diagnostics(db_path),
         "profiles": _profiles_with_scanners(
             [_profile_summary_row(row) for row in profile_rows],
             scanning_profiles,
         ),
     }
+
+
+def _paper_diagnostics(db_path: Path) -> dict[str, Any]:
+    if not db_path.exists() or not _db_table_exists(db_path, "paper_orders"):
+        return _empty_paper_diagnostics()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM paper_orders
+            WHERE status != 'REJECTED'
+            """
+        ).fetchall()
+
+    resolved = [
+        row
+        for row in rows
+        if row["realized_pnl"] is not None and row["status"] != "PAPER_EXPIRED"
+    ]
+    return {
+        "resolved_positions": len(resolved),
+        "by_profile": _paper_group_diagnostics(resolved, lambda row: _row_risk_profile(row) or "unknown"),
+        "by_side": _paper_group_diagnostics(resolved, _side_from_row),
+        "by_exit_reason": _paper_group_diagnostics(resolved, _paper_exit_reason),
+        "worst_segments": _worst_paper_segments(resolved),
+    }
+
+
+def _empty_paper_diagnostics() -> dict[str, Any]:
+    return {
+        "resolved_positions": 0,
+        "by_profile": {},
+        "by_side": {},
+        "by_exit_reason": {},
+        "worst_segments": [],
+    }
+
+
+def _paper_group_diagnostics(
+    rows: list[sqlite3.Row],
+    key_fn,
+) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        groups.setdefault(str(key_fn(row)), []).append(row)
+    return {key: _paper_group_summary(group) for key, group in sorted(groups.items())}
+
+
+def _paper_group_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
+    wins = sum(1 for row in rows if _paper_order_won(row))
+    losses = sum(1 for row in rows if _paper_order_decided(row) and not _paper_order_won(row))
+    pnl = sum(_to_float(row["realized_pnl"]) for row in rows)
+    capital = sum(_to_float(row["contracts"]) * _to_float(row["cost_per_contract"]) for row in rows)
+    return {
+        "resolved": len(rows),
+        "wins": wins,
+        "losses": losses,
+        "realized_pnl": _round(pnl, 2),
+        "capital_resolved": _round(capital, 2),
+        "roi": _round(pnl / capital, 4) if capital > 0 else None,
+        "hit_rate": _round(wins / (wins + losses), 4) if (wins + losses) else None,
+    }
+
+
+def _worst_paper_segments(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        key = (_row_risk_profile(row) or "unknown", _side_from_row(row), _paper_exit_reason(row))
+        grouped.setdefault(key, []).append(row)
+    segments = []
+    for (profile, side, exit_reason), group in grouped.items():
+        summary = _paper_group_summary(group)
+        segments.append(
+            {
+                "risk_profile": profile,
+                "side": side,
+                "exit_reason": exit_reason,
+                **summary,
+            }
+        )
+    segments.sort(key=lambda row: (_to_float(row.get("realized_pnl")), -int(row.get("resolved") or 0)))
+    return segments[:6]
+
+
+def _paper_exit_reason(row: sqlite3.Row) -> str:
+    if row["status"] == "PAPER_EXPIRED":
+        return "limit_expired"
+    if row["closed_at"]:
+        return "monitor_exit"
+    if row["settled_at"]:
+        return "held_to_settlement"
+    return "unresolved"
+
+
+def _paper_order_won(row: sqlite3.Row) -> bool:
+    try:
+        resolved_yes = row["resolved_yes"]
+    except (IndexError, KeyError):
+        resolved_yes = None
+    if resolved_yes is None:
+        return _to_float(row["realized_pnl"]) > 0.0
+    side = _side_from_row(row)
+    return bool(resolved_yes) if side == "YES" else not bool(resolved_yes)
+
+
+def _paper_order_decided(row: sqlite3.Row) -> bool:
+    try:
+        resolved_yes = row["resolved_yes"]
+    except (IndexError, KeyError):
+        resolved_yes = None
+    if resolved_yes is not None:
+        return True
+    return abs(_to_float(row["realized_pnl"])) > 1e-9
 
 
 def _profiles_with_scanners(
@@ -1723,6 +1856,438 @@ def _dataset_promotion_rule() -> str:
     )
 
 
+def _forecast_health_payload(
+    forecaster_root: Path,
+    *,
+    config: StrategyConfig,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current_utc = _coerce_utc(now)
+    today = settlement_today(current_utc)
+    rolling_targets = [
+        (today + timedelta(days=offset)).isoformat()
+        for offset in range(FORECAST_HEALTH_ROLLING_DAYS)
+    ]
+    db_path = Path(forecaster_root) / "weather.db"
+    warnings: list[dict[str, Any]] = []
+    payload: dict[str, Any] = {
+        "available": False,
+        "db_path_hint": str(db_path),
+        "generated_at": current_utc.isoformat(),
+        "rolling_targets": rolling_targets,
+        "nwp": {"available": False, "targets": []},
+        "emos": {
+            "available": False,
+            "profiles_using_emos": _emos_enabled_profiles(config),
+            "live_targets": [],
+        },
+        "clisfo": {"available": False},
+        "nws_ground_truth": {"available": False},
+        "warnings": warnings,
+    }
+    if not db_path.exists():
+        warnings.append(
+            _health_warning(
+                "critical",
+                "weather-db-missing",
+                "Weather DB missing",
+                f"Strategy Lab cannot inspect NWP, EMOS, or CLISFO health at {db_path}.",
+                "Verify the AWS forecaster runtime path and refresh service.",
+            )
+        )
+        return payload
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            payload["available"] = True
+            payload["nwp"] = _nwp_health(conn, rolling_targets, current_utc, warnings)
+            payload["emos"] = _emos_health(
+                conn,
+                rolling_targets,
+                current_utc,
+                warnings,
+                profiles_using_emos=_emos_enabled_profiles(config),
+            )
+            payload["clisfo"] = _clisfo_health(conn, today, warnings)
+            payload["nws_ground_truth"] = _nws_ground_truth_health(conn, today)
+    except sqlite3.Error as exc:
+        payload["available"] = False
+        warnings.append(
+            _health_warning(
+                "critical",
+                "weather-db-unreadable",
+                "Weather DB unreadable",
+                f"{type(exc).__name__}: {exc}",
+                "Inspect weather.db permissions and SQLite integrity on AWS.",
+            )
+        )
+    return payload
+
+
+def _nwp_health(
+    conn: sqlite3.Connection,
+    rolling_targets: list[str],
+    current_utc: datetime,
+    warnings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _sqlite_table_exists(conn, "nwp_model_forecasts"):
+        warnings.append(
+            _health_warning(
+                "warning",
+                "nwp-table-missing",
+                "NWP archive missing",
+                "The nwp_model_forecasts table is not present in weather.db.",
+                "Run the forecaster NWP archive refresh and check its logs.",
+            )
+        )
+        return {"available": False, "targets": [], "reason": "nwp_model_forecasts table missing"}
+
+    targets: list[dict[str, Any]] = []
+    for target in rolling_targets:
+        row = conn.execute(
+            """
+            SELECT target_date,
+                   lead_days,
+                   COUNT(DISTINCT model) AS model_count,
+                   MAX(fetched_at) AS latest_fetched_at,
+                   GROUP_CONCAT(DISTINCT source) AS sources
+            FROM nwp_model_forecasts
+            WHERE target_date = ? AND lead_days = 1
+            GROUP BY target_date, lead_days
+            """,
+            (target,),
+        ).fetchone()
+        target_health = _nwp_target_health(row, current_utc, target)
+        targets.append(target_health)
+        if target_health["model_count"] < FORECAST_HEALTH_MIN_NWP_MODELS:
+            warnings.append(
+                _health_warning(
+                    "warning",
+                    "nwp-thin-target",
+                    "Thin NWP target",
+                    (
+                        f"{target} has {target_health['model_count']} model(s), below "
+                        f"the {FORECAST_HEALTH_MIN_NWP_MODELS}-model health floor."
+                    ),
+                    "Check the NWP archive refresh log for source outages.",
+                    target_date=target,
+                )
+            )
+        if target_health.get("latest_age_hours") is not None and (
+            target_health["latest_age_hours"] > FORECAST_HEALTH_MAX_NWP_AGE.total_seconds() / 3600
+        ):
+            warnings.append(
+                _health_warning(
+                    "warning",
+                    "nwp-stale-target",
+                    "Stale NWP target",
+                    f"{target} NWP data is {target_health['latest_age_hours']:.1f} hours old.",
+                    "Check sfo-forecaster-refresh.service and the NWP archive step.",
+                    target_date=target,
+                )
+            )
+
+    recent = [
+        _round_dict(dict(row))
+        for row in conn.execute(
+            """
+            SELECT target_date,
+                   lead_days,
+                   COUNT(DISTINCT model) AS model_count,
+                   MAX(fetched_at) AS latest_fetched_at,
+                   GROUP_CONCAT(DISTINCT source) AS sources
+            FROM nwp_model_forecasts
+            GROUP BY target_date, lead_days
+            ORDER BY target_date DESC, lead_days
+            LIMIT 21
+            """
+        ).fetchall()
+    ]
+    return {
+        "available": True,
+        "min_healthy_models": FORECAST_HEALTH_MIN_NWP_MODELS,
+        "max_stale_hours": FORECAST_HEALTH_MAX_NWP_AGE.total_seconds() / 3600,
+        "targets": targets,
+        "recent_targets": recent,
+    }
+
+
+def _nwp_target_health(row: sqlite3.Row | None, current_utc: datetime, target: str) -> dict[str, Any]:
+    if row is None:
+        return {
+            "target_date": target,
+            "lead_days": 1,
+            "model_count": 0,
+            "latest_fetched_at": None,
+            "latest_age_hours": None,
+            "sources": [],
+        }
+    latest = _parse_timestamp(row["latest_fetched_at"])
+    return {
+        "target_date": str(row["target_date"]),
+        "lead_days": int(row["lead_days"]),
+        "model_count": int(row["model_count"] or 0),
+        "latest_fetched_at": row["latest_fetched_at"],
+        "latest_age_hours": _age_hours(current_utc, latest),
+        "sources": _split_csv(row["sources"]),
+    }
+
+
+def _emos_health(
+    conn: sqlite3.Connection,
+    rolling_targets: list[str],
+    current_utc: datetime,
+    warnings: list[dict[str, Any]],
+    *,
+    profiles_using_emos: list[str],
+) -> dict[str, Any]:
+    if not _sqlite_table_exists(conn, "forecast_emos_daily_high"):
+        warnings.append(
+            _health_warning(
+                "warning",
+                "emos-table-missing",
+                "EMOS table missing",
+                "The forecast_emos_daily_high table is not present in weather.db.",
+                "Run the EMOS archive and live serving step.",
+            )
+        )
+        return {
+            "available": False,
+            "profiles_using_emos": profiles_using_emos,
+            "live_targets": [],
+            "reason": "forecast_emos_daily_high table missing",
+        }
+
+    live_rows = conn.execute(
+        """
+        SELECT target_date, lead_days, predicted_high_f, sigma_f, n_models,
+               fetched_at, method, source
+        FROM forecast_emos_daily_high
+        WHERE source = 'live'
+        ORDER BY target_date DESC, fetched_at DESC
+        LIMIT 12
+        """
+    ).fetchall()
+    latest_by_target: dict[str, dict[str, Any]] = {}
+    for row in live_rows:
+        target = str(row["target_date"])
+        latest_by_target.setdefault(target, _emos_row(row, current_utc))
+
+    live_targets = [latest_by_target[target] for target in rolling_targets if target in latest_by_target]
+    for target in rolling_targets:
+        row = latest_by_target.get(target)
+        if row is None and profiles_using_emos:
+            warnings.append(
+                _health_warning(
+                    "warning",
+                    "emos-live-missing",
+                    "Live EMOS target missing",
+                    (
+                        f"No live EMOS distribution was found for {target}; EMOS-enabled "
+                        f"profiles will degrade to residual calibration for that target."
+                    ),
+                    "Run emos_forecast.py --serve-rolling and inspect its output.",
+                    target_date=target,
+                )
+            )
+            continue
+        if row and row.get("latest_age_hours") is not None and (
+            row["latest_age_hours"] > FORECAST_HEALTH_MAX_EMOS_AGE.total_seconds() / 3600
+        ):
+            warnings.append(
+                _health_warning(
+                    "warning",
+                    "emos-live-stale",
+                    "Live EMOS target stale",
+                    f"{target} live EMOS is {row['latest_age_hours']:.1f} hours old.",
+                    "Check the forecaster refresh timer and EMOS serve-rolling step.",
+                    target_date=target,
+                )
+            )
+
+    archive = conn.execute(
+        """
+        SELECT COUNT(*) AS rows,
+               MAX(target_date) AS latest_target_date,
+               MAX(fetched_at) AS latest_fetched_at
+        FROM forecast_emos_daily_high
+        WHERE source != 'live'
+        """
+    ).fetchone()
+    return {
+        "available": True,
+        "profiles_using_emos": profiles_using_emos,
+        "max_stale_hours": FORECAST_HEALTH_MAX_EMOS_AGE.total_seconds() / 3600,
+        "live_targets": live_targets,
+        "recent_live_targets": list(latest_by_target.values()),
+        "rolling_archive": {
+            "rows": int(archive["rows"] or 0),
+            "latest_target_date": archive["latest_target_date"],
+            "latest_fetched_at": archive["latest_fetched_at"],
+        },
+    }
+
+
+def _emos_row(row: sqlite3.Row, current_utc: datetime) -> dict[str, Any]:
+    fetched = _parse_timestamp(row["fetched_at"])
+    return {
+        "target_date": str(row["target_date"]),
+        "lead_days": int(row["lead_days"]),
+        "mu_f": _round(row["predicted_high_f"], 2),
+        "sigma_f": _round(row["sigma_f"], 2),
+        "n_models": int(row["n_models"] or 0),
+        "fetched_at": row["fetched_at"],
+        "latest_age_hours": _age_hours(current_utc, fetched),
+        "method": row["method"],
+        "source": row["source"],
+    }
+
+
+def _clisfo_health(
+    conn: sqlite3.Connection,
+    today: object,
+    warnings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _sqlite_table_exists(conn, "clisfo_settlements"):
+        warnings.append(
+            _health_warning(
+                "warning",
+                "clisfo-table-missing",
+                "CLISFO settlements missing",
+                "The clisfo_settlements table is not present in weather.db.",
+                "Run the CLISFO settlement refresh and inspect source access.",
+            )
+        )
+        return {"available": False, "reason": "clisfo_settlements table missing"}
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS rows,
+               MAX(local_date) AS latest_date,
+               MAX(fetched_at) AS latest_fetched_at
+        FROM clisfo_settlements
+        WHERE max_temperature_f IS NOT NULL
+        """
+    ).fetchone()
+    latest_date = _date_from_string(row["latest_date"])
+    lag_days = (today - latest_date).days if latest_date is not None else None
+    if int(row["rows"] or 0) == 0:
+        warnings.append(
+            _health_warning(
+                "critical",
+                "clisfo-empty",
+                "CLISFO truth empty",
+                "No CLISFO settlement rows with max_temperature_f are available.",
+                "Check CLISFO fetch logs before trusting calibration or settlement.",
+            )
+        )
+    elif lag_days is not None and lag_days > FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS:
+        warnings.append(
+            _health_warning(
+                "warning",
+                "clisfo-stale",
+                "CLISFO truth stale",
+                f"Latest CLISFO truth is {lag_days} settlement day(s) behind.",
+                "Run paper-auto-settle or inspect the CLISFO/NWS source fetch.",
+            )
+        )
+    return {
+        "available": True,
+        "rows": int(row["rows"] or 0),
+        "latest_date": row["latest_date"],
+        "latest_fetched_at": row["latest_fetched_at"],
+        "lag_days": lag_days,
+        "max_lag_days": FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS,
+    }
+
+
+def _nws_ground_truth_health(conn: sqlite3.Connection, today: object) -> dict[str, Any]:
+    if not _sqlite_table_exists(conn, "nws_daily_high_ground_truth"):
+        return {"available": False, "reason": "nws_daily_high_ground_truth table missing"}
+    columns = _sqlite_columns(conn, "nws_daily_high_ground_truth")
+    observed_expr = "MAX(high_observed_at)" if "high_observed_at" in columns else "NULL"
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS rows,
+               MAX(local_date) AS latest_date,
+               {observed_expr} AS latest_observed_at
+        FROM nws_daily_high_ground_truth
+        WHERE high_f IS NOT NULL
+        """
+    ).fetchone()
+    latest_date = _date_from_string(row["latest_date"])
+    lag_days = (today - latest_date).days if latest_date is not None else None
+    return {
+        "available": True,
+        "rows": int(row["rows"] or 0),
+        "latest_date": row["latest_date"],
+        "latest_observed_at": row["latest_observed_at"],
+        "lag_days": lag_days,
+    }
+
+
+def _emos_enabled_profiles(config: StrategyConfig) -> list[str]:
+    profiles: list[str] = []
+    if config.emos_distribution_enabled:
+        profiles.append(PRIMARY_PROFILE)
+    for profile in sorted(EXPERIMENTAL_PROFILES):
+        if strategy_config_for_profile(profile).emos_distribution_enabled:
+            profiles.append(profile)
+    return profiles
+
+
+def _health_warning(
+    level: str,
+    code: str,
+    title: str,
+    detail: str,
+    action: str,
+    *,
+    target_date: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "level": level,
+        "code": code,
+        "title": title,
+        "detail": detail,
+        "action": action,
+    }
+    if target_date is not None:
+        row["target_date"] = target_date
+    return row
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _sqlite_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _coerce_utc(value: datetime | None) -> datetime:
+    current_utc = value or datetime.now(UTC)
+    if current_utc.tzinfo is None:
+        return current_utc.replace(tzinfo=UTC)
+    return current_utc.astimezone(UTC)
+
+
+def _age_hours(current_utc: datetime, timestamp: datetime | None) -> float | None:
+    if timestamp is None:
+        return None
+    return _round(max(0.0, (current_utc - timestamp).total_seconds() / 3600.0), 2)
+
+
+def _split_csv(value: object) -> list[str]:
+    if value is None:
+        return []
+    return [part for part in str(value).split(",") if part]
+
+
 def _row_risk_profile(row: sqlite3.Row) -> str | None:
     try:
         value = row["risk_profile"]
@@ -1739,6 +2304,7 @@ def _status_payload(
     backtest: dict[str, Any],
     signal_quality: dict[str, Any],
     paper: dict[str, Any],
+    forecast_health: dict[str, Any],
 ) -> dict[str, Any]:
     latest_targets = [
         str(row.get("target_date"))
@@ -1759,6 +2325,7 @@ def _status_payload(
     alerts = _strategy_alerts(
         paper=paper,
         entry_block_reason=entry_block_reason,
+        forecast_health=forecast_health,
     )
     return {
         "active_calibration_source": ACTIVE_CALIBRATION_SOURCE,
@@ -1802,6 +2369,109 @@ def _status_payload(
     }
 
 
+def _decision_lead_mode_counts(db_path: Path) -> dict[str, dict[str, Any]]:
+    if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
+        return _empty_lead_mode_counts()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT created_at, market_close_time, approved, forecast_lead_hours,
+                       forecast_method, forecast_observed_high_mode,
+                       intraday_observed_high_f, intraday_is_complete
+                FROM decision_snapshots
+                WHERE market_ticker NOT LIKE '%-PAPER%'
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return _empty_lead_mode_counts()
+
+    decisions = []
+    for row in rows:
+        lead_mode = _forecast_lead_mode(
+            lead_hours=row["forecast_lead_hours"],
+            forecast_method=row["forecast_method"],
+            observed_high_mode=row["forecast_observed_high_mode"],
+            intraday_observed_high_f=row["intraday_observed_high_f"],
+            intraday_is_complete=bool(row["intraday_is_complete"]),
+            pre_resolution=_is_strategy_pre_resolution(row),
+        )
+        decisions.append({"lead_mode": lead_mode, "approved": bool(row["approved"])})
+    return _lead_mode_counts(decisions)
+
+
+def _lead_mode_counts(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    counts = _empty_lead_mode_counts()
+    for row in decisions:
+        mode = str(row.get("lead_mode") or "unknown")
+        if mode not in counts:
+            counts[mode] = {
+                "lead_mode": mode,
+                "label": FORECAST_LEAD_MODE_LABELS["unknown"],
+                "total": 0,
+                "approved": 0,
+            }
+        counts[mode]["total"] += 1
+        if row.get("approved"):
+            counts[mode]["approved"] += 1
+    return counts
+
+
+def _empty_lead_mode_counts() -> dict[str, dict[str, Any]]:
+    return {
+        mode: {"lead_mode": mode, "label": label, "total": 0, "approved": 0}
+        for mode, label in FORECAST_LEAD_MODE_LABELS.items()
+    }
+
+
+def _forecast_lead_mode(
+    *,
+    lead_hours: object,
+    forecast_method: object,
+    observed_high_mode: object,
+    intraday_observed_high_f: object,
+    intraday_is_complete: bool,
+    pre_resolution: bool,
+) -> str:
+    if not pre_resolution or intraday_is_complete:
+        return "post_resolution_excluded"
+    method = str(forecast_method or "").lower()
+    if (
+        observed_high_mode
+        or intraday_observed_high_f not in (None, "")
+        or "observed high" in method
+        or "intraday" in method
+        or "high-so-far" in method
+    ):
+        return "intraday_high_so_far"
+    lead = _to_float(lead_hours, default=math.nan)
+    if not math.isfinite(lead):
+        return "unknown"
+    if lead >= 18.0:
+        return "day_ahead"
+    return "same_day_prelock"
+
+
+def _is_strategy_pre_resolution(row: sqlite3.Row) -> bool:
+    if _sqlite_row_value(row, "intraday_is_complete", 0):
+        return False
+    created_at = _parse_timestamp(_sqlite_row_value(row, "created_at"))
+    close_time = _parse_timestamp(_sqlite_row_value(row, "market_close_time"))
+    if created_at is None:
+        return True
+    if close_time is None:
+        return False
+    return created_at < close_time
+
+
+def _sqlite_row_value(row: sqlite3.Row, key: str, default=None):
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return []
@@ -1840,6 +2510,15 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
 def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
     reasons = _json_list(row["reasons_json"])
     approved = bool(row["approved"])
+    lead_hours = _sqlite_row_value(row, "forecast_lead_hours")
+    lead_mode = _forecast_lead_mode(
+        lead_hours=lead_hours,
+        forecast_method=_sqlite_row_value(row, "forecast_method"),
+        observed_high_mode=_sqlite_row_value(row, "forecast_observed_high_mode"),
+        intraday_observed_high_f=_sqlite_row_value(row, "intraday_observed_high_f"),
+        intraday_is_complete=bool(_sqlite_row_value(row, "intraday_is_complete", 0)),
+        pre_resolution=_is_strategy_pre_resolution(row),
+    )
     return {
         "created_at": row["created_at"],
         "target_date": row["target_date"],
@@ -1867,6 +2546,11 @@ def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
         "recommended_contracts": _round(row["recommended_contracts"], 4),
         "recommended_spend": _round(row["recommended_spend"], 2),
         "expected_profit": _round(row["expected_profit"], 2),
+        "forecast_lead_hours": _round(lead_hours, 2),
+        "forecast_method": _sqlite_row_value(row, "forecast_method"),
+        "forecast_observed_high_mode": _sqlite_row_value(row, "forecast_observed_high_mode"),
+        "lead_mode": lead_mode,
+        "lead_mode_label": FORECAST_LEAD_MODE_LABELS.get(lead_mode, FORECAST_LEAD_MODE_LABELS["unknown"]),
         "reasons": reasons,
         "decision_reason": _decision_reason(approved, reasons, row["edge"], row["edge_lcb"]),
     }
@@ -1879,6 +2563,26 @@ def _decisions_from_trading_signal(payload: dict[str, Any] | None) -> list[dict[
     for target in payload.get("targets") or []:
         if target.get("market_available") is False:
             continue
+        forecast = target.get("forecast") or {}
+        lead_hours = forecast.get("lead_hours")
+        forecast_method = forecast.get("method")
+        observed_high_mode = (
+            (forecast.get("observed_high_decision") or {}).get("mode")
+            if isinstance(forecast.get("observed_high_decision"), dict)
+            else None
+        )
+        lead_mode = _forecast_lead_mode(
+            lead_hours=lead_hours,
+            forecast_method=forecast_method,
+            observed_high_mode=observed_high_mode,
+            intraday_observed_high_f=(target.get("intraday") or {}).get("observed_high_f")
+            if isinstance(target.get("intraday"), dict)
+            else None,
+            intraday_is_complete=bool((target.get("intraday") or {}).get("is_complete"))
+            if isinstance(target.get("intraday"), dict)
+            else False,
+            pre_resolution=True,
+        )
         for row in target.get("decisions") or []:
             if _is_probability_only_ticker(row.get("ticker")):
                 continue
@@ -1912,6 +2616,14 @@ def _decisions_from_trading_signal(payload: dict[str, Any] | None) -> list[dict[
                     "recommended_contracts": row.get("recommended_contracts"),
                     "recommended_spend": row.get("recommended_spend"),
                     "expected_profit": row.get("expected_profit"),
+                    "forecast_lead_hours": lead_hours,
+                    "forecast_method": forecast_method,
+                    "forecast_observed_high_mode": observed_high_mode,
+                    "lead_mode": lead_mode,
+                    "lead_mode_label": FORECAST_LEAD_MODE_LABELS.get(
+                        lead_mode,
+                        FORECAST_LEAD_MODE_LABELS["unknown"],
+                    ),
                     "reasons": reasons,
                     "decision_reason": _decision_reason(
                         approved,
@@ -2611,6 +3323,7 @@ def _strategy_alerts(
     entry_block_reason: str | None,
     daily_budget: float | None = None,
     now: datetime | None = None,
+    forecast_health: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
     current_utc = now or datetime.now(UTC)
@@ -2781,6 +3494,8 @@ def _strategy_alerts(
             )
         )
 
+    alerts.extend(_forecast_health_alerts(forecast_health))
+
     if not alerts:
         alerts.append(
             _alert(
@@ -2792,6 +3507,25 @@ def _strategy_alerts(
             )
         )
     return alerts
+
+
+def _forecast_health_alerts(forecast_health: dict[str, Any] | None) -> list[dict[str, str]]:
+    if not forecast_health:
+        return []
+    output: list[dict[str, str]] = []
+    for warning in forecast_health.get("warnings") or []:
+        if not isinstance(warning, dict):
+            continue
+        output.append(
+            _alert(
+                str(warning.get("level") or "warning"),
+                str(warning.get("code") or "forecast-health-warning"),
+                str(warning.get("title") or "Forecast health warning"),
+                str(warning.get("detail") or "Forecast health check reported a warning."),
+                str(warning.get("action") or "Inspect AWS forecast refresh logs."),
+            )
+        )
+    return output
 
 
 def _alert(level: str, code: str, title: str, detail: str, action: str) -> dict[str, str]:

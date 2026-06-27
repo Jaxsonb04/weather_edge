@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+import io
+from contextlib import redirect_stdout
 from datetime import date, timedelta
 
-from emos_forecast import build_emos_archive, load_emos_archive, serve_live_emos
+from emos_forecast import build_emos_archive, load_emos_archive, main, serve_live_emos
 from nwp_archive import ensure_schema as ensure_nwp_schema
 from nwp_archive import upsert_forecasts
 
@@ -108,3 +110,19 @@ def test_serve_live_emos_returns_none_without_enough_history():
         live_models={"gfs_seamless": 70.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 70.0},
     )
     assert result is None  # below EMOS warm-up
+
+
+def test_serve_rolling_logs_zero_served_summary(tmp_path):
+    db_path = tmp_path / "weather.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE clisfo_settlements "
+            "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
+        )
+    out = io.StringIO()
+
+    with redirect_stdout(out):
+        status = main(["--db", str(db_path), "--serve-rolling"])
+
+    assert status == 0
+    assert "live EMOS rolling summary: served=0 targets=3 lead=1" in out.getvalue()

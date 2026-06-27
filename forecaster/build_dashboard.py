@@ -58,7 +58,7 @@ def strategy_lab_password():
 
 
 def strategy_lab_public_mode():
-    raw = os.environ.get(STRATEGY_LAB_PUBLIC_MODE_ENV, "1").strip().lower()
+    raw = os.environ.get(STRATEGY_LAB_PUBLIC_MODE_ENV, "0").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
@@ -147,8 +147,7 @@ def encrypt_strategy_lab_bytes(plaintext, password, iterations):
 
 
 def protect_strategy_research(source_path, target_path):
-    password = strategy_lab_password()
-    if not password:
+    if strategy_lab_public_mode():
         if target_path.exists():
             target_path.unlink()
         return {
@@ -156,6 +155,13 @@ def protect_strategy_research(source_path, target_path):
             "artifact": source_path.name,
             "format": "public-json",
         }
+
+    password = strategy_lab_password()
+    if not password:
+        raise ValueError(
+            f"{STRATEGY_LAB_PASSWORD_ENV} is required when "
+            f"{STRATEGY_LAB_PUBLIC_MODE_ENV} is disabled"
+        )
 
     iterations = strategy_lab_iterations()
     payload = encrypt_strategy_lab_bytes(source_path.read_bytes(), password, iterations)

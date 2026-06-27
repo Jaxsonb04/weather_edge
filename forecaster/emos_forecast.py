@@ -287,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
             mu, sigma = result
             served += 1
             print(f"live EMOS for {target.isoformat()} (lead {args.lead}): mu={mu:.2f}F sigma={sigma:.2f}F")
+        if args.serve_rolling:
+            print(f"live EMOS rolling summary: served={served} targets={len(targets)} lead={args.lead}")
         # Fail loud only when an explicit single --serve produced nothing.
         if args.serve and not args.serve_rolling and served == 0:
             return 1

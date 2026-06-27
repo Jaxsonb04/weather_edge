@@ -17,7 +17,12 @@ forecaster = [
   "xgboost",
   "torch",
 ]
-dev = ["pytest>=8.0"]
+dev = [
+  "certifi",
+  "numpy",
+  "pandas",
+  "pytest>=8.0",
+]
 
 [project.scripts]
 sfo-kalshi = "sfo_kalshi_quant.cli:main"
@@ -27,5 +32,5 @@ where = ["trading"]
 include = ["sfo_kalshi_quant*"]
 
 [tool.pytest.ini_options]
-testpaths = ["trading/tests"]
-pythonpath = ["trading"]
+testpaths = ["trading/tests", "forecaster/tests"]
+pythonpath = ["trading", "forecaster"]

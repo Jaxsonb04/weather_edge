@@ -15,6 +15,20 @@ token patterns, trading tests, and Python syntax. Warnings about Git or optional
 quality tools are useful setup reminders; failures should be fixed before sync
 or deploy work continues.
 
+## GitHub Hygiene Check
+
+Run this before merging audit or deployment work:
+
+```bash
+cd /path/to/WeatherEdge
+python3 scripts/github_hygiene_check.py
+```
+
+The checker is read-only. It verifies public branch-protection status for
+`main` and `gh-pages`, reports stale or stacked open PRs, and lists stale remote
+branches from local `origin/*` refs. Use a `GITHUB_TOKEN` only if public API rate
+limits or private settings require authenticated reads.
+
 ## Local Forecast Refresh Without Google API
 
 ```bash
@@ -99,8 +113,7 @@ python -m sfo_kalshi_quant.cli --no-color strategy-research --output forecaster/
 This is read-only. It does not record snapshots, place paper orders, or expose
 private DB state. The generated `forecaster/trading_signal.json` and
 `forecaster/strategy_research.json` are optional dashboard inputs.
-AWS temporarily publishes plaintext Strategy Lab data while
-`SFO_STRATEGY_LAB_PUBLIC_MODE=1`. Restore the password gate by setting
+AWS publishes encrypted Strategy Lab data by default with
 `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and `SFO_STRATEGY_LAB_PASSWORD`; then
 `forecaster/build_dashboard.py` writes
 `forecaster/strategy_research.protected.json`, and the publisher ships that
