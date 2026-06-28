@@ -128,7 +128,11 @@ def build_target_report(
         event_title = "No live Kalshi event found; probability-only fallback ladder"
         market_available = False
 
-    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
+    # lead_days=None: read the live EMOS across leads (next-day=1, 2-day-out=2);
+    # a fixed lead 1 would drop the 2-day-out market from the published signal.
+    emos_lookup = (
+        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
+    )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,

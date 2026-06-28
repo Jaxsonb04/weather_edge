@@ -64,6 +64,33 @@ def test_load_emos_mu_sigma_is_date_keyed_and_lead_filtered():
         assert loaded == {date(2025, 6, 1): (70.0, 2.5)}
 
 
+def test_load_emos_mu_sigma_reads_all_leads_when_lead_none():
+    # The live serve writes each rolling target at its TRUE lead (next-day -> 1,
+    # the 2-day-out market -> 2) on DISTINCT dates. lead_days=None must return
+    # BOTH, keyed by target_date, so the live trader sees the 2-day-out market;
+    # the default lead_days=1 read sees only the next-day market.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        conn = sqlite3.connect(root / "weather.db")
+        conn.execute(
+            "CREATE TABLE forecast_emos_daily_high "
+            "(target_date TEXT, lead_days INTEGER, predicted_high_f REAL, sigma_f REAL, "
+            " n_models INTEGER, fetched_at TEXT, method TEXT, source TEXT, actual_high_f REAL, "
+            " PRIMARY KEY (target_date, lead_days, source))"
+        )
+        conn.execute("INSERT INTO forecast_emos_daily_high VALUES ('2026-06-28',1,68.0,2.5,8,'t','m','live',NULL)")
+        conn.execute("INSERT INTO forecast_emos_daily_high VALUES ('2026-06-29',2,71.0,3.5,8,'t','m','live',NULL)")
+        conn.commit()
+        conn.close()
+        adapter = SfoForecasterAdapter(root=root)
+        assert adapter.load_emos_mu_sigma(lead_days=None) == {
+            date(2026, 6, 28): (68.0, 2.5),
+            date(2026, 6, 29): (71.0, 3.5),
+        }
+        # The previous fixed-lead-1 read silently dropped the 2-day-out market.
+        assert adapter.load_emos_mu_sigma(lead_days=1) == {date(2026, 6, 28): (68.0, 2.5)}
+
+
 def test_load_emos_mu_sigma_filters_by_source_and_prefers_freshest():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

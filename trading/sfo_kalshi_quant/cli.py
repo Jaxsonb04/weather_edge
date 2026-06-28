@@ -1147,7 +1147,12 @@ def _analyze_one_target(
         markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
-    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
+    # lead_days=None: the live serve writes each rolling target at its TRUE lead
+    # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
+    # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
+    emos_lookup = (
+        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
+    )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1310,7 +1315,12 @@ def _portfolio_scan_one_target(
         event_title = "No live Kalshi event found; portfolio scan is research-only"
         market_available = False
 
-    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
+    # lead_days=None: the live serve writes each rolling target at its TRUE lead
+    # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
+    # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
+    emos_lookup = (
+        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
+    )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1585,7 +1595,12 @@ def _tail_basket_one_target(
         markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
-    emos_lookup = adapter.load_emos_mu_sigma() if config.emos_distribution_enabled else {}
+    # lead_days=None: the live serve writes each rolling target at its TRUE lead
+    # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
+    # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
+    emos_lookup = (
+        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
+    )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
