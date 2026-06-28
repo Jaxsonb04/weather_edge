@@ -125,4 +125,38 @@ def test_serve_rolling_logs_zero_served_summary(tmp_path):
         status = main(["--db", str(db_path), "--serve-rolling"])
 
     assert status == 0
-    assert "live EMOS rolling summary: served=0 targets=3 lead=1" in out.getvalue()
+    assert "live EMOS rolling summary: served=0 targets=3 leads=0..2" in out.getvalue()
+
+
+def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch):
+    # Regression: serve-rolling must serve today+offset at lead=offset, not a
+    # fixed lead 1. The same-day target (lead 0) has no NWP archive and is never
+    # sent to serve_live_emos; the next-day and 2-day-out markets are served at
+    # leads 1 and 2 so each EMOS fit's per-model biases match its horizon.
+    import emos_forecast as ef
+
+    calls: list[tuple] = []
+
+    def fake_serve(conn, target, *, lead_days=1, **kwargs):
+        calls.append((target, lead_days))
+        return (70.0, 3.0)
+
+    monkeypatch.setattr(ef, "serve_live_emos", fake_serve)
+    db_path = tmp_path / "weather.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE clisfo_settlements "
+            "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
+        )
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        status = ef.main(["--db", str(db_path), "--serve-rolling"])
+
+    assert status == 0
+    today = ef._settlement_today()
+    assert calls == [
+        (today + timedelta(days=1), 1),
+        (today + timedelta(days=2), 2),
+    ]
+    assert "served=2 targets=3 leads=0..2" in out.getvalue()

@@ -398,13 +398,19 @@ class SfoForecasterAdapter:
         return {date.fromisoformat(local_date): float(high_f) for local_date, high_f in rows}
 
     def load_emos_mu_sigma(
-        self, lead_days: int = 1, *, source: str | None = None
+        self, lead_days: int | None = 1, *, source: str | None = None
     ) -> dict[date, tuple[float, float]]:
         """target_date -> (mu, sigma) from the forecaster's EMOS archive.
 
         Reads ``forecast_emos_daily_high`` (written by ``emos_forecast.py``).
         Empty when the artifact has not been built, so a caller that always
         passes the lookup degrades gracefully to the residual-calibrated path.
+
+        ``lead_days`` filters to one forecast horizon; ``lead_days=None`` reads
+        every lead, keyed by target_date. The live serve path stores each rolling
+        target at its TRUE lead (next-day at lead 1, the 2-day-out market at lead
+        2), so the live trader must pass ``lead_days=None`` to see both -- a fixed
+        ``lead_days=1`` would silently miss the 2-day-out market entirely.
 
         ``source`` filters the EMOS source: ``'rolling_origin'`` for leakage-safe
         backtest/rescore reads (every value is strictly out-of-sample),
@@ -415,20 +421,23 @@ class SfoForecasterAdapter:
 
         if not self.weather_db.exists():
             return {}
-        query = (
-            "SELECT target_date, predicted_high_f, sigma_f "
-            "FROM forecast_emos_daily_high WHERE lead_days = ?"
-        )
-        params: tuple = (lead_days,)
+        query = "SELECT target_date, predicted_high_f, sigma_f FROM forecast_emos_daily_high"
+        clauses: list[str] = []
+        params: list[object] = []
+        if lead_days is not None:
+            clauses.append("lead_days = ?")
+            params.append(lead_days)
         if source is not None:
-            query += " AND source = ?"
-            params = (lead_days, source)
+            clauses.append("source = ?")
+            params.append(source)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY fetched_at"  # later (fresher) rows win in the dict below
         try:
             with sqlite3.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_emos_daily_high"):
                     return {}
-                rows = conn.execute(query, params).fetchall()
+                rows = conn.execute(query, tuple(params)).fetchall()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read EMOS archive from {self.weather_db}: {exc}") from exc
         return {

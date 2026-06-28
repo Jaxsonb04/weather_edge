@@ -272,23 +272,40 @@ def main(argv: list[str] | None = None) -> int:
             ).fetchone()[0]
             print(f"wrote {written} EMOS forecasts (lead {args.lead}); {scored} have CLISFO truth")
 
-        targets: list[date] = []
+        today = _settlement_today()
+        # Serve each target at its TRUE lead so the EMOS fit's per-model biases
+        # match the forecast horizon (next-day -> lead 1, 2-day-out -> lead 2).
+        # The NWP archive only holds leads >= 1, so the same-day target (lead 0)
+        # has no training history and is intentionally left without a live EMOS
+        # row; the trader falls back to its blend + observed-high path for the
+        # same-day market. Previously every rolling target was served with a
+        # fixed lead 1, applying next-day biases to same-day and 2-day forecasts.
+        serve_targets: list[tuple[date, int]] = []
         if args.serve:
-            targets.append(_settlement_tomorrow() if args.serve == "tomorrow" else date.fromisoformat(args.serve))
+            target = _settlement_tomorrow() if args.serve == "tomorrow" else date.fromisoformat(args.serve)
+            serve_targets.append((target, (target - today).days))
         if args.serve_rolling:
-            targets.extend(_settlement_today() + timedelta(days=offset) for offset in range(ROLLING_SERVE_DAYS))
+            serve_targets.extend(
+                (today + timedelta(days=offset), offset) for offset in range(ROLLING_SERVE_DAYS)
+            )
 
         served = 0
-        for target in targets:
-            result = serve_live_emos(conn, target, lead_days=args.lead)
+        for target, lead in serve_targets:
+            result = serve_live_emos(conn, target, lead_days=lead) if lead >= 1 else None
             if result is None:
-                print(f"live EMOS for {target.isoformat()}: unavailable (already settled or thin coverage)")
+                print(
+                    f"live EMOS for {target.isoformat()} (lead {lead}): "
+                    "unavailable (lead<1, already settled, or thin coverage)"
+                )
                 continue
             mu, sigma = result
             served += 1
-            print(f"live EMOS for {target.isoformat()} (lead {args.lead}): mu={mu:.2f}F sigma={sigma:.2f}F")
+            print(f"live EMOS for {target.isoformat()} (lead {lead}): mu={mu:.2f}F sigma={sigma:.2f}F")
         if args.serve_rolling:
-            print(f"live EMOS rolling summary: served={served} targets={len(targets)} lead={args.lead}")
+            print(
+                f"live EMOS rolling summary: served={served} "
+                f"targets={len(serve_targets)} leads=0..{ROLLING_SERVE_DAYS - 1}"
+            )
         # Fail loud only when an explicit single --serve produced nothing.
         if args.serve and not args.serve_rolling and served == 0:
             return 1
