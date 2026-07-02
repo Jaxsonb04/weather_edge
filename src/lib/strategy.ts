@@ -17,6 +17,53 @@ export interface ClosedPosition {
   position_status_label?: string;
   position_status_tone?: string;
   outcome_reason?: string | null;
+  exit_rule_reason?: string | null;
+  entry_mode?: string | null;
+  edge?: number | null;
+  edge_lcb?: number | null;
+  probability?: number | null;
+  model_side_probability?: number | null;
+  settlement_high_f?: number | null;
+  initial_cost?: number | null;
+  entry_fee_per_contract?: number | null;
+  why_good?: string | null;
+}
+
+/** Open positions / pending limit orders share the ledger field shape; most
+    numeric fields are nullable until the monitor marks them. */
+export interface OpenPosition {
+  id: number;
+  ticker?: string;
+  label?: string;
+  side?: string;
+  contracts?: number | null;
+  entry_price?: number | null;
+  limit_price?: number | null;
+  risk?: number | null;
+  risk_profile?: string;
+  target_date?: string;
+  current_bid?: number | null;
+  current_value?: number | null;
+  unrealized_pnl?: number | null;
+  unrealized_roi?: number | null;
+  quality_score?: number | null;
+}
+
+export interface MonitorAction {
+  id: number;
+  time: string;
+  ticker: string;
+  label: string;
+  side: string;
+  risk_profile: string;
+  contracts: number;
+  entry_price: number | null;
+  exit_price: number | null;
+  realized_pnl: number;
+  realized_roi: number | null;
+  note?: string | null;
+  status?: string;
+  target_date?: string;
 }
 
 export interface DayRow {
@@ -26,6 +73,17 @@ export interface DayRow {
   trades_opened?: number;
   opened?: number;
   closed?: number;
+  wins?: number;
+  losses?: number;
+  hit_rate?: number | null;
+  signals?: number;
+  approved_signals?: number;
+  opened_spend?: number;
+  settled?: number;
+  roi?: number | null;
+  forecast_predicted_high_f?: number | null;
+  forecast_actual_high_f?: number | null;
+  forecast_error_f?: number | null;
 }
 
 export interface WinnerLoser {
@@ -84,6 +142,25 @@ export interface ProfileStatus {
   paper_trading_status?: string;
   realized_pnl?: number;
 }
+/** Per-profile slice of the daily summary (same shapes as the combined one). */
+export interface ProfileDailySummary {
+  totals?: {
+    realized_pnl?: number;
+    cumulative_realized_pnl?: number;
+    roi?: number | null;
+    hit_rate?: number | null;
+    wins?: number;
+    losses?: number;
+    trades_closed?: number;
+    capital_resolved?: number;
+  };
+  days?: DayRow[];
+  exit_reasons?: Record<string, number>;
+  side_performance?: Record<string, SideStats>;
+  window_days?: number;
+  current_equity?: number;
+  bankroll?: number;
+}
 export interface ProfileEntry {
   label: string;
   risk_profile: string;
@@ -91,6 +168,8 @@ export interface ProfileEntry {
   learnings?: string[];
   recommended_changes?: string[];
   paper_trading?: { available?: boolean; summary?: ProfilePaperSummary };
+  daily_summary?: ProfileDailySummary;
+  signal_quality?: SignalQuality;
   status?: ProfileStatus;
 }
 
@@ -239,8 +318,15 @@ export interface StrategyLab {
       loss_count: number;
       capital_at_risk: number;
       open_positions: number;
+      open_risk?: number;
+      pending_limit_orders?: number;
+      pending_limit_risk?: number;
+      latest_monitor_action_at?: string | null;
     };
     closed_positions: ClosedPosition[];
+    open_positions?: OpenPosition[];
+    pending_limit_orders?: OpenPosition[];
+    recent_monitor_actions?: MonitorAction[];
     monitor?: Record<string, number>;
     diagnostics?: { by_profile?: Record<string, ProfileResolvedStats> };
   };
@@ -309,11 +395,11 @@ export function equitySeries(s: StrategyLab) {
     }));
 }
 
-/** Most-recent closed paper trades. */
-export function recentTrades(s: StrategyLab, limit = 12): ClosedPosition[] {
-  return [...(s.paper_trading?.closed_positions ?? [])]
-    .sort((a, b) => (b.closed_at ?? "").localeCompare(a.closed_at ?? ""))
-    .slice(0, limit);
+/** Full closed ledger, newest first. */
+export function closedLedger(s: StrategyLab): ClosedPosition[] {
+  return [...(s.paper_trading?.closed_positions ?? [])].sort((a, b) =>
+    (b.closed_at ?? "").localeCompare(a.closed_at ?? ""),
+  );
 }
 
 /** Gate stats for one risk profile (matched from daily_summary.gate_behavior). */
@@ -324,3 +410,6 @@ export function profileGate(s: StrategyLab, riskProfile: string): ProfileGateSta
 /** Signed money string: +$1.23 / −$4.56 (true minus sign). */
 export const money = (n: number | null | undefined, digits = 2) =>
   n == null || Number.isNaN(n) ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toFixed(digits)}`;
+
+/** Contract price as cents: 0.92 → 92¢. */
+export const cents = (p: number | null | undefined) => (p == null ? "—" : `${Math.round(p * 100)}¢`);

@@ -7,25 +7,27 @@ export const ROUTES: { id: Route; label: string; icon: string }[] = [
   { id: "lab", label: "Strategy Lab", icon: "solar:test-tube-bold" },
 ];
 
-function parse(): Route {
-  const h = window.location.hash.replace(/^#\/?/, "").split(/[/?#]/)[0];
-  return (ROUTES.some((r) => r.id === h) ? h : "overview") as Route;
+function parse(): { route: Route; sub: string | null } {
+  const segs = window.location.hash.replace(/^#\/?/, "").split(/[?#]/)[0].split("/");
+  const route = (ROUTES.some((r) => r.id === segs[0]) ? segs[0] : "overview") as Route;
+  return { route, sub: segs[1] || null };
 }
 
-/** Tiny hash router — gh-pages-safe (no server rewrites), no router dependency. */
+/** Tiny hash router — gh-pages-safe (no server rewrites), no router dependency.
+    Supports one optional sub-segment (e.g. #/lab/trades → route "lab", sub "trades"). */
 export function useHashRoute() {
-  const [route, setRoute] = useState<Route>(parse);
+  const [state, setState] = useState(parse);
   useEffect(() => {
     const onHash = () => {
-      setRoute(parse());
+      setState(parse());
       window.scrollTo({ top: 0 });
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   const navigate = (r: Route) => {
-    if (parse() === r) window.scrollTo({ top: 0 }); // re-selecting current route still scrolls up
+    if (parse().route === r) window.scrollTo({ top: 0 }); // re-selecting current route still scrolls up
     window.location.hash = `#/${r}`;
   };
-  return { route, navigate };
+  return { route: state.route, sub: state.sub, navigate };
 }

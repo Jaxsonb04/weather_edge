@@ -9,51 +9,19 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-function RejectionBars({ g }: { g: ProfileGateStats }) {
-  const rows = (g.top_rejections_all?.length ? g.top_rejections_all : g.top_rejections ?? []).slice(0, 6);
-  const max = rows[0]?.count ?? 1;
-  const primary = g.risk_profile === "live";
-  return (
-    <div>
-      <div className="mb-3 flex items-baseline justify-between gap-2">
-        <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.15em] text-muted">
-          {g.risk_profile} book
-        </p>
-        <p className="text-xs text-muted">
-          <span className="tnum font-semibold text-foreground">{g.approved.toLocaleString()}</span> approved of{" "}
-          <span className="tnum">{g.signals.toLocaleString()}</span>
-        </p>
-      </div>
-      <ul className="space-y-2.5">
-        {rows.map((r) => (
-          <li key={r.reason}>
-            <div className="mb-1 flex items-baseline justify-between gap-3">
-              <span className="min-w-0 truncate text-xs text-muted" title={r.reason}>
-                {r.reason}
-              </span>
-              <span className="tnum shrink-0 font-mono text-[11px] text-muted">{r.count.toLocaleString()}</span>
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-foreground/8">
-              <div
-                className={`h-full rounded-full ${primary ? "bg-accent/80" : "bg-[color:var(--series-market)]/80"}`}
-                style={{ width: `${Math.max((r.count / max) * 100, 1.5)}%` }}
-              />
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** Why almost everything gets rejected: the window's gate evaluations, the
-    approval sliver, and the reasons signals die — per book. */
+    approval sliver, and the top global rejection reasons. Per-book detail
+    lives in the profile explorer. */
 export function GateFunnel({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
   const total = gate.approved + gate.rejected;
   const approvedPct = total ? gate.approved / total : 0;
   const cats = Object.entries(aggregateCategories(gate.by_profile ?? []));
+  const rejections = (gate.top_rejections_all?.length ? gate.top_rejections_all : gate.top_rejections ?? []).slice(0, 8);
+  const max = rejections[0]?.count ?? 1;
+  const half = Math.ceil(rejections.length / 2);
+  const columns = [rejections.slice(0, half), rejections.slice(half)];
 
   return (
     <Card className="rounded-2xl ring-1 ring-border/70">
@@ -96,11 +64,30 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
           )}
         </div>
 
-        <div className="grid gap-6 border-t border-border/50 pt-5 md:grid-cols-2">
-          {(gate.by_profile ?? []).map((g) => (
-            <RejectionBars key={g.risk_profile} g={g} />
-          ))}
-        </div>
+        {!!rejections.length && (
+          <div className="grid gap-x-6 gap-y-2.5 border-t border-border/50 pt-5 md:grid-cols-2">
+            {columns.map((col, ci) => (
+              <ul key={ci} className="space-y-2.5">
+                {col.map((r) => (
+                  <li key={r.reason}>
+                    <div className="mb-1 flex items-baseline justify-between gap-3">
+                      <span className="min-w-0 truncate text-xs text-muted" title={r.reason}>
+                        {r.reason}
+                      </span>
+                      <span className="tnum shrink-0 font-mono text-[11px] text-muted">{r.count.toLocaleString()}</span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-foreground/8">
+                      <div
+                        className="h-full rounded-full bg-accent/80"
+                        style={{ width: `${Math.max((r.count / max) * 100, 1.5)}%` }}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ))}
+          </div>
+        )}
       </Card.Content>
     </Card>
   );

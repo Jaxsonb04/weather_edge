@@ -13,11 +13,13 @@ import {
 } from "recharts";
 import { ChartTooltip, Widget } from "@heroui-pro/react";
 import { pct, signedPct } from "../../lib/data";
-import type { ScatterPoint, StrategyLab } from "../../lib/strategy";
+import type { EdgeBucket, ScatterPoint } from "../../lib/strategy";
 
 const AXIS_TICK = { fill: "var(--color-muted)", fontSize: 12 };
 
-function CandidateScatter({ points, targetDate }: { points: ScatterPoint[]; targetDate?: string }) {
+/** Model vs market probability per candidate signal — points off the dashed
+    diagonal are the brackets where the book disagrees with the crowd. */
+export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[]; targetDate?: string }) {
   const yes = points.filter((p) => p.side === "YES");
   const no = points.filter((p) => p.side !== "YES");
   return (
@@ -107,15 +109,15 @@ function CandidateScatter({ points, targetDate }: { points: ScatterPoint[]; targ
   );
 }
 
-function EdgeByPriceChart({ s }: { s: StrategyLab }) {
-  const buckets = s.signal_quality?.charts?.edge_by_market_bucket ?? [];
+/** Average model-minus-market edge grouped by 20¢ market-price buckets. */
+export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
   const data = buckets.map((b) => ({ range: `${b.range}¢`, edge: Math.round(b.avg_edge * 1000) / 10, count: b.count }));
   return (
     <Widget className="h-full w-full">
       <Widget.Header>
         <div>
           <Widget.Title>Average edge by market price</Widget.Title>
-          <Widget.Description>Where in the price ladder the model disagrees, latest candidates</Widget.Description>
+          <Widget.Description>Where in the price ladder this book's disagreements sit</Widget.Description>
         </div>
         <Widget.Legend>
           <Widget.LegendItem color="var(--color-success)">model above market</Widget.LegendItem>
@@ -164,19 +166,5 @@ function EdgeByPriceChart({ s }: { s: StrategyLab }) {
         </div>
       </Widget.Content>
     </Widget>
-  );
-}
-
-/** The live signal surface: every candidate the engine is watching right now,
-    and where in the price ladder its disagreements sit. */
-export function SignalQualityPanel({ s }: { s: StrategyLab }) {
-  const q = s.signal_quality;
-  const points = q?.charts?.probability_vs_market ?? [];
-  if (!q?.available || !points.length) return null;
-  return (
-    <div className="grid gap-5 lg:grid-cols-2">
-      <CandidateScatter points={points} targetDate={q.latest_target_date} />
-      <EdgeByPriceChart s={s} />
-    </div>
   );
 }

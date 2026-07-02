@@ -1,24 +1,27 @@
 import { Icon } from "@iconify/react";
 import { pct } from "../../lib/data";
 import { money, useStrategyLab, type StrategyLab } from "../../lib/strategy";
+import { useHashRoute } from "../../lib/useHashRoute";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
 import { Finding } from "../ui/Finding";
 import { PnlHeader } from "../strategy/PnlHeader";
 import { EquityCurve } from "../strategy/EquityCurve";
-import { TradesTable } from "../strategy/TradesTable";
 import { MoversCard } from "../strategy/MoversCard";
 import { Learnings } from "../strategy/Learnings";
 import { BacktestStats } from "../strategy/BacktestStats";
 import { ResearchNotes } from "../strategy/ResearchNotes";
-import { ProfilesPanel } from "../strategy/ProfilesPanel";
+import { ProfileExplorer } from "../strategy/ProfileExplorer";
 import { GateFunnel } from "../strategy/GateFunnel";
-import { SignalQualityPanel } from "../strategy/SignalQualityPanel";
 import { CalibrationCompare } from "../strategy/CalibrationCompare";
 import { ReadinessPanel } from "../strategy/ReadinessPanel";
 import { OpsHealth } from "../strategy/OpsHealth";
 import { ExitPolicyCard } from "../strategy/ExitPolicyCard";
+import { OpenBook } from "../strategy/OpenBook";
+import { MonitorLog } from "../strategy/MonitorLog";
+import { LedgerTable } from "../strategy/LedgerTable";
+import { DailyActivity } from "../strategy/DailyActivity";
 
 function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const t = s.daily_summary?.totals;
@@ -79,8 +82,195 @@ function ReadinessFinding({ s }: { s: StrategyLab }) {
   );
 }
 
+function DeskFinding({ s }: { s: StrategyLab }) {
+  const sum = s.paper_trading?.summary;
+  const exits = s.daily_summary?.exit_reasons;
+  if (!sum) return null;
+  const tp = exits?.closed_take_profit ?? 0;
+  const sl = exits?.closed_stop_loss ?? 0;
+  const settled = exits?.held_to_settlement ?? 0;
+  return (
+    <Finding>
+      The book is currently <strong>flat</strong>: {sum.open_positions} open position{sum.open_positions === 1 ? "" : "s"} and{" "}
+      {sum.pending_limit_orders ?? 0} pending order{(sum.pending_limit_orders ?? 0) === 1 ? "" : "s"}, with{" "}
+      <strong>${(sum.open_risk ?? 0).toFixed(2)}</strong> at risk. Of the window's closed trades, <strong>{tp}</strong> hit
+      take-profit, <strong>{sl}</strong> hit stop-loss, and <strong>{settled}</strong> ran to settlement — every exit initiated
+      by the monitor's rules, none by hand.
+    </Finding>
+  );
+}
+
+function TabLink({ href, active, icon, children }: { href: string; active: boolean; icon: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      onClick={() => {
+        // Re-clicking the active tab fires no hashchange, so scroll up manually.
+        if (active) window.scrollTo({ top: 0 });
+      }}
+      aria-current={active ? "page" : undefined}
+      className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium no-underline ring-1 transition-colors ${
+        active
+          ? "bg-accent-soft text-[color:var(--accent-text)] ring-accent/30"
+          : "text-muted ring-border/70 hover:bg-surface-secondary hover:text-foreground"
+      }`}
+    >
+      <Icon icon={icon} className="size-4" aria-hidden="true" />
+      {children}
+    </a>
+  );
+}
+
+function LabOverviewTab({ s }: { s: StrategyLab }) {
+  return (
+    <>
+      <section className="scroll-mt-24">
+        <SectionHeading index="01" eyebrow="Track record" title="Paper equity over the window" sub="Cumulative realized P&L against the starting bankroll — both books combined." />
+        <Reveal>
+          <EquityCurve s={s} />
+        </Reveal>
+        <TrackRecordFinding s={s} />
+        <Reveal className="mt-5">
+          <MoversCard s={s} />
+        </Reveal>
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="02"
+          eyebrow="Risk profiles"
+          title="Two books, one engine"
+          sub="The same signals flow through two isolated risk profiles. Toggle between them — each book tells its own story with its own gates, charts, and lessons."
+        />
+        <Reveal>
+          <ProfileExplorer s={s} />
+        </Reveal>
+        <Finding>
+          The headline P&L is dominated by the <strong>research</strong> book, which intentionally trades marginal
+          signals at $1–5 stakes to buy data. The <strong>live</strong> candidate book trades the same engine with
+          real-money gates and has barely resolved any positions — by design it stays statistically quiet until its
+          stricter rules find genuinely clean setups.
+        </Finding>
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="03"
+          eyebrow="Signal pipeline"
+          title="From 46,000 scans to a handful of trades"
+          sub="Every 15 minutes the AWS runtime re-prices every bracket and side, then the gate stack rejects nearly everything."
+        />
+        <Reveal>
+          <GateFunnel s={s} />
+        </Reveal>
+        <GauntletFinding s={s} />
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="04"
+          eyebrow="Self-critique"
+          title="What the window taught the engine"
+          sub="Auto-generated learnings, the changes the strategy recommends to itself, and the champion/challenger rule that decides which calibration is allowed to execute."
+        />
+        <Reveal>
+          <Learnings s={s} />
+        </Reveal>
+        <Reveal className="mt-5">
+          <CalibrationCompare s={s} />
+        </Reveal>
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="05"
+          eyebrow="Go-live gate"
+          title="Would you trade real money with this? The engine says no."
+          sub="A six-check readiness gate recomputed on every refresh. Until all six pass, live orders stay disabled in code."
+        />
+        <Reveal>
+          <ReadinessPanel s={s} />
+        </Reveal>
+        <ReadinessFinding s={s} />
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="06"
+          eyebrow="Operations"
+          title="The machine that runs itself"
+          sub="Unattended AWS timers, tens of thousands of snapshots, monitored exits, and health checks on every upstream feed."
+        />
+        <Reveal className="mb-5">
+          <OpsHealth s={s} />
+        </Reveal>
+        <Reveal>
+          <ExitPolicyCard s={s} />
+        </Reveal>
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading index="07" eyebrow="Backtest" title="From raw scans to approved trades" sub="The dedup funnel behind the metrics, plus a glossary for reading them honestly." />
+        <Reveal className="mb-5">
+          <BacktestStats s={s} />
+        </Reveal>
+        <Reveal>
+          <ResearchNotes s={s} />
+        </Reveal>
+      </section>
+    </>
+  );
+}
+
+function TradesTab({ s }: { s: StrategyLab }) {
+  return (
+    <>
+      <section className="scroll-mt-24">
+        <SectionHeading index="01" eyebrow="The book right now" title="Open exposure, live from the runtime" sub="Open positions, pending limit orders, and what the monitor is holding — flat is a position too." />
+        <Reveal>
+          <OpenBook s={s} />
+        </Reveal>
+        <DeskFinding s={s} />
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading index="02" eyebrow="Monitor log" title="Rule-based exits, as they happened" sub="The monitor's most recent closes — take-profits, stop-losses, and model vetoes, timestamped." />
+        <Reveal>
+          <MonitorLog s={s} />
+        </Reveal>
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="03"
+          eyebrow="Full ledger"
+          title="Every closed position, in detail"
+          sub="Entry to exit with the edge the engine saw at entry, its quality score, the settled high, and how the exit rule fired."
+        />
+        <Reveal>
+          <LedgerTable s={s} detailed />
+        </Reveal>
+      </section>
+
+      <section className="scroll-mt-24">
+        <SectionHeading
+          index="04"
+          eyebrow="Daily activity"
+          title="Day by day: scans, entries, and verification"
+          sub="Scanning volume, approvals, trades, P&L, and how the forecast verified against the settled high."
+        />
+        <Reveal>
+          <DailyActivity s={s} />
+        </Reveal>
+      </section>
+    </>
+  );
+}
+
 export default function StrategyLabView() {
   const { data: s, error } = useStrategyLab();
+  const { sub } = useHashRoute();
+  const isTrades = sub === "trades";
 
   return (
     <>
@@ -114,110 +304,16 @@ export default function StrategyLabView() {
 
             <PnlHeader s={s} />
 
-            <section className="scroll-mt-24">
-              <SectionHeading index="01" eyebrow="Track record" title="Paper equity over the window" sub="Cumulative realized P&L against the starting bankroll — both books combined." />
-              <Reveal>
-                <EquityCurve s={s} />
-              </Reveal>
-              <TrackRecordFinding s={s} />
-              <Reveal className="mt-5">
-                <MoversCard s={s} />
-              </Reveal>
-            </section>
+            <nav aria-label="Strategy Lab tabs" className="mt-8 flex flex-wrap gap-2.5">
+              <TabLink href="#/lab" active={!isTrades} icon="solar:chart-square-bold">
+                Lab overview
+              </TabLink>
+              <TabLink href="#/lab/trades" active={isTrades} icon="solar:clipboard-list-bold">
+                Trading desk
+              </TabLink>
+            </nav>
 
-            <section className="scroll-mt-24">
-              <SectionHeading
-                index="02"
-                eyebrow="Risk profiles"
-                title="Two books, one engine"
-                sub="The same signals flow through two isolated risk profiles: a strict real-money candidate and a loose experimental collector. Comparing them is the experiment."
-              />
-              <Reveal>
-                <ProfilesPanel s={s} />
-              </Reveal>
-              <Finding>
-                The headline P&L is dominated by the <strong>research</strong> book, which intentionally trades marginal
-                signals at $1–5 stakes to buy data. The <strong>live</strong> candidate book trades the same engine with
-                real-money gates and has barely resolved any positions — by design it stays statistically quiet until its
-                stricter rules find genuinely clean setups.
-              </Finding>
-            </section>
-
-            <section className="scroll-mt-24">
-              <SectionHeading index="03" eyebrow="Ledger" title="Recent closed positions" sub="The most recent settled paper trades, newest first, tagged by book." />
-              <Reveal>
-                <TradesTable s={s} />
-              </Reveal>
-            </section>
-
-            <section className="scroll-mt-24">
-              <SectionHeading
-                index="04"
-                eyebrow="Signal pipeline"
-                title="From 46,000 scans to a handful of trades"
-                sub="Every 15 minutes the AWS runtime re-prices every bracket and side, then the gate stack rejects nearly everything."
-              />
-              <Reveal className="mb-5">
-                <GateFunnel s={s} />
-              </Reveal>
-              <Reveal>
-                <SignalQualityPanel s={s} />
-              </Reveal>
-              <GauntletFinding s={s} />
-            </section>
-
-            <section className="scroll-mt-24">
-              <SectionHeading
-                index="05"
-                eyebrow="Self-critique"
-                title="What the window taught the engine"
-                sub="Auto-generated learnings, the changes the strategy recommends to itself, and the champion/challenger rule that decides which calibration is allowed to execute."
-              />
-              <Reveal>
-                <Learnings s={s} />
-              </Reveal>
-              <Reveal className="mt-5">
-                <CalibrationCompare s={s} />
-              </Reveal>
-            </section>
-
-            <section className="scroll-mt-24">
-              <SectionHeading
-                index="06"
-                eyebrow="Go-live gate"
-                title="Would you trade real money with this? The engine says no."
-                sub="A six-check readiness gate recomputed on every refresh. Until all six pass, live orders stay disabled in code."
-              />
-              <Reveal>
-                <ReadinessPanel s={s} />
-              </Reveal>
-              <ReadinessFinding s={s} />
-            </section>
-
-            <section className="scroll-mt-24">
-              <SectionHeading
-                index="07"
-                eyebrow="Operations"
-                title="The machine that runs itself"
-                sub="Unattended AWS timers, tens of thousands of snapshots, monitored exits, and health checks on every upstream feed."
-              />
-              <Reveal className="mb-5">
-                <OpsHealth s={s} />
-              </Reveal>
-              <Reveal>
-                <ExitPolicyCard s={s} />
-              </Reveal>
-            </section>
-
-            <section className="scroll-mt-24">
-              <SectionHeading index="08" eyebrow="Backtest" title="From raw scans to approved trades" sub="The dedup funnel behind the metrics, plus a glossary for reading them honestly." />
-              <Reveal className="mb-5">
-                <BacktestStats s={s} />
-              </Reveal>
-              <Reveal>
-                <ResearchNotes s={s} />
-              </Reveal>
-            </section>
+            {isTrades ? <TradesTab s={s} /> : <LabOverviewTab s={s} />}
           </>
         )}
       </main>
