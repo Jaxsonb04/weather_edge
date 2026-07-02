@@ -29,6 +29,20 @@ export function TradesTable({ s }: { s: StrategyLab }) {
         </div>
       ),
     },
+    {
+      id: "profile",
+      header: "Book",
+      headerClassName: HEAD,
+      cell: (d) => (
+        <span
+          className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${
+            d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"
+          }`}
+        >
+          {d.risk_profile}
+        </span>
+      ),
+    },
     { id: "date", header: "Target", accessorKey: "target_date", headerClassName: HEAD, cell: (d) => <span className="tnum text-muted">{d.target_date.slice(5)}</span> },
     { id: "contracts", header: "Qty", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum">{d.contracts}</span> },
     { id: "entry", header: "Entry", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum text-muted">{cents(d.entry_price)}</span> },

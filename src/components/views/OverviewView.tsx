@@ -1,4 +1,4 @@
-import { targetLabel, type DashboardData } from "../../lib/data";
+import { f1, pct, targetLabel, type DashboardData } from "../../lib/data";
 import { Hero } from "../hero/Hero";
 import { SkillStrip } from "../kpi/SkillStrip";
 import { PipelineStepper } from "../pipeline/PipelineStepper";
@@ -6,7 +6,9 @@ import { ForecastInputs } from "../market/ForecastInputs";
 import { DecisionCard } from "../market/DecisionCard";
 import { EdgeChart } from "../market/EdgeChart";
 import { MarketBook } from "../market/MarketBook";
+import { SystemHighlights } from "../overview/SystemHighlights";
 import { SectionHeading } from "../ui/SectionHeading";
+import { Finding } from "../ui/Finding";
 import { Reveal } from "../ui/Reveal";
 
 export function OverviewView({ data }: { data: DashboardData }) {
@@ -15,6 +17,7 @@ export function OverviewView({ data }: { data: DashboardData }) {
     return <div className="grid min-h-[60vh] place-items-center text-sm text-muted">No active forecast targets right now.</div>;
   }
   const today = signal.targets[0];
+  const mc = today.market_consensus;
 
   return (
     <>
@@ -50,6 +53,18 @@ export function OverviewView({ data }: { data: DashboardData }) {
           <Reveal>
             <EdgeChart target={today} />
           </Reveal>
+          {mc?.available && (
+            <Finding>
+              Right now the model reads the {targetLabel(today.target_date).toLowerCase()} high at{" "}
+              <strong>{f1(mc.model_high_f)}</strong> while the market implies <strong>{f1(mc.implied_high_f)}</strong> — a{" "}
+              <strong>{mc.model_minus_market_f > 0 ? "+" : ""}{Math.round(mc.model_minus_market_f * 10) / 10}°F</strong> disagreement.
+              The crowd's favorite bracket is <strong>{mc.modal_bin_label}</strong> at {pct(mc.modal_probability, 0)}, and the
+              book carries a {pct(mc.overround, 1)} overround — the tax any edge must beat before it is real. The engine
+              approved <strong>{signal.summary.approved_signal_count}</strong> signal
+              {signal.summary.approved_signal_count === 1 ? "" : "s"} on the latest scan; when the gap doesn't clear fees and
+              gates, standing down is the correct trade.
+            </Finding>
+          )}
         </section>
 
         <section id="book" className="scroll-mt-24">
@@ -61,6 +76,18 @@ export function OverviewView({ data }: { data: DashboardData }) {
           />
           <Reveal>
             <MarketBook target={today} />
+          </Reveal>
+        </section>
+
+        <section id="system" className="scroll-mt-24">
+          <SectionHeading
+            index="04"
+            eyebrow="Under the hood"
+            title="A trading system, not a script"
+            sub="What's actually running behind this page: a forecasting stack, a market microstructure engine, and the production discipline that keeps it honest."
+          />
+          <Reveal>
+            <SystemHighlights />
           </Reveal>
         </section>
       </main>
