@@ -285,11 +285,15 @@ LIVE_PROFILE_OVERRIDES = {
     # through ungated), and size YES case-by-case off the lower bound.
     "cheap_tail_max_ask": 0.15,
     "yes_estimation_shrink": True,
-    # Block the warm/hot regime where the forecaster is anti-calibrated (cohort
-    # Brier ~0.96). Self-clears by editing this list once recalibration earns the
-    # cohort back. Scoped to balanced; the explorer profiles still trade them to
-    # collect the data that recalibration needs.
-    "blocked_forecast_cohorts": (WARM_COHORT, HOT_COHORT),
+    # WARM UNBLOCKED (2026-07-02, Phase 2a). The "Brier ~0.96" that justified the
+    # warm block was the BLEND's number; the served emos_wmean distribution is
+    # calibrated on warm (walk-forward shared-sigma Brier 0.895, on par with cold
+    # 0.903 / normal 0.862 -- see docs/PHASE0-findings.md). Warm is the dominant
+    # summer regime, so blocking it left the book idle exactly when it should
+    # trade. HOT stays blocked here: it is genuinely harder (CRPS ~2.2 vs ~1.2)
+    # and rare, so it is left to the research collector and to size-gating
+    # (posterior-mean Kelly + its wider sigma) rather than an outright block.
+    "blocked_forecast_cohorts": (HOT_COHORT,),
     "cheap_tail_min_yes_bid_size": 10.0,
     "cheap_tail_min_probability_lcb": 0.09,
     "cheap_tail_min_edge_lcb": 0.03,
@@ -305,6 +309,14 @@ LIVE_PROFILE_OVERRIDES = {
     # budget sits below the per-position cap also deploy more -- more swing on the
     # days the position cap is NOT the binding lever. PENDING walk-forward validation.
     "fractional_kelly": 0.30,
+    # Posterior-mean Kelly ON as a light safety valve (Phase 2b) now that warm is
+    # unblocked: it does NOT reduce trade frequency, only per-trade size, scaling
+    # up automatically as a cohort proves out. A GENEROUS 0.4 floor keeps real
+    # size on unproven cohorts (0.4 x 0.30 fractional Kelly) so the book stays
+    # active rather than idle -- raise the floor toward 1.0 for more aggression,
+    # lower it to stand down harder on unproven regimes.
+    "posterior_mean_kelly_enabled": True,
+    "posterior_mean_kelly_floor": 0.4,
     # Size off a less-pessimistic blend of the point estimate and its lower
     # bound rather than the pure LCB. kelly_lcb_weight=1.0 sized off the LCB
     # alone, which on a typical favorite (point ~0.94 vs LCB ~0.89) cut the Kelly

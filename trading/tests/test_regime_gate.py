@@ -50,14 +50,16 @@ def test_temperature_cohort_boundaries():
     assert temperature_cohort(80.0) == HOT_COHORT
 
 
-def test_live_blocks_warm_and_hot_forecast_cohorts():
+def test_live_blocks_hot_but_no_longer_warm():
+    # Phase 2a: warm is unblocked (emos_wmean is calibrated on warm); hot stays
+    # blocked. The regime reason must fire for hot and NOT for warm.
     market, probability = _no_favorite()
     evaluator = TradeEvaluator(strategy_config_for_profile("live"))
     warm = evaluator.evaluate_market(market, probability, bankroll=1000, side="NO", forecast_high_f=75.0)
     hot = evaluator.evaluate_market(market, probability, bankroll=1000, side="NO", forecast_high_f=85.0)
-    assert not warm.approved
-    assert any("regime" in r for r in warm.reasons)
+    assert not any("regime" in r for r in warm.reasons)  # warm no longer regime-blocked
     assert not hot.approved
+    assert any("regime" in r for r in hot.reasons)
 
 
 def test_live_does_not_regime_block_cold_and_normal_cohorts():
