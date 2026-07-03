@@ -9,6 +9,7 @@ from forecast_postproc_backtest import (
     MIN_CONSENSUS_MODELS,
     DayScore,
     PredictorScore,
+    brier_by_cohort,
     brier_with_shared_sigma,
     build_climatology,
     crps_gate,
@@ -174,6 +175,27 @@ def test_brier_sigma_fallback_chain_does_not_crash():
     score.per_day.append(DayScore("2025-06-10", 70.0, 2.0, 70.0, 0.0, 0.0, 0.0, "warm"))
     assert brier_with_shared_sigma(score, {"overall": 2.0}) is not None  # cohort -> overall
     assert brier_with_shared_sigma(score, {}) is not None                # -> SIGMA_FLOOR_F
+
+
+def test_brier_by_cohort_splits_and_matches_aggregate_within_cohort():
+    # Two warm days (biased) and two hot days (accurate): the cohort split must
+    # isolate the biased-warm penalty from the accurate-hot calibration, and a
+    # cohort with no days must report None rather than crash.
+    score = PredictorScore(name="x")
+    for date_str in ("2025-06-01", "2025-06-02"):  # warm, off by 4F
+        score.per_day.append(DayScore(date_str, 74.0, 2.0, 70.0, 4.0, 4.0, 0.0, "warm"))
+    for date_str in ("2025-07-01", "2025-07-02"):  # hot, on target
+        score.per_day.append(DayScore(date_str, 82.0, 2.0, 82.0, 0.0, 0.0, 0.0, "hot"))
+
+    shared = {"warm": 2.0, "hot": 2.0, "overall": 2.0}
+    by_cohort = brier_by_cohort(score, shared)
+    # The biased-warm cohort must score worse (higher Brier) than accurate-hot.
+    assert by_cohort["warm"] > by_cohort["hot"]
+    # A cohort with no scored days is reported as None, not zero.
+    assert by_cohort["cold"] is None
+    # Restricting the aggregate to one cohort's days reproduces that cohort's cell.
+    warm_only = PredictorScore(name="x", per_day=[d for d in score.per_day if d.settled_cohort == "warm"])
+    assert abs(by_cohort["warm"] - brier_with_shared_sigma(warm_only, shared)) < 1e-12
 
 
 def test_crps_gate_insufficient_overlap_returns_none():

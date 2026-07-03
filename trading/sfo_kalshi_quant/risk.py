@@ -11,11 +11,20 @@ from .fees import (
     quadratic_fee_per_contract,
 )
 from .models import BucketProbability, MarketBin, TradeDecision
+from .posterior_kelly import PosteriorKellyModel
 
 
 class TradeEvaluator:
-    def __init__(self, config: StrategyConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: StrategyConfig | None = None,
+        *,
+        sizing_model: PosteriorKellyModel | None = None,
+    ) -> None:
         self.config = config or StrategyConfig()
+        # Optional posterior-mean Kelly model (Phase 2b). Only consulted when
+        # config.posterior_mean_kelly_enabled is True; None -> frozen baseline.
+        self.sizing_model = sizing_model
 
     def evaluate_market(
         self,
@@ -217,6 +226,20 @@ class TradeEvaluator:
             )
         kelly = kelly_fraction_spent(sizing_probability, cost)
         kelly *= self.config.fractional_kelly
+        # Phase 2b: scale the base fractional-Kelly by the cohort's demonstrated
+        # calibration from the settled journal. Size grows only as a real edge is
+        # proven and shrinks on cohorts the engine keeps losing. Strict no-op
+        # (bit-identical) when disabled or no model was injected.
+        if self.config.posterior_mean_kelly_enabled and self.sizing_model is not None:
+            cohort = (
+                temperature_cohort(forecast_high_f)
+                if forecast_high_f is not None
+                else None
+            )
+            # Pure size adjustment -- NOT a rejection. ``reasons`` is the rejection
+            # list (approval is ``not reasons``), so the haircut must never append
+            # to it; its effect is visible in the reduced contract count.
+            kelly *= self.sizing_model.size_multiplier(cohort)
         risk_budget = bankroll * self.config.max_position_risk_pct
         kelly_budget = bankroll * kelly
         if kelly_budget <= risk_budget:

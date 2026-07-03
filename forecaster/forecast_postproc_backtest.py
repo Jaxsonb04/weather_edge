@@ -307,6 +307,29 @@ def brier_with_shared_sigma(score: PredictorScore, shared_sigmas: dict[str, floa
     return round(total / score.days, 4)
 
 
+def brier_by_cohort(
+    score: PredictorScore, shared_sigmas: dict[str, float]
+) -> dict[str, float | None]:
+    """Per-settled-cohort mean multi-category Brier (shared sigma, like the
+    aggregate ``brier_with_shared_sigma``).
+
+    The warm/hot trade block is justified by cohort *Brier* (~0.96), not CRPS, so
+    the cohort Brier row is what tells us whether a post-processor actually earns
+    a blocked cohort back -- a sharper CRPS with an uncalibrated Brier would not.
+    """
+
+    out: dict[str, float | None] = {}
+    for cohort in COHORTS:
+        days = [d for d in score.per_day if d.settled_cohort == cohort]
+        if not days:
+            out[cohort] = None
+            continue
+        sigma = shared_sigmas.get(cohort) or shared_sigmas.get("overall") or SIGMA_FLOOR_F
+        total = sum(_multicat_brier(d.mu, sigma, int(round(d.truth))) for d in days)
+        out[cohort] = round(total / len(days), 4)
+    return out
+
+
 def crps_gate(candidate: PredictorScore, reference: PredictorScore) -> dict:
     """DM + block-bootstrap on per-day (candidate - reference) CRPS deltas.
 
@@ -333,6 +356,45 @@ def crps_gate(candidate: PredictorScore, reference: PredictorScore) -> dict:
 # Orchestration
 # --------------------------------------------------------------------------- #
 
+def recalibrated_lookup_predictions(
+    base_preds: dict[str, tuple[float, float]],
+    truth: dict[str, float],
+    *,
+    shrinkage_k: float = 40.0,
+    min_train: int = 60,
+) -> dict[str, tuple[float, float]]:
+    """Rolling-origin per-cohort recalibration of a ``(mu, sigma)`` lookup.
+
+    For each date, fit the per-cohort shift+scale correction (Phase 1a) ONLY on
+    strictly-earlier dates that already have settled truth -- leakage-safe, the
+    same discipline the EMOS arms use -- then apply the correction for that
+    date's *predicted* cohort. Days before ``min_train`` settled history pass
+    through unchanged. This is the honest OOS test of whether the recalibration
+    earns the blocked warm/hot cohorts back before it is wired into the engine.
+    """
+
+    from sfo_kalshi_quant.recalibration import fit_by_cohort  # trading-layer core
+
+    out: dict[str, tuple[float, float]] = {}
+    history: list[tuple[float, float, float, str]] = []  # (mu, sigma, realized, cohort)
+    for date_str in sorted(base_preds):
+        mu, sigma = base_preds[date_str]
+        cohort = predicted_temperature_cohort(mu)
+        if len(history) >= min_train:
+            by_cohort: dict[str, list[tuple[float, float, float]]] = {}
+            for hmu, hsig, hy, hc in history:
+                by_cohort.setdefault(hc, []).append((hmu, hsig, hy))
+            recal = fit_by_cohort(by_cohort, shrinkage_k=shrinkage_k).get(cohort)
+            if recal is not None:
+                mu, sigma = recal.apply(mu, sigma)
+        out[date_str] = (mu, sigma)
+        # Record truth AFTER predicting so date_str never trains on its own outcome.
+        if date_str in truth:
+            base_mu, base_sigma = base_preds[date_str]
+            history.append((base_mu, base_sigma, truth[date_str], cohort))
+    return out
+
+
 def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> dict:
     truth = load_clisfo_truth(conn)
     nwp_by_date = load_nwp_forecasts(conn, lead_days)
@@ -346,6 +408,8 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
     # Phase 4 candidate upgrades, gated against emos_ngr (ship only if they win OOS).
     emos_wmean_preds = emos_ngr_predictions(nwp_dates, truth, nwp_by_date, weight_mode="inv_var")
     emos_anen_blend = blend_gaussian_predictions(emos_preds, analog_preds)
+    # Phase 1a: per-cohort recalibration on top of the winning emos_wmean arm.
+    emos_wmean_recal = recalibrated_lookup_predictions(emos_wmean_preds, truth)
 
     predictors = {
         "climatology": make_climatology_predictor(climatology),
@@ -355,6 +419,7 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
         "analog_ens": make_lookup_predictor(analog_preds),
         "emos_wmean": make_lookup_predictor(emos_wmean_preds),
         "emos_anen_blend": make_lookup_predictor(emos_anen_blend),
+        "emos_wmean_recal": make_lookup_predictor(emos_wmean_recal),
     }
     scores = {name: score_predictor(name, fn, truth) for name, fn in predictors.items()}
 
@@ -382,6 +447,7 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
         "scores": scores,
         "shared_sigmas": shared_sigmas,
         "brier": {name: brier_with_shared_sigma(s, shared_sigmas) for name, s in scores.items()},
+        "brier_by_cohort": {name: brier_by_cohort(s, shared_sigmas) for name, s in scores.items()},
         "consensus_model_counts": consensus_model_counts,
         "gates": {
             name: crps_gate(s, reference)
@@ -426,6 +492,19 @@ def _print_report(result: dict) -> None:
         cells = " ".join(f"{(by_cohort[c] if by_cohort[c] is not None else float('nan')):>8.3f}" for c in COHORTS)
         print(f"{name:16s} {cells}")
 
+    print("\nBrier by settled cohort (shared sigma; the warm/hot trade block's own metric):")
+    print(f"{'predictor':16s} " + " ".join(f"{c:>8s}" for c in COHORTS))
+    brier_cohorts = result.get("brier_by_cohort") or {}
+    for name, score in result["scores"].items():
+        if not score.per_day:
+            continue
+        by_cohort = brier_cohorts.get(name) or {}
+        cells = " ".join(
+            f"{(by_cohort.get(c) if by_cohort.get(c) is not None else float('nan')):>8.3f}"
+            for c in COHORTS
+        )
+        print(f"{name:16s} {cells}")
+
     if result["reference"] == "climatology":
         print(
             "\nNote: climatology is an in-sample (all-years) reference, so it is a "
@@ -464,7 +543,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--baseline",
         default="baseline_blend",
-        choices=("baseline_blend", "climatology", "nwp_consensus", "emos_ngr", "analog_ens"),
+        choices=(
+            "baseline_blend",
+            "climatology",
+            "nwp_consensus",
+            "emos_ngr",
+            "analog_ens",
+            "emos_wmean",
+            "emos_wmean_recal",
+        ),
         help="reference arm for the CRPS gate",
     )
     args = parser.parse_args(argv)

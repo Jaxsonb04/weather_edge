@@ -159,6 +159,19 @@ class StrategyConfig:
     # CLI/report path degrades to residual calibration and Strategy Lab health
     # should show the missing live EMOS target.
     emos_distribution_enabled: bool = False
+    # Phase 2b -- posterior-mean Kelly. When True and a PosteriorKellyModel is
+    # injected, the base fractional_kelly is multiplied by a per-cohort trust
+    # factor learned from the settled journal: size grows only as a real edge is
+    # demonstrated and shrinks on cohorts the engine keeps losing (Baker & McHale
+    # 2013; Chu, Wu & Swartz 2018). Off (identity) by default -- the frozen
+    # baseline; enabled per profile after a walk-forward rescore. The prior is
+    # centered on breakeven so a short record shrinks toward the floor; the floor
+    # keeps a data-collecting profile filling the journal (set 0.0 to stand a
+    # real-money profile down on unproven cohorts).
+    posterior_mean_kelly_enabled: bool = False
+    posterior_mean_kelly_prior_strength: float = 20.0
+    posterior_mean_kelly_floor: float = 0.2
+    posterior_mean_kelly_min_cohort_n: int = 8
     # Smoothing bandwidth (F) applied to the empirical residual histogram so a
     # ~35-sample window stops emitting spurious 0.0 tail bins. 0 disables it
     # (raw histogram counts).

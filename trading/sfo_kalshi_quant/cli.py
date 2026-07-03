@@ -44,6 +44,7 @@ from .ensemble import OpenMeteoEnsembleError, SfoEnsembleClient
 from .exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
     DEFAULT_NO_TAKE_PROFIT_PCT,
+    DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_YES_STOP_LOSS_PCT,
@@ -70,6 +71,7 @@ from .paper import PaperTrader
 from .portfolio import PortfolioPlan, allocate_portfolio
 from .probability import ResidualCalibrator
 from .report import build_daily_report, write_report
+from .posterior_kelly import load_posterior_kelly_model
 from .risk import TradeEvaluator
 from .settlement_day import settlement_clock, settlement_today
 from .settlement import fetch_latest_clisfo, fetch_recent_clisfo_settlements
@@ -1069,6 +1071,21 @@ def _sizing_bankroll(store: PaperStore, config: StrategyConfig, risk_profile: st
     return config.paper_bankroll
 
 
+def _build_sizing_model(config: StrategyConfig, store: PaperStore):
+    """Posterior-mean Kelly model (Phase 2b) from the settled journal, or None
+    when the profile has it disabled -- the frozen-baseline, no-op path."""
+
+    if not config.posterior_mean_kelly_enabled:
+        return None
+    with store.connect() as conn:
+        return load_posterior_kelly_model(
+            conn,
+            prior_strength=config.posterior_mean_kelly_prior_strength,
+            floor=config.posterior_mean_kelly_floor,
+            min_cohort_n=config.posterior_mean_kelly_min_cohort_n,
+        )
+
+
 def _rolling_targets_count() -> int:
     # Kalshi lists SFO events several days out; scanning more of them grows the
     # distinct-candidate universe (and the paper sample) without touching any
@@ -1168,7 +1185,7 @@ def _analyze_one_target(
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(config)
+    evaluator = TradeEvaluator(config, sizing_model=_build_sizing_model(config, store))
     decisions = evaluator.rank(
         markets,
         probabilities,
@@ -1333,7 +1350,7 @@ def _portfolio_scan_one_target(
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(config)
+    evaluator = TradeEvaluator(config, sizing_model=_build_sizing_model(config, store))
     decisions = evaluator.rank(
         markets,
         probabilities,
@@ -1612,7 +1629,7 @@ def _tail_basket_one_target(
     )
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(config)
+    evaluator = TradeEvaluator(config, sizing_model=_build_sizing_model(config, store))
     basket = build_tail_basket(
         markets,
         probabilities,
@@ -2414,6 +2431,13 @@ def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[f
     return float(args.take_profit_pct), float(args.stop_loss_pct)
 
 
+def _settlement_first_no_min_cost_for_order(row) -> float | None:
+    risk_profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
+    if risk_profile == "research":
+        return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
+    return None
+
+
 def _same_day_no_basket_veto_reason(
     store: PaperStore,
     row,
@@ -2562,9 +2586,15 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             model_veto_max_loss_roi=model_veto_max_loss,
             legacy_take_profit_net=entry_cost * (1.0 + take_profit),
             stop_loss_pct=stop_loss_pct,
+            settlement_first_no_min_cost=_settlement_first_no_min_cost_for_order(row),
         )
 
-        if signal.action in ("HOLD", "HOLD_MODEL_VETO", "HOLD_NO_MODEL_READ"):
+        if signal.action in (
+            "HOLD",
+            "HOLD_MODEL_VETO",
+            "HOLD_NO_MODEL_READ",
+            "HOLD_SETTLEMENT_FIRST",
+        ):
             store.record_monitor_snapshot(
                 row,
                 side=side,
