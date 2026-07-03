@@ -172,6 +172,11 @@ class StrategyConfig:
     posterior_mean_kelly_prior_strength: float = 20.0
     posterior_mean_kelly_floor: float = 0.2
     posterior_mean_kelly_min_cohort_n: int = 8
+    # Phase 2c -- joint Kelly. When True, the portfolio re-sizes its directional
+    # legs with the growth-optimal allocation across the mutually exclusive bin
+    # ladder (cross-bin hedging) instead of stacking independent per-bin Kelly
+    # bets, bounded by liquidity and the worst-case-loss cap. Off by default.
+    joint_kelly_enabled: bool = False
     # Smoothing bandwidth (F) applied to the empirical residual histogram so a
     # ~35-sample window stops emitting spurious 0.0 tail bins. 0 disables it
     # (raw histogram counts).
@@ -325,6 +330,9 @@ LIVE_PROFILE_OVERRIDES = {
     # lower it to stand down harder on unproven regimes.
     "posterior_mean_kelly_enabled": True,
     "posterior_mean_kelly_floor": 0.4,
+    # Joint Kelly ON: deploy more capital across hedged bins per event, sized for
+    # growth rather than as independent per-bin bets (Phase 2c).
+    "joint_kelly_enabled": True,
     # Size off a less-pessimistic blend of the point estimate and its lower
     # bound rather than the pure LCB. kelly_lcb_weight=1.0 sized off the LCB
     # alone, which on a typical favorite (point ~0.94 vs LCB ~0.89) cut the Kelly

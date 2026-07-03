@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 from .arbitrage import ArbitrageOpportunity
 from .config import normalize_risk_profile_name
+from .joint_kelly import build_joint_positions, joint_kelly_fractions
 from .models import MarketBin, TradeDecision
 
 
@@ -72,6 +73,8 @@ def allocate_portfolio(
     bankroll: float,
     risk_profile: str | None = None,
     run_id: str | None = None,
+    bin_yes_probs: dict[str, float] | None = None,
+    joint_kelly_enabled: bool = False,
 ) -> PortfolioPlan:
     limits = portfolio_limits_for_profile(risk_profile, bankroll)
     run_id = run_id or f"PF-{uuid.uuid4().hex[:12]}"
@@ -151,6 +154,17 @@ def allocate_portfolio(
         elif sleeve == "research_explore":
             explore_spend += spend
 
+    # Phase 2c: re-size the directional legs jointly across the bin ladder, so a
+    # basket of hedged bins is grown-optimal rather than a stack of independent
+    # per-bin Kelly bets. Opt-in; a strict no-op when disabled or without a ladder.
+    if joint_kelly_enabled and bin_yes_probs:
+        selected = _joint_resize_directional(
+            selected,
+            bin_yes_probs,
+            bankroll=limits.bankroll,
+            max_daily_loss=limits.max_daily_loss,
+        )
+
     total_spend = sum(leg.spend for leg in selected)
     expected_profit = sum(leg.expected_profit for leg in selected)
     worst_case = _worst_case_loss(selected)
@@ -184,6 +198,60 @@ def _sleeve_for_decision(decision: TradeDecision, profile: str) -> str | None:
         if profile == "research" and decision.edge > 0.0:
             return "research_explore"
     return None
+
+
+def _joint_resize_directional(
+    legs: list[PortfolioLeg],
+    bin_yes_probs: dict[str, float],
+    *,
+    bankroll: float,
+    max_daily_loss: float,
+) -> list[PortfolioLeg]:
+    """Re-size the non-arbitrage legs with the growth-optimal joint allocation.
+
+    Reuses the greedy selection but replaces each directional leg's per-bin Kelly
+    contract count with its share of the joint (cross-bin-hedged) allocation,
+    bounded by the leg's own liquidity and the portfolio worst-case-loss cap.
+    Arbitrage legs are untouched. Fails safe: on any ladder/leg mismatch, or if the
+    re-size would breach the worst-case cap, the original legs are returned.
+    """
+
+    directional = [leg for leg in legs if leg.sleeve != "arbitrage"]
+    others = [leg for leg in legs if leg.sleeve == "arbitrage"]
+    if not directional or bankroll <= 0:
+        return legs
+
+    bin_keys = sorted(bin_yes_probs)
+    leg_keys = [f"{leg.decision.ticker}|{leg.decision.side}|{i}" for i, leg in enumerate(directional)]
+    specs: list[tuple[str, str, str, float]] = []
+    for key, leg in zip(leg_keys, directional):
+        decision = leg.decision
+        if decision.ticker not in bin_yes_probs or decision.cost_per_contract <= 0:
+            return legs  # ladder does not describe this leg -> do not risk a bad re-size
+        specs.append((key, decision.ticker, decision.side, decision.cost_per_contract))
+
+    positions, scenario_probs = build_joint_positions(bin_keys, bin_yes_probs, specs)
+    cap = max_daily_loss / bankroll if bankroll > 0 else 0.0
+    fractions = joint_kelly_fractions(positions, scenario_probs, total_fraction_cap=cap)
+
+    resized: list[PortfolioLeg] = []
+    for key, leg in zip(leg_keys, directional):
+        decision = leg.decision
+        joint_spend = fractions.get(key, 0.0) * bankroll
+        # Never exceed the leg's available liquidity (the per-bin size already did).
+        ask_size = decision.entry_ask_size or decision.yes_ask_size or 0.0
+        if ask_size > 0:
+            joint_spend = min(joint_spend, ask_size * decision.cost_per_contract)
+        new_decision = _scale_decision(decision, joint_spend)
+        if new_decision is None:
+            resized.append(leg)  # keep the original rather than drop a selected leg
+            continue
+        resized.append(_portfolio_leg(new_decision, sleeve=leg.sleeve, growth_score=leg.growth_score))
+
+    candidate = [*others, *resized]
+    if _worst_case_loss(candidate) > max_daily_loss + 1e-9:
+        return legs  # fail safe: keep the disciplined greedy sizing
+    return candidate
 
 
 def _portfolio_leg(decision: TradeDecision, *, sleeve: str, growth_score: float) -> PortfolioLeg:

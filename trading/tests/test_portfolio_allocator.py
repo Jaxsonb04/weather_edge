@@ -208,3 +208,39 @@ def test_portfolio_worst_case_includes_settlements_outside_selected_yes_bins() -
 
     assert len(plan.legs) == 2
     assert plan.worst_case_loss == 80.0
+
+
+def test_joint_kelly_resizes_directional_legs_within_cap() -> None:
+    # Two NO-favorites on different bins; with the ladder provided and joint
+    # Kelly on, the portfolio re-sizes them as a hedged basket and stays under
+    # the worst-case-loss cap.
+    m1 = _market("70° to 71°", ticker="KXHIGHTSFO-TEST-B70.5", floor=70, cap=71, no_ask=0.75)
+    m2 = _market("72° to 73°", ticker="KXHIGHTSFO-TEST-B72.5", floor=72, cap=73, no_ask=0.75)
+    d1 = _decision(m1, side="NO", spend=50, probability=0.10, edge=0.10, edge_lcb=0.05)
+    d2 = _decision(m2, side="NO", spend=50, probability=0.12, edge=0.10, edge_lcb=0.05)
+    ladder = {m1.ticker: 0.10, m2.ticker: 0.12, "KXHIGHTSFO-TEST-B74.5": 0.05}
+
+    joint = allocate_portfolio(
+        [d1, d2],
+        bankroll=1000,
+        risk_profile="research",
+        bin_yes_probs=ladder,
+        joint_kelly_enabled=True,
+    )
+    assert joint.approved
+    limits = portfolio_limits_for_profile("research", 1000)
+    assert joint.worst_case_loss <= limits.max_daily_loss + 1e-9
+    # Every re-sized leg carries a real position.
+    assert all(leg.decision.recommended_contracts > 0 for leg in joint.legs)
+
+
+def test_joint_kelly_is_noop_without_a_ladder() -> None:
+    m1 = _market("70° to 71°", ticker="KXHIGHTSFO-TEST-B70.5", no_ask=0.75)
+    d1 = _decision(m1, side="NO", spend=50, probability=0.10, edge=0.10, edge_lcb=0.05)
+    off = allocate_portfolio([d1], bankroll=1000, risk_profile="research")
+    on_no_ladder = allocate_portfolio(
+        [d1], bankroll=1000, risk_profile="research", joint_kelly_enabled=True
+    )
+    assert [leg.decision.recommended_contracts for leg in off.legs] == [
+        leg.decision.recommended_contracts for leg in on_no_ladder.legs
+    ]

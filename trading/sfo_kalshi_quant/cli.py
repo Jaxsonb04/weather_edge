@@ -1373,6 +1373,8 @@ def _portfolio_scan_one_target(
         arbitrage_opportunities=opportunities,
         bankroll=paper_bankroll,
         risk_profile=risk_profile,
+        bin_yes_probs={ticker: prob.probability for ticker, prob in probabilities.items()},
+        joint_kelly_enabled=config.joint_kelly_enabled,
     )
 
     entry_allowed = True
