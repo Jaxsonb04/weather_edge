@@ -267,10 +267,18 @@ LIVE_PROFILE_OVERRIDES = {
     # against a modeled 8.7%. Balanced now keeps the conservative statistical
     # floor (edge_lcb >= 0) and differs from conservative only in a slightly
     # lower headline-edge bar and a longer forecast-age allowance.
-    "min_edge": 0.02,
+    # FREQUENCY RETUNE (2026-07-02). The rescore showed balanced approving 0/240
+    # recorded snapshots vs research's 39 -- the headline gates, not the cohort
+    # block, were the wall. Lowered the headline-edge bar (0.02->0.012) and the
+    # posterior floor (0.07->0.05) so more mid-ladder bins clear, now that
+    # posterior-mean Kelly sizes each unproven trade small (frequency up without
+    # betting big on unproven edge). The PROVEN edge_lcb >= 0 floor -- which
+    # fenced off the 3/190 negative-LCB disaster -- is deliberately UNCHANGED.
+    # Validate the win-rate impact on a walk-forward once more settled data exists.
+    "min_edge": 0.012,
     "min_edge_lcb": 0.00,
     "max_spread": 0.07,
-    "max_model_market_gap": 0.15,
+    "max_model_market_gap": 0.20,
     # Balanced previously inherited conservative's strict cheap-tail floors and
     # a 0.10 posterior minimum, so it almost never cleared a tradeable
     # mid-priced bin (spread aside, this was the dominant volume suppressor on
@@ -279,7 +287,7 @@ LIVE_PROFILE_OVERRIDES = {
     # floor that fenced off the 3/190 negative-LCB failure is kept unchanged.
     # PENDING: validate with a walk-forward, after-fee backtest before treating
     # these as final for real money (see docs/codebase_audit_2026-06-15.md).
-    "min_posterior_probability": 0.07,
+    "min_posterior_probability": 0.05,
     # Raise the cheap-tail scrutiny ceiling so the 0.08-0.12 YES longshots that
     # lost live actually get tail-grade gating (the old 0.05 ceiling let them
     # through ungated), and size YES case-by-case off the lower bound.
