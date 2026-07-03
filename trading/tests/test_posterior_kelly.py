@@ -103,12 +103,12 @@ def test_floor_zero_stands_down_a_losing_cohort_completely():
     assert model.size_multiplier("warm_70_79f") == 0.0
 
 
-def test_accumulate_scores_side_wins_and_cohorts():
-    # (side, claimed, cost, resolved_yes, settlement_high_f)
+def test_accumulate_scores_wins_and_cohorts():
+    # (claimed, cost, won, settlement_high_f)
     rows = [
-        ("NO", 0.90, 0.85, 0, 72.0),   # warm, NO wins (resolved_yes=0)
-        ("NO", 0.90, 0.85, 1, 74.0),   # warm, NO loses
-        ("YES", 0.60, 0.50, 1, 65.0),  # cool, YES wins
+        (0.90, 0.85, True, 72.0),   # warm win
+        (0.90, 0.85, False, 74.0),  # warm loss
+        (0.60, 0.50, True, 65.0),   # normal win
     ]
     cohort_records, overall = _accumulate(rows)
     assert overall.n == 3
@@ -121,28 +121,60 @@ def test_accumulate_scores_side_wins_and_cohorts():
 def _seed_orders(conn: sqlite3.Connection, rows: list[tuple]) -> None:
     conn.execute(
         "CREATE TABLE paper_orders (side TEXT, probability REAL, cost_per_contract REAL, "
-        "resolved_yes INTEGER, settlement_high_f REAL, settled_at TEXT)"
+        "resolved_yes INTEGER, settlement_high_f REAL, settled_at TEXT, status TEXT, "
+        "target_date TEXT, strike_type TEXT, floor_strike REAL, cap_strike REAL)"
     )
     conn.executemany(
         "INSERT INTO paper_orders (side, probability, cost_per_contract, resolved_yes, "
-        "settlement_high_f, settled_at) VALUES (?,?,?,?,?,?)",
+        "settlement_high_f, settled_at, status, target_date, strike_type, floor_strike, "
+        "cap_strike) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()
 
 
-def test_load_posterior_kelly_model_reads_only_settled_orders():
+def test_load_counts_settled_actual_outcomes():
     conn = sqlite3.connect(":memory:")
     _seed_orders(
         conn,
         [
-            ("NO", 0.92, 0.85, 0, 65.0, "2026-06-15T00:00:00Z"),   # settled, NO win
-            ("NO", 0.92, 0.85, 0, 66.0, "2026-06-16T00:00:00Z"),   # settled, NO win
-            ("YES", 0.60, 0.50, 1, 64.0, None),                    # unsettled -> ignored
+            # side, prob, cost, resolved_yes, high, settled_at, status, date, stype, floor, cap
+            ("NO", 0.92, 0.85, 0, 65.0, "t", "PAPER_SETTLED", "2026-06-15", "range", 64.0, 67.0),
+            ("NO", 0.92, 0.85, 0, 66.0, "t", "PAPER_SETTLED", "2026-06-16", "range", 64.0, 67.0),
         ],
     )
-    model = load_posterior_kelly_model(conn, prior_strength=20.0, floor=0.2, min_cohort_n=8)
-    assert model.overall.n == 2  # the unsettled order is excluded
-    assert model.overall.wins == 2.0
-    # Normal cohort thin (n=2 < 8) -> multiplier resolves via the pooled record.
+    model = load_posterior_kelly_model(
+        conn, include_counterfactual_closed=False, prior_strength=20.0, floor=0.2, min_cohort_n=8
+    )
+    assert model.overall.n == 2
+    assert model.overall.wins == 2.0  # both NO settled winners
     assert 0.2 <= model.size_multiplier("normal_60_69f") <= 1.0
+
+
+def test_counterfactual_closed_orders_are_scored_only_on_known_high_dates():
+    conn = sqlite3.connect(":memory:")
+    _seed_orders(
+        conn,
+        [
+            # A settled NO winner establishes the authoritative high (66) for 6-15.
+            ("NO", 0.92, 0.85, 0, 66.0, "t", "PAPER_SETTLED", "2026-06-15", "less", None, 70.0),
+            # Closed YES on the 70-72 bin, same date: high 66 -> bin resolves NO -> YES loses.
+            ("YES", 0.30, 0.28, None, None, None, "PAPER_CLOSED", "2026-06-15", "range", 70.0, 72.0),
+            # Closed order on a date with NO authoritative high -> skipped (no obs-max proxy).
+            ("YES", 0.30, 0.28, None, None, None, "PAPER_CLOSED", "2026-06-20", "range", 70.0, 72.0),
+        ],
+    )
+    full = load_posterior_kelly_model(
+        conn, include_counterfactual_closed=True, prior_strength=20.0, floor=0.2, min_cohort_n=8
+    )
+    # 1 settled win + 1 counterfactual loss; the unknown-high closed order is skipped.
+    assert full.overall.n == 2
+    assert full.overall.wins == 1.0
+    # Disabling the counterfactual path leaves only the settled order.
+    held_only = load_posterior_kelly_model(
+        conn, include_counterfactual_closed=False, prior_strength=20.0, floor=0.2, min_cohort_n=8
+    )
+    assert held_only.overall.n == 1
+    assert held_only.overall.wins == 1.0
+    # Seeing the extra loss lowers the demonstrated win-rate -> a smaller multiplier.
+    assert full.size_multiplier("normal_60_69f") <= held_only.size_multiplier("normal_60_69f")

@@ -189,3 +189,27 @@ That refinement makes the model reflect the ACTUAL record, not just the held win
   a walk-forward validates (blocked on more settled trades).
 - Do NOT enable live without the counterfactual refinement + a walk-forward -- with only 14
   settled trades the record is too thin to size real-money-intent stakes off.
+
+## Phase 2b refinement — counterfactual scoring of closed orders (committed)
+
+The loader now also scores early-closed orders by their would-have-settled outcome
+(reusing `clv.side_won`) on dates with an authoritative CLI high. Effect on the real journal:
+
+| record | trades | win rate | claimed | cost | all-cohort multiplier |
+|---|---|---|---|---|---|
+| held-only (settled) | 14 | 100% | 0.926 | 0.858 | 0.71-0.89 |
+| **counterfactual** | **32** | **75%** | 0.856 | 0.771 | **0.20 (floor)** |
+
+The 18 additional closed orders (on the 7 known-high dates) add 10 wins + 8 losses, dropping
+the demonstrated win-rate to 0.75 against a mean cost of 0.77 -- a realized edge of ~0, versus
+the claimed 0.085. So the model correctly collapses EVERY cohort to the size floor: the engine
+has not yet demonstrated a real edge, so it should size at the floor until it does. This is the
+behavior that would have curbed the -44.8 bleed (0.2x instead of full Kelly on the losing book).
+
+Coverage caveat unchanged: only 18 of 57 closed orders are scored (7/17 dates have an
+authoritative high). The IEM CLI backfill would complete it, but the signal is already decisive
+-- even the partial counterfactual flips 100%->75% and floors every multiplier. Default in the
+loader is `include_counterfactual_closed=True`; the CLI uses it.
+
+Two commits on branch `feat/accuracy-trading-uplift` (not pushed): 8659dc31 (Phase 0/1a/2b),
+9906df15 (counterfactual refinement).

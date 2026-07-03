@@ -106,24 +106,24 @@ class PosteriorKellyModel:
         return self.floor + (1.0 - self.floor) * trust
 
 
-def _accumulate(rows: list[tuple[str, float, float, int, float]]) -> tuple[
+def _accumulate(rows: list[tuple[float, float, bool, float]]) -> tuple[
     dict[str, CohortRecord], CohortRecord
 ]:
-    """Build per-cohort + pooled CohortRecords from settled-order tuples.
+    """Build per-cohort + pooled CohortRecords from pre-scored outcome tuples.
 
-    Each row is ``(side, claimed_prob, cost, resolved_yes, settlement_high_f)``.
-    Cohort is the SETTLED regime (available on every settled order); serving keys
-    on the forecast regime, an approximation that is moot while cohorts are thin
-    (they fall back to the pooled record) and self-corrects as the journal grows.
-    A NO side wins when the bin resolved NO (``resolved_yes == 0``).
+    Each row is ``(claimed_prob, cost, won, settlement_high_f)`` -- the outcome
+    (``won``) is resolved by the caller so a settled order (actual) and a closed
+    order (counterfactual would-it-have-won) accumulate through the same path.
+    Cohort is the SETTLED regime; serving keys on the forecast regime, an
+    approximation that is moot while cohorts are thin (they fall back to the
+    pooled record) and self-corrects as the journal grows.
     """
 
     from .config import temperature_cohort
 
     sums: dict[str, list[float]] = {}  # cohort -> [n, wins, sum_claimed, sum_cost]
     overall = [0.0, 0.0, 0.0, 0.0]
-    for side, claimed, cost, resolved_yes, high in rows:
-        won = (resolved_yes == 1) if side.upper() == "YES" else (resolved_yes == 0)
+    for claimed, cost, won, high in rows:
         cohort = temperature_cohort(high)
         bucket = sums.setdefault(cohort, [0.0, 0.0, 0.0, 0.0])
         for acc in (bucket, overall):
@@ -144,24 +144,62 @@ def _accumulate(rows: list[tuple[str, float, float, int, float]]) -> tuple[
     return cohort_records, to_record(overall)
 
 
+def _date_settlement_highs(conn) -> dict[str, float]:
+    """Per-target-date authoritative NWS CLI high from recorded settlements."""
+
+    rows = conn.execute(
+        "SELECT target_date, settlement_high_f FROM paper_orders "
+        "WHERE settlement_high_f IS NOT NULL"
+    ).fetchall()
+    return {target_date: float(high) for target_date, high in rows}
+
+
 def load_posterior_kelly_model(
     conn,
     *,
+    include_counterfactual_closed: bool = True,
     prior_strength: float = _DEFAULT_PRIOR_STRENGTH,
     floor: float = _DEFAULT_FLOOR,
     min_cohort_n: int = _DEFAULT_MIN_COHORT_N,
 ) -> PosteriorKellyModel:
-    """Build the sizing model from settled paper orders in ``paper_trading.db``."""
+    """Build the sizing model from the paper journal.
 
-    rows = conn.execute(
+    Settled orders contribute their ACTUAL outcome. When
+    ``include_counterfactual_closed`` is set, orders closed before settlement also
+    contribute their WOULD-HAVE-SETTLED outcome on the dates where an
+    authoritative CLI high is known -- so the model reflects the orders the engine
+    exited (the source of the observed bleed), not only the ones it held to
+    settlement. Closed orders on dates without an authoritative high are skipped
+    (never scored against the observation-max, which runs below the CLI value).
+    """
+
+    from .clv import side_won  # counterfactual bin outcome (mirrors MarketBin)
+
+    rows: list[tuple[float, float, bool, float]] = []
+
+    for side, claimed, cost, resolved_yes, high in conn.execute(
         "SELECT side, probability, cost_per_contract, resolved_yes, settlement_high_f "
         "FROM paper_orders "
         "WHERE settled_at IS NOT NULL AND resolved_yes IS NOT NULL "
         "AND settlement_high_f IS NOT NULL AND cost_per_contract IS NOT NULL"
-    ).fetchall()
-    cohort_records, overall = _accumulate(
-        [(r[0], float(r[1]), float(r[2]), int(r[3]), float(r[4])) for r in rows]
-    )
+    ).fetchall():
+        won = (int(resolved_yes) == 1) if side.upper() == "YES" else (int(resolved_yes) == 0)
+        rows.append((float(claimed), float(cost), won, float(high)))
+
+    if include_counterfactual_closed:
+        highs = _date_settlement_highs(conn)
+        for side, claimed, cost, target_date, strike_type, floor_strike, cap_strike in conn.execute(
+            "SELECT side, probability, cost_per_contract, target_date, strike_type, "
+            "floor_strike, cap_strike FROM paper_orders "
+            "WHERE status = 'PAPER_CLOSED' AND cost_per_contract IS NOT NULL"
+        ).fetchall():
+            high = highs.get(target_date)
+            if high is None:
+                continue
+            won = side_won(side, strike_type, floor_strike, cap_strike, high)
+            rows.append((float(claimed), float(cost), won, high))
+
+    cohort_records, overall = _accumulate(rows)
     return PosteriorKellyModel(
         cohort_records=cohort_records,
         overall=overall,
