@@ -365,7 +365,11 @@ LIVE_PROFILE_OVERRIDES = {
     "max_target_exposure_pct": 0.18,
     "max_forecast_age_hours": 12.0,
     "max_contracts_per_market": 100.0,
-    "max_source_spread_f": 7.0,
+    # FREQUENCY PUSH (2026-07-03): trade higher-disagreement days too (was 7.0,
+    # matching the research collector) -- posterior-mean Kelly + the source-spread
+    # sigma inflation already size these uncertain days down, so let them trade
+    # rather than sit out. 120 of the 240 rescored rejections were this gate.
+    "max_source_spread_f": 10.0,
     # Size against live paper equity (bankroll + realized PnL) so sizing
     # compounds correctly once the bigger caps let PnL accumulate -- Kelly
     # requires sizing off current wealth (Kelly 1956; Thorp 2006). Scoped to the
@@ -373,12 +377,15 @@ LIVE_PROFILE_OVERRIDES = {
     # so the strict test baseline remains reproducible. Effect is ~nil today
     # (equity ~= $1000) and grows only as the book does.
     "size_against_live_equity": True,
-    # Comfortable far-tail NO entry (see StrategyConfig.comfort_edge_*). Live
-    # blocks near-forecast coin-flip NO bets (the documented loss source) and
-    # sizes up genuine far tails, keeping the positive after-fee edge_lcb floor.
-    # The research collector leaves this OFF so it still records the center bins
-    # the readiness rescore needs to prove the rule actually helps.
+    # Comfortable far-tail NO entry (see StrategyConfig.comfort_edge_*). Kept ON
+    # for the far-tail SIZE BOOST, but the coin-flip BLOCK band is shrunk hard
+    # (block_sigma_mult 1.25 -> 0.4, i.e. ~3.8F -> ~1.2F) as part of the frequency
+    # push: near-money NO bets are now allowed (162 of the 240 rescored rejections
+    # were this gate) and posterior-mean Kelly sizes their thin edge small. Only
+    # the tightest coin-flips within ~1F of the forecast stay blocked. The proven
+    # after-fee edge_lcb >= 0 floor is still the real defense.
     "comfort_edge_enabled": True,
+    "comfort_edge_block_sigma_mult": 0.4,
 }
 
 

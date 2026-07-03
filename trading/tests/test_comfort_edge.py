@@ -100,11 +100,12 @@ def test_comfort_blocks_near_forecast_no_and_boosts_far_tails():
 def test_comfort_distance_scales_with_forecast_sigma():
     market, _ = _no_favorite()
     live = strategy_config_for_profile("live")
-    # A wide-sigma day (sigma 6F) pushes the block band out to 1.25*6=7.5F, so a
-    # forecast 71 (3.5F from the bin) that the floor-sigma day would trade is now
-    # inside the coin-flip band.
+    # After the frequency push the block band is 0.4*sigma (was 1.25). Sigma
+    # scaling is preserved, just narrower: a wide-sigma day (sigma 10F -> band 4F)
+    # still pulls a near-forecast NO bin into the coin-flip band, while a
+    # floor-sigma day (band ~1.2F) would trade the same bin.
     reason, _mult = _comfort_edge_assessment(
-        side="NO", market=market, forecast_high_f=71.0, forecast_sigma_f=6.0, config=live
+        side="NO", market=market, forecast_high_f=68.0, forecast_sigma_f=10.0, config=live
     )
     assert reason is not None
 

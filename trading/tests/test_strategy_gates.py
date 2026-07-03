@@ -687,10 +687,14 @@ def test_live_blocks_trade_when_forecast_sources_disagree():
     calm = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=5.0)
     assert calm.approved, calm.reasons
 
-    # 2026-06-10: every losing entry carried source spread 9.6-11.0F while the
-    # blend missed the settled high by ~4F. Disagreement this large means the
-    # point forecast cannot price brackets.
-    stormy = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=9.6)
+    # Frequency push (2026-07-03): live now trades higher-disagreement days too
+    # (max_source_spread_f 7->10, matching research), sized down by posterior-mean
+    # Kelly + the source-spread sigma inflation. 2026-06-10 caveat still stands --
+    # losing entries carried 9.6-11F spread -- so only spreads ABOVE the 10F bar
+    # are blocked now; validate the win-rate impact on a walk-forward.
+    moderate = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=9.6)
+    assert moderate.approved, moderate.reasons
+    stormy = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=10.5)
     assert not stormy.approved
     assert any("source spread" in reason for reason in stormy.reasons)
 
