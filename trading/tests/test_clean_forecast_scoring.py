@@ -16,7 +16,6 @@ FORECASTER = ROOT / "forecaster"
 if str(FORECASTER) not in sys.path:
     sys.path.insert(0, str(FORECASTER))
 
-import dashboard_payload
 import google_weather_cache
 from forecast_scoring import is_clean_next_day_forecast
 from forecast_validation import chronological_unit_split_masks, forecast_unit_dates
@@ -137,53 +136,6 @@ def test_clean_next_day_forecast_excludes_same_day_lock_and_floor():
         _fetched_iso(date(2026, 6, 3)),
         {"observed_high_decision": {"mode": "floor"}},
     )
-
-
-def test_forecast_success_uses_last_clean_prior_day_snapshot_not_same_day_lock():
-    with tempfile.TemporaryDirectory() as tmp:
-        db_path = Path(tmp) / "weather.db"
-        with sqlite3.connect(db_path) as conn:
-            _create_blend_table(conn)
-            target = date(2026, 6, 4)
-            _insert_blend(
-                conn,
-                target=target,
-                fetched_at=_fetched_iso(date(2026, 6, 3), 12),
-                predicted=65,
-                actual=70,
-                refresh=1,
-            )
-            _insert_blend(
-                conn,
-                target=target,
-                fetched_at=_fetched_iso(date(2026, 6, 3), 23),
-                predicted=69,
-                actual=70,
-                refresh=2,
-            )
-            _insert_blend(
-                conn,
-                target=target,
-                fetched_at=_fetched_iso(target, 10),
-                predicted=70,
-                actual=70,
-                details={"observed_high_decision": {"mode": "lock"}},
-                refresh=3,
-            )
-
-        result = dashboard_payload.load_forecast_success(db_path)
-
-        assert result["available"]
-        assert result["scoredCount"] == 2
-        assert result["allScoredCount"] == 3
-        assert result["excludedOperationalCount"] == 1
-        assert result["dailyMae"] == 1.0
-        assert result["snapshotMae"] == 3.0
-        assert result["dailyRows"][0]["targetDate"] == target.isoformat()
-        assert result["dailyRows"][0]["predicted"] == 69.0
-        assert result["dailyRows"][0]["actual"] == 70.0
-        assert {row["scoreCategory"] for row in result["recentRows"]} == {"clean_next_day"}
-        assert result["sameDayContext"]["count"] == 1
 
 
 def _adaptive_weights_for_db(db_path: Path):

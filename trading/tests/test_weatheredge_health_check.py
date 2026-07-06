@@ -31,7 +31,7 @@ def _make_minimal_project(root: Path) -> Path:
     _write(root, "CONTEXT.md", "# WeatherEdge Context\n")
     _write(root, ".gitignore", ".env\n")
     _write(root, "docs/architecture.md", "# Architecture\n")
-    _write(root, "forecaster/build_dashboard.py", "print('build dashboard')\n")
+    _write(root, "src/App.tsx", "export default function App() { return null }\n")
     _write(root, "forecaster/forecast_data.json", "{}\n")
     _write(root, "forecaster/weather_story_data.json", "{}\n")
     _write(root, "scripts/run_tests.sh", "#!/usr/bin/env bash\n")

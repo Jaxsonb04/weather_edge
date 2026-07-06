@@ -105,22 +105,21 @@ now automated end to end:
    API key is kept off the public website; refreshes happen server-side and are
    written to `google_weather_cache.json` plus the SQLite archive.
 2. **Always-on runner**: an AWS Lightsail Ubuntu instance runs the refresh
-   workflow even when the laptop is asleep. The Mac launchd job has been
-   disabled so the cloud machine is the single automation source.
+   workflow even when the laptop is asleep. There is no local launchd job; the
+   cloud machine is the single automation source.
 3. **Scheduled jobs**: systemd timers refresh NWS ground truth, fetch Google
-   Weather within the event budget, rebuild the blended forecast, and update
-   `index.html`, `details.html`, `strategy-lab.html`, `trading_signal.json`,
-   and Strategy Lab research data. A separate Strategy Lab refresh timer runs
-   every five minutes to rebuild trading results and republish the static site
-   without calling the paid Google Weather refresh path. Strategy Lab is
-   protected by default with `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and
-   `SFO_STRATEGY_LAB_PASSWORD`; set public mode to `1` only for a deliberate
-   temporary sharing window. The same server also runs the Kalshi
-   paper-trading scanner and exit monitor from the companion trading repo.
+   Weather within the event budget, rebuild the blended forecast, and rebuild
+   `trading_signal.json` and Strategy Lab research data
+   (`strategy_research.json`). A separate Strategy Lab refresh timer runs
+   every five minutes to rebuild trading results and republish the site
+   without calling the paid Google Weather refresh path. Strategy Lab research
+   data is plain public JSON; it contains only paper-trading research. The
+   same server also runs the Kalshi paper-trading scanner and exit monitor
+   from the companion trading repo.
 4. **Public website**: after each successful rebuild, the Lightsail server uses
-   a GitHub deploy key with write access to commit and push the refreshed static
-   dashboard to `gh-pages`, which GitHub Pages serves at
-   `https://jaxsonb04.github.io/weather-edge/`.
+   a GitHub deploy key with write access to publish the prebuilt React SPA and
+   the fresh data JSONs to `gh-pages`, which GitHub Pages serves at
+   `https://jaxsonb04.github.io/weather_edge/`.
 
 In short: AWS fetches the paid Google Weather data privately, the forecaster
 stores/scales it with the public NWS/Open-Meteo context, and GitHub Pages
@@ -182,8 +181,6 @@ Other limits:
 ```text
 combine_psv.py        NOAA PSV files -> clean hourly CSV
 load_to_db.py         CSV -> SQLite
-explore.py            data quality checks
-sql_analysis.py       SQL summaries over the cleaned data
 features.py           feature engineering and prediction targets
 eda.py                exploratory plots
 xgboost_model.py      XGBoost training, baselines, diagnostics
@@ -193,7 +190,6 @@ ab_test.py            paired t-test, Wilcoxon, bootstrap CI, lift
 forecast_tomorrow.py  static month/day forecast lookup for the site
 google_weather_cache.py  cached Google hourly high for the site
 nws_ground_truth.py      NWS KSFO observations and daily-high ground truth
-build_dashboard.py    generates index.html
 ab_test_results.json  A/B metrics plus chart data for animated diagnostics
 model_compare_results.json  model metrics and XGBoost feature importance
 weather_story_data.json     temperature distribution data for the dashboard
@@ -228,7 +224,6 @@ python ab_test.py
 python forecast_tomorrow.py
 python nws_ground_truth.py --days 14
 python google_weather_cache.py --refresh
-python build_dashboard.py
 ```
 
 Each step writes its outputs to disk so upstream data prep does not need to be
@@ -237,32 +232,8 @@ rerun for every experiment.
 For the Google fetch, put `GOOGLE_WEATHER_API_KEY=...` in `.env` first. The
 `.env` file is ignored by git.
 
-To refresh Google, archive the full hourly payload, and rebuild the dashboard:
-
-```bash
-scripts/refresh_google_weather.sh
-```
-
-That script also backfills 14 days of NWS KSFO ground truth first, then scores
-any completed forecast benchmark rows. The 14-day window makes verification
-robust when the laptop sleeps through a scheduled run.
-
-To make that automatic on this Mac:
-
-```bash
-scripts/install_google_weather_launchd.sh
-```
-
-That installs a local launchd job that runs every 30 minutes from 05:10 through
-18:40 local time. The script respects the Google Weather event budget before
-each refresh.
-
-To check whether the automatic refresh is loaded, running cleanly, and writing
-fresh cache/archive rows without spending a Google API call:
-
-```bash
-scripts/check_autofetch.sh
-```
+Production refresh automation runs on the Lightsail box (see
+`docs/aws_lightsail.md`); there is no local launchd job.
 
 Google Weather usage is tracked in `.google_weather_usage.json` by billable
 Weather events, not just refresh attempts. One enhanced refresh uses about five
@@ -290,12 +261,6 @@ local-calendar-day high. The daily endpoint can nudge the Google component, but
 it is intentionally low-weight until the archive proves it improves error.
 Google current conditions are context only; NWS/KSFO observations remain the
 official same-day lock because they match settlement.
-
-To disable the automatic job:
-
-```bash
-scripts/uninstall_google_weather_launchd.sh
-```
 
 To score archived Google forecasts later without spending an API call:
 

@@ -16,10 +16,6 @@ RUNTIME_PATHS = (
     "forecaster/google_weather_cache.json",
     "forecaster/trading_signal.json",
     "forecaster/strategy_research.json",
-    "forecaster/strategy_research.protected.json",
-    "forecaster/index.html",
-    "forecaster/details.html",
-    "forecaster/strategy-lab.html",
     ".google_weather_usage.json",
     "trading/data",
 )

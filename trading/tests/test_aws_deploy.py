@@ -35,12 +35,14 @@ def test_github_verify_workflow_installs_test_import_dependencies():
     assert "semgrep" in workflow
 
 
-def test_forecaster_refresh_generates_signal_before_dashboard_publish():
+def test_forecaster_refresh_generates_signal_before_publish():
     text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
     signal_idx = text.index("build_public_trading_signal.sh")
-    dashboard_idx = text.index("build_dashboard.py")
     publish_idx = text.index("publish_forecaster_pages.sh")
-    assert signal_idx < dashboard_idx < publish_idx
+    assert signal_idx < publish_idx
+    # The legacy generated-HTML dashboard is retired; the SPA in webdist is
+    # the only site the publisher ships.
+    assert "build_dashboard.py" not in text
 
 
 def test_strategy_lab_refresh_timer_is_installed_and_avoids_google_refresh():
@@ -52,7 +54,7 @@ def test_strategy_lab_refresh_timer_is_installed_and_avoids_google_refresh():
     assert "sfo-strategy-lab-refresh.timer" in installer
     assert "sfo-strategy-lab-refresh.timer" in installer
     assert "build_public_trading_signal.sh" in service
-    assert "build_dashboard.py" in service
+    assert "build_dashboard.py" not in service
     assert "publish_forecaster_pages.sh" in service
     assert "google_weather_cache.py --refresh" not in service
     assert "OnUnitActiveSec=5min" in timer
@@ -161,29 +163,25 @@ def test_dataset_backfill_timer_is_lightsail_safe_and_installed():
     assert "tr '[:upper:]' '[:lower:]'" in runner
 
 
-def test_pages_publish_includes_generated_detail_page():
+def test_pages_publish_ships_spa_and_fresh_jsons():
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
-    assert "index.html" in publisher
-    assert "details.html" in publisher
-    assert "strategy-lab.html" in publisher
+    # The site is the prebuilt SPA plus the fresh public research JSONs.
+    assert "WEBDIST_DIR" in publisher
+    assert "trading_signal.json" in publisher
+    assert "forecast_data.json" in publisher
+    assert "weather_story_data.json" in publisher
     assert "strategy_research.json" in publisher
-    assert "strategy_research.protected.json" in publisher
-    assert "SFO_STRATEGY_LAB_PASSWORD" in publisher
-    assert "SFO_STRATEGY_LAB_PUBLIC_MODE" in publisher
-    assert "SFO_STRATEGY_LAB_PUBLIC_MODE=0" in example_env
-    assert "Strategy Lab protected mode is enabled" in publisher
+    # The legacy generated-HTML/protected pipeline is retired.
+    assert "strategy_research.protected.json" not in publisher
+    assert "SFO_STRATEGY_LAB_PUBLIC_MODE" not in publisher
     assert "SFO_PAGES_GIT_AUTHOR_NAME=JaxsonB04" in example_env
     assert "SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com" in example_env
     assert '${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}' in publisher
     assert '${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}' in publisher
-    assert '--exclude "/index.html"' in syncer
-    assert '--exclude "/details.html"' in syncer
-    assert '--exclude "/strategy-lab.html"' in syncer
     assert '--exclude "strategy_research.json"' in syncer
-    assert '--exclude "strategy_research.protected.json"' in syncer
 
 
 def test_pages_deploy_key_path_matches_lightsail_setup_docs():
@@ -265,13 +263,5 @@ def test_initial_lightsail_sync_does_not_copy_local_runtime_state():
         "google_weather_cache.json",
         "trading_signal.json",
         "strategy_research.json",
-        "strategy_research.protected.json",
-    ):
-        assert f"--exclude '{artifact}'" in syncer
-
-    for artifact in (
-        "/index.html",
-        "/details.html",
-        "/strategy-lab.html",
     ):
         assert f"--exclude '{artifact}'" in syncer

@@ -8,13 +8,13 @@ Type=oneshot
 User=__APP_USER__
 WorkingDirectory=__FORECASTER_DIR__
 EnvironmentFile=__ENV_FILE__
-# The full refresh (git sync + NWS + Google + NWP + EMOS + dashboard + publish) is a
+# The full refresh (git sync + NWS + Google + NWP + EMOS + signal + publish) is a
 # legitimately long oneshot (~1-2 min); raise the start timeout above the 90 s default
 # so a normal run is never killed as a false "timeout" failure.
 TimeoutStartSec=900
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 # External fetches get a '-' prefix: a transient NWS/Google hiccup must NOT abort
-# the pipeline before the local re-blend, dashboard build, and publish. The
+# the pipeline before the local re-blend, signal build, and publish. The
 # re-blend below runs on whatever cached data did land; freshness is still gated
 # downstream by max_forecast_age_hours and the freshness watchdog.
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python nws_ground_truth.py --days 14
@@ -25,12 +25,10 @@ ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python nwp_archive.py --daily
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python emos_forecast.py --serve-rolling
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/build_public_trading_signal.sh
-ExecStart=__FORECASTER_DIR__/.venv/bin/python build_dashboard.py
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/publish_forecaster_pages.sh
 Nice=5
 # Contain a runaway to this unit instead of letting the kernel OOM-killer pick an
 # arbitrary victim (often the long-lived trading loop) on the no-swap 1 GB box.
-# This is the heaviest unit (~250 MB peak: the build_dashboard pandas read).
 # Tune after observing real peaks via `systemctl status`.
 MemoryHigh=400M
 MemoryMax=550M

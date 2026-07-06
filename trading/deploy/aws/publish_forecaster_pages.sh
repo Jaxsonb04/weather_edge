@@ -19,24 +19,16 @@ WEBDIST_DIR="${SFO_WEBDIST_DIR:-/opt/weatheredge/webdist}"
 REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
 PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
-PUBLIC_MODE_RAW="${SFO_STRATEGY_LAB_PUBLIC_MODE:-0}"
-PUBLIC_MODE="$(printf '%s' "$PUBLIC_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
 
 # Fresh data artifacts (regenerated each refresh by the forecaster pipeline).
+# These are exactly the JSONs the SPA fetches; everything here is public
+# paper-trading research by design.
 JSON_ARTIFACTS=(
-  google_weather_cache.json
   trading_signal.json
   forecast_data.json
   weather_story_data.json
+  strategy_research.json
 )
-if [[ "$PUBLIC_MODE" != "0" && "$PUBLIC_MODE" != "false" && "$PUBLIC_MODE" != "no" && "$PUBLIC_MODE" != "off" ]]; then
-  JSON_ARTIFACTS+=(strategy_research.json)
-elif [[ -n "${SFO_STRATEGY_LAB_PASSWORD:-}" ]]; then
-  JSON_ARTIFACTS+=(strategy_research.protected.json)
-else
-  echo "Strategy Lab protected mode is enabled but SFO_STRATEGY_LAB_PASSWORD is empty" >&2
-  exit 1
-fi
 
 if [[ ! -d "$FORECASTER_DIR" ]]; then
   echo "missing forecaster directory: $FORECASTER_DIR" >&2

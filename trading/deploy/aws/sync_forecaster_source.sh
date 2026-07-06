@@ -61,13 +61,9 @@ rsync -a --delete \
   --exclude "google_weather_cache.json" \
   --exclude "trading_signal.json" \
   --exclude "strategy_research.json" \
-  --exclude "strategy_research.protected.json" \
   --exclude "dataset_research.json" \
   --exclude "forecast_data.json" \
   --exclude "weather_story_data.json" \
-  --exclude "/index.html" \
-  --exclude "/details.html" \
-  --exclude "/strategy-lab.html" \
   "$RSYNC_SOURCE" "$FORECASTER_DIR"/
 
 echo "synced $REMOTE_URL#$BRANCH:$SOURCE_SUBDIR into $FORECASTER_DIR"

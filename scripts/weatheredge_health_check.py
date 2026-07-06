@@ -17,7 +17,7 @@ REQUIRED_PATHS = (
     "CONTEXT.md",
     ".gitignore",
     "docs/architecture.md",
-    "forecaster/build_dashboard.py",
+    "src/App.tsx",
     "forecaster/forecast_data.json",
     "forecaster/weather_story_data.json",
     "scripts/run_tests.sh",
@@ -75,10 +75,6 @@ LOCAL_RUNTIME_ARTIFACTS = {
     "forecaster/google_weather_cache.json": "local Google Weather cache",
     "forecaster/trading_signal.json": "local public trading signal",
     "forecaster/strategy_research.json": "local Strategy Lab research artifact",
-    "forecaster/strategy_research.protected.json": "local protected Strategy Lab research artifact",
-    "forecaster/index.html": "generated dashboard page",
-    "forecaster/details.html": "generated dashboard detail page",
-    "forecaster/strategy-lab.html": "generated Strategy Lab page",
     "trading/data": "local paper-trading state directory",
 }
 

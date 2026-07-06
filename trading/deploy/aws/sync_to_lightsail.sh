@@ -57,11 +57,7 @@ rsync -av \
   --exclude 'google_weather_cache.json' \
   --exclude 'trading_signal.json' \
   --exclude 'strategy_research.json' \
-  --exclude 'strategy_research.protected.json' \
   --exclude 'dataset_research.json' \
-  --exclude '/index.html' \
-  --exclude '/details.html' \
-  --exclude '/strategy-lab.html' \
   --exclude 'tmp_*' \
   "$LOCAL_FORECASTER_DIR/" \
   "$REMOTE_USER@$LIGHTSAIL_IP:$REMOTE_BASE/forecaster/"

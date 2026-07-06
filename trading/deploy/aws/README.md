@@ -8,7 +8,7 @@ Deployment flow:
 - The configured Git branch provides forecaster source for scheduled refreshes.
 - Lightsail pulls the `forecaster/` subdirectory from `main` before each
   scheduled forecast refresh.
-- Lightsail publishes generated dashboard artifacts to `gh-pages`.
+- Lightsail publishes the prebuilt SPA and fresh data JSONs to `gh-pages`.
 - GitHub Pages should serve the `gh-pages` branch.
 
 It runs:
@@ -55,9 +55,9 @@ bash trading/deploy/aws/sync_to_lightsail.sh
 
 This sync intentionally excludes local runtime artifacts such as
 `weather.db`, `google_weather_cache.json`, `trading_signal.json`,
-`strategy_research.json`, generated dashboard HTML, SQLite files, and
-`trading/data/`. Those files are generated and refreshed on AWS so stale local
-MacBook state does not overwrite server state.
+`strategy_research.json`, SQLite files, and `trading/data/`. Those files are
+generated and refreshed on AWS so stale local MacBook state does not overwrite
+server state.
 
 ## Install Services
 
@@ -95,11 +95,6 @@ SFO_TRADING_SIGNAL_TARGET_DATE=both
 SFO_TRADING_SIGNAL_SIDE=both
 SFO_TRADING_SIGNAL_CALIBRATION_SOURCE=lstm
 SFO_STRATEGY_RESEARCH_CALIBRATION_MIN_TRAIN=180
-# Protected Strategy Lab mode. Set to 1 only for a deliberate temporary
-# sharing window.
-SFO_STRATEGY_LAB_PUBLIC_MODE=0
-SFO_STRATEGY_LAB_PASSWORD=replace_with_private_strategy_lab_password
-SFO_STRATEGY_LAB_PBKDF2_ITERATIONS=210000
 # No PAPER_DAILY_BUDGET: paper exposure is risk-gated, not budget-capped.
 PAPER_BANKROLL=1000
 PAPER_RISK_PROFILE=live
@@ -118,16 +113,15 @@ SFO_PORTFOLIO_MIN_PROFIT=0.01
 ```
 
 Each forecast refresh builds the public `trading_signal.json` and Strategy Lab
-research data before dashboard HTML, so GitHub Pages is published from the same
-AWS-side forecast DB, paper DB, and paper-research signal. The
+research data (`strategy_research.json`) before publishing, so GitHub Pages is
+published from the same AWS-side forecast DB, paper DB, and paper-research
+signal. The publisher ships the prebuilt React SPA from
+`/opt/weatheredge/webdist` plus the fresh data JSONs. The
 `sfo-strategy-lab-refresh.timer` also runs every five minutes to rebuild
-`trading_signal.json`, `strategy_research.protected.json`, `strategy-lab.html`,
-and the Pages branch without calling `google_weather_cache.py --refresh`.
-
-Strategy Lab is published as encrypted `strategy_research.protected.json` while
-`SFO_STRATEGY_LAB_PUBLIC_MODE=0`. If `SFO_STRATEGY_LAB_PUBLIC_MODE=1` is set for
-temporary sharing, the publisher ships plaintext `strategy_research.json`;
-otherwise protected mode fails closed when `SFO_STRATEGY_LAB_PASSWORD` is empty.
+`trading_signal.json` and `strategy_research.json` and republish the Pages
+branch without calling `google_weather_cache.py --refresh`. Strategy Lab
+research is plain public JSON by design; it contains only paper-trading
+research data.
 
 AWS paper scanning is pinned to LSTM calibration during this deployment stage.
 If `PAPER_RISK_PROFILES` is a comma-list, the scan service runs each profile
@@ -185,7 +179,7 @@ sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-strategy-lab-refres
 
 The box can own the entire daily refresh, so the Mac heavy forecaster is no longer
 required. Every refresh-path entrypoint (`nws_ground_truth`, `google_weather_cache`,
-`nwp_archive`, `emos_forecast`, `build_dashboard`) is pure stdlib + numpy/pandas and
+`nwp_archive`, `emos_forecast`) is pure stdlib + numpy/pandas and
 peaks ~250 MB; only offline LSTM/XGBoost **training** is heavy, and that stays off the
 box (run on a dev machine or in CI; the box serves the committed `models/` artifacts).
 
