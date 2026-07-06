@@ -10,7 +10,14 @@ from typing import Any
 
 from .backtest import run_walk_forward_calibration_backtest
 from .backtest_rescore import compute_real_money_readiness, run_rescore
-from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, SFO_TZ, StrategyConfig, strategy_config_for_profile
+from .config import (
+    DEFAULT_DB_PATH,
+    DEFAULT_FORECASTER_ROOT,
+    SFO_TZ,
+    StrategyConfig,
+    normalize_risk_profile_name,
+    strategy_config_for_profile,
+)
 from .db import PaperStore
 from .dataset_research import (
     DEFAULT_MIN_AFTER_COST_TRADES,
@@ -20,6 +27,7 @@ from .dataset_research import (
 from .exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
     DEFAULT_NO_TAKE_PROFIT_PCT,
+    DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_YES_STOP_LOSS_PCT,
@@ -2910,6 +2918,13 @@ def _monitor_thresholds_for_side(monitor: dict[str, Any], side: str) -> tuple[fl
     )
 
 
+def _settlement_first_no_min_cost_for_row(row: sqlite3.Row) -> float | None:
+    profile = _row_risk_profile(row)
+    if profile is not None and normalize_risk_profile_name(profile) == "research":
+        return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
+    return None
+
+
 def _position_mark_status(
     unrealized_pnl: float | None,
     unrealized_roi: float | None,
@@ -3030,6 +3045,7 @@ def _paper_row(
             ),
             legacy_take_profit_net=legacy_take_profit_net,
             stop_loss_pct=stop_loss_pct,
+            settlement_first_no_min_cost=_settlement_first_no_min_cost_for_row(row),
         )
         exit_rule_reason = signal.reason
         mark_status = {**mark_status, "monitor_action": signal.action}

@@ -494,6 +494,47 @@ def test_strategy_research_exit_targets_match_edge_based_monitor_logic():
         assert position["monitor_action"] == "HOLD"
 
 
+def test_strategy_research_mirrors_research_no_settlement_first_hold():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+
+        store = PaperStore(db_path)
+        decision = _no_favorite_decision()
+        store.record_decisions("2026-06-20", [decision])
+        order_id = store.record_paper_order("2026-06-20", decision, risk_profile="research")
+        assert order_id is not None
+        order = store.paper_order(order_id)
+        assert order is not None
+        contracts = float(order["contracts"])
+        live_bid = 0.99
+        net_exit = net_exit_per_contract(live_bid, contracts)
+        store.record_monitor_snapshot(
+            order,
+            side="NO",
+            action="HOLD",
+            reason="inside exit bands",
+            market_status="active",
+            live_bid=live_bid,
+            exit_fee_per_contract=live_bid - net_exit,
+            net_exit_per_contract=net_exit,
+            unrealized_pnl=contracts * (net_exit - float(order["cost_per_contract"])),
+            unrealized_roi=(net_exit - float(order["cost_per_contract"])) / float(order["cost_per_contract"]),
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        position = payload["paper_trading"]["open_positions"][0]
+        assert position["risk_profile"] == "research"
+        assert position["monitor_action"] == "HOLD_SETTLEMENT_FIRST"
+        assert "settlement-first" in position["exit_rule_reason"]
+
+
 def test_signal_quality_prefers_newest_target_before_old_approved_candidates():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"

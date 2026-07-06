@@ -13,6 +13,11 @@ ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/build_public_trading_signal.sh
 ExecStart=__FORECASTER_DIR__/.venv/bin/python build_dashboard.py
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/publish_forecaster_pages.sh
 Nice=5
-# Per-unit memory cap so a spike self-limits on the no-swap 1 GB box.
-MemoryHigh=300M
-MemoryMax=400M
+# Cap memory so a spike self-limits instead of evicting the other sfo units
+# (1 GB box). A healthy cycle peaks well under the cap now that
+# strategy-research streams decision_snapshots instead of materializing them.
+MemoryHigh=450M
+MemoryMax=600M
+# Fail a stuck cycle fast instead of blocking the 5-minute publish queue for
+# hours (memory-throttled strategy-research once ran 76 minutes).
+TimeoutStartSec=900

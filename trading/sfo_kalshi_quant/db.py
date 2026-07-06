@@ -1986,14 +1986,18 @@ class PaperStore:
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
+            # Stream the cursor instead of fetchall(): decision_snapshots grows
+            # by thousands of ~7KB-JSON rows per day, and materializing every
+            # row memory-thrashed the 1GB refresh box. Sampling keeps at most
+            # one row per market-side, so a single pass is enough.
+            cursor = conn.execute(
                 f"SELECT * FROM decision_snapshots {where} ORDER BY target_date, created_at",
                 params,
-            ).fetchall()
-        pre_resolution_rows = [
-            row for row in rows if not pre_resolution_only or _is_pre_resolution_decision(row)
-        ]
-        return _sample_decision_rows(pre_resolution_rows, sample_mode)
+            )
+            pre_resolution_rows = (
+                row for row in cursor if not pre_resolution_only or _is_pre_resolution_decision(row)
+            )
+            return _sample_decision_rows(pre_resolution_rows, sample_mode)
 
     def signal_backtest_summary(
         self,
@@ -2025,33 +2029,43 @@ class PaperStore:
             filters.append("trade_quality_score >= ?")
             params.append(str(float(min_quality)))
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        counts = {"raw": 0, "raw_approved": 0, "pre": 0, "pre_approved": 0}
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
+            cursor = conn.execute(
                 f"SELECT * FROM decision_snapshots {where} ORDER BY target_date, created_at",
                 params,
-            ).fetchall()
+            )
 
-        pre_resolution_rows = [
-            row for row in rows if not pre_resolution_only or _is_pre_resolution_decision(row)
-        ]
-        sampled_rows = _sample_decision_rows(pre_resolution_rows, sample_mode)
+            def _pre_resolution_stream():
+                # Stream + tally instead of fetchall(); see sampled_decision_rows.
+                for row in cursor:
+                    counts["raw"] += 1
+                    approved = bool(int(row["approved"]))
+                    if approved:
+                        counts["raw_approved"] += 1
+                    if pre_resolution_only and not _is_pre_resolution_decision(row):
+                        continue
+                    counts["pre"] += 1
+                    if approved:
+                        counts["pre_approved"] += 1
+                    yield row
+
+            sampled_rows = _sample_decision_rows(_pre_resolution_stream(), sample_mode)
         settled_rows = [
             row for row in sampled_rows if str(row["target_date"]) in normalized_settlements
         ]
         if not settled_rows:
             return {
                 "signals": float(len(sampled_rows)),
-                "raw_signals": float(len(rows)),
-                "pre_resolution_signals": float(len(pre_resolution_rows)),
+                "raw_signals": float(counts["raw"]),
+                "pre_resolution_signals": float(counts["pre"]),
                 "settled_signals": 0.0,
                 "approved_signals": float(sum(1 for row in sampled_rows if int(row["approved"]))),
-                "approved_raw_signals": float(sum(1 for row in rows if int(row["approved"]))),
-                "approved_pre_resolution_signals": float(
-                    sum(1 for row in pre_resolution_rows if int(row["approved"]))
-                ),
+                "approved_raw_signals": float(counts["raw_approved"]),
+                "approved_pre_resolution_signals": float(counts["pre_approved"]),
                 "approval_rate": _safe_div(sum(1 for row in sampled_rows if int(row["approved"])), len(sampled_rows)),
-                "excluded_post_resolution_signals": float(len(rows) - len(pre_resolution_rows)),
+                "excluded_post_resolution_signals": float(counts["raw"] - counts["pre"]),
                 "sample_mode": sample_mode,
                 "pre_resolution_only": pre_resolution_only,
                 "brier_score": 0.0,
@@ -2081,16 +2095,14 @@ class PaperStore:
         pnl = sum(_decision_row_pnl(row, bool(outcome)) for row, outcome, _ in approved)
         return {
             "signals": float(len(sampled_rows)),
-            "raw_signals": float(len(rows)),
-            "pre_resolution_signals": float(len(pre_resolution_rows)),
+            "raw_signals": float(counts["raw"]),
+            "pre_resolution_signals": float(counts["pre"]),
             "settled_signals": float(len(settled_rows)),
             "approved_signals": float(sum(1 for row in sampled_rows if int(row["approved"]))),
-            "approved_raw_signals": float(sum(1 for row in rows if int(row["approved"]))),
-            "approved_pre_resolution_signals": float(
-                sum(1 for row in pre_resolution_rows if int(row["approved"]))
-            ),
+            "approved_raw_signals": float(counts["raw_approved"]),
+            "approved_pre_resolution_signals": float(counts["pre_approved"]),
             "approval_rate": _safe_div(sum(1 for row in sampled_rows if int(row["approved"])), len(sampled_rows)),
-            "excluded_post_resolution_signals": float(len(rows) - len(pre_resolution_rows)),
+            "excluded_post_resolution_signals": float(counts["raw"] - counts["pre"]),
             "sample_mode": sample_mode,
             "pre_resolution_only": pre_resolution_only,
             "brier_score": sum((probability - outcome) ** 2 for _, outcome, probability in outcomes) / len(outcomes),
@@ -2717,7 +2729,7 @@ def _date_filters(since: str | None, until: str | None) -> tuple[list[str], list
     return filters, params
 
 
-def _sample_decision_rows(rows: list[sqlite3.Row], sample_mode: str) -> list[sqlite3.Row]:
+def _sample_decision_rows(rows: Iterable[sqlite3.Row], sample_mode: str) -> list[sqlite3.Row]:
     if sample_mode == "all":
         return list(rows)
     if sample_mode == "entry-per-market-side":
@@ -2731,7 +2743,7 @@ def _sample_decision_rows(rows: list[sqlite3.Row], sample_mode: str) -> list[sql
     return sorted(latest.values(), key=lambda row: (str(row["target_date"]), str(row["created_at"]), int(row["id"])))
 
 
-def _entry_decision_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+def _entry_decision_rows(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
     """First approved snapshot per market/side — the decision that opened the
     position — falling back to the first snapshot when nothing was approved.
 

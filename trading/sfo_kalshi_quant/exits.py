@@ -32,6 +32,10 @@ DEFAULT_YES_TAKE_PROFIT_PCT = 50.0
 DEFAULT_YES_STOP_LOSS_PCT = 25.0
 DEFAULT_NO_TAKE_PROFIT_PCT = 35.0
 DEFAULT_NO_STOP_LOSS_PCT = 35.0
+# Research-only settlement-first guard for expensive NO favorites. The prior
+# paper book clustered above this cost, where a binary's residual upside is tiny
+# and profitable early exits mostly clip the remaining settlement spread.
+DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST = 0.73
 
 
 @dataclass(frozen=True)
@@ -122,7 +126,7 @@ def convergence_take_profit_net(
 
 @dataclass(frozen=True)
 class ExitSignal:
-    action: str  # "HOLD" | "TAKE_PROFIT" | "STOP_LOSS"
+    action: str  # "HOLD" | "HOLD_SETTLEMENT_FIRST" | "TAKE_PROFIT" | "STOP_LOSS"
     reason: str
 
 
@@ -140,6 +144,7 @@ def decide_exit(
     edge_based_take_profit: bool = True,
     legacy_take_profit_net: float | None = None,
     stop_loss_pct: float | None = None,
+    settlement_first_no_min_cost: float | None = None,
 ) -> ExitSignal:
     """Decide whether to hold, take profit, or stop out an open position.
 
@@ -180,6 +185,17 @@ def decide_exit(
     # exit is a gain or a loss relative to entry cost.
     if tp_net is not None and net_exit >= tp_net:
         if net_exit >= entry_cost:
+            if (
+                side.upper() == "NO"
+                and settlement_first_no_min_cost is not None
+                and entry_cost >= settlement_first_no_min_cost
+            ):
+                return ExitSignal(
+                    "HOLD_SETTLEMENT_FIRST",
+                    f"settlement-first NO favorite: entry cost {entry_cost:.3f} >= "
+                    f"{settlement_first_no_min_cost:.3f}; hold instead of clipping "
+                    f"residual settlement upside at net exit {net_exit:.3f}",
+                )
             return ExitSignal(
                 "TAKE_PROFIT",
                 f"edge captured: net exit {net_exit:.3f} >= fair value {tp_net:.3f}",

@@ -249,6 +249,43 @@ def test_monitor_edge_based_take_profit_banks_a_converged_no_favorite():
         assert action == "CLOSE_TAKE_PROFIT"
 
 
+def test_monitor_research_no_favorite_rides_converged_profit_to_settlement():
+    """Research NO favorites have tiny residual upside and nearly full downside.
+    When they are already expensive favorites, do not clip a converged winner;
+    leave it open for settlement unless the edge reverses or a real stop fires."""
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order(
+            "2026-06-12",
+            _stopped_no_decision(),
+            risk_profile="research",
+        )
+        store.record_probabilities(
+            "2026-06-12",
+            [_probability("KXHIGHTSFO-TEST-B82.5", 0.07)],
+        )
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoConvergedClient), redirect_stdout(out):
+            code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
+
+        assert code == 0
+        row = store.paper_orders(1)[0]
+        assert row["id"] == order_id
+        assert row["status"] == "PAPER_FILLED"
+        with store.connect() as conn:
+            action, reason = conn.execute(
+                """
+                SELECT action, reason FROM paper_monitor_snapshots
+                WHERE order_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+        assert action == "HOLD_SETTLEMENT_FIRST"
+        assert "settlement-first" in reason
+
+
 def test_monitor_holds_a_still_mispriced_no_favorite_instead_of_riding_blind():
     """The same favorite, but the price has NOT yet reached fair value (NO bid
     0.84 nets below 0.93): hold for further convergence rather than scalp early."""
