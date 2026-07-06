@@ -6,7 +6,7 @@ set -euo pipefail
 # The site is the prebuilt HeroUI React single-page app (SFO_WEBDIST_DIR), with
 # the freshly generated data JSONs overlaid on top each refresh so the SPA always
 # loads live forecast/trading data. The React app shell changes rarely (rebuild +
-# redeploy SFO_WEBDIST_DIR via trading/deploy/aws/deploy_web_app.sh); the JSONs
+# redeploy SFO_WEBDIST_DIR per README "Public Website"); the JSONs
 # refresh every cycle.
 
 if [[ "${SFO_PUBLISH_PAGES:-0}" != "1" ]]; then
