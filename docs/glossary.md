@@ -37,9 +37,10 @@
 
 ## Project
 
-- **Forecaster**: `forecaster/`, the weather data, blend, archive, and dashboard
-  generator.
+- **Forecaster**: `forecaster/`, the weather data, blend, archive, and site
+  data generator.
 - **Trading engine**: `trading/sfo_kalshi_quant/`, the Kalshi analyzer and
   paper-trading CLI.
-- **Dashboard**: generated static GitHub Pages artifact from
-  `forecaster/build_dashboard.py`.
+- **Dashboard**: the React + Vite SPA served from GitHub Pages. The publisher
+  ships the prebuilt app from `/opt/weatheredge/webdist` plus fresh data JSONs
+  to `gh-pages` every refresh cycle.

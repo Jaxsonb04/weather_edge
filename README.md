@@ -3,7 +3,8 @@
 WeatherEdge is a unified SFO weather forecasting and Kalshi paper-trading
 research project. It combines a station-aligned SFO forecaster, Google/NWS/
 Open-Meteo blend, Kalshi market probability engine, paper-trading journal,
-optional deployment scripts, and a static dashboard workflow.
+AWS deployment scripts, and a React single-page dashboard published to
+GitHub Pages.
 
 **Safety rule:** this project is paper trading only. It uses real Kalshi market
 prices for research, but it does not place live real-money orders.
@@ -12,9 +13,10 @@ prices for research, but it does not place live real-money orders.
 
 ```text
 WeatherEdge/
-  forecaster/   KSFO weather pipeline, forecast blend, archive, dashboard generator
+  forecaster/   KSFO weather pipeline, forecast blend, NWP/EMOS archive
   trading/      Kalshi probability, risk gates, CLI, paper journal, AWS scripts
-  docs/         unified guides, glossary, sync/deploy notes, dashboard direction
+  src/          React SPA (the public site), built with bun + Vite
+  docs/         unified guides, glossary, sync/deploy notes
   pyproject.toml
   CONTEXT.md
 ```
@@ -92,12 +94,29 @@ python features.py
 python forecast_tomorrow.py
 python nws_ground_truth.py --days 14
 python google_weather_cache.py
-python build_dashboard.py
 ```
 
 Refreshing Google Weather requires `GOOGLE_WEATHER_API_KEY`. The project keeps
 Google usage disciplined with an 8,000/month and 260/day default event budget,
 below the 10,000 free monthly cap.
+
+## Public Website (React SPA)
+
+The public site is a React + Vite + HeroUI Pro single-page app at the repo root
+(`src/`, `index.html`, `vite.config.ts`), built with bun:
+
+```bash
+bun install   # HeroUI Pro registry auth required (HEROUI_PERSONAL_TOKEN)
+bun run build # outputs dist/
+```
+
+Production serves the prebuilt app from `/opt/weatheredge/webdist` on the
+Lightsail box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
+the `gh-pages` branch with the freshly generated data JSONs
+(`trading_signal.json`, `forecast_data.json`, `weather_story_data.json`,
+`strategy_research.json`) overlaid on every refresh cycle. To ship a new app
+build, copy `dist/` to `/opt/weatheredge/webdist` and run one strategy-lab
+refresh.
 
 ## Kalshi Workflow
 

@@ -13,26 +13,24 @@ state, not project source.
 
 ## Design And Redesign Memory
 
-For any future WeatherEdge dashboard design, redesign, UI polish, or frontend
-quality pass, read and follow `docs/design_redesign_playbook.md` before editing.
+The public site is the React + HeroUI Pro SPA at the repo root (`src/`,
+built with bun + Vite, served from `/opt/weatheredge/webdist` in production).
 
 Required design workflow:
 
 - Use the local skills `frontend-design`, `ui-ux-pro-max`,
   `web-design-guidelines`, and `agent-browser` for substantial UI work.
-- Treat the dashboard as generated static HTML. Understand the Python generator,
-  template files, token substitution, and dashboard payload before changing UI.
-- Preserve JavaScript hooks, element IDs, template tokens, and chart/data wiring.
-  For risky template refactors, prove the refactor is byte-identical before
-  making visual changes.
+- The SPA fetches its data JSONs (`trading_signal.json`, `forecast_data.json`,
+  `weather_story_data.json`, `strategy_research.json`) at runtime; keep
+  `src/lib/data.ts` / `src/lib/strategy.ts` parsing tolerant of missing fields.
 - Keep the WeatherEdge visual direction: an operational meteorological
   instrument for a student quant weather project, not a marketing landing page.
 - Verify desktop and real mobile layouts with browser screenshots, then verify
   behavior by driving the page and reading DOM state back.
 
-Do not finish a frontend change with only static inspection. Build the generated
-HTML, check for unresolved tokens, run the relevant Python verification, and use
-browser automation when the page is meant to be viewed or interacted with.
+Do not finish a frontend change with only static inspection. Run `bun run
+build`, serve `dist/`, and use browser automation when the page is meant to be
+viewed or interacted with.
 
 ## Runtime Data Authority
 
@@ -43,10 +41,6 @@ disposable unless you just regenerated them in the current task:
 - `forecaster/google_weather_cache.json`
 - `forecaster/trading_signal.json`
 - `forecaster/strategy_research.json`
-- `forecaster/strategy_research.protected.json`
-- `forecaster/index.html`
-- `forecaster/details.html`
-- `forecaster/strategy-lab.html`
 - `trading/data/`
 
 After sync and refresh, live API/cache/dashboard state is AWS-side, under the
@@ -63,11 +57,10 @@ python3 scripts/clear_local_runtime_state.py --confirm
 
 The cleanup writes explicit local placeholder JSON for the Google cache, trading
 signal, and Strategy Lab research artifact saying the live data belongs on AWS
-after sync. Then build from inside `forecaster/` before browser checks:
+after sync. For frontend checks, build and serve the SPA:
 
 ```bash
-cd forecaster
-python3 build_dashboard.py
+bun run build   # or `bun run dev` for a live dev server
 ```
 
 ## Conversation Queue

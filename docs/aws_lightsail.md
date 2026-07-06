@@ -15,9 +15,8 @@ bash trading/deploy/aws/sync_to_lightsail.sh
 
 The sync copies source and rebuild inputs, but excludes local runtime artifacts
 such as `weather.db`, `google_weather_cache.json`, `trading_signal.json`,
-`strategy_research.json`, `strategy_research.protected.json`, generated
-dashboard HTML, SQLite files, and `trading/data/`. After sync and refresh,
-those live artifacts belong to AWS.
+`strategy_research.json`, SQLite files, and `trading/data/`. After sync and
+refresh, those live artifacts belong to AWS.
 
 Required local env before syncing:
 
@@ -37,9 +36,9 @@ The systemd installer remains in:
 
 - `sfo-forecaster-refresh.timer`
 - `sfo-strategy-lab-refresh.timer` (every five minutes; live-fetches Kalshi
-  top-of-book via `daily-report` and rebuilds `trading_signal.json`,
-  `strategy_research.json`, dashboard HTML, and Pages without paid Google
-  Weather refresh calls)
+  top-of-book via `daily-report`, rebuilds `trading_signal.json` and
+  `strategy_research.json`, and republishes the SPA site to Pages without paid
+  Google Weather refresh calls)
 - `sfo-dataset-backfill.timer`
 - `sfo-kalshi-paper-scan.timer` (every five minutes; live-fetches the current
   order books and places paper-trade entries on fresh market data)
@@ -47,10 +46,8 @@ The systemd installer remains in:
   positions)
 - `sfo-kalshi-paper-settle.timer`
 
-Strategy Lab is protected by default when `SFO_STRATEGY_LAB_PUBLIC_MODE=0`, so
-AWS publishes encrypted `strategy_research.protected.json`. Set
-`SFO_STRATEGY_LAB_PUBLIC_MODE=1` only for a deliberate temporary sharing window;
-protected mode fails closed if `SFO_STRATEGY_LAB_PASSWORD` is empty.
+Strategy Lab research is published as plain public `strategy_research.json` by
+design. It contains only paper-trading research data, with no secrets.
 
 ## Safety
 
@@ -78,9 +75,6 @@ Before changing the host:
 
 - Confirm the Lightsail firewall allows only intended inbound ports.
 - Create or verify a recent Lightsail snapshot.
-- Confirm `/etc/weatheredge.env` has `SFO_STRATEGY_LAB_PUBLIC_MODE=0` and a
-  non-empty `SFO_STRATEGY_LAB_PASSWORD`.
-- Remove any stray `nSFO_STRATEGY_LAB_PASSWORD` key from `/etc/weatheredge.env`.
 
 Server checks:
 
@@ -114,11 +108,9 @@ sudo ufw --force enable
 sudo ufw status verbose
 ```
 
-Then rebuild and publish once to verify protected Strategy Lab output:
+Then rebuild and publish once to verify Strategy Lab output:
 
 ```bash
-cd /opt/weatheredge/forecaster
-SFO_STRATEGY_LAB_PUBLIC_MODE=0 .venv/bin/python build_dashboard.py
+sudo systemctl start sfo-strategy-lab-refresh.service
 curl -I https://jaxsonb04.github.io/weather_edge/strategy_research.json
-curl -I https://jaxsonb04.github.io/weather_edge/strategy_research.protected.json
 ```

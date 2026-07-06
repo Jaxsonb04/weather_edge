@@ -35,7 +35,6 @@ limits or private settings require authenticated reads.
 cd /path/to/WeatherEdge/forecaster
 python nws_ground_truth.py --days 14
 python google_weather_cache.py
-python build_dashboard.py
 ```
 
 This reuses cached Google Weather and refreshes public/free context.
@@ -47,7 +46,6 @@ cd /path/to/WeatherEdge/forecaster
 export GOOGLE_WEATHER_API_KEY="..."
 python google_weather_cache.py --refresh
 python google_weather_cache.py
-python build_dashboard.py
 ```
 
 Check the budget fields in `google_weather_cache.json` after refresh.
@@ -111,15 +109,12 @@ python -m sfo_kalshi_quant.cli --no-color strategy-research --output forecaster/
 ```
 
 This is read-only. It does not record snapshots, place paper orders, or expose
-private DB state. The generated `forecaster/trading_signal.json` and
-`forecaster/strategy_research.json` are optional dashboard inputs.
-AWS publishes encrypted Strategy Lab data by default with
-`SFO_STRATEGY_LAB_PUBLIC_MODE=0` and `SFO_STRATEGY_LAB_PASSWORD`; then
-`forecaster/build_dashboard.py` writes
-`forecaster/strategy_research.protected.json`, and the publisher ships that
-protected artifact instead of plaintext Strategy Lab research data. The
-`sfo-strategy-lab-refresh.timer` refreshes this trading-results path every five
-minutes without calling the paid Google Weather refresh command.
+private DB state. In production, `build_public_trading_signal.sh` generates
+`forecaster/trading_signal.json` and `forecaster/strategy_research.json`, and
+the publisher ships both as plain public JSON alongside the SPA site. They
+contain only paper-trading research data. The `sfo-strategy-lab-refresh.timer`
+refreshes this trading-results path every five minutes without calling the paid
+Google Weather refresh command.
 
 ## Paper Place
 

@@ -27,13 +27,15 @@ paper-trading research project.
 ## Architecture Terms
 
 - **Forecaster module**: `forecaster/`, the station-aligned weather pipeline,
-  Google/NWS/Open-Meteo blend, SQLite forecast archive, and dashboard generator.
+  Google/NWS/Open-Meteo blend, SQLite forecast archive, and NWP/EMOS
+  post-processing.
 - **Trading module**: `trading/sfo_kalshi_quant/`, the Kalshi market adapter,
   probability engine, risk gates, and paper-trading journal.
 - **Deployment module**: `trading/deploy/aws/`, the scripts and systemd units
   that preserve the current AWS split-folder runtime.
-- **Dashboard artifact**: generated static files in `forecaster/`, especially
-  `index.html`, `details.html`, `strategy-lab.html`,
-  `google_weather_cache.json`, `trading_signal.json`,
-  `strategy_research.json`, `forecast_data.json`, and
-  `weather_story_data.json`.
+- **Web app**: the React + HeroUI Pro SPA at the repo root (`src/`), built with
+  bun and published to GitHub Pages from `/opt/weatheredge/webdist`.
+- **Data artifacts**: runtime JSONs generated in `forecaster/` on the box and
+  overlaid onto the published site every cycle: `trading_signal.json`,
+  `strategy_research.json`, `forecast_data.json`, `weather_story_data.json`
+  (plus `google_weather_cache.json` kept server-side).

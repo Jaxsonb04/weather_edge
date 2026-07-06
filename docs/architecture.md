@@ -13,7 +13,7 @@ Responsibilities:
 - archive NWS observations and daily highs
 - fetch/cache Google Weather within the event budget
 - blend Google, NWS, Open-Meteo, and SFO history
-- generate dashboard artifacts
+- generate the site data JSONs consumed by the public SPA
 - keep forecast archive tables in `weather.db`
 - score forecast skill only on clean next-day snapshots; same-day observed-high
   rows are settlement context
@@ -59,12 +59,23 @@ Optional deployment scripts support a split server runtime:
 The sync script copies `forecaster/` and `trading/` into configurable remote
 paths.
 
+## Public Site
+
+The public site is a React + Vite + HeroUI Pro SPA whose source lives at the
+repository root (`src/`, `index.html`, `vite.config.ts`) and is built with
+`bun run build`. The prebuilt app lives at `/opt/weatheredge/webdist` on the
+server. Each refresh cycle, `trading/deploy/aws/publish_forecaster_pages.sh`
+publishes `webdist` plus fresh `trading_signal.json`, `forecast_data.json`,
+`weather_story_data.json`, and `strategy_research.json` to the `gh-pages`
+branch, which GitHub Pages serves at
+`https://jaxsonb04.github.io/weather_edge/`.
+
 ## Deepening Opportunities
 
 Near-term architecture improvements:
 
 - Wrap forecaster project-relative paths in a small config module.
-- Move dashboard data loading into named functions with testable interfaces.
+- Move site data building into named functions with testable interfaces.
 - Add a formal forecast snapshot schema shared by forecaster and trading.
 - Add a stable market snapshot storage module before claiming real PnL edge.
 - Keep paper trading and any future live-order path as separate modules.
