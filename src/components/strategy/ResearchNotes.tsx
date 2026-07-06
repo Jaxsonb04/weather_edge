@@ -19,7 +19,7 @@ export function ResearchNotes({ s }: { s: StrategyLab }) {
           </ItemCard.Icon>
           <ItemCard.Content>
             <ItemCard.Title>{n.term}</ItemCard.Title>
-            <ItemCard.Description>{n.note}</ItemCard.Description>
+            <ItemCard.Description className="whitespace-normal break-words">{n.note}</ItemCard.Description>
           </ItemCard.Content>
         </ItemCard>
       ))}

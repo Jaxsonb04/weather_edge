@@ -187,6 +187,7 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
   return (
     <div>
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="max-w-full overflow-x-auto">
         <Segment
           aria-label="Risk profile"
           selectedKey={active.risk_profile}
@@ -201,6 +202,7 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
             </Segment.Item>
           ))}
         </Segment>
+        </div>
         <p className="text-xs text-muted" aria-label="Both books at a glance">
           {profiles.map((x, i) => {
             const v = x.paper_trading?.summary?.realized_pnl ?? 0;
