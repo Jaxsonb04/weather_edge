@@ -1564,10 +1564,14 @@ def latest_scored_blend_rows():
             if not table_exists(conn, "forecast_blend_daily_high"):
                 return []
             has_clisfo = table_exists(conn, "clisfo_settlements")
-            has_truth_source = "truth_source" in table_columns(conn, "forecast_blend_daily_high")
+            blend_columns = table_columns(conn, "forecast_blend_daily_high")
+            has_truth_source = "truth_source" in blend_columns
             conn.row_factory = sqlite3.Row
 
             stored_source = "b.truth_source" if has_truth_source else "NULL"
+            station_adjustment_expr = (
+                "b.station_adjustment_f" if "station_adjustment_f" in blend_columns else "NULL"
+            )
             if has_clisfo:
                 # Prefer the CLISFO settlement directly so learned weights track
                 # the real Kalshi outcome even when a row's stored actual_high_f
@@ -1597,6 +1601,7 @@ def latest_scored_blend_rows():
                        b.history_high_f,
                        b.fetched_at,
                        b.details_json,
+                       {station_adjustment_expr} AS station_adjustment_f,
                        {effective_source_expr} AS effective_truth_source
                 FROM forecast_blend_daily_high b
                 {join_clause}
@@ -1831,6 +1836,15 @@ def source_mos_corrections():
     if not ENABLE_SOURCE_MOS_CORRECTION:
         return _disabled("source MOS correction disabled via ENABLE_SOURCE_MOS_CORRECTION")
 
+    # Source MOS is an optional enhancement; a failure here must never take
+    # down the refresh (a crash in this path cost days of blend outage).
+    try:
+        return _compute_source_mos_corrections(metadata, _disabled)
+    except Exception as exc:
+        return _disabled(f"source MOS correction failed: {type(exc).__name__}: {exc}")
+
+
+def _compute_source_mos_corrections(metadata, _disabled):
     rows = latest_scored_blend_rows()
     scored_days = len({row["target_date"] for row in rows})
     metadata["scored_days"] = scored_days
@@ -2600,6 +2614,10 @@ def main():
         )
         return
 
+    # The fetch consumed real quota; persist it before blending so a blend
+    # failure can never discard paid-for forecast data.
+    write_json(CACHE_PATH, summary)
+    write_json(USAGE_PATH, usage)
     blends = [
         build_blend_snapshot(summary, blend_target)
         for blend_target in blend_targets(summary, target_iso)
@@ -2608,7 +2626,6 @@ def main():
     summary["blend_generated_at"] = datetime.now(timezone.utc).isoformat()
     archive_stats = archive_forecast(summary, raw, blends)
     write_json(CACHE_PATH, summary)
-    write_json(USAGE_PATH, usage)
     print(
         f"wrote {CACHE_PATH} and archived to {DB_PATH} for {target_iso}; "
         f"Google Weather events today: {usage['daily_events']}/{usage['daily_event_budget']}; "
