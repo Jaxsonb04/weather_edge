@@ -1,0 +1,183 @@
+/* HeroUI v3 import order is mandatory: Tailwind → OSS styles → Pro styles. */
+@import "tailwindcss";
+@import "@heroui/styles";
+@import "@heroui-pro/react/css";
+
+/* Drive the `dark:` variant from an explicit .dark class so the theme toggle
+   controls the whole instrument regardless of OS preference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+   THEME — "operational instrument"
+   Retint the brand by overriding a single token: --accent. The Pro chart
+   palette (--chart-1..5), focus ring, links and soft chips all derive from it.
+   The temperature ramp is a separate semantic scale for temp-specific data.
+--------------------------------------------------------------------------- */
+:root {
+  /* warm-gold instrument readout — the brand accent (both modes) */
+  --accent: oklch(0.8 0.145 83);
+  --accent-foreground: oklch(0.22 0.03 70);
+
+  /* AA-contrast accent for small text on a light surface (~4.9:1 on white).
+     Overridden to the bright accent in dark mode below. */
+  --accent-text: oklch(0.52 0.15 74);
+
+  /* SERIES palette — for comparison series (model vs market / observed).
+     Deliberately separate from the TEMPERATURE ramp; an indigo so it never reads
+     as either "cold" (blue) or part of the thermal ramp. */
+  --series-model: var(--accent);
+  --series-market: oklch(0.64 0.13 286);
+
+  /* THERMAL ramp — a tight cool→warm→hot progression (NO green/cyan). Gradients
+     interpolate in oklab (see .temp-text / tempColor) so the midpoint is a muted
+     neutral, not a rainbow sweep. --temp-mild is a neutral steel used only as a
+     categorical source color, never in the gradient. */
+  --temp-cold: oklch(0.68 0.13 252);
+  --temp-mild: oklch(0.72 0.035 248);
+  --temp-warm: oklch(0.81 0.14 74);
+  --temp-hot: oklch(0.6 0.21 30);
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.dark {
+  --accent: oklch(0.82 0.145 83);
+  --accent-foreground: oklch(0.2 0.03 70);
+  /* bright gold already clears AA on the dark canvas (~11:1) */
+  --accent-text: var(--accent);
+  /* a touch deeper + cooler than the default dark canvas, for an instrument feel */
+  --background: oklch(0.142 0.006 264);
+}
+
+/* Bridge custom tokens into Tailwind v4 so bg-temp-*, font-display etc. emit. */
+@theme inline {
+  --color-temp-cold: var(--temp-cold);
+  --color-temp-mild: var(--temp-mild);
+  --color-temp-warm: var(--temp-warm);
+  --color-temp-hot: var(--temp-hot);
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    margin: 0;
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv01", "tnum";
+  }
+  /* Tabular numerals wherever numbers carry meaning. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .font-display {
+    font-family: var(--font-display);
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Atmosphere — gradient wordmark, ambient hero glow, instrument grid, grain.
+   Compositor-friendly; mask/opacity only.
+--------------------------------------------------------------------------- */
+.temp-text {
+  background: linear-gradient(100deg in oklab, var(--temp-cold), var(--temp-warm) 52%, var(--temp-hot));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-glow {
+  background-image:
+    radial-gradient(58rem 28rem at 78% -22%, color-mix(in oklch, var(--temp-hot) 18%, transparent), transparent 60%),
+    radial-gradient(50rem 26rem at -6% -12%, color-mix(in oklch, var(--temp-cold) 16%, transparent), transparent 56%);
+}
+
+.grid-lines {
+  background-image:
+    linear-gradient(to right, color-mix(in oklch, var(--color-border) 65%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklch, var(--color-border) 65%, transparent) 1px, transparent 1px);
+  background-size: 58px 58px;
+  mask-image: radial-gradient(62rem 42rem at 50% 0%, black, transparent 76%);
+}
+
+/* Fine film grain over the whole page for tactile depth. */
+.grain::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Live pulse for the "data fresh" indicator. */
+@keyframes pulse-ring {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { opacity: 0; }
+}
+.pulse-dot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: pulse-ring 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot::before { animation: none; }
+}
+
+/* Scroll-reveal — CSS-driven (toggled by IntersectionObserver) so it settles
+   even when the tab is backgrounded, unlike rAF-gated JS animation. */
+.reveal {
+  opacity: 0;
+  transform: translateY(22px);
+  transition:
+    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+.reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+/* Pop-in for small marks (source dots, indicators). */
+.pop {
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    opacity 0.5s ease,
+    transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pop.is-in {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal.is-in,
+  .pop,
+  .pop.is-in {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* Recharts: let strokes/areas inherit our themed easing on first draw. */
+.recharts-surface { overflow: visible; }

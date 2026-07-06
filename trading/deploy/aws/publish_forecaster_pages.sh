@@ -1,32 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Publishes the WeatherEdge dashboard to GitHub Pages.
+#
+# The site is the prebuilt HeroUI React single-page app (SFO_WEBDIST_DIR), with
+# the freshly generated data JSONs overlaid on top each refresh so the SPA always
+# loads live forecast/trading data. The React app shell changes rarely (rebuild +
+# redeploy SFO_WEBDIST_DIR via trading/deploy/aws/deploy_web_app.sh); the JSONs
+# refresh every cycle.
+
 if [[ "${SFO_PUBLISH_PAGES:-0}" != "1" ]]; then
   echo "GitHub Pages publishing disabled; set SFO_PUBLISH_PAGES=1 to enable"
   exit 0
 fi
 
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
+WEBDIST_DIR="${SFO_WEBDIST_DIR:-/opt/weatheredge/webdist}"
 REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
 PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
 PUBLIC_MODE_RAW="${SFO_STRATEGY_LAB_PUBLIC_MODE:-0}"
 PUBLIC_MODE="$(printf '%s' "$PUBLIC_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
 
-ARTIFACTS=(
-  index.html
-  details.html
-  strategy-lab.html
+# Fresh data artifacts (regenerated each refresh by the forecaster pipeline).
+JSON_ARTIFACTS=(
   google_weather_cache.json
   trading_signal.json
   forecast_data.json
   weather_story_data.json
 )
-
 if [[ "$PUBLIC_MODE" != "0" && "$PUBLIC_MODE" != "false" && "$PUBLIC_MODE" != "no" && "$PUBLIC_MODE" != "off" ]]; then
-  ARTIFACTS+=(strategy_research.json)
+  JSON_ARTIFACTS+=(strategy_research.json)
 elif [[ -n "${SFO_STRATEGY_LAB_PASSWORD:-}" ]]; then
-  ARTIFACTS+=(strategy_research.protected.json)
+  JSON_ARTIFACTS+=(strategy_research.protected.json)
 else
   echo "Strategy Lab protected mode is enabled but SFO_STRATEGY_LAB_PASSWORD is empty" >&2
   exit 1
@@ -36,7 +42,10 @@ if [[ ! -d "$FORECASTER_DIR" ]]; then
   echo "missing forecaster directory: $FORECASTER_DIR" >&2
   exit 1
 fi
-
+if [[ ! -d "$WEBDIST_DIR" || ! -f "$WEBDIST_DIR/index.html" ]]; then
+  echo "missing prebuilt web app at $WEBDIST_DIR (expected index.html)" >&2
+  exit 1
+fi
 if [[ ! -f "$DEPLOY_KEY" ]]; then
   echo "missing GitHub Pages deploy key: $DEPLOY_KEY" >&2
   exit 1
@@ -44,24 +53,9 @@ fi
 
 export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
-present_artifacts=()
-for artifact in "${ARTIFACTS[@]}"; do
-  if [[ -e "$FORECASTER_DIR/$artifact" ]]; then
-    present_artifacts+=("$FORECASTER_DIR/$artifact")
-  fi
-done
-
-if [[ "${#present_artifacts[@]}" -eq 0 ]]; then
-  echo "no publish artifacts found"
-  exit 0
-fi
-
-# Serialize publishers on the box so the hourly forecaster-refresh and the
-# 5-minute strategy-lab-refresh cannot race the same gh-pages ref (the
-# documented intermittent "publish failed" was a non-fast-forward push from two
-# overlapping runs). flock is the primary on-box serializer; it is a no-op where
-# unavailable (e.g. local macOS dev), and the fetch+retry loop below is the
-# portable backstop that also survives any out-of-band pusher.
+# Serialize publishers on the box (hourly forecaster-refresh + 5-min strategy-lab
+# refresh) so they cannot race the same gh-pages ref. flock is the primary
+# serializer; the fetch+retry loop is the portable backstop.
 PAGES_LOCK="${SFO_PAGES_LOCK:-${TMPDIR:-/tmp}/sfo-weather-pages.lock}"
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$PAGES_LOCK"
@@ -77,11 +71,6 @@ git remote add origin "$REMOTE_URL"
 git config user.name "${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}"
 git config user.email "${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}"
 
-# Re-fetch the remote tip, re-apply artifacts onto it, commit and push -- and on
-# a non-fast-forward rejection (another publisher pushed between our fetch and
-# push) start over from the fresh tip. "Lost the race" is success, not failure:
-# the other run published the same artifacts. Bounded so a genuinely broken
-# remote still surfaces an error instead of looping forever.
 attempts="${SFO_PAGES_PUSH_ATTEMPTS:-4}"
 attempt=1
 while true; do
@@ -94,8 +83,13 @@ while true; do
 
   find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 
-  for artifact_path in "${present_artifacts[@]}"; do
-    cp "$artifact_path" "./$(basename "$artifact_path")"
+  # 1) the prebuilt React SPA (index.html, assets/, icons, diagnostics.json, …)
+  cp -R "$WEBDIST_DIR"/. ./
+  # 2) overlay the freshly generated data JSONs so the SPA loads live data
+  for artifact in "${JSON_ARTIFACTS[@]}"; do
+    if [[ -e "$FORECASTER_DIR/$artifact" ]]; then
+      cp "$FORECASTER_DIR/$artifact" "./$artifact"
+    fi
   done
   touch .nojekyll
 
