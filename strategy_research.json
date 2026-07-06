@@ -10,7 +10,7 @@
       "excluded_post_resolution_signals": 348,
       "pre_resolution_signals": 151040,
       "raw_signals": 151388,
-      "settled_signals": 288
+      "settled_signals": 300
     },
     "dedupe_explanation": "Repeated 15-minute AWS scans are counted once per target, market, and side, using the first approved (entry) snapshot so approved metrics reflect trades actually taken, not the decayed last scan.",
     "lead_mode_counts": {
@@ -51,13 +51,13 @@
       "approved_hit_rate": 0.7,
       "approved_paper_pnl": 24.15,
       "approved_roi": 0.1124,
-      "avg_edge": -0.1581,
-      "avg_edge_lcb": -0.2966,
-      "avg_probability": 0.5121,
-      "avg_quality": 32.9,
-      "brier_score": 0.1283,
+      "avg_edge": -0.1625,
+      "avg_edge_lcb": -0.3017,
+      "avg_probability": 0.5116,
+      "avg_quality": 32.6,
+      "brier_score": 0.128,
       "hit_rate": 0.5,
-      "log_loss": 0.4262
+      "log_loss": 0.4244
     },
     "metrics_available": true,
     "pre_resolution_only": true,
@@ -66,21 +66,21 @@
         "approved": 0.0,
         "approved_pnl": 0,
         "approved_roi": 0.0,
-        "avg_probability": 0.3734,
-        "brier_score": 0.1397,
-        "count": 41.0,
+        "avg_probability": 0.3816,
+        "brier_score": 0.1383,
+        "count": 42.0,
         "range": "0-20",
-        "win_rate": 0.439
+        "win_rate": 0.4524
       },
       {
         "approved": 3.0,
         "approved_pnl": 1.01,
         "approved_roi": 0.1264,
-        "avg_probability": 0.4237,
-        "brier_score": 0.091,
-        "count": 171.0,
+        "avg_probability": 0.4272,
+        "brier_score": 0.093,
+        "count": 182.0,
         "range": "20-40",
-        "win_rate": 0.4444
+        "win_rate": 0.4451
       },
       {
         "approved": 44.0,
@@ -356,8 +356,8 @@
         }
       ],
       "minimum_train_rows": 180,
-      "outcome_count": 30,
-      "reason": "clean-blend/combined has 30 outcome rows; needs more than 180 rows for this walk-forward comparison.",
+      "outcome_count": 31,
+      "reason": "clean-blend/combined has 31 outcome rows; needs more than 180 rows for this walk-forward comparison.",
       "role": "Challenger research calibration",
       "sample_size": 0,
       "source": "clean-blend/combined"
@@ -372,41 +372,156 @@
     "available": true,
     "by_profile": {
       "live": {
-        "by_cohort": {},
-        "by_forecast_cohort": {},
-        "by_side": {},
+        "by_cohort": {
+          "normal_60_69f": {
+            "capital_at_risk": 14.13,
+            "hit_rate": 1.0,
+            "independent_days": 3,
+            "losses": 0,
+            "realized_pnl": 1.87,
+            "roi": 0.132343,
+            "trades": 4,
+            "wins": 4
+          },
+          "warm_70_79f": {
+            "capital_at_risk": 11.15,
+            "hit_rate": 1.0,
+            "independent_days": 3,
+            "losses": 0,
+            "realized_pnl": 1.85,
+            "roi": 0.165919,
+            "trades": 3,
+            "wins": 3
+          }
+        },
+        "by_forecast_cohort": {
+          "normal_60_69f": {
+            "capital_at_risk": 22.73,
+            "hit_rate": 1.0,
+            "independent_days": 4,
+            "losses": 0,
+            "realized_pnl": 3.27,
+            "roi": 0.143863,
+            "trades": 5,
+            "wins": 5
+          },
+          "warm_70_79f": {
+            "capital_at_risk": 2.55,
+            "hit_rate": 1.0,
+            "independent_days": 2,
+            "losses": 0,
+            "realized_pnl": 0.45,
+            "roi": 0.176471,
+            "trades": 2,
+            "wins": 2
+          }
+        },
+        "by_side": {
+          "NO": {
+            "capital_at_risk": 25.28,
+            "hit_rate": 1.0,
+            "independent_days": 6,
+            "losses": 0,
+            "realized_pnl": 3.72,
+            "roi": 0.147152,
+            "trades": 7,
+            "wins": 7
+          }
+        },
         "candidate": {
-          "capital_at_risk": 0,
-          "ending_equity": 1000.0,
-          "geometric_growth_per_independent_day": null,
-          "hit_rate_per_trade": null,
-          "log_growth_per_independent_day": null,
+          "capital_at_risk": 25.28,
+          "ending_equity": 1003.72,
+          "geometric_growth_per_independent_day": 0.162935,
+          "hit_rate_per_trade": 1.0,
+          "log_growth_per_independent_day": 0.150947,
           "losses": 0,
-          "realized_pnl": 0,
-          "roi": null,
-          "roi_ci95_day_clustered": null,
-          "wins": 0
+          "realized_pnl": 3.72,
+          "roi": 0.147152,
+          "roi_ci95_day_clustered": [
+            0.114754,
+            0.183805
+          ],
+          "wins": 7
         },
         "config_basis": "paper-realism, not real-money validated",
         "counts": {
-          "approved_under_candidate_config": 0,
+          "approved_under_candidate_config": 7,
           "approved_under_recorded_config": 60,
           "approved_without_settlement": 0,
           "considered": 300,
-          "independent_days": 0,
-          "settled_decisions": 0
+          "independent_days": 6,
+          "settled_decisions": 7
         },
         "portfolio": {
-          "by_side": {},
-          "by_sleeve": {},
-          "ending_equity": 1000.0,
-          "equity_curve": [],
-          "growth_multiple": 1.0,
-          "hit_rate_per_day": null,
-          "independent_days": 0,
+          "by_side": {
+            "NO": {
+              "capital_at_risk": 25.28,
+              "hit_rate": 1.0,
+              "independent_days": 6,
+              "losses": 0,
+              "realized_pnl": 3.72,
+              "roi": 0.147152,
+              "trades": 7,
+              "wins": 7
+            }
+          },
+          "by_sleeve": {
+            "no_core": {
+              "capital_at_risk": 25.28,
+              "hit_rate": 1.0,
+              "independent_days": 6,
+              "losses": 0,
+              "realized_pnl": 3.72,
+              "roi": 0.147152,
+              "trades": 7,
+              "wins": 7
+            }
+          },
+          "ending_equity": 1003.72,
+          "equity_curve": [
+            {
+              "day_pnl": 0.15,
+              "drawdown": 0.0,
+              "ending_equity": 1000.15,
+              "target_date": "2026-06-14"
+            },
+            {
+              "day_pnl": 0.3,
+              "drawdown": 0.0,
+              "ending_equity": 1000.45,
+              "target_date": "2026-06-15"
+            },
+            {
+              "day_pnl": 1.3,
+              "drawdown": 0.0,
+              "ending_equity": 1001.75,
+              "target_date": "2026-06-16"
+            },
+            {
+              "day_pnl": 0.4,
+              "drawdown": 0.0,
+              "ending_equity": 1002.15,
+              "target_date": "2026-06-17"
+            },
+            {
+              "day_pnl": 1.22,
+              "drawdown": 0.0,
+              "ending_equity": 1003.37,
+              "target_date": "2026-06-22"
+            },
+            {
+              "day_pnl": 0.35,
+              "drawdown": 0.0,
+              "ending_equity": 1003.72,
+              "target_date": "2026-06-27"
+            }
+          ],
+          "growth_multiple": 1.00372,
+          "hit_rate_per_day": 1.0,
+          "independent_days": 6,
           "max_drawdown": 0.0,
           "max_drawdown_pct": 0.0,
-          "trades": 0
+          "trades": 7
         },
         "recorded_config_own_book": {
           "capital_at_risk": 214.85,
@@ -702,7 +817,7 @@
       }
     },
     "sampled_snapshots": 300,
-    "settlement_days": 38
+    "settlement_days": 40
   },
   "daily_summary": {
     "available": true,
@@ -777,134 +892,28 @@
       },
       {
         "contracts": 1.0,
-        "edge_lcb": -0.069,
-        "entry_price": 0.52,
-        "id": 73,
-        "label": "72\u00b0 to 73\u00b0",
-        "quality_score": 52.1,
-        "realized_pnl": 0.16,
+        "edge_lcb": 0.005,
+        "entry_price": 0.9,
+        "id": 75,
+        "label": "63\u00b0 or below",
+        "quality_score": 54.9,
+        "realized_pnl": 0.04,
         "risk_profile": "research",
         "side": "NO",
-        "target_date": "2026-06-28",
-        "ticker": "KXHIGHTSFO-26JUN28-B72.5"
+        "target_date": "2026-07-02",
+        "ticker": "KXHIGHTSFO-26JUL02-T64"
       }
     ],
     "current_equity": 959.19,
     "data_collected": {
-      "decision_snapshots": 48876,
-      "forecast_snapshots": 2037,
-      "market_snapshots": 2037,
-      "paper_monitor_snapshots": 461,
-      "paper_orders": 9,
-      "probability_snapshots": 12222
+      "decision_snapshots": 37392,
+      "forecast_snapshots": 1558,
+      "market_snapshots": 1558,
+      "paper_monitor_snapshots": 422,
+      "paper_orders": 8,
+      "probability_snapshots": 9348
     },
     "days": [
-      {
-        "approved_signals": 0,
-        "avg_market_probability": 0.5,
-        "avg_model_probability": 0.5,
-        "closed": 0,
-        "cumulative_realized": -39.77,
-        "date": "2026-06-27",
-        "forecast_actual_high_f": 67.0,
-        "forecast_error_f": 2.79,
-        "forecast_predicted_high_f": 64.21,
-        "hit_rate": null,
-        "losses": 0,
-        "opened": 0,
-        "opened_spend": 0.0,
-        "profiles": {
-          "live": {
-            "approved_signals": 0,
-            "closed": 0,
-            "hit_rate": null,
-            "losses": 0,
-            "opened": 0,
-            "opened_spend": 0.0,
-            "realized_pnl": 0.0,
-            "resolved": 0,
-            "resolved_spend": 0.0,
-            "roi": null,
-            "settled": 0,
-            "signals": 1152,
-            "wins": 0
-          },
-          "research": {
-            "approved_signals": 0,
-            "closed": 0,
-            "hit_rate": null,
-            "losses": 0,
-            "opened": 0,
-            "opened_spend": 0.0,
-            "realized_pnl": 0.0,
-            "resolved": 0,
-            "resolved_spend": 0.0,
-            "roi": null,
-            "settled": 0,
-            "signals": 1140,
-            "wins": 0
-          }
-        },
-        "realized_pnl": 0.0,
-        "resolved_spend": 0.0,
-        "roi": null,
-        "settled": 0,
-        "signals": 2292,
-        "wins": 0
-      },
-      {
-        "approved_signals": 1,
-        "avg_market_probability": 0.5,
-        "avg_model_probability": 0.5,
-        "closed": 1,
-        "cumulative_realized": -39.61,
-        "date": "2026-06-28",
-        "forecast_actual_high_f": 74.0,
-        "forecast_error_f": 2.98,
-        "forecast_predicted_high_f": 71.02,
-        "hit_rate": 1.0,
-        "losses": 0,
-        "opened": 1,
-        "opened_spend": 0.54,
-        "profiles": {
-          "live": {
-            "approved_signals": 0,
-            "closed": 0,
-            "hit_rate": null,
-            "losses": 0,
-            "opened": 0,
-            "opened_spend": 0.0,
-            "realized_pnl": 0.0,
-            "resolved": 0,
-            "resolved_spend": 0.0,
-            "roi": null,
-            "settled": 0,
-            "signals": 4608,
-            "wins": 0
-          },
-          "research": {
-            "approved_signals": 1,
-            "closed": 1,
-            "hit_rate": 1.0,
-            "losses": 0,
-            "opened": 1,
-            "opened_spend": 0.54,
-            "realized_pnl": 0.16,
-            "resolved": 1,
-            "resolved_spend": 0.54,
-            "roi": 0.2962962962962961,
-            "settled": 0,
-            "signals": 4608,
-            "wins": 1
-          }
-        },
-        "realized_pnl": 0.16,
-        "resolved_spend": 0.54,
-        "roi": 0.2962962962962961,
-        "settled": 0,
-        "signals": 9216,
-        "wins": 1
-      },
       {
         "approved_signals": 6,
         "avg_market_probability": 0.5,
@@ -1124,9 +1133,9 @@
         "closed": 0,
         "cumulative_realized": -40.81,
         "date": "2026-07-03",
-        "forecast_actual_high_f": null,
-        "forecast_error_f": null,
-        "forecast_predicted_high_f": null,
+        "forecast_actual_high_f": 70.0,
+        "forecast_error_f": 0.4,
+        "forecast_predicted_high_f": 70.4,
         "hit_rate": null,
         "losses": 0,
         "opened": 0,
@@ -1169,12 +1178,87 @@
         "settled": 0,
         "signals": 1656,
         "wins": 0
+      },
+      {
+        "approved_signals": 0,
+        "avg_market_probability": null,
+        "avg_model_probability": null,
+        "closed": 0,
+        "cumulative_realized": -40.81,
+        "date": "2026-07-04",
+        "forecast_actual_high_f": null,
+        "forecast_error_f": null,
+        "forecast_predicted_high_f": null,
+        "hit_rate": null,
+        "losses": 0,
+        "opened": 0,
+        "opened_spend": 0.0,
+        "profiles": {},
+        "realized_pnl": 0.0,
+        "resolved_spend": 0.0,
+        "roi": null,
+        "settled": 0,
+        "signals": 0,
+        "wins": 0
+      },
+      {
+        "approved_signals": 0,
+        "avg_market_probability": 0.5,
+        "avg_model_probability": 0.5,
+        "closed": 0,
+        "cumulative_realized": -40.81,
+        "date": "2026-07-05",
+        "forecast_actual_high_f": null,
+        "forecast_error_f": null,
+        "forecast_predicted_high_f": null,
+        "hit_rate": null,
+        "losses": 0,
+        "opened": 0,
+        "opened_spend": 0.0,
+        "profiles": {
+          "live": {
+            "approved_signals": 0,
+            "closed": 0,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 12,
+            "wins": 0
+          },
+          "research": {
+            "approved_signals": 0,
+            "closed": 0,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 12,
+            "wins": 0
+          }
+        },
+        "realized_pnl": 0.0,
+        "resolved_spend": 0.0,
+        "roi": null,
+        "settled": 0,
+        "signals": 24,
+        "wins": 0
       }
     ],
     "exit_reasons": {
       "closed_break_even": 0,
       "closed_stop_loss": 5,
-      "closed_take_profit": 3,
+      "closed_take_profit": 2,
       "expired_unfilled": 0,
       "held_to_settlement": 1
     },
@@ -1182,27 +1266,27 @@
       "research": {
         "closed_break_even": 0,
         "closed_stop_loss": 5,
-        "closed_take_profit": 3,
+        "closed_take_profit": 2,
         "expired_unfilled": 0,
         "held_to_settlement": 1
       }
     },
     "gate_behavior": {
-      "approved": 54,
+      "approved": 53,
       "by_profile": [
         {
           "approved": 0,
           "entry_block_reasons": [],
           "rejection_categories": {
-            "edge": 4068,
-            "no_data": 20376,
+            "edge": 780,
+            "no_data": 17916,
             "other": 0
           },
           "risk_profile": "live",
-          "signals": 24444,
+          "signals": 18696,
           "top_rejections": [
             {
-              "count": 13500,
+              "count": 13488,
               "reason": "source spread"
             },
             {
@@ -1210,59 +1294,59 @@
               "reason": "forecast high 70.4F is in the warm_70_79f regime"
             },
             {
-              "count": 1212,
-              "reason": "forecast high 71.0F is in the warm_70_79f regime"
-            },
-            {
-              "count": 684,
+              "count": 540,
               "reason": "forecast high 72.0F is in the warm_70_79f regime"
             },
             {
-              "count": 672,
-              "reason": "forecast high 72.5F is in the warm_70_79f regime"
+              "count": 369,
+              "reason": "model/market gap"
             },
             {
-              "count": 588,
-              "reason": "forecast high 71.6F is in the warm_70_79f regime"
+              "count": 288,
+              "reason": "forecast high 72.2F is in the warm_70_79f regime"
+            },
+            {
+              "count": 288,
+              "reason": "forecast high 70.1F is in the warm_70_79f regime"
             }
           ],
           "top_rejections_all": [
             {
-              "count": 24444,
+              "count": 18696,
               "reason": "edge"
             },
             {
-              "count": 24235,
+              "count": 18549,
               "reason": "lower-bound edge"
             },
             {
-              "count": 20376,
+              "count": 17916,
               "reason": "source spread"
             },
             {
-              "count": 6303,
+              "count": 4661,
               "reason": "edge_lcb"
             },
             {
-              "count": 5927,
+              "count": 4151,
               "reason": "model/market gap"
             },
             {
-              "count": 3994,
+              "count": 2986,
               "reason": "spread"
             },
             {
-              "count": 2333,
+              "count": 1643,
               "reason": "posterior probability"
             },
             {
-              "count": 1880,
-              "reason": "all-in cost"
+              "count": 1368,
+              "reason": "forecast high 70.4F is in the warm_70_79f regime"
             }
           ]
         },
         {
-          "approved": 54,
+          "approved": 53,
           "entry_block_reasons": [
             {
               "count": 1,
@@ -1270,153 +1354,152 @@
             }
           ],
           "rejection_categories": {
-            "edge": 9859,
-            "no_data": 14519,
+            "edge": 5660,
+            "no_data": 12983,
             "other": 0
           },
           "risk_profile": "research",
-          "signals": 24432,
+          "signals": 18696,
           "top_rejections": [
             {
-              "count": 14496,
+              "count": 12960,
               "reason": "source spread"
             },
             {
-              "count": 3800,
+              "count": 2149,
               "reason": "edge"
             },
             {
-              "count": 2031,
+              "count": 1057,
               "reason": "lower-bound edge"
             },
             {
-              "count": 786,
+              "count": 394,
               "reason": "NO ask is not tradeable"
             },
             {
-              "count": 786,
+              "count": 394,
               "reason": "bid"
             },
             {
-              "count": 671,
-              "reason": "posterior probability"
+              "count": 379,
+              "reason": "model/market gap"
             }
           ],
           "top_rejections_all": [
             {
-              "count": 18002,
+              "count": 14003,
               "reason": "lower-bound edge"
             },
             {
-              "count": 15981,
-              "reason": "edge"
-            },
-            {
-              "count": 14496,
+              "count": 12960,
               "reason": "source spread"
             },
             {
-              "count": 6299,
+              "count": 12058,
+              "reason": "edge"
+            },
+            {
+              "count": 4664,
               "reason": "edge_lcb"
             },
             {
-              "count": 2733,
+              "count": 1936,
               "reason": "posterior probability"
             },
             {
-              "count": 1880,
-              "reason": "all-in cost"
-            },
-            {
-              "count": 1849,
+              "count": 1281,
               "reason": "spread"
             },
             {
-              "count": 1216,
+              "count": 1203,
+              "reason": "all-in cost"
+            },
+            {
+              "count": 805,
               "reason": "bid size"
             }
           ]
         }
       ],
-      "rejected": 48822,
+      "rejected": 37339,
       "rejection_categories": {
-        "edge": 13927,
-        "no_data": 34895,
+        "edge": 6440,
+        "no_data": 30899,
         "other": 0
       },
       "top_rejections": [
         {
-          "count": 27996,
+          "count": 26448,
           "reason": "source spread"
         },
         {
-          "count": 3843,
+          "count": 2201,
           "reason": "edge"
-        },
-        {
-          "count": 2054,
-          "reason": "lower-bound edge"
         },
         {
           "count": 1368,
           "reason": "forecast high 70.4F is in the warm_70_79f regime"
         },
         {
-          "count": 1212,
-          "reason": "forecast high 71.0F is in the warm_70_79f regime"
+          "count": 1081,
+          "reason": "lower-bound edge"
         },
         {
-          "count": 884,
-          "reason": "NO ask is not tradeable"
+          "count": 748,
+          "reason": "model/market gap"
+        },
+        {
+          "count": 540,
+          "reason": "forecast high 72.0F is in the warm_70_79f regime"
         }
       ],
       "top_rejections_all": [
         {
-          "count": 42237,
+          "count": 32552,
           "reason": "lower-bound edge"
         },
         {
-          "count": 40425,
-          "reason": "edge"
-        },
-        {
-          "count": 34872,
+          "count": 30876,
           "reason": "source spread"
         },
         {
-          "count": 12602,
+          "count": 30754,
+          "reason": "edge"
+        },
+        {
+          "count": 9325,
           "reason": "edge_lcb"
         },
         {
-          "count": 6706,
+          "count": 4912,
           "reason": "model/market gap"
         },
         {
-          "count": 5843,
+          "count": 4267,
           "reason": "spread"
         },
         {
-          "count": 5066,
+          "count": 3579,
           "reason": "posterior probability"
         },
         {
-          "count": 3760,
+          "count": 2403,
           "reason": "all-in cost"
         }
       ]
     },
-    "generated_at": "2026-07-03T12:41:54.794163+00:00",
+    "generated_at": "2026-07-06T05:40:59.317259+00:00",
     "learnings": [
-      "Lower-bound edge split: edge_lcb<0 trades netted $+0.16 (1 trades) vs edge_lcb>=0 at $-1.20 (8 trades).",
-      "NO side: 4/8 won, net $-0.70 this window.",
+      "NO side: 3/7 won, net $-0.86 this window.",
       "YES side: 0/1 won, net $-0.34 this window.",
-      "Most frequent gate rejections: source spread (27996x); edge (3843x).",
-      "Clean next-day forecast error averaged 2.33F across 6 settled day(s) in this window."
+      "Most frequent gate rejections: source spread (26448x); edge (2201x).",
+      "Clean next-day forecast error averaged 1.73F across 5 settled day(s) in this window."
     ],
     "model_vs_market": {
-      "max_abs_gap": 0.7981,
-      "mean_abs_gap": 0.0911,
-      "samples": 48876
+      "max_abs_gap": 0.6795,
+      "mean_abs_gap": 0.0923,
+      "samples": 37392
     },
     "profiles": [
       {
@@ -1432,32 +1515,31 @@
         "wins": 0
       },
       {
-        "capital_resolved": 34.37,
-        "hit_rate": 0.4444,
+        "capital_resolved": 33.83,
+        "hit_rate": 0.375,
         "losses": 5,
         "open_positions": 0,
         "open_risk": 0.0,
-        "realized_pnl": -1.04,
-        "resolved": 9,
+        "realized_pnl": -1.2,
+        "resolved": 8,
         "risk_profile": "research",
-        "roi": -0.0303,
-        "wins": 4
+        "roi": -0.0355,
+        "wins": 3
       }
     ],
     "recommended_changes": [
-      "Sample is small (9 resolved trades); treat window ROI as noise and wait for at least 15 resolved trades before changing gates.",
-      "Mean absolute forecast error is 2.33F; review source weights and recent Google/NWS disagreement before trusting tail bins."
+      "Sample is small (8 resolved trades); treat window ROI as noise and wait for at least 15 resolved trades before changing gates."
     ],
     "schema_version": 1,
     "side_performance": {
       "NO": {
-        "capital": 33.57,
-        "hit_rate": 0.5,
+        "capital": 33.03,
+        "hit_rate": 0.4286,
         "losses": 4,
-        "realized_pnl": -0.7,
-        "roi": -0.0209,
-        "trades": 8,
-        "wins": 4
+        "realized_pnl": -0.86,
+        "roi": -0.026,
+        "trades": 7,
+        "wins": 3
       },
       "YES": {
         "capital": 0.8,
@@ -1472,13 +1554,13 @@
     "side_performance_by_profile": {
       "research": {
         "NO": {
-          "capital": 33.57,
-          "hit_rate": 0.5,
+          "capital": 33.03,
+          "hit_rate": 0.4286,
           "losses": 4,
-          "realized_pnl": -0.7,
-          "roi": -0.0209,
-          "trades": 8,
-          "wins": 4
+          "realized_pnl": -0.86,
+          "roi": -0.026,
+          "trades": 7,
+          "wins": 3
         },
         "YES": {
           "capital": 0.8,
@@ -1493,23 +1575,23 @@
     },
     "starting_bankroll": 1000.0,
     "totals": {
-      "capital_resolved": 34.37,
+      "capital_resolved": 33.83,
       "cumulative_realized_pnl": -40.81,
-      "hit_rate": 0.4444,
+      "hit_rate": 0.375,
       "losses": 5,
-      "mean_abs_forecast_error_f": 2.33,
+      "mean_abs_forecast_error_f": 1.73,
       "open_positions": 0,
       "open_risk": 0,
-      "realized_pnl": -1.04,
-      "roi": -0.0303,
-      "trades_closed": 8,
-      "trades_opened": 9,
+      "realized_pnl": -1.2,
+      "roi": -0.0355,
+      "trades_closed": 7,
+      "trades_opened": 8,
       "trades_settled": 1,
-      "wins": 4
+      "wins": 3
     },
     "window_days": 7,
-    "window_end": "2026-07-03",
-    "window_start": "2026-06-27"
+    "window_end": "2026-07-05",
+    "window_start": "2026-06-29"
   },
   "dataset_research": {
     "accuracy_candidate_count": 0,
@@ -1594,127 +1676,127 @@
       "forecast_feature_sources": [
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-historical-forecast",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day1"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day2"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day3"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day4"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day5"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day6"
         },
         {
           "first_target_date": "2026-05-31",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "best_match",
-          "rows": 44,
+          "rows": 46,
           "source": "open-meteo-previous-runs",
-          "target_dates": 34,
+          "target_dates": 36,
           "variable": "temperature_2m_max_previous_day7"
         },
         {
           "first_target_date": "2026-06-16",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "gfs-mos",
-          "rows": 512,
+          "rows": 552,
           "source": "gfs-mos",
-          "target_dates": 18,
+          "target_dates": 20,
           "variable": "temperature_2m"
         },
         {
           "first_target_date": "2026-06-16",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "gfs-mos",
-          "rows": 128,
+          "rows": 138,
           "source": "gfs-mos",
-          "target_dates": 18,
+          "target_dates": 20,
           "variable": "temperature_2m_max"
         },
         {
           "first_target_date": "2026-06-16",
-          "last_target_date": "2026-07-03",
+          "last_target_date": "2026-07-05",
           "model": "gfs_hrrr",
-          "rows": 18,
+          "rows": 20,
           "source": "open-meteo-previous-runs",
-          "target_dates": 18,
+          "target_dates": 20,
           "variable": "temperature_2m_max"
         }
       ],
       "market_history": {
         "candles": 365,
-        "markets": 312,
+        "markets": 324,
         "minimum_after_cost_trades": 30,
         "trade_rows_ready": false,
         "trades": 0
       },
       "tables": {
-        "dataset_forecast_features": 1072,
+        "dataset_forecast_features": 1144,
         "dataset_kalshi_candles": 365,
-        "dataset_kalshi_markets": 312,
+        "dataset_kalshi_markets": 324,
         "dataset_kalshi_trades": 0,
-        "dataset_runs": 148,
-        "dataset_station_observations": 10101
+        "dataset_runs": 164,
+        "dataset_station_observations": 10731
       }
     },
     "dataset_stack": {
@@ -1724,13 +1806,13 @@
       "minimum_matched_rows": 30,
       "reason": "No dataset forecast feature has enough matched settlement rows for a combined stack yet; need at least 30."
     },
-    "generated_at": "2026-07-03T09:27:48.844536+00:00",
+    "generated_at": "2026-07-05T09:26:52.724870+00:00",
     "headline": "Collected dataset features have not beaten the active LSTM baseline on holdout yet.",
     "profitability_gate": {
       "decision": "collect_only",
       "market_history": {
         "candles": 365,
-        "markets": 312,
+        "markets": 324,
         "trades": 0
       },
       "minimum_after_cost_trades": 30,
@@ -1745,37 +1827,48 @@
     "available": true,
     "clisfo": {
       "available": true,
-      "lag_days": 1,
-      "latest_date": "2026-07-02",
-      "latest_fetched_at": "2026-07-03T12:41:09.295895+00:00",
+      "lag_days": 0,
+      "latest_date": "2026-07-05",
+      "latest_fetched_at": "2026-07-06T05:38:16.889980+00:00",
       "max_lag_days": 2,
-      "rows": 4181
+      "rows": 4184
     },
     "db_path_hint": "/opt/weatheredge/forecaster/weather.db",
     "emos": {
       "available": true,
       "live_targets": [
         {
-          "fetched_at": "2026-07-03T00:41:30+00:00",
-          "latest_age_hours": 12.01,
+          "fetched_at": "2026-07-05T06:41:57+00:00",
+          "latest_age_hours": 22.98,
           "lead_days": 1,
           "method": "emos_wmean",
-          "mu_f": 70.83,
+          "mu_f": 67.95,
           "n_models": 8,
-          "sigma_f": 2.81,
+          "sigma_f": 2.38,
           "source": "live",
-          "target_date": "2026-07-03"
+          "target_date": "2026-07-05"
         },
         {
-          "fetched_at": "2026-07-03T00:41:36+00:00",
-          "latest_age_hours": 12.0,
+          "fetched_at": "2026-07-06T05:38:52+00:00",
+          "latest_age_hours": 0.03,
+          "lead_days": 1,
+          "method": "emos_wmean",
+          "mu_f": 67.04,
+          "n_models": 8,
+          "sigma_f": 2.32,
+          "source": "live",
+          "target_date": "2026-07-06"
+        },
+        {
+          "fetched_at": "2026-07-06T05:38:58+00:00",
+          "latest_age_hours": 0.03,
           "lead_days": 2,
           "method": "emos_wmean",
-          "mu_f": 69.54,
+          "mu_f": 64.78,
           "n_models": 8,
-          "sigma_f": 2.87,
+          "sigma_f": 2.48,
           "source": "live",
-          "target_date": "2026-07-04"
+          "target_date": "2026-07-07"
         }
       ],
       "max_stale_hours": 6.0,
@@ -1784,19 +1877,52 @@
       ],
       "recent_live_targets": [
         {
-          "fetched_at": "2026-07-03T00:41:36+00:00",
-          "latest_age_hours": 12.0,
+          "fetched_at": "2026-07-06T05:38:58+00:00",
+          "latest_age_hours": 0.03,
           "lead_days": 2,
           "method": "emos_wmean",
-          "mu_f": 69.54,
+          "mu_f": 64.78,
           "n_models": 8,
-          "sigma_f": 2.87,
+          "sigma_f": 2.48,
+          "source": "live",
+          "target_date": "2026-07-07"
+        },
+        {
+          "fetched_at": "2026-07-06T05:38:52+00:00",
+          "latest_age_hours": 0.03,
+          "lead_days": 1,
+          "method": "emos_wmean",
+          "mu_f": 67.04,
+          "n_models": 8,
+          "sigma_f": 2.32,
+          "source": "live",
+          "target_date": "2026-07-06"
+        },
+        {
+          "fetched_at": "2026-07-05T06:41:57+00:00",
+          "latest_age_hours": 22.98,
+          "lead_days": 1,
+          "method": "emos_wmean",
+          "mu_f": 67.95,
+          "n_models": 8,
+          "sigma_f": 2.38,
+          "source": "live",
+          "target_date": "2026-07-05"
+        },
+        {
+          "fetched_at": "2026-07-04T06:41:03+00:00",
+          "latest_age_hours": 46.99,
+          "lead_days": 1,
+          "method": "emos_wmean",
+          "mu_f": 70.35,
+          "n_models": 8,
+          "sigma_f": 2.59,
           "source": "live",
           "target_date": "2026-07-04"
         },
         {
           "fetched_at": "2026-07-03T00:41:30+00:00",
-          "latest_age_hours": 12.01,
+          "latest_age_hours": 76.99,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 70.83,
@@ -1807,7 +1933,7 @@
         },
         {
           "fetched_at": "2026-07-02T07:42:30+00:00",
-          "latest_age_hours": 28.99,
+          "latest_age_hours": 93.97,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 69.82,
@@ -1818,7 +1944,7 @@
         },
         {
           "fetched_at": "2026-07-01T07:41:23+00:00",
-          "latest_age_hours": 53.01,
+          "latest_age_hours": 117.99,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 69.08,
@@ -1826,39 +1952,6 @@
           "sigma_f": 2.64,
           "source": "live",
           "target_date": "2026-07-01"
-        },
-        {
-          "fetched_at": "2026-06-30T07:41:38+00:00",
-          "latest_age_hours": 77.0,
-          "lead_days": 1,
-          "method": "emos_wmean",
-          "mu_f": 69.06,
-          "n_models": 8,
-          "sigma_f": 2.69,
-          "source": "live",
-          "target_date": "2026-06-30"
-        },
-        {
-          "fetched_at": "2026-06-29T07:41:16+00:00",
-          "latest_age_hours": 101.01,
-          "lead_days": 1,
-          "method": "emos_wmean",
-          "mu_f": 74.27,
-          "n_models": 8,
-          "sigma_f": 2.92,
-          "source": "live",
-          "target_date": "2026-06-29"
-        },
-        {
-          "fetched_at": "2026-06-28T07:41:13+00:00",
-          "latest_age_hours": 125.01,
-          "lead_days": 1,
-          "method": "emos_wmean",
-          "mu_f": 73.53,
-          "n_models": 8,
-          "sigma_f": 2.66,
-          "source": "live",
-          "target_date": "2026-06-28"
         }
       ],
       "rolling_archive": {
@@ -1867,260 +1960,237 @@
         "rows": 830
       }
     },
-    "generated_at": "2026-07-03T12:41:53.323992+00:00",
+    "generated_at": "2026-07-06T05:40:43.803830+00:00",
     "nwp": {
       "available": true,
       "max_stale_hours": 36.0,
       "min_healthy_models": 6,
       "recent_targets": [
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 1,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-06"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 2,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-06"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 3,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-06"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 1,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-05"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 2,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-05"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 3,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-05"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 1,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-04"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 2,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-04"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 3,
+          "model_count": 8,
+          "sources": "openmeteo_previous_runs",
+          "target_date": "2026-07-04"
+        },
+        {
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 1,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-03"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 2,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-03"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 3,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-03"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 1,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-02"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 2,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-02"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 3,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-02"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 1,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-01"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 2,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-01"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 3,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-07-01"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 1,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-06-30"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 2,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-06-30"
         },
         {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 3,
           "model_count": 8,
           "sources": "openmeteo_previous_runs",
           "target_date": "2026-06-30"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 1,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-29"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 2,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-29"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 3,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-29"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 1,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-28"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 2,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-28"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 3,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-28"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 1,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-27"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 2,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-27"
-        },
-        {
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
-          "lead_days": 3,
-          "model_count": 8,
-          "sources": "openmeteo_previous_runs",
-          "target_date": "2026-06-27"
         }
       ],
       "targets": [
         {
-          "latest_age_hours": 12.01,
-          "latest_fetched_at": "2026-07-03T00:41:03+00:00",
+          "latest_age_hours": 0.04,
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
           "lead_days": 1,
           "model_count": 8,
           "sources": [
             "openmeteo_previous_runs"
           ],
-          "target_date": "2026-07-03"
-        },
-        {
-          "latest_age_hours": null,
-          "latest_fetched_at": null,
-          "lead_days": 1,
-          "model_count": 0,
-          "sources": [],
-          "target_date": "2026-07-04"
-        },
-        {
-          "latest_age_hours": null,
-          "latest_fetched_at": null,
-          "lead_days": 1,
-          "model_count": 0,
-          "sources": [],
           "target_date": "2026-07-05"
+        },
+        {
+          "latest_age_hours": 0.04,
+          "latest_fetched_at": "2026-07-06T05:38:17+00:00",
+          "lead_days": 1,
+          "model_count": 8,
+          "sources": [
+            "openmeteo_previous_runs"
+          ],
+          "target_date": "2026-07-06"
+        },
+        {
+          "latest_age_hours": null,
+          "latest_fetched_at": null,
+          "lead_days": 1,
+          "model_count": 0,
+          "sources": [],
+          "target_date": "2026-07-07"
         }
       ]
     },
     "nws_ground_truth": {
       "available": true,
       "lag_days": 0,
-      "latest_date": "2026-07-03",
-      "latest_observed_at": "2026-07-03T08:00:00+00:00",
-      "rows": 39
+      "latest_date": "2026-07-05",
+      "latest_observed_at": "2026-07-05T19:40:00+00:00",
+      "rows": 41
     },
     "rolling_targets": [
-      "2026-07-03",
-      "2026-07-04",
-      "2026-07-05"
+      "2026-07-05",
+      "2026-07-06",
+      "2026-07-07"
     ],
     "warnings": [
       {
         "action": "Check the NWP archive refresh log for source outages.",
         "code": "nwp-thin-target",
-        "detail": "2026-07-04 has 0 model(s), below the 6-model health floor.",
+        "detail": "2026-07-07 has 0 model(s), below the 6-model health floor.",
         "level": "warning",
-        "target_date": "2026-07-04",
-        "title": "Thin NWP target"
-      },
-      {
-        "action": "Check the NWP archive refresh log for source outages.",
-        "code": "nwp-thin-target",
-        "detail": "2026-07-05 has 0 model(s), below the 6-model health floor.",
-        "level": "warning",
-        "target_date": "2026-07-05",
+        "target_date": "2026-07-07",
         "title": "Thin NWP target"
       },
       {
         "action": "Check the forecaster refresh timer and EMOS serve-rolling step.",
         "code": "emos-live-stale",
-        "detail": "2026-07-03 live EMOS is 12.0 hours old.",
-        "level": "warning",
-        "target_date": "2026-07-03",
-        "title": "Live EMOS target stale"
-      },
-      {
-        "action": "Check the forecaster refresh timer and EMOS serve-rolling step.",
-        "code": "emos-live-stale",
-        "detail": "2026-07-04 live EMOS is 12.0 hours old.",
-        "level": "warning",
-        "target_date": "2026-07-04",
-        "title": "Live EMOS target stale"
-      },
-      {
-        "action": "Run emos_forecast.py --serve-rolling and inspect its output.",
-        "code": "emos-live-missing",
-        "detail": "No live EMOS distribution was found for 2026-07-05; EMOS-enabled profiles will degrade to residual calibration for that target.",
+        "detail": "2026-07-05 live EMOS is 23.0 hours old.",
         "level": "warning",
         "target_date": "2026-07-05",
-        "title": "Live EMOS target missing"
+        "title": "Live EMOS target stale"
       }
     ]
   },
-  "generated_at": "2026-07-03T12:41:57.648993+00:00",
+  "generated_at": "2026-07-06T05:41:03.876313+00:00",
   "live_frequency_tuning": {
-    "approved_per_independent_day": 0.0,
-    "approved_under_current_live_config": 0,
+    "approved_per_independent_day": 1.1667,
+    "approved_under_current_live_config": 7,
     "available": true,
     "considered_snapshots": 300,
     "guardrails": {
       "blocked_forecast_cohorts": [
-        "warm_70_79f",
         "hot_80f_plus"
       ],
-      "max_source_spread_f": 7.0,
+      "max_source_spread_f": 10.0,
       "min_edge_lcb": 0.0,
       "paper_pause_enabled": true
     },
-    "independent_days": 0,
+    "independent_days": 6,
     "recommendation": "Current live gates do not yet produce enough settled, independent evidence to tune toward 2-3 paper entries/day without weakening the lower-bound edge or pause guardrails.",
     "safe_config_change": null,
     "status": "BELOW_TARGET_COLLECT_ONLY",
@@ -6148,54 +6218,14 @@
         "biggest_winners": [],
         "current_equity": 998.51,
         "data_collected": {
-          "decision_snapshots": 48876,
-          "forecast_snapshots": 2037,
-          "market_snapshots": 2037,
-          "paper_monitor_snapshots": 461,
-          "paper_orders": 9,
-          "probability_snapshots": 12222
+          "decision_snapshots": 37392,
+          "forecast_snapshots": 1558,
+          "market_snapshots": 1558,
+          "paper_monitor_snapshots": 422,
+          "paper_orders": 8,
+          "probability_snapshots": 9348
         },
         "days": [
-          {
-            "approved_signals": 0,
-            "closed": 0,
-            "cumulative_realized": 0.0,
-            "date": "2026-06-27",
-            "forecast_actual_high_f": 67.0,
-            "forecast_error_f": 2.79,
-            "forecast_predicted_high_f": 64.21,
-            "hit_rate": null,
-            "losses": 0,
-            "opened": 0,
-            "opened_spend": 0.0,
-            "realized_pnl": 0.0,
-            "resolved": 0,
-            "resolved_spend": 0.0,
-            "roi": null,
-            "settled": 0,
-            "signals": 1152,
-            "wins": 0
-          },
-          {
-            "approved_signals": 0,
-            "closed": 0,
-            "cumulative_realized": 0.0,
-            "date": "2026-06-28",
-            "forecast_actual_high_f": 74.0,
-            "forecast_error_f": 2.98,
-            "forecast_predicted_high_f": 71.02,
-            "hit_rate": null,
-            "losses": 0,
-            "opened": 0,
-            "opened_spend": 0.0,
-            "realized_pnl": 0.0,
-            "resolved": 0,
-            "resolved_spend": 0.0,
-            "roi": null,
-            "settled": 0,
-            "signals": 4608,
-            "wins": 0
-          },
           {
             "approved_signals": 0,
             "closed": 0,
@@ -6281,6 +6311,46 @@
             "closed": 0,
             "cumulative_realized": 0.0,
             "date": "2026-07-03",
+            "forecast_actual_high_f": 70.0,
+            "forecast_error_f": 0.4,
+            "forecast_predicted_high_f": 70.4,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 828,
+            "wins": 0
+          },
+          {
+            "approved_signals": 0,
+            "closed": 0,
+            "cumulative_realized": 0.0,
+            "date": "2026-07-04",
+            "forecast_actual_high_f": null,
+            "forecast_error_f": null,
+            "forecast_predicted_high_f": null,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": null,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": null,
+            "roi": null,
+            "settled": 0,
+            "signals": 0,
+            "wins": 0
+          },
+          {
+            "approved_signals": 0,
+            "closed": 0,
+            "cumulative_realized": 0.0,
+            "date": "2026-07-05",
             "forecast_actual_high_f": null,
             "forecast_error_f": null,
             "forecast_predicted_high_f": null,
@@ -6293,7 +6363,7 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 828,
+            "signals": 12,
             "wins": 0
           }
         ],
@@ -6305,15 +6375,15 @@
               "approved": 0,
               "entry_block_reasons": [],
               "rejection_categories": {
-                "edge": 4068,
-                "no_data": 20376,
+                "edge": 780,
+                "no_data": 17916,
                 "other": 0
               },
               "risk_profile": "live",
-              "signals": 24444,
+              "signals": 18696,
               "top_rejections": [
                 {
-                  "count": 13500,
+                  "count": 13488,
                   "reason": "source spread"
                 },
                 {
@@ -6321,68 +6391,68 @@
                   "reason": "forecast high 70.4F is in the warm_70_79f regime"
                 },
                 {
-                  "count": 1212,
-                  "reason": "forecast high 71.0F is in the warm_70_79f regime"
-                },
-                {
-                  "count": 684,
+                  "count": 540,
                   "reason": "forecast high 72.0F is in the warm_70_79f regime"
                 },
                 {
-                  "count": 672,
-                  "reason": "forecast high 72.5F is in the warm_70_79f regime"
+                  "count": 369,
+                  "reason": "model/market gap"
                 },
                 {
-                  "count": 588,
-                  "reason": "forecast high 71.6F is in the warm_70_79f regime"
+                  "count": 288,
+                  "reason": "forecast high 72.2F is in the warm_70_79f regime"
+                },
+                {
+                  "count": 288,
+                  "reason": "forecast high 70.1F is in the warm_70_79f regime"
                 }
               ],
               "top_rejections_all": [
                 {
-                  "count": 24444,
+                  "count": 18696,
                   "reason": "edge"
                 },
                 {
-                  "count": 24235,
+                  "count": 18549,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 20376,
+                  "count": 17916,
                   "reason": "source spread"
                 },
                 {
-                  "count": 6303,
+                  "count": 4661,
                   "reason": "edge_lcb"
                 },
                 {
-                  "count": 5927,
+                  "count": 4151,
                   "reason": "model/market gap"
                 },
                 {
-                  "count": 3994,
+                  "count": 2986,
                   "reason": "spread"
                 },
                 {
-                  "count": 2333,
+                  "count": 1643,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 1880,
-                  "reason": "all-in cost"
+                  "count": 1368,
+                  "reason": "forecast high 70.4F is in the warm_70_79f regime"
                 }
               ]
             }
           ],
           "entry_block_reasons": [],
-          "rejected": 24444,
+          "rejected": 18696,
           "rejection_categories": {
-            "edge": 4068,
-            "no_data": 20376,
+            "edge": 780,
+            "no_data": 17916,
             "other": 0
           },
           "top_rejections": [
             {
-              "count": 13500,
+              "count": 13488,
               "reason": "source spread"
             },
             {
@@ -6390,66 +6460,66 @@
               "reason": "forecast high 70.4F is in the warm_70_79f regime"
             },
             {
-              "count": 1212,
-              "reason": "forecast high 71.0F is in the warm_70_79f regime"
-            },
-            {
-              "count": 684,
+              "count": 540,
               "reason": "forecast high 72.0F is in the warm_70_79f regime"
             },
             {
-              "count": 672,
-              "reason": "forecast high 72.5F is in the warm_70_79f regime"
+              "count": 369,
+              "reason": "model/market gap"
             },
             {
-              "count": 588,
-              "reason": "forecast high 71.6F is in the warm_70_79f regime"
+              "count": 288,
+              "reason": "forecast high 72.2F is in the warm_70_79f regime"
+            },
+            {
+              "count": 288,
+              "reason": "forecast high 70.1F is in the warm_70_79f regime"
             }
           ],
           "top_rejections_all": [
             {
-              "count": 24444,
+              "count": 18696,
               "reason": "edge"
             },
             {
-              "count": 24235,
+              "count": 18549,
               "reason": "lower-bound edge"
             },
             {
-              "count": 20376,
+              "count": 17916,
               "reason": "source spread"
             },
             {
-              "count": 6303,
+              "count": 4661,
               "reason": "edge_lcb"
             },
             {
-              "count": 5927,
+              "count": 4151,
               "reason": "model/market gap"
             },
             {
-              "count": 3994,
+              "count": 2986,
               "reason": "spread"
             },
             {
-              "count": 2333,
+              "count": 1643,
               "reason": "posterior probability"
             },
             {
-              "count": 1880,
-              "reason": "all-in cost"
+              "count": 1368,
+              "reason": "forecast high 70.4F is in the warm_70_79f regime"
             }
           ]
         },
-        "generated_at": "2026-07-03T12:41:54.794163+00:00",
+        "generated_at": "2026-07-06T05:40:59.317259+00:00",
         "learnings": [
           "live has no resolved trades in this window yet.",
           "live has 24 current signal candidate(s) in the latest artifact."
         ],
         "model_vs_market": {
-          "max_abs_gap": 0.7981,
-          "mean_abs_gap": 0.0911,
-          "samples": 48876
+          "max_abs_gap": 0.6795,
+          "mean_abs_gap": 0.0923,
+          "samples": 37392
         },
         "profiles": [
           {
@@ -6477,7 +6547,7 @@
           "cumulative_realized_pnl": -1.49,
           "hit_rate": null,
           "losses": 0,
-          "mean_abs_forecast_error_f": 2.33,
+          "mean_abs_forecast_error_f": 1.73,
           "open_positions": 0,
           "open_risk": 0.0,
           "realized_pnl": 0.0,
@@ -6488,8 +6558,8 @@
           "wins": 0
         },
         "window_days": 7,
-        "window_end": "2026-07-03",
-        "window_start": "2026-06-27"
+        "window_end": "2026-07-05",
+        "window_start": "2026-06-29"
       },
       "label": "Live (real-money candidate)",
       "learnings": [
@@ -7936,63 +8006,63 @@
           "available": true,
           "distribution": [
             {
+              "center_f": 62.5,
+              "implied_probability": 0.0642,
+              "label": "63\u00b0 or below",
+              "model_probability": 0.0538,
+              "ticker": "KXHIGHTSFO-26JUL06-T64"
+            },
+            {
               "center_f": 64.5,
-              "implied_probability": 0.0088,
-              "label": "65\u00b0 or below",
-              "model_probability": 0.0278,
-              "ticker": "KXHIGHTSFO-26JUL03-T66"
+              "implied_probability": 0.0826,
+              "label": "64\u00b0 to 65\u00b0",
+              "model_probability": 0.0976,
+              "ticker": "KXHIGHTSFO-26JUL06-B64.5"
             },
             {
               "center_f": 66.5,
-              "implied_probability": 0.0442,
+              "implied_probability": 0.2661,
               "label": "66\u00b0 to 67\u00b0",
-              "model_probability": 0.0868,
-              "ticker": "KXHIGHTSFO-26JUL03-B66.5"
+              "model_probability": 0.2249,
+              "ticker": "KXHIGHTSFO-26JUL06-B66.5"
             },
             {
               "center_f": 68.5,
-              "implied_probability": 0.1062,
+              "implied_probability": 0.4771,
               "label": "68\u00b0 to 69\u00b0",
-              "model_probability": 0.3408,
-              "ticker": "KXHIGHTSFO-26JUL03-B68.5"
+              "model_probability": 0.2713,
+              "ticker": "KXHIGHTSFO-26JUL06-B68.5"
             },
             {
               "center_f": 70.5,
-              "implied_probability": 0.3009,
+              "implied_probability": 0.0917,
               "label": "70\u00b0 to 71\u00b0",
-              "model_probability": 0.2269,
-              "ticker": "KXHIGHTSFO-26JUL03-B70.5"
+              "model_probability": 0.1678,
+              "ticker": "KXHIGHTSFO-26JUL06-B70.5"
             },
             {
               "center_f": 72.5,
-              "implied_probability": 0.354,
-              "label": "72\u00b0 to 73\u00b0",
-              "model_probability": 0.1764,
-              "ticker": "KXHIGHTSFO-26JUL03-B72.5"
-            },
-            {
-              "center_f": 74.5,
-              "implied_probability": 0.1858,
-              "label": "74\u00b0 or above",
-              "model_probability": 0.1412,
-              "ticker": "KXHIGHTSFO-26JUL03-T73"
+              "implied_probability": 0.0183,
+              "label": "72\u00b0 or above",
+              "model_probability": 0.1846,
+              "ticker": "KXHIGHTSFO-26JUL06-T71"
             }
           ],
-          "implied_high_f": 71.51,
-          "implied_stdev_f": 2.1961,
+          "implied_high_f": 67.51,
+          "implied_stdev_f": 2.0919,
           "liquid_bin_count": 6,
-          "median_f": 71.725,
-          "modal_bin_label": "72\u00b0 to 73\u00b0",
-          "modal_bin_ticker": "KXHIGHTSFO-26JUL03-B72.5",
-          "modal_probability": 0.354,
-          "model_high_f": 68.51,
-          "model_minus_market_f": -3.0,
-          "overround": 0.13,
-          "p10_f": 68.3833,
-          "p25_f": 70.1029,
-          "p75_f": 73.1375,
-          "p90_f": 74.4238,
-          "target_date": "2026-07-03"
+          "median_f": 67.8654,
+          "modal_bin_label": "68\u00b0 to 69\u00b0",
+          "modal_bin_ticker": "KXHIGHTSFO-26JUL06-B68.5",
+          "modal_probability": 0.4771,
+          "model_high_f": 68.92,
+          "model_minus_market_f": 1.41,
+          "overround": 0.09,
+          "p10_f": 64.3667,
+          "p25_f": 66.2759,
+          "p75_f": 68.9135,
+          "p90_f": 69.72,
+          "target_date": "2026-07-06"
         },
         "source": "decision_snapshots"
       },
@@ -8093,72 +8163,32 @@
           },
           {
             "contracts": 1.0,
-            "edge_lcb": -0.069,
-            "entry_price": 0.52,
-            "id": 73,
-            "label": "72\u00b0 to 73\u00b0",
-            "quality_score": 52.1,
-            "realized_pnl": 0.16,
+            "edge_lcb": 0.005,
+            "entry_price": 0.9,
+            "id": 75,
+            "label": "63\u00b0 or below",
+            "quality_score": 54.9,
+            "realized_pnl": 0.04,
             "risk_profile": "research",
             "side": "NO",
-            "target_date": "2026-06-28",
-            "ticker": "KXHIGHTSFO-26JUN28-B72.5"
+            "target_date": "2026-07-02",
+            "ticker": "KXHIGHTSFO-26JUL02-T64"
           }
         ],
         "current_equity": 960.68,
         "data_collected": {
-          "decision_snapshots": 48876,
-          "forecast_snapshots": 2037,
-          "market_snapshots": 2037,
-          "paper_monitor_snapshots": 461,
-          "paper_orders": 9,
-          "probability_snapshots": 12222
+          "decision_snapshots": 37392,
+          "forecast_snapshots": 1558,
+          "market_snapshots": 1558,
+          "paper_monitor_snapshots": 422,
+          "paper_orders": 8,
+          "probability_snapshots": 9348
         },
         "days": [
           {
-            "approved_signals": 0,
-            "closed": 0,
-            "cumulative_realized": 0.0,
-            "date": "2026-06-27",
-            "forecast_actual_high_f": 67.0,
-            "forecast_error_f": 2.79,
-            "forecast_predicted_high_f": 64.21,
-            "hit_rate": null,
-            "losses": 0,
-            "opened": 0,
-            "opened_spend": 0.0,
-            "realized_pnl": 0.0,
-            "resolved": 0,
-            "resolved_spend": 0.0,
-            "roi": null,
-            "settled": 0,
-            "signals": 1140,
-            "wins": 0
-          },
-          {
-            "approved_signals": 1,
-            "closed": 1,
-            "cumulative_realized": 0.16,
-            "date": "2026-06-28",
-            "forecast_actual_high_f": 74.0,
-            "forecast_error_f": 2.98,
-            "forecast_predicted_high_f": 71.02,
-            "hit_rate": 1.0,
-            "losses": 0,
-            "opened": 1,
-            "opened_spend": 0.54,
-            "realized_pnl": 0.16,
-            "resolved": 1,
-            "resolved_spend": 0.54,
-            "roi": 0.2962962962962961,
-            "settled": 0,
-            "signals": 4608,
-            "wins": 1
-          },
-          {
             "approved_signals": 6,
             "closed": 0,
-            "cumulative_realized": 0.16,
+            "cumulative_realized": 0.0,
             "date": "2026-06-29",
             "forecast_actual_high_f": 74.0,
             "forecast_error_f": 1.43,
@@ -8178,7 +8208,7 @@
           {
             "approved_signals": 3,
             "closed": 0,
-            "cumulative_realized": 0.16,
+            "cumulative_realized": 0.0,
             "date": "2026-06-30",
             "forecast_actual_high_f": 73.0,
             "forecast_error_f": 3.8,
@@ -8198,7 +8228,7 @@
           {
             "approved_signals": 42,
             "closed": 7,
-            "cumulative_realized": -1.04,
+            "cumulative_realized": -1.2,
             "date": "2026-07-01",
             "forecast_actual_high_f": 71.0,
             "forecast_error_f": 1.58,
@@ -8218,7 +8248,7 @@
           {
             "approved_signals": 2,
             "closed": 0,
-            "cumulative_realized": -1.04,
+            "cumulative_realized": -1.2,
             "date": "2026-07-02",
             "forecast_actual_high_f": 71.0,
             "forecast_error_f": 1.42,
@@ -8238,8 +8268,48 @@
           {
             "approved_signals": 0,
             "closed": 0,
-            "cumulative_realized": -1.04,
+            "cumulative_realized": -1.2,
             "date": "2026-07-03",
+            "forecast_actual_high_f": 70.0,
+            "forecast_error_f": 0.4,
+            "forecast_predicted_high_f": 70.4,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 828,
+            "wins": 0
+          },
+          {
+            "approved_signals": 0,
+            "closed": 0,
+            "cumulative_realized": -1.2,
+            "date": "2026-07-04",
+            "forecast_actual_high_f": null,
+            "forecast_error_f": null,
+            "forecast_predicted_high_f": null,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": null,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": null,
+            "roi": null,
+            "settled": 0,
+            "signals": 0,
+            "wins": 0
+          },
+          {
+            "approved_signals": 0,
+            "closed": 0,
+            "cumulative_realized": -1.2,
+            "date": "2026-07-05",
             "forecast_actual_high_f": null,
             "forecast_error_f": null,
             "forecast_predicted_high_f": null,
@@ -8252,22 +8322,22 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 828,
+            "signals": 12,
             "wins": 0
           }
         ],
         "exit_reasons": {
           "closed_break_even": 0,
           "closed_stop_loss": 5,
-          "closed_take_profit": 3,
+          "closed_take_profit": 2,
           "expired_unfilled": 0,
           "held_to_settlement": 1
         },
         "gate_behavior": {
-          "approved": 54,
+          "approved": 53,
           "by_profile": [
             {
-              "approved": 54,
+              "approved": 53,
               "entry_block_reasons": [
                 {
                   "count": 1,
@@ -8275,69 +8345,69 @@
                 }
               ],
               "rejection_categories": {
-                "edge": 9859,
-                "no_data": 14519,
+                "edge": 5660,
+                "no_data": 12983,
                 "other": 0
               },
               "risk_profile": "research",
-              "signals": 24432,
+              "signals": 18696,
               "top_rejections": [
                 {
-                  "count": 14496,
+                  "count": 12960,
                   "reason": "source spread"
                 },
                 {
-                  "count": 3800,
+                  "count": 2149,
                   "reason": "edge"
                 },
                 {
-                  "count": 2031,
+                  "count": 1057,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 786,
+                  "count": 394,
                   "reason": "NO ask is not tradeable"
                 },
                 {
-                  "count": 786,
+                  "count": 394,
                   "reason": "bid"
                 },
                 {
-                  "count": 671,
-                  "reason": "posterior probability"
+                  "count": 379,
+                  "reason": "model/market gap"
                 }
               ],
               "top_rejections_all": [
                 {
-                  "count": 18002,
+                  "count": 14003,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 15981,
-                  "reason": "edge"
-                },
-                {
-                  "count": 14496,
+                  "count": 12960,
                   "reason": "source spread"
                 },
                 {
-                  "count": 6299,
+                  "count": 12058,
+                  "reason": "edge"
+                },
+                {
+                  "count": 4664,
                   "reason": "edge_lcb"
                 },
                 {
-                  "count": 2733,
+                  "count": 1936,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 1880,
-                  "reason": "all-in cost"
-                },
-                {
-                  "count": 1849,
+                  "count": 1281,
                   "reason": "spread"
                 },
                 {
-                  "count": 1216,
+                  "count": 1203,
+                  "reason": "all-in cost"
+                },
+                {
+                  "count": 805,
                   "reason": "bid size"
                 }
               ]
@@ -8349,112 +8419,112 @@
               "reason": "same-day entry disabled: local peak/high window has passed; rolling scanner shifts to later target dates"
             }
           ],
-          "rejected": 24378,
+          "rejected": 18643,
           "rejection_categories": {
-            "edge": 9859,
-            "no_data": 14519,
+            "edge": 5660,
+            "no_data": 12983,
             "other": 0
           },
           "top_rejections": [
             {
-              "count": 14496,
+              "count": 12960,
               "reason": "source spread"
             },
             {
-              "count": 3800,
+              "count": 2149,
               "reason": "edge"
             },
             {
-              "count": 2031,
+              "count": 1057,
               "reason": "lower-bound edge"
             },
             {
-              "count": 786,
+              "count": 394,
               "reason": "NO ask is not tradeable"
             },
             {
-              "count": 786,
+              "count": 394,
               "reason": "bid"
             },
             {
-              "count": 671,
-              "reason": "posterior probability"
+              "count": 379,
+              "reason": "model/market gap"
             }
           ],
           "top_rejections_all": [
             {
-              "count": 18002,
+              "count": 14003,
               "reason": "lower-bound edge"
             },
             {
-              "count": 15981,
-              "reason": "edge"
-            },
-            {
-              "count": 14496,
+              "count": 12960,
               "reason": "source spread"
             },
             {
-              "count": 6299,
+              "count": 12058,
+              "reason": "edge"
+            },
+            {
+              "count": 4664,
               "reason": "edge_lcb"
             },
             {
-              "count": 2733,
+              "count": 1936,
               "reason": "posterior probability"
             },
             {
-              "count": 1880,
-              "reason": "all-in cost"
-            },
-            {
-              "count": 1849,
+              "count": 1281,
               "reason": "spread"
             },
             {
-              "count": 1216,
+              "count": 1203,
+              "reason": "all-in cost"
+            },
+            {
+              "count": 805,
               "reason": "bid size"
             }
           ]
         },
-        "generated_at": "2026-07-03T12:41:54.794163+00:00",
+        "generated_at": "2026-07-06T05:40:59.317259+00:00",
         "learnings": [
-          "research resolved 9 trade(s): 4W / 5L, net $-1.04.",
+          "research resolved 8 trade(s): 3W / 5L, net $-1.20.",
           "research has 24 current signal candidate(s) in the latest artifact.",
           "research is experimental paper-data collection; its P&L is isolated from the balanced headline."
         ],
         "model_vs_market": {
-          "max_abs_gap": 0.7981,
-          "mean_abs_gap": 0.0911,
-          "samples": 48876
+          "max_abs_gap": 0.6795,
+          "mean_abs_gap": 0.0923,
+          "samples": 37392
         },
         "profiles": [
           {
-            "capital_resolved": 34.37,
-            "hit_rate": 0.4444,
+            "capital_resolved": 33.83,
+            "hit_rate": 0.375,
             "losses": 5,
             "open_positions": 0,
             "open_risk": 0.0,
-            "realized_pnl": -1.04,
-            "resolved": 9,
+            "realized_pnl": -1.2,
+            "resolved": 8,
             "risk_profile": "research",
-            "roi": -0.0303,
-            "wins": 4
+            "roi": -0.0355,
+            "wins": 3
           }
         ],
         "recommended_changes": [
-          "research has only 9 resolved trade(s); wait for at least 15 before changing gates."
+          "research has only 8 resolved trade(s); wait for at least 15 before changing gates."
         ],
         "risk_profile": "research",
         "schema_version": 1,
         "side_performance": {
           "NO": {
-            "capital": 33.57,
-            "hit_rate": 0.5,
+            "capital": 33.03,
+            "hit_rate": 0.4286,
             "losses": 4,
-            "realized_pnl": -0.7,
-            "roi": -0.0209,
-            "trades": 8,
-            "wins": 4
+            "realized_pnl": -0.86,
+            "roi": -0.026,
+            "trades": 7,
+            "wins": 3
           },
           "YES": {
             "capital": 0.8,
@@ -8468,27 +8538,27 @@
         },
         "starting_bankroll": 1000.0,
         "totals": {
-          "capital_resolved": 34.37,
+          "capital_resolved": 33.83,
           "cumulative_realized_pnl": -39.32,
-          "hit_rate": 0.4444,
+          "hit_rate": 0.375,
           "losses": 5,
-          "mean_abs_forecast_error_f": 2.33,
+          "mean_abs_forecast_error_f": 1.73,
           "open_positions": 0,
           "open_risk": 0.0,
-          "realized_pnl": -1.04,
-          "roi": -0.0303,
-          "trades_closed": 8,
-          "trades_opened": 9,
+          "realized_pnl": -1.2,
+          "roi": -0.0355,
+          "trades_closed": 7,
+          "trades_opened": 8,
           "trades_settled": 1,
-          "wins": 4
+          "wins": 3
         },
         "window_days": 7,
-        "window_end": "2026-07-03",
-        "window_start": "2026-06-27"
+        "window_end": "2026-07-05",
+        "window_start": "2026-06-29"
       },
       "label": "Research (experimental)",
       "learnings": [
-        "research resolved 9 trade(s): 4W / 5L, net $-1.04.",
+        "research resolved 8 trade(s): 3W / 5L, net $-1.20.",
         "research has 24 current signal candidate(s) in the latest artifact.",
         "research is experimental paper-data collection; its P&L is isolated from the balanced headline."
       ],
@@ -10991,7 +11061,7 @@
       },
       "profile_type": "experimental",
       "recommended_changes": [
-        "research has only 9 resolved trade(s); wait for at least 15 before changing gates."
+        "research has only 8 resolved trade(s); wait for at least 15 before changing gates."
       ],
       "risk_profile": "research",
       "signal_quality": {
@@ -12302,63 +12372,63 @@
           "available": true,
           "distribution": [
             {
+              "center_f": 62.5,
+              "implied_probability": 0.0642,
+              "label": "63\u00b0 or below",
+              "model_probability": 0.0538,
+              "ticker": "KXHIGHTSFO-26JUL06-T64"
+            },
+            {
               "center_f": 64.5,
-              "implied_probability": 0.0088,
-              "label": "65\u00b0 or below",
-              "model_probability": 0.0278,
-              "ticker": "KXHIGHTSFO-26JUL03-T66"
+              "implied_probability": 0.0826,
+              "label": "64\u00b0 to 65\u00b0",
+              "model_probability": 0.0976,
+              "ticker": "KXHIGHTSFO-26JUL06-B64.5"
             },
             {
               "center_f": 66.5,
-              "implied_probability": 0.0442,
+              "implied_probability": 0.2661,
               "label": "66\u00b0 to 67\u00b0",
-              "model_probability": 0.0868,
-              "ticker": "KXHIGHTSFO-26JUL03-B66.5"
+              "model_probability": 0.2249,
+              "ticker": "KXHIGHTSFO-26JUL06-B66.5"
             },
             {
               "center_f": 68.5,
-              "implied_probability": 0.1062,
+              "implied_probability": 0.4771,
               "label": "68\u00b0 to 69\u00b0",
-              "model_probability": 0.3408,
-              "ticker": "KXHIGHTSFO-26JUL03-B68.5"
+              "model_probability": 0.2713,
+              "ticker": "KXHIGHTSFO-26JUL06-B68.5"
             },
             {
               "center_f": 70.5,
-              "implied_probability": 0.3009,
+              "implied_probability": 0.0917,
               "label": "70\u00b0 to 71\u00b0",
-              "model_probability": 0.2269,
-              "ticker": "KXHIGHTSFO-26JUL03-B70.5"
+              "model_probability": 0.1678,
+              "ticker": "KXHIGHTSFO-26JUL06-B70.5"
             },
             {
               "center_f": 72.5,
-              "implied_probability": 0.354,
-              "label": "72\u00b0 to 73\u00b0",
-              "model_probability": 0.1764,
-              "ticker": "KXHIGHTSFO-26JUL03-B72.5"
-            },
-            {
-              "center_f": 74.5,
-              "implied_probability": 0.1858,
-              "label": "74\u00b0 or above",
-              "model_probability": 0.1412,
-              "ticker": "KXHIGHTSFO-26JUL03-T73"
+              "implied_probability": 0.0183,
+              "label": "72\u00b0 or above",
+              "model_probability": 0.1846,
+              "ticker": "KXHIGHTSFO-26JUL06-T71"
             }
           ],
-          "implied_high_f": 71.51,
-          "implied_stdev_f": 2.1961,
+          "implied_high_f": 67.51,
+          "implied_stdev_f": 2.0919,
           "liquid_bin_count": 6,
-          "median_f": 71.725,
-          "modal_bin_label": "72\u00b0 to 73\u00b0",
-          "modal_bin_ticker": "KXHIGHTSFO-26JUL03-B72.5",
-          "modal_probability": 0.354,
-          "model_high_f": 68.51,
-          "model_minus_market_f": -3.0,
-          "overround": 0.13,
-          "p10_f": 68.3833,
-          "p25_f": 70.1029,
-          "p75_f": 73.1375,
-          "p90_f": 74.4238,
-          "target_date": "2026-07-03"
+          "median_f": 67.8654,
+          "modal_bin_label": "68\u00b0 to 69\u00b0",
+          "modal_bin_ticker": "KXHIGHTSFO-26JUL06-B68.5",
+          "modal_probability": 0.4771,
+          "model_high_f": 68.92,
+          "model_minus_market_f": 1.41,
+          "overround": 0.09,
+          "p10_f": 64.3667,
+          "p25_f": 66.2759,
+          "p75_f": 68.9135,
+          "p90_f": 69.72,
+          "target_date": "2026-07-06"
         },
         "source": "decision_snapshots"
       },
@@ -12374,14 +12444,14 @@
           }
         ],
         "entry_scanner_reason": null,
-        "hit_rate": 0.4444,
+        "hit_rate": 0.375,
         "latest_signal_count": 24,
         "open_risk": 0.0,
         "paper_trading_status": "no open research paper positions",
         "pending_limit_risk": 0.0,
         "profile_label": "Research (experimental)",
         "profile_type": "experimental",
-        "realized_pnl": -1.04,
+        "realized_pnl": -1.2,
         "risk_profile": "research"
       }
     }
@@ -12390,39 +12460,88 @@
     "available": true,
     "checks": [
       {
-        "detail": "0/30 independent weather days",
+        "detail": "6/30 independent weather days",
         "label": "Independent settlement days",
         "name": "independent_days",
         "passed": false,
-        "progress": 0.0
+        "progress": 0.2
       },
       {
-        "detail": "0/30 settled decisions",
+        "detail": "7/30 settled decisions",
         "label": "Settled decisions",
         "name": "settled_decisions",
         "passed": false,
-        "progress": 0.0
+        "progress": 0.2333
       },
       {
-        "detail": "no day-clustered ROI CI (too few independent days)",
+        "detail": "day-clustered 95% ROI lower bound +11.48%",
         "label": "After-fee ROI lower CI > 0",
         "name": "after_fee_roi_lower_ci_positive",
-        "passed": false,
-        "progress": 0.0
+        "passed": true,
+        "progress": 1.0
       },
       {
-        "detail": "no settled days to measure growth",
+        "detail": "log-growth +0.1509/day",
         "label": "Positive after-fee log-growth/day",
         "name": "positive_log_growth_per_day",
-        "passed": false,
-        "progress": 0.0
+        "passed": true,
+        "progress": 1.0
       },
       {
-        "detail": "no traded cohorts yet",
-        "label": "Traded-cohort forecast skill",
-        "name": "cohort_skill",
+        "detail": "Brier Skill Score +0.203 (Brier 0.526)",
+        "label": "Forecast skill > 0 (normal_60_69f)",
+        "name": "cohort_skill:normal_60_69f",
+        "passed": true,
+        "progress": 1.0
+      },
+      {
+        "detail": "Brier Skill Score +0.303 (Brier 0.904)",
+        "label": "Forecast skill > 0 (warm_70_79f)",
+        "name": "cohort_skill:warm_70_79f",
+        "passed": true,
+        "progress": 1.0
+      },
+      {
+        "detail": "4/10 independent days",
+        "label": "Cohort breadth (normal_60_69f)",
+        "name": "cohort_days:normal_60_69f",
         "passed": false,
-        "progress": 0.0
+        "progress": 0.4
+      },
+      {
+        "detail": "ROI +14.39%",
+        "label": "Cohort after-fee ROI > 0 (normal_60_69f)",
+        "name": "cohort_roi:normal_60_69f",
+        "passed": true,
+        "progress": 1.0
+      },
+      {
+        "detail": "2/10 independent days",
+        "label": "Cohort breadth (warm_70_79f)",
+        "name": "cohort_days:warm_70_79f",
+        "passed": false,
+        "progress": 0.2
+      },
+      {
+        "detail": "ROI +17.65%",
+        "label": "Cohort after-fee ROI > 0 (warm_70_79f)",
+        "name": "cohort_roi:warm_70_79f",
+        "passed": true,
+        "progress": 1.0
+      },
+      {
+        "detail": "6/10 independent days",
+        "label": "Side breadth (NO)",
+        "name": "side_days:NO",
+        "passed": false,
+        "progress": 0.6
+      },
+      {
+        "detail": "ROI +14.72%",
+        "label": "Side after-fee ROI > 0 (NO)",
+        "name": "side_roi:NO",
+        "passed": true,
+        "progress": 1.0
       },
       {
         "detail": "max bucket gap 0.210",
@@ -12432,8 +12551,8 @@
         "progress": 0.0
       }
     ],
-    "checks_passed": 0,
-    "checks_total": 6,
+    "checks_passed": 7,
+    "checks_total": 13,
     "config_basis": "paper-realism, not real-money validated",
     "live_policy": {
       "daily_loss": 20.0,
@@ -12444,19 +12563,19 @@
     },
     "pilot_loss_remaining": 50.0,
     "profile": "live",
-    "readiness_pct": 0.0,
+    "readiness_pct": 66.4,
     "ready": false,
     "status": "PAPER_READY",
     "status_reasons": [
       "Independent settlement days",
       "Settled decisions",
-      "After-fee ROI lower CI > 0",
-      "Positive after-fee log-growth/day",
-      "Traded-cohort forecast skill",
+      "Cohort breadth (normal_60_69f)",
+      "Cohort breadth (warm_70_79f)",
+      "Side breadth (NO)",
       "Calibration gap < 0.1",
       "evidence gate has not passed"
     ],
-    "summary": "0% ready for real money -- 0/6 go-live checks pass",
+    "summary": "66% ready for real money -- 7/13 go-live checks pass",
     "thresholds": {
       "max_calibration_gap": 0.1,
       "max_cohort_brier": 0.25,
@@ -12542,7 +12661,7 @@
     "summary": {
       "linked_paper_orders": 1,
       "sampled_orders": 1,
-      "settlement_days": 38,
+      "settlement_days": 40,
       "shadow_orders": 32
     }
   },
@@ -16095,63 +16214,63 @@
       "available": true,
       "distribution": [
         {
+          "center_f": 62.5,
+          "implied_probability": 0.0642,
+          "label": "63\u00b0 or below",
+          "model_probability": 0.0538,
+          "ticker": "KXHIGHTSFO-26JUL06-T64"
+        },
+        {
           "center_f": 64.5,
-          "implied_probability": 0.0088,
-          "label": "65\u00b0 or below",
-          "model_probability": 0.0278,
-          "ticker": "KXHIGHTSFO-26JUL03-T66"
+          "implied_probability": 0.0826,
+          "label": "64\u00b0 to 65\u00b0",
+          "model_probability": 0.0976,
+          "ticker": "KXHIGHTSFO-26JUL06-B64.5"
         },
         {
           "center_f": 66.5,
-          "implied_probability": 0.0442,
+          "implied_probability": 0.2661,
           "label": "66\u00b0 to 67\u00b0",
-          "model_probability": 0.0868,
-          "ticker": "KXHIGHTSFO-26JUL03-B66.5"
+          "model_probability": 0.2249,
+          "ticker": "KXHIGHTSFO-26JUL06-B66.5"
         },
         {
           "center_f": 68.5,
-          "implied_probability": 0.1062,
+          "implied_probability": 0.4771,
           "label": "68\u00b0 to 69\u00b0",
-          "model_probability": 0.3408,
-          "ticker": "KXHIGHTSFO-26JUL03-B68.5"
+          "model_probability": 0.2713,
+          "ticker": "KXHIGHTSFO-26JUL06-B68.5"
         },
         {
           "center_f": 70.5,
-          "implied_probability": 0.3009,
+          "implied_probability": 0.0917,
           "label": "70\u00b0 to 71\u00b0",
-          "model_probability": 0.2269,
-          "ticker": "KXHIGHTSFO-26JUL03-B70.5"
+          "model_probability": 0.1678,
+          "ticker": "KXHIGHTSFO-26JUL06-B70.5"
         },
         {
           "center_f": 72.5,
-          "implied_probability": 0.354,
-          "label": "72\u00b0 to 73\u00b0",
-          "model_probability": 0.1764,
-          "ticker": "KXHIGHTSFO-26JUL03-B72.5"
-        },
-        {
-          "center_f": 74.5,
-          "implied_probability": 0.1858,
-          "label": "74\u00b0 or above",
-          "model_probability": 0.1412,
-          "ticker": "KXHIGHTSFO-26JUL03-T73"
+          "implied_probability": 0.0183,
+          "label": "72\u00b0 or above",
+          "model_probability": 0.1846,
+          "ticker": "KXHIGHTSFO-26JUL06-T71"
         }
       ],
-      "implied_high_f": 71.51,
-      "implied_stdev_f": 2.1961,
+      "implied_high_f": 67.51,
+      "implied_stdev_f": 2.0919,
       "liquid_bin_count": 6,
-      "median_f": 71.725,
-      "modal_bin_label": "72\u00b0 to 73\u00b0",
-      "modal_bin_ticker": "KXHIGHTSFO-26JUL03-B72.5",
-      "modal_probability": 0.354,
-      "model_high_f": 68.51,
-      "model_minus_market_f": -3.0,
-      "overround": 0.13,
-      "p10_f": 68.3833,
-      "p25_f": 70.1029,
-      "p75_f": 73.1375,
-      "p90_f": 74.4238,
-      "target_date": "2026-07-03"
+      "median_f": 67.8654,
+      "modal_bin_label": "68\u00b0 to 69\u00b0",
+      "modal_bin_ticker": "KXHIGHTSFO-26JUL06-B68.5",
+      "modal_probability": 0.4771,
+      "model_high_f": 68.92,
+      "model_minus_market_f": 1.41,
+      "overround": 0.09,
+      "p10_f": 64.3667,
+      "p25_f": 66.2759,
+      "p75_f": 68.9135,
+      "p90_f": 69.72,
+      "target_date": "2026-07-06"
     },
     "source": "decision_snapshots",
     "stale_candidates_filtered": 12
@@ -16165,37 +16284,16 @@
       {
         "action": "Check the NWP archive refresh log for source outages.",
         "code": "nwp-thin-target",
-        "detail": "2026-07-04 has 0 model(s), below the 6-model health floor.",
-        "level": "warning",
-        "title": "Thin NWP target"
-      },
-      {
-        "action": "Check the NWP archive refresh log for source outages.",
-        "code": "nwp-thin-target",
-        "detail": "2026-07-05 has 0 model(s), below the 6-model health floor.",
+        "detail": "2026-07-07 has 0 model(s), below the 6-model health floor.",
         "level": "warning",
         "title": "Thin NWP target"
       },
       {
         "action": "Check the forecaster refresh timer and EMOS serve-rolling step.",
         "code": "emos-live-stale",
-        "detail": "2026-07-03 live EMOS is 12.0 hours old.",
+        "detail": "2026-07-05 live EMOS is 23.0 hours old.",
         "level": "warning",
         "title": "Live EMOS target stale"
-      },
-      {
-        "action": "Check the forecaster refresh timer and EMOS serve-rolling step.",
-        "code": "emos-live-stale",
-        "detail": "2026-07-04 live EMOS is 12.0 hours old.",
-        "level": "warning",
-        "title": "Live EMOS target stale"
-      },
-      {
-        "action": "Run emos_forecast.py --serve-rolling and inspect its output.",
-        "code": "emos-live-missing",
-        "detail": "No live EMOS distribution was found for 2026-07-05; EMOS-enabled profiles will degrade to residual calibration for that target.",
-        "level": "warning",
-        "title": "Live EMOS target missing"
       }
     ],
     "automation_status": "AWS timers generate forecast, public signal, Strategy Lab JSON, paper scans, and paper monitor state when enabled.",
@@ -16207,7 +16305,7 @@
     "deduped_signal_count": 300,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-07-03T12:41:57.648965+00:00",
+    "last_updated": "2026-07-06T05:41:03.876286+00:00",
     "latest_signal_targets": [
       "2026-07-03"
     ],
