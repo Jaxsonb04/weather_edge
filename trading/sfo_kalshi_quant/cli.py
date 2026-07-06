@@ -44,6 +44,7 @@ from .ensemble import OpenMeteoEnsembleError, SfoEnsembleClient
 from .exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
     DEFAULT_NO_TAKE_PROFIT_PCT,
+    DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_YES_STOP_LOSS_PCT,
@@ -2432,6 +2433,13 @@ def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[f
     return float(args.take_profit_pct), float(args.stop_loss_pct)
 
 
+def _settlement_first_no_min_cost_for_order(row) -> float | None:
+    risk_profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
+    if risk_profile == "research":
+        return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
+    return None
+
+
 def _same_day_no_basket_veto_reason(
     store: PaperStore,
     row,
@@ -2580,9 +2588,15 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             model_veto_max_loss_roi=model_veto_max_loss,
             legacy_take_profit_net=entry_cost * (1.0 + take_profit),
             stop_loss_pct=stop_loss_pct,
+            settlement_first_no_min_cost=_settlement_first_no_min_cost_for_order(row),
         )
 
-        if signal.action in ("HOLD", "HOLD_MODEL_VETO", "HOLD_NO_MODEL_READ"):
+        if signal.action in (
+            "HOLD",
+            "HOLD_MODEL_VETO",
+            "HOLD_NO_MODEL_READ",
+            "HOLD_SETTLEMENT_FIRST",
+        ):
             store.record_monitor_snapshot(
                 row,
                 side=side,
