@@ -279,15 +279,26 @@ export function tempColor(tempF: number): string {
 }
 
 export function targetLabel(iso: string): string {
-  const t = new Date(iso + "T00:00:00"); // local midnight of the target date
-  const now = new Date();
-  const target0 = new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
-  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  // Target dates are SFO settlement days, so "Today" must mean today in
+  // San Francisco — not in the viewer's (or a build server's) timezone.
+  const sfoToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date()); // en-CA renders as YYYY-MM-DD
+  const target0 = Date.parse(iso + "T00:00:00Z");
+  const today0 = Date.parse(sfoToday + "T00:00:00Z");
   const diff = Math.round((target0 - today0) / 86400000);
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
   if (diff === -1) return "Yesterday";
-  return t.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return new Date(target0).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 // Pull the predicted high from a target's forecast blob (several possible keys).
