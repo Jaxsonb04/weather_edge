@@ -90,7 +90,7 @@ def _seed_db() -> sqlite3.Connection:
         day = (base + timedelta(days=i)).isoformat()
         truth = 65 + (i % 7)
         for model, offset in (("gfs_seamless", 0.5), ("ecmwf_ifs025", -0.5), ("ncep_nbm_conus", 0.0)):
-            rows.append((day, model, 1, truth + offset, "x", "test"))
+            rows.append(("KSFO", day, model, 1, truth + offset, "x", "test"))
     upsert_forecasts(conn, rows)
     conn.commit()
     return conn

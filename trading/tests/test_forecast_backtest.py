@@ -308,8 +308,8 @@ def test_late_clisfo_rescore_upgrades_fallback_row():
             )
             # CLISFO posts a day late with a different settlement (72F).
             conn.execute(
-                "INSERT INTO clisfo_settlements (local_date, max_temperature_f, fetched_at) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO cli_settlements (station_id, local_date, max_temperature_f, fetched_at) "
+                "VALUES ('KSFO', ?, ?, ?)",
                 ("2026-05-04", 72, "2026-05-05T18:00:00+00:00"),
             )
             google_weather_cache.update_scores_for_table(conn, "forecast_blend_daily_high")
@@ -337,8 +337,8 @@ def test_clisfo_rescore_is_idempotent_once_on_clisfo():
                 ("2026-05-03T07:30:00+00:00", "2026-05-04", "2026-05-05T18:00:00+00:00"),
             )
             conn.execute(
-                "INSERT INTO clisfo_settlements (local_date, max_temperature_f, fetched_at) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO cli_settlements (station_id, local_date, max_temperature_f, fetched_at) "
+                "VALUES ('KSFO', ?, ?, ?)",
                 ("2026-05-04", 72, "2026-05-05T18:00:00+00:00"),
             )
             rescored = google_weather_cache.update_scores_for_table(
@@ -362,8 +362,8 @@ def test_clisfo_nws_divergence_is_reported_not_averaged():
             data = [("2026-05-01", 70, 70.4), ("2026-05-02", 73, 72.1), ("2026-05-03", 68, 68.0)]
             for local_date, clisfo, nws in data:
                 conn.execute(
-                    "INSERT INTO clisfo_settlements (local_date, max_temperature_f, fetched_at) "
-                    "VALUES (?, ?, '2026-05-04T00:00:00+00:00')",
+                    "INSERT INTO cli_settlements (station_id, local_date, max_temperature_f, fetched_at) "
+                    "VALUES ('KSFO', ?, ?, '2026-05-04T00:00:00+00:00')",
                     (local_date, clisfo),
                 )
                 conn.execute(

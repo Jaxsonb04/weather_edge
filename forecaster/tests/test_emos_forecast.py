@@ -25,7 +25,7 @@ def _seed(conn: sqlite3.Connection) -> None:
         truth = 65 + (i % 9)
         conn.execute("INSERT INTO clisfo_settlements VALUES (?, ?, ?, ?)", (day, truth, "x", "t"))
         for model, offset in (("gfs_seamless", 1.0), ("ecmwf_ifs025", -1.0), ("ncep_nbm_conus", 0.0)):
-            rows.append((day, model, 1, truth + offset, "x", "test"))
+            rows.append(("KSFO", day, model, 1, truth + offset, "x", "test"))
     upsert_forecasts(conn, rows)
     conn.commit()
 
@@ -122,10 +122,10 @@ def test_serve_rolling_logs_zero_served_summary(tmp_path):
     out = io.StringIO()
 
     with redirect_stdout(out):
-        status = main(["--db", str(db_path), "--serve-rolling"])
+        status = main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"])
 
     assert status == 0
-    assert "live EMOS rolling summary: served=0 targets=3 leads=0..2" in out.getvalue()
+    assert "live EMOS rolling summary: served=0 targets=3 cities=1 leads=0..2" in out.getvalue()
 
 
 def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch):
@@ -151,7 +151,7 @@ def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch
 
     out = io.StringIO()
     with redirect_stdout(out):
-        status = ef.main(["--db", str(db_path), "--serve-rolling"])
+        status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"])
 
     assert status == 0
     today = ef._settlement_today()
@@ -159,4 +159,4 @@ def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch
         (today + timedelta(days=1), 1),
         (today + timedelta(days=2), 2),
     ]
-    assert "served=2 targets=3 leads=0..2" in out.getvalue()
+    assert "served=2 targets=3 cities=1 leads=0..2" in out.getvalue()

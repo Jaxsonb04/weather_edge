@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+import city_truth
 from clisfo import fetch_recent_clisfo_settlements
 from forecast_scoring import is_clean_next_day_forecast, parse_details_json
 from settlement_calendar import (
@@ -279,15 +280,7 @@ def hourly_archive_columns(conn):
 def init_archive(conn):
     migrate_daily_archive(conn)
     create_blend_archive_table(conn)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS clisfo_settlements (
-            local_date TEXT PRIMARY KEY,
-            max_temperature_f INTEGER,
-            fetched_at TEXT
-        )
-        """
-    )
+    city_truth.ensure_schema(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS forecast_google_hourly (
@@ -619,31 +612,24 @@ def refresh_clisfo_settlements(conn):
         settlements = fetch_recent_clisfo_settlements()
     except Exception:
         return 0
+    city_truth.ensure_schema(conn)
     now_iso = datetime.now(timezone.utc).isoformat()
     stored = 0
     for report_date, max_temperature_f in settlements.items():
-        conn.execute(
-            """
-            INSERT INTO clisfo_settlements (local_date, max_temperature_f, fetched_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(local_date) DO UPDATE SET
-                max_temperature_f = excluded.max_temperature_f,
-                fetched_at = excluded.fetched_at
-            """,
-            (report_date.isoformat(), int(max_temperature_f), now_iso),
+        city_truth.upsert_settlement(
+            conn,
+            "KSFO",
+            report_date.isoformat(),
+            int(max_temperature_f),
+            fetched_at=now_iso,
         )
         stored += 1
     return stored
 
 
 def clisfo_high_for(conn, target_iso):
-    if not table_exists(conn, "clisfo_settlements"):
-        return None
-    row = conn.execute(
-        "SELECT max_temperature_f FROM clisfo_settlements WHERE local_date = ? AND max_temperature_f IS NOT NULL",
-        (target_iso,),
-    ).fetchone()
-    return integer_settlement_high_f(row[0]) if row else None
+    city_truth.ensure_schema(conn)
+    return city_truth.cli_high_for(conn, "KSFO", target_iso)
 
 
 def update_scores(conn):
@@ -1441,14 +1427,24 @@ def _dataset_guidance_corrections(db_path, target_iso, promoted_keys):
             conn.row_factory = sqlite3.Row
             if not (
                 table_exists(conn, "dataset_forecast_features")
-                and table_exists(conn, "clisfo_settlements")
+                and (
+                    table_exists(conn, "cli_settlements")
+                    or table_exists(conn, "clisfo_settlements")
+                )
             ):
-                return {"metadata": {"mode": "disabled", "reason": "no CLISFO settlement table"}}
+                return {"metadata": {"mode": "disabled", "reason": "no CLI settlement table"}}
+            if table_exists(conn, "cli_settlements"):
+                join_clause = (
+                    "JOIN cli_settlements c ON c.local_date = f.target_date "
+                    "AND c.station_id = 'KSFO'"
+                )
+            else:
+                join_clause = "JOIN clisfo_settlements c ON c.local_date = f.target_date"
             rows = conn.execute(
-                """
+                f"""
                 SELECT f.source, f.model, f.variable, f.lead_hours, f.value, c.max_temperature_f
                 FROM dataset_forecast_features f
-                JOIN clisfo_settlements c ON c.local_date = f.target_date
+                {join_clause}
                 WHERE f.target_date < ?
                   AND f.value IS NOT NULL
                   AND c.max_temperature_f IS NOT NULL
@@ -1563,7 +1559,9 @@ def latest_scored_blend_rows():
         with sqlite3.connect(DB_PATH) as conn:
             if not table_exists(conn, "forecast_blend_daily_high"):
                 return []
-            has_clisfo = table_exists(conn, "clisfo_settlements")
+            has_clisfo = table_exists(conn, "cli_settlements") or table_exists(
+                conn, "clisfo_settlements"
+            )
             blend_columns = table_columns(conn, "forecast_blend_daily_high")
             has_truth_source = "truth_source" in blend_columns
             conn.row_factory = sqlite3.Row
@@ -1581,10 +1579,17 @@ def latest_scored_blend_rows():
                     f"CASE WHEN c.max_temperature_f IS NOT NULL THEN 'clisfo' "
                     f"ELSE {stored_source} END"
                 )
-                join_clause = (
-                    "LEFT JOIN clisfo_settlements c "
-                    "ON c.local_date = b.target_date AND c.max_temperature_f IS NOT NULL"
-                )
+                if table_exists(conn, "cli_settlements"):
+                    join_clause = (
+                        "LEFT JOIN cli_settlements c "
+                        "ON c.local_date = b.target_date AND c.station_id = 'KSFO' "
+                        "AND c.max_temperature_f IS NOT NULL"
+                    )
+                else:
+                    join_clause = (
+                        "LEFT JOIN clisfo_settlements c "
+                        "ON c.local_date = b.target_date AND c.max_temperature_f IS NOT NULL"
+                    )
             else:
                 actual_expr = "b.actual_high_f"
                 effective_source_expr = stored_source

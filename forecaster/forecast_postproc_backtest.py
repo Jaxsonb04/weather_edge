@@ -109,29 +109,47 @@ def gaussian_crps(mu: float, sigma: float, y: float) -> float:
 # Loaders
 # --------------------------------------------------------------------------- #
 
-def load_clisfo_truth(conn: sqlite3.Connection) -> dict[str, float]:
-    truth: dict[str, float] = {}
-    for local_date, max_t in conn.execute(
-        "SELECT local_date, max_temperature_f FROM clisfo_settlements "
-        "WHERE max_temperature_f IS NOT NULL"
-    ):
-        value = integer_settlement_high_f(max_t)
-        if value is not None:
-            truth[local_date] = float(value)
-    return truth
+def load_clisfo_truth(
+    conn: sqlite3.Connection, station_id: str = "KSFO"
+) -> dict[str, float]:
+    """Settlement truth for one station from the station-keyed cli_settlements.
+
+    The name is kept for its many call sites; the table behind it migrated from
+    the SFO-only ``clisfo_settlements`` to the multi-city ``cli_settlements``
+    (city_truth.ensure_schema performs the one-time migration).
+    """
+
+    import city_truth
+
+    city_truth.ensure_schema(conn)
+    return city_truth.load_cli_truth(conn, station_id)
 
 
-def load_nwp_forecasts(conn: sqlite3.Connection, lead_days: int) -> dict[str, dict[str, float]]:
+def load_nwp_forecasts(
+    conn: sqlite3.Connection, lead_days: int, station_id: str = "KSFO"
+) -> dict[str, dict[str, float]]:
     """target_date -> {model: day-ahead daily high} for one lead horizon."""
 
     out: dict[str, dict[str, float]] = {}
     if not _table_exists(conn, "nwp_model_forecasts"):
         return out
-    for target_date, model, value in conn.execute(
-        "SELECT target_date, model, predicted_high_f FROM nwp_model_forecasts "
-        "WHERE lead_days = ? AND predicted_high_f IS NOT NULL",
-        (lead_days,),
-    ):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nwp_model_forecasts)")}
+    if "station_id" not in columns:
+        # Pre-migration DB: every row is KSFO by construction.
+        if station_id != "KSFO":
+            return out
+        cursor = conn.execute(
+            "SELECT target_date, model, predicted_high_f FROM nwp_model_forecasts "
+            "WHERE lead_days = ? AND predicted_high_f IS NOT NULL",
+            (lead_days,),
+        )
+    else:
+        cursor = conn.execute(
+            "SELECT target_date, model, predicted_high_f FROM nwp_model_forecasts "
+            "WHERE lead_days = ? AND station_id = ? AND predicted_high_f IS NOT NULL",
+            (lead_days, station_id),
+        )
+    for target_date, model, value in cursor:
         out.setdefault(target_date, {})[model] = float(value)
     return out
 

@@ -67,8 +67,8 @@ def test_schema_and_upsert_is_idempotent():
     conn = sqlite3.connect(":memory:")
     ensure_schema(conn)
     key = ("2025-06-10", "gfs_seamless", 1)
-    upsert_forecasts(conn, [(*key, 63.2, "t1", "openmeteo_previous_runs")])
-    upsert_forecasts(conn, [(*key, 64.0, "t2", "openmeteo_previous_runs")])  # same PK
+    upsert_forecasts(conn, [("KSFO", *key, 63.2, "t1", "openmeteo_previous_runs")])
+    upsert_forecasts(conn, [("KSFO", *key, 64.0, "t2", "openmeteo_previous_runs")])  # same PK
     rows = conn.execute(
         "SELECT predicted_high_f, fetched_at FROM nwp_model_forecasts"
     ).fetchall()
@@ -111,11 +111,11 @@ def test_upsert_keys_on_source():
     conn = sqlite3.connect(":memory:")
     ensure_schema(conn)
     base = ("2025-06-10", "gfs_seamless", 1)
-    upsert_forecasts(conn, [(*base, 70.0, "t", "openmeteo_previous_runs")])
-    upsert_forecasts(conn, [(*base, 71.0, "t", "ghcn_backfill")])  # different source
+    upsert_forecasts(conn, [("KSFO", *base, 70.0, "t", "openmeteo_previous_runs")])
+    upsert_forecasts(conn, [("KSFO", *base, 71.0, "t", "ghcn_backfill")])  # different source
     assert conn.execute("SELECT COUNT(*) FROM nwp_model_forecasts").fetchone()[0] == 2
 
-    upsert_forecasts(conn, [(*base, 72.0, "t2", "openmeteo_previous_runs")])  # same source -> in place
+    upsert_forecasts(conn, [("KSFO", *base, 72.0, "t2", "openmeteo_previous_runs")])  # same source -> in place
     assert conn.execute("SELECT COUNT(*) FROM nwp_model_forecasts").fetchone()[0] == 2
     updated = conn.execute(
         "SELECT predicted_high_f FROM nwp_model_forecasts WHERE source = 'openmeteo_previous_runs'"

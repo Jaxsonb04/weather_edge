@@ -21,6 +21,40 @@ CLISFO_URL = "https://forecast.weather.gov/product.php?site=MTR&product=CLI&issu
 CLISFO_VERSION_URL = CLISFO_URL + "&version={version}"
 
 
+def cli_product_url(site: str, issuedby: str) -> str:
+    return (
+        "https://forecast.weather.gov/product.php"
+        f"?site={site}&product=CLI&issuedby={issuedby}&format=txt"
+    )
+
+
+def fetch_recent_cli_settlements(
+    site: str, issuedby: str, *, timeout: int = 20, versions: int = 10
+) -> dict[date, int]:
+    """Settlement-high (F) by report date across recent CLI versions for any station.
+
+    Versions are scanned newest-first and the first parse wins, so a corrected
+    final report always shadows the preliminary one.
+    """
+
+    settlements: dict[date, int] = {}
+    for url in _recent_cli_urls(cli_product_url(site, issuedby), versions):
+        try:
+            report_date, max_temperature = _fetch_clisfo_url(url, timeout=timeout)
+        except OSError:
+            continue
+        if report_date is None or max_temperature is None:
+            continue
+        settlements.setdefault(report_date, max_temperature)
+    return settlements
+
+
+def _recent_cli_urls(base_url: str, versions: int) -> list[str]:
+    if versions <= 1:
+        return [base_url]
+    return [base_url, *[f"{base_url}&version={v}" for v in range(2, versions + 1)]]
+
+
 def fetch_recent_clisfo_settlements(*, timeout: int = 20, versions: int = 10) -> dict[date, int]:
     """Return settlement-high (F) by report date across recent CLISFO versions."""
 

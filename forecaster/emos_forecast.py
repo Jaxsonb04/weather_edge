@@ -27,15 +27,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
+from cities import CITIES, CityConfig, get_city, parse_city_slugs
 from forecast_postproc_backtest import load_clisfo_truth, load_nwp_forecasts
 from nwp_archive import (
-    KSFO_LATITUDE,
-    KSFO_LONGITUDE,
     NWP_MODELS,
-    SETTLEMENT_TZ,
     NwpArchiveError,
     _http_get_json,
 )
+
+DEFAULT_CITY = get_city("sfo")
 from postproc_models import EMOS_MIN_TRAIN, MIN_MODELS, apply_emos, emos_ngr_predictions, fit_emos
 
 DB_PATH = Path(__file__).resolve().parent / "weather.db"
@@ -55,27 +55,81 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS forecast_emos_daily_high (
+            station_id TEXT NOT NULL DEFAULT 'KSFO',
             target_date TEXT NOT NULL,
             lead_days INTEGER NOT NULL,
             predicted_high_f REAL NOT NULL,
             sigma_f REAL NOT NULL,
             n_models INTEGER,
+            model_spread_f REAL,
             fetched_at TEXT NOT NULL,
             method TEXT NOT NULL DEFAULT 'emos_ngr',
             source TEXT NOT NULL DEFAULT 'rolling_origin',
             actual_high_f REAL,
-            PRIMARY KEY (target_date, lead_days, source)
+            PRIMARY KEY (station_id, target_date, lead_days, source)
+        )
+        """
+    )
+    _migrate_station_key(conn)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_emos_station_target "
+        "ON forecast_emos_daily_high(station_id, target_date)"
+    )
+
+
+def _migrate_station_key(conn: sqlite3.Connection) -> None:
+    """Rebuild a pre-multi-city table (no station_id) in place, once."""
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(forecast_emos_daily_high)")}
+    if "station_id" in columns:
+        return
+    conn.execute("ALTER TABLE forecast_emos_daily_high RENAME TO forecast_emos_daily_high_legacy")
+    conn.execute(
+        """
+        CREATE TABLE forecast_emos_daily_high (
+            station_id TEXT NOT NULL DEFAULT 'KSFO',
+            target_date TEXT NOT NULL,
+            lead_days INTEGER NOT NULL,
+            predicted_high_f REAL NOT NULL,
+            sigma_f REAL NOT NULL,
+            n_models INTEGER,
+            model_spread_f REAL,
+            fetched_at TEXT NOT NULL,
+            method TEXT NOT NULL DEFAULT 'emos_ngr',
+            source TEXT NOT NULL DEFAULT 'rolling_origin',
+            actual_high_f REAL,
+            PRIMARY KEY (station_id, target_date, lead_days, source)
         )
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_emos_target ON forecast_emos_daily_high(target_date)"
+        """
+        INSERT INTO forecast_emos_daily_high
+            (station_id, target_date, lead_days, predicted_high_f, sigma_f,
+             n_models, model_spread_f, fetched_at, method, source, actual_high_f)
+        SELECT 'KSFO', target_date, lead_days, predicted_high_f, sigma_f,
+               n_models, NULL, fetched_at, method, source, actual_high_f
+        FROM forecast_emos_daily_high_legacy
+        """
     )
+    conn.execute("DROP TABLE forecast_emos_daily_high_legacy")
+    conn.commit()
+
+
+def _model_spread_f(forecasts: dict[str, float]) -> float | None:
+    """Cross-model disagreement (max - min raw forecast) -- the multi-city
+    analogue of the blend's source_spread_f uncertain-day gate."""
+
+    if len(forecasts) < 2:
+        return None
+    values = list(forecasts.values())
+    return round(max(values) - min(values), 2)
 
 
 def build_emos_archive(
     conn: sqlite3.Connection,
     *,
+    city: CityConfig = DEFAULT_CITY,
     lead_days: int = 1,
     fetched_at: str | None = None,
     source: str = DEFAULT_SOURCE,
@@ -84,23 +138,26 @@ def build_emos_archive(
     """Compute rolling-origin EMOS (mu, sigma) over the NWP archive and upsert.
 
     Each row is the out-of-sample prediction for its day (fit on strictly-prior
-    days), with the CLISFO settlement joined in where available for scoring.
+    days), with the CLI settlement joined in where available for scoring.
     """
 
     ensure_schema(conn)
-    truth = load_clisfo_truth(conn)
-    nwp_by_date = load_nwp_forecasts(conn, lead_days)
+    station = city.nws_station_id
+    truth = load_clisfo_truth(conn, station)
+    nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
     predictions = emos_ngr_predictions(sorted(nwp_by_date), truth, nwp_by_date, weight_mode=weight_mode)
     stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     method = _method_tag(weight_mode)
 
     rows = [
         (
+            station,
             target_date,
             lead_days,
             mu,
             sigma,
             len(nwp_by_date.get(target_date, {})),
+            _model_spread_f(nwp_by_date.get(target_date, {})),
             stamp,
             method,
             source,
@@ -111,9 +168,9 @@ def build_emos_archive(
     conn.executemany(
         """
         INSERT OR REPLACE INTO forecast_emos_daily_high
-            (target_date, lead_days, predicted_high_f, sigma_f, n_models,
-             fetched_at, method, source, actual_high_f)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (station_id, target_date, lead_days, predicted_high_f, sigma_f, n_models,
+             model_spread_f, fetched_at, method, source, actual_high_f)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -121,24 +178,32 @@ def build_emos_archive(
     return len(rows)
 
 
-def load_emos_archive(conn: sqlite3.Connection, lead_days: int = 1) -> dict[str, tuple[float, float]]:
+def load_emos_archive(
+    conn: sqlite3.Connection, lead_days: int = 1, station_id: str = "KSFO"
+) -> dict[str, tuple[float, float]]:
     """target_date -> (mu, sigma) from the persisted EMOS archive."""
 
     if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_emos_daily_high'"
     ).fetchone() is None:
         return {}
+    ensure_schema(conn)
     out: dict[str, tuple[float, float]] = {}
     for target_date, mu, sigma in conn.execute(
         "SELECT target_date, predicted_high_f, sigma_f FROM forecast_emos_daily_high "
-        "WHERE lead_days = ?",
-        (lead_days,),
+        "WHERE lead_days = ? AND station_id = ?",
+        (lead_days, station_id),
     ):
         out[target_date] = (float(mu), float(sigma))
     return out
 
 
-def fetch_live_model_forecasts(target_date: date, *, models: tuple[str, ...] = NWP_MODELS) -> dict[str, float]:
+def fetch_live_model_forecasts(
+    target_date: date,
+    *,
+    city: CityConfig = DEFAULT_CITY,
+    models: tuple[str, ...] = NWP_MODELS,
+) -> dict[str, float]:
     """Current-run daily-max forecast for ``target_date`` per model (live path).
 
     For a future target the day-ahead forecast is the freshest model run, so this
@@ -149,29 +214,42 @@ def fetch_live_model_forecasts(target_date: date, *, models: tuple[str, ...] = N
 
     target_iso = target_date.isoformat()
     out: dict[str, float] = {}
+    # One batched request for all models: the response carries one
+    # ``temperature_2m_max_<model>`` array per model. At 15 cities on a
+    # 30-minute refresh this is the difference between ~720 and ~6500
+    # Open-Meteo calls per day. A model missing from the response (or null at
+    # the target) is simply skipped -- same fail-soft contract as before.
+    params = urlencode(
+        {
+            "latitude": f"{city.latitude:.4f}",
+            "longitude": f"{city.longitude:.4f}",
+            "daily": "temperature_2m_max",
+            "temperature_unit": "fahrenheit",
+            "timezone": city.settlement_tz_name,
+            "forecast_days": "3",
+            "models": ",".join(models),
+        }
+    )
+    try:
+        payload = _http_get_json(f"{OPEN_METEO_FORECAST_URL}?{params}")
+    except NwpArchiveError:
+        return out
+    daily = payload.get("daily") or {}
+    times = daily.get("time") or []
+    if target_iso not in times:
+        return out
+    index = times.index(target_iso)
     for model in models:
-        params = urlencode(
-            {
-                "latitude": f"{KSFO_LATITUDE:.4f}",
-                "longitude": f"{KSFO_LONGITUDE:.4f}",
-                "daily": "temperature_2m_max",
-                "temperature_unit": "fahrenheit",
-                "timezone": SETTLEMENT_TZ,
-                "forecast_days": "3",
-                "models": model,
-            }
-        )
-        try:
-            payload = _http_get_json(f"{OPEN_METEO_FORECAST_URL}?{params}")
-        except NwpArchiveError:
+        highs = daily.get(f"temperature_2m_max_{model}")
+        # Single-model responses use the bare key; keep reading it so a
+        # one-model call (tests, ad-hoc) still works.
+        if highs is None and len(models) == 1:
+            highs = daily.get("temperature_2m_max")
+        if not highs or index >= len(highs):
             continue
-        daily = payload.get("daily") or {}
-        times = daily.get("time") or []
-        highs = daily.get("temperature_2m_max") or []
-        if target_iso in times:
-            value = highs[times.index(target_iso)]
-            if value is not None:
-                out[model] = float(value)
+        value = highs[index]
+        if value is not None:
+            out[model] = float(value)
     return out
 
 
@@ -179,6 +257,7 @@ def serve_live_emos(
     conn: sqlite3.Connection,
     target_date: date,
     *,
+    city: CityConfig = DEFAULT_CITY,
     lead_days: int = 1,
     fetched_at: str | None = None,
     live_models: dict[str, float] | None = None,
@@ -194,8 +273,9 @@ def serve_live_emos(
     """
 
     ensure_schema(conn)
-    truth = load_clisfo_truth(conn)
-    nwp_by_date = load_nwp_forecasts(conn, lead_days)
+    station = city.nws_station_id
+    truth = load_clisfo_truth(conn, station)
+    nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
     target_iso = target_date.isoformat()
     if target_iso in truth:
         # A settled day's "live" forecast is meaningless and would shadow the
@@ -212,7 +292,11 @@ def serve_live_emos(
     if params is None:
         return None
 
-    forecasts = live_models if live_models is not None else fetch_live_model_forecasts(target_date)
+    forecasts = (
+        live_models
+        if live_models is not None
+        else fetch_live_model_forecasts(target_date, city=city)
+    )
     # Drop live models with no learned bias (absent from training history) so an
     # unseen or renamed model cannot enter the debiased mean uncorrected.
     forecasts = {model: value for model, value in forecasts.items() if model in params.biases}
@@ -224,22 +308,36 @@ def serve_live_emos(
     conn.execute(
         """
         INSERT OR REPLACE INTO forecast_emos_daily_high
-            (target_date, lead_days, predicted_high_f, sigma_f, n_models,
-             fetched_at, method, source, actual_high_f)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (station_id, target_date, lead_days, predicted_high_f, sigma_f, n_models,
+             model_spread_f, fetched_at, method, source, actual_high_f)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (target_iso, lead_days, mu, sigma, len(forecasts), stamp, _method_tag(weight_mode), LIVE_SOURCE, truth.get(target_iso)),
+        (
+            station,
+            target_iso,
+            lead_days,
+            mu,
+            sigma,
+            len(forecasts),
+            _model_spread_f(forecasts),
+            stamp,
+            _method_tag(weight_mode),
+            LIVE_SOURCE,
+            truth.get(target_iso),
+        ),
     )
     conn.commit()
     return mu, sigma
 
 
-def _settlement_today() -> date:
-    return (datetime.now(timezone.utc) - timedelta(hours=8)).date()
+def _settlement_today(city: CityConfig = DEFAULT_CITY) -> date:
+    return (
+        datetime.now(timezone.utc) + timedelta(hours=city.standard_utc_offset_hours)
+    ).date()
 
 
-def _settlement_tomorrow() -> date:
-    return _settlement_today() + timedelta(days=1)
+def _settlement_tomorrow(city: CityConfig = DEFAULT_CITY) -> date:
+    return _settlement_today(city) + timedelta(days=1)
 
 
 # The scheduled paper scan trades a rolling window (today .. today+2); serve EMOS
@@ -258,53 +356,75 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="serve live EMOS for today..today+2 (the scan's rolling window)",
     )
+    parser.add_argument("--cities", default="all", help="'all' or comma slugs (e.g. sfo,nyc)")
     args = parser.parse_args(argv)
     if not (args.backfill or args.serve or args.serve_rolling):
         parser.error("nothing to do; pass --backfill, --serve, or --serve-rolling")
 
+    cities = parse_city_slugs(args.cities)
     with sqlite3.connect(args.db) as conn:
         if args.backfill:
-            written = build_emos_archive(conn, lead_days=args.lead)
-            scored = conn.execute(
-                "SELECT COUNT(*) FROM forecast_emos_daily_high "
-                "WHERE actual_high_f IS NOT NULL AND lead_days = ? AND source = ?",
-                (args.lead, DEFAULT_SOURCE),
-            ).fetchone()[0]
-            print(f"wrote {written} EMOS forecasts (lead {args.lead}); {scored} have CLISFO truth")
-
-        today = _settlement_today()
-        # Serve each target at its TRUE lead so the EMOS fit's per-model biases
-        # match the forecast horizon (next-day -> lead 1, 2-day-out -> lead 2).
-        # The NWP archive only holds leads >= 1, so the same-day target (lead 0)
-        # has no training history and is intentionally left without a live EMOS
-        # row; the trader falls back to its blend + observed-high path for the
-        # same-day market. Previously every rolling target was served with a
-        # fixed lead 1, applying next-day biases to same-day and 2-day forecasts.
-        serve_targets: list[tuple[date, int]] = []
-        if args.serve:
-            target = _settlement_tomorrow() if args.serve == "tomorrow" else date.fromisoformat(args.serve)
-            serve_targets.append((target, (target - today).days))
-        if args.serve_rolling:
-            serve_targets.extend(
-                (today + timedelta(days=offset), offset) for offset in range(ROLLING_SERVE_DAYS)
-            )
+            for city in cities:
+                written = build_emos_archive(conn, city=city, lead_days=args.lead)
+                scored = conn.execute(
+                    "SELECT COUNT(*) FROM forecast_emos_daily_high "
+                    "WHERE actual_high_f IS NOT NULL AND lead_days = ? AND source = ? "
+                    "AND station_id = ?",
+                    (args.lead, DEFAULT_SOURCE, city.nws_station_id),
+                ).fetchone()[0]
+                print(
+                    f"[{city.slug}] wrote {written} EMOS forecasts (lead {args.lead}); "
+                    f"{scored} have CLI truth"
+                )
 
         served = 0
-        for target, lead in serve_targets:
-            result = serve_live_emos(conn, target, lead_days=lead) if lead >= 1 else None
-            if result is None:
-                print(
-                    f"live EMOS for {target.isoformat()} (lead {lead}): "
-                    "unavailable (lead<1, already settled, or thin coverage)"
+        total_targets = 0
+        for city in cities:
+            today = _settlement_today(city)
+            # Serve each target at its TRUE lead so the EMOS fit's per-model
+            # biases match the forecast horizon (next-day -> lead 1, 2-day-out
+            # -> lead 2). The NWP archive only holds leads >= 1, so the
+            # same-day target (lead 0) has no training history and is
+            # intentionally left without a live EMOS row; the trader falls back
+            # to its blend + observed-high path (SFO) or skips the same-day
+            # market (EMOS-only cities).
+            serve_targets: list[tuple[date, int]] = []
+            if args.serve:
+                target = (
+                    _settlement_tomorrow(city)
+                    if args.serve == "tomorrow"
+                    else date.fromisoformat(args.serve)
                 )
-                continue
-            mu, sigma = result
-            served += 1
-            print(f"live EMOS for {target.isoformat()} (lead {lead}): mu={mu:.2f}F sigma={sigma:.2f}F")
+                serve_targets.append((target, (target - today).days))
+            if args.serve_rolling:
+                serve_targets.extend(
+                    (today + timedelta(days=offset), offset)
+                    for offset in range(ROLLING_SERVE_DAYS)
+                )
+            total_targets += len(serve_targets)
+
+            for target, lead in serve_targets:
+                result = (
+                    serve_live_emos(conn, target, city=city, lead_days=lead)
+                    if lead >= 1
+                    else None
+                )
+                if result is None:
+                    print(
+                        f"live EMOS [{city.slug}] {target.isoformat()} (lead {lead}): "
+                        "unavailable (lead<1, already settled, or thin coverage)"
+                    )
+                    continue
+                mu, sigma = result
+                served += 1
+                print(
+                    f"live EMOS [{city.slug}] {target.isoformat()} (lead {lead}): "
+                    f"mu={mu:.2f}F sigma={sigma:.2f}F"
+                )
         if args.serve_rolling:
             print(
-                f"live EMOS rolling summary: served={served} "
-                f"targets={len(serve_targets)} leads=0..{ROLLING_SERVE_DAYS - 1}"
+                f"live EMOS rolling summary: served={served} targets={total_targets} "
+                f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1}"
             )
         # Fail loud only when an explicit single --serve produced nothing.
         if args.serve and not args.serve_rolling and served == 0:

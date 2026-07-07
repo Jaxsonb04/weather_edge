@@ -38,16 +38,22 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from cities import CITIES, CityConfig, get_city, parse_city_slugs
+
+DEFAULT_CITY = get_city("sfo")
+
 OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 
-# Fixed PST (POSIX sign is inverted: Etc/GMT+8 == UTC-8). Matches the NWS/Kalshi
-# settlement window used elsewhere in the forecaster so the daily max aligns.
+# Fixed PST (POSIX sign is inverted: Etc/GMT+8 == UTC-8). SFO legacy constant;
+# per-city code uses CityConfig.settlement_tz_name (each station's climate day
+# runs midnight-to-midnight in ITS OWN standard time).
 SETTLEMENT_TZ = "Etc/GMT+8"
 
-# KSFO coordinates -- identical to ``trading/sfo_kalshi_quant/ensemble.py`` so the
-# grid cell matches the ensemble plumbing we build on in later phases.
-KSFO_LATITUDE = 37.62
-KSFO_LONGITUDE = -122.38
+# KSFO coordinates -- kept as the canonical SFO grid cell (moving it would
+# invalidate every learned per-model EMOS bias). Per-city code reads
+# CityConfig.latitude/longitude.
+KSFO_LATITUDE = DEFAULT_CITY.latitude
+KSFO_LONGITUDE = DEFAULT_CITY.longitude
 
 # Models verified to return an SFO daily max via Open-Meteo on 2026-06-25.
 # Ordered by expected value: the US MOS gold-standard (NBM) and ECMWF first, then
@@ -111,15 +117,19 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _settlement_today() -> date:
-    """Today's fixed-PST settlement date (UTC-8, no DST).
+def _settlement_today(city: CityConfig = DEFAULT_CITY) -> date:
+    """Today's settlement date in the city's fixed standard time (no DST).
 
-    The archive is aligned to the PST settlement window, so cron/verify windows
-    derive 'today' the same way -- UTC ``.date()`` would drift a day ahead during
-    00:00-08:00 UTC and silently desync from the settlement calendar.
+    The archive is aligned to each station's own climate-day window, so
+    cron/verify windows derive 'today' the same way -- UTC ``.date()`` would
+    drift a day ahead overnight and silently desync from the settlement
+    calendar.
     """
 
-    return (datetime.now(timezone.utc) - timedelta(hours=8)).date()
+    return (
+        datetime.now(timezone.utc)
+        + timedelta(hours=city.standard_utc_offset_hours)
+    ).date()
 
 
 def _http_get_json(url: str, timeout: float = _HTTP_TIMEOUT) -> dict:
@@ -145,22 +155,63 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS nwp_model_forecasts (
+            station_id TEXT NOT NULL DEFAULT 'KSFO',
             target_date TEXT NOT NULL,
             model TEXT NOT NULL,
             lead_days INTEGER NOT NULL,
             predicted_high_f REAL,
             fetched_at TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'openmeteo_previous_runs',
-            PRIMARY KEY (target_date, model, lead_days, source)
+            PRIMARY KEY (station_id, target_date, model, lead_days, source)
         )
         """
     )
+    _migrate_station_key(conn)
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_nwp_target ON nwp_model_forecasts(target_date)"
+        "CREATE INDEX IF NOT EXISTS idx_nwp_station_target "
+        "ON nwp_model_forecasts(station_id, target_date)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_nwp_model_lead ON nwp_model_forecasts(model, lead_days)"
     )
+
+
+def _migrate_station_key(conn: sqlite3.Connection) -> None:
+    """Rebuild a pre-multi-city table (no station_id) in place, once.
+
+    SQLite cannot extend a PRIMARY KEY with ALTER, so the legacy table is
+    renamed, its rows re-inserted as KSFO (the only station it ever held), and
+    the shell dropped. Idempotent: a station-keyed table passes straight through.
+    """
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(nwp_model_forecasts)")}
+    if "station_id" in columns:
+        return
+    conn.execute("ALTER TABLE nwp_model_forecasts RENAME TO nwp_model_forecasts_legacy")
+    conn.execute(
+        """
+        CREATE TABLE nwp_model_forecasts (
+            station_id TEXT NOT NULL DEFAULT 'KSFO',
+            target_date TEXT NOT NULL,
+            model TEXT NOT NULL,
+            lead_days INTEGER NOT NULL,
+            predicted_high_f REAL,
+            fetched_at TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'openmeteo_previous_runs',
+            PRIMARY KEY (station_id, target_date, model, lead_days, source)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO nwp_model_forecasts
+            (station_id, target_date, model, lead_days, predicted_high_f, fetched_at, source)
+        SELECT 'KSFO', target_date, model, lead_days, predicted_high_f, fetched_at, source
+        FROM nwp_model_forecasts_legacy
+        """
+    )
+    conn.execute("DROP TABLE nwp_model_forecasts_legacy")
+    conn.commit()
 
 
 def upsert_forecasts(conn: sqlite3.Connection, rows: list[tuple]) -> int:
@@ -172,8 +223,8 @@ def upsert_forecasts(conn: sqlite3.Connection, rows: list[tuple]) -> int:
     conn.executemany(
         """
         INSERT OR REPLACE INTO nwp_model_forecasts
-            (target_date, model, lead_days, predicted_high_f, fetched_at, source)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (station_id, target_date, model, lead_days, predicted_high_f, fetched_at, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -217,17 +268,18 @@ def fetch_model_range(
     end: str,
     lead_days: int,
     *,
+    city: CityConfig = DEFAULT_CITY,
     timeout: float = _HTTP_TIMEOUT,
 ) -> dict[str, float]:
     """Day-ahead (lead N) daily max per date for one model over [start, end]."""
 
     params = urlencode(
         {
-            "latitude": f"{KSFO_LATITUDE:.4f}",
-            "longitude": f"{KSFO_LONGITUDE:.4f}",
+            "latitude": f"{city.latitude:.4f}",
+            "longitude": f"{city.longitude:.4f}",
             "hourly": previous_day_variable(lead_days),
             "temperature_unit": "fahrenheit",
-            "timezone": SETTLEMENT_TZ,
+            "timezone": city.settlement_tz_name,
             "start_date": start,
             "end_date": end,
             "models": model,
@@ -253,6 +305,7 @@ def archive_range(
     start: str,
     end: str,
     *,
+    city: CityConfig = DEFAULT_CITY,
     models: tuple[str, ...] = NWP_MODELS,
     leads: tuple[int, ...] = LEAD_DAYS,
     fetched_at: str | None = None,
@@ -275,13 +328,13 @@ def archive_range(
             written = 0
             for chunk_start, chunk_end in _date_chunks(start, end):
                 try:
-                    by_date = fetch_model_range(model, chunk_start, chunk_end, lead)
+                    by_date = fetch_model_range(model, chunk_start, chunk_end, lead, city=city)
                 except NwpArchiveError as exc:
                     if verbose:
                         print(f"  ! {model}@lead{lead} {chunk_start}..{chunk_end}: {exc}")
                     continue
                 rows = [
-                    (target_date, model, lead, value, stamp, source)
+                    (city.nws_station_id, target_date, model, lead, value, stamp, source)
                     for target_date, value in by_date.items()
                 ]
                 written += upsert_forecasts(conn, rows)
@@ -302,12 +355,12 @@ def coverage_report(conn: sqlite3.Connection) -> list[tuple]:
     ensure_schema(conn)
     return conn.execute(
         """
-        SELECT model, lead_days, COUNT(*) AS days,
+        SELECT station_id, model, lead_days, COUNT(*) AS days,
                MIN(target_date) AS min_date, MAX(target_date) AS max_date
         FROM nwp_model_forecasts
         WHERE predicted_high_f IS NOT NULL
-        GROUP BY model, lead_days
-        ORDER BY lead_days, model
+        GROUP BY station_id, model, lead_days
+        ORDER BY station_id, lead_days, model
         """
     ).fetchall()
 
@@ -328,23 +381,26 @@ def _print_coverage(conn: sqlite3.Connection) -> None:
     if not rows:
         print("  (archive empty)")
         return
-    print(f"  {'model':22s} {'lead':>4s} {'days':>6s} {'dens%':>6s} {'gaps':>5s}  range")
-    for model, lead, days, lo, hi in rows:
+    print(f"  {'station':8s} {'model':22s} {'lead':>4s} {'days':>6s} {'dens%':>6s} {'gaps':>5s}  range")
+    for station, model, lead, days, lo, hi in rows:
         span = (date.fromisoformat(hi) - date.fromisoformat(lo)).days + 1
         density = 100.0 * days / span if span else 0.0
         gaps = max(0, span - days)
         flag = "  <-- interior holes" if gaps else ""
-        print(f"  {model:22s} {lead:>4d} {days:>6d} {density:>6.1f} {gaps:>5d}  {lo} -> {hi}{flag}")
+        print(
+            f"  {station:8s} {model:22s} {lead:>4d} {days:>6d} {density:>6.1f} "
+            f"{gaps:>5d}  {lo} -> {hi}{flag}"
+        )
 
 
-def _cmd_verify(conn: sqlite3.Connection) -> int:
+def _cmd_verify(conn: sqlite3.Connection, city: CityConfig) -> int:
     """Connectivity + schema smoke test: archive the last week at lead 1."""
 
-    today = _settlement_today()
+    today = _settlement_today(city)
     start = (today - timedelta(days=8)).isoformat()
     end = (today - timedelta(days=1)).isoformat()
-    print(f"verify: fetching {start}..{end} (lead 1) for {len(NWP_MODELS)} models")
-    summary = archive_range(conn, start, end, leads=(1,), verbose=True)
+    print(f"verify[{city.slug}]: fetching {start}..{end} (lead 1) for {len(NWP_MODELS)} models")
+    summary = archive_range(conn, start, end, city=city, leads=(1,), verbose=True)
     present = [name for name, n in summary.items() if n > 0]
     print(f"\nmodels returning data: {len(present)}/{len(NWP_MODELS)}")
     print("\narchive coverage:")
@@ -356,35 +412,42 @@ def _cmd_verify(conn: sqlite3.Connection) -> int:
     return 0
 
 
-def _cmd_backfill(conn: sqlite3.Connection, start: str, end: str) -> int:
-    print(f"backfill: {start}..{end}  models={len(NWP_MODELS)} leads={LEAD_DAYS}")
-    summary = archive_range(conn, start, end, verbose=True)
-    total = sum(summary.values())
+def _cmd_backfill(conn: sqlite3.Connection, cities: tuple[CityConfig, ...], start: str, end: str) -> int:
+    total = 0
+    for city in cities:
+        print(f"backfill[{city.slug}]: {start}..{end}  models={len(NWP_MODELS)} leads={LEAD_DAYS}")
+        summary = archive_range(conn, start, end, city=city, verbose=True)
+        total += sum(summary.values())
     print(f"\nwrote {total} forecast rows")
     print("\narchive coverage:")
     _print_coverage(conn)
     return 0 if total else 1
 
 
-def _cmd_daily(conn: sqlite3.Connection, days: int) -> int:
-    today = _settlement_today()
-    start = (today - timedelta(days=days)).isoformat()
-    end = (today + timedelta(days=1)).isoformat()
-    summary = archive_range(conn, start, end, verbose=True)
-    total = sum(summary.values())
-    models_present = {name.split("@")[0] for name, n in summary.items() if n > 0}
-    print(
-        f"\ndaily refresh wrote {total} rows ({start}..{end}); "
-        f"{len(models_present)}/{len(NWP_MODELS)} models returned data"
-    )
+def _cmd_daily(conn: sqlite3.Connection, cities: tuple[CityConfig, ...], days: int) -> int:
+    total = 0
+    worst_models_present = len(NWP_MODELS)
+    for city in cities:
+        today = _settlement_today(city)
+        start = (today - timedelta(days=days)).isoformat()
+        end = (today + timedelta(days=1)).isoformat()
+        summary = archive_range(conn, start, end, city=city, verbose=False)
+        city_total = sum(summary.values())
+        total += city_total
+        models_present = {name.split("@")[0] for name, n in summary.items() if n > 0}
+        worst_models_present = min(worst_models_present, len(models_present))
+        print(
+            f"daily[{city.slug}]: {city_total} rows ({start}..{end}); "
+            f"{len(models_present)}/{len(NWP_MODELS)} models returned data"
+        )
     # Fail loud on a total miss so a cron wrapper's exit-code monitor catches a
     # stale archive instead of reading silence as success.
     if total == 0:
         print("FAIL: no rows fetched -- archive going stale (network/SSL/API change?)")
         return 1
-    if len(models_present) < MIN_DAILY_MODELS:
+    if worst_models_present < MIN_DAILY_MODELS:
         print(
-            f"WARN: only {len(models_present)} models returned data "
+            f"WARN: a city had only {worst_models_present} models return data "
             f"(floor {MIN_DAILY_MODELS}) -- partial collapse, investigate"
         )
     return 0
@@ -399,17 +462,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", help="backfill start date YYYY-MM-DD")
     parser.add_argument("--end", help="backfill end date YYYY-MM-DD")
     parser.add_argument("--days", type=int, default=5, help="--daily lookback window")
+    parser.add_argument("--cities", default="all", help="'all' or comma slugs (e.g. sfo,nyc)")
     args = parser.parse_args(argv)
 
+    cities = parse_city_slugs(args.cities)
     with _connect(args.db) as conn:
         if args.verify:
-            return _cmd_verify(conn)
+            return _cmd_verify(conn, cities[0])
         if args.backfill:
             if not (args.start and args.end):
                 parser.error("--backfill requires --start and --end")
-            return _cmd_backfill(conn, args.start, args.end)
+            return _cmd_backfill(conn, cities, args.start, args.end)
         if args.daily:
-            return _cmd_daily(conn, args.days)
+            return _cmd_daily(conn, cities, args.days)
         parser.error("choose one of --verify, --backfill, or --daily")
 
 

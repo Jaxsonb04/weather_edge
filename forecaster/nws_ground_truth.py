@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Archive NWS KSFO observations and daily highs into weather.db."""
+"""Archive NWS station observations and daily highs into weather.db.
+
+Runs for any configured city (``--cities``); each station's climate day is
+computed in its own fixed standard time so the daily high covers the same
+window its CLI settlement report does.
+"""
 
 import argparse
 import json
@@ -10,8 +15,10 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from cities import CITY_BY_STATION, get_city, parse_city_slugs
 from settlement_calendar import (
     local_standard_date,
+    standard_timezone,
     today_local_standard,
     utc_window_for_local_standard_date,
 )
@@ -19,9 +26,19 @@ from settlement_calendar import (
 SFO_TZ = ZoneInfo("America/Los_Angeles")
 DB_PATH = Path("weather.db")
 NWS_STATION_ID = "KSFO"
+# GHCN-Daily id is only wired for the legacy SFO history bootstrap; other
+# stations do not need one (their history comes from the IEM CLI archive).
 NOAA_STATION_ID = "USW00023234"
+NOAA_STATION_BY_NWS = {"KSFO": NOAA_STATION_ID}
 NWS_API = "https://api.weather.gov"
-USER_AGENT = "SFO Weather Forecaster student project"
+USER_AGENT = "WeatherEdge forecaster student project"
+
+
+def _station_tz(station_id):
+    city = CITY_BY_STATION.get(station_id)
+    if city is None:
+        return standard_timezone(-8)
+    return city.fixed_standard_timezone()
 
 
 def read_json_url(url):
@@ -61,16 +78,16 @@ def parse_timestamp(raw):
     return datetime.fromisoformat(raw.replace("Z", "+00:00"))
 
 
-def sfo_local_date(timestamp):
-    return local_standard_date(timestamp).isoformat()
+def station_local_date(timestamp, station_id=NWS_STATION_ID):
+    return local_standard_date(timestamp, _station_tz(station_id)).isoformat()
 
 
 def iso_utc(timestamp):
     return timestamp.astimezone(timezone.utc).isoformat()
 
 
-def utc_window_for_local_date(local_date):
-    return utc_window_for_local_standard_date(local_date)
+def utc_window_for_local_date(local_date, station_id=NWS_STATION_ID):
+    return utc_window_for_local_standard_date(local_date, _station_tz(station_id))
 
 
 def init_db(conn):
@@ -123,7 +140,7 @@ def init_db(conn):
 
 
 def fetch_observations_for_date(local_date, station_id=NWS_STATION_ID):
-    start_utc, end_utc = utc_window_for_local_date(local_date)
+    start_utc, end_utc = utc_window_for_local_date(local_date, station_id)
     params = urlencode(
         {
             "start": start_utc.isoformat().replace("+00:00", "Z"),
@@ -142,9 +159,9 @@ def observation_row(feature, station_id=NWS_STATION_ID):
 
     return (
         station_id,
-        NOAA_STATION_ID,
+        NOAA_STATION_BY_NWS.get(station_id),
         iso_utc(observed),
-        sfo_local_date(observed),
+        station_local_date(observed, station_id),
         temp_to_f(props.get("temperature") or {}),
         temp_to_f(props.get("dewpoint") or {}),
         wind_to_mph(props.get("windSpeed") or {}),
@@ -189,7 +206,7 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
         """,
         (station_id, local_date),
     ).fetchall()
-    now_local_date = today_local_standard().isoformat()
+    now_local_date = today_local_standard(tz=_station_tz(station_id)).isoformat()
     is_complete = 1 if local_date < now_local_date else 0
 
     if not rows:
@@ -207,7 +224,7 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
             """,
             (
                 station_id,
-                NOAA_STATION_ID,
+                NOAA_STATION_BY_NWS.get(station_id),
                 local_date,
                 is_complete,
                 datetime.now(timezone.utc).isoformat(),
@@ -245,7 +262,7 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
         """,
         (
             station_id,
-            NOAA_STATION_ID,
+            NOAA_STATION_BY_NWS.get(station_id),
             local_date,
             round(float(high_f), 2),
             high_observed_at,
@@ -261,7 +278,7 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
 
 
 def refresh_ground_truth(days, station_id=NWS_STATION_ID):
-    today = today_local_standard()
+    today = today_local_standard(tz=_station_tz(station_id))
     local_dates = [
         (today - timedelta(days=offset)).isoformat()
         for offset in range(days - 1, -1, -1)
@@ -293,15 +310,30 @@ def refresh_ground_truth(days, station_id=NWS_STATION_ID):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=3, help="local days to refresh, ending today")
-    parser.add_argument("--station", default=NWS_STATION_ID, help="NWS station identifier")
+    parser.add_argument("--station", default=None, help="single NWS station identifier (legacy)")
+    parser.add_argument(
+        "--cities", default=None, help="'all' or comma slugs; overrides --station"
+    )
     args = parser.parse_args()
 
-    result = refresh_ground_truth(max(1, args.days), args.station)
-    print(
-        f"fetched {result['observations_seen']} NWS observations "
-        f"({result['observations_inserted']} new) for "
-        f"{result['station_id']} across {len(result['dates'])} local day(s)"
-    )
+    if args.cities:
+        stations = [city.nws_station_id for city in parse_city_slugs(args.cities)]
+    else:
+        stations = [args.station or NWS_STATION_ID]
+
+    for station_id in stations:
+        # Fail-soft per station: one station's API hiccup must not stall the
+        # other fourteen (the freshness watchdog still catches a stale station).
+        try:
+            result = refresh_ground_truth(max(1, args.days), station_id)
+        except OSError as exc:
+            print(f"{station_id}: refresh failed ({exc})")
+            continue
+        print(
+            f"fetched {result['observations_seen']} NWS observations "
+            f"({result['observations_inserted']} new) for "
+            f"{result['station_id']} across {len(result['dates'])} local day(s)"
+        )
 
 
 if __name__ == "__main__":

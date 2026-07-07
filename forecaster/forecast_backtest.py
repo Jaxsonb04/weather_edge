@@ -121,14 +121,22 @@ def load_clean_blend_rows(
         return [], LoadDiagnostics()
 
     settlements: dict[str, float] = {}
-    if _table_exists(conn, "clisfo_settlements"):
-        for local_date, max_t in conn.execute(
+    if _table_exists(conn, "cli_settlements"):
+        truth_cursor = conn.execute(
+            "SELECT local_date, max_temperature_f FROM cli_settlements "
+            "WHERE station_id = 'KSFO' AND max_temperature_f IS NOT NULL"
+        )
+    elif _table_exists(conn, "clisfo_settlements"):
+        truth_cursor = conn.execute(
             "SELECT local_date, max_temperature_f FROM clisfo_settlements "
             "WHERE max_temperature_f IS NOT NULL"
-        ):
-            value = integer_settlement_high_f(max_t)
-            if value is not None:
-                settlements[local_date] = value
+        )
+    else:
+        truth_cursor = ()
+    for local_date, max_t in truth_cursor:
+        value = integer_settlement_high_f(max_t)
+        if value is not None:
+            settlements[local_date] = value
 
     has_truth_source = _has_column(conn, "forecast_blend_daily_high", "truth_source")
     truth_select = "truth_source" if has_truth_source else "NULL AS truth_source"
@@ -902,19 +910,22 @@ def evaluate_acceptance(
 def clisfo_nws_divergence(conn: sqlite3.Connection) -> dict:
     """Quantify the CLISFO-vs-NWS-daily divergence (not assert it)."""
 
+    has_new = _table_exists(conn, "cli_settlements")
     if not (
-        _table_exists(conn, "clisfo_settlements")
+        (has_new or _table_exists(conn, "clisfo_settlements"))
         and _table_exists(conn, "nws_daily_high_ground_truth")
     ):
         return {"available": False, "rows": [], "summary": {}}
 
+    truth_table = "cli_settlements" if has_new else "clisfo_settlements"
+    truth_filter = "AND c.station_id = 'KSFO'" if has_new else ""
     rows = conn.execute(
-        """
+        f"""
         SELECT c.local_date, c.max_temperature_f AS clisfo, n.high_f AS nws
-        FROM clisfo_settlements c
+        FROM {truth_table} c
         JOIN nws_daily_high_ground_truth n
           ON n.local_date = c.local_date AND n.station_id = 'KSFO' AND n.is_complete = 1
-        WHERE c.max_temperature_f IS NOT NULL AND n.high_f IS NOT NULL
+        WHERE c.max_temperature_f IS NOT NULL AND n.high_f IS NOT NULL {truth_filter}
         ORDER BY c.local_date
         """
     ).fetchall()
