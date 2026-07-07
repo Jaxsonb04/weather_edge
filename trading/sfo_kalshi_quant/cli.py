@@ -2615,15 +2615,18 @@ def _same_day_no_basket_veto_reason(
 def cmd_paper_monitor(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
-    rows = store.open_paper_orders(args.limit)
-    if not rows:
-        print(color.yellow("no open paper positions"))
-        return 0
 
     model_veto_max_loss = args.model_veto_max_loss_pct / 100.0
     _validate_monitor_args(args)
 
     client = KalshiPublicClient()
+    filled = _fill_resting_orders_against_live_book(store, client, color)
+
+    rows = store.open_paper_orders(args.limit)
+    if not rows:
+        if not filled:
+            print(color.yellow("no open paper positions"))
+        return 0
     closed = 0
     inspected = 0
     for row in rows:
@@ -2844,8 +2847,60 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             f"realized_pnl={pnl}; {reason}"
         )
 
-    print(color.cyan(f"paper monitor inspected {inspected}, closed {closed}"))
+    print(
+        color.cyan(
+            f"paper monitor inspected {inspected}, closed {closed}, "
+            f"filled {filled} resting limits"
+        )
+    )
     return 0
+
+
+def _fill_resting_orders_against_live_book(
+    store: PaperStore, client: KalshiPublicClient, color: Color
+) -> int:
+    """Fill resting maker limits whose side ask has crossed down to the limit.
+
+    Runs on the ~2-minute monitor cadence so maker fills are recognized between
+    the 5-minute scans. FILL-MODEL LIMITATION (stated, not papered over): a
+    resting order fills here when the VISIBLE ask reaches the limit price --
+    i.e. a counterparty is displayed willing to trade at our price. Real
+    exchange fills depend on queue position and on trades that never move the
+    displayed ask, so this proxy can both miss real fills and grant generous
+    ones; the measured maker fill RATE is therefore itself a research output,
+    not ground truth.
+    """
+
+    filled = 0
+    for row in store.resting_paper_orders():
+        limit_price = row["limit_price"] if row["limit_price"] is not None else row["entry_price"]
+        if limit_price is None:
+            continue
+        side = str(row["side"] or "YES").upper()
+        try:
+            market = client.get_market(row["market_ticker"])
+        except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
+            continue
+        if market.status != "active":
+            continue
+        side_ask = market.side_ask(side)
+        if side_ask <= 0.0 or side_ask > float(limit_price) + 1e-12:
+            continue
+        updated = store.fill_resting_limit_order(int(row["id"]))
+        if updated is not None and updated["status"] == "PAPER_FILLED":
+            filled += 1
+            store.record_monitor_snapshot(
+                updated,
+                side=side,
+                action="LIMIT_FILLED",
+                reason=f"visible {side} ask {side_ask:.2f} crossed resting limit {float(limit_price):.2f}",
+                market_status=market.status,
+            )
+            print(
+                f"filled resting order {row['id']} {row['market_ticker']} {side}: "
+                f"ask {side_ask:.2f} <= limit {float(limit_price):.2f}"
+            )
+    return filled
 
 
 def cmd_paper_settle(args: argparse.Namespace) -> int:

@@ -102,6 +102,21 @@ class TradeEvaluator:
                     f"{side} ask size {ask_size:.2f} below min {self.config.min_ask_size:.2f}; "
                     f"no displayed entry liquidity"
                 )
+        if (
+            self.config.favorite_band_enabled
+            and 0.0 < ask < 1.0
+            and not (
+                self.config.favorite_band_min_cost - 1e-9
+                <= ask
+                <= self.config.favorite_band_max_cost + 1e-9
+            )
+        ):
+            reasons.append(
+                f"{side} price {ask:.2f} outside favorite band "
+                f"[{self.config.favorite_band_min_cost:.2f}, "
+                f"{self.config.favorite_band_max_cost:.2f}]; documented post-fee "
+                "edge concentrates on high-probability favorites"
+            )
         if spread > self.config.max_spread + 1e-9:
             reasons.append(f"spread {spread:.2f} exceeds max {self.config.max_spread:.2f}")
         if 0.0 < ask < 1.0 and spread / ask > self.config.max_spread_fraction_of_cost + 1e-9:

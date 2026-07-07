@@ -1755,6 +1755,24 @@ class PaperStore:
     def open_paper_order(self, order_id: int) -> sqlite3.Row | None:
         return self._open_order(order_id)
 
+    def resting_paper_orders(self, limit: int = 100) -> list[sqlite3.Row]:
+        """Every live resting maker limit order, for the monitor's fill pass."""
+
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                """
+                SELECT *
+                FROM paper_orders
+                WHERE status = 'PAPER_LIMIT_RESTING'
+                  AND settled_at IS NULL
+                  AND closed_at IS NULL
+                ORDER BY created_at, id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
     def open_paper_orders(self, limit: int = 50) -> list[sqlite3.Row]:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row

@@ -118,11 +118,10 @@ def test_two_cent_tail_is_structurally_blocked_by_relative_spread():
 
 
 def test_live_admits_mid_ladder_cheap_tail_that_strict_baseline_rejects():
-    # Identical cheap tail with a moderate (12-contract) bid: the strict
-    # StrategyConfig() baseline requires a 25-contract bid for cheap tails and
-    # refuses it; live now carries its own 10-contract floor and takes the
-    # trade. Only the bid-size floor differs, so this isolates the deliberate
-    # live loosening.
+    # FAVORITE-BAND REORIENTATION (2026-07-06): live now rejects cheap tails
+    # outright (documented FLB: longshots lose post-fee), so the cheap-tail
+    # bid-size loosening is asserted with the band disabled -- the machinery
+    # must stay correct for the research collector that still runs it.
     market = _bin(
         "66° to 67°",
         yes_bid=0.04,
@@ -144,9 +143,14 @@ def test_live_admits_mid_ladder_cheap_tail_that_strict_baseline_rejects():
         market_probability=0.05,
     )
     strict = TradeEvaluator(StrategyConfig())
-    live = TradeEvaluator(strategy_config_for_profile("live"))
+    live_config = strategy_config_for_profile("live")
+    live = TradeEvaluator(live_config)
+    banded = live.evaluate_market(market, probability, bankroll=350)
+    assert not banded.approved
+    assert any("favorite band" in reason for reason in banded.reasons)
+    unbanded = TradeEvaluator(replace(live_config, favorite_band_enabled=False))
     assert not strict.evaluate_market(market, probability, bankroll=350).approved
-    assert live.evaluate_market(market, probability, bankroll=350).approved
+    assert unbanded.evaluate_market(market, probability, bankroll=350).approved
 
 
 def test_edge_gate_can_measure_point_edge_against_model_probability():
@@ -325,25 +329,27 @@ def test_live_profile_rejects_negative_lcb_penny_tail():
 
 
 def test_live_profile_approves_structurally_sound_value_trade():
+    # In-band favorite (>=70c): the shape of trade the reoriented live book
+    # exists to take.
     market = _bin(
         "68° to 69°",
-        yes_bid=0.55,
-        yes_ask=0.58,
+        yes_bid=0.72,
+        yes_ask=0.74,
         yes_bid_size=40.0,
         yes_ask_size=40.0,
     )
     probability = BucketProbability(
         ticker=market.ticker,
         label=market.yes_sub_title,
-        probability=0.70,
-        lower_confidence=0.65,
-        empirical_probability=0.70,
-        normal_probability=0.70,
+        probability=0.85,
+        lower_confidence=0.80,
+        empirical_probability=0.85,
+        normal_probability=0.85,
         effective_n=400,
-        residual_probability=0.69,
-        ensemble_probability=0.71,
-        model_probability=0.72,
-        market_probability=0.57,
+        residual_probability=0.84,
+        ensemble_probability=0.86,
+        model_probability=0.86,
+        market_probability=0.73,
     )
     decision = TradeEvaluator(strategy_config_for_profile("live")).evaluate_market(
         market,
@@ -665,21 +671,21 @@ def test_event_risk_cap_scales_total_approved_exposure():
 def test_live_blocks_trade_when_forecast_sources_disagree():
     market = _bin(
         "72° to 73°",
-        yes_bid=0.49,
-        yes_ask=0.50,
+        yes_bid=0.79,
+        yes_ask=0.80,
         yes_bid_size=40.0,
         yes_ask_size=40.0,
     )
     probability = BucketProbability(
         ticker=market.ticker,
         label=market.yes_sub_title,
-        probability=0.60,
-        lower_confidence=0.55,
-        empirical_probability=0.60,
-        normal_probability=0.60,
+        probability=0.90,
+        lower_confidence=0.86,
+        empirical_probability=0.90,
+        normal_probability=0.90,
         effective_n=250,
-        model_probability=0.62,
-        market_probability=0.55,
+        model_probability=0.91,
+        market_probability=0.80,
     )
     config = strategy_config_for_profile("live")
     evaluator = TradeEvaluator(config)

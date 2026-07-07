@@ -50,9 +50,16 @@ def buy_limit_for_decision(
 
     price = _floor_to_tick(min(visible_ask, desired), tick)
     while price + 1e-12 >= minimum_limit:
+        # Fee follows liquidity role: a limit below the visible ask RESTS and
+        # pays the maker rate (25% of taker since Kalshi's April-2025 change);
+        # a limit at/above the ask crosses immediately and pays taker. Charging
+        # taker on resting fills overstated maker costs ~4x and buried exactly
+        # the favorite-band maker edge this engine now targets.
+        crosses = price >= visible_ask - 1e-12
         fee = quadratic_fee_average_per_contract(
             price,
             decision.recommended_contracts,
+            maker=not crosses,
             fee_multiplier=config.fee_multiplier,
             taker_rate=config.taker_fee_rate,
             maker_rate=config.maker_fee_rate,

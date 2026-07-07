@@ -257,6 +257,20 @@ class StrategyConfig:
     # after-fee edge_lcb floor, so it only leans harder into far tails that
     # already clear the gates -- it never manufactures a bet that was not there.
     comfort_edge_max_size_boost: float = 2.0
+    # --- Favorite-band concentration (the researched Maker edge) -----------
+    # Kalshi's favorite-longshot bias is the documented durable edge for a
+    # small liquidity-providing operator: contracts priced above ~70c earned
+    # small but significant positive post-fee returns while cheap longshots
+    # lost heavily, and Makers materially outperformed Takers (Burgi, Deng &
+    # Whelan, SSRN 5502658). When enabled, entries whose side price sits
+    # outside [min, max] are rejected, concentrating the book on the
+    # high-probability favorite side where that documented return lives. The
+    # max bound skips degenerate near-$1 prices where one tick of adverse
+    # settlement wipes dozens of wins. Off on the frozen baseline and the
+    # research collector (which keeps measuring the whole price curve).
+    favorite_band_enabled: bool = False
+    favorite_band_min_cost: float = 0.70
+    favorite_band_max_cost: float = 0.97
     # Research shadow sampling: the research profile still records every
     # point-positive exploration candidate, but only a deterministic sample becomes
     # a real paper position. This keeps the learning set wide while preventing the
@@ -396,6 +410,14 @@ LIVE_PROFILE_OVERRIDES = {
     # after-fee edge_lcb >= 0 floor is still the real defense.
     "comfort_edge_enabled": True,
     "comfort_edge_block_sigma_mult": 0.4,
+    # FAVORITE-BAND REORIENTATION (2026-07-06). The live book now concentrates
+    # where the transaction-level evidence says the post-fee edge lives:
+    # resting maker entries on the >=70c favorite side. This supersedes the
+    # 07-03 near-money frequency push -- breadth now comes from fifteen city
+    # markets, not from coin-flip bins whose average post-fee return is
+    # negative. The research collector keeps the full price curve so the band
+    # itself stays measurable.
+    "favorite_band_enabled": True,
 }
 
 
@@ -481,6 +503,9 @@ RESEARCH_PROFILE_OVERRIDES = {
     # measured disagreement -- exactly the validation signal we want to collect.
     "market_consensus_anchor_enabled": True,
     "market_consensus_guard_enabled": True,
+    # The collector measures the whole price curve (including the longshots the
+    # live band rejects) so the favorite-band choice remains evidence, not dogma.
+    "favorite_band_enabled": False,
 }
 
 

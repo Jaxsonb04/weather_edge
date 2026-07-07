@@ -95,7 +95,10 @@ def test_approved_balanced_yes_is_sized_small_and_capped():
         model_probability=0.55,
         market_probability=0.50,
     )
-    cfg = strategy_config_for_profile("balanced")
+    # The live favorite band would reject this sub-band YES outright; disable
+    # it here to isolate the estimation-shrink SIZING machinery, which the
+    # research collector still exercises on the full price curve.
+    cfg = replace(strategy_config_for_profile("balanced"), favorite_band_enabled=False)
     decision = TradeEvaluator(cfg).evaluate_market(market, probability, bankroll=1000, side="YES")
     assert decision.approved
     assert decision.binding_constraint == "yes_estimation_shrink"
