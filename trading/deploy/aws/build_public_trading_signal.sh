@@ -48,8 +48,14 @@ if [[ "${SFO_TRADING_SIGNAL_DISABLE_ENSEMBLE:-0}" == "1" ]]; then
   args+=(--no-ensemble)
 fi
 
+CITIES_OUTPUT_PATH="${SFO_CITIES_DATA_PATH:-$FORECASTER_DIR/cities_data.json}"
+
 cd "$TRADING_DIR"
 "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}" >/dev/null
+"$PYTHON_BIN" -m sfo_kalshi_quant.cities_report \
+  --forecaster-root "$FORECASTER_DIR" \
+  --db-path "$DB_PATH" \
+  --output "$CITIES_OUTPUT_PATH" >/dev/null
 "$PYTHON_BIN" -m sfo_kalshi_quant.cli \
   --no-color \
   --forecaster-root "$FORECASTER_DIR" \

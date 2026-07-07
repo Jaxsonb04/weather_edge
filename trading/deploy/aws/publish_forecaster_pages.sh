@@ -28,6 +28,7 @@ JSON_ARTIFACTS=(
   forecast_data.json
   weather_story_data.json
   strategy_research.json
+  cities_data.json
 )
 
 if [[ ! -d "$FORECASTER_DIR" ]]; then
