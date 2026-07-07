@@ -65,3 +65,13 @@ evaluation confirms that choice remains sound at lead 1.
 - `baseline_blend` had no settled cold-cohort days in the overlap window
   (its cold cell is empty), so cold-cohort comparisons rest on the other
   predictors' internal consistency only.
+
+## Addendum (2026-07-06 00:40 PT): source-MOS corrections engaged
+
+The adaptive per-source MOS correction — the feature whose crash caused the
+July 3-6 outage — engaged for the first time in production once the fix
+landed: `mode: adaptive` over 31 clean scored days, gated on a 10-day
+walk-forward holdout where corrections cut blend MAE from **2.97°F to
+2.37°F** (-20%). Live corrections at first engagement: google +1.5°F
+(marine-layer cold bias, capped), nws +1.0°F. The gate re-evaluates every
+refresh and disables itself if the holdout stops improving.
