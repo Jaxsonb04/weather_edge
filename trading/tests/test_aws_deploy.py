@@ -92,10 +92,12 @@ def test_paper_scan_pins_calibration_source():
     assert 'PORTFOLIO_MAX_ARB_SPEND="${SFO_PORTFOLIO_MAX_ARB_SPEND:-12}"' in runner
     assert 'PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"' in runner
     assert "PAPER_RISK_PROFILES=live,research" in example_env
-    # The deployment example uses market entry (2026-06-17) so approved scans
-    # fill immediately at the ask instead of resting as limit orders that expire
-    # unfilled; the runner also defaults to market when unset (asserted above).
-    assert "PAPER_ENTRY_MODE=market" in example_env
+    # Maker-first reorientation (2026-07-06): the deployment example posts
+    # resting limit orders (maker fees, favorite-band strategy) and scans every
+    # configured city; the runner still defaults to market when unset so ad-hoc
+    # local runs stay comparable to the historical taker journal.
+    assert "PAPER_ENTRY_MODE=limit" in example_env
+    assert "PAPER_CITIES=all" in example_env
     assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
     assert "SFO_PORTFOLIO_MIN_PROFIT=0.01" in example_env
     assert "balanced,fast-feedback,exploratory" not in example_env

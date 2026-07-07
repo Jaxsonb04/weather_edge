@@ -1240,7 +1240,15 @@ def _analyze_one_target(
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
-    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+    # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
+    # calls per target); at fifteen cities on a 5-minute cadence it would blow
+    # the free ensemble quota, so EMOS-only cities run without it -- their
+    # sigma already comes from the calibrated EMOS fit.
+    ensemble = (
+        _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+        if city.has_full_blend
+        else None
+    )
     event = event_hint
     if event_lookup_done:
         pass
@@ -1415,7 +1423,15 @@ def _portfolio_scan_one_target(
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
-    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+    # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
+    # calls per target); at fifteen cities on a 5-minute cadence it would blow
+    # the free ensemble quota, so EMOS-only cities run without it -- their
+    # sigma already comes from the calibrated EMOS fit.
+    ensemble = (
+        _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+        if city.has_full_blend
+        else None
+    )
     event = event_hint
     if event_lookup_done:
         pass
@@ -1715,7 +1731,15 @@ def _tail_basket_one_target(
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
-    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+    # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
+    # calls per target); at fifteen cities on a 5-minute cadence it would blow
+    # the free ensemble quota, so EMOS-only cities run without it -- their
+    # sigma already comes from the calibrated EMOS fit.
+    ensemble = (
+        _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+        if city.has_full_blend
+        else None
+    )
     event = event_hint
     if event_lookup_done:
         pass
