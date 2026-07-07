@@ -23,11 +23,15 @@ class PaperTrader:
         *,
         risk_profile: str | None = None,
         entry_mode: str = "market",
+        series_ticker: str | None = None,
     ) -> None:
         self.store = store
         self.config = config or StrategyConfig()
         self.risk_profile = risk_profile
         self.entry_mode = _normalize_entry_mode(entry_mode)
+        # Scopes the per-target exposure cap to one city's event. None keeps
+        # the legacy single-book semantics (cap across the whole date).
+        self.series_ticker = series_ticker
 
     def with_paper_stake(self, decision: TradeDecision, stake_dollars: float | None) -> TradeDecision:
         if stake_dollars is None or not decision.approved:
@@ -412,7 +416,11 @@ class PaperTrader:
         cap = bankroll * self.config.max_target_exposure_pct
         if cap <= 0:
             return None
-        spent = self.store.paper_spend_for_target(target_date, risk_profile=self.risk_profile)
+        spent = self.store.paper_spend_for_target(
+            target_date,
+            risk_profile=self.risk_profile,
+            series_ticker=self.series_ticker,
+        )
         return max(0.0, cap - spent)
 
     def _normalize_contracts(self, decision: TradeDecision) -> TradeDecision | None:

@@ -36,7 +36,16 @@ class SfoEnsembleClient:
         timeout: float = 12.0,
         base_url: str = OPEN_METEO_ENSEMBLE_URL,
         cell_selections: tuple[str, ...] = ("nearest", "land"),
+        city=None,
     ) -> None:
+        # City geometry (default: the legacy KSFO cell). Elevation is only
+        # meaningful where configured; Open-Meteo infers it otherwise.
+        self.latitude = city.latitude if city is not None else KSFO_LATITUDE
+        self.longitude = city.longitude if city is not None else KSFO_LONGITUDE
+        self.elevation_m = KSFO_ELEVATION_M if city is None or city.slug == "sfo" else None
+        self.settlement_tz = (
+            city.settlement_tz_name if city is not None else IANA_FIXED_PST
+        )
         self.timeout = timeout
         self.base_url = base_url
         self.cell_selections = cell_selections
@@ -70,19 +79,21 @@ class SfoEnsembleClient:
 
     def _fetch_payload(self, target: date, cell_selection: str) -> dict[str, Any]:
         params = {
-            "latitude": KSFO_LATITUDE,
-            "longitude": KSFO_LONGITUDE,
-            "elevation": KSFO_ELEVATION_M,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
             "cell_selection": cell_selection,
             "daily": "temperature_2m_max",
             "temperature_unit": "fahrenheit",
-            # Fixed PST so the ensemble's daily max covers the same window as
-            # NWS/Kalshi settlement, not the civil calendar day.
-            "timezone": IANA_FIXED_PST,
+            # The station's fixed standard time so the ensemble's daily max
+            # covers the same window as NWS/Kalshi settlement, not the civil
+            # calendar day.
+            "timezone": self.settlement_tz,
             "start_date": target.isoformat(),
             "end_date": target.isoformat(),
             "models": "gfs_seamless",
         }
+        if self.elevation_m is not None:
+            params["elevation"] = self.elevation_m
         request = Request(f"{self.base_url}?{urlencode(params)}", headers={"accept": "application/json"})
         with urlopen(request, timeout=self.timeout) as response:
             return json.loads(response.read().decode("utf-8"))

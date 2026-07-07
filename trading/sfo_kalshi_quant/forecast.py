@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from .cities import CityConfig, get_city
 from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ
 from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
@@ -51,15 +52,34 @@ def parse_target_dates(value: str | date | None) -> list[date]:
 
 
 class SfoForecasterAdapter:
-    """Read artifacts from the SFO forecaster project root."""
+    """Read one city's forecast artifacts from the forecaster project root.
 
-    def __init__(self, root: Path = DEFAULT_FORECASTER_ROOT) -> None:
+    SFO reads its full blend stack (blend rows, Google cache, LSTM
+    calibration). Every other city reads the station-agnostic EMOS pipeline:
+    the live EMOS Gaussian is the point forecast, the scored rolling-origin
+    EMOS archive is the calibration record, and the cross-model NWP spread
+    stands in for blend source disagreement.
+    """
+
+    def __init__(
+        self, root: Path = DEFAULT_FORECASTER_ROOT, city: CityConfig | None = None
+    ) -> None:
         self.root = Path(root)
+        self.city = city or get_city("sfo")
+        self.station_id = self.city.nws_station_id
         self.weather_db = self.root / "weather.db"
         self.ab_test_path = self.root / "ab_test_results.json"
         self.google_cache_path = self.root / "google_weather_cache.json"
 
     def latest_blend(self, target: date) -> ForecastSnapshot:
+        if not self.city.has_full_blend:
+            snapshot = self._latest_emos_snapshot(target)
+            if snapshot is not None:
+                return snapshot
+            raise ForecastDataError(
+                f"No live EMOS forecast for {self.city.slug} {target.isoformat()} "
+                f"in {self.weather_db}"
+            )
         if self.weather_db.exists():
             row = self._latest_blend_row(target)
             if row is not None:
@@ -95,36 +115,40 @@ class SfoForecasterAdapter:
                         """
                         SELECT high_f, high_observed_at, observation_count, is_complete, source
                         FROM nws_daily_high_ground_truth
-                        WHERE station_id = 'KSFO' AND local_date = ? AND high_f IS NOT NULL
+                        WHERE station_id = ? AND local_date = ? AND high_f IS NOT NULL
                         """,
-                        (target.isoformat(),),
+                        (self.station_id, target.isoformat()),
                     ).fetchone()
                 high_row = conn.execute(
                     """
                     SELECT MAX(temp_f), COUNT(*)
                     FROM nws_station_observations
-                    WHERE station_id = 'KSFO' AND local_date = ? AND temp_f IS NOT NULL
+                    WHERE station_id = ? AND local_date = ? AND temp_f IS NOT NULL
                     """,
-                    (target.isoformat(),),
+                    (self.station_id, target.isoformat()),
                 ).fetchone()
                 latest_row = conn.execute(
                     """
                     SELECT observed_at, temp_f
                     FROM nws_station_observations
-                    WHERE station_id = 'KSFO' AND local_date = ? AND temp_f IS NOT NULL
+                    WHERE station_id = ? AND local_date = ? AND temp_f IS NOT NULL
                     ORDER BY observed_at DESC
                     LIMIT 1
                     """,
-                    (target.isoformat(),),
+                    (self.station_id, target.isoformat()),
                 ).fetchone()
-                fetched_row = conn.execute(
-                    """
-                    SELECT MAX(fetched_at)
-                    FROM forecast_google_hourly
-                    WHERE target_date = ?
-                    """,
-                    (target.isoformat(),),
-                ).fetchone()
+                # The hourly remaining-heat forecast is a Google artifact and
+                # exists only for the blend city.
+                fetched_row = None
+                if self.city.has_full_blend:
+                    fetched_row = conn.execute(
+                        """
+                        SELECT MAX(fetched_at)
+                        FROM forecast_google_hourly
+                        WHERE target_date = ?
+                        """,
+                        (target.isoformat(),),
+                    ).fetchone()
 
                 latest_observed_at = latest_row[0] if latest_row else None
                 latest_temp_f = _maybe_float(latest_row[1]) if latest_row else None
@@ -297,6 +321,100 @@ class SfoForecasterAdapter:
             },
         )
 
+    def _latest_emos_snapshot(self, target: date) -> ForecastSnapshot | None:
+        """Build a ForecastSnapshot from the freshest live EMOS row for a city.
+
+        The EMOS Gaussian is the city's forecast: mu is the point, sigma rides
+        along in ``raw`` for the distribution override, and the cross-model NWP
+        spread fills the source-disagreement gate. Freshest row wins across
+        leads (the live serve writes each rolling target at its true lead).
+        """
+
+        if not self.weather_db.exists():
+            return None
+        query = """
+            SELECT predicted_high_f, sigma_f, n_models, model_spread_f,
+                   fetched_at, method, lead_days
+            FROM forecast_emos_daily_high
+            WHERE station_id = ? AND target_date = ?
+            ORDER BY fetched_at DESC
+            LIMIT 1
+        """
+        try:
+            with sqlite3.connect(self.weather_db) as conn:
+                if not _table_exists(conn, "forecast_emos_daily_high"):
+                    return None
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(forecast_emos_daily_high)")
+                }
+                if "station_id" not in columns:
+                    return None
+                row = conn.execute(query, (self.station_id, target.isoformat())).fetchone()
+        except sqlite3.Error as exc:
+            raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
+        if row is None:
+            return None
+        mu, sigma, n_models, model_spread, fetched_at, method, lead_days = row
+        return ForecastSnapshot(
+            target_date=target,
+            predicted_high_f=float(mu),
+            station_id=self.station_id,
+            fetched_at=fetched_at,
+            lead_hours=float(lead_days) * 24.0 if lead_days is not None else None,
+            method=f"{method or 'emos'} (live NWP ensemble)",
+            source_count=int(n_models or 0),
+            source_spread_override_f=(
+                float(model_spread) if model_spread is not None else None
+            ),
+            raw={
+                "source": "forecast_emos_daily_high",
+                "emos": {
+                    "mu": float(mu),
+                    "sigma": float(sigma),
+                    "n_models": n_models,
+                    "model_spread_f": model_spread,
+                    "lead_days": lead_days,
+                },
+            },
+        )
+
+    def load_emos_outcomes(self) -> list[ForecastOutcome]:
+        """Scored rolling-origin EMOS outcomes for this station.
+
+        Each row is the out-of-sample EMOS prediction joined with the CLI
+        settlement -- the same leakage-free record the postproc backtests
+        score, reused as the residual-calibration history for cities that have
+        no blend/LSTM archive.
+        """
+
+        if not self.weather_db.exists():
+            raise ForecastDataError(f"Missing forecast archive: {self.weather_db}")
+        query = """
+            SELECT target_date, predicted_high_f, actual_high_f
+            FROM forecast_emos_daily_high
+            WHERE station_id = ? AND source = 'rolling_origin' AND lead_days = 1
+              AND actual_high_f IS NOT NULL
+            ORDER BY target_date
+        """
+        try:
+            with sqlite3.connect(self.weather_db) as conn:
+                if not _table_exists(conn, "forecast_emos_daily_high"):
+                    return []
+                rows = conn.execute(query, (self.station_id,)).fetchall()
+        except sqlite3.Error as exc:
+            raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
+        return [
+            ForecastOutcome(
+                local_date=date.fromisoformat(target_date),
+                predicted_high_f=float(mu),
+                actual_high_f=_integer_settlement_high_f(actual),
+                model_name="emos_wmean",
+                station_id=self.station_id,
+            )
+            for target_date, mu, actual in rows
+        ]
+
     def load_lstm_outcomes(self) -> list[ForecastOutcome]:
         if not self.ab_test_path.exists():
             raise ForecastDataError(f"Missing calibration file: {self.ab_test_path}")
@@ -321,6 +439,10 @@ class SfoForecasterAdapter:
         min_clean_blend: int = 30,
     ) -> list[ForecastOutcome]:
         normalized = source.replace("_", "-").lower()
+        if not self.city.has_full_blend:
+            # LSTM/blend archives are SFO-only artifacts; every other city's
+            # calibration record is its scored rolling-origin EMOS history.
+            return self.load_emos_outcomes()
         if normalized == "lstm":
             return self.load_lstm_outcomes()
         if normalized == "clean-blend":
@@ -383,6 +505,29 @@ class SfoForecasterAdapter:
             raise ForecastDataError("No clean next-day blend outcomes are available")
         return outcomes
 
+    def load_cli_settlement_highs(self) -> dict[date, float]:
+        """Archived CLI settlement maxima for this station (weather.db truth).
+
+        This is the same instrument Kalshi settles on (live CLI + IEM archive),
+        unlike the observation-derived daily high below, which runs a few
+        degrees low of the CLI on some days and must not settle orders.
+        """
+
+        if not self.weather_db.exists():
+            return {}
+        with sqlite3.connect(self.weather_db) as conn:
+            if not _table_exists(conn, "cli_settlements"):
+                return {}
+            rows = conn.execute(
+                "SELECT local_date, max_temperature_f FROM cli_settlements "
+                "WHERE station_id = ? AND max_temperature_f IS NOT NULL",
+                (self.station_id,),
+            ).fetchall()
+        return {
+            date.fromisoformat(local_date): float(high)
+            for local_date, high in rows
+        }
+
     def load_ksfo_daily_highs(self) -> dict[date, float]:
         if not self.weather_db.exists():
             return {}
@@ -424,6 +569,24 @@ class SfoForecasterAdapter:
         query = "SELECT target_date, predicted_high_f, sigma_f FROM forecast_emos_daily_high"
         clauses: list[str] = []
         params: list[object] = []
+        try:
+            with sqlite3.connect(self.weather_db) as conn:
+                station_keyed = _table_exists(conn, "forecast_emos_daily_high") and (
+                    "station_id"
+                    in {
+                        row[1]
+                        for row in conn.execute(
+                            "PRAGMA table_info(forecast_emos_daily_high)"
+                        )
+                    }
+                )
+        except sqlite3.Error:
+            return {}
+        if station_keyed:
+            clauses.append("station_id = ?")
+            params.append(self.station_id)
+        elif self.station_id != "KSFO":
+            return {}
         if lead_days is not None:
             clauses.append("lead_days = ?")
             params.append(lead_days)

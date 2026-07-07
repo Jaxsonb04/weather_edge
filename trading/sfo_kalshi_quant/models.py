@@ -16,6 +16,7 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 class ForecastSnapshot:
     target_date: date
     predicted_high_f: float
+    station_id: str = "KSFO"
     fetched_at: str | None = None
     lead_hours: float | None = None
     method: str = "unknown"
@@ -32,6 +33,10 @@ class ForecastSnapshot:
     source_count: int = 0
     max_calls_per_day: int | None = None
     calls_used_today: int | None = None
+    # EMOS-only snapshots have no blend source values; they carry the
+    # cross-model NWP disagreement here so the uncertain-day source-spread gate
+    # keeps meaning the same thing ("how much do independent forecasts differ").
+    source_spread_override_f: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -49,6 +54,8 @@ class ForecastSnapshot:
 
     @property
     def source_spread_f(self) -> float:
+        if self.source_spread_override_f is not None:
+            return float(self.source_spread_override_f)
         values = self.source_values
         if len(values) < 2:
             return 0.0
@@ -75,6 +82,7 @@ class ForecastOutcome:
     predicted_high_f: float
     actual_high_f: float
     model_name: str = "lstm"
+    station_id: str = "KSFO"
 
     @property
     def residual_f(self) -> float:

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .cities import CityConfig, get_city
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SFO_TZ = ZoneInfo("America/Los_Angeles")
-SERIES_TICKER = "KXHIGHTSFO"
+DEFAULT_CITY = get_city("sfo")
+SERIES_TICKER = DEFAULT_CITY.series_ticker
 
 COLD_COHORT = "cold_below_60f"
 NORMAL_COHORT = "normal_60_69f"
@@ -520,6 +522,27 @@ def strategy_config_for_profile(profile: str | None = None) -> StrategyConfig:
     if normalized == "research":
         return StrategyConfig(**{**base.__dict__, **RESEARCH_PROFILE_OVERRIDES})
     raise ValueError("risk profile must be 'live' or 'research'")
+
+
+def config_for_city(config: StrategyConfig, city: CityConfig) -> StrategyConfig:
+    """Adapt a profile's gates to a city's forecast reality.
+
+    Cities without the SFO blend stack trade on the EMOS Gaussian -- their only
+    calibrated distribution -- so ``emos_distribution_enabled`` is forced on.
+    The absolute-F cohort block is evidence-scoped: it encodes SFO's measured
+    warm/hot anti-calibration, and applying it to a hot-climate city (Phoenix
+    is above 80F nearly every summer day) would simply turn that city off, so
+    only cities flagged ``apply_cohort_blocks`` keep it.
+    """
+
+    updates: dict[str, object] = {}
+    if not city.has_full_blend and not config.emos_distribution_enabled:
+        updates["emos_distribution_enabled"] = True
+    if not city.apply_cohort_blocks and config.blocked_forecast_cohorts:
+        updates["blocked_forecast_cohorts"] = ()
+    if not updates:
+        return config
+    return replace(config, **updates)
 
 
 def project_path(*parts: str) -> Path:

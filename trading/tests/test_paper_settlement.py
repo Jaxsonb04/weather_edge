@@ -436,8 +436,8 @@ def test_paper_auto_settle_prefers_clisfo_over_weatheredge_ground_truth():
 
         out = io.StringIO()
         with patch(
-            "sfo_kalshi_quant.cli.fetch_recent_clisfo_settlements",
-            lambda timeout=20: {date(2026, 6, 3): 64},
+            "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+            lambda site, issuedby, timeout=20: {date(2026, 6, 3): 64},
         ), redirect_stdout(out):
             code = main(
                 [
@@ -451,7 +451,7 @@ def test_paper_auto_settle_prefers_clisfo_over_weatheredge_ground_truth():
             )
 
         assert code == 0
-        assert "CLISFO" in out.getvalue()
+        assert "from CLI" in out.getvalue()
         row = store.paper_orders(1)[0]
         assert row["status"] == "PAPER_SETTLED"
         assert row["settlement_high_f"] == 64.0
@@ -462,20 +462,23 @@ def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
         root = Path(tmp) / "forecaster"
         root.mkdir()
         with sqlite3.connect(root / "weather.db") as conn:
+            # The archived-CLI fallback settles from cli_settlements -- the
+            # same instrument Kalshi resolves on -- never from the
+            # observation-derived nws_daily_high table (which runs low).
             conn.execute(
                 """
-                CREATE TABLE nws_daily_high_ground_truth (
+                CREATE TABLE cli_settlements (
                     station_id TEXT,
                     local_date TEXT,
-                    high_f REAL,
-                    is_complete INTEGER
+                    max_temperature_f INTEGER,
+                    fetched_at TEXT,
+                    source TEXT
                 )
                 """
             )
             conn.execute(
                 """
-                INSERT INTO nws_daily_high_ground_truth (station_id, local_date, high_f, is_complete)
-                VALUES ('KSFO', '2026-06-03', 67, 1)
+                INSERT INTO cli_settlements VALUES ('KSFO', '2026-06-03', 67, 't', 'iem_cli')
                 """
             )
         db_path = Path(tmp) / "paper.db"
@@ -506,8 +509,8 @@ def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
 
         out = io.StringIO()
         with patch(
-            "sfo_kalshi_quant.cli.fetch_recent_clisfo_settlements",
-            lambda timeout=20: {},
+            "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+            lambda site, issuedby, timeout=20: {},
         ), redirect_stdout(out):
             code = main(
                 [
@@ -521,7 +524,7 @@ def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
             )
 
         assert code == 0
-        assert "WeatherEdge ground truth" in out.getvalue()
+        assert "archived CLI truth" in out.getvalue()
         row = store.paper_orders(1)[0]
         assert row["status"] == "PAPER_SETTLED"
         assert row["settlement_high_f"] == 67.0

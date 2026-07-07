@@ -469,6 +469,14 @@ class PaperStore:
                 for column, column_type in MONITOR_AUDIT_COLUMNS.items():
                     if column not in existing_monitor:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+            existing_forecast = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(forecast_snapshots)").fetchall()
+            }
+            if "station_id" not in existing_forecast:
+                conn.execute(
+                    "ALTER TABLE forecast_snapshots ADD COLUMN station_id TEXT DEFAULT 'KSFO'"
+                )
             _migrate_legacy_profile_names(conn)
             conn.executescript(INDEXES)
             self._ensure_open_position_guard_index(conn)
@@ -528,13 +536,14 @@ class PaperStore:
             cursor = conn.execute(
                 """
                 INSERT INTO forecast_snapshots (
-                    created_at, target_date, predicted_high_f, fetched_at, method, source_spread_f, raw_json
+                    created_at, target_date, station_id, predicted_high_f, fetched_at, method, source_spread_f, raw_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
                     forecast.target_date.isoformat(),
+                    forecast.station_id,
                     forecast.predicted_high_f,
                     forecast.fetched_at,
                     forecast.method,
@@ -1257,8 +1266,25 @@ class PaperStore:
             reason=reason,
         )
 
-    def paper_spend_for_target(self, target_date: str, *, risk_profile: str | None = None) -> float:
+    def paper_spend_for_target(
+        self,
+        target_date: str,
+        *,
+        risk_profile: str | None = None,
+        series_ticker: str | None = None,
+    ) -> float:
+        """Capital already deployed for one settlement target.
+
+        ``series_ticker`` scopes the cap to one city's event (multi-city scans
+        cap per city-day, not across all fifteen cities sharing one date).
+        """
+
         profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        series_filter = ""
+        series_params: tuple = ()
+        if series_ticker:
+            series_filter = " AND market_ticker LIKE ?"
+            series_params = (f"{series_ticker}-%",)
         with self.connect() as conn:
             # Exclude PAPER_EXPIRED: those are resting limit orders that never
             # crossed and deployed ZERO capital, so they must not consume the
@@ -1271,9 +1297,10 @@ class PaperStore:
                 SELECT COALESCE(SUM(contracts * cost_per_contract), 0)
                 FROM paper_orders
                 WHERE target_date = ? AND status NOT IN ('REJECTED', 'PAPER_EXPIRED')
+                {series_filter}
                 {profile_filter}
                 """,
-                (target_date, *profile_params),
+                (target_date, *series_params, *profile_params),
             ).fetchone()
         return float(row[0] or 0.0)
 
@@ -1506,7 +1533,13 @@ class PaperStore:
                 (*params, limit),
             ).fetchall()
 
-    def settle_paper_orders(self, target_date: str, settlement_high_f: float) -> int:
+    def settle_paper_orders(
+        self,
+        target_date: str,
+        settlement_high_f: float,
+        *,
+        series_ticker: str | None = None,
+    ) -> int:
         # Resolve bins against the integer °F Kalshi settles on, never a
         # fractional NWS/provisional high. Without this, a true high of 65.4
         # would settle the 65-or-below bin differently than Kalshi does, and a
@@ -1516,6 +1549,13 @@ class PaperStore:
         settlement_high_f = _integer_settlement_high_f(settlement_high_f)
         settled_at = _now()
         settled = 0
+        series_filter = ""
+        series_params: tuple = ()
+        if series_ticker:
+            # A settlement high is one station's number; it must never resolve
+            # another city's bins that happen to share the calendar date.
+            series_filter = " AND market_ticker LIKE ?"
+            series_params = (f"{series_ticker}-%",)
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             # Reserve the writer slot BEFORE reading the unsettled rows so the
@@ -1533,8 +1573,8 @@ class PaperStore:
                 SELECT *
                 FROM paper_orders
                 WHERE target_date = ? AND status = 'PAPER_FILLED' AND settled_at IS NULL
-                """,
-                (target_date,),
+                """ + series_filter,
+                (target_date, *series_params),
             ).fetchall()
             # Resting limit orders that never crossed before this target
             # resolved can never fill now. Expire them (zero PnL) so they stop
@@ -1548,8 +1588,8 @@ class PaperStore:
                   AND status = 'PAPER_LIMIT_RESTING'
                   AND settled_at IS NULL
                   AND closed_at IS NULL
-                """,
-                (target_date,),
+                """ + series_filter,
+                (target_date, *series_params),
             ).fetchall()
             for row in resting_rows:
                 outcome_json = json.dumps(
@@ -1760,18 +1800,21 @@ class PaperStore:
                 params,
             ).fetchall()
 
-    def open_paper_target_dates(self) -> list[str]:
+    def open_paper_target_dates(self, *, series_ticker: str | None = None) -> list[str]:
+        query = """
+            SELECT DISTINCT target_date
+            FROM paper_orders
+            WHERE status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+              AND settled_at IS NULL
+              AND closed_at IS NULL
+        """
+        params: tuple = ()
+        if series_ticker:
+            query += " AND market_ticker LIKE ?"
+            params = (f"{series_ticker}-%",)
+        query += " ORDER BY target_date"
         with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT DISTINCT target_date
-                FROM paper_orders
-                WHERE status = 'PAPER_FILLED'
-                  AND settled_at IS NULL
-                  AND closed_at IS NULL
-                ORDER BY target_date
-                """
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [str(row[0]) for row in rows]
 
     def market_backtest_summary(

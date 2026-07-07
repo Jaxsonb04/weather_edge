@@ -14,12 +14,14 @@ from .backtest import run_walk_forward_calibration_backtest
 from .backtest_rescore import run_rescore
 from .arbitrage import ArbitrageOpportunity, build_arbitrage_opportunities
 from .colors import Color
+from .cities import CITIES, CityConfig, get_city, parse_city_slugs
 from .config import (
     DEFAULT_DB_PATH,
     DEFAULT_FORECASTER_ROOT,
     SFO_TZ,
     SERIES_TICKER,
     StrategyConfig,
+    config_for_city,
     normalize_risk_profile_name,
     strategy_config_for_profile,
 )
@@ -74,8 +76,8 @@ from .report import build_daily_report, write_report
 from .posterior_kelly import load_posterior_kelly_model
 from .risk import TradeEvaluator
 from .settlement_day import settlement_clock, settlement_today
-from .settlement import fetch_latest_clisfo, fetch_recent_clisfo_settlements
-from .standard_bins import standard_sfo_bins
+from .settlement import fetch_latest_clisfo, fetch_recent_cli_settlements, fetch_recent_clisfo_settlements
+from .standard_bins import fallback_bins
 from .strategy_research import build_strategy_research, write_strategy_research
 from .summary import build_paper_summary, write_paper_summary, write_paper_summary_csv
 from .synthetic_blend import build_synthetic_blend_calibration, write_synthetic_blend_calibration
@@ -112,6 +114,14 @@ def _default_calibration_source() -> str:
     """
 
     return os.getenv("SFO_TRADING_SIGNAL_CALIBRATION_SOURCE", "lstm")
+
+
+def _default_cities() -> str:
+    return os.getenv("PAPER_CITIES", "all")
+
+
+def _cities_for_args(args: argparse.Namespace) -> tuple[CityConfig, ...]:
+    return parse_city_slugs(getattr(args, "cities", None) or _default_cities())
 
 
 def _default_paper_entry_mode() -> str:
@@ -158,7 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(required=True)
 
-    analyze = sub.add_parser("analyze", help="Rank current/paper SFO market opportunities")
+    analyze = sub.add_parser("analyze", help="Rank current/paper market opportunities across cities")
+    analyze.add_argument(
+        "--cities",
+        default=None,
+        help="'all' or comma-separated city slugs (default: env PAPER_CITIES or all)",
+    )
     analyze.add_argument(
         "--target-date",
         default="tomorrow",
@@ -234,6 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
         "tail-basket",
         help="Build a forecast-centered paper basket: far-tail NOs plus a small center YES",
     )
+    basket.add_argument("--city", default="sfo", help="city slug (single city)")
     basket.add_argument(
         "--target-date",
         default="rolling",
@@ -332,6 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
         "arbitrage",
         help="Scan active daily temperature bins for paper-only arbitrage portfolios",
     )
+    arbitrage.add_argument("--city", default="sfo", help="city slug (single city)")
     arbitrage.add_argument(
         "--target-date",
         default="rolling",
@@ -363,6 +380,11 @@ def build_parser() -> argparse.ArgumentParser:
     portfolio = sub.add_parser(
         "portfolio-scan",
         help="Run the shared portfolio allocator for AWS paper placement",
+    )
+    portfolio.add_argument(
+        "--cities",
+        default=None,
+        help="'all' or comma-separated city slugs (default: env PAPER_CITIES or all)",
     )
     portfolio.add_argument(
         "--target-date",
@@ -432,6 +454,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     collect = sub.add_parser("collect", help="Fetch and store live Kalshi event plus forecast snapshot")
     collect.add_argument("--target-date", default="today", help="today, tomorrow, both, comma-list, or YYYY-MM-DD")
+    collect.add_argument(
+        "--cities",
+        default=None,
+        help="'all' or comma-separated city slugs (default: env PAPER_CITIES or all)",
+    )
     collect.set_defaults(func=cmd_collect)
 
     dataset_backfill = sub.add_parser(
@@ -778,16 +805,22 @@ def build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--dry-run", action="store_true", help="Print actions without closing paper positions")
     monitor.set_defaults(func=cmd_paper_monitor)
 
-    settle = sub.add_parser("paper-settle", help="Settle paper orders for a date with final CLISFO high")
+    settle = sub.add_parser("paper-settle", help="Settle one city's paper orders for a date with its final CLI high")
     settle.add_argument("--target-date", required=True)
     settle.add_argument("--settlement-high", type=float, required=True)
+    settle.add_argument("--city", default="sfo", help="city slug whose orders this high settles")
     settle.set_defaults(func=cmd_paper_settle)
 
     auto_settle = sub.add_parser(
         "paper-auto-settle",
-        help="Settle open paper orders from CLISFO, with WeatherEdge ground truth as a fallback",
+        help="Settle open paper orders per city from its live CLI report, archived CLI truth as fallback",
     )
-    auto_settle.add_argument("--timeout", type=int, default=20, help="Seconds to wait for CLISFO")
+    auto_settle.add_argument("--timeout", type=int, default=20, help="Seconds to wait per CLI product")
+    auto_settle.add_argument(
+        "--cities",
+        default=None,
+        help="'all' or comma-separated city slugs (default: env PAPER_CITIES or all)",
+    )
     auto_settle.set_defaults(func=cmd_paper_auto_settle)
 
     market_backtest = sub.add_parser("backtest-market", help="Summarize settled paper-trading PnL")
@@ -869,46 +902,76 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     if args.paper_stake is not None and args.daily_budget is not None:
         raise ValueError("use either --paper-stake or --daily-budget, not both")
-    config = _config(args)
+    base_config = _config(args)
     kalshi_client = KalshiPublicClient()
-    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client)
-    if not targets:
-        print(color.yellow("no eligible target dates found"))
-        return 0
-    adapter = SfoForecasterAdapter(args.forecaster_root)
-    outcomes = adapter.load_calibration_outcomes(args.calibration_source)
-    calibrator = ResidualCalibrator(outcomes, config)
     store = PaperStore(args.db_path)
-
-    for idx, target in enumerate(targets):
-        if idx:
+    scanned_any = False
+    for city_idx, city in enumerate(_cities_for_args(args)):
+        if city_idx:
             print("")
-            print("=" * 92)
+            print("#" * 92)
             print("")
-        _analyze_one_target(
-            args,
-            target,
-            adapter,
-            calibrator,
-            config,
-            store,
-            color,
-            event_hint=live_events_by_target.get(target),
-            event_lookup_done=target in live_events_by_target,
-            kalshi_client=kalshi_client,
+        config = config_for_city(base_config, city)
+        targets, live_events_by_target = _resolve_analysis_targets(
+            args, color, kalshi_client, city
         )
+        if not targets:
+            print(color.yellow(f"[{city.slug}] no eligible target dates found"))
+            continue
+        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
+        # Fail-soft per city: a city with no calibration history yet (archive
+        # still backfilling) or a stale forecast must not stall the other
+        # fourteen books.
+        try:
+            outcomes = adapter.load_calibration_outcomes(args.calibration_source)
+            calibrator = ResidualCalibrator(outcomes, config)
+        except (ForecastDataError, ValueError) as exc:
+            print(
+                color.yellow(f"[{city.slug}] skipped: calibration unavailable ({exc})"),
+                file=sys.stderr,
+            )
+            continue
+
+        for idx, target in enumerate(targets):
+            if idx:
+                print("")
+                print("=" * 92)
+                print("")
+            try:
+                _analyze_one_target(
+                    args,
+                    target,
+                    adapter,
+                    calibrator,
+                    config,
+                    store,
+                    color,
+                    city=city,
+                    event_hint=live_events_by_target.get(target),
+                    event_lookup_done=target in live_events_by_target,
+                    kalshi_client=kalshi_client,
+                )
+                scanned_any = True
+            except ForecastDataError as exc:
+                print(
+                    color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
+                    file=sys.stderr,
+                )
+    if not scanned_any:
+        print(color.yellow("no city produced an analyzable target"))
     return 0
 
 
 def cmd_tail_basket(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
-    config = _config(args)
+    city = get_city(getattr(args, "city", None) or "sfo")
+    config = config_for_city(_config(args), city)
     kalshi_client = KalshiPublicClient()
-    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client)
+    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client, city)
     if not targets:
         print(color.yellow("no eligible target dates found"))
         return 0
-    adapter = SfoForecasterAdapter(args.forecaster_root)
+    adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
     outcomes = adapter.load_calibration_outcomes(args.calibration_source)
     calibrator = ResidualCalibrator(outcomes, config)
     store = PaperStore(args.db_path)
@@ -926,6 +989,7 @@ def cmd_tail_basket(args: argparse.Namespace) -> int:
             config,
             store,
             color,
+            city=city,
             event_hint=live_events_by_target.get(target),
             event_lookup_done=target in live_events_by_target,
             kalshi_client=kalshi_client,
@@ -935,9 +999,10 @@ def cmd_tail_basket(args: argparse.Namespace) -> int:
 
 def cmd_arbitrage(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
-    config = _config(args)
+    city = get_city(getattr(args, "city", None) or "sfo")
+    config = config_for_city(_config(args), city)
     kalshi_client = KalshiPublicClient()
-    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client)
+    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client, city)
     if not targets:
         print(color.yellow("no eligible target dates found"))
         return 0
@@ -954,6 +1019,7 @@ def cmd_arbitrage(args: argparse.Namespace) -> int:
             config,
             store,
             color,
+            city=city,
             event_hint=live_events_by_target.get(target),
             event_lookup_done=target in live_events_by_target,
             kalshi_client=kalshi_client,
@@ -963,34 +1029,60 @@ def cmd_arbitrage(args: argparse.Namespace) -> int:
 
 def cmd_portfolio_scan(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
-    config = _config(args)
+    base_config = _config(args)
     kalshi_client = KalshiPublicClient()
-    targets, live_events_by_target = _resolve_analysis_targets(args, color, kalshi_client)
-    if not targets:
-        print(color.yellow("no eligible target dates found"))
-        return 0
-    adapter = SfoForecasterAdapter(args.forecaster_root)
-    outcomes = adapter.load_calibration_outcomes(args.calibration_source)
-    calibrator = ResidualCalibrator(outcomes, config)
     store = PaperStore(args.db_path)
-
-    for idx, target in enumerate(targets):
-        if idx:
+    scanned_any = False
+    for city_idx, city in enumerate(_cities_for_args(args)):
+        if city_idx:
             print("")
-            print("=" * 92)
+            print("#" * 92)
             print("")
-        _portfolio_scan_one_target(
-            args,
-            target,
-            adapter,
-            calibrator,
-            config,
-            store,
-            color,
-            event_hint=live_events_by_target.get(target),
-            event_lookup_done=target in live_events_by_target,
-            kalshi_client=kalshi_client,
+        config = config_for_city(base_config, city)
+        targets, live_events_by_target = _resolve_analysis_targets(
+            args, color, kalshi_client, city
         )
+        if not targets:
+            print(color.yellow(f"[{city.slug}] no eligible target dates found"))
+            continue
+        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
+        try:
+            outcomes = adapter.load_calibration_outcomes(args.calibration_source)
+            calibrator = ResidualCalibrator(outcomes, config)
+        except (ForecastDataError, ValueError) as exc:
+            print(
+                color.yellow(f"[{city.slug}] skipped: calibration unavailable ({exc})"),
+                file=sys.stderr,
+            )
+            continue
+
+        for idx, target in enumerate(targets):
+            if idx:
+                print("")
+                print("=" * 92)
+                print("")
+            try:
+                _portfolio_scan_one_target(
+                    args,
+                    target,
+                    adapter,
+                    calibrator,
+                    config,
+                    store,
+                    color,
+                    city=city,
+                    event_hint=live_events_by_target.get(target),
+                    event_lookup_done=target in live_events_by_target,
+                    kalshi_client=kalshi_client,
+                )
+                scanned_any = True
+            except ForecastDataError as exc:
+                print(
+                    color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
+                    file=sys.stderr,
+                )
+    if not scanned_any:
+        print(color.yellow("no city produced a scannable target"))
     return 0
 
 
@@ -998,14 +1090,16 @@ def _resolve_analysis_targets(
     args: argparse.Namespace,
     color: Color,
     kalshi_client: KalshiPublicClient,
+    city: CityConfig | None = None,
 ) -> tuple[list[date], dict[date, EventSnapshot]]:
+    series_ticker = city.series_ticker if city is not None else SERIES_TICKER
     clock_targets = parse_target_dates(args.target_date)
     if args.offline_events or args.target_date != "rolling":
         return clock_targets, {}
 
     try:
         events = kalshi_client.list_event_snapshots(
-            series_ticker=SERIES_TICKER,
+            series_ticker=series_ticker,
             limit=20,
             with_nested_markets=True,
         )
@@ -1028,15 +1122,15 @@ def _resolve_analysis_targets(
         )
         return clock_targets, {}
 
-    targets, events_by_target = _rolling_live_event_targets(events)
+    targets, events_by_target = _rolling_live_event_targets(events, city=city)
     if targets:
         return targets, events_by_target
 
     if args.place_paper:
         print(
             color.yellow(
-                "warning: no active Kalshi KXHIGHTSFO events found; skipping paper scan "
-                "instead of using clock-derived target dates"
+                f"warning: no active Kalshi {series_ticker} events found; skipping paper "
+                "scan instead of using clock-derived target dates"
             ),
             file=sys.stderr,
         )
@@ -1103,10 +1197,11 @@ def _rolling_live_event_targets(
     *,
     now: datetime | None = None,
     max_targets: int | None = None,
+    city: CityConfig | None = None,
 ) -> tuple[list[date], dict[date, EventSnapshot]]:
     if max_targets is None:
         max_targets = _rolling_targets_count()
-    local_now = settlement_clock(now)
+    local_now = settlement_clock(now, city)
     today = local_now.date()
     min_target = today
     if local_now.hour >= _same_day_entry_cutoff_hour():
@@ -1132,17 +1227,20 @@ def _analyze_one_target(
     store: PaperStore,
     color: Color,
     *,
+    city: CityConfig | None = None,
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
 ) -> None:
+    city = city or get_city("sfo")
+    series_ticker = city.series_ticker
     forecast = adapter.latest_blend(target)
     _enforce_live_forecast_freshness(forecast, config)
-    intraday = _intraday_for_target(args, target, adapter)
+    intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
-    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color)
+    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
     event = event_hint
     if event_lookup_done:
         pass
@@ -1152,7 +1250,7 @@ def _analyze_one_target(
     else:
         try:
             client = kalshi_client or KalshiPublicClient()
-            event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
+            event = client.find_event_by_date(target, series_ticker=series_ticker)
         except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
             event = None
@@ -1161,7 +1259,10 @@ def _analyze_one_target(
         markets = event.active_markets or event.markets
         event_title = event.title
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
+        markets = fallback_bins(
+            f"{series_ticker}-{format_event_date_token(target)}-PAPER",
+            forecast.predicted_high_f,
+        )
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
     # lead_days=None: the live serve writes each rolling target at its TRUE lead
@@ -1212,7 +1313,9 @@ def _analyze_one_target(
             entry_allowed = False
             entry_block_reason = "paper entry disabled: Kalshi event has no active markets"
         else:
-            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(target, forecast, intraday)
+            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
+                target, forecast, intraday, city=city
+            )
     if args.place_paper and entry_allowed:
         pause_reason = store.paper_entry_pause_reason(
             risk_profile,
@@ -1227,6 +1330,7 @@ def _analyze_one_target(
         config,
         risk_profile=risk_profile,
         entry_mode=args.paper_entry_mode,
+        series_ticker=series_ticker,
     )
     display_decisions = paper_trader.with_paper_stakes(decisions, args.paper_stake)
     daily_budget_remaining = None
@@ -1298,17 +1402,20 @@ def _portfolio_scan_one_target(
     store: PaperStore,
     color: Color,
     *,
+    city: CityConfig | None = None,
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
 ) -> None:
+    city = city or get_city("sfo")
+    series_ticker = city.series_ticker
     forecast = adapter.latest_blend(target)
     _enforce_live_forecast_freshness(forecast, config)
-    intraday = _intraday_for_target(args, target, adapter)
+    intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
-    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color)
+    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
     event = event_hint
     if event_lookup_done:
         pass
@@ -1318,7 +1425,7 @@ def _portfolio_scan_one_target(
     else:
         try:
             client = kalshi_client or KalshiPublicClient()
-            event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
+            event = client.find_event_by_date(target, series_ticker=series_ticker)
         except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
             event = None
@@ -1328,7 +1435,10 @@ def _portfolio_scan_one_target(
         event_title = event.title
         market_available = True
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
+        markets = fallback_bins(
+            f"{series_ticker}-{format_event_date_token(target)}-PAPER",
+            forecast.predicted_high_f,
+        )
         event_title = "No live Kalshi event found; portfolio scan is research-only"
         market_available = False
 
@@ -1389,12 +1499,15 @@ def _portfolio_scan_one_target(
             entry_allowed = False
             entry_block_reason = "paper portfolio disabled: Kalshi event has no active markets"
         else:
-            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(target, forecast, intraday)
+            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
+                target, forecast, intraday, city=city
+            )
     paper_trader = PaperTrader(
         store,
         config,
         risk_profile=risk_profile,
         entry_mode=args.paper_entry_mode,
+        series_ticker=series_ticker,
     )
     if args.place_paper and entry_allowed:
         pause_reason = store.paper_entry_pause_reason(
@@ -1482,10 +1595,13 @@ def _arbitrage_one_target(
     store: PaperStore,
     color: Color,
     *,
+    city: CityConfig | None = None,
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
 ) -> None:
+    city = city or get_city("sfo")
+    series_ticker = city.series_ticker
     event = event_hint
     if event_lookup_done:
         pass
@@ -1495,7 +1611,7 @@ def _arbitrage_one_target(
     else:
         try:
             client = kalshi_client or KalshiPublicClient()
-            event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
+            event = client.find_event_by_date(target, series_ticker=series_ticker)
         except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); no active ladder available"), file=sys.stderr)
             event = None
@@ -1505,7 +1621,11 @@ def _arbitrage_one_target(
         event_title = event.title
         market_available = True
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
+        # Arbitrage needs live prices; the synthetic ladder only keeps the
+        # research record shaped. Center is irrelevant to the empty book.
+        markets = fallback_bins(
+            f"{series_ticker}-{format_event_date_token(target)}-PAPER", 70.0
+        )
         event_title = "No live Kalshi event found; arbitrage scan is research-only"
         market_available = False
 
@@ -1582,17 +1702,20 @@ def _tail_basket_one_target(
     store: PaperStore,
     color: Color,
     *,
+    city: CityConfig | None = None,
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
 ) -> None:
+    city = city or get_city("sfo")
+    series_ticker = city.series_ticker
     forecast = adapter.latest_blend(target)
     _enforce_live_forecast_freshness(forecast, config)
-    intraday = _intraday_for_target(args, target, adapter)
+    intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
-    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color)
+    ensemble = _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
     event = event_hint
     if event_lookup_done:
         pass
@@ -1602,7 +1725,7 @@ def _tail_basket_one_target(
     else:
         try:
             client = kalshi_client or KalshiPublicClient()
-            event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
+            event = client.find_event_by_date(target, series_ticker=series_ticker)
         except (URLError, OSError) as exc:
             print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
             event = None
@@ -1611,7 +1734,10 @@ def _tail_basket_one_target(
         markets = event.active_markets or event.markets
         event_title = event.title
     else:
-        markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
+        markets = fallback_bins(
+            f"{series_ticker}-{format_event_date_token(target)}-PAPER",
+            forecast.predicted_high_f,
+        )
         event_title = "No live Kalshi event found; probability-only fallback ladder"
 
     # lead_days=None: the live serve writes each rolling target at its TRUE lead
@@ -1728,11 +1854,14 @@ def _ensemble_for_target(
     target,
     station_center_high_f: float,
     color: Color,
+    city: CityConfig | None = None,
 ) -> EnsembleSnapshot | None:
     if args.no_ensemble:
         return None
     try:
-        return SfoEnsembleClient(timeout=args.ensemble_timeout).station_aligned_snapshot(
+        return SfoEnsembleClient(
+            timeout=args.ensemble_timeout, city=city
+        ).station_aligned_snapshot(
             target,
             station_center_high_f,
         )
@@ -1748,8 +1877,9 @@ def _intraday_for_target(
     args: argparse.Namespace,
     target,
     adapter: SfoForecasterAdapter,
+    city: CityConfig | None = None,
 ) -> IntradaySnapshot | None:
-    today = parse_target_date("today")
+    today = settlement_today(None, city)
     if target != today:
         return None
     intraday = adapter.intraday_snapshot(target)
@@ -1773,6 +1903,7 @@ def _paper_entry_gate_for_target(
     forecast,
     intraday: IntradaySnapshot | None,
     *,
+    city: CityConfig | None = None,
     now: datetime | None = None,
 ) -> tuple[bool, str | None]:
     # A single-source forecast (Google-cache fallback when the multi-source
@@ -1784,7 +1915,7 @@ def _paper_entry_gate_for_target(
             "paper entry disabled: single-source forecast (no multi-source "
             "corroboration); disagreement gate and sigma widening cannot engage"
         )
-    local_now = settlement_clock(now)
+    local_now = settlement_clock(now, city)
     if target != local_now.date():
         return True, None
     if intraday is not None and intraday.is_complete:
@@ -1888,13 +2019,23 @@ def _same_day_entry_cutoff_hour() -> int:
 
 def cmd_collect(args: argparse.Namespace) -> int:
     targets = parse_target_dates(args.target_date)
-    adapter = SfoForecasterAdapter(args.forecaster_root)
     client = KalshiPublicClient()
     store = PaperStore(args.db_path)
+    for city in _cities_for_args(args):
+        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
+        _collect_one_city(args, city, adapter, client, store, targets)
+    return 0
+
+
+def _collect_one_city(args, city, adapter, client, store, targets) -> None:
     for target in targets:
-        forecast = adapter.latest_blend(target)
         try:
-            event = client.find_event_by_date(target, series_ticker=SERIES_TICKER)
+            forecast = adapter.latest_blend(target)
+        except ForecastDataError as exc:
+            print(f"warning: [{city.slug}] no forecast for {target.isoformat()} ({exc})", file=sys.stderr)
+            continue
+        try:
+            event = client.find_event_by_date(target, series_ticker=city.series_ticker)
         except (URLError, OSError) as exc:
             print(f"warning: live Kalshi lookup failed for {target.isoformat()} ({exc})", file=sys.stderr)
             event = None
@@ -1907,7 +2048,6 @@ def cmd_collect(args: argparse.Namespace) -> int:
             print(f"stored market snapshot {market_id} for {event.event_ticker}")
         else:
             print("no Kalshi event found for that date yet")
-    return 0
 
 
 def cmd_dataset_backfill(args: argparse.Namespace) -> int:
@@ -2711,84 +2851,114 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
 def cmd_paper_settle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     target = parse_target_date(args.target_date)
+    city = get_city(getattr(args, "city", None) or "sfo")
     store = PaperStore(args.db_path)
-    count = store.settle_paper_orders(target.isoformat(), args.settlement_high)
-    print(color.cyan(f"settled {count} paper orders for {target.isoformat()} at {args.settlement_high:.0f}F"))
+    count = store.settle_paper_orders(
+        target.isoformat(), args.settlement_high, series_ticker=city.series_ticker
+    )
+    print(
+        color.cyan(
+            f"[{city.slug}] settled {count} paper orders for {target.isoformat()} "
+            f"at {args.settlement_high:.0f}F"
+        )
+    )
     return 0
 
 
 def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
-    open_targets = _completed_open_target_dates(store.open_paper_target_dates())
-    if not open_targets:
+    cities = _cities_for_args(args)
+    any_open = False
+    clisfo_settled = 0
+    db_settled = 0
+    for city in cities:
+        open_targets = _completed_open_target_dates(
+            store.open_paper_target_dates(series_ticker=city.series_ticker),
+            city=city,
+        )
+        if not open_targets:
+            continue
+        any_open = True
+        # Primary truth: the city's live CLI product (same instrument Kalshi
+        # settles on), corrected finals shadowing preliminaries.
+        try:
+            cli_settlements = {
+                target.isoformat(): high
+                for target, high in fetch_recent_cli_settlements(
+                    city.cli_site, city.cli_issuedby, timeout=args.timeout
+                ).items()
+            }
+        except (OSError, TimeoutError, URLError) as exc:
+            cli_settlements = {}
+            print(
+                color.yellow(
+                    f"[{city.slug}] recent CLI settlement lookup skipped: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            )
+        for target_date in open_targets:
+            if target_date not in cli_settlements:
+                continue
+            count = store.settle_paper_orders(
+                target_date,
+                float(cli_settlements[target_date]),
+                series_ticker=city.series_ticker,
+            )
+            clisfo_settled += count
+            if count:
+                print(
+                    color.cyan(
+                        f"[{city.slug}] settled {count} paper orders for {target_date} from CLI"
+                    )
+                )
+
+        # Fallback truth: the settlement store in weather.db (IEM/CLI archive).
+        remaining = _completed_open_target_dates(
+            store.open_paper_target_dates(series_ticker=city.series_ticker),
+            city=city,
+        )
+        if not remaining:
+            continue
+        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
+        settlements = {
+            target.isoformat(): high
+            for target, high in adapter.load_cli_settlement_highs().items()
+        }
+        for target_date in remaining:
+            if target_date not in settlements:
+                continue
+            count = store.settle_paper_orders(
+                target_date,
+                settlements[target_date],
+                series_ticker=city.series_ticker,
+            )
+            db_settled += count
+            if count:
+                print(
+                    color.cyan(
+                        f"[{city.slug}] settled {count} paper orders for {target_date} "
+                        "from archived CLI truth"
+                    )
+                )
+    if not any_open:
         print(color.yellow("auto-settle skipped: no completed open paper target dates"))
         return 0
-    clisfo_settled = 0
-    try:
-        clisfo_settlements = {
-            target.isoformat(): high
-            for target, high in fetch_recent_clisfo_settlements(timeout=args.timeout).items()
-        }
-    except (OSError, TimeoutError, URLError) as exc:
-        clisfo_settlements = {}
-        print(color.yellow(f"recent CLISFO settlement lookup skipped: {type(exc).__name__}: {exc}"))
-    for target_date in open_targets:
-        if target_date not in clisfo_settlements:
-            continue
-        count = store.settle_paper_orders(target_date, float(clisfo_settlements[target_date]))
-        clisfo_settled += count
-        if count:
-            print(color.cyan(f"settled {count} paper orders for {target_date} from CLISFO"))
-    if clisfo_settled and not _completed_open_target_dates(store.open_paper_target_dates()):
-        print(color.cyan(f"auto-settled {clisfo_settled} paper orders from CLISFO"))
-        return 0
-
-    adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = {target.isoformat(): high for target, high in adapter.load_ksfo_daily_highs().items()}
-    db_settled = 0
-    for target_date in store.open_paper_target_dates():
-        if target_date not in open_targets:
-            continue
-        if target_date not in settlements:
-            continue
-        count = store.settle_paper_orders(target_date, settlements[target_date])
-        db_settled += count
-        if count:
-            print(color.cyan(f"settled {count} paper orders for {target_date} from WeatherEdge ground truth"))
-    if db_settled and not _completed_open_target_dates(store.open_paper_target_dates()):
-        print(
-            color.cyan(
-                f"auto-settled {clisfo_settled + db_settled} paper orders "
-                "from CLISFO/WeatherEdge ground truth"
-            )
-        )
-        return 0
-
-    try:
-        report = fetch_latest_clisfo(timeout=args.timeout)
-    except (OSError, TimeoutError, URLError) as exc:
-        print(color.yellow(f"CLISFO settlement lookup skipped: {type(exc).__name__}: {exc}"))
-        return 0
-    if report.report_date is None or report.max_temperature_f is None:
-        print(color.yellow("CLISFO settlement lookup skipped: report date or max temperature missing"))
-        return 0
-    if report.report_date.isoformat() not in _completed_open_target_dates(store.open_paper_target_dates()):
-        print(color.yellow("CLISFO settlement skipped: latest report does not match a completed open target"))
-        return 0
-    count = store.settle_paper_orders(report.report_date.isoformat(), float(report.max_temperature_f))
-    print(
-        color.cyan(
-            f"auto-settled {clisfo_settled + db_settled + count} paper orders; "
-            f"latest CLISFO {report.report_date.isoformat()} at {report.max_temperature_f}F "
-            f"settled {count}"
-        )
-    )
+    total = clisfo_settled + db_settled
+    if total:
+        print(color.cyan(f"auto-settled {total} paper orders across cities"))
+    else:
+        print(color.yellow("auto-settle: completed open targets remain but no CLI truth is available yet"))
     return 0
 
 
-def _completed_open_target_dates(target_dates: list[str], *, now: datetime | None = None) -> list[str]:
-    local_today = settlement_today(now)
+def _completed_open_target_dates(
+    target_dates: list[str],
+    *,
+    now: datetime | None = None,
+    city: CityConfig | None = None,
+) -> list[str]:
+    local_today = settlement_today(now, city)
     completed = []
     for target_date in target_dates:
         try:
