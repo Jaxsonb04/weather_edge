@@ -1,19 +1,40 @@
 # WeatherEdge
 
-WeatherEdge is a unified SFO weather forecasting and Kalshi paper-trading
-research project. It combines a station-aligned SFO forecaster, Google/NWS/
-Open-Meteo blend, Kalshi market probability engine, paper-trading journal,
-AWS deployment scripts, and a React single-page dashboard published to
-GitHub Pages.
+WeatherEdge is a unified weather forecasting and Kalshi paper-trading research
+project covering fifteen US city daily-high markets, with SFO as the flagship.
+It combines a station-aligned SFO forecaster with its Google/NWS/Open-Meteo
+blend, a station-agnostic NWP→EMOS pipeline for the other fourteen cities, a
+Kalshi market probability engine, paper-trading journal, AWS deployment
+scripts, and a React single-page dashboard published to GitHub Pages.
 
 **Safety rule:** this project is paper trading only. It uses real Kalshi market
 prices for research, but it does not place live real-money orders.
+
+## Cities
+
+The city registry is `forecaster/cities.py`, duplicated byte-identically as
+`trading/sfo_kalshi_quant/cities.py` (a parity test enforces this). Each entry
+defines the slug, name, Kalshi series ticker, NWS settlement station, CLI
+product (site + issuedby), lat/lon, civil timezone, and fixed standard-time UTC
+offset. Every market settles on its own NWS Climatological Report (CLI), and
+each city's climate day runs midnight-to-midnight in local standard time.
+
+Forecasting is two-tier:
+
+- **SFO** keeps the full legacy blend: Google Weather (budgeted), LSTM,
+  marine-layer features, plus the NWP/EMOS archive.
+- **All other cities** run the station-agnostic NWP→EMOS→CLI path only:
+  Open-Meteo previous-runs archive (9 models, leads 1-3), rolling-origin EMOS
+  per city, and settlement truth in the station-keyed `cli_settlements` table
+  fed by live CLI scans plus the IEM archive backfill
+  (`forecaster/city_truth.py`).
 
 ## What Is Here
 
 ```text
 WeatherEdge/
-  forecaster/   KSFO weather pipeline, forecast blend, NWP/EMOS archive
+  forecaster/   weather pipeline: SFO blend, multi-city NWP/EMOS archive,
+                cities.py registry, CLI settlement truth
   trading/      Kalshi probability, risk gates, CLI, paper journal, AWS scripts
   src/          React SPA (the public site), built with bun + Vite
   docs/         unified guides, glossary, sync/deploy notes
@@ -47,10 +68,13 @@ It runs the WeatherEdge health check, trading tests, and Python compile check.
 Warnings about Git not being initialized or Semgrep not being installed are
 informational until you decide to turn those on.
 
-Analyze today and tomorrow with paper-trading gates:
+Analyze today and tomorrow with paper-trading gates. The loop covers all
+fifteen registered cities by default (env `PAPER_CITIES`, default `all`); pass
+`--cities` with a comma list of slugs to narrow it:
 
 ```bash
 python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --side both
+python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --side both --cities sfo,lax
 ```
 
 Without installing first:
@@ -100,6 +124,11 @@ Refreshing Google Weather requires `GOOGLE_WEATHER_API_KEY`. The project keeps
 Google usage disciplined with an 8,000/month and 260/day default event budget,
 below the 10,000 free monthly cap.
 
+These commands drive the SFO legacy blend. The other fourteen cities run
+through the NWP→EMOS path (`nwp_archive.py`, `emos_forecast.py`) with CLI
+settlement truth from `city_truth.py`; the AWS timers run these with
+`--cities all`.
+
 ## Public Website (React SPA)
 
 The public site is a React + Vite + HeroUI Pro single-page app at the repo root
@@ -114,9 +143,11 @@ Production serves the prebuilt app from `/opt/weatheredge/webdist` on the
 Lightsail box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
 the `gh-pages` branch with the freshly generated data JSONs
 (`trading_signal.json`, `forecast_data.json`, `weather_story_data.json`,
-`strategy_research.json`) overlaid on every refresh cycle. To ship a new app
-build, copy `dist/` to `/opt/weatheredge/webdist` and run one strategy-lab
-refresh.
+`strategy_research.json`, `cities_data.json`) overlaid on every refresh cycle.
+The site includes a fifteen-city Coverage grid fed by `cities_data.json`
+(per-city forecasts, latest settlement, book activity), with SFO presented as
+the flagship. To ship a new app build, copy `dist/` to
+`/opt/weatheredge/webdist` and run one strategy-lab refresh.
 
 ## Kalshi Workflow
 
@@ -131,6 +162,7 @@ python -m sfo_kalshi_quant.cli backtest-calibration --source clean-blend
 python -m sfo_kalshi_quant.cli daily-report --target-date both --side both --format json --no-live-market --output forecaster/trading_signal.json
 python -m sfo_kalshi_quant.cli strategy-research --output forecaster/strategy_research.json
 python -m sfo_kalshi_quant.cli analyze --target-date both --side both
+python -m sfo_kalshi_quant.cli analyze --target-date both --side both --cities sfo,lax
 python -m sfo_kalshi_quant.cli backtest-signals
 python -m sfo_kalshi_quant.cli paper-report
 python -m sfo_kalshi_quant.cli paper-monitor
@@ -151,7 +183,9 @@ clean next-day forecasts only. It excludes same-day observed-high lock/floor
 rows.
 
 `--settlement-high 67` means the official resolved SFO high was 67°F for that
-date.
+date. Exposure caps and settlement are series-scoped, so one city's high can
+never settle another city's bins; automatic settlement walks each city's own
+NWS CLI product, with archived CLI truth as fallback.
 
 ## Repository Sync
 

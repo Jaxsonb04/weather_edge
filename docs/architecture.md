@@ -1,7 +1,18 @@
 # Architecture
 
 WeatherEdge deliberately keeps two deep modules with a small interface between
-them.
+them. The system covers fifteen US city daily-high markets; SFO is the
+flagship.
+
+## City Registry
+
+The registry of markets lives in `forecaster/cities.py` and is duplicated
+byte-identically as `trading/sfo_kalshi_quant/cities.py` (a parity test
+enforces this). Each entry defines the slug, name, Kalshi series ticker, NWS
+settlement station, CLI product (site + issuedby), lat/lon, civil timezone,
+and fixed standard-time UTC offset. Every market settles on its own NWS
+Climatological Report (CLI); each city's climate day is midnight-to-midnight
+in local standard time.
 
 ## Forecaster Module
 
@@ -11,10 +22,17 @@ Responsibilities:
 
 - ingest KSFO station history
 - archive NWS observations and daily highs
-- fetch/cache Google Weather within the event budget
-- blend Google, NWS, Open-Meteo, and SFO history
+- fetch/cache Google Weather within the event budget (SFO only)
+- blend Google, NWS, Open-Meteo, and SFO history (SFO only)
+- run the station-agnostic NWP→EMOS→CLI path for the other fourteen cities:
+  Open-Meteo previous-runs archive (9 models, leads 1-3) and rolling-origin
+  EMOS per city
+- maintain CLI settlement truth in the station-keyed `cli_settlements` table,
+  fed by live CLI scans plus the IEM archive backfill
+  (`forecaster/city_truth.py`)
 - generate the site data JSONs consumed by the public SPA
-- keep forecast archive tables in `weather.db`
+- keep forecast archive tables in `weather.db`; `nwp_model_forecasts` and
+  `forecast_emos_daily_high` are station-keyed (auto-migration)
 - score forecast skill only on clean next-day snapshots; same-day observed-high
   rows are settlement context
 
@@ -30,14 +48,28 @@ Path: `trading/sfo_kalshi_quant/`
 
 Responsibilities:
 
-- read forecaster snapshots through `SfoForecasterAdapter`
+- loop all registered cities in `analyze`/`portfolio-scan` (`--cities`, env
+  `PAPER_CITIES=all`)
+- read forecaster snapshots through a per-city forecaster adapter (SFO uses
+  the full blend; other cities use the EMOS Gaussian snapshot, with the scored
+  EMOS archive supplying calibration outcomes)
 - fetch Kalshi public market/orderbook data
 - convert forecast distributions into Kalshi bin probabilities
-- apply same-day observed-high and boundary-aware intraday updates
-- evaluate YES/NO sides after fees, spread, confidence, and liquidity gates
+- apply same-day observed-high and boundary-aware intraday updates, with
+  per-city settlement clocks
+- evaluate YES/NO sides after fees, spread, confidence, and liquidity gates;
+  the live profile additionally gates entries to the favorite band
+  [0.70, 0.97], while research trades the whole price curve
+- enter maker-first: production entry mode rests limit orders that pay the
+  maker fee (25% of the quadratic taker rate); the monitor fills a resting
+  limit when the visible ask crosses (a proxy fill model, no queue position)
+- keep exposure caps and settlement series-scoped, so one city's high can
+  never settle another city's bins; auto-settle walks each city's own CLI
+  product with archived CLI truth as fallback
 - record and monitor paper-only trades
 - run walk-forward calibration on either LSTM held-out outcomes or clean
-  archived blend outcomes
+  archived blend outcomes (SFO); warm/hot cohort blocks and GFS-ensemble
+  sharpening remain SFO-only
 
 Main public interface:
 
@@ -66,9 +98,11 @@ repository root (`src/`, `index.html`, `vite.config.ts`) and is built with
 `bun run build`. The prebuilt app lives at `/opt/weatheredge/webdist` on the
 server. Each refresh cycle, `trading/deploy/aws/publish_forecaster_pages.sh`
 publishes `webdist` plus fresh `trading_signal.json`, `forecast_data.json`,
-`weather_story_data.json`, and `strategy_research.json` to the `gh-pages`
+`weather_story_data.json`, `strategy_research.json`, and `cities_data.json`
+(per-city forecasts, latest settlement, book activity) to the `gh-pages`
 branch, which GitHub Pages serves at
-`https://jaxsonb04.github.io/weather_edge/`.
+`https://jaxsonb04.github.io/weather_edge/`. The site includes a fifteen-city
+Coverage grid; SFO is presented as the flagship.
 
 ## Deepening Opportunities
 

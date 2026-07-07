@@ -16,7 +16,8 @@ bash trading/deploy/aws/sync_to_lightsail.sh
 The sync copies source and rebuild inputs, but excludes local runtime artifacts
 such as `weather.db`, `google_weather_cache.json`, `trading_signal.json`,
 `strategy_research.json`, SQLite files, and `trading/data/`. After sync and
-refresh, those live artifacts belong to AWS.
+refresh, those live artifacts (including the generated `cities_data.json`)
+belong to AWS.
 
 Required local env before syncing:
 
@@ -34,17 +35,24 @@ The systemd installer remains in:
 
 ## Timers
 
-- `sfo-forecaster-refresh.timer`
+- `sfo-forecaster-refresh.timer` (every 30 minutes; serves live EMOS forecasts
+  for all fifteen cities — one batched Open-Meteo call per city — plus NWS
+  observations with `--days 2 --cities all`, and publishes `cities_data.json`
+  alongside the other data JSONs)
 - `sfo-strategy-lab-refresh.timer` (every five minutes; live-fetches Kalshi
   top-of-book via `daily-report`, rebuilds `trading_signal.json` and
   `strategy_research.json`, and republishes the SPA site to Pages without paid
   Google Weather refresh calls)
-- `sfo-dataset-backfill.timer`
+- `sfo-dataset-backfill.timer` (nightly at 02:25 Pacific; also runs the IEM CLI
+  settlement-truth refresh, NWP `--daily --cities all`, the EMOS rolling-origin
+  rebuild for leads 1 and 2, and `paper-prune` snapshot retention)
 - `sfo-kalshi-paper-scan.timer` (every five minutes; live-fetches the current
-  order books and places paper-trade entries on fresh market data)
+  order books across all cities and places paper-trade entries on fresh market
+  data)
 - `sfo-kalshi-paper-monitor.timer` (every two minutes; live exit prices for open
-  positions)
-- `sfo-kalshi-paper-settle.timer`
+  positions, and fills resting maker limits when the visible ask crosses)
+- `sfo-kalshi-paper-settle.timer` (per-city; walks each city's own NWS CLI
+  product, with archived CLI truth as fallback)
 
 Strategy Lab research is published as plain public `strategy_research.json` by
 design. It contains only paper-trading research data, with no secrets.

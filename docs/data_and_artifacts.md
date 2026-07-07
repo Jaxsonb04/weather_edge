@@ -5,11 +5,16 @@
 - Forecaster source scripts.
 - Raw KSFO NOAA GHCNh station files from `2016-2026 weather data/`.
 - Optional local `weather.db` forecast archive. Treat it as disposable runtime
-  state unless it was just regenerated for the current task.
+  state unless it was just regenerated for the current task. Multi-city tables:
+  `cli_settlements` (station-keyed NWS CLI settlement truth, fed by live CLI
+  scans plus the IEM archive backfill), and the station-keyed
+  `nwp_model_forecasts` and `forecast_emos_daily_high` (migrated automatically
+  from the single-station layout).
 - Site data artifacts: `trading_signal.json`, `forecast_data.json`,
-  `weather_story_data.json`, and `strategy_research.json` (the four JSONs
-  published with the prebuilt SPA in `webdist`), plus `ab_test_results.json`
-  and `model_compare_results.json`.
+  `weather_story_data.json`, `strategy_research.json`, and `cities_data.json`
+  (the five JSONs published with the prebuilt SPA in `webdist`;
+  `cities_data.json` carries per-city forecasts, latest settlement, and book
+  activity), plus `ab_test_results.json` and `model_compare_results.json`.
 - Trained model and prediction artifacts under `forecaster/models/`.
 - Trading source package, tests, docs, AWS scripts, and small Kalshi research
   orderbook snapshots.
@@ -56,6 +61,7 @@ AWS runtime paths are documented in `docs/aws_lightsail.md`, typically:
 - `/opt/weatheredge/forecaster/google_weather_cache.json`
 - `/opt/weatheredge/forecaster/trading_signal.json`
 - `/opt/weatheredge/forecaster/strategy_research.json`
+- `/opt/weatheredge/forecaster/cities_data.json`
 - `/opt/weatheredge/webdist/` (the prebuilt SPA that the publisher ships)
 - `/opt/weatheredge/trading/data/`
 

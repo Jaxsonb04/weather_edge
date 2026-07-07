@@ -21,8 +21,12 @@ Required design workflow:
 - Use the local skills `frontend-design`, `ui-ux-pro-max`,
   `web-design-guidelines`, and `agent-browser` for substantial UI work.
 - The SPA fetches its data JSONs (`trading_signal.json`, `forecast_data.json`,
-  `weather_story_data.json`, `strategy_research.json`) at runtime; keep
-  `src/lib/data.ts` / `src/lib/strategy.ts` parsing tolerant of missing fields.
+  `weather_story_data.json`, `strategy_research.json`, `cities_data.json`) at
+  runtime; keep `src/lib/data.ts` / `src/lib/strategy.ts` parsing tolerant of
+  missing fields.
+- The site covers fifteen city markets (Coverage grid fed by
+  `cities_data.json`), with SFO presented as the flagship. The site never says
+  "Kalshi"; say "prediction market".
 - Keep the WeatherEdge visual direction: an operational meteorological
   instrument for a student quant weather project, not a marketing landing page.
 - Verify desktop and real mobile layouts with browser screenshots, then verify
@@ -41,6 +45,7 @@ disposable unless you just regenerated them in the current task:
 - `forecaster/google_weather_cache.json`
 - `forecaster/trading_signal.json`
 - `forecaster/strategy_research.json`
+- `forecaster/cities_data.json`
 - `trading/data/`
 
 After sync and refresh, live API/cache/dashboard state is AWS-side, under the

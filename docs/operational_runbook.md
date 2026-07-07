@@ -57,7 +57,17 @@ cd /path/to/WeatherEdge
 python -m sfo_kalshi_quant.cli --no-color analyze --target-date both
 ```
 
-To simulate conservative paper buy limits instead of immediate paper fills:
+`analyze` loops all fifteen registered cities by default (env `PAPER_CITIES`,
+default `all`). Pass `--cities` with `all` or a comma list of slugs to
+override:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --cities sfo,lax
+```
+
+Production entry mode is maker-first resting limits (`PAPER_ENTRY_MODE=limit`);
+resting quotes pay the maker fee, and the 2-minute monitor fills a resting
+limit when the visible ask crosses it (a proxy fill model, no queue position):
 
 ```bash
 PAPER_ENTRY_MODE=limit python -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --place-paper
@@ -65,7 +75,8 @@ PAPER_ENTRY_MODE=limit python -m sfo_kalshi_quant.cli --no-color analyze --targe
 
 ## Portfolio Paper Scan
 
-Scheduled AWS paper placement uses the shared allocator:
+Scheduled AWS paper placement uses the shared allocator and loops all cities
+(`PAPER_CITIES=all` in production; `--cities` narrows it for diagnostics):
 
 ```bash
 cd /path/to/WeatherEdge/trading
@@ -114,7 +125,9 @@ private DB state. In production, `build_public_trading_signal.sh` generates
 the publisher ships both as plain public JSON alongside the SPA site. They
 contain only paper-trading research data. The `sfo-strategy-lab-refresh.timer`
 refreshes this trading-results path every five minutes without calling the paid
-Google Weather refresh command.
+Google Weather refresh command. Each refresh also publishes `cities_data.json`
+(per-city forecasts, latest settlement, book activity) for the site's
+fifteen-city Coverage grid.
 
 ## Paper Place
 
@@ -139,13 +152,47 @@ python -m sfo_kalshi_quant.cli --no-color paper-monitor \
 python -m sfo_kalshi_quant.cli --no-color paper-settle --target-date YYYY-MM-DD --settlement-high 67
 ```
 
-Replace `67` with the official resolved SFO high.
+Replace `67` with the official resolved high for that city and date.
+Settlement is series-scoped: one city's high can never settle another city's
+bins.
 
-AWS can also settle the latest published CLISFO report automatically:
+AWS can also settle automatically. Auto-settle walks each city's own NWS CLI
+product, with archived CLI truth (the `cli_settlements` table) as fallback:
 
 ```bash
 python -m sfo_kalshi_quant.cli --no-color paper-auto-settle
 ```
+
+## Edge Scan Diagnostic
+
+`sfo_kalshi_quant/edge_scan.py` measures the favorite-band maker opportunity
+on live order books. Its first run posted 51 quotes across 16 city-days with a
+median model edge of +0.8c and a maker-vs-taker saving of 1.45c per contract;
+roughly 619 settled trades are needed to confirm a 2.6% mean edge at 95%
+confidence.
+
+## Scheduled Multi-City Refresh And Nightly Maintenance
+
+On AWS, the 30-minute forecaster refresh serves live EMOS forecasts for all
+fifteen cities (one batched Open-Meteo call per city) plus NWS observations
+(`--days 2 --cities all`).
+
+The nightly dataset unit (02:25 Pacific) additionally runs:
+
+- IEM CLI settlement-truth refresh
+- NWP archive update (`--daily --cities all`)
+- EMOS rolling-origin rebuild (leads 1 and 2)
+- `paper-prune` (decision-snapshot retention)
+
+## Paper Prune
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color paper-prune
+```
+
+Decision-snapshot retention: 7 days of full snapshots, last-per-market-side-day
+rows kept to 45 days, approved rows kept forever. Without pruning, fifteen
+cities write roughly 60k rejection snapshots (~0.5 GB) per day.
 
 ## Signal Backtest
 
@@ -154,6 +201,6 @@ python -m sfo_kalshi_quant.cli --no-color backtest-signals
 python -m sfo_kalshi_quant.cli --no-color backtest-signals --min-quality 60
 ```
 
-This scores recorded decision snapshots against official settled SFO highs. Use
+This scores recorded decision snapshots against official settled highs. Use
 it to check rejected rows, approved rows, and quality buckets before trusting a
 new gate profile.

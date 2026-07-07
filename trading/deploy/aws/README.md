@@ -14,13 +14,25 @@ Deployment flow:
 It runs:
 
 - Forecaster refresh: every 30 minutes from 05:10 through 18:40 Pacific time,
-  then hourly overnight at minute 40.
-- Compact dataset backfill: nightly at 02:25 Pacific time.
-- Kalshi paper scan: every 5 minutes, around the clock. Each run live-fetches
-  the current Kalshi order books and makes paper-trade entries on fresh market
-  data (it is not a dashboard rebuild), so a newly-listed bracket is acted on
-  within ~5 minutes.
-- Paper exit monitor: every 2 minutes around the clock.
+  then hourly overnight at minute 40. Each refresh serves live EMOS forecasts
+  for all fifteen registered cities (one batched Open-Meteo call per city),
+  refreshes NWS observations (`--days 2 --cities all`), and publishes
+  `cities_data.json` alongside the other data JSONs.
+- Compact dataset backfill: nightly at 02:25 Pacific time. The nightly unit
+  also runs the IEM CLI settlement-truth refresh, the NWP archive update
+  (`--daily --cities all`), the EMOS rolling-origin rebuild (leads 1 and 2),
+  and `paper-prune` snapshot retention (7 days of full decision snapshots,
+  last-per-market-side-day rows to 45 days, approved rows forever — fifteen
+  cities would otherwise write ~60k rejection snapshots/~0.5 GB per day).
+- Kalshi paper scan: every 5 minutes, around the clock, looping all cities.
+  Each run live-fetches the current Kalshi order books and makes paper-trade
+  entries on fresh market data (it is not a dashboard rebuild), so a
+  newly-listed bracket is acted on within ~5 minutes.
+- Paper exit monitor: every 2 minutes around the clock. It also fills resting
+  maker limit entries when the visible ask crosses (a proxy fill model, no
+  queue position).
+- Paper settle: per-city; auto-settle walks each city's own NWS CLI product,
+  with archived CLI truth as fallback.
 
 The services are paper-only. They do not contain a live-order path.
 
@@ -99,7 +111,11 @@ SFO_STRATEGY_RESEARCH_CALIBRATION_MIN_TRAIN=180
 PAPER_BANKROLL=1000
 PAPER_RISK_PROFILE=live
 PAPER_RISK_PROFILES=live,research
-PAPER_ENTRY_MODE=market
+# All fifteen registered city markets; a comma list of slugs also works.
+PAPER_CITIES=all
+# Maker-first: rest limit orders (maker fee is 25% of the quadratic taker
+# rate); the monitor fills them when the visible ask crosses.
+PAPER_ENTRY_MODE=limit
 PAPER_TAKE_PROFIT_PCT=40
 PAPER_STOP_LOSS_PCT=35
 PAPER_YES_TAKE_PROFIT_PCT=50
@@ -112,10 +128,11 @@ SFO_PORTFOLIO_MAX_ARB_SPEND=12
 SFO_PORTFOLIO_MIN_PROFIT=0.01
 ```
 
-Each forecast refresh builds the public `trading_signal.json` and Strategy Lab
-research data (`strategy_research.json`) before publishing, so GitHub Pages is
-published from the same AWS-side forecast DB, paper DB, and paper-research
-signal. The publisher ships the prebuilt React SPA from
+Each forecast refresh builds the public `trading_signal.json`, Strategy Lab
+research data (`strategy_research.json`), and `cities_data.json` (per-city
+forecasts, latest settlement, book activity) before publishing, so GitHub
+Pages is published from the same AWS-side forecast DB, paper DB, and
+paper-research signal. The publisher ships the prebuilt React SPA from
 `/opt/weatheredge/webdist` plus the fresh data JSONs. The
 `sfo-strategy-lab-refresh.timer` also runs every five minutes to rebuild
 `trading_signal.json` and `strategy_research.json` and republish the Pages
@@ -123,7 +140,9 @@ branch without calling `google_weather_cache.py --refresh`. Strategy Lab
 research is plain public JSON by design; it contains only paper-trading
 research data.
 
-AWS paper scanning is pinned to LSTM calibration during this deployment stage.
+AWS paper scanning is pinned to LSTM calibration for SFO during this
+deployment stage; non-SFO cities calibrate from their scored out-of-sample
+EMOS archive outcomes.
 If `PAPER_RISK_PROFILES` is a comma-list, the scan service runs each profile
 back to back in the same paper DB. Orders are tagged by `risk_profile`, so the
 `live` paper book and `research` paper book do not block each other.

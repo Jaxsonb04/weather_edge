@@ -76,7 +76,7 @@ from .report import build_daily_report, write_report
 from .posterior_kelly import load_posterior_kelly_model
 from .risk import TradeEvaluator
 from .settlement_day import settlement_clock, settlement_today
-from .settlement import fetch_latest_clisfo, fetch_recent_cli_settlements, fetch_recent_clisfo_settlements
+from .settlement import fetch_recent_cli_settlements
 from .standard_bins import fallback_bins
 from .strategy_research import build_strategy_research, write_strategy_research
 from .summary import build_paper_summary, write_paper_summary, write_paper_summary_csv
