@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Navbar } from "@heroui-pro/react";
 import { Button, Tooltip } from "@heroui/react";
 import { Icon } from "@iconify/react";
@@ -15,19 +16,25 @@ interface TopBarProps {
 }
 
 export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liveUrl }: TopBarProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
     <Navbar
       position="sticky"
       maxWidth="xl"
+      isMenuOpen={menuOpen}
+      onMenuOpenChange={setMenuOpen}
       className="border-b border-border/60 bg-background/70 backdrop-blur-xl"
     >
       <Navbar.Header>
+        <Navbar.MenuToggle aria-label={menuOpen ? "Close menu" : "Open menu"} className="lg:hidden" />
+
         <Navbar.Brand className="gap-2.5">
           <a href="#/overview" className="flex items-center gap-2.5 no-underline">
             <span className="relative grid size-7 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
               <Icon icon="solar:temperature-bold" className="size-4" />
             </span>
-            <span className="font-display text-[15px] font-semibold tracking-tight text-foreground">
+            <span className="hidden font-display text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
               Weather<span className="temp-text">Edge</span>
             </span>
           </a>
@@ -71,6 +78,49 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
           </LinkButton>
         </div>
       </Navbar.Header>
+
+      {/* Mobile / tablet navigation (below lg the route links collapse here). */}
+      <Navbar.Menu className="lg:hidden">
+        {ROUTES.map((r) => (
+          <Navbar.MenuItem key={r.id}>
+            <a
+              href={`#/${r.id}`}
+              aria-current={route === r.id ? "page" : undefined}
+              onClick={() => setMenuOpen(false)}
+              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium no-underline ${
+                route === r.id ? "bg-accent-soft text-[color:var(--accent-text)]" : "text-foreground"
+              }`}
+            >
+              <Icon icon={r.icon} className="size-5" aria-hidden="true" />
+              {r.label}
+            </a>
+          </Navbar.MenuItem>
+        ))}
+        <Navbar.MenuItem>
+          <a
+            href={liveUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => setMenuOpen(false)}
+            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-base text-muted no-underline"
+          >
+            <Icon icon="solar:square-top-down-linear" className="size-5" aria-hidden="true" />
+            Live dashboard
+          </a>
+        </Navbar.MenuItem>
+        <Navbar.MenuItem>
+          <a
+            href={repoUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => setMenuOpen(false)}
+            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-base text-muted no-underline"
+          >
+            <Icon icon="mdi:github" className="size-5" aria-hidden="true" />
+            Source on GitHub
+          </a>
+        </Navbar.MenuItem>
+      </Navbar.Menu>
     </Navbar>
   );
 }

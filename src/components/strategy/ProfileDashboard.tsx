@@ -213,14 +213,25 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           note={`showing ${Math.min(ledger.length, allTimeClosed || ledger.length)} of ${allTimeClosed} resolved all-time`}
         />
         {byCity.length > 0 && (
-          <div className="mb-3 flex flex-wrap gap-2" aria-label="Closed positions by settlement city">
-            {byCity.map((c) => (
-              <span key={c.slug} className="flex items-center gap-1.5 rounded-full bg-surface-secondary px-2.5 py-1 text-[11px] ring-1 ring-border/50">
-                <span className="font-mono font-semibold uppercase text-foreground">{c.slug}</span>
-                <span className="text-muted">{c.trades}</span>
-                <span className={`tnum font-medium ${c.pnl > 0 ? "text-success" : c.pnl < 0 ? "text-danger" : "text-muted"}`}>{money(c.pnl)}</span>
-              </span>
-            ))}
+          <div className="mb-3">
+            <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+              <Icon icon="solar:map-point-bold" className="size-3.5 text-accent" aria-hidden="true" />
+              By settlement city
+            </p>
+            <div className="flex flex-wrap gap-2" aria-label="Closed positions grouped by settlement city">
+              {byCity.map((c) => (
+                <span key={c.slug} className="flex items-center gap-1.5 rounded-full bg-surface-secondary px-2.5 py-1 text-xs ring-1 ring-border/50">
+                  <span className="font-medium text-foreground">{c.name}</span>
+                  <span className="tnum text-muted">
+                    {c.trades} trade{c.trades === 1 ? "" : "s"} · {c.wins}W
+                  </span>
+                  <span className={`tnum font-medium ${c.pnl > 0 ? "text-success" : c.pnl < 0 ? "text-danger" : "text-muted"}`}>{money(c.pnl)}</span>
+                </span>
+              ))}
+              {byCity.length === 1 && (
+                <span className="self-center text-[11px] text-muted">— other cities populate here as their markets settle</span>
+              )}
+            </div>
           </div>
         )}
         <LedgerTable

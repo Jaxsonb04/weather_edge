@@ -19,6 +19,13 @@ export function EquityCurve({ s, days, startingBankroll, windowDays, title, desc
   const last = series[series.length - 1]?.equity ?? start;
   const win = windowDays ?? s.daily_summary.window_days ?? series.length;
   const up = last >= start;
+  // Adaptive y-domain: pad proportional to the actual swing (with a small floor)
+  // so a book that barely moved still shows its shape instead of a dead-flat line.
+  const eqs = series.map((d) => d.equity);
+  const lo = Math.min(start, ...eqs);
+  const hi = Math.max(start, ...eqs);
+  const pad = Math.max((hi - lo) * 0.15, 3);
+  const yDomain: [number, number] = [Math.floor(lo - pad), Math.ceil(hi + pad)];
   const stroke = up ? "var(--color-success)" : "var(--color-danger)";
   const label = `${title ?? "Paper equity curve"} over ${series.length} days, from $${start} to $${last} (${up ? "up" : "down"} over the window).`;
 
@@ -47,7 +54,7 @@ export function EquityCurve({ s, days, startingBankroll, windowDays, title, desc
           </defs>
           <LineChart.Grid vertical={false} />
           <LineChart.XAxis dataKey="date" tickMargin={8} />
-          <LineChart.YAxis width={52} tickFormatter={(v: number) => `$${v}`} domain={["dataMin - 20", "dataMax + 20"]} />
+          <LineChart.YAxis width={52} tickFormatter={(v: number) => `$${v}`} domain={yDomain} allowDecimals={false} />
           <ReferenceLine y={start} stroke="var(--color-muted)" strokeDasharray="5 5" strokeWidth={1.25} />
           <LineChart.Line dataKey="equity" name="Equity" stroke={stroke} strokeWidth={2.5} type="monotone" fill="url(#equity-fill)" />
           <LineChart.Tooltip
