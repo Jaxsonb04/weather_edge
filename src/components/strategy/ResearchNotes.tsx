@@ -13,12 +13,12 @@ export function ResearchNotes({ s }: { s: StrategyLab }) {
         <ItemCardGroup.Description>How to interpret these figures honestly</ItemCardGroup.Description>
       </ItemCardGroup.Header>
       {notes.map((n) => (
-        <ItemCard key={n.term} variant="secondary">
+        <ItemCard key={n.term} variant="secondary" className="min-w-0">
           <ItemCard.Icon>
             <Icon icon="solar:notebook-bold" className="size-4 text-accent" />
           </ItemCard.Icon>
-          <ItemCard.Content>
-            <ItemCard.Title>{n.term}</ItemCard.Title>
+          <ItemCard.Content className="min-w-0">
+            <ItemCard.Title className="whitespace-normal break-words">{n.term}</ItemCard.Title>
             <ItemCard.Description className="whitespace-normal break-words">{n.note}</ItemCard.Description>
           </ItemCard.Content>
         </ItemCard>

@@ -30,9 +30,24 @@ function collapseActions(raw: MonitorAction[]): MonitorAction[] {
 }
 
 /** The monitor's most recent closes — the audit trail of rule-based exits. */
-export function MonitorLog({ s }: { s: StrategyLab }) {
-  const rows = collapseActions(s.paper_trading?.recent_monitor_actions ?? []);
-  if (!rows.length) return null;
+export function MonitorLog({
+  s,
+  rows: rowsProp,
+  hideProfile = false,
+  emptyNote,
+}: {
+  s: StrategyLab;
+  /** override the raw action set (e.g. one profile's) — collapsed internally */
+  rows?: MonitorAction[];
+  hideProfile?: boolean;
+  emptyNote?: string;
+}) {
+  const rows = collapseActions(rowsProp ?? s.paper_trading?.recent_monitor_actions ?? []);
+  if (!rows.length) {
+    return emptyNote ? (
+      <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">{emptyNote}</p>
+    ) : null;
+  }
 
   const columns: DataGridColumn<MonitorAction>[] = [
     {
@@ -57,16 +72,20 @@ export function MonitorLog({ s }: { s: StrategyLab }) {
         </div>
       ),
     },
-    {
-      id: "book",
-      header: "Book",
-      headerClassName: HEAD,
-      cell: (d) => (
-        <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"}`}>
-          {d.risk_profile}
-        </span>
-      ),
-    },
+    ...(hideProfile
+      ? []
+      : ([
+          {
+            id: "book",
+            header: "Book",
+            headerClassName: HEAD,
+            cell: (d) => (
+              <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"}`}>
+                {d.risk_profile}
+              </span>
+            ),
+          },
+        ] as DataGridColumn<MonitorAction>[])),
     { id: "qty", header: "Qty", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum">{d.contracts}</span> },
     {
       id: "fill",

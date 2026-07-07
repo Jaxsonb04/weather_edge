@@ -266,6 +266,54 @@ export function cityForTicker(ticker: string): { slug: string; name: string } | 
   return best ? { slug: best.slug, name: best.name } : null;
 }
 
+/* ---- per-city helpers (shared by the coverage grid and the city drill-down) ---- */
+
+/** "2026-07-06" → "Jul 6" (date-only, timezone-safe via UTC). */
+export function shortDateUTC(iso: string | undefined | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(`${iso}T00:00:00Z`);
+  if (Number.isNaN(t)) return iso;
+  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/** The forecast a city leads with: earliest target strictly after the newest
+    settlement, else the earliest still-open date, else the last one. */
+export function cityNextForecast(city: City): CityForecast | null {
+  const sorted = [...(city.forecasts ?? [])]
+    .filter((f) => typeof f?.predicted_high_f === "number" && !!f?.target_date)
+    .sort((a, b) => a.target_date.localeCompare(b.target_date));
+  if (!sorted.length) return null;
+  const settledDate = city.latest_settlement?.local_date;
+  if (settledDate) {
+    const next = sorted.find((f) => f.target_date > settledDate);
+    if (next) return next;
+  }
+  const todayIso = new Date().toISOString().slice(0, 10);
+  return sorted.find((f) => f.target_date >= todayIso) ?? sorted[sorted.length - 1];
+}
+
+const FRESH_GREEN_HOURS = 2;
+const FRESH_AMBER_HOURS = 12;
+export interface Freshness {
+  tone: "success" | "warning" | "danger";
+  label: string;
+  ageHours: number | null;
+}
+/** How recently a city's forecasts were fetched → a tone + human label. */
+export function cityFreshness(forecasts: CityForecast[] | undefined): Freshness {
+  let newest: number | null = null;
+  for (const f of forecasts ?? []) {
+    const t = Date.parse(f?.fetched_at ?? "");
+    if (!Number.isNaN(t) && (newest == null || t > newest)) newest = t;
+  }
+  if (newest == null) return { tone: "danger", label: "No forecast fetch recorded", ageHours: null };
+  const hrs = Math.max(0, (Date.now() - newest) / 3_600_000);
+  if (hrs < FRESH_GREEN_HOURS)
+    return { tone: "success", label: `Refreshed ${Math.max(1, Math.round(hrs * 60))}m ago`, ageHours: hrs };
+  if (hrs < FRESH_AMBER_HOURS) return { tone: "warning", label: `Refreshed ${Math.round(hrs)}h ago`, ageHours: hrs };
+  return { tone: "danger", label: `Stale — last refreshed ${Math.round(hrs)}h ago`, ageHours: hrs };
+}
+
 /* ---- derived helpers ---- */
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

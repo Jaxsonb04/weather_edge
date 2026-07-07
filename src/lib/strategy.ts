@@ -1,4 +1,4 @@
-import { useResource } from "./data";
+import { cityForTicker, useResource } from "./data";
 
 export interface ClosedPosition {
   id: number;
@@ -159,6 +159,7 @@ export interface ProfileDailySummary {
   side_performance?: Record<string, SideStats>;
   window_days?: number;
   current_equity?: number;
+  starting_bankroll?: number;
   bankroll?: number;
 }
 export interface ProfileEntry {
@@ -383,16 +384,22 @@ export interface StrategyLab {
 
 export const useStrategyLab = () => useResource<StrategyLab>("strategy_research.json");
 
-/** Equity curve across the reporting window: starting bankroll + cumulative realized. */
-export function equitySeries(s: StrategyLab) {
-  const start = s.daily_summary?.starting_bankroll ?? 1000;
-  return [...(s.daily_summary?.days ?? [])]
+/** Equity curve from any day series + starting bankroll (combined book OR a
+    single profile). Tolerant of missing dates / cumulative values. */
+export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankroll = 1000) {
+  return [...(days ?? [])]
+    .filter((d) => !!d?.date)
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((d) => ({
       date: d.date.slice(5), // MM-DD
-      equity: Math.round((start + d.cumulative_realized) * 100) / 100,
-      pnl: d.cumulative_realized,
+      equity: Math.round((startingBankroll + (d.cumulative_realized ?? 0)) * 100) / 100,
+      pnl: d.cumulative_realized ?? 0,
     }));
+}
+
+/** Equity curve across the reporting window: starting bankroll + cumulative realized. */
+export function equitySeries(s: StrategyLab) {
+  return equitySeriesFromDays(s.daily_summary?.days, s.daily_summary?.starting_bankroll ?? 1000);
 }
 
 /** Full closed ledger, newest first. */
@@ -405,6 +412,50 @@ export function closedLedger(s: StrategyLab): ClosedPosition[] {
 /** Gate stats for one risk profile (matched from daily_summary.gate_behavior). */
 export function profileGate(s: StrategyLab, riskProfile: string): ProfileGateStats | undefined {
   return s.daily_summary?.gate_behavior?.by_profile?.find((g) => g.risk_profile === riskProfile);
+}
+
+/* ---- per-profile slices (all client-side; every ledger row carries risk_profile) ---- */
+
+export const findProfile = (s: StrategyLab, rp: string): ProfileEntry | undefined =>
+  s.profiles?.find((p) => p.risk_profile === rp);
+
+/** Recent closed positions for one book (the published ledger is a recent slice,
+    not the full history — the all-time count lives in paper_trading.summary). */
+export function ledgerForProfile(s: StrategyLab, rp: string): ClosedPosition[] {
+  return closedLedger(s).filter((p) => p.risk_profile === rp);
+}
+export function openForProfile(s: StrategyLab, rp: string): OpenPosition[] {
+  return (s.paper_trading?.open_positions ?? []).filter((p) => p.risk_profile === rp);
+}
+export function pendingForProfile(s: StrategyLab, rp: string): OpenPosition[] {
+  return (s.paper_trading?.pending_limit_orders ?? []).filter((p) => p.risk_profile === rp);
+}
+export function monitorForProfile(s: StrategyLab, rp: string): MonitorAction[] {
+  return (s.paper_trading?.recent_monitor_actions ?? []).filter((a) => a.risk_profile === rp);
+}
+
+/* ---- multi-city lens: group a ledger by the market's city ---- */
+
+export interface CityLedgerGroup {
+  slug: string;
+  name: string;
+  trades: number;
+  pnl: number;
+  wins: number;
+}
+/** Roll a set of closed positions up by settlement city (via cityForTicker). */
+export function ledgerByCity(rows: ClosedPosition[]): CityLedgerGroup[] {
+  const map = new Map<string, CityLedgerGroup>();
+  for (const r of rows) {
+    const c = cityForTicker(r.ticker ?? "");
+    const slug = c?.slug ?? "—";
+    const g = map.get(slug) ?? { slug, name: c?.name ?? "Unknown", trades: 0, pnl: 0, wins: 0 };
+    g.trades += 1;
+    g.pnl += r.realized_pnl ?? 0;
+    if ((r.realized_pnl ?? 0) > 0) g.wins += 1;
+    map.set(slug, g);
+  }
+  return [...map.values()].sort((a, b) => b.trades - a.trades || b.pnl - a.pnl);
 }
 
 /** Signed money string: +$1.23 / −$4.56 (true minus sign). */

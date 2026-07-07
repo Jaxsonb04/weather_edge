@@ -29,7 +29,47 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
   );
 }
 
-/** The six go-live checks: the engine's own answer to "would you trade real
+/** Compact go-live verdict for the book overview — the headline number, a
+    progress bar, and the one-line summary. The full checklist is ReadinessPanel. */
+export function ReadinessVerdict({ s }: { s: StrategyLab }) {
+  const r = s.real_money_readiness;
+  if (!r?.available) return null;
+  const checks = r.checks ?? [];
+  const passed = r.checks_passed ?? checks.filter((c) => c.passed).length;
+  const total = r.checks_total ?? checks.length;
+  const ready = r.ready === true;
+  const progress = r.readiness_pct != null ? r.readiness_pct : total ? (passed / total) * 100 : 0;
+
+  return (
+    <Card className="h-full rounded-2xl ring-1 ring-border/70">
+      <Card.Header className="flex flex-row items-center gap-2">
+        <Icon icon="solar:shield-keyhole-bold" className="size-4 text-accent" aria-hidden="true" />
+        <div>
+          <Card.Title className="text-base">Go-live readiness</Card.Title>
+          <Card.Description className="text-sm text-muted">Recomputed on every refresh · enforced in code</Card.Description>
+        </div>
+      </Card.Header>
+      <Card.Content className="space-y-3 pt-0">
+        <div className="flex items-center gap-3">
+          <span className={`font-display text-2xl font-bold tracking-tight ${ready ? "text-success" : "text-danger"}`}>
+            {r.verdict ?? (ready ? "READY" : "NOT READY")}
+          </span>
+          <Chip size="sm" variant="soft" color={ready ? "success" : "danger"}>
+            <Chip.Label>
+              <span className="tnum">{passed}/{total}</span> checks
+            </Chip.Label>
+          </Chip>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-foreground/10" role="img" aria-label={`${passed} of ${total} go-live checks passed (${Math.round(progress)}%).`}>
+          <div className={`h-full rounded-full ${ready ? "bg-success" : "bg-accent"}`} style={{ width: `${Math.max(progress, 2)}%` }} />
+        </div>
+        {r.summary && <p className="text-sm leading-relaxed text-muted">{r.summary}</p>}
+      </Card.Content>
+    </Card>
+  );
+}
+
+/** The full go-live checks: the engine's own answer to "would you trade real
     money with this?" — enforced in code, published unedited. */
 export function ReadinessPanel({ s }: { s: StrategyLab }) {
   const r = s.real_money_readiness;

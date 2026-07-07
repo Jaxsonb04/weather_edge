@@ -1,22 +1,34 @@
 import { ReferenceLine } from "recharts";
 import { ChartTooltip, LineChart, Widget } from "@heroui-pro/react";
-import { equitySeries, type StrategyLab } from "../../lib/strategy";
+import { equitySeries, equitySeriesFromDays, type DayRow, type StrategyLab } from "../../lib/strategy";
 
-export function EquityCurve({ s }: { s: StrategyLab }) {
-  const series = equitySeries(s);
-  const start = s.daily_summary.starting_bankroll ?? 1000;
+interface EquityCurveProps {
+  s: StrategyLab;
+  /** override the day series (e.g. a single profile's days) */
+  days?: DayRow[];
+  /** starting bankroll for the override series */
+  startingBankroll?: number;
+  windowDays?: number;
+  title?: string;
+  description?: string;
+}
+
+export function EquityCurve({ s, days, startingBankroll, windowDays, title, description }: EquityCurveProps) {
+  const start = startingBankroll ?? s.daily_summary.starting_bankroll ?? 1000;
+  const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
   const last = series[series.length - 1]?.equity ?? start;
+  const win = windowDays ?? s.daily_summary.window_days ?? series.length;
   const up = last >= start;
   const stroke = up ? "var(--color-success)" : "var(--color-danger)";
-  const label = `Paper equity curve over ${series.length} days, from $${start} to $${last} (${up ? "up" : "down"} over the window).`;
+  const label = `${title ?? "Paper equity curve"} over ${series.length} days, from $${start} to $${last} (${up ? "up" : "down"} over the window).`;
 
   return (
     <Widget className="w-full">
       <Widget.Header>
         <div>
-          <Widget.Title>Paper equity curve</Widget.Title>
+          <Widget.Title>{title ?? "Paper equity curve"}</Widget.Title>
           <Widget.Description>
-            Cumulative realized P&L over the reporting window · {s.daily_summary.window_days ?? series.length}-day view
+            {description ?? `Cumulative realized P&L over the reporting window · ${win}-day view`}
           </Widget.Description>
         </div>
         <Widget.Legend>

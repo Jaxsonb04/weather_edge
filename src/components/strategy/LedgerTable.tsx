@@ -18,12 +18,26 @@ interface LedgerTableProps {
   limit?: number;
   /** show the extra detail columns (edge at entry, quality, exit) */
   detailed?: boolean;
+  /** override the row set (e.g. a single profile's closed positions) */
+  rows?: ClosedPosition[];
+  /** drop the Book column (when the ledger is already scoped to one profile) */
+  hideProfile?: boolean;
+  /** shown when there are no rows */
+  emptyNote?: string;
 }
 
 /** The closed-positions ledger. Compact (recent trades) or detailed (trading
     desk) via props, one source of truth for both. */
-export function LedgerTable({ s, limit, detailed = false }: LedgerTableProps) {
-  const rows = limit ? closedLedger(s).slice(0, limit) : closedLedger(s);
+export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hideProfile = false, emptyNote }: LedgerTableProps) {
+  const base = rowsProp ?? closedLedger(s);
+  const rows = limit ? base.slice(0, limit) : base;
+  if (!rows.length) {
+    return (
+      <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
+        {emptyNote ?? "No closed positions in this slice yet."}
+      </p>
+    );
+  }
 
   const columns: DataGridColumn<ClosedPosition>[] = [
     {
@@ -53,20 +67,24 @@ export function LedgerTable({ s, limit, detailed = false }: LedgerTableProps) {
         );
       },
     },
-    {
-      id: "profile",
-      header: "Book",
-      headerClassName: HEAD,
-      cell: (d) => (
-        <span
-          className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${
-            d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"
-          }`}
-        >
-          {d.risk_profile}
-        </span>
-      ),
-    },
+    ...(hideProfile
+      ? []
+      : ([
+          {
+            id: "profile",
+            header: "Book",
+            headerClassName: HEAD,
+            cell: (d) => (
+              <span
+                className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${
+                  d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"
+                }`}
+              >
+                {d.risk_profile}
+              </span>
+            ),
+          },
+        ] as DataGridColumn<ClosedPosition>[])),
     { id: "date", header: "Target", accessorKey: "target_date", allowsSorting: detailed, headerClassName: HEAD, cell: (d) => <span className="tnum text-muted">{d.target_date ? d.target_date.slice(5) : "—"}</span> },
     { id: "contracts", header: "Qty", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum">{d.contracts}</span> },
     {

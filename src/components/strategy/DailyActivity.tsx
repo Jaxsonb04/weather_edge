@@ -4,9 +4,10 @@ import { money, type DayRow, type StrategyLab } from "../../lib/strategy";
 const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
 
 /** One row per day of the reporting window: scanning activity, entries, exits,
-    P&L, and how the forecast actually verified. */
-export function DailyActivity({ s }: { s: StrategyLab }) {
-  const rows = [...(s.daily_summary?.days ?? [])].sort((a, b) => b.date.localeCompare(a.date));
+    P&L, and how the forecast actually verified. `days` overrides the combined
+    series (e.g. a single profile's days). */
+export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) {
+  const rows = [...(days ?? s.daily_summary?.days ?? [])].sort((a, b) => b.date.localeCompare(a.date));
   if (!rows.length) return null;
 
   const columns: DataGridColumn<DayRow>[] = [

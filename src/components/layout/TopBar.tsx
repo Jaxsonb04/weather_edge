@@ -33,7 +33,7 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
           </a>
         </Navbar.Brand>
 
-        <Navbar.Content className="ml-6 hidden md:flex">
+        <Navbar.Content className="ml-6 hidden lg:flex">
           {ROUTES.map((r) => (
             <Navbar.Item key={r.id} href={`#/${r.id}`} isCurrent={route === r.id} className="no-underline">
               {r.label}
@@ -44,10 +44,10 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
         <Navbar.Spacer />
 
         <div className="flex items-center gap-1.5">
-          <Button isIconOnly variant="ghost" size="sm" className="md:hidden" aria-label="Open command palette" onPress={onOpenCommand}>
+          <Button isIconOnly variant="ghost" size="sm" className="lg:hidden" aria-label="Open command palette" onPress={onOpenCommand}>
             <Icon icon="solar:magnifer-linear" className="size-4" />
           </Button>
-          <Button variant="outline" size="sm" className="hidden gap-2 text-muted md:inline-flex" onPress={onOpenCommand}>
+          <Button variant="outline" size="sm" className="hidden gap-2 text-muted lg:inline-flex" onPress={onOpenCommand}>
             <Icon icon="solar:magnifer-linear" className="size-4" />
             <span className="text-sm">Search</span>
             <kbd className="rounded border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
@@ -67,7 +67,7 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
             <Icon icon="solar:square-top-down-linear" className="size-4" /> Live
           </LinkButton>
           <LinkButton href={repoUrl} variant="primary" size="sm" className="gap-1.5">
-            <Icon icon="mdi:github" className="size-4" /> Source
+            <Icon icon="mdi:github" className="size-4" /> <span className="hidden sm:inline">Source</span>
           </LinkButton>
         </div>
       </Navbar.Header>

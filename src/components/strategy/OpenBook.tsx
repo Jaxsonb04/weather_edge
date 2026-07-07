@@ -1,8 +1,10 @@
 import { Card } from "@heroui/react";
 import { Icon } from "@iconify/react";
 import { cityForTicker } from "../../lib/data";
-import { cents, money, type OpenPosition, type StrategyLab } from "../../lib/strategy";
+import { cents, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
+
+const sumRisk = (rows: OpenPosition[]) => rows.reduce((acc, r) => acc + (r.risk ?? 0), 0);
 
 function relTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -75,22 +77,33 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
 }
 
 /** The book as it stands this refresh: exposure KPIs plus open and pending
-    orders (honest empty states included — flat is a position too). */
-export function OpenBook({ s }: { s: StrategyLab }) {
+    orders (honest empty states included — flat is a position too). Pass
+    `profile` to scope everything to one book; exposure is recomputed from the
+    filtered rows. */
+export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
   const sum = s.paper_trading?.summary;
-  const open = s.paper_trading?.open_positions ?? [];
-  const pending = s.paper_trading?.pending_limit_orders ?? [];
+  const open = profile ? openForProfile(s, profile) : s.paper_trading?.open_positions ?? [];
+  const pending = profile ? pendingForProfile(s, profile) : s.paper_trading?.pending_limit_orders ?? [];
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Stat label="Open positions" value={`${sum?.open_positions ?? open.length}`} />
-        <Stat label="Open risk" value={sum?.open_risk != null ? `$${sum.open_risk.toFixed(2)}` : "$0.00"} />
-        <Stat label="Pending limits" value={`${sum?.pending_limit_orders ?? pending.length}`} />
-        <Stat label="Pending risk" value={sum?.pending_limit_risk != null ? `$${sum.pending_limit_risk.toFixed(2)}` : "$0.00"} />
-        <Stat label="Capital at risk · window" value={sum?.capital_at_risk != null ? `$${sum.capital_at_risk.toFixed(2)}` : "—"} />
-        <Stat label="Last monitor action" value={relTime(sum?.latest_monitor_action_at)} />
-      </div>
+      {profile ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Stat label="Open positions" value={`${open.length}`} />
+          <Stat label="Open risk" value={`$${sumRisk(open).toFixed(2)}`} />
+          <Stat label="Pending limits" value={`${pending.length}`} />
+          <Stat label="Pending risk" value={`$${sumRisk(pending).toFixed(2)}`} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <Stat label="Open positions" value={`${sum?.open_positions ?? open.length}`} />
+          <Stat label="Open risk" value={sum?.open_risk != null ? `$${sum.open_risk.toFixed(2)}` : "$0.00"} />
+          <Stat label="Pending limits" value={`${sum?.pending_limit_orders ?? pending.length}`} />
+          <Stat label="Pending risk" value={sum?.pending_limit_risk != null ? `$${sum.pending_limit_risk.toFixed(2)}` : "$0.00"} />
+          <Stat label="Capital at risk · window" value={sum?.capital_at_risk != null ? `$${sum.capital_at_risk.toFixed(2)}` : "—"} />
+          <Stat label="Last monitor action" value={relTime(sum?.latest_monitor_action_at)} />
+        </div>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card className="h-full rounded-2xl ring-1 ring-border/70">
