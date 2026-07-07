@@ -14,7 +14,7 @@ const PILLARS: Pillar[] = [
     title: "Forecasting stack",
     points: [
       "LSTM in production, with an XGBoost challenger A/B-tested out-of-sample (Diebold–Mariano, bootstrap CIs)",
-      "EMOS-weighted blend over an 8-member NWP ensemble plus Google, NWS, and Open-Meteo inputs",
+      "EMOS-weighted 8-member NWP ensemble in all fifteen cities, plus Google, NWS, and Open-Meteo blend inputs on the SFO flagship",
       "A decade of station-aligned KSFO history behind climatology, bias correction, and bin calibration",
     ],
   },
@@ -31,7 +31,7 @@ const PILLARS: Pillar[] = [
     icon: "solar:server-square-cloud-bold",
     title: "Production discipline",
     points: [
-      "Unattended AWS timers scan markets every 15 minutes and publish these JSON artifacts",
+      "Unattended AWS timers scan every city's markets on a 15-minute cadence and publish these JSON artifacts",
       "SQLite paper journal with rule-based monitor exits (take-profit, stop-loss, model veto)",
       "A six-check go-live readiness gate keeps real money disabled in code until it's earned",
     ],

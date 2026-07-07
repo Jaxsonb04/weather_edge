@@ -1,6 +1,6 @@
 import { Chip } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
-import { pct, qualityColor, signedPct } from "../../lib/data";
+import { cityForTicker, pct, qualityColor, signedPct } from "../../lib/data";
 import { cents, closedLedger, money, type ClosedPosition, type StrategyLab } from "../../lib/strategy";
 
 const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
@@ -37,6 +37,21 @@ export function LedgerTable({ s, limit, detailed = false }: LedgerTableProps) {
           <span className="rounded bg-foreground/8 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase text-muted">{d.side}</span>
         </div>
       ),
+    },
+    {
+      id: "city",
+      header: "City",
+      headerClassName: HEAD,
+      cell: (d) => {
+        const city = cityForTicker(d.ticker ?? "");
+        return city ? (
+          <span title={city.name} className="font-mono text-[11px] font-medium uppercase text-muted">
+            {city.slug}
+          </span>
+        ) : (
+          <span className="text-xs text-muted">—</span>
+        );
+      },
     },
     {
       id: "profile",

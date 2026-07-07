@@ -16,7 +16,7 @@ export function Footer({ disclaimer, repoUrl, liveUrl }: FooterProps) {
           <p className="font-display text-base font-semibold">
             Weather<span className="temp-text">Edge</span>
           </p>
-          <p className="mt-1 text-sm text-muted">Station-aligned SFO forecasting + prediction-market quant research.</p>
+          <p className="mt-1 text-sm text-muted">Station-aligned forecasting across fifteen US cities + prediction-market quant research.</p>
           <p className="mt-3 text-xs leading-relaxed text-muted">{disclaimer}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">

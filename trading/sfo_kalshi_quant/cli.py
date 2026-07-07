@@ -811,6 +811,14 @@ def build_parser() -> argparse.ArgumentParser:
     settle.add_argument("--city", default="sfo", help="city slug whose orders this high settles")
     settle.set_defaults(func=cmd_paper_settle)
 
+    prune = sub.add_parser(
+        "paper-prune",
+        help="Retention for decision snapshots (full 7d, per-day dedup to 45d, approved kept)",
+    )
+    prune.add_argument("--full-days", type=int, default=7)
+    prune.add_argument("--dedup-days", type=int, default=45)
+    prune.set_defaults(func=cmd_paper_prune)
+
     auto_settle = sub.add_parser(
         "paper-auto-settle",
         help="Settle open paper orders per city from its live CLI report, archived CLI truth as fallback",
@@ -2939,6 +2947,22 @@ def cmd_paper_settle(args: argparse.Namespace) -> int:
         color.cyan(
             f"[{city.slug}] settled {count} paper orders for {target.isoformat()} "
             f"at {args.settlement_high:.0f}F"
+        )
+    )
+    return 0
+
+
+def cmd_paper_prune(args: argparse.Namespace) -> int:
+    color = Color.from_no_color(args.no_color)
+    store = PaperStore(args.db_path)
+    result = store.prune_decision_snapshots(
+        full_days=args.full_days, dedup_days=args.dedup_days
+    )
+    print(
+        color.cyan(
+            f"pruned decision snapshots: {result['deduped']} deduped "
+            f"(kept last per market-side-day), {result['dropped']} dropped "
+            f"beyond {args.dedup_days}d; approved rows untouched"
         )
     )
     return 0

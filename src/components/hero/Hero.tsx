@@ -22,19 +22,23 @@ export function Hero({ targets }: HeroProps) {
             <Chip size="sm" variant="soft">
               <Chip.Label>Station-aligned · EMOS-calibrated</Chip.Label>
             </Chip>
+            <Chip size="sm" variant="soft">
+              <Chip.Label>15 city markets</Chip.Label>
+            </Chip>
           </Reveal>
 
           <Reveal immediate delay={0.08}>
             <h1 className="font-display text-[2.6rem] font-bold leading-[1.02] tracking-tight text-balance sm:text-6xl">
-              Forecasting the <span className="temp-text">SFO daily high</span>, priced on prediction markets.
+              Forecasting <span className="temp-text">daily highs in fifteen cities</span>, priced on prediction markets.
             </h1>
           </Reveal>
 
           <Reveal immediate delay={0.16}>
             <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted">
-              A station-aligned KSFO forecaster blends Google&nbsp;Weather, NWS, Open-Meteo and a decade of
-              history, layers NWP/EMOS post-processing, then converts the predictive distribution into
-              calibrated temperature-bin probabilities and fee-aware edge — gating every trade.
+              One calibrated NWP/EMOS engine prices daily-high brackets across fifteen US city markets,
+              each settling on its own NWS station. San Francisco is the flagship — Google&nbsp;Weather,
+              NWS, Open-Meteo and a decade of KSFO history feed its full blend — and every trade is
+              converted to fee-aware edge and gated.
             </p>
           </Reveal>
 

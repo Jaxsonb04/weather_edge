@@ -1,5 +1,6 @@
 import { Card } from "@heroui/react";
 import { Icon } from "@iconify/react";
+import { cityForTicker } from "../../lib/data";
 import { cents, money, type OpenPosition, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
 
@@ -28,11 +29,21 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
   }
   return (
     <ul className="divide-y divide-border/50">
-      {rows.map((r) => (
+      {rows.map((r) => {
+        const city = cityForTicker(r.ticker ?? "");
+        return (
         <li key={r.id} className="flex items-center justify-between gap-3 py-2.5">
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium text-foreground">
               <span className="truncate">{r.label ?? r.ticker ?? `#${r.id}`}</span>
+              {city && (
+                <span
+                  title={city.name}
+                  className="rounded bg-foreground/8 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase text-muted"
+                >
+                  {city.slug}
+                </span>
+              )}
               {r.side && (
                 <span className="rounded bg-foreground/8 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase text-muted">
                   {r.side}
@@ -57,7 +68,8 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
             )}
           </div>
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }

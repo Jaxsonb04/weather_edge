@@ -62,11 +62,11 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
                   <span>Toggle light / dark</span>
                 </Command.Item>
                 <Command.Item
-                  textValue="Copy market ticker"
+                  textValue="Copy flagship SFO market ticker"
                   onAction={() => { navigator.clipboard?.writeText("KXHIGHTSFO"); toast.success("Copied KXHIGHTSFO"); onOpenChange(false); }}
                 >
                   <Icon icon="solar:copy-bold" className="size-4 text-muted" />
-                  <span>Copy market ticker</span>
+                  <span>Copy flagship ticker (SFO)</span>
                 </Command.Item>
               </Command.Group>
               <Command.Group heading="Links">

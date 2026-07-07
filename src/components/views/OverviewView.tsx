@@ -7,6 +7,7 @@ import { DecisionCard } from "../market/DecisionCard";
 import { EdgeChart } from "../market/EdgeChart";
 import { MarketBook } from "../market/MarketBook";
 import { SystemHighlights } from "../overview/SystemHighlights";
+import { CityGrid } from "../overview/CityGrid";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Finding } from "../ui/Finding";
 import { Reveal } from "../ui/Reveal";
@@ -79,9 +80,21 @@ export function OverviewView({ data }: { data: DashboardData }) {
           </Reveal>
         </section>
 
-        <section id="system" className="scroll-mt-24">
+        <section id="cities" className="scroll-mt-24">
           <SectionHeading
             index="04"
+            eyebrow="Coverage"
+            title="Fifteen city markets"
+            sub="Each market settles on its own official NWS climate report; every city runs the same calibrated multi-model forecast."
+          />
+          <Reveal>
+            <CityGrid />
+          </Reveal>
+        </section>
+
+        <section id="system" className="scroll-mt-24">
+          <SectionHeading
+            index="05"
             eyebrow="Under the hood"
             title="A trading system, not a script"
             sub="What's actually running behind this page: a forecasting stack, a market microstructure engine, and the production discipline that keeps it honest."

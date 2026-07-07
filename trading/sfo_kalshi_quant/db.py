@@ -1818,6 +1818,55 @@ class PaperStore:
                 params,
             ).fetchall()
 
+    def prune_decision_snapshots(
+        self,
+        *,
+        full_days: int = 7,
+        dedup_days: int = 45,
+    ) -> dict[str, int]:
+        """Retention for the highest-volume table on the disk-bound box.
+
+        Fifteen cities at a 5-minute scan write ~60k rejection snapshots
+        (~0.5 GB) per day; unbounded growth filled the old single-city box and
+        thrashed the strategy-lab pass. Policy: everything stays full-fidelity
+        for ``full_days``; between ``full_days`` and ``dedup_days`` only the
+        LAST snapshot per (market, side, target_date) survives -- the
+        end-of-day context of why the book said what it said -- plus every
+        approved/signal-approved row; beyond ``dedup_days`` only approved
+        rows remain. Approved rows are never deleted.
+        """
+
+        if full_days < 1 or dedup_days <= full_days:
+            raise ValueError("need dedup_days > full_days >= 1")
+        with self.connect() as conn:
+            dedup_cursor = conn.execute(
+                """
+                DELETE FROM decision_snapshots
+                WHERE created_at < datetime('now', ?)
+                  AND created_at >= datetime('now', ?)
+                  AND COALESCE(approved, 0) = 0
+                  AND COALESCE(signal_approved, 0) = 0
+                  AND id NOT IN (
+                      SELECT MAX(id) FROM decision_snapshots
+                      GROUP BY market_ticker, side, target_date
+                  )
+                """,
+                (f"-{full_days} days", f"-{dedup_days} days"),
+            )
+            drop_cursor = conn.execute(
+                """
+                DELETE FROM decision_snapshots
+                WHERE created_at < datetime('now', ?)
+                  AND COALESCE(approved, 0) = 0
+                  AND COALESCE(signal_approved, 0) = 0
+                """,
+                (f"-{dedup_days} days",),
+            )
+            return {
+                "deduped": dedup_cursor.rowcount,
+                "dropped": drop_cursor.rowcount,
+            }
+
     def open_paper_target_dates(self, *, series_ticker: str | None = None) -> list[str]:
         query = """
             SELECT DISTINCT target_date

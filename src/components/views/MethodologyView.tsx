@@ -75,7 +75,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
         icon="solar:graph-up-bold"
         eyebrow="Methodology & diagnostics"
         title="How the forecast earns its trust"
-        sub="A decade of KSFO observations, two models held out-of-sample, and the calibration that turns a temperature distribution into honest probabilities."
+        sub="A decade of KSFO observations behind the San Francisco flagship, the same EMOS multi-model pipeline running per city against each city's own settlement station, and the calibration that turns a temperature distribution into honest probabilities."
       />
       <main className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
         <section className="scroll-mt-24">
@@ -83,7 +83,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="01"
             eyebrow="Model proof"
             title="LSTM in production, held out-of-sample"
-            sub="Compared against an XGBoost challenger and a naive persistence baseline on days neither model trained on."
+            sub="Compared against an XGBoost challenger and a naive persistence baseline on days neither model trained on. The LSTM — like the Google source blend — remains an SFO-flagship extra; the other fourteen cities trade on the shared EMOS pipeline."
           />
           {diag ? (
             <div className="space-y-5">
@@ -122,7 +122,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="02"
             eyebrow="Forecast accuracy"
             title="Ten years of KSFO, distilled"
-            sub={`${forecast.n_days_observed.toLocaleString()} observed days across ${forecast.n_years} years anchor the climatology, post-processing, and calibration.`}
+            sub={`${forecast.n_days_observed.toLocaleString()} observed days across ${forecast.n_years} years anchor the flagship's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station.`}
           />
           <Reveal className="mb-5">
             <ClimatologyChart forecast={forecast} />

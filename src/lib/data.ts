@@ -130,6 +130,56 @@ export interface DashboardData {
   signal: TradingSignal;
 }
 
+/* ---- multi-city artifact (cities_data.json) ---- */
+
+export interface CityForecast {
+  target_date: string;
+  lead_days?: number;
+  predicted_high_f: number;
+  sigma_f?: number | null;
+  n_models?: number | null;
+  model_spread_f?: number | null;
+  fetched_at?: string;
+  method?: string;
+}
+export interface CitySettlement {
+  local_date: string;
+  high_f: number;
+  fetched_at?: string;
+  source?: string;
+}
+export interface CityBookSide {
+  open_positions?: number;
+  open_exposure?: number;
+  settled_orders?: number;
+  settled_pnl?: number;
+}
+export interface CityBooks {
+  live?: CityBookSide;
+  research?: CityBookSide;
+  decisions_24h?: number;
+  approved_24h?: number;
+}
+export interface City {
+  slug: string;
+  name: string;
+  series_ticker: string;
+  station_id?: string;
+  settlement_source?: string;
+  civil_tz?: string;
+  has_full_blend?: boolean;
+  forecasts?: CityForecast[];
+  latest_settlement?: CitySettlement | null;
+  books?: CityBooks | null;
+}
+export interface CitiesData {
+  generated_at?: string;
+  city_count?: number;
+  cities_with_live_forecasts?: number;
+  note?: string;
+  cities?: City[];
+}
+
 const BASE = import.meta.env.BASE_URL ?? "./";
 
 async function getJSON<T>(name: string): Promise<T> {
@@ -177,6 +227,43 @@ export function useResource<T>(name: string) {
     };
   }, [name]);
   return { data, error };
+}
+
+/** Multi-city coverage artifact — tolerant of the file not being published yet
+    (renders a quiet empty state instead of failing the page). */
+export const useCitiesData = () => useResource<CitiesData>("cities_data.json");
+
+/* ---- city ticker mapping ---- */
+
+const CITY_TICKERS: { ticker: string; slug: string; name: string }[] = [
+  { ticker: "KXHIGHMIA", slug: "mia", name: "Miami" },
+  { ticker: "KXHIGHLAX", slug: "lax", name: "Los Angeles" },
+  { ticker: "KXHIGHCHI", slug: "chi", name: "Chicago" },
+  { ticker: "KXHIGHTATL", slug: "atl", name: "Atlanta" },
+  { ticker: "KXHIGHNY", slug: "nyc", name: "New York" },
+  { ticker: "KXHIGHTDAL", slug: "dal", name: "Dallas" },
+  { ticker: "KXHIGHTSEA", slug: "sea", name: "Seattle" },
+  { ticker: "KXHIGHPHIL", slug: "phl", name: "Philadelphia" },
+  { ticker: "KXHIGHTPHX", slug: "phx", name: "Phoenix" },
+  { ticker: "KXHIGHAUS", slug: "aus", name: "Austin" },
+  { ticker: "KXHIGHTSFO", slug: "sfo", name: "San Francisco" },
+  { ticker: "KXHIGHTHOU", slug: "hou", name: "Houston" },
+  { ticker: "KXHIGHTOKC", slug: "okc", name: "Oklahoma City" },
+  { ticker: "KXHIGHTBOS", slug: "bos", name: "Boston" },
+  { ticker: "KXHIGHDEN", slug: "den", name: "Denver" },
+];
+
+/** Longest-prefix match of a full market ticker (e.g. "KXHIGHTSFO-26JUL07-B67")
+    against the fifteen series tickers. Null when nothing matches. */
+export function cityForTicker(ticker: string): { slug: string; name: string } | null {
+  if (!ticker) return null;
+  let best: (typeof CITY_TICKERS)[number] | null = null;
+  for (const c of CITY_TICKERS) {
+    if (ticker.startsWith(c.ticker) && (best == null || c.ticker.length > best.ticker.length)) {
+      best = c;
+    }
+  }
+  return best ? { slug: best.slug, name: best.name } : null;
 }
 
 /* ---- derived helpers ---- */
