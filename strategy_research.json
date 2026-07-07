@@ -3,22 +3,22 @@
   "backtest_summary": {
     "available": true,
     "counts": {
-      "approved_pre_resolution_signals": 1209,
-      "approved_raw_signals": 1209,
-      "approved_signals": 62,
-      "deduped_signals": 324,
+      "approved_pre_resolution_signals": 1212,
+      "approved_raw_signals": 1212,
+      "approved_signals": 64,
+      "deduped_signals": 492,
       "excluded_post_resolution_signals": 348,
-      "pre_resolution_signals": 159560,
-      "raw_signals": 159908,
+      "pre_resolution_signals": 159920,
+      "raw_signals": 160268,
       "settled_signals": 300
     },
     "dedupe_explanation": "Repeated 15-minute AWS scans are counted once per target, market, and side, using the first approved (entry) snapshot so approved metrics reflect trades actually taken, not the decayed last scan.",
     "lead_mode_counts": {
       "day_ahead": {
-        "approved": 416,
+        "approved": 419,
         "label": "Day-ahead forecast",
         "lead_mode": "day_ahead",
-        "total": 71093
+        "total": 71453
       },
       "intraday_high_so_far": {
         "approved": 584,
@@ -46,7 +46,7 @@
       }
     },
     "metrics": {
-      "approval_rate": 0.1914,
+      "approval_rate": 0.1301,
       "approved_capital_at_risk": 214.85,
       "approved_hit_rate": 0.7,
       "approved_paper_pnl": 24.15,
@@ -446,7 +446,7 @@
         "config_basis": "paper-realism, not real-money validated",
         "counts": {
           "approved_under_candidate_config": 8,
-          "approved_under_recorded_config": 63,
+          "approved_under_recorded_config": 64,
           "approved_without_settlement": 1,
           "considered": 492,
           "independent_days": 6,
@@ -619,7 +619,7 @@
         "config_basis": "paper-realism, not real-money validated",
         "counts": {
           "approved_under_candidate_config": 55,
-          "approved_under_recorded_config": 63,
+          "approved_under_recorded_config": 64,
           "approved_without_settlement": 4,
           "considered": 492,
           "independent_days": 19,
@@ -1496,7 +1496,7 @@
         }
       ]
     },
-    "generated_at": "2026-07-07T03:12:19.800308+00:00",
+    "generated_at": "2026-07-07T03:12:48.458391+00:00",
     "learnings": [
       "NO side: 4/8 won, net $-0.80 this window.",
       "YES side: 0/1 won, net $-0.34 this window.",
@@ -1863,7 +1863,7 @@
       "live_targets": [
         {
           "fetched_at": "2026-07-07T03:10:50+00:00",
-          "latest_age_hours": 0.02,
+          "latest_age_hours": 0.03,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 91.98,
@@ -1880,7 +1880,7 @@
       "recent_live_targets": [
         {
           "fetched_at": "2026-07-07T03:10:50+00:00",
-          "latest_age_hours": 0.02,
+          "latest_age_hours": 0.03,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 91.98,
@@ -1896,7 +1896,7 @@
         "rows": 10378
       }
     },
-    "generated_at": "2026-07-07T03:12:08.144494+00:00",
+    "generated_at": "2026-07-07T03:12:39.927076+00:00",
     "nwp": {
       "available": true,
       "max_stale_hours": 36.0,
@@ -2052,7 +2052,7 @@
       ],
       "targets": [
         {
-          "latest_age_hours": 0.22,
+          "latest_age_hours": 0.23,
           "latest_fetched_at": "2026-07-07T02:58:45+00:00",
           "lead_days": 1,
           "model_count": 8,
@@ -2062,7 +2062,7 @@
           "target_date": "2026-07-06"
         },
         {
-          "latest_age_hours": 0.22,
+          "latest_age_hours": 0.23,
           "latest_fetched_at": "2026-07-07T02:58:45+00:00",
           "lead_days": 1,
           "model_count": 8,
@@ -2127,7 +2127,7 @@
       }
     ]
   },
-  "generated_at": "2026-07-07T03:12:25.283246+00:00",
+  "generated_at": "2026-07-07T03:12:52.841000+00:00",
   "live_frequency_tuning": {
     "approved_per_independent_day": 1.3333,
     "approved_under_current_live_config": 8,
@@ -6556,7 +6556,7 @@
             }
           ]
         },
-        "generated_at": "2026-07-07T03:12:19.800308+00:00",
+        "generated_at": "2026-07-07T03:12:48.458391+00:00",
         "learnings": [
           "live resolved 1 trade(s): 1W / 0L, net $+0.06.",
           "live currently has $8.08 of paper open risk.",
@@ -8767,7 +8767,7 @@
             }
           ]
         },
-        "generated_at": "2026-07-07T03:12:19.800308+00:00",
+        "generated_at": "2026-07-07T03:12:48.458391+00:00",
         "learnings": [
           "research resolved 8 trade(s): 3W / 5L, net $-1.20.",
           "research has 24 current signal candidate(s) in the latest artifact.",
@@ -16430,10 +16430,10 @@
     "challenger_calibration_label": "clean-blend/combined = Challenger research calibration",
     "challenger_calibration_source": "clean-blend/combined",
     "db_path_hint": "/opt/weatheredge/trading/data/paper_trading.db",
-    "deduped_signal_count": 324,
+    "deduped_signal_count": 492,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-07-07T03:12:25.283203+00:00",
+    "last_updated": "2026-07-07T03:12:52.840974+00:00",
     "latest_signal_targets": [
       "2026-07-06",
       "2026-07-07"
@@ -16444,8 +16444,8 @@
     "paper_only": true,
     "paper_trading_status": "1 open paper position(s)",
     "post_resolution_excluded_count": 348,
-    "pre_resolution_signal_count": 159560,
-    "raw_signal_count": 159908,
+    "pre_resolution_signal_count": 159920,
+    "raw_signal_count": 160268,
     "sample_warning": "",
     "target_exposure_cap": 180.0
   }
