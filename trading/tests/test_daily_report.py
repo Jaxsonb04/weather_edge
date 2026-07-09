@@ -5,11 +5,14 @@ import json
 import sqlite3
 import tempfile
 from contextlib import redirect_stdout
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sfo_kalshi_quant.cli import main
-from sfo_kalshi_quant.report import _best_signal
+from sfo_kalshi_quant import report
+from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.models import EventSnapshot, MarketBin
+from sfo_kalshi_quant.report import _best_signal, build_daily_report
 
 
 def _write_forecaster_fixture(root: Path, target: date) -> None:
@@ -129,6 +132,13 @@ def test_daily_report_json_uses_fallback_without_recording_state():
         assert payload["targets"][0]["market_available"] is False
         assert payload["targets"][0]["decisions"]
         assert payload["calibration"]["n"] == 40
+        assert datetime.fromisoformat(payload["generated_at"]).tzinfo is not None
+        assert payload["market_data_at"] is None
+        assert payload["targets"][0]["target_status"] in {
+            "settlement_day",
+            "upcoming",
+            "past",
+        }
         assert not (Path(tmp) / "trading" / "data").exists()
 
 
@@ -164,6 +174,59 @@ def test_daily_report_can_write_public_trading_signal_artifact():
         assert payload["summary"]["best_signal"] is not None
         sides = {row["side"] for row in payload["targets"][0]["decisions"]}
         assert sides == {"YES", "NO"}
+
+
+def test_daily_report_uses_fixed_standard_settlement_day_for_target_status():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        target = date(2026, 6, 4)
+        _write_forecaster_fixture(root, target)
+
+        payload = build_daily_report(
+            forecaster_root=root,
+            targets=[target],
+            config=StrategyConfig(),
+            side="both",
+            no_ensemble=True,
+            allow_live_market=False,
+            calibration_source="lstm",
+            now=datetime(2026, 6, 4, 7, 30, tzinfo=timezone.utc),
+        )
+
+    # 07:30 UTC is still June 3 on SFO's fixed UTC-8 settlement clock.
+    assert payload["generated_at"] == "2026-06-04T07:30:00+00:00"
+    assert payload["targets"][0]["target_status"] == "upcoming"
+    assert payload["market_data_at"] is None
+
+
+def test_market_data_at_uses_latest_available_source_timestamp():
+    market = MarketBin(
+        ticker="KXHIGHTSFO-26JUN04-B65.5",
+        event_ticker="KXHIGHTSFO-26JUN04",
+        title="",
+        yes_sub_title="65 to 66",
+        strike_type="between",
+        floor_strike=65.0,
+        cap_strike=66.0,
+        yes_bid=0.2,
+        yes_ask=0.3,
+        no_bid=0.7,
+        no_ask=0.8,
+        yes_bid_size=10.0,
+        yes_ask_size=10.0,
+        status="active",
+        raw={"updated_time": "2026-06-04T07:25:00Z"},
+    )
+    event = EventSnapshot(
+        event_ticker="KXHIGHTSFO-26JUN04",
+        title="",
+        target_date=date(2026, 6, 4),
+        markets=[market],
+        raw={"updated_time": "2026-06-04T07:20:00Z"},
+    )
+
+    assert report._market_data_at(event) == "2026-06-04T07:25:00+00:00"
+    assert report._market_data_at(None) is None
 
 
 def test_best_signal_prefers_live_market_over_probability_only_ladder():

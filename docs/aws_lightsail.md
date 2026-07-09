@@ -15,8 +15,8 @@ bash trading/deploy/aws/sync_to_lightsail.sh
 
 The sync copies source and rebuild inputs, but excludes local runtime artifacts
 such as `weather.db`, `google_weather_cache.json`, `trading_signal.json`,
-`strategy_research.json`, SQLite files, and `trading/data/`. After sync and
-refresh, those live artifacts (including the generated `cities_data.json`)
+`strategy_research.json`, `cities_data.json`, `publication_manifest.json`,
+SQLite files, and `trading/data/`. After sync and refresh, those live artifacts
 belong to AWS.
 
 Required local env before syncing:
@@ -37,12 +37,14 @@ The systemd installer remains in:
 
 - `sfo-forecaster-refresh.timer` (every 30 minutes; serves live EMOS forecasts
   for all fifteen cities — one batched Open-Meteo call per city — plus NWS
-  observations with `--days 2 --cities all`, and publishes `cities_data.json`
-  alongside the other data JSONs)
-- `sfo-strategy-lab-refresh.timer` (every five minutes; live-fetches Kalshi
-  top-of-book via `daily-report`, rebuilds `trading_signal.json` and
-  `strategy_research.json`, and republishes the SPA site to Pages without paid
-  Google Weather refresh calls)
+  observations with `--days 2 --cities all`; this service only refreshes
+  forecast state and never builds or publishes site artifacts)
+- `sfo-operational-publish.timer` (every five minutes; builds
+  `trading_signal.json`, `cities_data.json`, and the checksum-bearing
+  `publication_manifest.json`, validates the snapshot, then publishes it)
+- `sfo-strategy-lab-refresh.timer` (every fifteen minutes; rebuilds only the
+  heavier `strategy_research.json`, refreshes the manifest, validates the
+  snapshot, and publishes without paid Google Weather refresh calls)
 - `sfo-dataset-backfill.timer` (nightly at 02:25 Pacific; also runs the IEM CLI
   settlement-truth refresh, NWP `--daily --cities all`, the EMOS rolling-origin
   rebuild for leads 1 and 2, and `paper-prune` snapshot retention)
@@ -56,6 +58,32 @@ The systemd installer remains in:
 
 Strategy Lab research is published as plain public `strategy_research.json` by
 design. It contains only paper-trading research data, with no secrets.
+
+Both publication services hold
+`SFO_ARTIFACT_GENERATION_LOCK=/opt/weatheredge/.locks/artifact-generation.lock`
+across generation, manifest validation, and artifact copying. This lock is
+separate from the publisher's Git lock, which only serializes updates to the
+`gh-pages` branch.
+
+The freshness watchdog verifies more than `weather.db`: the operational
+`trading_signal.json` and `cities_data.json` generation times must be within
+10 minutes, and `strategy_research.json` must be present and within 20 minutes.
+Set
+`SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json`
+to apply the same metadata checks to the snapshot visitors receive. Missing,
+invalid, stale, or checksum-mismatched local artifacts make the watchdog exit
+non-zero.
+
+For an existing paper database, create the covering decision-report index once
+with paper scan and monitor services paused. Normal service initialization
+deliberately skips this potentially large build on an existing journal:
+
+```bash
+sudo systemctl stop sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer
+sudo systemctl stop sfo-kalshi-paper-scan.service sfo-kalshi-paper-monitor.service
+bash /opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh
+sudo systemctl start sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer
+```
 
 ## Safety
 
@@ -116,9 +144,11 @@ sudo ufw --force enable
 sudo ufw status verbose
 ```
 
-Then rebuild and publish once to verify Strategy Lab output:
+Then rebuild and publish each path once:
 
 ```bash
+sudo systemctl start sfo-operational-publish.service
 sudo systemctl start sfo-strategy-lab-refresh.service
+curl -I https://jaxsonb04.github.io/weather_edge/publication_manifest.json
 curl -I https://jaxsonb04.github.io/weather_edge/strategy_research.json
 ```

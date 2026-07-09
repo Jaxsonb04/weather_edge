@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, is_dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -29,6 +29,7 @@ from .models import (
 )
 from .probability import ResidualCalibrator
 from .risk import TradeEvaluator
+from .settlement_day import settlement_today
 from .standard_bins import standard_sfo_bins
 
 
@@ -45,9 +46,14 @@ def build_daily_report(
     allow_live_market: bool = True,
     calibration_min_train: int = 180,
     calibration_source: str = "auto",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a public, paper-only daily report without recording local state."""
 
+    generated_at = now or datetime.now(timezone.utc)
+    if generated_at.tzinfo is None or generated_at.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    generated_at = generated_at.astimezone(timezone.utc)
     adapter = SfoForecasterAdapter(forecaster_root)
     outcomes = adapter.load_calibration_outcomes(calibration_source)
     calibrator = ResidualCalibrator(outcomes, config)
@@ -67,9 +73,20 @@ def build_daily_report(
         )
         for target in targets
     ]
+    settlement_day = settlement_today(generated_at)
+    for report in target_reports:
+        report["target_status"] = _target_status(
+            date.fromisoformat(report["target_date"]),
+            settlement_day,
+        )
     best = _best_signal(target_reports)
+    market_data_at = _latest_timestamp(
+        report.get("market_data_at") for report in target_reports
+    )
     return {
         "schema_version": 1,
+        "generated_at": generated_at.isoformat(timespec="seconds"),
+        "market_data_at": market_data_at,
         "mode": "paper_research_only",
         "live_orders_enabled": False,
         "summary": {
@@ -125,7 +142,7 @@ def build_target_report(
         market_available = True
     else:
         markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
-        event_title = "No live Kalshi event found; probability-only fallback ladder"
+        event_title = "No live prediction-market event found; probability-only fallback ladder"
         market_available = False
 
     # lead_days=None: read the live EMOS across leads (next-day=1, 2-day-out=2);
@@ -163,6 +180,7 @@ def build_target_report(
         "target_date": target.isoformat(),
         "event_title": event_title,
         "market_available": market_available,
+        "market_data_at": _market_data_at(event),
         "forecast": forecast_to_dict(forecast),
         "intraday": intraday_to_dict(intraday),
         "ensemble": ensemble_to_dict(ensemble),
@@ -427,11 +445,70 @@ def _event_for_report(
         events = load_event_snapshots(offline_events, target)
         return (events[0] if events else None), None
     if not allow_live_market:
-        return None, "Live Kalshi lookup disabled; using probability-only fallback ladder."
+        return (
+            None,
+            "Live prediction-market lookup disabled; using probability-only fallback ladder.",
+        )
     try:
         return KalshiPublicClient().find_event_by_date(target, series_ticker=SERIES_TICKER), None
     except URLError as exc:
-        return None, f"Live Kalshi lookup failed: {exc}"
+        return None, f"Live prediction-market lookup failed: {exc}"
+
+
+def _target_status(target: date, today: date) -> str:
+    if target < today:
+        return "past"
+    if target == today:
+        return "settlement_day"
+    return "upcoming"
+
+
+def _parse_source_timestamp(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 10_000_000_000:
+            seconds /= 1000.0
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.replace(".", "", 1).isdigit():
+        return _parse_source_timestamp(float(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_timestamp(values) -> str | None:
+    parsed = [
+        timestamp
+        for value in values
+        if (timestamp := _parse_source_timestamp(value))
+    ]
+    if not parsed:
+        return None
+    return max(parsed).isoformat(timespec="seconds")
+
+
+def _market_data_at(event: EventSnapshot | None) -> str | None:
+    """Return the newest source timestamp without inventing one when absent."""
+
+    if event is None:
+        return None
+    values: list[object] = []
+    for payload in [event.raw, *(market.raw for market in event.markets)]:
+        for key in ("updated_time", "last_updated_ts", "fetched_at"):
+            values.append(payload.get(key))
+    return _latest_timestamp(values)
 
 
 def _ensemble_for_report(

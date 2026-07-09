@@ -1,11 +1,11 @@
 [Unit]
-Description=Run SFO Strategy Lab trading-results refresh every five minutes
+Description=Run SFO Strategy Lab trading-results refresh every fifteen minutes
 
 [Timer]
 # Decorrelate firing on a no-swap box so units don't all spike together
 RandomizedDelaySec=30
-OnBootSec=2min
-OnUnitActiveSec=5min
+OnBootSec=4min
+OnUnitActiveSec=15min
 AccuracySec=30s
 Persistent=true
 Unit=sfo-strategy-lab-refresh.service

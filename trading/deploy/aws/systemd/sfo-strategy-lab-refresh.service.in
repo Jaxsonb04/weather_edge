@@ -9,14 +9,13 @@ User=__APP_USER__
 WorkingDirectory=__FORECASTER_DIR__
 EnvironmentFile=__ENV_FILE__
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
-ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/build_public_trading_signal.sh
-ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/publish_forecaster_pages.sh
+ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh strategy
 Nice=5
 # Cap memory so a spike self-limits instead of evicting the other sfo units
 # (1 GB box). A healthy cycle peaks well under the cap now that
 # strategy-research streams decision_snapshots instead of materializing them.
 MemoryHigh=450M
 MemoryMax=600M
-# Fail a stuck cycle fast instead of blocking the 5-minute publish queue for
+# Fail a stuck cycle fast instead of blocking the shared publication queue for
 # hours (memory-throttled strategy-research once ran 76 minutes).
 TimeoutStartSec=900

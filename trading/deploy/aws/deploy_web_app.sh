@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the HeroUI React dashboard and deploy it to the Lightsail box's prebuilt
-# web dir (/opt/weatheredge/webdist). The box's 5-minute gh-pages publish
+# web dir (/opt/weatheredge/webdist). The box's 5-minute operational publish
 # (publish_forecaster_pages.sh) then serves that app shell with the freshly
 # generated forecast/trading JSONs overlaid on top.
 #
@@ -34,6 +34,6 @@ $SSH "$USER@$LIGHTSAIL_IP" 'mkdir -p /opt/weatheredge/webdist'
 rsync -az --delete -e "$SSH" dist/ "$USER@$LIGHTSAIL_IP:/opt/weatheredge/webdist/"
 
 echo "==> publishing to GitHub Pages"
-$SSH "$USER@$LIGHTSAIL_IP" 'sudo systemctl start sfo-strategy-lab-refresh.service'
+$SSH "$USER@$LIGHTSAIL_IP" 'sudo systemctl start sfo-operational-publish.service'
 
 echo "Done — live at https://jaxsonb04.github.io/weather_edge/"

@@ -284,6 +284,15 @@ CREATE INDEX IF NOT EXISTS idx_research_shadow_monitor_order
     ON research_shadow_monitor_snapshots (shadow_order_id, created_at);
 """
 
+# Fresh databases can build this covering report index cheaply during normal
+# initialization. Existing journals deliberately skip it: production creates it
+# once with deploy/aws/create_decision_snapshot_index.sh while scanners are
+# paused, avoiding a surprise multi-GB index build at ordinary service start.
+DECISION_SNAPSHOT_REPORT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_created_market
+    ON decision_snapshots (created_at, market_ticker, approved)
+"""
+
 # DB-level backstop for the application's concurrent-open guard
 # (has_active_paper_entry). The app guard is a check-then-insert across separate
 # connections, so a transient profile-normalization gap during a deploy (the
@@ -432,6 +441,10 @@ class PaperStore:
 
     def init(self) -> None:
         with self.connect() as conn:
+            decision_table_existed = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='decision_snapshots'"
+            ).fetchone() is not None
             conn.executescript(SCHEMA)
             existing = {
                 row[1]
@@ -479,6 +492,8 @@ class PaperStore:
                 )
             _migrate_legacy_profile_names(conn)
             conn.executescript(INDEXES)
+            if not decision_table_existed:
+                conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
             self._ensure_open_position_guard_index(conn)
 
     def _ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:

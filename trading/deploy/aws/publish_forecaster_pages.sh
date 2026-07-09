@@ -15,20 +15,25 @@ if [[ "${SFO_PUBLISH_PAGES:-0}" != "1" ]]; then
 fi
 
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
+TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
+PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 WEBDIST_DIR="${SFO_WEBDIST_DIR:-/opt/weatheredge/webdist}"
 REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
 PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
+MANIFEST_PATH="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
+ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-/opt/weatheredge/.locks/artifact-generation.lock}"
+LOCK_WAIT_SECONDS="${SFO_ARTIFACT_LOCK_WAIT_SECONDS:-900}"
 
-# Fresh data artifacts (regenerated each refresh by the forecaster pipeline).
-# These are exactly the JSONs the SPA fetches; everything here is public
-# paper-trading research by design.
-JSON_ARTIFACTS=(
+# The manifest validator always emits these required files. It emits the
+# strategy_research.json artifact only when the manifest records a validated
+# current or preserved copy, then emits publication_manifest.json itself.
+REQUIRED_JSON_ARTIFACTS=(
   trading_signal.json
   forecast_data.json
   weather_story_data.json
-  strategy_research.json
   cities_data.json
+  publication_manifest.json
 )
 
 if [[ ! -d "$FORECASTER_DIR" ]]; then
@@ -43,20 +48,95 @@ if [[ ! -f "$DEPLOY_KEY" ]]; then
   echo "missing GitHub Pages deploy key: $DEPLOY_KEY" >&2
   exit 1
 fi
+if [[ "$PYTHON_BIN" != */* ]]; then
+  if ! PYTHON_BIN="$(command -v "$PYTHON_BIN")"; then
+    echo "missing trading Python runtime: ${SFO_TRADING_PYTHON:-$PYTHON_BIN}" >&2
+    exit 1
+  fi
+elif [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "missing trading Python runtime: $PYTHON_BIN" >&2
+  exit 1
+fi
+
+artifact_lock_owned=0
+if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" ]]; then
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "flock is required for artifact publication" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$ARTIFACT_LOCK")"
+  exec 8>"$ARTIFACT_LOCK"
+  if ! flock -w "$LOCK_WAIT_SECONDS" 8; then
+    echo "timed out waiting for artifact generation lock: $ARTIFACT_LOCK" >&2
+    exit 1
+  fi
+  artifact_lock_owned=1
+fi
+
+validate_args=(
+  -m sfo_kalshi_quant.publication validate
+  --artifact-root "$FORECASTER_DIR"
+  --manifest "$MANIFEST_PATH"
+  --print-artifacts
+)
+if [[ "${SFO_REQUIRE_STRATEGY_ARTIFACT:-0}" == "1" ]]; then
+  validate_args+=(--require-strategy)
+fi
+if ! validated_artifacts="$(cd "$TRADING_DIR" && "$PYTHON_BIN" "${validate_args[@]}")"; then
+  echo "publication manifest validation failed" >&2
+  exit 1
+fi
+JSON_ARTIFACTS=()
+while IFS= read -r artifact; do
+  [[ -n "$artifact" ]] && JSON_ARTIFACTS+=("$artifact")
+done <<<"$validated_artifacts"
+
+for required in "${REQUIRED_JSON_ARTIFACTS[@]}"; do
+  found=0
+  for artifact in "${JSON_ARTIFACTS[@]}"; do
+    [[ "$artifact" == "$required" ]] && found=1
+  done
+  if (( found == 0 )); then
+    echo "validated publication set omitted required artifact: $required" >&2
+    exit 1
+  fi
+done
+
+snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-snapshot.XXXXXX")"
+publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-pages.XXXXXX")"
+trap 'rm -rf "$snapshot_dir" "$publish_dir"' EXIT
+
+# Copy exactly the validator's list while the generation lock is held. There is
+# no existence-based skip: a vanished or unreadable configured file fails here.
+for artifact in "${JSON_ARTIFACTS[@]}"; do
+  case "$artifact" in
+    trading_signal.json|forecast_data.json|weather_story_data.json|cities_data.json|strategy_research.json|publication_manifest.json) ;;
+    *)
+      echo "validator returned unexpected artifact path: $artifact" >&2
+      exit 1
+      ;;
+  esac
+  source_path="$FORECASTER_DIR/$artifact"
+  if [[ "$artifact" == "publication_manifest.json" ]]; then
+    source_path="$MANIFEST_PATH"
+  fi
+  cp "$source_path" "$snapshot_dir/$artifact"
+done
+
+if (( artifact_lock_owned == 1 )); then
+  flock -u 8
+fi
 
 export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
-# Serialize publishers on the box (hourly forecaster-refresh + 5-min strategy-lab
-# refresh) so they cannot race the same gh-pages ref. flock is the primary
-# serializer; the fetch+retry loop is the portable backstop.
+# Keep the pages Git lock distinct from the artifact-generation lock. The
+# artifact snapshot above is already immutable, so slow fetch/push retries do
+# not block the next generator.
 PAGES_LOCK="${SFO_PAGES_LOCK:-${TMPDIR:-/tmp}/sfo-weather-pages.lock}"
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$PAGES_LOCK"
   flock 9
 fi
-
-publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-pages.XXXXXX")"
-trap 'rm -rf "$publish_dir"' EXIT
 
 git init -b "$PAGES_BRANCH" "$publish_dir" >/dev/null
 cd "$publish_dir"
@@ -80,9 +160,7 @@ while true; do
   cp -R "$WEBDIST_DIR"/. ./
   # 2) overlay the freshly generated data JSONs so the SPA loads live data
   for artifact in "${JSON_ARTIFACTS[@]}"; do
-    if [[ -e "$FORECASTER_DIR/$artifact" ]]; then
-      cp "$FORECASTER_DIR/$artifact" "./$artifact"
-    fi
+    cp "$snapshot_dir/$artifact" "./$artifact"
   done
   touch .nojekyll
 
