@@ -26,6 +26,8 @@ def test_installer_forecaster_venv_installs_runtime_dependencies():
     installer = _read(AWS_DIR / "install_systemd.sh")
 
     assert '"$FORECASTER_DIR/.venv/bin/python" -m pip install certifi numpy pandas' in installer
+    apt_install = next(line for line in installer.splitlines() if "apt-get install" in line)
+    assert "curl" in apt_install.split()
 
 
 def test_github_verify_workflow_installs_test_import_dependencies():
@@ -358,7 +360,12 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     assert "sfo_kalshi_quant.publication validate" in watchdog
     assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
     assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
-    assert "SFO_PUBLICATION_MANIFEST_URL=" in example_env
+    assert (
+        "SFO_PUBLICATION_MANIFEST_URL="
+        "https://jaxsonb04.github.io/weather_edge/publication_manifest.json"
+    ) in example_env
+    assert "plain-text HTTP endpoint" in watchdog
+    assert "Slack/Discord" not in watchdog
     for documentation in (readme, lightsail):
         assert "10 minutes" in documentation
         assert "20 minutes" in documentation

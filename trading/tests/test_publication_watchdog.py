@@ -58,7 +58,12 @@ def _fresh_root(
     return root
 
 
-def _run(root: Path, *, public_url: str = "") -> subprocess.CompletedProcess[str]:
+def _run(
+    root: Path,
+    *,
+    public_url: str = "",
+    publish_pages: bool = False,
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "SFO_FORECASTER_ROOT": str(root),
@@ -71,6 +76,7 @@ def _run(root: Path, *, public_url: str = "") -> subprocess.CompletedProcess[str
         "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES": "10",
         "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES": "20",
         "SFO_PUBLICATION_MANIFEST_URL": public_url,
+        "SFO_PUBLISH_PAGES": "1" if publish_pages else "0",
         "SFO_FRESHNESS_ALERT_URL": "",
     }
     return subprocess.run(
@@ -92,6 +98,16 @@ def test_watchdog_accepts_fresh_database_and_publication_manifest():
     assert result.returncode == 0, result.stderr
     assert "publication manifest valid" in result.stdout
     assert "forecast DB fresh" in result.stdout
+
+
+def test_watchdog_requires_public_manifest_url_when_pages_publishing_is_enabled():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fresh_root(Path(tmp))
+
+        result = _run(root, publish_pages=True)
+
+    assert result.returncode == 1
+    assert "SFO_PUBLICATION_MANIFEST_URL is required" in result.stderr
 
 
 def test_watchdog_rejects_stale_operational_artifacts_even_with_fresh_manifest():
@@ -170,3 +186,20 @@ def test_watchdog_optionally_rejects_stale_public_manifest():
     assert "public publication manifest" in result.stderr
     assert "cities_data.json is stale" in result.stderr
     assert "trading_signal.json is stale" not in result.stderr
+
+
+def test_watchdog_rejects_public_manifest_timestamp_beyond_future_skew():
+    with tempfile.TemporaryDirectory() as tmp:
+        parent = Path(tmp)
+        root = _fresh_root(parent)
+        public_manifest = parent / "public_manifest.json"
+        payload = json.loads((root / "publication_manifest.json").read_text(encoding="utf-8"))
+        future = datetime.now(timezone.utc) + timedelta(minutes=6)
+        payload["artifacts"]["cities_data.json"]["generated_at"] = _iso(future)
+        public_manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = _run(root, public_url=public_manifest.as_uri())
+
+    assert result.returncode == 1
+    assert "public publication manifest" in result.stderr
+    assert "cities_data.json.generated_at is in the future" in result.stderr

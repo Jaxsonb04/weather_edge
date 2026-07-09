@@ -14,6 +14,7 @@ from typing import Iterable
 
 
 SCHEMA_VERSION = 1
+MAX_FUTURE_SKEW_MINUTES = 5.0
 MANIFEST_NAME = "publication_manifest.json"
 REQUIRED_FAST_ARTIFACTS = (
     "trading_signal.json",
@@ -143,6 +144,15 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def _snapshot_id_for_artifacts(artifacts: dict[str, dict]) -> str:
+    identity = json.dumps(
+        {name: entry.get("sha256") for name, entry in artifacts.items()},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()[:24]
+
+
 def build_manifest(
     artifact_root: Path,
     *,
@@ -206,14 +216,9 @@ def build_manifest(
             "status": "missing",
         }
 
-    identity = json.dumps(
-        {name: entry["sha256"] for name, entry in artifacts.items()},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "snapshot_id": hashlib.sha256(identity).hexdigest()[:24],
+        "snapshot_id": _snapshot_id_for_artifacts(artifacts),
         "published_at": _format_timestamp(published),
         "artifacts": artifacts,
     }
@@ -276,6 +281,20 @@ def _validate_age(
         )
 
 
+def _validate_not_future(
+    timestamp: datetime,
+    *,
+    now: datetime,
+    label: str,
+) -> None:
+    future_minutes = (timestamp - now).total_seconds() / 60.0
+    if future_minutes > MAX_FUTURE_SKEW_MINUTES:
+        raise PublicationError(
+            f"{label} is in the future by {future_minutes:.1f}m "
+            f"(maximum clock skew {MAX_FUTURE_SKEW_MINUTES:g}m)"
+        )
+
+
 def validate_manifest_metadata(
     manifest: dict,
     *,
@@ -290,13 +309,20 @@ def validate_manifest_metadata(
         raise PublicationError("unsupported publication manifest schema_version")
     _validate_artifact_allowlist(manifest)
     snapshot_id = manifest.get("snapshot_id")
-    if not isinstance(snapshot_id, str) or not snapshot_id:
-        raise PublicationError("publication manifest snapshot_id is missing")
+    if (
+        not isinstance(snapshot_id, str)
+        or len(snapshot_id) != 24
+        or any(char not in "0123456789abcdef" for char in snapshot_id)
+    ):
+        raise PublicationError(
+            "publication manifest snapshot_id must be 24 lowercase hex characters"
+        )
     published_at = _parse_timestamp(
         manifest.get("published_at"),
         label="publication_manifest.json.published_at",
     )
 
+    artifact_generated_at: dict[str, datetime] = {}
     for name in REQUIRED_FAST_ARTIFACTS:
         entry = _artifact_entry(manifest, name)
         if entry.get("status") not in {"ready", "preserved"}:
@@ -304,7 +330,10 @@ def validate_manifest_metadata(
         checksum = entry.get("sha256")
         if not isinstance(checksum, str) or len(checksum) != 64:
             raise PublicationError(f"invalid manifest checksum: {name}")
-        _parse_timestamp(entry.get("generated_at"), label=f"{name}.generated_at")
+        artifact_generated_at[name] = _parse_timestamp(
+            entry.get("generated_at"),
+            label=f"{name}.generated_at",
+        )
 
     strategy_entry = _artifact_entry(manifest, STRATEGY_ARTIFACT)
     strategy_present = strategy_entry.get("status") != "missing"
@@ -316,12 +345,29 @@ def validate_manifest_metadata(
         checksum = strategy_entry.get("sha256")
         if not isinstance(checksum, str) or len(checksum) != 64:
             raise PublicationError(f"invalid manifest checksum: {STRATEGY_ARTIFACT}")
-        _parse_timestamp(
+        artifact_generated_at[STRATEGY_ARTIFACT] = _parse_timestamp(
             strategy_entry.get("generated_at"),
             label=f"{STRATEGY_ARTIFACT}.generated_at",
         )
 
+    expected_snapshot_id = _snapshot_id_for_artifacts(manifest["artifacts"])
+    if snapshot_id != expected_snapshot_id:
+        raise PublicationError(
+            "publication manifest snapshot_id does not match artifact hashes"
+        )
+
     checked_at = _utc_now(now)
+    _validate_not_future(
+        published_at,
+        now=checked_at,
+        label="publication_manifest.json.published_at",
+    )
+    for name, generated_at in artifact_generated_at.items():
+        _validate_not_future(
+            generated_at,
+            now=checked_at,
+            label=f"{name}.generated_at",
+        )
     if max_operational_age_minutes is not None:
         age_minutes = (checked_at - published_at).total_seconds() / 60.0
         if age_minutes > max_operational_age_minutes:

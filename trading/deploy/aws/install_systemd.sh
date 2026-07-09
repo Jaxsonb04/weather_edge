@@ -20,7 +20,7 @@ fi
 
 sudo timedatectl set-timezone America/Los_Angeles || true
 sudo apt-get update
-sudo apt-get install -y git python3 python3-venv python3-pip sqlite3 rsync
+sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
 
 mkdir -p "$TRADING_DIR/data" "$TRADING_DIR/logs" "$FORECASTER_DIR/logs"
 

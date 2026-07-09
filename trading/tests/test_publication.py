@@ -186,6 +186,57 @@ def test_manifest_rejects_artifacts_outside_the_public_allowlist():
         )
 
 
+def test_manifest_validation_rejects_timestamps_beyond_future_skew_allowance():
+    module = _publication()
+    future = (NOW + timedelta(minutes=6)).isoformat()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        manifest = module.build_manifest(root, now=NOW)
+        manifest["published_at"] = future
+        _write_json(root / "publication_manifest.json", manifest)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "publication_manifest.json.published_at is in the future",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        manifest = module.build_manifest(root, now=NOW)
+        manifest["artifacts"]["cities_data.json"]["generated_at"] = future
+        _write_json(root / "publication_manifest.json", manifest)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "cities_data.json.generated_at is in the future",
+        )
+
+
+def test_manifest_validation_requires_content_derived_snapshot_id():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        manifest = module.build_manifest(root, now=NOW)
+        manifest["snapshot_id"] = "NOT-LOWERCASE-HEX"
+        _write_json(root / "publication_manifest.json", manifest)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "publication manifest snapshot_id must be 24 lowercase hex characters",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        manifest = module.build_manifest(root, now=NOW)
+        manifest["snapshot_id"] = "0" * 24
+        _write_json(root / "publication_manifest.json", manifest)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "publication manifest snapshot_id does not match artifact hashes",
+        )
+
+
 def test_manifest_validation_enforces_operational_and_strategy_ages():
     module = _publication()
     with tempfile.TemporaryDirectory() as tmp:
@@ -208,7 +259,7 @@ def test_manifest_validation_enforces_operational_and_strategy_ages():
         _assert_publication_error(
             lambda: module.validate_manifest(
                 root,
-                now=NOW,
+                now=NOW + timedelta(minutes=11),
                 max_strategy_age_minutes=20,
             ),
             "strategy_research.json is stale",

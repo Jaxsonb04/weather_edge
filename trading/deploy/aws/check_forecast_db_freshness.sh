@@ -6,7 +6,7 @@
 # manifest cannot reset the operational clocks recorded inside it.
 #
 # Wire a real push alert by setting SFO_FRESHNESS_ALERT_URL in /etc/weatheredge.env
-# to an ntfy.sh topic, Slack/Discord incoming webhook, etc.
+# to a plain-text HTTP endpoint, such as an ntfy.sh topic.
 set -uo pipefail
 
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
@@ -20,9 +20,14 @@ MANIFEST="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.
 OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
+PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
 
 now=$(date +%s)
 failures=()
+
+if [[ "$PUBLISH_PAGES" == "1" && -z "$PUBLIC_MANIFEST_URL" ]]; then
+  failures+=("SFO_PUBLICATION_MANIFEST_URL is required when SFO_PUBLISH_PAGES=1")
+fi
 
 if [[ ! -f "$DB" ]]; then
   age_h="n/a"
