@@ -122,6 +122,27 @@ def test_publication_cycles_serialize_builder_and_publisher_under_shared_lock():
     assert "SFO_ARTIFACT_GENERATION_LOCK=/opt/weatheredge/.locks/artifact-generation.lock" in example_env
 
 
+def test_publication_cycle_hands_generation_lock_to_snapshot_copy_then_releases_before_network():
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+
+    held_idx = runner.index("export SFO_ARTIFACT_LOCK_HELD=1")
+    fd_idx = runner.index("export SFO_ARTIFACT_LOCK_FD=7")
+    build_idx = runner.index('/bin/bash "$BUILDER"')
+    publish_idx = runner.index('publish_forecaster_pages.sh')
+    assert held_idx < fd_idx < build_idx < publish_idx
+    assert "flock -u 7" not in runner
+
+    snapshot_copy_idx = publisher.index('cp "$source_path"')
+    publisher_unlock_idx = publisher.index('flock -u "$SFO_ARTIFACT_LOCK_FD"')
+    close_idx = publisher.index("exec 7>&-")
+    unset_idx = publisher.index("unset SFO_ARTIFACT_LOCK_HELD SFO_ARTIFACT_LOCK_FD")
+    git_init_idx = publisher.index("git init")
+    fetch_idx = publisher.index("git fetch")
+    assert snapshot_copy_idx < publisher_unlock_idx < close_idx < unset_idx < git_init_idx < fetch_idx
+    assert "exec 8>&-" in publisher
+
+
 def test_strategy_cycle_rebuilds_manifest_before_publishing_research():
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
 
@@ -342,6 +363,23 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
         assert "10 minutes" in documentation
         assert "20 minutes" in documentation
         assert "SFO_PUBLICATION_MANIFEST_URL" in documentation
+
+
+def test_project_docs_describe_split_publication_cadences():
+    root = AWS_DIR.parents[2]
+    documentation = (
+        _read(root / "forecaster" / "README.md"),
+        _read(root / "docs" / "operational_runbook.md"),
+    )
+
+    for text in documentation:
+        normalized = " ".join(text.split())
+        assert "sfo-operational-publish.timer" in normalized
+        assert "every five minutes" in normalized
+        assert "publication_manifest.json" in normalized
+        assert "sfo-strategy-lab-refresh.timer" in normalized
+        assert "every fifteen minutes" in normalized
+        assert "research-only" in normalized
 
 
 def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():

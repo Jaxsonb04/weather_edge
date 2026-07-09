@@ -142,7 +142,7 @@ def build_target_report(
         market_available = True
     else:
         markets = standard_sfo_bins(f"{SERIES_TICKER}-{format_event_date_token(target)}-PAPER")
-        event_title = "No live prediction-market event found; probability-only fallback ladder"
+        event_title = "No live prediction market event found; probability-only fallback ladder"
         market_available = False
 
     # lead_days=None: read the live EMOS across leads (next-day=1, 2-day-out=2);
@@ -447,12 +447,12 @@ def _event_for_report(
     if not allow_live_market:
         return (
             None,
-            "Live prediction-market lookup disabled; using probability-only fallback ladder.",
+            "Live prediction market lookup disabled; using probability-only fallback ladder.",
         )
     try:
         return KalshiPublicClient().find_event_by_date(target, series_ticker=SERIES_TICKER), None
     except URLError as exc:
-        return None, f"Live prediction-market lookup failed: {exc}"
+        return None, f"Live prediction market lookup failed: {exc}"
 
 
 def _target_status(target: date, today: date) -> str:

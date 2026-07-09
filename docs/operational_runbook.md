@@ -120,13 +120,16 @@ python -m sfo_kalshi_quant.cli --no-color strategy-research --output forecaster/
 ```
 
 This is read-only. It does not record snapshots, place paper orders, or expose
-private DB state. In production, `build_public_trading_signal.sh` generates
-`forecaster/trading_signal.json` and `forecaster/strategy_research.json`, and
-the publisher ships both as plain public JSON alongside the SPA site. They
-contain only paper-trading research data. The `sfo-strategy-lab-refresh.timer`
-refreshes this trading-results path every five minutes without calling the paid
-Google Weather refresh command. Each refresh also publishes `cities_data.json`
-(per-city forecasts, latest settlement, book activity) for the site's
+private DB state. In production, `sfo-operational-publish.timer` runs every five
+minutes: `build_public_trading_signal.sh` generates
+`forecaster/trading_signal.json`, `forecaster/cities_data.json`, and
+`forecaster/publication_manifest.json`, then the publisher validates and ships
+that snapshot alongside the SPA. The research-only
+`sfo-strategy-lab-refresh.timer` runs every fifteen minutes to rebuild
+`forecaster/strategy_research.json` separately without calling the paid Google
+Weather refresh command. No published artifact contains private DB state; the
+trading artifacts contain only paper-trading research. `cities_data.json`
+supplies per-city forecasts, latest settlement, and book activity for the
 fifteen-city Coverage grid.
 
 ## Paper Place

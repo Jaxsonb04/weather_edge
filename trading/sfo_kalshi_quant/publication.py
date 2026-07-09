@@ -22,6 +22,7 @@ REQUIRED_FAST_ARTIFACTS = (
     "cities_data.json",
 )
 STRATEGY_ARTIFACT = "strategy_research.json"
+ALLOWED_ARTIFACTS = frozenset((*REQUIRED_FAST_ARTIFACTS, STRATEGY_ARTIFACT))
 OPERATIONAL_FRESHNESS_ARTIFACTS = (
     "trading_signal.json",
     "cities_data.json",
@@ -230,6 +231,17 @@ def _artifact_entry(manifest: dict, name: str) -> dict:
     return entry
 
 
+def _validate_artifact_allowlist(manifest: dict) -> None:
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise PublicationError("publication manifest has no artifacts object")
+    unexpected = sorted(set(artifacts) - ALLOWED_ARTIFACTS)
+    if unexpected:
+        raise PublicationError(
+            "unsupported artifact in publication manifest: " + ", ".join(unexpected)
+        )
+
+
 def _validate_artifact(root: Path, manifest: dict, name: str) -> None:
     entry = _artifact_entry(manifest, name)
     if entry.get("status") == "missing":
@@ -276,6 +288,7 @@ def validate_manifest_metadata(
 
     if manifest.get("schema_version") != SCHEMA_VERSION:
         raise PublicationError("unsupported publication manifest schema_version")
+    _validate_artifact_allowlist(manifest)
     snapshot_id = manifest.get("snapshot_id")
     if not isinstance(snapshot_id, str) or not snapshot_id:
         raise PublicationError("publication manifest snapshot_id is missing")
@@ -377,6 +390,7 @@ def validate_manifest(
 def published_artifacts(manifest: dict) -> tuple[str, ...]:
     """Return the data files represented by a validated manifest."""
 
+    _validate_artifact_allowlist(manifest)
     names = list(REQUIRED_FAST_ARTIFACTS)
     if _artifact_entry(manifest, STRATEGY_ARTIFACT).get("status") != "missing":
         names.append(STRATEGY_ARTIFACT)

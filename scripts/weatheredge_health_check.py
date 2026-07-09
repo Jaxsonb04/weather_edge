@@ -75,6 +75,8 @@ LOCAL_RUNTIME_ARTIFACTS = {
     "forecaster/google_weather_cache.json": "local Google Weather cache",
     "forecaster/trading_signal.json": "local public trading signal",
     "forecaster/strategy_research.json": "local Strategy Lab research artifact",
+    "forecaster/cities_data.json": "local multi-city public snapshot",
+    "forecaster/publication_manifest.json": "local publication manifest",
     "trading/data": "local paper-trading state directory",
 }
 

@@ -31,8 +31,10 @@ if ! flock -w "$LOCK_WAIT_SECONDS" 7; then
 fi
 
 # Keep one lock across generation, manifest validation, and the publisher's
-# copy. Child scripts use this marker instead of trying to reacquire it.
+# snapshot copy. The publisher inherits this descriptor, unlocks it only after
+# copying the validated snapshot, then takes the separate Pages Git lock.
 export SFO_ARTIFACT_LOCK_HELD=1
+export SFO_ARTIFACT_LOCK_FD=7
 /bin/bash "$BUILDER"
 if [[ "$MODE" == "strategy" ]]; then
   "$PYTHON_BIN" -m sfo_kalshi_quant.publication build \

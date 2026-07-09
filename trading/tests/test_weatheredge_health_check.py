@@ -20,6 +20,20 @@ def _load_health_module():
 health = _load_health_module()
 
 
+def _load_clear_module():
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "clear_local_runtime_state.py"
+    spec = importlib.util.spec_from_file_location("clear_local_runtime_state", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+clear_runtime = _load_clear_module()
+
+
 def _write(root: Path, relative_path: str, content: str = "") -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,3 +125,33 @@ def test_local_runtime_placeholder_is_not_stale():
 
         assert runtime.status == "PASS"
         assert "strategy_research.json" in runtime.details
+
+
+def test_city_and_manifest_runtime_artifacts_are_ignored_cleared_and_health_checked():
+    repo_root = Path(__file__).resolve().parents[2]
+    ignored = (repo_root / ".gitignore").read_text(encoding="utf-8")
+    documentation = (repo_root / "docs" / "data_and_artifacts.md").read_text(
+        encoding="utf-8"
+    )
+    artifacts = (
+        "forecaster/cities_data.json",
+        "forecaster/publication_manifest.json",
+    )
+
+    for artifact in artifacts:
+        assert artifact in ignored
+        assert artifact in clear_runtime.RUNTIME_PATHS
+        assert artifact in health.LOCAL_RUNTIME_ARTIFACTS
+        assert artifact in documentation
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        for artifact in artifacts:
+            _write(root, artifact, '{"generated_at": "2026-07-09T12:00:00+00:00"}\n')
+
+        results = health.run_checks(root)
+        runtime = next(result for result in results if result.name == "local runtime data")
+
+    assert runtime.status == "WARN"
+    assert "cities_data.json" in runtime.details
+    assert "publication_manifest.json" in runtime.details

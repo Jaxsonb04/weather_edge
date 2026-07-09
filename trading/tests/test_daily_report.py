@@ -139,6 +139,9 @@ def test_daily_report_json_uses_fallback_without_recording_state():
             "upcoming",
             "past",
         }
+        public_text = json.dumps(payload).lower()
+        assert "prediction market" in public_text
+        assert "kalshi" not in public_text
         assert not (Path(tmp) / "trading" / "data").exists()
 
 

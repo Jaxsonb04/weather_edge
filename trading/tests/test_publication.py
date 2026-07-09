@@ -164,6 +164,28 @@ def test_manifest_validation_checks_hashes_and_can_require_strategy_research():
         )
 
 
+def test_manifest_rejects_artifacts_outside_the_public_allowlist():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        manifest = module.build_manifest(root, now=NOW)
+        manifest["artifacts"]["unexpected.json"] = {
+            "generated_at": "2026-07-09T11:59:00+00:00",
+            "sha256": "0" * 64,
+            "status": "ready",
+        }
+        _write_json(root / "publication_manifest.json", manifest)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "unsupported artifact in publication manifest: unexpected.json",
+        )
+        _assert_publication_error(
+            lambda: module.published_artifacts(manifest),
+            "unsupported artifact in publication manifest: unexpected.json",
+        )
+
+
 def test_manifest_validation_enforces_operational_and_strategy_ages():
     module = _publication()
     with tempfile.TemporaryDirectory() as tmp:

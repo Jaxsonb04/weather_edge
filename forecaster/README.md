@@ -108,14 +108,16 @@ now automated end to end:
    workflow even when the laptop is asleep. There is no local launchd job; the
    cloud machine is the single automation source.
 3. **Scheduled jobs**: systemd timers refresh NWS ground truth, fetch Google
-   Weather within the event budget, rebuild the blended forecast, and rebuild
-   `trading_signal.json` and Strategy Lab research data
-   (`strategy_research.json`). A separate Strategy Lab refresh timer runs
-   every five minutes to rebuild trading results and republish the site
-   without calling the paid Google Weather refresh path. Strategy Lab research
-   data is plain public JSON; it contains only paper-trading research. The
-   same server also runs the Kalshi paper-trading scanner and exit monitor
-   from the companion trading repo.
+   Weather within the event budget, and rebuild the blended forecast. The
+   `sfo-operational-publish.timer` runs every five minutes to generate
+   `trading_signal.json`, `cities_data.json`, and
+   `publication_manifest.json`, validate the snapshot, and republish the site.
+   The `sfo-strategy-lab-refresh.timer` runs every fifteen minutes as the
+   research-only path that rebuilds `strategy_research.json`; it does not call
+   the paid Google Weather refresh path. Strategy Lab data is plain public JSON
+   containing only paper-trading research. The same server also runs the
+   prediction-market paper scanner and exit monitor from the companion trading
+   repo.
 4. **Public website**: after each successful rebuild, the Lightsail server uses
    a GitHub deploy key with write access to publish the prebuilt React SPA and
    the fresh data JSONs to `gh-pages`, which GitHub Pages serves at

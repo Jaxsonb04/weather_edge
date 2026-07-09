@@ -58,7 +58,6 @@ elif [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-artifact_lock_owned=0
 if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" ]]; then
   if ! command -v flock >/dev/null 2>&1; then
     echo "flock is required for artifact publication" >&2
@@ -70,8 +69,17 @@ if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" ]]; then
     echo "timed out waiting for artifact generation lock: $ARTIFACT_LOCK" >&2
     exit 1
   fi
-  artifact_lock_owned=1
+  export SFO_ARTIFACT_LOCK_HELD=1
+  export SFO_ARTIFACT_LOCK_FD=8
 fi
+
+case "${SFO_ARTIFACT_LOCK_FD:-}" in
+  7|8) ;;
+  *)
+    echo "artifact lock marker is missing a supported inherited descriptor" >&2
+    exit 1
+    ;;
+esac
 
 validate_args=(
   -m sfo_kalshi_quant.publication validate
@@ -123,9 +131,12 @@ for artifact in "${JSON_ARTIFACTS[@]}"; do
   cp "$source_path" "$snapshot_dir/$artifact"
 done
 
-if (( artifact_lock_owned == 1 )); then
-  flock -u 8
-fi
+flock -u "$SFO_ARTIFACT_LOCK_FD"
+case "$SFO_ARTIFACT_LOCK_FD" in
+  7) exec 7>&- ;;
+  8) exec 8>&- ;;
+esac
+unset SFO_ARTIFACT_LOCK_HELD SFO_ARTIFACT_LOCK_FD
 
 export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
