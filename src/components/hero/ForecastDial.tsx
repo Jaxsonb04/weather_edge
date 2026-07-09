@@ -1,15 +1,30 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Card, Chip, Separator } from "@heroui/react";
 import { Segment, TrendChip } from "@heroui-pro/react";
 import { Icon } from "@iconify/react";
-import { f1, predictedHigh, targetLabel, type Target } from "../../lib/data";
+import { f1, predictedHigh, selectCurrentTargets, targetLabel, type Target } from "../../lib/data";
+import { usePublication } from "../../lib/publication";
 import { SourceBlend } from "./SourceBlend";
 
 export function ForecastDial({ targets }: { targets: Target[] }) {
   const reduce = useReducedMotion();
+  const { operational } = usePublication();
+  const currentStateAvailable = operational.state === "fresh";
   const [idx, setIdx] = useState(0);
-  const target = targets[idx] ?? targets[0];
+  const displayTargets = useMemo(() => selectCurrentTargets(targets), [targets]);
+  const target = displayTargets[idx] ?? displayTargets.at(0);
+
+  if (!target) {
+    return (
+      <Card className="rounded-3xl ring-1 ring-danger/30">
+        <Card.Content className="flex items-start gap-3 p-6" role="alert">
+          <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
+          <p className="text-sm text-muted">No settlement-day or upcoming prediction-market target is published.</p>
+        </Card.Content>
+      </Card>
+    );
+  }
   const high = predictedHigh(target);
   const mc = target.market_consensus;
   const intraday = target.intraday;
@@ -22,12 +37,18 @@ export function ForecastDial({ targets }: { targets: Target[] }) {
           <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
             SFO daily high · forecast
           </span>
-          <Chip size="sm" variant="soft" color={target.market_available ? "success" : "default"}>
-            <Chip.Label>{target.market_available ? "Market live" : "No market"}</Chip.Label>
+          <Chip size="sm" variant="soft" color={currentStateAvailable && target.market_available ? "success" : "default"}>
+            <Chip.Label>
+              {currentStateAvailable
+                ? target.market_available
+                  ? "Market live"
+                  : "No market"
+                : "Current status unavailable"}
+            </Chip.Label>
           </Chip>
         </div>
 
-        {targets.length > 1 && (
+        {displayTargets.length > 1 && (
           <Segment
             aria-label="Forecast day"
             size="sm"
@@ -35,7 +56,7 @@ export function ForecastDial({ targets }: { targets: Target[] }) {
             onSelectionChange={(k) => setIdx(Number(k))}
             className="mb-5"
           >
-            {targets.map((t, i) => (
+            {displayTargets.map((t, i) => (
               <Segment.Item key={i} id={String(i)}>
                 {targetLabel(t.target_date)}
               </Segment.Item>
@@ -73,7 +94,7 @@ export function ForecastDial({ targets }: { targets: Target[] }) {
           )}
         </div>
 
-        {intraday && !intraday.is_complete && (
+        {currentStateAvailable && intraday && !intraday.is_complete && (
           <div className="mt-5 rounded-2xl bg-surface-secondary px-4 py-3 ring-1 ring-border/50">
             <div className="flex items-center justify-between text-xs">
               <span className="flex items-center gap-2 text-muted">

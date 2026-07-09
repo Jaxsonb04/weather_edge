@@ -2,6 +2,7 @@ import { Card } from "@heroui/react";
 import { Icon } from "@iconify/react";
 import { cityForTicker } from "../../lib/data";
 import { cents, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
+import { usePublication } from "../../lib/publication";
 import { Stat } from "../ui/Stat";
 
 const sumRisk = (rows: OpenPosition[]) => rows.reduce((acc, r) => acc + (r.risk ?? 0), 0);
@@ -81,6 +82,8 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
     `profile` to scope everything to one book; exposure is recomputed from the
     filtered rows. */
 export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
+  const { strategy } = usePublication();
+  const currentStateAvailable = strategy.state === "fresh";
   const sum = s.paper_trading?.summary;
   const open = profile ? openForProfile(s, profile) : s.paper_trading?.open_positions ?? [];
   const pending = profile ? pendingForProfile(s, profile) : s.paper_trading?.pending_limit_orders ?? [];
@@ -89,42 +92,50 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
     <div className="space-y-5">
       {profile ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Open positions" value={`${open.length}`} />
-          <Stat label="Open risk" value={`$${sumRisk(open).toFixed(2)}`} />
-          <Stat label="Pending limits" value={`${pending.length}`} />
-          <Stat label="Pending risk" value={`$${sumRisk(pending).toFixed(2)}`} />
+          <Stat label="Open positions" value={currentStateAvailable ? `${open.length}` : "Unavailable"} />
+          <Stat label="Open risk" value={currentStateAvailable ? `$${sumRisk(open).toFixed(2)}` : "Unavailable"} />
+          <Stat label="Pending limits" value={currentStateAvailable ? `${pending.length}` : "Unavailable"} />
+          <Stat label="Pending risk" value={currentStateAvailable ? `$${sumRisk(pending).toFixed(2)}` : "Unavailable"} />
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Stat label="Open positions" value={`${sum?.open_positions ?? open.length}`} />
-          <Stat label="Open risk" value={sum?.open_risk != null ? `$${sum.open_risk.toFixed(2)}` : "$0.00"} />
-          <Stat label="Pending limits" value={`${sum?.pending_limit_orders ?? pending.length}`} />
-          <Stat label="Pending risk" value={sum?.pending_limit_risk != null ? `$${sum.pending_limit_risk.toFixed(2)}` : "$0.00"} />
-          <Stat label="Capital at risk · window" value={sum?.capital_at_risk != null ? `$${sum.capital_at_risk.toFixed(2)}` : "—"} />
+          <Stat label="Open positions" value={currentStateAvailable ? `${sum?.open_positions ?? open.length}` : "Unavailable"} />
+          <Stat label="Open risk" value={currentStateAvailable ? (sum?.open_risk != null ? `$${sum.open_risk.toFixed(2)}` : "$0.00") : "Unavailable"} />
+          <Stat label="Pending limits" value={currentStateAvailable ? `${sum?.pending_limit_orders ?? pending.length}` : "Unavailable"} />
+          <Stat label="Pending risk" value={currentStateAvailable ? (sum?.pending_limit_risk != null ? `$${sum.pending_limit_risk.toFixed(2)}` : "$0.00") : "Unavailable"} />
+          <Stat label="Capital at risk · window" value={currentStateAvailable ? (sum?.capital_at_risk != null ? `$${sum.capital_at_risk.toFixed(2)}` : "—") : "Unavailable"} />
           <Stat label="Last monitor action" value={relTime(sum?.latest_monitor_action_at)} />
         </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="h-full rounded-2xl ring-1 ring-border/70">
-          <Card.Header className="flex flex-row items-center gap-2">
-            <Icon icon="solar:folder-open-bold" className="size-4 text-accent" aria-hidden="true" />
-            <Card.Title className="text-base">Open positions</Card.Title>
-          </Card.Header>
-          <Card.Content className="pt-0">
-            <PositionList rows={open} kind="open" />
-          </Card.Content>
-        </Card>
-        <Card className="h-full rounded-2xl ring-1 ring-border/70">
-          <Card.Header className="flex flex-row items-center gap-2">
-            <Icon icon="solar:hourglass-line-bold" className="size-4 text-accent" aria-hidden="true" />
-            <Card.Title className="text-base">Pending limit orders</Card.Title>
-          </Card.Header>
-          <Card.Content className="pt-0">
-            <PositionList rows={pending} kind="pending" />
-          </Card.Content>
-        </Card>
-      </div>
+      {currentStateAvailable ? (
+        <div className="grid gap-5 lg:grid-cols-2">
+          <Card className="h-full rounded-2xl ring-1 ring-border/70">
+            <Card.Header className="flex flex-row items-center gap-2">
+              <Icon icon="solar:folder-open-bold" className="size-4 text-accent" aria-hidden="true" />
+              <Card.Title className="text-base">Open positions</Card.Title>
+            </Card.Header>
+            <Card.Content className="pt-0">
+              <PositionList rows={open} kind="open" />
+            </Card.Content>
+          </Card>
+          <Card className="h-full rounded-2xl ring-1 ring-border/70">
+            <Card.Header className="flex flex-row items-center gap-2">
+              <Icon icon="solar:hourglass-line-bold" className="size-4 text-accent" aria-hidden="true" />
+              <Card.Title className="text-base">Pending limit orders</Card.Title>
+            </Card.Header>
+            <Card.Content className="pt-0">
+              <PositionList rows={pending} kind="pending" />
+            </Card.Content>
+          </Card>
+        </div>
+      ) : (
+        <div role="status" className="rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 py-8 text-center">
+          <Icon icon="solar:clock-circle-bold" className="mx-auto mb-2 size-5 text-warning" aria-hidden="true" />
+          <p className="text-sm font-medium text-foreground">Current open and pending book state is unavailable.</p>
+          <p className="mt-1 text-xs text-muted">Counts and position lists will return when Strategy Lab publication recovers.</p>
+        </div>
+      )}
     </div>
   );
 }

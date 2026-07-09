@@ -8,6 +8,7 @@ import {
   type City,
   type CitiesData,
 } from "../../lib/data";
+import { usePublication } from "../../lib/publication";
 
 const GRID = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
 const DOT_TONE: Record<string, string> = {
@@ -20,10 +21,12 @@ function CityCard({
   city,
   isActive,
   onSelect,
+  currentStateAvailable,
 }: {
   city: City;
   isActive: boolean;
   onSelect: () => void;
+  currentStateAvailable: boolean;
 }) {
   const fc = cityNextForecast(city);
   const fresh = cityFreshness(city.forecasts);
@@ -78,7 +81,7 @@ function CityCard({
             )}
           </div>
           <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
-            {fc ? `${shortDateUTC(fc.target_date)} · ${fc.n_models ?? "—"} models` : "no live forecast"}
+            {fc ? `${shortDateUTC(fc.target_date)} · ${fc.n_models ?? "—"} models` : "no current forecast"}
           </p>
         </div>
 
@@ -94,7 +97,9 @@ function CityCard({
             )}
           </p>
           <p className="tnum">
-            {openPositions > 0
+            {!currentStateAvailable
+              ? "Current book status unavailable"
+              : openPositions > 0
               ? `${openPositions} open position${openPositions === 1 ? "" : "s"}`
               : `${scans.toLocaleString()} scans/24h`}
           </p>
@@ -134,7 +139,9 @@ interface CityGridProps {
     lead with the next calibrated high, with settlement + book activity quiet
     underneath. */
 export function CityGrid({ data, error, selected, onSelect }: CityGridProps) {
-  if (error) return <EmptyNote />;
+  const { operational } = usePublication();
+  const currentStateAvailable = operational.state === "fresh";
+  if (error && !data) return <EmptyNote />;
   if (!data) {
     return (
       <div className={GRID} aria-hidden="true">
@@ -156,6 +163,7 @@ export function CityGrid({ data, error, selected, onSelect }: CityGridProps) {
             city={c}
             isActive={slug === selected}
             onSelect={() => onSelect(slug)}
+            currentStateAvailable={currentStateAvailable}
           />
         );
       })}

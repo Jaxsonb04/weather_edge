@@ -72,7 +72,7 @@ function EmptyNote() {
     artifact not being published yet. Scrolls horizontally on small screens. */
 export function CityMethodTable() {
   const { data, error } = useCitiesData();
-  if (error) return <EmptyNote />;
+  if (error && !data) return <EmptyNote />;
   if (!data) return <Skeleton className="h-72 w-full rounded-2xl" />;
   const cities = data.cities ?? [];
   if (!cities.length) return <EmptyNote />;
