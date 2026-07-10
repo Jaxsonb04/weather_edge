@@ -1,6 +1,13 @@
 import { Icon } from "@iconify/react";
 import { pct } from "../../lib/data";
-import { money, useStrategyLab, type StrategyLab } from "../../lib/strategy";
+import {
+  findProfile,
+  money,
+  useStrategyLab,
+  type ProfileEntry,
+  type ProfilePaperSummary,
+  type StrategyLab,
+} from "../../lib/strategy";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
@@ -80,6 +87,104 @@ function ReadinessFinding({ s }: { s: StrategyLab }) {
   );
 }
 
+function HeroStat({ label, value, tone }: { label: string; value: string; tone?: "pos" | "neg" }) {
+  const toneClass = tone === "pos" ? "text-success" : tone === "neg" ? "text-danger" : "text-foreground";
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-[11px] uppercase tracking-wide text-muted">{label}</dt>
+      <dd className={`tnum font-display text-lg font-semibold ${toneClass}`}>{value}</dd>
+    </div>
+  );
+}
+
+/** The live candidate's own performance, surfaced as the section headline so the
+    real-money book is judged on its own record — not the blended, research-dragged
+    combined figure that leads the KPI strip. */
+function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
+  const pnl = sum.realized_pnl ?? 0;
+  const up = pnl >= 0;
+  const win = p.daily_summary?.window_days ?? 7;
+  return (
+    <div className="rounded-2xl bg-accent-soft p-4 ring-1 ring-accent/30 sm:p-5">
+      <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+            <Icon icon="solar:shield-check-bold" className="size-3.5 shrink-0" aria-hidden="true" />
+            Live candidate · the real-money book
+          </p>
+          <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <span className={`font-display text-4xl font-bold tracking-tight ${up ? "text-success" : "text-danger"}`}>
+              {money(pnl)}
+            </span>
+            <span className="text-xs text-muted">attributed realized P&amp;L · {win}-day window</span>
+          </div>
+        </div>
+        <dl className="flex flex-wrap gap-x-7 gap-y-3">
+          <HeroStat label="ROI · resolved" value={sum.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum.roi ?? 0) > 0 ? "pos" : (sum.roi ?? 0) < 0 ? "neg" : undefined} />
+          <HeroStat label="Hit rate" value={sum.hit_rate == null ? "—" : pct(sum.hit_rate, 1)} />
+          <HeroStat label="Resolved" value={`${sum.closed_positions ?? 0} · ${sum.win_count ?? 0}–${sum.loss_count ?? 0}`} />
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+/** Overview equity block: LIVE leads (hero stats + its own curve), RESEARCH follows on
+    a separate, visually secondary curve. The two books' P&L never share a line. */
+function OverviewEquity({ s }: { s: StrategyLab }) {
+  const live = findProfile(s, "live");
+  const research = findProfile(s, "research");
+  const liveDays = live?.daily_summary?.days;
+  const researchDays = research?.daily_summary?.days;
+  const liveSum = live?.paper_trading?.summary;
+  const readinessAvailable = !!s.real_money_readiness?.available;
+
+  // Fall back to the combined curve only if the per-book series is missing.
+  const liveCurve =
+    live && liveDays?.length ? (
+      <EquityCurve
+        s={s}
+        days={liveDays}
+        startingBankroll={0}
+        contributionMode
+        windowDays={live.daily_summary?.window_days}
+        emphasis="headline"
+        eyebrow="Live candidate · real-money track"
+        title="Live candidate — cumulative P&L"
+        description={`Realized P&L attributed to the live book · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
+      />
+    ) : (
+      <EquityCurve s={s} emphasis="headline" eyebrow="Live candidate · real-money track" title="Live candidate — cumulative P&L" />
+    );
+
+  return (
+    <div className="space-y-4">
+      {live && liveSum && <LiveHero p={live} sum={liveSum} />}
+      {readinessAvailable ? (
+        <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+          {liveCurve}
+          <ReadinessVerdict s={s} />
+        </div>
+      ) : (
+        liveCurve
+      )}
+      {research && !!researchDays?.length && (
+        <EquityCurve
+          s={s}
+          days={researchDays}
+          startingBankroll={0}
+          contributionMode
+          windowDays={research.daily_summary?.window_days}
+          emphasis="secondary"
+          eyebrow="Experimental book · isolated from the live record"
+          title="Research — cumulative P&L"
+          description={`Realized P&L attributed to the experimental book · ${research.daily_summary?.window_days ?? researchDays.length}-day view`}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function StrategyLabView() {
   const { data: s, error } = useStrategyLab();
 
@@ -112,22 +217,23 @@ export default function StrategyLabView() {
               )}
             </Reveal>
 
-            {/* ---- Book overview: the whole system, general before specific ---- */}
+            {/* ---- Book overview: live candidate leads, research separate, combined for context ---- */}
             <section className="scroll-mt-24">
               <SectionHeading
                 index="01"
                 eyebrow="Book overview"
-                title="The whole book at a glance"
-                sub="Combined performance, both isolated books side by side, and the go-live verdict — the full picture before drilling into either one."
+                title="The live candidate, front and centre"
+                sub="The real-money candidate leads on its own equity curve; the experimental book follows on a separate, secondary curve. Their P&L never blends — the combined shared-account totals sit below purely as context."
               />
-              <PnlHeader s={s} />
-              <div className="mt-5 grid gap-5 lg:grid-cols-[1.45fr_0.85fr]">
-                <Reveal>
-                  <EquityCurve s={s} />
-                </Reveal>
-                <Reveal delay={0.05}>
-                  <ReadinessVerdict s={s} />
-                </Reveal>
+              <Reveal>
+                <OverviewEquity s={s} />
+              </Reveal>
+              <div className="mt-7">
+                <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                  <Icon icon="solar:wallet-money-bold" className="size-3.5 text-accent" aria-hidden="true" />
+                  Shared paper account · both books combined
+                </p>
+                <PnlHeader s={s} />
               </div>
               <Reveal className="mt-5">
                 <ProfileComparison s={s} />

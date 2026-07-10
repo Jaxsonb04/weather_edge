@@ -1,6 +1,9 @@
+import { useId } from "react";
 import { ReferenceLine } from "recharts";
 import { ChartTooltip, LineChart, Widget } from "@heroui-pro/react";
 import { equitySeries, equitySeriesFromDays, type DayRow, type StrategyLab } from "../../lib/strategy";
+
+type Emphasis = "headline" | "secondary" | "normal";
 
 interface EquityCurveProps {
   s: StrategyLab;
@@ -12,74 +15,122 @@ interface EquityCurveProps {
   title?: string;
   description?: string;
   contributionMode?: boolean;
+  /** small uppercase kicker above the title */
+  eyebrow?: string;
+  /** visual weight: headline = tall + accent frame, secondary = compact + muted */
+  emphasis?: Emphasis;
+  /** override the plot height in px (defaults keyed off emphasis) */
+  height?: number;
+  className?: string;
 }
 
-export function EquityCurve({ s, days, startingBankroll, windowDays, title, description, contributionMode = false }: EquityCurveProps) {
+const EMPHASIS_HEIGHT: Record<Emphasis, number> = { headline: 288, secondary: 168, normal: 240 };
+const EMPHASIS_RING: Record<Emphasis, string> = {
+  headline: "ring-1 ring-accent/30",
+  secondary: "ring-1 ring-border/60",
+  normal: "",
+};
+
+/** −$80 / $0 / +$3 — whole-dollar money for axis ticks + aria text. */
+const axisMoney = (v: number, signed = false) => {
+  const r = Math.round(v);
+  const sign = r < 0 ? "−" : signed && r > 0 ? "+" : "";
+  return `${sign}$${Math.abs(r)}`;
+};
+
+export function EquityCurve({
+  s,
+  days,
+  startingBankroll,
+  windowDays,
+  title,
+  description,
+  contributionMode = false,
+  eyebrow,
+  emphasis = "normal",
+  height,
+  className,
+}: EquityCurveProps) {
+  // Unique gradient id per instance — several equity curves now share a page and a
+  // duplicated SVG id would make later charts inherit the first chart's fill colour.
+  const gid = `eq-fill-${useId().replace(/:/g, "")}`;
+
   const start = startingBankroll ?? s.daily_summary.starting_bankroll ?? 1000;
   const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
   const last = series[series.length - 1]?.equity ?? start;
   const win = windowDays ?? s.daily_summary.window_days ?? series.length;
   const up = last >= start;
-  // Adaptive y-domain: pad proportional to the actual swing (with a small floor)
-  // so a book that barely moved still shows its shape instead of a dead-flat line.
+  // Adaptive y-domain: pad proportional to the actual DATA swing (with a small
+  // floor) so a book that barely moved still shows its shape. Padding keys off the
+  // data range — not data∪break-even — so a book sitting entirely on one side of
+  // break-even fills its plot instead of leaving a dead band up to the reference
+  // line. The break-even line stays visible, but flush, with no overshoot past it.
   const eqs = series.map((d) => d.equity);
-  const lo = Math.min(start, ...eqs);
-  const hi = Math.max(start, ...eqs);
-  const pad = Math.max((hi - lo) * 0.15, 3);
-  const yDomain: [number, number] = [Math.floor(lo - pad), Math.ceil(hi + pad)];
+  const dataLo = Math.min(...eqs);
+  const dataHi = Math.max(...eqs);
+  const pad = Math.max((dataHi - dataLo) * 0.15, 3);
+  const lo = Math.min(dataLo - pad, start);
+  const hi = Math.max(dataHi + pad, start);
+  const yDomain: [number, number] = [Math.floor(lo), Math.ceil(hi)];
   const stroke = up ? "var(--color-success)" : "var(--color-danger)";
   const valueName = contributionMode ? "P&L contribution" : "Equity";
-  const label = `${title ?? "Paper equity curve"} over ${series.length} days, from $${start} to $${last} (${up ? "up" : "down"} over the window).`;
+  const chartH = height ?? EMPHASIS_HEIGHT[emphasis];
+  const label = `${title ?? "Paper equity curve"} over ${series.length} days, from ${axisMoney(start, contributionMode)} to ${axisMoney(last, contributionMode)} (${up ? "up" : "down"} over the window).`;
 
   return (
-    <Widget className="w-full">
-      <Widget.Header>
-        <div>
-          <Widget.Title>{title ?? "Paper equity curve"}</Widget.Title>
+    <Widget className={`w-full ${EMPHASIS_RING[emphasis]} ${className ?? ""}`.trim()}>
+      <Widget.Header className="items-start py-1">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {eyebrow && (
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">{eyebrow}</span>
+          )}
+          <Widget.Title className={emphasis === "headline" ? "text-base" : undefined}>
+            {title ?? "Paper equity curve"}
+          </Widget.Title>
           <Widget.Description>
             {description ?? `Cumulative realized P&L over the reporting window · ${win}-day view`}
           </Widget.Description>
         </div>
-        <Widget.Legend>
-          <Widget.LegendItem color={stroke}>{contributionMode ? "contribution" : "equity"}</Widget.LegendItem>
-          <Widget.LegendItem color="var(--color-muted)">{contributionMode ? "zero" : "start"}</Widget.LegendItem>
+        <Widget.Legend className="shrink-0 self-start pt-0.5">
+          <Widget.LegendItem color={stroke}>{contributionMode ? "P&L" : "equity"}</Widget.LegendItem>
+          <Widget.LegendItem color="var(--color-muted)">{contributionMode ? "break-even" : "start"}</Widget.LegendItem>
         </Widget.Legend>
       </Widget.Header>
       <Widget.Content>
         <div role="img" aria-label={label}>
-        <LineChart data={series} height={240}>
-          <defs>
-            <linearGradient id="equity-fill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor={stroke} stopOpacity={0.18} />
-              <stop offset="100%" stopColor={stroke} stopOpacity={0.01} />
-            </linearGradient>
-          </defs>
-          <LineChart.Grid vertical={false} />
-          <LineChart.XAxis dataKey="date" tickMargin={8} />
-          <LineChart.YAxis width={52} tickFormatter={(v: number) => `$${v}`} domain={yDomain} allowDecimals={false} />
-          <ReferenceLine y={start} stroke="var(--color-muted)" strokeDasharray="5 5" strokeWidth={1.25} />
-          <LineChart.Line dataKey="equity" name="Equity" stroke={stroke} strokeWidth={2.5} type="monotone" fill="url(#equity-fill)" />
-          <LineChart.Tooltip
-            content={({ active, label, payload }) => {
-              if (!active || !payload?.length) return null;
-              const row = payload[0]?.payload as { equity: number; pnl: number };
-              return (
-                <ChartTooltip>
-                  <ChartTooltip.Header>{label}</ChartTooltip.Header>
-                  <ChartTooltip.Item>
-                    <ChartTooltip.Indicator color={stroke} />
-                    <ChartTooltip.Label>{valueName}</ChartTooltip.Label>
-                    <ChartTooltip.Value>${row.equity.toLocaleString()}</ChartTooltip.Value>
-                  </ChartTooltip.Item>
-                  <ChartTooltip.Item>
-                    <ChartTooltip.Label>Cum. P&L</ChartTooltip.Label>
-                    <ChartTooltip.Value>{row.pnl >= 0 ? "+" : ""}${row.pnl.toFixed(2)}</ChartTooltip.Value>
-                  </ChartTooltip.Item>
-                </ChartTooltip>
-              );
-            }}
-          />
-        </LineChart>
+          <LineChart data={series} height={chartH} margin={{ top: 8, right: 14, bottom: 0, left: 0 }}>
+            <defs>
+              <linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor={stroke} stopOpacity={0.18} />
+                <stop offset="100%" stopColor={stroke} stopOpacity={0.01} />
+              </linearGradient>
+            </defs>
+            <LineChart.Grid vertical={false} />
+            <LineChart.XAxis dataKey="date" tickMargin={8} />
+            <LineChart.YAxis width={56} tickFormatter={(v: number) => axisMoney(v, contributionMode)} domain={yDomain} allowDecimals={false} />
+            <ReferenceLine y={start} stroke="var(--color-muted)" strokeDasharray="5 5" strokeWidth={1.25} />
+            <LineChart.Line dataKey="equity" name={valueName} stroke={stroke} strokeWidth={2.5} type="monotone" fill={`url(#${gid})`} />
+            <LineChart.Tooltip
+              content={({ active, label, payload }) => {
+                if (!active || !payload?.length) return null;
+                const row = payload[0]?.payload as { equity: number; pnl: number };
+                return (
+                  <ChartTooltip>
+                    <ChartTooltip.Header>{label}</ChartTooltip.Header>
+                    <ChartTooltip.Item>
+                      <ChartTooltip.Indicator color={stroke} />
+                      <ChartTooltip.Label>{valueName}</ChartTooltip.Label>
+                      <ChartTooltip.Value>{row.pnl >= 0 ? "+" : "−"}${Math.abs(row.equity).toFixed(2)}</ChartTooltip.Value>
+                    </ChartTooltip.Item>
+                    <ChartTooltip.Item>
+                      <ChartTooltip.Label>Cum. P&L</ChartTooltip.Label>
+                      <ChartTooltip.Value>{row.pnl >= 0 ? "+" : "−"}${Math.abs(row.pnl).toFixed(2)}</ChartTooltip.Value>
+                    </ChartTooltip.Item>
+                  </ChartTooltip>
+                );
+              }}
+            />
+          </LineChart>
         </div>
       </Widget.Content>
     </Widget>
