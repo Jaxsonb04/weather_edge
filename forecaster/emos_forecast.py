@@ -28,6 +28,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from cities import CITIES, CityConfig, get_city, parse_city_slugs
+from emos_recalibration import correction_for_serve
 from forecast_postproc_backtest import load_clisfo_truth, load_nwp_forecasts
 from nwp_archive import (
     NWP_MODELS,
@@ -49,6 +50,14 @@ def _method_tag(weight_mode: str) -> str:
     return "emos_wmean" if weight_mode == "inv_var" else "emos_ngr"
 LIVE_SOURCE = "live"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+# Serve-time trailing recalibration toggles (emos_recalibration.py). Bias
+# passed the rolling-origin replay acceptance gate (pooled CRPS -1.3% over the
+# last 60 scored days, no city worse than +2.6%); the sigma dispersion rescale
+# FAILED its own gate (pooled CRPS +0.4%, BOS lead-2 +5.2%) and stays off. Both
+# remain separately toggleable in recalibration_replay.py.
+SERVE_RECAL_BIAS = True
+SERVE_RECAL_SIGMA = False
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -262,9 +271,22 @@ def serve_live_emos(
     fetched_at: str | None = None,
     live_models: dict[str, float] | None = None,
     weight_mode: str = DEFAULT_WEIGHT_MODE,
+    store_lead_days: int | None = None,
+    recalibrate: bool = True,
 ) -> tuple[float, float] | None:
     """Fit EMOS on all settled history strictly before ``target_date`` and apply
     it to the current-run multi-model forecast, persisting (mu, sigma).
+
+    ``lead_days`` selects the NWP archive lead the fit trains on;
+    ``store_lead_days`` (default: same) is the lead recorded on the persisted
+    row. The same-day serve passes ``lead_days=1, store_lead_days=0``: lead 0
+    has no archive of its own, and the lead-1 per-model biases/weights are the
+    closest learned coefficients for the current-run forecast of today.
+
+    ``recalibrate`` applies the serve-time trailing recalibration
+    (emos_recalibration.py) as a post-process on the EMOS output. Rolling-origin
+    rows are never touched -- they stay the uncorrected record the correction
+    window is computed from.
 
     CONSISTENCY NOTE: the fit is trained on the previous_day1 archive while the
     serve input is the current run -- biases are dominated by lead-invariant model
@@ -276,6 +298,7 @@ def serve_live_emos(
     station = city.nws_station_id
     truth = load_clisfo_truth(conn, station)
     nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
+    stored_lead = lead_days if store_lead_days is None else store_lead_days
     target_iso = target_date.isoformat()
     if target_iso in truth:
         # A settled day's "live" forecast is meaningless and would shadow the
@@ -304,6 +327,20 @@ def serve_live_emos(
         return None
     mu, sigma = apply_emos(params, forecasts)
 
+    if recalibrate and (SERVE_RECAL_BIAS or SERVE_RECAL_SIGMA):
+        # The serve happens on the day `stored_lead` days before the target;
+        # the correction window may only use truth published before that day.
+        serve_date = target_date - timedelta(days=stored_lead)
+        correction = correction_for_serve(
+            conn,
+            station,
+            max(lead_days, 1),
+            serve_date,
+            apply_bias=SERVE_RECAL_BIAS,
+            apply_sigma=SERVE_RECAL_SIGMA,
+        )
+        mu, sigma = correction.apply(mu, sigma)
+
     stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn.execute(
         """
@@ -315,7 +352,7 @@ def serve_live_emos(
         (
             station,
             target_iso,
-            lead_days,
+            stored_lead,
             mu,
             sigma,
             len(forecasts),
@@ -384,10 +421,12 @@ def main(argv: list[str] | None = None) -> int:
             # Serve each target at its TRUE lead so the EMOS fit's per-model
             # biases match the forecast horizon (next-day -> lead 1, 2-day-out
             # -> lead 2). The NWP archive only holds leads >= 1, so the
-            # same-day target (lead 0) has no training history and is
-            # intentionally left without a live EMOS row; the trader falls back
-            # to its blend + observed-high path (SFO) or skips the same-day
-            # market (EMOS-only cities).
+            # same-day target (lead 0) has no training history of its own; it
+            # is served with the lead-1 fit (per-model biases/weights and
+            # sigma) applied to the CURRENT-run forecast for today, stored at
+            # lead_days=0 so every 30-minute tick refreshes the same-day
+            # market's distribution instead of leaving it on a pre-midnight
+            # mean all day.
             serve_targets: list[tuple[date, int]] = []
             if args.serve:
                 target = (
@@ -405,14 +444,22 @@ def main(argv: list[str] | None = None) -> int:
 
             for target, lead in serve_targets:
                 result = (
-                    serve_live_emos(conn, target, city=city, lead_days=lead)
-                    if lead >= 1
+                    serve_live_emos(
+                        conn,
+                        target,
+                        city=city,
+                        # Lead 0 reuses the lead-1 coefficients (see comment
+                        # above) and records the row at its true lead 0.
+                        lead_days=max(lead, 1),
+                        store_lead_days=lead,
+                    )
+                    if lead >= 0
                     else None
                 )
                 if result is None:
                     print(
                         f"live EMOS [{city.slug}] {target.isoformat()} (lead {lead}): "
-                        "unavailable (lead<1, already settled, or thin coverage)"
+                        "unavailable (already settled or thin coverage)"
                     )
                     continue
                 mu, sigma = result

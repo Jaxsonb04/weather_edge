@@ -130,15 +130,16 @@ def test_serve_rolling_logs_zero_served_summary(tmp_path):
 
 def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch):
     # Regression: serve-rolling must serve today+offset at lead=offset, not a
-    # fixed lead 1. The same-day target (lead 0) has no NWP archive and is never
-    # sent to serve_live_emos; the next-day and 2-day-out markets are served at
+    # fixed lead 1. The same-day target (lead 0) has no NWP archive of its own,
+    # so it is FIT at lead 1 (the closest learned coefficients) but STORED at
+    # its true lead 0; the next-day and 2-day-out markets fit and store at
     # leads 1 and 2 so each EMOS fit's per-model biases match its horizon.
     import emos_forecast as ef
 
     calls: list[tuple] = []
 
-    def fake_serve(conn, target, *, lead_days=1, **kwargs):
-        calls.append((target, lead_days))
+    def fake_serve(conn, target, *, lead_days=1, store_lead_days=None, **kwargs):
+        calls.append((target, lead_days, store_lead_days))
         return (70.0, 3.0)
 
     monkeypatch.setattr(ef, "serve_live_emos", fake_serve)
@@ -156,7 +157,67 @@ def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch
     assert status == 0
     today = ef._settlement_today()
     assert calls == [
-        (today + timedelta(days=1), 1),
-        (today + timedelta(days=2), 2),
+        (today, 1, 0),
+        (today + timedelta(days=1), 1, 1),
+        (today + timedelta(days=2), 2, 2),
     ]
-    assert "served=2 targets=3 cities=1 leads=0..2" in out.getvalue()
+    assert "served=3 targets=3 cities=1 leads=0..2" in out.getvalue()
+
+
+def test_serve_live_emos_stores_lead0_row_with_lead1_fit():
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)  # lead-1 history: 140 settled days before the target
+    target = date(2024, 6, 1)
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    result = serve_live_emos(conn, target, lead_days=1, store_lead_days=0, live_models=live)
+    assert result is not None
+    row = conn.execute(
+        "SELECT lead_days, predicted_high_f, sigma_f FROM forecast_emos_daily_high "
+        "WHERE target_date = ? AND source = 'live'",
+        (target.isoformat(),),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 0  # stored at its true (same-day) lead
+    assert abs(row[1] - result[0]) < 1e-9
+    # Identical inputs at lead 1: same fit, same (mu, sigma), different key.
+    lead1 = serve_live_emos(conn, target, lead_days=1, live_models=live)
+    assert lead1 is not None
+    assert abs(lead1[0] - result[0]) < 1e-9 and abs(lead1[1] - result[1]) < 1e-9
+
+
+def test_serve_live_emos_applies_trailing_bias_recalibration():
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)  # settles 2024-01-01 .. 2024-05-19
+    target = date(2024, 5, 20)  # serve date = 2024-05-19 at lead 1
+    # Rolling-origin record: a constant +2F warm error over the trailing
+    # window (45 scored days ending 2024-05-18). cli_settlements was created
+    # by the legacy-table migration inside _seed's first truth load.
+    import city_truth
+    from emos_forecast import ensure_schema as ensure_emos_schema
+
+    city_truth.ensure_schema(conn)
+    ensure_emos_schema(conn)
+    start = date(2024, 4, 4)
+    for i in range(45):
+        day = (start + timedelta(days=i)).isoformat()
+        truth = conn.execute(
+            "SELECT max_temperature_f FROM cli_settlements WHERE station_id='KSFO' AND local_date=?",
+            (day,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO forecast_emos_daily_high "
+            "(station_id, target_date, lead_days, predicted_high_f, sigma_f, n_models, "
+            " model_spread_f, fetched_at, method, source, actual_high_f) "
+            "VALUES ('KSFO', ?, 1, ?, 2.0, 3, 1.0, 'x', 'emos_wmean', 'rolling_origin', NULL)",
+            (day, truth + 2.0),
+        )
+    conn.commit()
+
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    raw = serve_live_emos(conn, target, live_models=live, recalibrate=False)
+    recal = serve_live_emos(conn, target, live_models=live, recalibrate=True)
+    assert raw is not None and recal is not None
+    # Constant error -> zero spread -> deadband subtracts nothing; the shrunk
+    # correction is exactly 2.0 * 45/55 and sigma is untouched (bias-only).
+    assert abs((raw[0] - recal[0]) - 2.0 * 45 / 55) < 1e-9
+    assert abs(raw[1] - recal[1]) < 1e-9
