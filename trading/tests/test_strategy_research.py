@@ -747,7 +747,7 @@ def test_strategy_research_surfaces_resting_limit_orders():
         assert summary["pending_limit_risk"] > 0
         pending = payload["paper_trading"]["pending_limit_orders"][0]
         assert pending["status"] == "PAPER_LIMIT_RESTING"
-        assert pending["limit_price"] == 0.29
+        assert pending["limit_price"] == 0.21
         # The current market price is now shown for resting limits.
         assert pending["current_ask"] is not None
         assert pending["current_bid"] is not None
