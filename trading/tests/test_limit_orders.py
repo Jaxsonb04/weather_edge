@@ -156,3 +156,75 @@ def test_analyze_entry_mode_defaults_from_environment():
         args = build_parser().parse_args(["analyze"])
 
     assert args.paper_entry_mode == "limit"
+
+
+def test_resting_quote_size_is_not_capped_by_displayed_ask():
+    """A resting maker bid's fill depends on FUTURE traded volume (queue-ahead
+    fill model), not the ask displayed at entry, so its size must not be
+    clamped to the displayed ask depth."""
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(
+            store,
+            StrategyConfig(limit_price_edge_lcb_buffer=0.02),
+            entry_mode="limit",
+        )
+        decision = _decision(
+            probability_lcb=0.81,
+            entry_bid=0.73,
+            entry_ask=0.75,
+            recommended_contracts=25.0,
+            entry_ask_size=3.0,
+        )
+
+        order_ids = trader.place_approved("2026-06-15", [decision])
+
+        assert len(order_ids) == 1
+        row = store.paper_order(order_ids[0])
+        assert row["status"] == "PAPER_LIMIT_RESTING"
+        assert row["contracts"] == 25.0
+
+
+def test_crossing_limit_is_clamped_to_displayed_ask():
+    """A crossing limit takes instantly against the visible ask: it cannot
+    take more contracts than the book displays."""
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(
+            store,
+            StrategyConfig(limit_price_edge_lcb_buffer=0.02),
+            entry_mode="limit",
+        )
+        decision = _decision(
+            probability_lcb=0.90,
+            entry_bid=0.74,
+            entry_ask=0.75,
+            recommended_contracts=25.0,
+            entry_ask_size=3.0,
+        )
+
+        order_ids = trader.place_approved("2026-06-15", [decision])
+
+        assert len(order_ids) == 1
+        row = store.paper_order(order_ids[0])
+        assert row["status"] == "PAPER_FILLED"
+        assert row["contracts"] == 3.0
+
+
+def test_market_entry_is_clamped_to_displayed_ask():
+    """Market entry takes immediately at the displayed ask, so the taker cap
+    now applied at the execution gate (not in sizing) must still bind."""
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, StrategyConfig())
+        decision = _decision(
+            recommended_contracts=25.0,
+            entry_ask_size=3.0,
+        )
+
+        order_ids = trader.place_approved("2026-06-15", [decision])
+
+        assert len(order_ids) == 1
+        row = store.paper_order(order_ids[0])
+        assert row["status"] == "PAPER_FILLED"
+        assert row["contracts"] == 3.0

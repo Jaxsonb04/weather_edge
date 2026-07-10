@@ -68,11 +68,19 @@ def test_binding_constraint_is_reported_on_an_approved_trade():
         "kelly_budget",
         "position_risk_cap",
         "max_contracts_per_market",
-        "ask_size",
     }
 
 
-def test_thin_book_binding_constraint_is_ask_size():
+def test_thin_displayed_ask_no_longer_caps_sizing():
+    """Displayed ask depth must NOT bound the recommended size any more.
+
+    The ask_size sizing allowance was a taker-era assumption: a maker-first
+    resting bid's fill is gated by FUTURE traded volume (the queue-ahead fill
+    model), not by the ask displayed at entry. 558/560 approved live rows over
+    72h were ask_size-bound (median displayed ask: 2 contracts), starving the
+    book. The taker cases (market entry / crossing limit) are clamped at the
+    execution gate instead -- see test_limit_orders.py.
+    """
     market, probability = _no_favorite()
     # Only 3 contracts of NO ask depth (no_ask_size falls back to yes_bid_size).
     market = replace(market, yes_bid_size=3.0)
@@ -80,8 +88,8 @@ def test_thin_book_binding_constraint_is_ask_size():
         market, probability, bankroll=1000, side="NO"
     )
     assert decision.approved
-    assert decision.binding_constraint == "ask_size"
-    assert decision.recommended_contracts <= 3.0
+    assert decision.binding_constraint != "ask_size"
+    assert decision.recommended_contracts > 3.0
 
 
 def test_round_contracts_does_not_truncate_paper_stake():

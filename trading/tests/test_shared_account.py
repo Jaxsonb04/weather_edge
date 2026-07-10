@@ -57,7 +57,8 @@ def test_shared_account_caps_position_and_rejects_sub_five_dollar_dust() -> None
 
         assert len(large) == 1
         row = store.paper_order(large[0])
-        assert row["contracts"] * row["cost_per_contract"] <= 20.0 + 1e-9
+        # Per-position ceiling: min($30, 3% equity) since 2026-07-10.
+        assert row["contracts"] * row["cost_per_contract"] <= 30.0 + 1e-9
         assert row["contracts"] * row["cost_per_contract"] >= 5.0
         assert dust == []
         assert row["strategy_fingerprint"] == strategy_fingerprint(
@@ -184,7 +185,9 @@ def test_daily_loss_and_drawdown_breakers_fail_closed() -> None:
             risk_profile="live",
             requested_spend=20.0,
         )
-        assert 5.0 <= capacity["allowed_spend"] < 10.0
+        # Half of min($30, 3% of drawn-down equity) under the 10% drawdown
+        # haircut: ~13.4 on ~$892 equity (was ~8.9 under the $20/2% cap).
+        assert 5.0 <= capacity["allowed_spend"] < 15.0
 
         paused_store = PaperStore(Path(tmp) / "paused.db")
         paused_id = paused_store.record_paper_order(

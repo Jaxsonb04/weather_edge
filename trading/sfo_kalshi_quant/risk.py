@@ -270,7 +270,9 @@ class TradeEvaluator:
         # risk cap by up to comfort_edge_max_size_boost x -- the per-position cap
         # is the BASE the boost scales, not a ceiling on the result. The true
         # ceilings that still bind are the per-event cap (_apply_event_risk_cap),
-        # max_contracts_per_market, and displayed ask_size. The positive
+        # max_contracts_per_market, the shared-account per-position cap at
+        # placement, and -- for taker fills only -- the displayed-ask clamp at
+        # the execution gate. The positive
         # after-fee edge_lcb gate already passed, so a larger size is still a
         # positive-EV bet, never a manufactured negative-EV one.
         if comfort_size_multiplier != 1.0:
@@ -311,11 +313,21 @@ class TradeEvaluator:
                 budget_label: spend_budget / cost,
                 "max_contracts_per_market": float(self.config.max_contracts_per_market),
             }
-            if ask_size > 0:
-                allowances["ask_size"] = float(ask_size)
+            # Displayed ask size is deliberately NOT a sizing allowance. That
+            # cap was a taker-era assumption: with maker-first limit entries
+            # the quote RESTS, and a resting bid's fill is gated by FUTURE
+            # traded volume (the queue-ahead fill model in the monitor), not
+            # by the ask depth displayed at entry -- evidenced by 558/560
+            # approved live rows over 72h being ask_size-bound (median
+            # displayed ask 2 contracts -> median $1.72 stakes) while Kelly
+            # bound only 2. Where the order actually TAKES (market entry or a
+            # crossing limit), PaperTrader clamps contracts to the displayed
+            # ask at the execution gate, where crossing is known
+            # (paper._clamp_to_displayed_ask). The min_ask_size liquidity
+            # floor GATE above is unchanged.
             # The lever with the fewest allowed contracts is what actually caps
             # the size; surface it so the dashboard can distinguish a thin-edge
-            # (kelly) throttle from a thin-book (ask_size) or a configured cap.
+            # (kelly) throttle from a configured cap.
             binding_constraint = min(allowances, key=allowances.__getitem__)
             contracts = min(allowances.values())
             if not self.config.allow_fractional_contracts:

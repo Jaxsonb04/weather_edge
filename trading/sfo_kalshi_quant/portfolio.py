@@ -238,10 +238,13 @@ def _joint_resize_directional(
     for key, leg in zip(leg_keys, directional):
         decision = leg.decision
         joint_spend = fractions.get(key, 0.0) * bankroll
-        # Never exceed the leg's available liquidity (the per-bin size already did).
-        ask_size = decision.entry_ask_size or decision.yes_ask_size or 0.0
-        if ask_size > 0:
-            joint_spend = min(joint_spend, ask_size * decision.cost_per_contract)
+        # No displayed-ask cap here: it was a taker-era assumption. Where an
+        # order actually TAKES (market entry or a crossing limit), the paper
+        # trader clamps contracts to the displayed ask at the execution gate
+        # (paper._clamp_to_displayed_ask); a resting maker quote's fill is
+        # gated by future traded volume, not the ask displayed at entry. The
+        # worst-case-loss cap below and the shared-account per-position cap at
+        # placement remain the binding risk ceilings.
         new_decision = _scale_decision(decision, joint_spend)
         if new_decision is None:
             resized.append(leg)  # keep the original rather than drop a selected leg

@@ -842,17 +842,20 @@ def test_place_approved_enforces_cumulative_target_exposure_cap():
                 reasons=[],
             )
 
-        # Shared-account v2 first applies the $20 normal-position cap, then the
-        # 5% city/target cap. The third entry uses the final ~$10 of city room.
+        # Shared-account v2 first applies the $30 normal-position cap, then the
+        # 5% city/target cap: ~$30 + ~$20 exhausts the $50 city room, so the
+        # third entry falls below the $5 executable minimum and is rejected --
+        # the cumulative cap still binds at the same $50.
         first = trader.place_approved("2026-06-03", [decision_for("KXHIGHTSFO-TEST-B68.5")], bankroll=1000.0)
         second = trader.place_approved("2026-06-03", [decision_for("KXHIGHTSFO-TEST-B70.5")], bankroll=1000.0)
         third = trader.place_approved("2026-06-03", [decision_for("KXHIGHTSFO-TEST-B72.5")], bankroll=1000.0)
 
         assert len(first) == 1
         assert len(second) == 1
-        assert len(third) == 1
+        assert third == []
         spend = store.paper_spend_for_target("2026-06-03")
         assert spend <= 50.0 + 1e-6
+        assert spend >= 45.0
 
 
 def test_paper_stake_sets_contracts_from_dollars():

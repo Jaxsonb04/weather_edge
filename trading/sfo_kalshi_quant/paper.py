@@ -220,11 +220,27 @@ class PaperTrader:
                 quote = buy_limit_for_decision(adjusted, self.config)
                 if quote is None:
                     continue
+                # A crossing limit is an instant taker fill against the
+                # visible ask, so it can never take more than the displayed
+                # depth. A RESTING quote is deliberately NOT ask-capped: its
+                # fill is gated by FUTURE traded volume via the queue-ahead
+                # fill model, not by the ask displayed at entry (sizing no
+                # longer applies this taker-era cap -- see RiskManager).
+                if quote.would_cross:
+                    adjusted = _clamp_to_displayed_ask(adjusted)
+                    if adjusted is None:
+                        continue
                 adjusted = with_buy_limit(adjusted, self.config)
                 if not adjusted.approved:
                     continue
                 status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
                 entry_mode = "limit"
+            else:
+                # Market entry takes immediately at the displayed ask; cap the
+                # size at what the book actually displays.
+                adjusted = _clamp_to_displayed_ask(adjusted)
+                if adjusted is None:
+                    continue
             if bankroll is not None:
                 adjusted = self._fit_to_account_policy(target_date, adjusted)
                 if adjusted is None:
@@ -594,6 +610,31 @@ def _normalize_entry_mode(entry_mode: str) -> str:
 
 def _decision_key(decision: TradeDecision) -> tuple[str, str]:
     return (decision.ticker, decision.side)
+
+
+def _clamp_to_displayed_ask(decision: TradeDecision) -> TradeDecision | None:
+    """Cap a TAKER fill at the ask depth the book displays right now.
+
+    Applies only where the order takes immediately -- market entry or a
+    crossing limit -- because an instant fill cannot take more contracts than
+    the visible ask offers. Resting maker quotes are deliberately not capped
+    here: their fill is gated by future traded volume through the queue-ahead
+    fill model, so the displayed ask at entry is irrelevant to their size.
+    Downstream repricing (with_buy_limit / _fit_to_account_policy) recomputes
+    exact fees for the clamped count.
+    """
+
+    ask_size = float(decision.ask_size or 0.0)
+    if ask_size <= 0 or decision.recommended_contracts <= ask_size:
+        return decision
+    contracts = float(int(ask_size))
+    if contracts <= 0:
+        return None
+    return replace(
+        decision,
+        recommended_contracts=contracts,
+        expected_profit=decision.edge * contracts,
+    )
 
 
 def _is_research_shadow_candidate(
