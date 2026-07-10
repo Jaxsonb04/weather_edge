@@ -40,44 +40,31 @@ def buy_limit_for_decision(
         raise ValueError("limit price tick must be greater than zero")
 
     visible_bid = max(0.0, float(decision.bid))
-    spread = visible_ask - visible_bid
-    if spread > tick + 1e-9:
-        desired = visible_ask - tick
-        minimum_limit = visible_bid + tick
-    else:
-        desired = visible_ask
-        minimum_limit = visible_ask
-
-    price = _floor_to_tick(min(visible_ask, desired), tick)
-    while price + 1e-12 >= minimum_limit:
-        # Fee follows liquidity role: a limit below the visible ask RESTS and
-        # pays the maker rate (25% of taker since Kalshi's April-2025 change);
-        # a limit at/above the ask crosses immediately and pays taker. Charging
-        # taker on resting fills overstated maker costs ~4x and buried exactly
-        # the favorite-band maker edge this engine now targets.
-        crosses = price >= visible_ask - 1e-12
-        fee = quadratic_fee_average_per_contract(
-            price,
-            decision.recommended_contracts,
-            maker=not crosses,
-            fee_multiplier=config.fee_multiplier,
-            taker_rate=config.taker_fee_rate,
-            maker_rate=config.maker_fee_rate,
-        )
-        cost = price + fee
-        edge = decision.probability - cost
-        edge_lcb = decision.probability_lcb - cost
-        if edge_lcb + 1e-12 >= config.limit_price_edge_lcb_buffer:
-            return BuyLimitQuote(
-                price=_round_price(price),
-                fee_per_contract=fee,
-                cost_per_contract=cost,
-                edge=edge,
-                edge_lcb=edge_lcb,
-                would_cross=price >= visible_ask - 1e-12,
-            )
-        price = _floor_to_tick(price - tick, tick)
-    return None
+    inside_price = _floor_to_tick(visible_bid + tick, tick)
+    crosses = inside_price >= visible_ask - 1e-12
+    price = _floor_to_tick(visible_ask if crosses else inside_price, tick)
+    fee = quadratic_fee_average_per_contract(
+        price,
+        decision.recommended_contracts,
+        maker=not crosses,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=decision.ticker,
+    )
+    cost = price + fee
+    edge = decision.probability - cost
+    edge_lcb = decision.probability_lcb - cost
+    if edge_lcb + 1e-12 < config.limit_price_edge_lcb_buffer:
+        return None
+    return BuyLimitQuote(
+        price=_round_price(price),
+        fee_per_contract=fee,
+        cost_per_contract=cost,
+        edge=edge,
+        edge_lcb=edge_lcb,
+        would_cross=crosses,
+    )
 
 
 def with_buy_limit(

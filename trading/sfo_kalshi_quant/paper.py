@@ -149,7 +149,6 @@ class PaperTrader:
         exposure_remaining = self._target_exposure_remaining(target_date, bankroll)
         order_ids = []
         for decision in decisions:
-            order_ids.extend(self._fill_crossed_resting_limits(target_date, decision))
             adjusted = self.with_paper_stake(decision, stake_dollars)
             if not adjusted.approved or adjusted.recommended_contracts <= 0:
                 continue
@@ -176,7 +175,9 @@ class PaperTrader:
                     sampled=sampled,
                     strategy_config=self.config,
                 )
-                if not sampled:
+                # Negative-confidence experiments are evidence rows only. They
+                # never consume the shared account merely to manufacture volume.
+                if adjusted.edge_lcb < 0.0 or not sampled:
                     continue
                 if self.store.has_losing_closed_negative_lcb_research_entry(
                     target_date,
@@ -224,6 +225,18 @@ class PaperTrader:
                     continue
                 status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
                 entry_mode = "limit"
+            if bankroll is not None:
+                adjusted = self._fit_to_account_policy(target_date, adjusted)
+                if adjusted is None:
+                    continue
+                # Fees depend on final contract count. Recompute once after
+                # sizing while preserving the single bid+tick/taker price rule.
+                if self.entry_mode == "limit":
+                    quote = buy_limit_for_decision(adjusted, self.config)
+                    if quote is None:
+                        continue
+                    adjusted = with_buy_limit(adjusted, self.config)
+                    status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
             order_id = self.store.record_paper_order(
                 target_date,
                 adjusted,
@@ -244,6 +257,60 @@ class PaperTrader:
             if exposure_remaining is not None:
                 exposure_remaining -= adjusted.recommended_contracts * adjusted.cost_per_contract
         return order_ids
+
+    def _fit_to_account_policy(
+        self, target_date: str, decision: TradeDecision
+    ) -> TradeDecision | None:
+        cost = float(decision.limit_cost_per_contract or decision.cost_per_contract)
+        requested = float(decision.recommended_contracts) * cost
+        capacity = self.store.account_policy_capacity(
+            target_date=target_date,
+            market_ticker=decision.ticker,
+            risk_profile=self.risk_profile,
+            requested_spend=requested,
+        )
+        allowed = float(capacity["allowed_spend"])
+        if allowed <= 0:
+            return None
+        contracts = min(float(decision.recommended_contracts), allowed / cost)
+        if not self.config.allow_fractional_contracts:
+            contracts = float(int(contracts))
+        while contracts > 0:
+            entry_price = float(decision.limit_price or decision.ask)
+            maker = decision.limit_price is not None and entry_price < float(decision.ask) - 1e-12
+            fee = quadratic_fee_average_per_contract(
+                entry_price,
+                contracts,
+                maker=maker,
+                fee_multiplier=self.config.fee_multiplier,
+                taker_rate=self.config.taker_fee_rate,
+                maker_rate=self.config.maker_fee_rate,
+                series_ticker=decision.ticker,
+            )
+            exact_cost = entry_price + fee
+            if contracts * exact_cost <= allowed + 1e-9:
+                break
+            contracts = contracts - 1.0 if not self.config.allow_fractional_contracts else allowed / exact_cost
+        if contracts <= 0 or contracts * exact_cost < 5.0 - 1e-9:
+            return None
+        edge = decision.probability - exact_cost
+        edge_lcb = decision.probability_lcb - exact_cost
+        changes = {
+            "recommended_contracts": contracts,
+            "fee_per_contract": fee,
+            "cost_per_contract": exact_cost,
+            "edge": edge,
+            "edge_lcb": edge_lcb,
+            "expected_profit": edge * contracts,
+        }
+        if decision.limit_price is not None:
+            changes.update(
+                limit_fee_per_contract=fee,
+                limit_cost_per_contract=exact_cost,
+                limit_edge=edge,
+                limit_edge_lcb=edge_lcb,
+            )
+        return replace(decision, **changes)
 
     def record_research_shadow_candidates(
         self,
@@ -289,28 +356,6 @@ class PaperTrader:
                 )
             )
         return shadow_ids
-
-    def _fill_crossed_resting_limits(self, target_date: str, decision: TradeDecision) -> list[int]:
-        if self.entry_mode != "limit":
-            return []
-        ask = float(decision.ask)
-        if ask <= 0.0 or ask >= 1.0:
-            return []
-        filled: list[int] = []
-        for row in self.store.resting_limit_orders(
-            target_date,
-            decision.ticker,
-            decision.side,
-            risk_profile=self.risk_profile,
-        ):
-            limit_price = row["limit_price"] if row["limit_price"] is not None else row["entry_price"]
-            if limit_price is None:
-                continue
-            if ask <= float(limit_price) + 1e-12:
-                updated = self.store.fill_resting_limit_order(int(row["id"]))
-                if updated is not None and updated["status"] == "PAPER_FILLED":
-                    filled.append(int(row["id"]))
-        return filled
 
     def place_arbitrage(
         self,

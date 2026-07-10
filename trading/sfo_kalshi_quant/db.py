@@ -10,6 +10,23 @@ from pathlib import Path
 from typing import Iterable
 
 from .config import StrategyConfig, normalize_risk_profile_name
+from .account import (
+    AGGREGATE_RISK_PCT,
+    CITY_TARGET_PCT,
+    DAILY_LOSS_PCT,
+    INITIAL_CAPITAL,
+    MAIN_SLEEVE_PCT,
+    MIN_EXECUTABLE_NOTIONAL,
+    NORMAL_POSITION_CAP,
+    NORMAL_POSITION_PCT,
+    REGION_BY_SERIES,
+    REGION_DAY_PCT,
+    RESEARCH_POSITION_PCT,
+    RESEARCH_SLEEVE_PCT,
+    SHARED_ACCOUNT_ID,
+    sleeve_for,
+    strategy_fingerprint,
+)
 from .consensus import MarketConsensus
 from .fees import (
     contracts_for_budget,
@@ -182,6 +199,34 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     outcome_diagnostics_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS paper_accounts (
+    account_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    initial_capital REAL NOT NULL,
+    opening_cash REAL NOT NULL,
+    high_water_equity REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    cutover_note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS paper_account_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    order_id INTEGER,
+    event_type TEXT NOT NULL,
+    amount REAL NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    details_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    fingerprint TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PAPER'
+);
+
 CREATE TABLE IF NOT EXISTS paper_monitor_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -283,6 +328,8 @@ CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_link
     ON research_shadow_orders (linked_paper_order_id);
 CREATE INDEX IF NOT EXISTS idx_research_shadow_monitor_order
     ON research_shadow_monitor_snapshots (shadow_order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_paper_account_ledger_account
+    ON paper_account_ledger (account_id, created_at, id);
 """
 
 # Fresh databases can build this covering report index cheaply during normal
@@ -346,6 +393,16 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     "entry_decision_snapshot_id": "INTEGER",
     "diagnostics_json": "TEXT",
     "outcome_diagnostics_json": "TEXT",
+    "account_id": "TEXT",
+    "strategy_fingerprint": "TEXT",
+    "sleeve": "TEXT",
+    "filled_at": "TEXT",
+    "cancelled_at": "TEXT",
+    "expires_at": "TEXT",
+    "reserved_cost": "REAL NOT NULL DEFAULT 0",
+    "quote_snapshot_json": "TEXT",
+    "fill_model": "TEXT",
+    "fill_evidence_json": "TEXT",
 }
 
 # Fixed-PST settlement clock (UTC-8 year round) used for the daily-loss window so
@@ -496,6 +553,194 @@ class PaperStore:
             if not decision_table_existed:
                 conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
             self._ensure_open_position_guard_index(conn)
+            self._ensure_shared_paper_account(conn)
+
+    def _ensure_shared_paper_account(self, conn: sqlite3.Connection) -> None:
+        if conn.execute(
+            "SELECT 1 FROM paper_accounts WHERE account_id = ?", (SHARED_ACCOUNT_ID,)
+        ).fetchone():
+            return
+        active = conn.execute(
+            "SELECT COUNT(*) FROM paper_orders WHERE status IN "
+            "('PAPER_FILLED', 'PAPER_LIMIT_RESTING') AND settled_at IS NULL AND closed_at IS NULL"
+        ).fetchone()
+        if active and int(active[0] or 0) > 0:
+            # Cutover must happen flat.  Existing monitoring/settlement remains
+            # available, but account_policy_capacity() will block new entries.
+            return
+        realized = conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
+            "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED')"
+        ).fetchone()
+        opening_cash = INITIAL_CAPITAL + float(realized[0] or 0.0)
+        created_at = _now()
+        conn.execute(
+            "INSERT INTO paper_accounts "
+            "(account_id, created_at, initial_capital, opening_cash, high_water_equity, cutover_note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                SHARED_ACCOUNT_ID,
+                created_at,
+                INITIAL_CAPITAL,
+                opening_cash,
+                opening_cash,
+                "flat-book shared-account v2 cutover",
+            ),
+        )
+        self._record_ledger_event(
+            conn,
+            account_id=SHARED_ACCOUNT_ID,
+            order_id=None,
+            event_type="OPENING_CASH",
+            amount=opening_cash,
+            idempotency_key=f"{SHARED_ACCOUNT_ID}:opening",
+            details={"initial_capital": INITIAL_CAPITAL, "legacy_realized_pnl": opening_cash - INITIAL_CAPITAL},
+        )
+
+    @staticmethod
+    def _record_ledger_event(
+        conn: sqlite3.Connection,
+        *,
+        account_id: str,
+        order_id: int | None,
+        event_type: str,
+        amount: float,
+        idempotency_key: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_account_ledger "
+            "(created_at, account_id, order_id, event_type, amount, idempotency_key, details_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                _now(), account_id, order_id, event_type, float(amount), idempotency_key,
+                json.dumps(details or {}, sort_keys=True),
+            ),
+        )
+
+    def shared_account_state(self) -> dict[str, object] | None:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            account = conn.execute(
+                "SELECT * FROM paper_accounts WHERE account_id = ?", (SHARED_ACCOUNT_ID,)
+            ).fetchone()
+            if account is None:
+                return None
+            cash = float(conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM paper_account_ledger WHERE account_id = ?",
+                (SHARED_ACCOUNT_ID,),
+            ).fetchone()[0] or 0.0)
+            risk = conn.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN status='PAPER_FILLED' AND settled_at IS NULL AND closed_at IS NULL "
+                "THEN contracts * cost_per_contract ELSE 0 END), 0), "
+                "COALESCE(SUM(CASE WHEN status='PAPER_LIMIT_RESTING' AND settled_at IS NULL AND closed_at IS NULL "
+                "THEN reserved_cost ELSE 0 END), 0) FROM paper_orders WHERE account_id = ?",
+                (SHARED_ACCOUNT_ID,),
+            ).fetchone()
+            open_cost = float(risk[0] or 0.0)
+            reservations = float(risk[1] or 0.0)
+            cash_balance = cash + reservations
+            realized_equity = cash_balance + open_cost
+            high_water = max(float(account["high_water_equity"]), realized_equity)
+            if high_water > float(account["high_water_equity"]):
+                conn.execute(
+                    "UPDATE paper_accounts SET high_water_equity=? WHERE account_id=?",
+                    (high_water, SHARED_ACCOUNT_ID),
+                )
+            return {
+                "account_id": SHARED_ACCOUNT_ID,
+                "initial_capital": float(account["initial_capital"]),
+                "opening_cash": float(account["opening_cash"]),
+                "cash_balance": cash_balance,
+                "open_cost_basis": open_cost,
+                "reservations": reservations,
+                "available_cash": cash,
+                "realized_equity": realized_equity,
+                "high_water_equity": high_water,
+                "drawdown": (high_water - realized_equity) / high_water if high_water > 0 else 0.0,
+                "status": account["status"],
+            }
+
+    def account_policy_capacity(
+        self,
+        *,
+        target_date: str,
+        market_ticker: str,
+        risk_profile: str | None,
+        requested_spend: float,
+    ) -> dict[str, object]:
+        """Maximum safe new notional under the one-account paper policy."""
+
+        state = self.shared_account_state()
+        if state is None:
+            return {"allowed_spend": 0.0, "reason": "shared account cutover requires a flat book"}
+        equity = float(state["realized_equity"])
+        drawdown = float(state["drawdown"])
+        if drawdown >= 0.15:
+            return {"allowed_spend": 0.0, "reason": "15% account drawdown pause"}
+        series = market_ticker.split("-", 1)[0].upper()
+        region = REGION_BY_SERIES.get(series, "unknown")
+        profile = normalize_risk_profile_name(risk_profile) if risk_profile else "live"
+        today_start = datetime.now(SETTLEMENT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        with self.connect() as conn:
+            daily_pnl = float(conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
+                "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED') "
+                "AND COALESCE(closed_at, settled_at) >= ?",
+                (today_start.astimezone(UTC).isoformat(),),
+            ).fetchone()[0] or 0.0)
+            if daily_pnl <= -DAILY_LOSS_PCT * equity:
+                return {"allowed_spend": 0.0, "reason": "2% shared-account daily loss pause"}
+            active = conn.execute(
+                "SELECT market_ticker, target_date, COALESCE(risk_profile, 'live'), "
+                "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
+                "ELSE contracts * cost_per_contract END AS risk "
+                "FROM paper_orders WHERE account_id=? AND status IN "
+                "('PAPER_FILLED','PAPER_LIMIT_RESTING') AND settled_at IS NULL AND closed_at IS NULL",
+                (SHARED_ACCOUNT_ID,),
+            ).fetchall()
+        aggregate = sum(float(row[3] or 0.0) for row in active)
+        research_risk = sum(float(row[3] or 0.0) for row in active if str(row[2]) == "research")
+        main_risk = aggregate - research_risk
+        city_risk = sum(
+            float(row[3] or 0.0) for row in active
+            if str(row[0]).startswith(series + "-") and str(row[1]) == target_date
+        )
+        region_risk = sum(
+            float(row[3] or 0.0) for row in active
+            if REGION_BY_SERIES.get(str(row[0]).split("-", 1)[0].upper(), "unknown") == region
+            and str(row[1]) == target_date
+        )
+        position_cap = (
+            RESEARCH_POSITION_PCT * equity
+            if profile == "research"
+            else min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * equity)
+        )
+        if drawdown >= 0.10:
+            position_cap *= 0.5
+        total_room = AGGREGATE_RISK_PCT * equity - aggregate
+        if profile == "research":
+            sleeve_room = RESEARCH_SLEEVE_PCT * equity - research_risk
+        else:
+            # Main can borrow whatever portion of the 4% research sleeve is idle.
+            sleeve_room = MAIN_SLEEVE_PCT * equity - main_risk + max(
+                0.0, RESEARCH_SLEEVE_PCT * equity - research_risk
+            )
+        allowed = min(
+            requested_spend,
+            position_cap,
+            total_room,
+            sleeve_room,
+            CITY_TARGET_PCT * equity - city_risk,
+            REGION_DAY_PCT * equity - region_risk,
+            float(state["available_cash"]),
+        )
+        if requested_spend < MIN_EXECUTABLE_NOTIONAL:
+            return {"allowed_spend": 0.0, "reason": "recommendation below $5 executable minimum"}
+        if allowed < MIN_EXECUTABLE_NOTIONAL:
+            return {"allowed_spend": 0.0, "reason": "account risk room below $5 executable minimum"}
+        return {"allowed_spend": max(0.0, allowed), "reason": None}
 
     def _ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
         """Build the unique open-position backstop index, tolerating a dirty book.
@@ -916,10 +1161,16 @@ class PaperStore:
     ) -> int | None:
         contracts = float(decision.recommended_contracts)
         entry_price = float(decision.limit_price if decision.limit_price is not None else decision.ask)
+        normalized_status = status or ("PAPER_FILLED" if decision.approved else "REJECTED")
         fee_per_contract = (
             float(decision.limit_fee_per_contract)
             if decision.limit_fee_per_contract is not None
-            else quadratic_fee_average_per_contract(entry_price, contracts)
+            else quadratic_fee_average_per_contract(
+                entry_price,
+                contracts,
+                maker=normalized_status == "PAPER_LIMIT_RESTING",
+                series_ticker=decision.ticker,
+            )
         )
         cost_per_contract = entry_price + fee_per_contract
         edge = float(decision.limit_edge) if decision.limit_edge is not None else float(decision.edge)
@@ -930,8 +1181,33 @@ class PaperStore:
         )
         expected_profit = edge * contracts
         profile = normalize_risk_profile_name(risk_profile) if risk_profile else None
-        normalized_status = status or ("PAPER_FILLED" if decision.approved else "REJECTED")
         created_at = _now()
+        filled_at = created_at if normalized_status == "PAPER_FILLED" else None
+        expires_at = (
+            (datetime.fromisoformat(created_at) + timedelta(minutes=15)).isoformat()
+            if normalized_status == "PAPER_LIMIT_RESTING"
+            else None
+        )
+        reserved_cost = contracts * cost_per_contract if normalized_status == "PAPER_LIMIT_RESTING" else 0.0
+        fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
+        sleeve = sleeve_for(profile, list(decision.reasons), decision.side)
+        quote_snapshot_json = json.dumps(
+            {
+                "side": decision.side,
+                "bid": decision.bid,
+                "ask": decision.ask,
+                "limit_price": decision.limit_price,
+                "contracts": contracts,
+                "fee_per_contract": fee_per_contract,
+                "cost_per_contract": cost_per_contract,
+            },
+            sort_keys=True,
+        )
+        fill_model = (
+            "maker_trade_through_required"
+            if normalized_status == "PAPER_LIMIT_RESTING"
+            else "immediate_visible_quote"
+        )
         with self.connect() as conn:
             entry_decision = _latest_entry_decision_snapshot(
                 conn,
@@ -968,9 +1244,11 @@ class PaperStore:
                         fee_per_contract, cost_per_contract, probability,
                         probability_lcb, edge, edge_lcb, trade_quality_score,
                         expected_profit, status, entry_decision_snapshot_id,
-                        diagnostics_json, reasons_json
+                        diagnostics_json, reasons_json, account_id,
+                        strategy_fingerprint, sleeve, filled_at, expires_at,
+                        reserved_cost, quote_snapshot_json, fill_model
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         created_at,
@@ -1008,6 +1286,14 @@ class PaperStore:
                         _row_value(entry_decision, "id") if entry_decision is not None else None,
                         diagnostics_json,
                         json.dumps(decision.reasons),
+                        SHARED_ACCOUNT_ID,
+                        fingerprint,
+                        sleeve,
+                        filled_at,
+                        expires_at,
+                        reserved_cost,
+                        quote_snapshot_json,
+                        fill_model,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -1016,7 +1302,36 @@ class PaperStore:
                 # application guard (has_active_paper_entry) did not catch. The
                 # existing open order stands; signal "not recorded" to the caller.
                 return None
-            return int(cursor.lastrowid)
+            order_id = int(cursor.lastrowid)
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_versions "
+                "(fingerprint, created_at, config_json, status) VALUES (?, ?, ?, 'PAPER')",
+                (
+                    fingerprint,
+                    created_at,
+                    json.dumps(_strategy_config_snapshot(strategy_config) or {}, sort_keys=True),
+                ),
+            )
+            if normalized_status == "PAPER_LIMIT_RESTING":
+                self._record_ledger_event(
+                    conn,
+                    account_id=SHARED_ACCOUNT_ID,
+                    order_id=order_id,
+                    event_type="RESERVE",
+                    amount=-reserved_cost,
+                    idempotency_key=f"order:{order_id}:reserve",
+                    details={"expires_at": expires_at},
+                )
+            elif normalized_status == "PAPER_FILLED":
+                self._record_ledger_event(
+                    conn,
+                    account_id=SHARED_ACCOUNT_ID,
+                    order_id=order_id,
+                    event_type="ENTRY_FILL",
+                    amount=-(contracts * cost_per_contract),
+                    idempotency_key=f"order:{order_id}:entry-fill",
+                )
+            return order_id
 
     def record_research_shadow_order(
         self,
@@ -1459,18 +1774,82 @@ class PaperStore:
                 params,
             ).fetchall()
 
-    def fill_resting_limit_order(self, order_id: int) -> sqlite3.Row | None:
+    def fill_resting_limit_order(
+        self, order_id: int, *, evidence: dict[str, object] | None = None
+    ) -> sqlite3.Row | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM paper_orders WHERE id=? AND status='PAPER_LIMIT_RESTING'",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                return self._order(order_id)
+            filled_at = _now()
+            cursor = conn.execute(
                 """
                 UPDATE paper_orders
-                SET status = 'PAPER_FILLED'
+                SET status = 'PAPER_FILLED', filled_at = ?, reserved_cost = 0,
+                    fill_evidence_json = ?
                 WHERE id = ? AND status = 'PAPER_LIMIT_RESTING'
                 """,
+                (filled_at, json.dumps(evidence or {}, sort_keys=True), order_id),
+            )
+            if cursor.rowcount:
+                reserved = float(row["reserved_cost"] or 0.0)
+                self._record_ledger_event(
+                    conn, account_id=row["account_id"] or SHARED_ACCOUNT_ID,
+                    order_id=order_id, event_type="RESERVATION_RELEASE", amount=reserved,
+                    idempotency_key=f"order:{order_id}:fill-release",
+                )
+                self._record_ledger_event(
+                    conn, account_id=row["account_id"] or SHARED_ACCOUNT_ID,
+                    order_id=order_id, event_type="ENTRY_FILL",
+                    amount=-(float(row["contracts"]) * float(row["cost_per_contract"])),
+                    idempotency_key=f"order:{order_id}:entry-fill",
+                    details=evidence,
+                )
+        return self._order(order_id)
+
+    def cancel_resting_limit_order(self, order_id: int, *, reason: str) -> sqlite3.Row | None:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM paper_orders WHERE id=? AND status='PAPER_LIMIT_RESTING'",
                 (order_id,),
+            ).fetchone()
+            if row is None:
+                return self._order(order_id)
+            cancelled_at = _now()
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_EXPIRED', cancelled_at=?, "
+                "reserved_cost=0, outcome_diagnostics_json=? WHERE id=?",
+                (cancelled_at, json.dumps({"event": "cancellation", "reason": reason}, sort_keys=True), order_id),
+            )
+            self._record_ledger_event(
+                conn, account_id=row["account_id"] or SHARED_ACCOUNT_ID,
+                order_id=order_id, event_type="RESERVATION_RELEASE",
+                amount=float(row["reserved_cost"] or 0.0),
+                idempotency_key=f"order:{order_id}:cancel-release",
+                details={"reason": reason},
             )
         return self._order(order_id)
+
+    def expire_stale_resting_orders(self, *, now: str | None = None) -> int:
+        cutoff = now or _now()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM paper_orders WHERE status='PAPER_LIMIT_RESTING' "
+                "AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at, id",
+                (cutoff,),
+            ).fetchall()
+        expired = 0
+        for (order_id,) in rows:
+            row = self.cancel_resting_limit_order(int(order_id), reason="15-minute maker TTL expired")
+            expired += int(row is not None and row["status"] == "PAPER_EXPIRED")
+        return expired
 
     def record_monitor_snapshot(
         self,
@@ -1625,15 +2004,25 @@ class PaperStore:
                     UPDATE paper_orders
                     SET status = 'PAPER_EXPIRED',
                         settled_at = ?,
+                        cancelled_at = ?,
                         settlement_high_f = ?,
                         realized_pnl = 0.0,
+                        reserved_cost = 0,
                         outcome_diagnostics_json = ?
                     WHERE id = ?
                       AND status = 'PAPER_LIMIT_RESTING'
                       AND settled_at IS NULL
                       AND closed_at IS NULL
                     """,
-                    (settled_at, settlement_high_f, outcome_json, row["id"]),
+                    (settled_at, settled_at, settlement_high_f, outcome_json, row["id"]),
+                )
+                self._record_ledger_event(
+                    conn,
+                    account_id=row["account_id"] or SHARED_ACCOUNT_ID,
+                    order_id=int(row["id"]),
+                    event_type="RESERVATION_RELEASE",
+                    amount=float(row["reserved_cost"] or 0.0),
+                    idempotency_key=f"order:{row['id']}:settlement-expire-release",
                 )
             for row in rows:
                 resolved_yes = _row_resolves_yes(row, settlement_high_f)
@@ -1682,6 +2071,17 @@ class PaperStore:
                         row["id"],
                     ),
                 )
+                if cursor.rowcount:
+                    proceeds = contracts if position_wins else 0.0
+                    self._record_ledger_event(
+                        conn,
+                        account_id=row["account_id"] or SHARED_ACCOUNT_ID,
+                        order_id=int(row["id"]),
+                        event_type="SETTLEMENT_PROCEEDS",
+                        amount=proceeds,
+                        idempotency_key=f"order:{row['id']}:settlement-proceeds",
+                        details={"position_won": position_wins},
+                    )
                 settled += cursor.rowcount
         return settled
 
@@ -1693,7 +2093,9 @@ class PaperStore:
             raise ValueError(f"no open paper order found with id {order_id}")
         contracts = float(row["contracts"])
         entry_cost = float(row["cost_per_contract"])
-        exit_fee = quadratic_fee_average_per_contract(exit_price, contracts)
+        exit_fee = quadratic_fee_average_per_contract(
+            exit_price, contracts, series_ticker=str(row["market_ticker"])
+        )
         realized_pnl = contracts * (exit_price - exit_fee - entry_cost)
         # Persist resolved_yes on close so a closed order is classified by the
         # same resolved_yes-driven path as a settled order (db.py settle path),
@@ -1763,6 +2165,16 @@ class PaperStore:
                 raise ValueError(
                     f"paper order {order_id} was resolved concurrently before close"
                 )
+            net_proceeds = contracts * (exit_price - exit_fee)
+            self._record_ledger_event(
+                conn,
+                account_id=row["account_id"] or SHARED_ACCOUNT_ID,
+                order_id=order_id,
+                event_type="EXIT_PROCEEDS",
+                amount=net_proceeds,
+                idempotency_key=f"order:{order_id}:exit-proceeds",
+                details={"exit_price": exit_price, "exit_fee_per_contract": exit_fee},
+            )
         closed = self._order(order_id)
         if closed is None:
             raise RuntimeError(f"paper order {order_id} disappeared after close")
@@ -1771,39 +2183,41 @@ class PaperStore:
     def open_paper_order(self, order_id: int) -> sqlite3.Row | None:
         return self._open_order(order_id)
 
-    def resting_paper_orders(self, limit: int = 100) -> list[sqlite3.Row]:
+    def resting_paper_orders(self, limit: int | None = None) -> list[sqlite3.Row]:
         """Every live resting maker limit order, for the monitor's fill pass."""
 
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            return conn.execute(
-                """
+            query = """
                 SELECT *
                 FROM paper_orders
                 WHERE status = 'PAPER_LIMIT_RESTING'
                   AND settled_at IS NULL
                   AND closed_at IS NULL
                 ORDER BY created_at, id
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+                """
+            params: tuple[object, ...] = ()
+            if limit is not None:
+                query += " LIMIT ?"
+                params = (limit,)
+            return conn.execute(query, params).fetchall()
 
-    def open_paper_orders(self, limit: int = 50) -> list[sqlite3.Row]:
+    def open_paper_orders(self, limit: int | None = None) -> list[sqlite3.Row]:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            return conn.execute(
-                """
+            query = """
                 SELECT *
                 FROM paper_orders
                 WHERE status = 'PAPER_FILLED'
                   AND settled_at IS NULL
                   AND closed_at IS NULL
                 ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+                """
+            params: tuple[object, ...] = ()
+            if limit is not None:
+                query += " LIMIT ?"
+                params = (limit,)
+            return conn.execute(query, params).fetchall()
 
     def open_no_basket_orders(
         self,

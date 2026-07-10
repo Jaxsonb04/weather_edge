@@ -160,6 +160,25 @@ class KalshiPublicClient:
     def get_orderbook(self, market_ticker: str, depth: int = 10) -> dict[str, Any]:
         return self.get_json(f"markets/{market_ticker}/orderbook", {"depth": depth})
 
+    def get_trades(
+        self,
+        *,
+        ticker: str,
+        min_ts: int,
+        max_ts: int,
+        limit: int = 1000,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "ticker": ticker,
+            "min_ts": min_ts,
+            "max_ts": max_ts,
+            "limit": limit,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        return self.get_json("markets/trades", params)
+
     def list_historical_markets(
         self,
         *,

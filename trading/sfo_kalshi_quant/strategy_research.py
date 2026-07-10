@@ -135,7 +135,7 @@ def build_strategy_research(
         paper=paper,
         forecast_health=forecast_health,
     )
-    accounting = _accounting_payload(daily_summary, paper)
+    accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
 
     return {
         "schema_version": 1,
@@ -207,6 +207,8 @@ def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
 def _accounting_payload(
     daily_summary: dict[str, Any],
     paper: dict[str, Any],
+    *,
+    db_path: Path,
 ) -> dict[str, Any]:
     """One account-level reconciliation; profiles are attribution only."""
 
@@ -223,8 +225,22 @@ def _accounting_payload(
     realized_equity = initial_capital + all_time_realized
     open_cost_basis = _to_float(paper_summary.get("open_risk"))
     reservations = _to_float(paper_summary.get("pending_limit_risk"))
-    cash_balance = realized_equity - open_cost_basis
-    available_cash = cash_balance - reservations
+    shared_state = PaperStore(db_path, init=False).shared_account_state() if db_path.exists() else None
+    cash_balance = (
+        _to_float(shared_state.get("cash_balance"))
+        if shared_state is not None
+        else realized_equity - open_cost_basis
+    )
+    reservations = (
+        _to_float(shared_state.get("reservations"))
+        if shared_state is not None
+        else reservations
+    )
+    available_cash = (
+        _to_float(shared_state.get("available_cash"))
+        if shared_state is not None
+        else cash_balance - reservations
+    )
     open_positions = int(_to_float(paper_summary.get("open_positions")))
     marked_open = int(_to_float(paper_summary.get("marked_open_positions")))
     open_value_raw = paper_summary.get("open_value")
@@ -260,8 +276,12 @@ def _accounting_payload(
     )
     return {
         "schema_version": 1,
-        "account_id": "legacy-paper-account",
-        "accounting_cohort": "legacy_independent_sizing",
+        "account_id": (
+            str(shared_state.get("account_id")) if shared_state is not None else "legacy-paper-account"
+        ),
+        "accounting_cohort": (
+            "shared_account_v2" if shared_state is not None else "legacy_independent_sizing"
+        ),
         "initial_capital": _round(initial_capital, 2),
         "all_time_realized_pnl": _round(all_time_realized, 2),
         "window_realized_pnl": _round(window_realized, 2),
@@ -3082,7 +3102,9 @@ def _paper_row(
     current_bid = _to_float(mark.get("bid"), None) if mark else None
     current_ask = _to_float(mark.get("ask"), None) if mark else None
     current_exit_fee = (
-        quadratic_fee_average_per_contract(current_bid, contracts)
+        quadratic_fee_average_per_contract(
+            current_bid, contracts, series_ticker=str(row["market_ticker"])
+        )
         if current_bid is not None and current_bid > 0
         else None
     )
@@ -3149,9 +3171,26 @@ def _paper_row(
             "tone": "warn",
             "monitor_action": "LIMIT_RESTING",
         }
+    elif row["status"] in {"PAPER_SETTLED", "PAPER_CLOSED"}:
+        realized = _to_float(row["realized_pnl"], 0.0)
+        mark_status = {
+            "status": "RESOLVED",
+            "label": "Resolved",
+            "tone": "good" if realized > 0 else "bad" if realized < 0 else "warn",
+            "monitor_action": "RESOLVED",
+        }
     return {
         "id": row["id"],
         "created_at": row["created_at"],
+        "filled_at": _sqlite_row_value(row, "filled_at"),
+        "cancelled_at": _sqlite_row_value(row, "cancelled_at"),
+        "expires_at": _sqlite_row_value(row, "expires_at"),
+        "account_id": _sqlite_row_value(row, "account_id"),
+        "strategy_fingerprint": (
+            _sqlite_row_value(row, "strategy_fingerprint") or "legacy_independent_sizing"
+        ),
+        "sleeve": _sqlite_row_value(row, "sleeve"),
+        "fill_model": _sqlite_row_value(row, "fill_model"),
         "target_date": row["target_date"],
         "ticker": row["market_ticker"],
         "label": row["label"],

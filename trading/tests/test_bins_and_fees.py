@@ -1,4 +1,6 @@
 from sfo_kalshi_quant.fees import (
+    FEE_SCHEDULE_VERSION,
+    fee_multipliers,
     contracts_for_budget,
     expected_profit_per_yes_contract,
     kelly_fraction_spent,
@@ -6,6 +8,19 @@ from sfo_kalshi_quant.fees import (
     quadratic_fee_total,
     quadratic_fee_per_contract,
 )
+
+
+def test_july_2026_fee_schedule_handles_general_and_contract_overrides():
+    assert FEE_SCHEDULE_VERSION == "2026-07-07"
+    assert fee_multipliers("KXHIGHNY-26JUL09-B85") == (0.0, 1.0)
+    assert fee_multipliers("KXCPI-26JUL") == (1.0, 1.0)
+    assert fee_multipliers("KXBTCY-26DEC") == (0.0, 0.0)
+    assert quadratic_fee_total(
+        0.5, 100, maker=True, series_ticker="KXHIGHNY"
+    ) == 0.0
+    assert quadratic_fee_total(
+        0.5, 100, maker=False, series_ticker="KXHIGHNY"
+    ) == 1.75
 from sfo_kalshi_quant.standard_bins import standard_sfo_bins
 
 

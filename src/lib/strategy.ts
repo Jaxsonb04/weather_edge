@@ -14,6 +14,14 @@ export interface ClosedPosition {
   risk_profile: string;
   target_date: string;
   closed_at: string;
+  settled_at?: string | null;
+  filled_at?: string | null;
+  cancelled_at?: string | null;
+  expires_at?: string | null;
+  account_id?: string | null;
+  strategy_fingerprint?: string | null;
+  sleeve?: string | null;
+  fill_model?: string | null;
   position_status_label?: string;
   position_status_tone?: string;
   outcome_reason?: string | null;
@@ -42,6 +50,13 @@ export interface OpenPosition {
   risk?: number | null;
   risk_profile?: string;
   target_date?: string;
+  filled_at?: string | null;
+  cancelled_at?: string | null;
+  expires_at?: string | null;
+  account_id?: string | null;
+  strategy_fingerprint?: string | null;
+  sleeve?: string | null;
+  fill_model?: string | null;
   current_bid?: number | null;
   current_value?: number | null;
   unrealized_pnl?: number | null;

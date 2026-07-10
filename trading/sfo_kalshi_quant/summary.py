@@ -42,7 +42,10 @@ def build_paper_summary(
     total_realized_all_time = 0.0
 
     for order in orders:
-        opened_day = _local_day(order["created_at"])
+        opened_at = order.get("filled_at")
+        if opened_at is None and order["status"] in {"PAPER_FILLED", "PAPER_SETTLED", "PAPER_CLOSED"}:
+            opened_at = order["created_at"]  # legacy rows predate filled_at
+        opened_day = _local_day(opened_at) if opened_at else None
         resolved_at = order["closed_at"] or order["settled_at"]
         resolved_day = _local_day(resolved_at) if resolved_at else None
         pnl = order["realized_pnl"]
@@ -464,6 +467,9 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
         {
             "id": int(row["id"]),
             "created_at": row["created_at"],
+            "filled_at": _row_value(row, "filled_at"),
+            "cancelled_at": _row_value(row, "cancelled_at"),
+            "expires_at": _row_value(row, "expires_at"),
             "target_date": row["target_date"],
             "market_ticker": row["market_ticker"],
             "label": row["label"],

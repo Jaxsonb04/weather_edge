@@ -2,6 +2,44 @@ from __future__ import annotations
 
 import math
 
+FEE_SCHEDULE_VERSION = "2026-07-07"
+FEE_ROUNDING_UNIT = 0.0001  # one centicent
+
+# July 7, 2026 non-standard table. Unlisted prediction series use maker M=0,
+# taker M=1. Only overrides that differ from that general rule are needed here.
+_MAKER_ONE = {
+    "KXAAAGASM", "KXATPMATCH", "KXBALLONDOR", "KXBTCMAX150", "KXCPI",
+    "KXCPIYOY", "KXEGGS", "KXEMMYCACTO", "KXEMMYCACTR", "KXEMMYCSERIES",
+    "KXEMMYDACTO", "KXEMMYDACTR", "KXEMMYDSERIES", "KXFED",
+    "KXFEDDECISION", "KXGDP", "KXHEISMAN", "KXINXY", "KXIPO", "KXLALIGA",
+    "KXLLM1", "KXMARMAD", "KXMENWORLDCUP", "KXMLB", "KXMLBAL",
+    "KXMLBASGAME", "KXMLBGAME", "KXMLBNL", "KXNASDAQ100Y", "KXNBA",
+    "KXNBAEAST", "KXNBAMVP", "KXNBAROY", "KXNBAWEST", "KXNCAAF",
+    "KXNCAAFACC", "KXNCAAFB10", "KXNCAAFB12", "KXNCAAFGAME",
+    "KXNCAAFPLAYOFF", "KXNCAAFSEC", "KXNFLAFCCHAMP", "KXNFLAFCEAST",
+    "KXNFLAFCNORTH", "KXNFLAFCSOUTH", "KXNFLAFCWEST", "KXNFLCOTY",
+    "KXNFLCPOTY", "KXNFLDPOTY", "KXNFLDROTY", "KXNFLGAME", "KXNFLMVP",
+    "KXNFLNFCCHAMP", "KXNFLNFCEAST", "KXNFLNFCNORTH", "KXNFLNFCSOUTH",
+    "KXNFLNFCWEST", "KXNFLOPOTY", "KXNFLOROTY", "KXNHL", "KXNHLEAST",
+    "KXNHLWEST", "KXPAYROLLS", "KXPGARYDER", "KXPGASOLHEIM", "KXPGATOUR",
+    "KXRATECUTCOUNT", "KXSB", "KXSUPERBOWLHEADLINE", "KXU3", "KXUCL",
+    "KXUCLGAME", "KXWCGAME", "KXWNBA", "KXWNBAGAME", "KXWTAMATCH",
+}
+_TAKER_ZERO = {
+    "KXBTCY", "KXCITRINI", "KXDOED", "KXELECTIRAN", "KXETHY",
+    "KXGAMBLINGREPEAL", "KXGREENLAND", "KXLAYOFFSYINFO", "KXPAHLAVIHEAD",
+}
+
+
+def fee_multipliers(series_or_ticker: str | None) -> tuple[float, float]:
+    series = (series_or_ticker or "").split("-", 1)[0].upper()
+    return (1.0 if series in _MAKER_ONE else 0.0, 0.0 if series in _TAKER_ZERO else 1.0)
+
+
+def _ceil_position_plus_fee(position_cost: float, raw_fee: float) -> float:
+    total = math.ceil((position_cost + raw_fee) / FEE_ROUNDING_UNIT - 1e-12) * FEE_ROUNDING_UNIT
+    return max(0.0, round(total - position_cost, 12))
+
 
 def ceil_to_cent(value: float) -> float:
     """Round fees up to the next cent.
@@ -23,6 +61,7 @@ def quadratic_fee_total(
     fee_multiplier: float = 1.0,
     taker_rate: float = 0.07,
     maker_rate: float = 0.0175,
+    series_ticker: str | None = None,
 ) -> float:
     """Estimate total Kalshi fee for binary weather contracts.
 
@@ -33,7 +72,14 @@ def quadratic_fee_total(
     if price <= 0 or price >= 1 or contracts <= 0:
         return 0.0
     rate = maker_rate if maker else taker_rate
-    return ceil_to_cent(rate * fee_multiplier * contracts * price * (1.0 - price))
+    schedule_multiplier = 1.0
+    if series_ticker is not None:
+        maker_multiplier, taker_multiplier = fee_multipliers(series_ticker)
+        schedule_multiplier = maker_multiplier if maker else taker_multiplier
+    raw_fee = rate * fee_multiplier * schedule_multiplier * contracts * price * (1.0 - price)
+    if series_ticker is not None:
+        return _ceil_position_plus_fee(price * contracts, raw_fee)
+    return ceil_to_cent(raw_fee)
 
 
 def quadratic_fee_per_contract(
@@ -43,6 +89,7 @@ def quadratic_fee_per_contract(
     fee_multiplier: float = 1.0,
     taker_rate: float = 0.07,
     maker_rate: float = 0.0175,
+    series_ticker: str | None = None,
 ) -> float:
     return quadratic_fee_total(
         price,
@@ -51,6 +98,7 @@ def quadratic_fee_per_contract(
         fee_multiplier=fee_multiplier,
         taker_rate=taker_rate,
         maker_rate=maker_rate,
+        series_ticker=series_ticker,
     )
 
 
@@ -62,6 +110,7 @@ def quadratic_fee_average_per_contract(
     fee_multiplier: float = 1.0,
     taker_rate: float = 0.07,
     maker_rate: float = 0.0175,
+    series_ticker: str | None = None,
 ) -> float:
     if contracts <= 0:
         return 0.0
@@ -72,6 +121,7 @@ def quadratic_fee_average_per_contract(
         fee_multiplier=fee_multiplier,
         taker_rate=taker_rate,
         maker_rate=maker_rate,
+        series_ticker=series_ticker,
     ) / contracts
 
 
