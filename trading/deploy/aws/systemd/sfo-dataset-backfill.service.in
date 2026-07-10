@@ -21,6 +21,12 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/nwp_archive.py
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/emos_forecast.py --db __FORECASTER_DIR__/weather.db --backfill --lead 1 --cities all
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/emos_forecast.py --db __FORECASTER_DIR__/weather.db --backfill --lead 2 --cities all
 Nice=10
-# Per-unit memory cap so a spike self-limits on the no-swap 1 GB box.
-MemoryHigh=280M
-MemoryMax=360M
+# Contain a runaway process to this unit instead of letting the kernel
+# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection).
+MemoryHigh=600M
+MemoryMax=800M
+# Five sequential network-bound backfill steps legitimately run long; raise
+# the start timeout above the 90 s oneshot default so a normal nightly run
+# is not killed mid-chain.
+TimeoutStartSec=1800

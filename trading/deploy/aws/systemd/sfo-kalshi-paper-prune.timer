@@ -1,0 +1,12 @@
+[Unit]
+Description=Run SFO decision-journal retention daily
+
+[Timer]
+# Decorrelate firing so the sfo units don't all spike together
+RandomizedDelaySec=300
+OnCalendar=*-*-* 09:20:00 UTC
+Persistent=true
+Unit=sfo-kalshi-paper-prune.service
+
+[Install]
+WantedBy=timers.target

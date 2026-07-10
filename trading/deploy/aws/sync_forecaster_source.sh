@@ -53,6 +53,7 @@ rsync -a --delete \
   --exclude "*.pyc" \
   --exclude "logs/" \
   --exclude "models/" \
+  --exclude "STALE_FORECAST" \
   --exclude "weather.db" \
   --exclude "*.db-journal" \
   --exclude "*.sqlite" \

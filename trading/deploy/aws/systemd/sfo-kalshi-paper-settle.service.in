@@ -10,6 +10,8 @@ WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
 ExecStart=__TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color --forecaster-root __FORECASTER_DIR__ --db-path __TRADING_DIR__/data/paper_trading.db paper-auto-settle
 Nice=5
-# Per-unit memory cap so a spike self-limits on the no-swap 1 GB box.
-MemoryHigh=180M
-MemoryMax=240M
+# Contain a runaway process to this unit instead of letting the kernel
+# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection).
+MemoryHigh=400M
+MemoryMax=512M

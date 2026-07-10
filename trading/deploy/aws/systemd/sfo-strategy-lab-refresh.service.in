@@ -11,11 +11,12 @@ EnvironmentFile=__ENV_FILE__
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh strategy
 Nice=5
-# Cap memory so a spike self-limits instead of evicting the other sfo units
-# (1 GB box). A healthy cycle peaks well under the cap now that
-# strategy-research streams decision_snapshots instead of materializing them.
-MemoryHigh=450M
-MemoryMax=600M
+# Contain a runaway strategy-research build to this unit instead of letting
+# the kernel OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection). A healthy cycle peaks well under the cap now that
+# decision-snapshot sampling runs in SQL instead of materializing rows.
+MemoryHigh=1200M
+MemoryMax=1600M
 # Fail a stuck cycle fast instead of blocking the shared publication queue for
 # hours (memory-throttled strategy-research once ran 76 minutes).
 TimeoutStartSec=900

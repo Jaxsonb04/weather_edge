@@ -10,6 +10,8 @@ WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_paper_scan_profiles.sh
 Nice=5
-# Per-unit memory cap so a spike self-limits on the no-swap 1 GB box.
-MemoryHigh=180M
-MemoryMax=240M
+# Contain a runaway process to this unit instead of letting the kernel
+# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection).
+MemoryHigh=400M
+MemoryMax=512M

@@ -1,0 +1,23 @@
+[Unit]
+Description=SFO paper decision-journal retention prune
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__TRADING_DIR__
+EnvironmentFile=__ENV_FILE__
+# Keep the highest-volume table bounded: full fidelity for the last day,
+# per-day dedup back to 45 days, approved rows never deleted. The lossless
+# archive export gate runs first; a failed archive aborts before the prune.
+ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_archive_then_prune.sh
+Nice=10
+# Contain a runaway process to this unit instead of letting the kernel
+# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection).
+MemoryHigh=1200M
+MemoryMax=1600M
+# The archive-then-prune chain legitimately runs long on backlog days; raise
+# the start timeout above the 90 s oneshot default so it is not killed mid-run.
+TimeoutStartSec=1800

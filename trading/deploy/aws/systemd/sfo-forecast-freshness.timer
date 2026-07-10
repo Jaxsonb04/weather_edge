@@ -2,7 +2,7 @@
 Description=Run SFO forecast freshness watchdog every 30 minutes
 
 [Timer]
-# Decorrelate firing on a no-swap box; check shortly after each refresh window.
+# Decorrelate firing; check shortly after each refresh window.
 RandomizedDelaySec=60
 OnCalendar=*-*-* *:15,45:00
 Persistent=true

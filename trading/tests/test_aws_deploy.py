@@ -243,6 +243,32 @@ def test_dataset_backfill_timer_is_lightsail_safe_and_installed():
     assert "tr '[:upper:]' '[:lower:]'" in runner
 
 
+def test_paper_prune_unit_is_installed_and_archive_gated():
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    service = _read(AWS_DIR / "systemd" / "sfo-kalshi-paper-prune.service.in")
+    timer = _read(AWS_DIR / "systemd" / "sfo-kalshi-paper-prune.timer")
+
+    assert "sfo-kalshi-paper-prune.service.in" in installer
+    assert "sfo-kalshi-paper-prune.timer" in installer
+    # Enabled alongside the other timers (echo hint + enable line).
+    assert installer.count("sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer") == 2
+    assert "run_archive_then_prune.sh" in service
+    assert "EnvironmentFile=__ENV_FILE__" in service
+    # The archive-then-prune chain runs long; it must outlive the 90 s default.
+    assert "TimeoutStartSec=1800" in service
+    assert "OnCalendar=*-*-* 09:20:00 UTC" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=sfo-kalshi-paper-prune.service" in timer
+
+
+def test_source_sync_preserves_stale_forecast_watchdog_marker():
+    # sync_forecaster_source.sh rsyncs with --delete into the forecaster root,
+    # which is also where the freshness watchdog writes its STALE_FORECAST
+    # marker; without this exclude the 5-minute sync silently erases the alarm.
+    syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
+    assert '--exclude "STALE_FORECAST"' in syncer
+
+
 def test_pages_publish_ships_spa_and_fresh_jsons():
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")

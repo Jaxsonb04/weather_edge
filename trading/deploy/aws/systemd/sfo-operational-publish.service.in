@@ -11,6 +11,9 @@ EnvironmentFile=__ENV_FILE__
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh operational
 Nice=5
-MemoryHigh=400M
-MemoryMax=550M
+# Contain a runaway process to this unit instead of letting the kernel
+# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection).
+MemoryHigh=800M
+MemoryMax=1100M
 TimeoutStartSec=900

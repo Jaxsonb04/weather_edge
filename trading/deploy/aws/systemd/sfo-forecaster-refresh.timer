@@ -2,7 +2,7 @@
 Description=Run SFO forecaster refresh frequently with overnight budget control
 
 [Timer]
-# Decorrelate firing on a no-swap box so units don't all spike together
+# Decorrelate firing so the sfo units don't all spike together
 RandomizedDelaySec=30
 OnCalendar=*-*-* 05..18:10,40:00
 OnCalendar=*-*-* 00..04,19..23:40:00

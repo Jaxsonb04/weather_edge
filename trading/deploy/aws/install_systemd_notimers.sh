@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Timer-less variant of install_systemd.sh used for migrations/cutover: it
+# renders and installs every unit file but does NOT enable any timer, so a
+# freshly provisioned box stays inert until the operator flips the timers on.
 set -euo pipefail
 
 APP_USER="${APP_USER:-ubuntu}"
@@ -75,13 +78,4 @@ sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-kalshi-paper-prune.timer" /etc/syst
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecast-freshness.timer" /etc/systemd/system/sfo-forecast-freshness.timer
 
 sudo systemctl daemon-reload
-
-if sudo grep -q "replace_with_google_weather_key" "$ENV_FILE"; then
-  echo "Edit $ENV_FILE and set GOOGLE_WEATHER_API_KEY before enabling timers."
-  echo "Then run:"
-  echo "  sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer"
-  exit 0
-fi
-
-sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer
-sudo systemctl list-timers 'sfo-*' --all
+echo "units rendered and installed; NOT enabling timers yet (cutover-safe mode)"
