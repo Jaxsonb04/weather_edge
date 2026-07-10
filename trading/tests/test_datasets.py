@@ -489,6 +489,67 @@ def test_kalshi_history_backfill_keeps_market_rows_when_optional_detail_rate_lim
     assert candle_count == 0
 
 
+def test_forecast_features_keep_two_stations_for_the_same_forecast_key():
+    with TemporaryDirectory() as tmp:
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        common = {
+            "source": "test-model",
+            "model": "baseline",
+            "issued_at": "2026-07-09T12:00:00+00:00",
+            "target_date": "2026-07-10",
+            "valid_time": "2026-07-10",
+            "variable": "temperature_2m_max",
+            "units": "degF",
+        }
+
+        store.upsert_forecast_features([
+            {**common, "station_id": "KSFO", "value": 68.0},
+            {**common, "station_id": "KNYC", "value": 87.0},
+        ])
+
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                "SELECT station_id, value FROM dataset_forecast_features ORDER BY station_id"
+            ).fetchall()
+
+    assert rows == [("KNYC", 87.0), ("KSFO", 68.0)]
+
+
+def test_forecast_feature_migration_preserves_legacy_rows_as_ksfo():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE dataset_forecast_features (
+                    source TEXT NOT NULL, model TEXT NOT NULL, issued_at TEXT NOT NULL,
+                    target_date TEXT NOT NULL, valid_time TEXT NOT NULL, lead_hours REAL,
+                    latitude REAL, longitude REAL, variable TEXT NOT NULL, value REAL NOT NULL,
+                    units TEXT, source_url TEXT, raw_json TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    PRIMARY KEY (source, model, issued_at, target_date, valid_time, variable)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dataset_forecast_features
+                VALUES ('legacy', 'baseline', '2026-07-08T12:00:00+00:00',
+                        '2026-07-09', '2026-07-09', 24, 37.6, -122.4,
+                        'temperature_2m_max', 67, 'degF', NULL, '{}',
+                        '2026-07-08T12:01:00+00:00')
+                """
+            )
+
+        DatasetStore(db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT station_id, source, value FROM dataset_forecast_features"
+            ).fetchone()
+
+    assert row == ("KSFO", "legacy", 67.0)
+
+
 class _FakeKalshiHistoryClient:
     def list_historical_markets(self, *, series_ticker, limit, cursor=None):
         return {

@@ -1173,6 +1173,12 @@ def test_strategy_research_includes_config_rescore():
         assert readiness["profile"] == "live"
         assert readiness["status"] == "REPLAY_REQUIRED"
         assert readiness["verdict"] == "REPLAY REQUIRED"
+        replay = payload["chronological_replay"]
+        assert replay["evidence_kind"] == "chronological_account_replay"
+        assert replay["promotion_eligible"] is False
+        scorecards = payload["forecast_scorecards"]
+        assert {"available", "scorecards", "challenger_gates"} <= set(scorecards)
+        assert all(gate["promotion_eligible"] is False for gate in scorecards["challenger_gates"])
         assert readiness["status_reasons"]
         assert 0.0 <= readiness["readiness_pct"] <= 100.0
         assert readiness["ready"] is False  # a one-day fixture cannot be ready

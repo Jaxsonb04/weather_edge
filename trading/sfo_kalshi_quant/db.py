@@ -621,6 +621,10 @@ class PaperStore:
     def shared_account_state(self) -> dict[str, object] | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_accounts'"
+            ).fetchone() is None:
+                return None
             account = conn.execute(
                 "SELECT * FROM paper_accounts WHERE account_id = ?", (SHARED_ACCOUNT_ID,)
             ).fetchone()

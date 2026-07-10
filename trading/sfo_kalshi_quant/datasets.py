@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS dataset_station_observations (
 CREATE TABLE IF NOT EXISTS dataset_forecast_features (
     source TEXT NOT NULL,
     model TEXT NOT NULL,
+    station_id TEXT NOT NULL DEFAULT 'KSFO',
     issued_at TEXT NOT NULL,
     target_date TEXT NOT NULL,
     valid_time TEXT NOT NULL,
@@ -88,7 +89,7 @@ CREATE TABLE IF NOT EXISTS dataset_forecast_features (
     source_url TEXT,
     raw_json TEXT NOT NULL,
     fetched_at TEXT NOT NULL,
-    PRIMARY KEY (source, model, issued_at, target_date, valid_time, variable)
+    PRIMARY KEY (source, model, station_id, issued_at, target_date, valid_time, variable)
 );
 
 CREATE TABLE IF NOT EXISTS dataset_kalshi_markets (
@@ -190,6 +191,40 @@ class DatasetStore:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(DATASET_SCHEMA)
+            self._migrate_forecast_features_station_key(conn)
+
+    @staticmethod
+    def _migrate_forecast_features_station_key(conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(dataset_forecast_features)")}
+        if "station_id" in columns:
+            return
+        conn.execute("ALTER TABLE dataset_forecast_features RENAME TO dataset_forecast_features_legacy")
+        conn.execute(
+            """
+            CREATE TABLE dataset_forecast_features (
+                source TEXT NOT NULL, model TEXT NOT NULL,
+                station_id TEXT NOT NULL DEFAULT 'KSFO', issued_at TEXT NOT NULL,
+                target_date TEXT NOT NULL, valid_time TEXT NOT NULL, lead_hours REAL,
+                latitude REAL, longitude REAL, variable TEXT NOT NULL, value REAL NOT NULL,
+                units TEXT, source_url TEXT, raw_json TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                PRIMARY KEY (source, model, station_id, issued_at, target_date, valid_time, variable)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO dataset_forecast_features (
+                source, model, station_id, issued_at, target_date, valid_time,
+                lead_hours, latitude, longitude, variable, value, units,
+                source_url, raw_json, fetched_at
+            )
+            SELECT source, model, 'KSFO', issued_at, target_date, valid_time,
+                   lead_hours, latitude, longitude, variable, value, units,
+                   source_url, raw_json, fetched_at
+            FROM dataset_forecast_features_legacy
+            """
+        )
+        conn.execute("DROP TABLE dataset_forecast_features_legacy")
 
     def start_run(self, source: str, params: dict[str, Any]) -> int:
         with self.connect() as conn:
@@ -273,11 +308,11 @@ class DatasetStore:
             conn.executemany(
                 """
                 INSERT INTO dataset_forecast_features (
-                    source, model, issued_at, target_date, valid_time, lead_hours,
+                    source, model, station_id, issued_at, target_date, valid_time, lead_hours,
                     latitude, longitude, variable, value, units, source_url, raw_json, fetched_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source, model, issued_at, target_date, valid_time, variable) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source, model, station_id, issued_at, target_date, valid_time, variable) DO UPDATE SET
                     lead_hours = excluded.lead_hours,
                     latitude = excluded.latitude,
                     longitude = excluded.longitude,
@@ -291,6 +326,7 @@ class DatasetStore:
                     (
                         row["source"],
                         row["model"],
+                        row.get("station_id", "KSFO"),
                         row["issued_at"],
                         row["target_date"],
                         row["valid_time"],

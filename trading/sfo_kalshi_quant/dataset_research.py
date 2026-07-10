@@ -181,6 +181,7 @@ def _load_forecast_feature_candidates(db_path: Path) -> list[_FeatureCandidate]:
         SELECT source, model, variable, lead_hours, target_date, value, issued_at
         FROM dataset_forecast_features
         WHERE value IS NOT NULL
+          AND station_id = 'KSFO'
           AND target_date IS NOT NULL
           AND variable LIKE '%temperature_2m_max%'
         ORDER BY source, model, variable, lead_hours, target_date, issued_at
@@ -666,14 +667,15 @@ def _dataset_coverage(db_path: Path) -> dict[str, Any]:
                 """
                 SELECT source,
                        model,
+                       station_id,
                        variable,
                        COUNT(*) AS rows,
                        COUNT(DISTINCT target_date) AS target_dates,
                        MIN(target_date) AS first_target_date,
                        MAX(target_date) AS last_target_date
                 FROM dataset_forecast_features
-                GROUP BY source, model, variable
-                ORDER BY target_dates DESC, rows DESC, source, model, variable
+                GROUP BY source, model, station_id, variable
+                ORDER BY target_dates DESC, rows DESC, source, model, station_id, variable
                 LIMIT 12
                 """
             ).fetchall()
@@ -694,11 +696,12 @@ def _dataset_coverage(db_path: Path) -> dict[str, Any]:
             {
                 "source": row[0],
                 "model": row[1],
-                "variable": row[2],
-                "rows": int(row[3] or 0),
-                "target_dates": int(row[4] or 0),
-                "first_target_date": row[5],
-                "last_target_date": row[6],
+                "station_id": row[2],
+                "variable": row[3],
+                "rows": int(row[4] or 0),
+                "target_dates": int(row[5] or 0),
+                "first_target_date": row[6],
+                "last_target_date": row[7],
             }
             for row in source_rows
         ],

@@ -38,8 +38,10 @@ from .exits import (
 )
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
+from .forecast_scorecards import build_forecast_scorecards
 from .live_execution import LiveExecutionPolicy, readiness_status_from_checks
 from .research_shadow import build_research_shadow_report
+from .replay import replay_from_database
 from .settlement_day import settlement_today
 from .summary import build_paper_summary
 from .synthetic_blend import build_synthetic_blend_calibration
@@ -110,12 +112,20 @@ def build_strategy_research(
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
     backtest = _signal_backtest_payload(adapter, db_path)
     config_rescore = _config_rescore_payload(adapter, db_path)
-    real_money_readiness = _real_money_readiness_payload(config_rescore, active_calibration)
+    chronological_replay = replay_from_database(
+        db_path,
+        adapter.load_cli_settlement_truth(),
+        initial_capital=cfg.paper_bankroll,
+    )
+    real_money_readiness = _real_money_readiness_payload(
+        config_rescore, active_calibration, chronological_replay
+    )
     live_frequency_tuning = _live_frequency_tuning_payload(config_rescore, strategy_config_for_profile("live"))
     research_shadow = _research_shadow_payload(adapter, db_path)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
     forecast_health = _forecast_health_payload(forecaster_root, config=cfg)
+    forecast_scorecards = build_forecast_scorecards(forecaster_root / "weather.db")
     daily_summary = _daily_summary_payload(
         db_path=db_path,
         forecaster_root=forecaster_root,
@@ -155,9 +165,11 @@ def build_strategy_research(
         },
         "prediction_replay": prediction_replay,
         "forecast_health": forecast_health,
+        "forecast_scorecards": forecast_scorecards,
         "signal_quality": signal_quality,
         "backtest_summary": backtest,
         "config_rescore": config_rescore,
+        "chronological_replay": chronological_replay,
         "real_money_readiness": real_money_readiness,
         "live_frequency_tuning": live_frequency_tuning,
         "research_shadow": research_shadow,
@@ -1008,6 +1020,7 @@ def _research_shadow_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
 def _real_money_readiness_payload(
     config_rescore: dict[str, Any],
     active_calibration: dict[str, Any],
+    chronological_replay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Single go/no-go gauge for promoting the LIVE profile to real money.
 
@@ -1024,7 +1037,7 @@ def _real_money_readiness_payload(
             "status_reasons": [config_rescore.get("reason", "config rescore unavailable")],
             "reason": config_rescore.get("reason", "config rescore unavailable"),
         }
-    live_rescore = (config_rescore.get("by_profile") or {}).get("live")
+    live_rescore = dict((config_rescore.get("by_profile") or {}).get("live") or {})
     if not live_rescore:
         return {
             "available": False,
@@ -1054,6 +1067,14 @@ def _real_money_readiness_payload(
     ]
     max_gap = max(gaps) if gaps else None
 
+    replay = chronological_replay or {}
+    live_rescore["evidence_kind"] = replay.get(
+        "evidence_kind", live_rescore.get("evidence_kind")
+    )
+    live_rescore["promotion_eligible"] = bool(replay.get("promotion_eligible"))
+    live_rescore["promotion_block_reason"] = "; ".join(
+        str(reason) for reason in replay.get("promotion_block_reasons") or []
+    )
     readiness = compute_real_money_readiness(
         live_rescore,
         calibration_cohort_brier=cohort_brier or None,
