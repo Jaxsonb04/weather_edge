@@ -1,8 +1,11 @@
 import { Icon } from "@iconify/react";
+import { Chip } from "@heroui/react";
 import { pct } from "../../lib/data";
 import {
   findProfile,
   money,
+  openForProfile,
+  pendingForProfile,
   useStrategyLab,
   type ProfileEntry,
   type ProfilePaperSummary,
@@ -93,6 +96,57 @@ function HeroStat({ label, value, tone }: { label: string; value: string; tone?:
     <div className="flex flex-col gap-0.5">
       <dt className="text-[11px] uppercase tracking-wide text-muted">{label}</dt>
       <dd className={`tnum font-display text-lg font-semibold ${toneClass}`}>{value}</dd>
+    </div>
+  );
+}
+
+/** One book's current entry state: paused (daily-loss breaker) vs scanning, plus
+    its live open/resting counts — read straight from the published feed. */
+function BookState({ s, rp, label }: { s: StrategyLab; rp: string; label: string }) {
+  const p = findProfile(s, rp);
+  const reason = p?.status?.entry_scanner_reason ?? "";
+  const paused = /pause/i.test(reason);
+  const sum = p?.paper_trading?.summary;
+  const open = sum?.open_positions ?? openForProfile(s, rp).length;
+  const pending = sum?.pending_limit_orders ?? pendingForProfile(s, rp).length;
+  return (
+    <span className="flex items-center gap-2" title={paused ? reason : undefined}>
+      <span className="text-xs font-medium text-foreground">{label}</span>
+      <Chip size="sm" variant="soft" color={paused ? "default" : "success"}>
+        <Chip.Label>{paused ? "Entry paused" : "Scanning"}</Chip.Label>
+      </Chip>
+      <span className="tnum text-xs text-muted">
+        {open} open · {pending} resting
+      </span>
+    </span>
+  );
+}
+
+/** Live trading-status strip: a real-time snapshot of the running engine — the
+    heartbeat, each book's entry state and current book, and the paper-only
+    disclaimer folded in as a muted note (replaces the old warning band). */
+function LiveStatusStrip({ s }: { s: StrategyLab }) {
+  const fresh = s.generated_at ? `${s.generated_at.slice(0, 16).replace("T", " ")} UTC` : null;
+  const disclaimer =
+    s.disclaimer ?? "Paper-trading research only — no real-money orders are ever placed.";
+  return (
+    <div className="mb-6 rounded-xl bg-surface-secondary px-4 py-3 ring-1 ring-border/60">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+        <span className="flex items-center gap-2">
+          <span className="relative flex size-2" aria-hidden="true">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60" />
+            <span className="relative inline-flex size-2 rounded-full bg-success" />
+          </span>
+          <span className="text-xs font-semibold text-foreground">Paper engine live</span>
+        </span>
+        <BookState s={s} rp="live" label="Live candidate" />
+        <BookState s={s} rp="research" label="Research" />
+        {fresh && <span className="ml-auto font-mono text-[11px] text-muted">updated {fresh}</span>}
+      </div>
+      <p className="mt-2 flex items-center gap-1.5 text-[11px] leading-relaxed text-muted">
+        <Icon icon="solar:shield-keyhole-bold" className="size-3.5 shrink-0" aria-hidden="true" />
+        {disclaimer}
+      </p>
     </div>
   );
 }
@@ -207,14 +261,8 @@ export default function StrategyLabView() {
         )}
         {s && (
           <>
-            <Reveal immediate className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl bg-warning-soft px-4 py-2.5 text-sm text-foreground ring-1 ring-warning/25">
-              <span className="flex items-center gap-2">
-                <Icon icon="solar:shield-keyhole-bold" className="size-4 shrink-0 text-warning" />
-                <span>{s.disclaimer ?? "Paper-trading research only — no live orders are ever placed."}</span>
-              </span>
-              {s.generated_at && (
-                <span className="font-mono text-[11px] text-muted">refreshed {s.generated_at.slice(0, 16).replace("T", " ")} UTC</span>
-              )}
+            <Reveal immediate>
+              <LiveStatusStrip s={s} />
             </Reveal>
 
             {/* ---- Book overview: live candidate leads, research separate, combined for context ---- */}

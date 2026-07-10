@@ -155,12 +155,18 @@ export interface ProfilePaperSummary {
   realized_pnl: number;
   roi: number | null;
   open_positions: number;
+  pending_limit_orders?: number;
+  open_risk?: number | null;
+  latest_monitor_action_at?: string | null;
+  latest_opened_at?: string | null;
 }
 export interface ProfileStatus {
   alert_level?: string;
   latest_signal_count?: number;
   paper_trading_status?: string;
   realized_pnl?: number;
+  /** Entry scanner state, e.g. "live paused: daily loss …; recording near-misses only". */
+  entry_scanner_reason?: string | null;
 }
 /** Per-profile slice of the daily summary (same shapes as the combined one). */
 export interface ProfileDailySummary {

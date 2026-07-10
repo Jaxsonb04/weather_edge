@@ -14,13 +14,17 @@
    The temperature ramp is a separate semantic scale for temp-specific data.
 --------------------------------------------------------------------------- */
 :root {
-  /* warm-gold instrument readout — the brand accent (both modes) */
-  --accent: oklch(0.8 0.145 83);
+  /* bright-gold instrument readout — the brand accent (both modes). A cleaner,
+     more luminous gold than the old muddy/brown-leaning tone: higher chroma +
+     lightness and a hue nudged toward pure gold. Retinting the whole system
+     (Pro chart palette, focus ring, links, soft chips, model series) is a
+     single-token change; everything below derives from it. */
+  --accent: oklch(0.8 0.16 86);
   --accent-foreground: oklch(0.22 0.03 70);
 
-  /* AA-contrast accent for small text on a light surface (~4.9:1 on white).
+  /* AA-contrast accent for small text on a light surface (~4.6:1 on white).
      Overridden to the bright accent in dark mode below. */
-  --accent-text: oklch(0.52 0.15 74);
+  --accent-text: oklch(0.54 0.14 84);
 
   /* SERIES palette — for comparison series (model vs market / observed).
      Deliberately separate from the TEMPERATURE ramp; an indigo so it never reads
@@ -43,9 +47,9 @@
 }
 
 .dark {
-  --accent: oklch(0.82 0.145 83);
+  --accent: oklch(0.85 0.16 88);
   --accent-foreground: oklch(0.2 0.03 70);
-  /* bright gold already clears AA on the dark canvas (~11:1) */
+  /* bright gold already clears AA on the dark canvas */
   --accent-text: var(--accent);
   /* a touch deeper + cooler than the default dark canvas, for an instrument feel */
   --background: oklch(0.142 0.006 264);
