@@ -27,6 +27,14 @@ TARGET_DATE="${SFO_PAPER_SCAN_TARGET_DATE:-rolling}"
 SIDE="${SFO_PAPER_SCAN_SIDE:-both}"
 PORTFOLIO_MAX_ARB_SPEND="${SFO_PORTFOLIO_MAX_ARB_SPEND:-12}"
 PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"
+PAPER_PLACE_ORDERS="${SFO_PAPER_PLACE_ORDERS:-1}"
+
+truthy() {
+  case "${1,,}" in
+    1 | true | yes | y | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 if [[ "$PYTHON_BIN" != */* ]]; then
   if ! PYTHON_BIN="$(command -v "$PYTHON_BIN")"; then
@@ -66,8 +74,12 @@ for raw_profile in "${profiles[@]}"; do
     --paper-entry-mode "$PAPER_ENTRY_MODE"
     --max-arb-spend "$PORTFOLIO_MAX_ARB_SPEND"
     --min-profit "$PORTFOLIO_MIN_PROFIT"
-    --place-paper
   )
+  if truthy "$PAPER_PLACE_ORDERS"; then
+    args+=(--place-paper)
+  else
+    echo "allocator shadow mode: recording decisions without paper placement"
+  fi
   # Forecast/probability/market context is identical across profiles in one
   # scan; only the first profile's first command records it.
   if (( skip_context > 0 )); then
