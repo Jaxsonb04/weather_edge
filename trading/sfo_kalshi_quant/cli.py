@@ -828,6 +828,38 @@ def build_parser() -> argparse.ArgumentParser:
     prune.add_argument("--dedup-days", type=int, default=45)
     prune.set_defaults(func=cmd_paper_prune)
 
+    archive = sub.add_parser(
+        "paper-archive",
+        help="Append-only lossless day export of the journal; gates paper-prune (see archive.py)",
+    )
+    archive.add_argument("--archive-dir", type=Path, default=None,
+                         help="Default: <db dir>/archive")
+    archive.add_argument("--merge-db", type=Path, action="append", default=None,
+                         help="Extra source DB (e.g. a backup) merged by id during export; repeatable")
+    archive.add_argument("--check-gate", action="store_true",
+                         help="Exit non-zero unless every complete UTC day is archived+verified")
+    archive.add_argument("--upload", action="store_true",
+                         help="Upload unuploaded archive files to S3 (env SFO_ARCHIVE_S3_BUCKET)")
+    archive.add_argument("--cleanup", action="store_true",
+                         help="Delete local files older than --keep-days that are verifiably uploaded")
+    archive.add_argument("--keep-days", type=int, default=30)
+    archive.add_argument("--skip-full", action="store_true",
+                         help="Skip the nightly full-table snapshots of the small tables")
+    archive.set_defaults(func=cmd_paper_archive)
+
+    features = sub.add_parser(
+        "paper-features",
+        help="Distill archived decision ticks into market_side_day feature rows with settlement labels",
+    )
+    features.add_argument("--archive-dir", type=Path, default=None)
+    features.add_argument("--features-db", type=Path, default=None,
+                          help="Default: <archive dir>/features.db")
+    features.add_argument("--weather-db", type=Path, default=None,
+                          help="weather.db for CLI settlement labels (default: forecaster root)")
+    features.add_argument("--days", type=int, default=9,
+                          help="Trailing target-date window to (re)build")
+    features.set_defaults(func=cmd_paper_features)
+
     auto_settle = sub.add_parser(
         "paper-auto-settle",
         help="Settle open paper orders per city from its live CLI report, archived CLI truth as fallback",
@@ -3890,6 +3922,60 @@ def _color_status(color: Color, status: str) -> str:
     if status == "REJECTED":
         return color.red(status)
     return color.yellow(status)
+
+
+def cmd_paper_archive(args: argparse.Namespace) -> int:
+    from .archive import (
+        archive_pending,
+        cleanup_local,
+        gate_missing_days,
+        upload_pending,
+    )
+
+    archive_dir = args.archive_dir or (args.db_path.parent / "archive")
+    if not (args.check_gate or args.upload or args.cleanup):
+        exported = archive_pending(
+            args.db_path,
+            archive_dir,
+            merge_dbs=args.merge_db,
+            include_full=not args.skip_full,
+        )
+        print(f"archive: {exported} new file(s) under {archive_dir}")
+        return 0
+    if args.upload:
+        upload_pending(archive_dir)
+    if args.cleanup:
+        cleanup_local(archive_dir, keep_days=args.keep_days)
+    if args.check_gate:
+        missing = gate_missing_days(args.db_path, archive_dir)
+        if missing:
+            preview = ", ".join(f"{t} {d}" for t, d in missing[:5])
+            print(
+                f"PRUNE GATE REFUSED: {len(missing)} unarchived complete day(s): {preview}",
+                file=sys.stderr,
+            )
+            return 1
+        print("prune gate ok: every complete UTC day is archived+verified")
+    return 0
+
+
+def cmd_paper_features(args: argparse.Namespace) -> int:
+    from .archive import build_features
+
+    archive_dir = args.archive_dir or (args.db_path.parent / "archive")
+    features_db = args.features_db or (archive_dir / "features.db")
+    weather_db = args.weather_db
+    if weather_db is None:
+        candidate = DEFAULT_FORECASTER_ROOT / "weather.db"
+        weather_db = candidate if candidate.exists() else None
+    build_features(
+        archive_dir,
+        features_db,
+        weather_db,
+        args.db_path,
+        window_days=args.days,
+    )
+    return 0
 
 
 if __name__ == "__main__":
