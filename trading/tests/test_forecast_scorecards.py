@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from sfo_kalshi_quant.forecast_scorecards import build_forecast_scorecards
 
@@ -24,20 +25,21 @@ def _schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def test_scorecards_join_truth_by_station_and_date(tmp_path: Path) -> None:
-    db = tmp_path / "weather.db"
-    with sqlite3.connect(db) as conn:
-        _schema(conn)
-        conn.executemany(
-            "INSERT INTO cli_settlements VALUES (?, ?, ?, 't', 'cli')",
-            [("KSFO", "2026-07-01", 68), ("KNYC", "2026-07-01", 88)],
-        )
-        conn.executemany(
-            "INSERT INTO forecast_emos_daily_high VALUES (?, '2026-07-01', 1, ?, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', NULL)",
-            [("KSFO", 68), ("KNYC", 88)],
-        )
+def test_scorecards_join_truth_by_station_and_date() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            conn.executemany(
+                "INSERT INTO cli_settlements VALUES (?, ?, ?, 't', 'cli')",
+                [("KSFO", "2026-07-01", 68), ("KNYC", "2026-07-01", 88)],
+            )
+            conn.executemany(
+                "INSERT INTO forecast_emos_daily_high VALUES (?, '2026-07-01', 1, ?, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', NULL)",
+                [("KSFO", 68), ("KNYC", 88)],
+            )
 
-    payload = build_forecast_scorecards(db)
+        payload = build_forecast_scorecards(db)
 
     assert payload["available"] is True
     cards = {(row["station_id"], row["lead_days"]): row for row in payload["scorecards"]}
@@ -46,22 +48,23 @@ def test_scorecards_join_truth_by_station_and_date(tmp_path: Path) -> None:
     assert len(cards) == 2
 
 
-def test_scorecards_publish_probabilistic_metrics_and_fail_closed_gates(tmp_path: Path) -> None:
-    db = tmp_path / "weather.db"
-    with sqlite3.connect(db) as conn:
-        _schema(conn)
-        for day in range(1, 11):
-            target = f"2026-06-{day:02d}"
-            conn.execute(
-                "INSERT INTO cli_settlements VALUES ('KSFO', ?, ?, 't', 'cli')",
-                (target, 60 + day),
-            )
-            conn.execute(
-                "INSERT INTO forecast_emos_daily_high VALUES ('KSFO', ?, 0, ?, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', NULL)",
-                (target, 60 + day),
-            )
+def test_scorecards_publish_probabilistic_metrics_and_fail_closed_gates() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            for day in range(1, 11):
+                target = f"2026-06-{day:02d}"
+                conn.execute(
+                    "INSERT INTO cli_settlements VALUES ('KSFO', ?, ?, 't', 'cli')",
+                    (target, 60 + day),
+                )
+                conn.execute(
+                    "INSERT INTO forecast_emos_daily_high VALUES ('KSFO', ?, 0, ?, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', NULL)",
+                    (target, 60 + day),
+                )
 
-    payload = build_forecast_scorecards(db)
+        payload = build_forecast_scorecards(db)
     card = payload["scorecards"][0]
 
     assert card["cases"] == 10
@@ -77,15 +80,16 @@ def test_scorecards_publish_probabilistic_metrics_and_fail_closed_gates(tmp_path
     assert gates["pooled_distributional"]["required_pooled_station_days"] == 5000
 
 
-def test_scorecards_do_not_use_embedded_non_authoritative_actuals(tmp_path: Path) -> None:
-    db = tmp_path / "weather.db"
-    with sqlite3.connect(db) as conn:
-        _schema(conn)
-        conn.execute(
-            "INSERT INTO forecast_emos_daily_high VALUES ('KSFO', '2026-07-01', 1, 70, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', 70)"
-        )
+def test_scorecards_do_not_use_embedded_non_authoritative_actuals() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES ('KSFO', '2026-07-01', 1, 70, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', 70)"
+            )
 
-    payload = build_forecast_scorecards(db)
+        payload = build_forecast_scorecards(db)
 
     assert payload["available"] is False
     assert payload["matched_cases"] == 0
