@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+from sfo_kalshi_quant.cities import CITIES
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
@@ -323,86 +324,204 @@ def test_strategy_research_summary_win_loss_counts_use_full_book():
         assert diagnostics["worst_segments"][0]["exit_reason"] == "held_to_settlement"
 
 
-def test_forecast_health_surfaces_healthy_nwp_emos_and_clisfo():
+# 2026-06-27 16:00 UTC: every traded station (fixed standard offsets -5..-8)
+# is mid-morning/midday on 2026-06-27, so all 15 share the same settlement day
+# and the SFO-based rolling window [06-27, 06-28, 06-29].
+_HEALTH_NOW = datetime(2026, 6, 27, 16, 0, tzinfo=UTC)
+_HEALTH_TARGETS = ["2026-06-27", "2026-06-28", "2026-06-29"]
+_HEALTH_FETCHED_AT = "2026-06-27T15:00:00+00:00"
+
+
+def _seed_health_db(root: Path) -> None:
+    """Healthy 15-city weather.db fixture: today's NWP archive rows, fresh
+    live EMOS rows at leads 0/1/2 for every station x rolling target, and CLI
+    settlement truth through yesterday (lag 1) for every station."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(root / "weather.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE nwp_model_forecasts (
+                station_id TEXT,
+                target_date TEXT,
+                model TEXT,
+                lead_days INTEGER,
+                predicted_high_f REAL,
+                fetched_at TEXT,
+                source TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE forecast_emos_daily_high (
+                station_id TEXT,
+                target_date TEXT,
+                lead_days INTEGER,
+                predicted_high_f REAL,
+                sigma_f REAL,
+                n_models INTEGER,
+                model_spread_f REAL,
+                fetched_at TEXT,
+                method TEXT,
+                source TEXT,
+                actual_high_f REAL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+            "max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE nws_daily_high_ground_truth "
+            "(station_id TEXT, local_date TEXT, high_f REAL, is_complete INTEGER)"
+        )
+        for city in CITIES:
+            station = city.nws_station_id
+            # Archive rows exist only for TODAY at leads 1..3 (the nightly
+            # fetch window never reaches today+2) -- mirror production.
+            for model_idx in range(8):
+                for lead in (1, 2, 3):
+                    conn.execute(
+                        "INSERT INTO nwp_model_forecasts VALUES (?, ?, ?, ?, ?, ?, 'test')",
+                        (
+                            station,
+                            _HEALTH_TARGETS[0],
+                            f"model_{model_idx}",
+                            lead,
+                            68.0 + model_idx / 10,
+                            _HEALTH_FETCHED_AT,
+                        ),
+                    )
+            # Live serve: same-day at lead 0, next-day at lead 1, 2-day-out at
+            # lead 2 -- one fresh row per rolling target.
+            for lead, target in enumerate(_HEALTH_TARGETS):
+                conn.execute(
+                    "INSERT INTO forecast_emos_daily_high VALUES "
+                    "(?, ?, ?, 69.0, 2.5, 8, 1.0, ?, 'emos_wmean', 'live', NULL)",
+                    (station, target, lead, _HEALTH_FETCHED_AT),
+                )
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "(?, '2026-06-20', 1, 68.0, 2.5, 8, 1.0, ?, 'emos_wmean', 'rolling_origin', 68.0)",
+                (station, _HEALTH_FETCHED_AT),
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES (?, '2026-06-26', 68, ?, 'nws_cli')",
+                (station, _HEALTH_FETCHED_AT),
+            )
+        conn.execute(
+            "INSERT INTO nws_daily_high_ground_truth VALUES ('KSFO', '2026-06-27', 69.0, 1)"
+        )
+        conn.commit()
+
+
+def test_forecast_health_healthy_15_city_fixture_has_zero_warnings():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
-        root.mkdir(parents=True, exist_ok=True)
-        now = datetime(2026, 6, 27, 16, 0, tzinfo=UTC)
-        targets = ["2026-06-27", "2026-06-28", "2026-06-29"]
-        fetched_at = "2026-06-27T15:00:00+00:00"
-        with sqlite3.connect(root / "weather.db") as conn:
-            conn.execute(
-                """
-                CREATE TABLE nwp_model_forecasts (
-                    target_date TEXT,
-                    model TEXT,
-                    lead_days INTEGER,
-                    predicted_high_f REAL,
-                    fetched_at TEXT,
-                    source TEXT
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE forecast_emos_daily_high (
-                    target_date TEXT,
-                    lead_days INTEGER,
-                    predicted_high_f REAL,
-                    sigma_f REAL,
-                    n_models INTEGER,
-                    fetched_at TEXT,
-                    method TEXT,
-                    source TEXT,
-                    actual_high_f REAL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE TABLE clisfo_settlements "
-                "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
-            )
-            conn.execute(
-                "CREATE TABLE nws_daily_high_ground_truth "
-                "(station_id TEXT, local_date TEXT, high_f REAL, is_complete INTEGER)"
-            )
-            for target in targets:
-                for model_idx in range(6):
-                    conn.execute(
-                        "INSERT INTO nwp_model_forecasts VALUES (?, ?, 1, ?, ?, 'test')",
-                        (target, f"model_{model_idx}", 68.0 + model_idx / 10, fetched_at),
-                    )
-                conn.execute(
-                    """
-                    INSERT INTO forecast_emos_daily_high
-                    VALUES (?, 1, 69.0, 2.5, 6, ?, 'emos_wmean', 'live', NULL)
-                    """,
-                    (target, fetched_at),
-                )
-            conn.execute(
-                "INSERT INTO forecast_emos_daily_high "
-                "VALUES ('2026-06-20', 1, 68.0, 2.5, 6, ?, 'emos_wmean', 'rolling_origin', 68.0)",
-                (fetched_at,),
-            )
-            conn.execute(
-                "INSERT INTO clisfo_settlements VALUES ('2026-06-26', 68, ?, 'CLISFO')",
-                (fetched_at,),
-            )
-            conn.execute(
-                "INSERT INTO nws_daily_high_ground_truth VALUES ('KSFO', '2026-06-27', 69.0, 1)"
-            )
+        _seed_health_db(root)
 
         payload = _forecast_health_payload(
             root,
             config=StrategyConfig(emos_distribution_enabled=True),
-            now=now,
+            now=_HEALTH_NOW,
         )
 
         assert payload["available"] is True
         assert payload["warnings"] == []
-        assert payload["nwp"]["targets"][0]["model_count"] == 6
+        # Today is checked against the archive at lead 1; future targets are
+        # checked against the live serve's per-station model coverage.
+        nwp_targets = payload["nwp"]["targets"]
+        assert nwp_targets[0]["check"] == "archive_lead1"
+        assert nwp_targets[0]["model_count"] == 8
+        assert nwp_targets[1]["check"] == "live_serve_models"
+        assert nwp_targets[1]["model_count"] == 8
+        assert nwp_targets[2]["check"] == "live_serve_models"
+        assert nwp_targets[2]["model_count"] == 8
+        # 15 stations x 3 rolling targets, freshest row per pair (any lead,
+        # including the same-day lead-0 serve).
+        assert len(payload["emos"]["live_targets"]) == 45
         assert payload["emos"]["live_targets"][0]["method"] == "emos_wmean"
+        assert {row["lead_days"] for row in payload["emos"]["live_targets"]} == {0, 1, 2}
+        # Worst-station CLI lag across all 15: yesterday settled everywhere.
         assert payload["clisfo"]["lag_days"] == 1
+        assert len(payload["clisfo"]["stations"]) == 15
+
+
+def test_forecast_health_flags_single_stale_cli_station_exactly_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        _seed_health_db(root)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "UPDATE cli_settlements SET local_date = '2026-06-23' "
+                "WHERE station_id = 'KNYC'"
+            )
+            conn.commit()
+
+        payload = _forecast_health_payload(
+            root,
+            config=StrategyConfig(emos_distribution_enabled=True),
+            now=_HEALTH_NOW,
+        )
+
+        assert len(payload["warnings"]) == 1
+        warning = payload["warnings"][0]
+        assert warning["code"] == "clisfo-stale"
+        assert warning["station_id"] == "KNYC"
+        assert "4 settlement day(s)" in warning["detail"]
+        assert payload["clisfo"]["lag_days"] == 4  # worst-station headline
+
+
+def test_forecast_health_flags_single_missing_emos_station_exactly_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        _seed_health_db(root)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "DELETE FROM forecast_emos_daily_high "
+                "WHERE station_id = 'KSEA' AND source = 'live'"
+            )
+            conn.commit()
+
+        payload = _forecast_health_payload(
+            root,
+            config=StrategyConfig(emos_distribution_enabled=True),
+            now=_HEALTH_NOW,
+        )
+
+        assert len(payload["warnings"]) == 1
+        warning = payload["warnings"][0]
+        assert warning["code"] == "emos-live-missing"
+        assert warning["station_id"] == "KSEA"
+        assert len(payload["emos"]["live_targets"]) == 42
+
+
+def test_forecast_health_settled_target_is_not_missing_or_stale():
+    # Once a (station, target) has CLI truth the serve refuses to refresh it
+    # by design; the health check must treat it as done, not missing.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        _seed_health_db(root)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "DELETE FROM forecast_emos_daily_high "
+                "WHERE station_id = 'KSFO' AND source = 'live' AND target_date = '2026-06-27'"
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES ('KSFO', '2026-06-27', 70, ?, 'nws_cli')",
+                (_HEALTH_FETCHED_AT,),
+            )
+            conn.commit()
+
+        payload = _forecast_health_payload(
+            root,
+            config=StrategyConfig(emos_distribution_enabled=True),
+            now=_HEALTH_NOW,
+        )
+
+        assert payload["warnings"] == []
 
 
 def test_strategy_research_splits_day_ahead_and_intraday_lead_modes():
