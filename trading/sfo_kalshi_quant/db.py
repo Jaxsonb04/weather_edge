@@ -345,6 +345,15 @@ DECISION_SNAPSHOT_REPORT_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_created_market
     ON decision_snapshots (created_at, market_ticker, approved)
 """
+DECISION_SNAPSHOT_SAMPLE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pre_entry
+    ON decision_snapshots (
+        target_date, market_ticker, side, approved DESC, created_at, id
+    )
+    WHERE COALESCE(intraday_is_complete, 0) = 0
+      AND market_close_time IS NOT NULL
+      AND created_at < market_close_time
+"""
 
 # DB-level backstop for the application's concurrent-open guard
 # (has_active_paper_entry). The app guard is a check-then-insert across separate
@@ -557,6 +566,7 @@ class PaperStore:
             conn.executescript(INDEXES)
             if not decision_table_existed:
                 conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
+                conn.execute(DECISION_SNAPSHOT_SAMPLE_INDEX)
             self._ensure_open_position_guard_index(conn)
             self._ensure_shared_paper_account(conn)
 
@@ -2545,7 +2555,7 @@ class PaperStore:
                     else "1 = 1"
                 )
                 ordering = (
-                    "CASE WHEN approved = 1 THEN 0 ELSE 1 END, created_at, id"
+                    "approved DESC, created_at, id"
                     if sample_mode == "entry-per-market-side"
                     else "created_at DESC, id DESC"
                 )
@@ -2556,8 +2566,7 @@ class PaperStore:
                         SELECT id,
                                ROW_NUMBER() OVER (
                                    PARTITION BY target_date, market_ticker,
-                                   COALESCE(NULLIF(UPPER(side), ''),
-                                       CASE WHEN UPPER(action) LIKE '%NO%' THEN 'NO' ELSE 'YES' END)
+                                   side
                                    ORDER BY {ordering}
                                ) AS sample_rank
                         FROM decision_snapshots
@@ -2618,24 +2627,33 @@ class PaperStore:
         counts = {"raw": 0, "raw_approved": 0, "pre": 0, "pre_approved": 0}
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            count_row = conn.execute(
+            raw_count_row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS raw,
-                       COALESCE(SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END), 0) AS raw_approved,
-                       COALESCE(SUM(CASE WHEN COALESCE(intraday_is_complete,0)=0
-                                             AND market_close_time IS NOT NULL
-                                             AND created_at < market_close_time
-                                         THEN 1 ELSE 0 END), 0) AS pre,
-                       COALESCE(SUM(CASE WHEN approved=1
-                                             AND COALESCE(intraday_is_complete,0)=0
-                                             AND market_close_time IS NOT NULL
-                                             AND created_at < market_close_time
-                                         THEN 1 ELSE 0 END), 0) AS pre_approved
+                       COALESCE(SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END), 0) AS raw_approved
                 FROM decision_snapshots {where}
                 """,
                 params,
             ).fetchone()
-            counts = {key: int(count_row[key] or 0) for key in counts}
+            pre_where = (
+                f"{where} {'AND' if where else 'WHERE'} "
+                "COALESCE(intraday_is_complete,0)=0 "
+                "AND market_close_time IS NOT NULL AND created_at < market_close_time"
+            )
+            pre_count_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS pre,
+                       COALESCE(SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END), 0) AS pre_approved
+                FROM decision_snapshots {pre_where}
+                """,
+                params,
+            ).fetchone()
+            counts = {
+                "raw": int(raw_count_row["raw"] or 0),
+                "raw_approved": int(raw_count_row["raw_approved"] or 0),
+                "pre": int(pre_count_row["pre"] or 0),
+                "pre_approved": int(pre_count_row["pre_approved"] or 0),
+            }
         sampled_rows = self.sampled_decision_rows(
             since=since,
             until=until,
