@@ -1679,6 +1679,15 @@ class PaperStore:
         Unlike has_open_paper_position, this also counts closed and settled
         orders, so a stop-loss exit cannot be followed by an immediate re-buy
         on the next scheduled scan.
+
+        PAPER_EXPIRED is excluded alongside REJECTED: an expired resting maker
+        quote never filled, deployed zero capital, and carries no position or
+        realized outcome. Counting it against max_entries_per_market_side
+        (live=1) permanently blocked that market-side for the whole target
+        date after one unfilled 15-minute quote, so an approved edge could
+        never re-quote (e.g. expired order #109 blocked 32 later approved
+        snapshots). Resting quotes still count while they rest, and
+        filled/closed/settled entries still count forever.
         """
 
         profile_filter, profile_params = _paper_profile_filter(risk_profile)
@@ -1690,7 +1699,7 @@ class PaperStore:
                 WHERE target_date = ?
                   AND market_ticker = ?
                   AND UPPER(COALESCE(side, 'YES')) = ?
-                  AND status != 'REJECTED'
+                  AND status NOT IN ('REJECTED', 'PAPER_EXPIRED')
                   {profile_filter}
                 """,
                 (target_date, market_ticker, side.upper(), *profile_params),
