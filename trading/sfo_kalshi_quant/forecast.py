@@ -12,6 +12,7 @@ from .cities import CityConfig, get_city
 from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ
 from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
+from .settlement_truth import load_cli_settlement_truth
 
 
 class ForecastDataError(RuntimeError):
@@ -528,19 +529,25 @@ class SfoForecasterAdapter:
             for local_date, high in rows
         }
 
-    def load_ksfo_daily_highs(self) -> dict[date, float]:
+    def load_cli_settlement_truth(self) -> dict[tuple[str, str], float]:
+        """All city outcomes keyed by (series ticker, target date)."""
+
         if not self.weather_db.exists():
             return {}
-        query = """
-            SELECT local_date, high_f
-            FROM nws_daily_high_ground_truth
-            WHERE high_f IS NOT NULL AND is_complete = 1
-        """
         with sqlite3.connect(self.weather_db) as conn:
-            if not _table_exists(conn, "nws_daily_high_ground_truth"):
+            if not _table_exists(conn, "cli_settlements"):
                 return {}
-            rows = conn.execute(query).fetchall()
-        return {date.fromisoformat(local_date): float(high_f) for local_date, high_f in rows}
+            return load_cli_settlement_truth(conn)
+
+    def load_ksfo_daily_highs(self) -> dict[date, float]:
+        """Deprecated SFO-only view of authoritative CLI settlements."""
+
+        truth = self.load_cli_settlement_truth()
+        return {
+            date.fromisoformat(target_date): high
+            for (series, target_date), high in truth.items()
+            if series == "KXHIGHTSFO"
+        }
 
     def load_emos_mu_sigma(
         self, lead_days: int | None = 1, *, source: str | None = None

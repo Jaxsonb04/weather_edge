@@ -5,6 +5,7 @@ import sqlite3
 from typing import Any
 
 from .db import PaperStore
+from .settlement_truth import normalize_settlement_truth, settlement_for_market
 
 
 def build_research_shadow_report(
@@ -13,10 +14,7 @@ def build_research_shadow_report(
     settlements: dict[object, float] | None = None,
     limit: int = 10000,
 ) -> dict[str, Any]:
-    normalized_settlements = {
-        str(target_date): float(high)
-        for target_date, high in (settlements or {}).items()
-    }
+    normalized_settlements = normalize_settlement_truth(settlements or {})
     try:
         rows = _shadow_rows_with_paper(store, limit=limit)
     except sqlite3.Error as exc:
@@ -60,8 +58,11 @@ def build_research_shadow_report(
                 )
 
         target_date = str(row["target_date"])
-        if target_date in normalized_settlements:
-            resolved_yes = _row_resolves_yes(row, normalized_settlements[target_date])
+        settlement_high = settlement_for_market(
+            normalized_settlements, str(row["market_ticker"]), target_date
+        )
+        if settlement_high is not None:
+            resolved_yes = _row_resolves_yes(row, settlement_high)
             side = _row_side(row)
             won = resolved_yes if side == "YES" else not resolved_yes
             contracts = _as_float(row["contracts"], 0.0)

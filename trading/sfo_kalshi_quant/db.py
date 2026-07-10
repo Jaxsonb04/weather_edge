@@ -18,6 +18,7 @@ from .fees import (
 )
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .prediction_features import build_prediction_feature_snapshot
+from .settlement_truth import normalize_settlement_truth, settlement_for_market
 
 logger = logging.getLogger(__name__)
 
@@ -2145,7 +2146,8 @@ class PaperStore:
         # every fractional-high day near a bin edge -- the exact numbers used to
         # judge model edge and gate profiles.
         normalized_settlements = {
-            str(key): _integer_settlement_high_f(value) for key, value in settlements.items()
+            key: _integer_settlement_high_f(value)
+            for key, value in normalize_settlement_truth(settlements).items()
         }
         filters, params = _date_filters(since, until)
         if approved_only:
@@ -2178,7 +2180,12 @@ class PaperStore:
 
             sampled_rows = _sample_decision_rows(_pre_resolution_stream(), sample_mode)
         settled_rows = [
-            row for row in sampled_rows if str(row["target_date"]) in normalized_settlements
+            row
+            for row in sampled_rows
+            if settlement_for_market(
+                normalized_settlements, str(row["market_ticker"]), row["target_date"]
+            )
+            is not None
         ]
         if not settled_rows:
             return {
@@ -2210,7 +2217,11 @@ class PaperStore:
 
         outcomes = []
         for row in settled_rows:
-            settlement = normalized_settlements[str(row["target_date"])]
+            settlement = settlement_for_market(
+                normalized_settlements, str(row["market_ticker"]), row["target_date"]
+            )
+            if settlement is None:  # guarded by settled_rows; keeps typing honest
+                continue
             position_won = _decision_row_position_won(row, settlement)
             probability = float(row["probability"])
             outcomes.append((row, 1.0 if position_won else 0.0, probability))

@@ -70,6 +70,11 @@ export interface DayRow {
   date: string;
   cumulative_realized: number;
   realized_pnl?: number;
+  opening_equity?: number;
+  daily_realized_pnl?: number;
+  closing_equity?: number;
+  opening_attributed_pnl?: number;
+  closing_attributed_pnl?: number;
   trades_opened?: number;
   opened?: number;
   closed?: number;
@@ -308,6 +313,24 @@ export interface StrategyLab {
   generated_at?: string;
   default_profile?: string;
   source_of_truth?: string;
+  accounting?: {
+    initial_capital: number;
+    all_time_realized_pnl: number;
+    window_realized_pnl: number;
+    realized_equity: number;
+    cash_balance: number;
+    reservations: number;
+    available_cash: number;
+    open_cost_basis: number;
+    unrealized_pnl: number | null;
+    marked_equity: number | null;
+    mark_coverage: string;
+    resolved_capital: number;
+    return_on_initial_capital: number | null;
+    roi_on_resolved_capital: number | null;
+    reconciliation_status: string;
+    accounting_cohort?: string;
+  };
   paper_trading: {
     available: boolean;
     summary: {
@@ -339,6 +362,7 @@ export interface StrategyLab {
     window_start?: string;
     window_end?: string;
     totals: {
+      realized_pnl: number;
       cumulative_realized_pnl: number;
       hit_rate: number;
       roi: number;
@@ -392,7 +416,9 @@ export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankrol
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((d) => ({
       date: d.date.slice(5), // MM-DD
-      equity: Math.round((startingBankroll + (d.cumulative_realized ?? 0)) * 100) / 100,
+      equity: Math.round(
+        (d.closing_equity ?? (startingBankroll + (d.cumulative_realized ?? 0))) * 100,
+      ) / 100,
       pnl: d.cumulative_realized ?? 0,
     }));
 }

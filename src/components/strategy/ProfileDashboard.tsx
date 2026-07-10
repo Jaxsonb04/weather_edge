@@ -108,10 +108,11 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         <EquityCurve
           s={s}
           days={days}
-          startingBankroll={p.daily_summary?.starting_bankroll}
+          startingBankroll={0}
           windowDays={p.daily_summary?.window_days}
-          title={`${p.label} — paper equity`}
-          description={`This book's cumulative realized P&L · ${p.daily_summary?.window_days ?? days.length}-day window`}
+          title={`${p.label} — P&L contribution`}
+          description={`Attributed cumulative realized P&L in the one shared account · ${p.daily_summary?.window_days ?? days.length}-day view`}
+          contributionMode
         />
       )}
 

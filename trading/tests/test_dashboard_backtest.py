@@ -15,7 +15,7 @@ class _StubAdapter:
     def __init__(self, settlements):
         self._settlements = settlements
 
-    def load_ksfo_daily_highs(self):
+    def load_cli_settlement_truth(self):
         return self._settlements
 
 

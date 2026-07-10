@@ -193,6 +193,46 @@ def test_run_rescore_floors_fractional_high_to_integer_settlement():
     assert cand["realized_pnl"] < 0
 
 
+def test_run_rescore_keeps_two_city_settlements_separate_on_the_same_date():
+    config = StrategyConfig()
+    sfo_decision = TradeEvaluator(config).evaluate_market(
+        _no_favorite_market(), _no_favorite_probability(), bankroll=1000.0, side="NO"
+    )
+    ny_market = replace(
+        _no_favorite_market(),
+        ticker="KXHIGHNY-TEST-B66.5",
+        event_ticker="KXHIGHNY-TEST",
+    )
+    ny_probability = replace(_no_favorite_probability(), ticker=ny_market.ticker)
+    ny_decision = TradeEvaluator(config).evaluate_market(
+        ny_market, ny_probability, bankroll=1000.0, side="NO"
+    )
+    assert sfo_decision.approved and ny_decision.approved
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03", [sfo_decision, ny_decision],
+            event=pre_resolution_event([sfo_decision, ny_decision]),
+        )
+        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        result = run_rescore(
+            rows,
+            {
+                ("KXHIGHTSFO", "2026-06-03"): 70.0,
+                ("KXHIGHNY", "2026-06-03"): 67.0,
+            },
+            config,
+            bankroll=1000.0,
+        )
+
+    assert result["counts"]["settled_decisions"] == 2
+    assert result["candidate"]["wins"] == 1
+    assert result["candidate"]["losses"] == 1
+    assert result["evidence_kind"] == "snapshot_rescore"
+    assert result["promotion_eligible"] is False
+
+
 def test_run_rescore_reports_portfolio_drawdown_and_sleeve_attribution():
     config = StrategyConfig()
     base = TradeEvaluator(config).evaluate_market(

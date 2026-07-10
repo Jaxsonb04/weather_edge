@@ -33,6 +33,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .settlement_truth import settlement_key_for_market
+
 _DEFAULT_PRIOR_STRENGTH = 20.0
 _DEFAULT_FLOOR = 0.2
 _DEFAULT_MIN_COHORT_N = 8
@@ -144,14 +146,25 @@ def _accumulate(rows: list[tuple[float, float, bool, float]]) -> tuple[
     return cohort_records, to_record(overall)
 
 
-def _date_settlement_highs(conn) -> dict[str, float]:
-    """Per-target-date authoritative NWS CLI high from recorded settlements."""
+def _date_settlement_highs(conn) -> dict[tuple[str, str], float]:
+    """City/date authoritative CLI highs from recorded settlements."""
 
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()}
+    has_market_ticker = "market_ticker" in columns
     rows = conn.execute(
-        "SELECT target_date, settlement_high_f FROM paper_orders "
-        "WHERE settlement_high_f IS NOT NULL"
+        (
+            "SELECT market_ticker, target_date, settlement_high_f FROM paper_orders "
+            if has_market_ticker
+            else "SELECT 'KXHIGHTSFO', target_date, settlement_high_f FROM paper_orders "
+        )
+        + "WHERE settlement_high_f IS NOT NULL"
     ).fetchall()
-    return {target_date: float(high) for target_date, high in rows}
+    highs: dict[tuple[str, str], float] = {}
+    for market_ticker, target_date, high in rows:
+        key = settlement_key_for_market(str(market_ticker), target_date)
+        if key is not None:
+            highs[key] = float(high)
+    return highs
 
 
 def load_posterior_kelly_model(
@@ -188,12 +201,15 @@ def load_posterior_kelly_model(
 
     if include_counterfactual_closed:
         highs = _date_settlement_highs(conn)
-        for side, claimed, cost, target_date, strike_type, floor_strike, cap_strike in conn.execute(
-            "SELECT side, probability, cost_per_contract, target_date, strike_type, "
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()}
+        ticker_select = "market_ticker" if "market_ticker" in columns else "'KXHIGHTSFO'"
+        for side, claimed, cost, ticker, target_date, strike_type, floor_strike, cap_strike in conn.execute(
+            f"SELECT side, probability, cost_per_contract, {ticker_select}, target_date, strike_type, "
             "floor_strike, cap_strike FROM paper_orders "
             "WHERE status = 'PAPER_CLOSED' AND cost_per_contract IS NOT NULL"
         ).fetchall():
-            high = highs.get(target_date)
+            key = settlement_key_for_market(str(ticker), target_date)
+            high = highs.get(key) if key is not None else None
             if high is None:
                 continue
             won = side_won(side, strike_type, floor_strike, cap_strike, high)

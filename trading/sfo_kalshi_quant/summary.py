@@ -96,11 +96,15 @@ def build_paper_summary(
     days_out: list[dict[str, Any]] = []
     for key in day_keys:
         day = per_day[key]
+        opening_equity = cfg.paper_bankroll + cumulative
         cumulative += day["realized_pnl"]
         resolved = day["closed"] + day["settled"]
         day["hit_rate"] = day["wins"] / resolved if resolved else None
         day["roi"] = day["realized_pnl"] / day["resolved_spend"] if day["resolved_spend"] > 0 else None
         day["cumulative_realized"] = round(cumulative, 2)
+        day["opening_equity"] = round(opening_equity, 2)
+        day["daily_realized_pnl"] = round(day["realized_pnl"], 2)
+        day["closing_equity"] = round(cfg.paper_bankroll + cumulative, 2)
         day["realized_pnl"] = round(day["realized_pnl"], 2)
         day["opened_spend"] = round(day["opened_spend"], 2)
         day["resolved_spend"] = round(day["resolved_spend"], 2)
@@ -136,6 +140,7 @@ def build_paper_summary(
         order
         for order in orders
         if order["realized_pnl"] is not None
+        and order["status"] in {"PAPER_SETTLED", "PAPER_CLOSED"}
         and (resolved := order["closed_at"] or order["settled_at"]) is not None
         and _local_day(resolved) >= window_start.isoformat()
     ]

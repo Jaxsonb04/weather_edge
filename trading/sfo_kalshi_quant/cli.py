@@ -3097,7 +3097,7 @@ def cmd_backtest_market(args: argparse.Namespace) -> int:
 def cmd_backtest_signals(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = adapter.load_ksfo_daily_highs()
+    settlements = adapter.load_cli_settlement_truth()
     store = PaperStore(args.db_path)
     summary = store.signal_backtest_summary(
         settlements,
@@ -3170,7 +3170,7 @@ def cmd_backtest_rescore(args: argparse.Namespace) -> int:
     config = _config(args)
     profile = _risk_profile_name(args)
     adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = adapter.load_ksfo_daily_highs()
+    settlements = adapter.load_cli_settlement_truth()
     store = PaperStore(args.db_path)
     rows = store.sampled_decision_rows(
         since=args.since,
