@@ -74,9 +74,9 @@ export function OverviewView({ data }: { data: DashboardData }) {
         <section id="today" className="scroll-mt-24">
           <SectionHeading
             index="02"
-            eyebrow="Today's call"
-            title={activeCity ? `${activeCity.name}: the calibrated call` : "Today's call"}
-            sub="The selected city's next high, official settlement and paper-book activity. The San Francisco flagship also publishes bracket-level model-vs-market microstructure when current publication is verified."
+            eyebrow="Today's forecast"
+            title={activeCity ? `${activeCity.name} — today's forecast and market` : "Today's forecast"}
+            sub="The selected city's next high, its official settlement, and recent paper-trading activity. San Francisco also shows bracket-level model-vs-market detail when the current data is verified."
           />
           {cities.length > 1 && (
             <Reveal className="mb-5 flex flex-wrap items-center gap-3">
@@ -102,9 +102,9 @@ export function OverviewView({ data }: { data: DashboardData }) {
         <section id="system" className="scroll-mt-24">
           <SectionHeading
             index="03"
-            eyebrow="Under the hood"
-            title="A trading system, not a script"
-            sub="What's actually running behind this page: a forecasting stack, a market microstructure engine, and the production discipline that keeps it honest."
+            eyebrow="Engineering"
+            title="What's running behind the page"
+            sub="The pieces that produce everything above: a forecasting stack, a market pricing engine, and the production setup that keeps it running unattended."
           />
           <Reveal>
             <SystemHighlights />

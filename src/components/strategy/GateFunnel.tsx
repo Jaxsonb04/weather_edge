@@ -27,9 +27,9 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
     <Card className="rounded-2xl ring-1 ring-border/70">
       <Card.Header className="flex flex-row items-center justify-between gap-3">
         <div>
-          <Card.Title className="text-base">The approval gauntlet</Card.Title>
+          <Card.Title className="text-base">Signal filtering</Card.Title>
           <Card.Description className="text-sm text-muted">
-            Every 15-minute scan re-evaluates every bracket and side against the full gate stack
+            Every 15-minute scan re-checks every bracket and side against the full set of filters
           </Card.Description>
         </div>
         <Icon icon="solar:filter-bold" className="size-4 shrink-0 text-accent" aria-hidden="true" />

@@ -43,15 +43,15 @@ describe("StrategyPublicationNotice", () => {
   it("shows stale Strategy Lab recovery copy and its generated time", async () => {
     await renderNotice(publication("2026-07-09T10:00:00Z"));
 
-    expect(screen.getByRole("alert")).toHaveTextContent(/Strategy Lab publication is stale/i);
-    expect(screen.getByRole("alert")).toHaveTextContent(/open positions, pending limits, and current candidate counts are unavailable/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/Strategy Lab data is behind/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/open positions, pending limits, and current candidate counts aren't shown/i);
     expect(screen.getByRole("alert").querySelector("time")).toHaveAttribute("datetime", "2026-07-09T10:00:00Z");
   });
 
   it("shows unknown freshness explicitly with the artifact generated time", async () => {
     await renderNotice(publication(null, "missing"), "2026-07-09T11:30:00Z");
 
-    expect(screen.getByRole("status")).toHaveTextContent(/Strategy Lab freshness is unavailable/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/Live Strategy Lab status unavailable/i);
     expect(screen.getByRole("status").querySelector("time")).toHaveAttribute("datetime", "2026-07-09T11:30:00Z");
   });
 

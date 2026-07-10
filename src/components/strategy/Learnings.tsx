@@ -10,7 +10,7 @@ export function Learnings({ s }: { s: StrategyLab }) {
       <Card className="h-full rounded-2xl">
         <Card.Header className="flex flex-row items-center gap-2">
           <Icon icon="solar:lightbulb-bolt-bold" className="size-4 text-accent" />
-          <Card.Title className="text-base">What the window taught us</Card.Title>
+          <Card.Title className="text-base">What this window showed</Card.Title>
         </Card.Header>
         <Card.Content className="pt-0">
           <ul className="space-y-2.5">

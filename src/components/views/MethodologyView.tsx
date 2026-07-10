@@ -41,17 +41,17 @@ function AccuracyFinding({ data }: { data: DashboardData }) {
   const worst = [...cohorts].sort((a, b) => a.ranked_probability_skill - b.ranked_probability_skill)[0];
   return (
     <Finding>
-      This is the flagship's decade-deep record. Across <strong>{cal.n.toLocaleString()}</strong> scored San Francisco
+      This is San Francisco's ten-year track record. Across <strong>{cal.n.toLocaleString()}</strong> scored San Francisco
       outcomes the probability engine carries a{" "}
       <strong>{pct(cal.ranked_probability_skill, 0)} ranked-probability skill</strong> over climatology and calls the exact
       settlement bin {pct(cal.top_bin_accuracy, 0)} of the time — against roughly a dozen 2°F-wide brackets. The calibration
-      curve above is the honesty check: predicted probabilities track observed frequencies instead of overclaiming.
+      curve above is the check on this: predicted probabilities track the observed frequencies rather than overstating them.
       {best && worst && best.name !== worst.name && (
         <>
           {" "}
-          Skill is regime-dependent — sharpest in the <strong>{cohortLabel(best.name)}</strong> cohort (
-          {pct(best.ranked_probability_skill, 0)}) and most humbled in <strong>{cohortLabel(worst.name)}</strong> (
-          {pct(worst.ranked_probability_skill, 0)}), knowledge the risk gates use when sizing anything at all. All of it rests
+          Skill varies by regime — strongest in the <strong>{cohortLabel(best.name)}</strong> cohort (
+          {pct(best.ranked_probability_skill, 0)}) and weakest in <strong>{cohortLabel(worst.name)}</strong> (
+          {pct(worst.ranked_probability_skill, 0)}), which the risk gates account for when sizing positions. All of it rests
           on {forecast.n_days_observed.toLocaleString()} observed KSFO days across {forecast.n_years} years — and the other
           fourteen cities run the same EMOS post-processing against their own settlement stations, just without a decade of
           scored live outcomes behind them yet.
@@ -78,7 +78,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
       <PageHeader
         icon="solar:graph-up-bold"
         eyebrow="Methodology & diagnostics"
-        title="How the forecast earns its trust"
+        title="How the forecast is built and tested"
         sub="The production method is one pipeline in every city: a leakage-free nine-model NWP ensemble, EMOS-calibrated per station, settled on each city's own NWS Climatological Report. San Francisco layers flagship extras — an LSTM, a Google blend, and marine-layer features — on top of that shared base."
       />
       <main className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
@@ -135,7 +135,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
           <SectionHeading
             index="03"
             eyebrow="Forecast accuracy"
-            title="The flagship's decade-deep record"
+            title="Ten years of San Francisco accuracy"
             sub={`${forecast.n_days_observed.toLocaleString()} observed days across ${forecast.n_years} years anchor San Francisco's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station, just without a decade of scored outcomes behind it yet.`}
           />
           <Reveal className="mb-5">

@@ -39,10 +39,10 @@ export function StrategyPublicationNotice({ generatedAt }: { generatedAt?: strin
       />
       <div className="text-sm leading-relaxed">
         <p className="font-semibold text-foreground">
-          {stale ? "Strategy Lab publication is stale." : "Strategy Lab freshness is unavailable."}
+          {stale ? "Strategy Lab data is behind." : "Live Strategy Lab status unavailable."}
         </p>
         <p className="text-muted">
-          Open positions, pending limits, and current candidate counts are unavailable until publication recovers.
+          Open positions, pending limits, and current candidate counts aren't shown until the feed catches up.
           {formatted && timestamp && (
             <>
               {" "}Artifact generated <time dateTime={timestamp}>{formatted}</time>.

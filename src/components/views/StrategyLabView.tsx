@@ -37,20 +37,20 @@ function TrackRecordFinding({ s }: { s: StrategyLab }) {
     <Finding>
       Over the {s.daily_summary.window_days ?? "recent"}-day window the combined book realized{" "}
       <strong>{money(t.cumulative_realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital) at a{" "}
-      <strong>{pct(t.hit_rate, 0)} hit rate</strong> — frequent small wins, occasional larger losses.
+      <strong>{pct(t.hit_rate, 0)} hit rate</strong> — many small wins and a few larger losses.
       {no && yes && (
         <>
           {" "}
-          The damage is one-sided: NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades while
-          the {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong> — exactly
-          the asymmetry the books call out in their own recommended changes.
+          The losses are concentrated on one side: NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades,
+          while the {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong> — the same
+          split the books flag in their recommended changes.
         </>
       )}
     </Finding>
   );
 }
 
-function GauntletFinding({ s }: { s: StrategyLab }) {
+function SelectivityFinding({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
   const total = gate.approved + gate.rejected;
@@ -64,11 +64,11 @@ function GauntletFinding({ s }: { s: StrategyLab }) {
       {liveTop && (
         <>
           {" "}
-          — its dominant blocker is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections), a deliberate
-          stand-down when forecast sources disagree
+          — its most common rejection is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections), where it
+          holds off because the forecast sources disagree
         </>
       )}
-      . Selectivity, not activity, is the strategy.
+      . The strategy is built on being selective, not on trade volume.
     </Finding>
   );
 }
@@ -80,9 +80,9 @@ function ReadinessFinding({ s }: { s: StrategyLab }) {
   return (
     <Finding>
       Today the engine scores itself <strong>{r.checks_passed ?? 0}/{total} checks passed</strong> —{" "}
-      {(r.verdict ?? "not ready").toLowerCase()} for real money. The blockers are sample-size honesty: it refuses to count a
-      hot week as proof until it has enough independent settlement days. The go/no-go decision is enforced in code and
-      published unedited, not decided by feel.
+      {(r.verdict ?? "not ready").toLowerCase()} for real money. The open items are mostly about sample size: it won't treat a
+      good week as proof until it has enough independent settlement days. The go/no-go decision is enforced in code and
+      published as-is, not set by hand.
     </Finding>
   );
 }
@@ -110,7 +110,7 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
             <Icon icon="solar:shield-check-bold" className="size-3.5 shrink-0" aria-hidden="true" />
-            Live candidate · the real-money book
+            Live candidate · real-money profile
           </p>
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <span className={`font-display text-4xl font-bold tracking-tight ${up ? "text-success" : "text-danger"}`}>
@@ -149,12 +149,12 @@ function OverviewEquity({ s }: { s: StrategyLab }) {
         contributionMode
         windowDays={live.daily_summary?.window_days}
         emphasis="headline"
-        eyebrow="Live candidate · real-money track"
+        eyebrow="Live candidate · real-money profile"
         title="Live candidate — cumulative P&L"
         description={`Realized P&L attributed to the live book · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
       />
     ) : (
-      <EquityCurve s={s} emphasis="headline" eyebrow="Live candidate · real-money track" title="Live candidate — cumulative P&L" />
+      <EquityCurve s={s} emphasis="headline" eyebrow="Live candidate · real-money profile" title="Live candidate — cumulative P&L" />
     );
 
   return (
@@ -176,7 +176,7 @@ function OverviewEquity({ s }: { s: StrategyLab }) {
           contributionMode
           windowDays={research.daily_summary?.window_days}
           emphasis="secondary"
-          eyebrow="Experimental book · isolated from the live record"
+          eyebrow="Experimental book · tracked separately"
           title="Research — cumulative P&L"
           description={`Realized P&L attributed to the experimental book · ${research.daily_summary?.window_days ?? researchDays.length}-day view`}
         />
@@ -193,12 +193,12 @@ export default function StrategyLabView() {
       <PageHeader
         icon="solar:test-tube-bold"
         eyebrow="Strategy Lab"
-        title="The paper book, with nothing hidden"
-        sub="Two isolated risk profiles — a real-money candidate and an experimental book — shown side by side, then each with its full diagnostics: the gate funnel that rejects almost every signal, per-book signal quality and exits, and the go-live checklist the engine must pass before real money is even possible. Published straight from the AWS runtime."
+        title="Paper-trading results"
+        sub="Two risk profiles run in parallel on the same signals: a strict real-money candidate and a looser experimental book. Below is each book's performance, the filters that reject most signals, per-book signal quality and exits, and the checklist the system must pass before any real capital is allowed. Generated directly by the AWS runtime."
       />
       <main className="mx-auto w-full max-w-6xl px-5 pb-28 pt-10 sm:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
-        {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Could not load the lab — {error}</div>}
+        {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Couldn't load the Strategy Lab — {error}</div>}
         {!error && !s && (
           <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
             <Icon icon="solar:refresh-linear" className="size-4 animate-spin" aria-hidden="true" />
@@ -222,8 +222,8 @@ export default function StrategyLabView() {
               <SectionHeading
                 index="01"
                 eyebrow="Book overview"
-                title="The live candidate, front and centre"
-                sub="The real-money candidate leads on its own equity curve; the experimental book follows on a separate, secondary curve. Their P&L never blends — the combined shared-account totals sit below purely as context."
+                title="Live candidate performance"
+                sub="The real-money candidate is shown first, on its own equity curve. The experimental book follows on a separate curve — the two books' P&L are never combined. The shared-account totals appear below for reference."
               />
               <Reveal>
                 <OverviewEquity s={s} />
@@ -242,7 +242,7 @@ export default function StrategyLabView() {
               <Reveal className="mt-5">
                 <GateFunnel s={s} />
               </Reveal>
-              <GauntletFinding s={s} />
+              <SelectivityFinding s={s} />
               <Reveal className="mt-5">
                 <MoversCard s={s} />
               </Reveal>
@@ -253,8 +253,8 @@ export default function StrategyLabView() {
               <SectionHeading
                 index="02"
                 eyebrow="Per-book diagnostics"
-                title="Inside each book"
-                sub="Switch between the live candidate and the research book. Each gets its complete treatment: its own equity, gate, signal quality, exits, lessons, current exposure, and closed ledger."
+                title="Each book in detail"
+                sub="Switch between the live candidate and the research book. Each one shows its own equity, filtering, signal quality, exits, notes, current exposure, and closed trades."
               />
               <Reveal>
                 <ProfileExplorer s={s} />
@@ -267,7 +267,7 @@ export default function StrategyLabView() {
                 index="03"
                 eyebrow="Governance & operations"
                 title="System-level checks"
-                sub="Diagnostics that span the whole engine: the full go-live checklist, the champion/challenger calibration lock, the unattended runtime and feed health, and the backtest funnel behind the metrics."
+                sub="Diagnostics that cover the whole system: the full go-live checklist, the active-vs-challenger calibration comparison, the unattended runtime and feed health, and the backtest coverage behind the metrics."
               />
               <Reveal>
                 <ReadinessPanel s={s} />

@@ -7,11 +7,11 @@ import { usePublication } from "../../lib/publication";
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   live: {
     icon: "solar:shield-check-bold",
-    blurb: "Real-money candidate — non-negative lower-bound edge, sources in agreement, structural liquidity. Deliberately quiet.",
+    blurb: "Real-money candidate — trades only on a non-negative lower-bound edge, with forecast sources in agreement and reliable liquidity. Trades infrequently by design.",
   },
   research: {
     icon: "solar:test-tube-bold",
-    blurb: "Experimental book — loosest gates at the smallest stakes, so the journal fills with the full opportunity set fast.",
+    blurb: "Experimental book — the loosest filters at the smallest stakes, so it records the full range of opportunities quickly.",
   },
 };
 

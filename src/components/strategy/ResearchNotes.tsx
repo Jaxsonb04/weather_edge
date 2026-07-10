@@ -9,8 +9,8 @@ export function ResearchNotes({ s }: { s: StrategyLab }) {
   return (
     <ItemCardGroup layout="grid" columns={2}>
       <ItemCardGroup.Header>
-        <ItemCardGroup.Title>Reading the lab</ItemCardGroup.Title>
-        <ItemCardGroup.Description>How to interpret these figures honestly</ItemCardGroup.Description>
+        <ItemCardGroup.Title>Glossary</ItemCardGroup.Title>
+        <ItemCardGroup.Description>How to read the figures on this page</ItemCardGroup.Description>
       </ItemCardGroup.Header>
       {notes.map((n) => (
         <ItemCard key={n.term} variant="secondary" className="min-w-0">

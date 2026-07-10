@@ -24,7 +24,7 @@ const PILLARS: Pillar[] = [
     points: [
       "Bin-level probability engine with boundary-aware intraday math and an observed-high lock",
       "Fee- and liquidity-aware edge, gated on the lower confidence bound — not the point estimate",
-      "Two isolated risk profiles: a strict real-money candidate and a loose research collector",
+      "Two separate risk profiles: a strict real-money candidate and a looser experimental book",
     ],
   },
   {
@@ -33,13 +33,12 @@ const PILLARS: Pillar[] = [
     points: [
       "Unattended AWS timers scan every city's markets on a 15-minute cadence and publish these JSON artifacts",
       "SQLite paper journal with rule-based monitor exits (take-profit, stop-loss, model veto)",
-      "A six-check go-live readiness gate keeps real money disabled in code until it's earned",
+      "A go-live readiness checklist keeps real-money trading disabled in code until every criterion is met",
     ],
   },
 ];
 
-/** Recruiter-facing systems summary: what is actually engineered here, one
-    level below the charts. */
+/** Systems summary: what is engineered here, one level below the charts. */
 export function SystemHighlights() {
   return (
     <>

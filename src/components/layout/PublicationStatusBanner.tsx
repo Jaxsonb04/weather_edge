@@ -28,9 +28,9 @@ export function PublicationStatusBanner() {
         <div className="mx-auto flex w-full max-w-6xl items-start gap-3 px-5 py-3 sm:px-8">
           <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
           <div className="text-sm leading-relaxed">
-            <p className="font-semibold">Publication stale</p>
+            <p className="font-semibold">Live data is behind</p>
             <p className="text-muted">
-              Current prediction-market and open-position status is suppressed until publication recovers.
+              Real-time prediction-market and open-position data is paused until the feed catches up.
               {generated && (
                 <>
                   {" "}Last operational publication: <time dateTime={operational.generatedAt ?? undefined}>{generated}</time>.
@@ -48,8 +48,8 @@ export function PublicationStatusBanner() {
       <div className="mx-auto flex w-full max-w-6xl items-start gap-3 px-5 py-2.5 sm:px-8">
         <Icon icon="solar:info-circle-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
         <p className="text-sm leading-relaxed text-muted">
-          <span className="font-medium text-foreground">Publication freshness is unavailable.</span>{" "}
-          This may be a legacy deployment; current status remains withheld until a publication manifest is available.
+          <span className="font-medium text-foreground">Live status unavailable.</span>{" "}
+          Real-time prediction-market and position data isn't being shown for this deployment.
         </p>
       </div>
     </div>

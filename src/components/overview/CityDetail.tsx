@@ -292,11 +292,11 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
                 {mc.model_minus_market_f > 0 ? "+" : ""}
                 {round1(mc.model_minus_market_f)}°F
               </strong>{" "}
-              disagreement. The crowd's favorite bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
+              disagreement. The market's most-likely bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
               {pct(mc.modal_probability, 0)}, and the book carries a {pct(mc.overround, 1)} overround —
-              the tax any edge must beat. The engine approved{" "}
+              the cost any edge has to beat. The engine approved{" "}
               <strong>{approvedCount}</strong> signal{approvedCount === 1 ? "" : "s"} on the latest
-              scan; when the gap doesn't clear fees and gates, standing down is the correct trade.
+              scan; when the gap doesn't clear fees and filters, not trading is the correct choice.
             </Finding>
           )}
 

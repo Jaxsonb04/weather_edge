@@ -73,7 +73,7 @@ export function ExitPolicyCard({ s }: { s: StrategyLab }) {
         <div>
           <Card.Title className="text-base">Exit discipline</Card.Title>
           <Card.Description className="text-sm text-muted">
-            A monitor re-marks every open position each cycle and closes it by rule, not by mood
+            A monitor re-marks every open position each cycle and closes it by rule
           </Card.Description>
         </div>
       </Card.Header>

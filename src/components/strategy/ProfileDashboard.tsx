@@ -28,7 +28,7 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
   research: {
     icon: "solar:test-tube-bold",
     blurb:
-      "The experimental book. Runs the loosest gates at the smallest stakes so the journal fills with the full opportunity set fast. Its P&L is deliberately isolated from the live candidate's record.",
+      "The experimental book. Runs the loosest filters at the smallest stakes so it records the full range of opportunities quickly. Its P&L is kept separate from the live candidate's record.",
   },
 };
 
@@ -111,7 +111,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           startingBankroll={0}
           windowDays={p.daily_summary?.window_days}
           title={`${p.label} — P&L contribution`}
-          description={`Attributed cumulative realized P&L in the one shared account · ${p.daily_summary?.window_days ?? days.length}-day view`}
+          description={`Cumulative realized P&L attributed to this book within the shared account · ${p.daily_summary?.window_days ?? days.length}-day view`}
           contributionMode
         />
       )}
@@ -168,7 +168,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           <Card.Content className="space-y-5 pt-0">
             <div>
               <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Exit reasons</p>
-              <ExitReasonBars reasons={p.daily_summary?.exit_reasons} emptyNote={`${p.label} recorded no monitored exits this window — the book has been standing down.`} />
+              <ExitReasonBars reasons={p.daily_summary?.exit_reasons} emptyNote={`${p.label} recorded no monitored exits this window — the book has not been trading.`} />
             </div>
             <div>
               <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>

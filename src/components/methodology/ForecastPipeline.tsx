@@ -115,7 +115,7 @@ export function ForecastPipeline() {
             tone="extra"
             index="Tier 2"
             title={`Flagship extras · ${flagshipName} only`}
-            note="Layered above Tier 1 where a decade of local history earns them."
+            note="Added on top of Tier 1 for San Francisco, where a decade of local history supports them."
           />
           <div className="grid gap-3 sm:grid-cols-3">
             {TIER2_EXTRAS.map((s) => (

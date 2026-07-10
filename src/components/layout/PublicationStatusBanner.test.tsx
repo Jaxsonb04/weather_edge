@@ -46,7 +46,7 @@ describe("PublicationStatusBanner", () => {
     await renderBanner(manifest("2026-07-07T12:00:00Z"));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /current prediction-market and open-position status is suppressed until publication recovers/i,
+      /real-time prediction-market and open-position data is paused until the feed catches up/i,
     );
     expect(screen.getByRole("alert")).toHaveTextContent(/last operational publication/i);
   });
@@ -60,8 +60,8 @@ describe("PublicationStatusBanner", () => {
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
 
-    expect(screen.getByRole("status")).toHaveTextContent(/publication freshness is unavailable/i);
-    expect(screen.getByRole("status")).toHaveTextContent(/current status remains withheld/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/live status unavailable/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/isn't being shown for this deployment/i);
   });
 
   it("stays out of the way while publication is fresh", async () => {
