@@ -33,6 +33,8 @@ EXCLUDED_DIR_PARTS = {
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
+    "node_modules",
+    "dist",
     "2016-2026 weather data",
     "models",
     "plots",

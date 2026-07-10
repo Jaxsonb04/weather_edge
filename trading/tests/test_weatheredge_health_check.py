@@ -94,6 +94,20 @@ def test_high_confidence_secret_pattern_is_a_failure():
         )
 
 
+def test_generated_frontend_dependencies_are_excluded_from_secret_scan():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        access_key = "AKIA" + "1234567890ABCDEF"
+        _write(root, "node_modules/vendor.js", f"const fixture = '{access_key}';\n")
+
+        results = health.run_checks(root)
+
+        assert not any(
+            result.name == "secret pattern scan" and result.status == "FAIL"
+            for result in results
+        )
+
+
 def test_local_runtime_artifact_is_a_warning():
     with tempfile.TemporaryDirectory() as tmp:
         root = _make_minimal_project(Path(tmp))
