@@ -60,6 +60,12 @@ KSFO_LONGITUDE = DEFAULT_CITY.longitude
 # GFS/ICON/GEM globals, the AI models, and the remaining globals. EMOS/QRF in
 # Phase 1 learns each model's bias and weight, so a noisy member is harmless --
 # it just gets down-weighted -- but a *missing* strong model is unrecoverable.
+#
+# gfs_graphcast025 (Google GraphCast) was removed 2026-07-10: the Open-Meteo
+# previous-runs API publishes it with a ~7-week lag, so it had contributed no
+# archive row since 2026-05-21 (a permanently absent member at fetch time).
+# Its historical archive rows are kept; EMOS reweights over present members,
+# so past fits are unaffected and future fits simply never see it.
 NWP_MODELS: tuple[str, ...] = (
     "ncep_nbm_conus",       # NOAA National Blend of Models (statistical MOS blend)
     "ecmwf_ifs025",         # ECMWF IFS 0.25
@@ -67,7 +73,6 @@ NWP_MODELS: tuple[str, ...] = (
     "icon_seamless",        # DWD ICON
     "gem_global",           # Environment Canada GEM
     "ecmwf_aifs025_single", # ECMWF AIFS (AI model)
-    "gfs_graphcast025",     # Google GraphCast (AI model)
     "jma_seamless",         # JMA
     "meteofrance_seamless", # Meteo-France ARPEGE/AROME
 )
@@ -78,8 +83,8 @@ NWP_MODELS: tuple[str, ...] = (
 LEAD_DAYS: tuple[int, ...] = (1, 2, 3)
 
 # Below this many models returning data, the --daily refresh warns of a partial
-# collapse (GraphCast is absent from the previous-runs archive, so a healthy run
-# is 8/9; the floor leaves margin for one transient model outage).
+# collapse (a healthy run is 8/8 now that GraphCast is delisted; the floor
+# leaves margin for a couple of transient model outages).
 MIN_DAILY_MODELS = 6
 
 DEFAULT_SOURCE = "openmeteo_previous_runs"
