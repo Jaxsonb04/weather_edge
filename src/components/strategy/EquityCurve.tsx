@@ -113,7 +113,7 @@ export function EquityCurve({
             <LineChart.Tooltip
               content={({ active, label, payload }) => {
                 if (!active || !payload?.length) return null;
-                const row = payload[0]?.payload as { equity: number; pnl: number };
+                const row = payload[0]?.payload as { equity: number; pnl: number; dailyPnl: number };
                 return (
                   <ChartTooltip>
                     <ChartTooltip.Header>{label}</ChartTooltip.Header>
@@ -125,6 +125,10 @@ export function EquityCurve({
                     <ChartTooltip.Item>
                       <ChartTooltip.Label>Cum. P&L</ChartTooltip.Label>
                       <ChartTooltip.Value>{row.pnl >= 0 ? "+" : "−"}${Math.abs(row.pnl).toFixed(2)}</ChartTooltip.Value>
+                    </ChartTooltip.Item>
+                    <ChartTooltip.Item>
+                      <ChartTooltip.Label>Daily P&L</ChartTooltip.Label>
+                      <ChartTooltip.Value>{row.dailyPnl >= 0 ? "+" : "−"}${Math.abs(row.dailyPnl).toFixed(2)}</ChartTooltip.Value>
                     </ChartTooltip.Item>
                   </ChartTooltip>
                 );

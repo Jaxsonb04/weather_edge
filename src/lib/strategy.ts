@@ -435,6 +435,7 @@ export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankrol
         (d.closing_equity ?? (startingBankroll + (d.cumulative_realized ?? 0))) * 100,
       ) / 100,
       pnl: d.cumulative_realized ?? 0,
+      dailyPnl: d.realized_pnl ?? 0,
     }));
 }
 
