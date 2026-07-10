@@ -42,7 +42,10 @@ def build_paper_summary(
     total_realized_all_time = 0.0
 
     for order in orders:
-        opened_day = _local_day(order["created_at"])
+        opened_at = order.get("filled_at")
+        if opened_at is None and order["status"] in {"PAPER_FILLED", "PAPER_SETTLED", "PAPER_CLOSED"}:
+            opened_at = order["created_at"]  # legacy rows predate filled_at
+        opened_day = _local_day(opened_at) if opened_at else None
         resolved_at = order["closed_at"] or order["settled_at"]
         resolved_day = _local_day(resolved_at) if resolved_at else None
         pnl = order["realized_pnl"]
@@ -96,11 +99,15 @@ def build_paper_summary(
     days_out: list[dict[str, Any]] = []
     for key in day_keys:
         day = per_day[key]
+        opening_equity = cfg.paper_bankroll + cumulative
         cumulative += day["realized_pnl"]
         resolved = day["closed"] + day["settled"]
         day["hit_rate"] = day["wins"] / resolved if resolved else None
         day["roi"] = day["realized_pnl"] / day["resolved_spend"] if day["resolved_spend"] > 0 else None
         day["cumulative_realized"] = round(cumulative, 2)
+        day["opening_equity"] = round(opening_equity, 2)
+        day["daily_realized_pnl"] = round(day["realized_pnl"], 2)
+        day["closing_equity"] = round(cfg.paper_bankroll + cumulative, 2)
         day["realized_pnl"] = round(day["realized_pnl"], 2)
         day["opened_spend"] = round(day["opened_spend"], 2)
         day["resolved_spend"] = round(day["resolved_spend"], 2)
@@ -136,6 +143,7 @@ def build_paper_summary(
         order
         for order in orders
         if order["realized_pnl"] is not None
+        and order["status"] in {"PAPER_SETTLED", "PAPER_CLOSED"}
         and (resolved := order["closed_at"] or order["settled_at"]) is not None
         and _local_day(resolved) >= window_start.isoformat()
     ]
@@ -459,6 +467,9 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
         {
             "id": int(row["id"]),
             "created_at": row["created_at"],
+            "filled_at": _row_value(row, "filled_at"),
+            "cancelled_at": _row_value(row, "cancelled_at"),
+            "expires_at": _row_value(row, "expires_at"),
             "target_date": row["target_date"],
             "market_ticker": row["market_ticker"],
             "label": row["label"],

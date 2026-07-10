@@ -42,7 +42,7 @@ def test_settle_paper_orders_computes_realized_pnl():
         assert store.settle_paper_orders("2026-06-03", 67) == 1
         summary = store.market_backtest_summary()
         assert summary["orders"] == 1
-        assert round(summary["realized_pnl"], 2) == 9.67
+        assert round(summary["realized_pnl"], 2) == 9.68
 
 
 def test_recorded_decisions_backtest_against_settlements():
@@ -352,7 +352,7 @@ def test_settle_paper_orders_pays_buy_no_when_bucket_resolves_no():
         summary = store.market_backtest_summary()
         assert summary["orders"] == 1
         assert summary["hit_rate"] == 1.0
-        assert round(summary["realized_pnl"], 2) == 7.57
+        assert round(summary["realized_pnl"], 2) == 7.58
 
 
 def test_settle_paper_orders_prefers_structured_strikes_over_labels():
@@ -842,15 +842,15 @@ def test_place_approved_enforces_cumulative_target_exposure_cap():
                 reasons=[],
             )
 
-        # Cap = 1000 * 5% = $50. First order costs $33; the second is trimmed
-        # to the remaining $17 (51 whole contracts at $0.33).
+        # Shared-account v2 first applies the $20 normal-position cap, then the
+        # 5% city/target cap. The third entry uses the final ~$10 of city room.
         first = trader.place_approved("2026-06-03", [decision_for("KXHIGHTSFO-TEST-B68.5")], bankroll=1000.0)
         second = trader.place_approved("2026-06-03", [decision_for("KXHIGHTSFO-TEST-B70.5")], bankroll=1000.0)
         third = trader.place_approved("2026-06-03", [decision_for("KXHIGHTSFO-TEST-B72.5")], bankroll=1000.0)
 
         assert len(first) == 1
         assert len(second) == 1
-        assert third == []
+        assert len(third) == 1
         spend = store.paper_spend_for_target("2026-06-03")
         assert spend <= 50.0 + 1e-6
 

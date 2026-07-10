@@ -151,7 +151,7 @@ def test_paused_research_records_positive_lcb_core_shadow() -> None:
         assert store.research_shadow_orders(10)[0]["market_ticker"] == "KXHIGHTSFO-TEST-CORE"
 
 
-def test_sampled_research_explore_caps_to_one_contract_and_links_paper_order() -> None:
+def test_sampled_negative_confidence_research_explore_stays_shadow_only() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         config = StrategyConfig(
@@ -167,21 +167,17 @@ def test_sampled_research_explore_caps_to_one_contract_and_links_paper_order() -
             bankroll=1000.0,
         )
 
-        assert len(order_ids) == 1
-        paper_row = store.paper_orders(10)[0]
-        assert paper_row["id"] == order_ids[0]
-        assert paper_row["contracts"] == 1.0
-        assert paper_row["risk_profile"] == "research"
-        assert paper_row["contracts"] * paper_row["cost_per_contract"] <= 2.50
+        assert order_ids == []
+        assert store.paper_orders(10) == []
 
         shadow_row = store.research_shadow_orders(10)[0]
         assert shadow_row["sampled"] == 1
         assert shadow_row["sample_probability"] == 1.0
-        assert shadow_row["linked_paper_order_id"] == order_ids[0]
+        assert shadow_row["linked_paper_order_id"] is None
         assert shadow_row["contracts"] == 10.0
 
 
-def test_closed_losing_negative_lcb_research_trade_blocks_real_reentry_but_keeps_shadow() -> None:
+def test_repeated_negative_lcb_research_signals_remain_shadow_only() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         config = StrategyConfig(research_shadow_sample_probability=1.0)
@@ -189,13 +185,12 @@ def test_closed_losing_negative_lcb_research_trade_blocks_real_reentry_but_keeps
         decision = _research_explore_decision()
 
         first_ids = trader.place_approved("2026-06-26", [decision], bankroll=1000.0)
-        assert len(first_ids) == 1
-        store.close_paper_order(first_ids[0], 0.16)
+        assert first_ids == []
 
         second_ids = trader.place_approved("2026-06-26", [decision], bankroll=1000.0)
 
         assert second_ids == []
-        assert len(store.paper_orders(10)) == 1
+        assert len(store.paper_orders(10)) == 0
         assert len(store.research_shadow_orders(10)) == 2
 
 
@@ -224,18 +219,16 @@ def test_research_shadow_report_keeps_ghost_and_sampled_paper_ledgers_separate()
             [_research_explore_decision(contracts=10.0, cost=0.62)],
             bankroll=1000.0,
         )
-        assert len(sampled_ids) == 1
-        store.close_paper_order(sampled_ids[0], 0.30)
+        assert sampled_ids == []
 
         report = build_research_shadow_report(store, settlements={"2026-06-26": 70.0})
 
         assert report["available"] is True
         assert report["summary"]["shadow_orders"] == 2
         assert report["summary"]["sampled_orders"] == 1
-        assert report["paper_executed"]["trades"] == 1
-        assert report["paper_executed"]["contracts"] == 1.0
+        assert report["paper_executed"]["trades"] == 0
+        assert report["paper_executed"]["contracts"] == 0.0
         assert report["shadow_hold_to_settlement"]["trades"] == 2
         assert report["shadow_hold_to_settlement"]["contracts"] == 20.0
         assert report["shadow_hold_to_settlement"]["realized_pnl"] > 0
-        assert report["shadow_current_exit_policy"]["trades"] == 1
-        assert report["shadow_current_exit_policy"]["realized_pnl"] < 0
+        assert report["shadow_current_exit_policy"]["trades"] == 0

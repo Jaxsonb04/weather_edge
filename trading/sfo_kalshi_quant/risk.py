@@ -142,6 +142,7 @@ class TradeEvaluator:
             fee_multiplier=self.config.fee_multiplier,
             taker_rate=self.config.taker_fee_rate,
             maker_rate=self.config.maker_fee_rate,
+            series_ticker=market.ticker,
         )
         cost = ask + fee
         if cost >= 1.0:

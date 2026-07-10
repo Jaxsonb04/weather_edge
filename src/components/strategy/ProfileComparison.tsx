@@ -2,6 +2,7 @@ import { Card, Chip } from "@heroui/react";
 import { Icon } from "@iconify/react";
 import { pct } from "../../lib/data";
 import { money, profileGate, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
+import { usePublication } from "../../lib/publication";
 
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   live: {
@@ -59,12 +60,14 @@ const ROWS: MetricRow[] = [
   },
 ];
 
-function BookColumn({ s, p }: { s: StrategyLab; p: ProfileEntry }) {
+const CURRENT_ROWS = new Set(["Open now", "Candidates this scan"]);
+
+function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: ProfileEntry; currentStateAvailable: boolean }) {
   const meta = PROFILE_META[p.risk_profile];
   const primary = p.profile_type === "primary";
   const gate = profileGate(s, p.risk_profile);
   const approvalRate = gate && gate.signals > 0 ? gate.approved / gate.signals : null;
-  const alertOk = (p.status?.alert_level ?? "ok") === "ok";
+  const alertOk = currentStateAvailable && (p.status?.alert_level ?? "ok") === "ok";
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
 
   return (
@@ -82,7 +85,9 @@ function BookColumn({ s, p }: { s: StrategyLab; p: ProfileEntry }) {
             <Card.Title className="text-base">{p.label}</Card.Title>
             <p className="flex items-center gap-1.5 text-xs text-muted">
               <span className={`size-1.5 rounded-full ${alertOk ? "bg-success" : "bg-warning"}`} aria-hidden="true" />
-              {p.status?.paper_trading_status ?? (primary ? "primary book" : "experimental book")}
+              {currentStateAvailable
+                ? p.status?.paper_trading_status ?? (primary ? "primary book" : "experimental book")
+                : "Current profile status unavailable"}
             </p>
           </div>
         </div>
@@ -95,7 +100,10 @@ function BookColumn({ s, p }: { s: StrategyLab; p: ProfileEntry }) {
 
         <dl className="divide-y divide-border/50">
           {ROWS.map((row) => {
-            const { text, tone } = row.render(p, s);
+            const { text, tone } =
+              !currentStateAvailable && CURRENT_ROWS.has(row.label)
+                ? { text: "Unavailable" }
+                : row.render(p, s);
             const toneClass = tone === "pos" ? "text-success" : tone === "neg" ? "text-danger" : "text-foreground";
             return (
               <div key={row.label} className="flex items-baseline justify-between gap-3 py-2">
@@ -134,13 +142,15 @@ function BookColumn({ s, p }: { s: StrategyLab; p: ProfileEntry }) {
     the same order so size, activity, hit rate and P&L compare at a glance. No
     toggle: both books are always visible. */
 export function ProfileComparison({ s }: { s: StrategyLab }) {
+  const { strategy } = usePublication();
+  const currentStateAvailable = strategy.state === "fresh";
   const rank = (p: ProfileEntry) => (p.profile_type === "primary" ? 0 : 1);
   const profiles = [...(s.profiles ?? [])].sort((a, b) => rank(a) - rank(b));
   if (profiles.length < 2) return null;
   return (
     <div className="grid gap-4 md:grid-cols-2">
       {profiles.map((p) => (
-        <BookColumn key={p.risk_profile} s={s} p={p} />
+        <BookColumn key={p.risk_profile} s={s} p={p} currentStateAvailable={currentStateAvailable} />
       ))}
     </div>
   );

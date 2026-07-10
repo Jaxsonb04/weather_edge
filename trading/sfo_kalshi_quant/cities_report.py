@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
-from datetime import datetime, timezone
+import tempfile
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from .cities import CITIES, CityConfig
-from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT
+from .cities import CITIES, CityConfig, city_for_market_ticker
+from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, normalize_risk_profile_name
 from .settlement_day import settlement_today
 
 
@@ -29,7 +31,20 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _city_forecasts(conn: sqlite3.Connection, city: CityConfig) -> list[dict]:
+def _target_status(target: str, today: date) -> str:
+    target_date = date.fromisoformat(target)
+    if target_date < today:
+        return "past"
+    if target_date == today:
+        return "settlement_day"
+    return "upcoming"
+
+
+def _city_forecasts(
+    conn: sqlite3.Connection,
+    city: CityConfig,
+    today: date,
+) -> list[dict]:
     if not _table_exists(conn, "forecast_emos_daily_high"):
         return []
     columns = {
@@ -37,7 +52,6 @@ def _city_forecasts(conn: sqlite3.Connection, city: CityConfig) -> list[dict]:
     }
     if "station_id" not in columns:
         return []
-    today = settlement_today(None, city).isoformat()
     rows = conn.execute(
         """
         SELECT target_date, lead_days, predicted_high_f, sigma_f, n_models,
@@ -46,7 +60,7 @@ def _city_forecasts(conn: sqlite3.Connection, city: CityConfig) -> list[dict]:
         WHERE station_id = ? AND target_date >= ?
         ORDER BY target_date, fetched_at DESC
         """,
-        (city.nws_station_id, today),
+        (city.nws_station_id, today.isoformat()),
     ).fetchall()
     seen: set[str] = set()
     out: list[dict] = []
@@ -57,6 +71,7 @@ def _city_forecasts(conn: sqlite3.Connection, city: CityConfig) -> list[dict]:
         out.append(
             {
                 "target_date": target,
+                "target_status": _target_status(target, today),
                 "lead_days": lead,
                 "predicted_high_f": round(float(mu), 2),
                 "sigma_f": round(float(sigma), 2),
@@ -92,60 +107,116 @@ def _city_settlement(conn: sqlite3.Connection, city: CityConfig) -> dict | None:
     }
 
 
-def _city_books(conn: sqlite3.Connection, city: CityConfig) -> dict:
-    prefix = f"{city.series_ticker}-%"
-    books: dict = {}
-    for profile in ("live", "research"):
-        open_row = conn.execute(
+def _empty_profile_book() -> dict:
+    return {
+        "open_positions": 0,
+        "open_exposure": 0.0,
+        "settled_orders": 0,
+        "settled_pnl": 0.0,
+    }
+
+
+def _empty_city_book() -> dict:
+    return {
+        "live": _empty_profile_book(),
+        "research": _empty_profile_book(),
+        "decisions_24h": 0,
+        "approved_24h": 0,
+    }
+
+
+def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict]:
+    """Aggregate every configured city's activity with two table passes total."""
+
+    books = {city.slug: _empty_city_book() for city in CITIES}
+    if _table_exists(conn, "decision_snapshots"):
+        decision_rows = conn.execute(
             """
-            SELECT COUNT(*), COALESCE(SUM(contracts * cost_per_contract), 0)
-            FROM paper_orders
-            WHERE market_ticker LIKE ?
-              AND COALESCE(risk_profile, 'live') = ?
-              AND status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
-              AND settled_at IS NULL AND closed_at IS NULL
-            """,
-            (prefix, profile),
-        ).fetchone()
-        settled_row = conn.execute(
-            """
-            SELECT COUNT(*), COALESCE(SUM(realized_pnl), 0)
-            FROM paper_orders
-            WHERE market_ticker LIKE ?
-              AND COALESCE(risk_profile, 'live') = ?
-              AND status = 'PAPER_SETTLED'
-            """,
-            (prefix, profile),
-        ).fetchone()
-        decisions_24h = conn.execute(
-            """
-            SELECT COUNT(*), COALESCE(SUM(approved), 0)
+            SELECT market_ticker, COUNT(*), COALESCE(SUM(approved), 0)
             FROM decision_snapshots
-            WHERE market_ticker LIKE ?
-              AND created_at > datetime('now', '-1 day')
+            WHERE created_at >= ?
+            GROUP BY market_ticker
             """,
-            (prefix,),
-        ).fetchone()
-        books[profile] = {
-            "open_positions": open_row[0],
-            "open_exposure": round(float(open_row[1]), 2),
-            "settled_orders": settled_row[0],
-            "settled_pnl": round(float(settled_row[1]), 2),
-        }
-        books["decisions_24h"] = decisions_24h[0]
-        books["approved_24h"] = decisions_24h[1]
+            (cutoff_iso,),
+        ).fetchall()
+        for ticker, count, approved in decision_rows:
+            city = city_for_market_ticker(ticker)
+            if city is None:
+                continue
+            books[city.slug]["decisions_24h"] += int(count)
+            books[city.slug]["approved_24h"] += int(approved)
+
+    if _table_exists(conn, "paper_orders"):
+        order_rows = conn.execute(
+            """
+            SELECT market_ticker,
+                   COALESCE(risk_profile, 'live') AS risk_profile,
+                   SUM(CASE
+                         WHEN status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+                          AND settled_at IS NULL AND closed_at IS NULL
+                         THEN 1 ELSE 0
+                       END) AS open_positions,
+                   COALESCE(SUM(CASE
+                         WHEN status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+                          AND settled_at IS NULL AND closed_at IS NULL
+                         THEN contracts * cost_per_contract ELSE 0
+                       END), 0) AS open_exposure,
+                   SUM(CASE WHEN status = 'PAPER_SETTLED' THEN 1 ELSE 0 END)
+                       AS settled_orders,
+                   COALESCE(SUM(CASE
+                         WHEN status = 'PAPER_SETTLED' THEN realized_pnl ELSE 0
+                       END), 0) AS settled_pnl
+            FROM paper_orders
+            GROUP BY market_ticker, COALESCE(risk_profile, 'live')
+            """
+        ).fetchall()
+        for ticker, raw_profile, open_count, exposure, settled_count, pnl in order_rows:
+            city = city_for_market_ticker(ticker)
+            if city is None:
+                continue
+            try:
+                profile = normalize_risk_profile_name(str(raw_profile))
+            except ValueError:
+                continue
+            if profile not in ("live", "research"):
+                continue
+            profile_book = books[city.slug][profile]
+            profile_book["open_positions"] += int(open_count)
+            profile_book["open_exposure"] += float(exposure)
+            profile_book["settled_orders"] += int(settled_count)
+            profile_book["settled_pnl"] += float(pnl)
+        for city_book in books.values():
+            for profile in ("live", "research"):
+                city_book[profile]["open_exposure"] = round(
+                    float(city_book[profile]["open_exposure"]),
+                    2,
+                )
+                city_book[profile]["settled_pnl"] = round(
+                    float(city_book[profile]["settled_pnl"]),
+                    2,
+                )
     return books
 
 
 def build_cities_data(
-    forecaster_root: Path, paper_db: Path
+    forecaster_root: Path,
+    paper_db: Path,
+    *,
+    now: datetime | None = None,
 ) -> dict:
+    generated_at = now or datetime.now(timezone.utc)
+    if generated_at.tzinfo is None or generated_at.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    generated_at = generated_at.astimezone(timezone.utc)
+    cutoff_iso = (generated_at - timedelta(days=1)).isoformat(timespec="seconds")
     weather_db = Path(forecaster_root) / "weather.db"
     cities_payload: list[dict] = []
     weather_conn = sqlite3.connect(weather_db) if weather_db.exists() else None
     paper_conn = sqlite3.connect(paper_db) if Path(paper_db).exists() else None
     try:
+        all_books = _all_city_books(paper_conn, cutoff_iso) if paper_conn is not None else None
         for city in CITIES:
+            city_today = settlement_today(generated_at, city)
             entry: dict = {
                 "slug": city.slug,
                 "name": city.name,
@@ -156,16 +227,17 @@ def build_cities_data(
                     f"WFO {city.cli_site})"
                 ),
                 "civil_tz": city.civil_tz_name,
+                "settlement_today": city_today.isoformat(),
                 "has_full_blend": city.has_full_blend,
                 "forecasts": [],
                 "latest_settlement": None,
                 "books": None,
             }
             if weather_conn is not None:
-                entry["forecasts"] = _city_forecasts(weather_conn, city)
+                entry["forecasts"] = _city_forecasts(weather_conn, city, city_today)
                 entry["latest_settlement"] = _city_settlement(weather_conn, city)
-            if paper_conn is not None:
-                entry["books"] = _city_books(paper_conn, city)
+            if all_books is not None:
+                entry["books"] = all_books[city.slug]
             cities_payload.append(entry)
     finally:
         if weather_conn is not None:
@@ -179,7 +251,7 @@ def build_cities_data(
         if any(f.get("fetched_at") for f in c["forecasts"])
     ]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": generated_at.isoformat(timespec="seconds"),
         "city_count": len(cities_payload),
         "cities_with_live_forecasts": len(fresh),
         "note": (
@@ -191,6 +263,31 @@ def build_cities_data(
     }
 
 
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(payload, indent=1, sort_keys=True) + "\n"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--forecaster-root", default=str(DEFAULT_FORECASTER_ROOT))
@@ -199,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     payload = build_cities_data(Path(args.forecaster_root), Path(args.db_path))
-    Path(args.output).write_text(json.dumps(payload, indent=1, sort_keys=True))
+    _atomic_write_json(Path(args.output), payload)
     print(
         f"wrote {args.output}: {payload['cities_with_live_forecasts']}/"
         f"{payload['city_count']} cities with live forecasts"

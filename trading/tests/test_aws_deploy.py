@@ -26,6 +26,8 @@ def test_installer_forecaster_venv_installs_runtime_dependencies():
     installer = _read(AWS_DIR / "install_systemd.sh")
 
     assert '"$FORECASTER_DIR/.venv/bin/python" -m pip install certifi numpy pandas' in installer
+    apt_install = next(line for line in installer.splitlines() if "apt-get install" in line)
+    assert "curl" in apt_install.split()
 
 
 def test_github_verify_workflow_installs_test_import_dependencies():
@@ -35,17 +37,40 @@ def test_github_verify_workflow_installs_test_import_dependencies():
     assert "semgrep" in workflow
 
 
-def test_forecaster_refresh_generates_signal_before_publish():
+def test_forecaster_refresh_only_refreshes_forecast_state():
     text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
-    signal_idx = text.index("build_public_trading_signal.sh")
-    publish_idx = text.index("publish_forecaster_pages.sh")
-    assert signal_idx < publish_idx
-    # The legacy generated-HTML dashboard is retired; the SPA in webdist is
-    # the only site the publisher ships.
-    assert "build_dashboard.py" not in text
+    assert "sync_forecaster_source.sh" in text
+    assert "nws_ground_truth.py" in text
+    assert "google_weather_cache.py" in text
+    assert "emos_forecast.py" in text
+    assert "build_public_trading_signal.sh" not in text
+    assert "build_strategy_research.sh" not in text
+    assert "publish_forecaster_pages.sh" not in text
 
 
-def test_strategy_lab_refresh_timer_is_installed_and_avoids_google_refresh():
+def test_operational_publish_service_runs_fast_builder_then_publisher():
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    service = _read(AWS_DIR / "systemd" / "sfo-operational-publish.service.in")
+    timer = _read(AWS_DIR / "systemd" / "sfo-operational-publish.timer")
+
+    assert "sfo-operational-publish.service.in" in installer
+    assert "sfo-operational-publish.timer" in installer
+    assert "sfo-operational-publish.timer" in installer
+    assert "sync_forecaster_source.sh" in service
+    assert "run_publication_cycle.sh operational" in service
+    assert "google_weather_cache.py --refresh" not in service
+    assert "OnUnitActiveSec=5min" in timer
+    assert "Unit=sfo-operational-publish.service" in timer
+
+
+def test_web_app_deploy_triggers_fast_operational_publication():
+    deployer = _read(AWS_DIR / "deploy_web_app.sh")
+
+    assert "systemctl start sfo-operational-publish.service" in deployer
+    assert "systemctl start sfo-strategy-lab-refresh.service" not in deployer
+
+
+def test_strategy_lab_refresh_runs_only_heavy_builder_every_fifteen_minutes():
     installer = _read(AWS_DIR / "install_systemd.sh")
     service = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.service.in")
     timer = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.timer")
@@ -53,18 +78,18 @@ def test_strategy_lab_refresh_timer_is_installed_and_avoids_google_refresh():
     assert "sfo-strategy-lab-refresh.service.in" in installer
     assert "sfo-strategy-lab-refresh.timer" in installer
     assert "sfo-strategy-lab-refresh.timer" in installer
-    assert "build_public_trading_signal.sh" in service
-    assert "build_dashboard.py" not in service
-    assert "publish_forecaster_pages.sh" in service
+    assert "run_publication_cycle.sh strategy" in service
+    assert "build_public_trading_signal.sh" not in service
     assert "google_weather_cache.py --refresh" not in service
-    assert "OnUnitActiveSec=5min" in timer
+    assert "OnUnitActiveSec=15min" in timer
     assert "Unit=sfo-strategy-lab-refresh.service" in timer
 
 
-def test_public_signal_builder_is_read_only_and_paper_only():
+def test_operational_builder_generates_fast_artifacts_and_manifest_only():
     text = _read(AWS_DIR / "build_public_trading_signal.sh")
     assert "daily-report" in text
-    assert "strategy-research" in text
+    assert "sfo_kalshi_quant.cities_report" in text
+    assert "sfo_kalshi_quant.publication build" in text
     assert "command -v" in text
     assert "--no-live-market" not in text
     assert "SFO_TRADING_SIGNAL_CALIBRATION_SOURCE:-lstm" in text
@@ -73,7 +98,60 @@ def test_public_signal_builder_is_read_only_and_paper_only():
     assert "--place-paper" not in text
     assert "paper-buy" not in text
     assert '"$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}" >/dev/null' in text
-    assert '--output "$RESEARCH_OUTPUT_PATH" >/dev/null' in text
+    assert "strategy-research" not in text
+
+
+def test_strategy_builder_generates_only_strategy_research():
+    text = _read(AWS_DIR / "build_strategy_research.sh")
+    assert "strategy-research" in text
+    assert "SFO_STRATEGY_RESEARCH_CALIBRATION_MIN_TRAIN:-180" in text
+    assert "daily-report" not in text
+    assert "sfo_kalshi_quant.cities_report" not in text
+    assert "sfo_kalshi_quant.publication build" not in text
+
+
+def test_publication_cycles_serialize_builder_and_publisher_under_shared_lock():
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+    example_env = _read(AWS_DIR / "sfo-weather.env.example")
+
+    assert 'SFO_ARTIFACT_GENERATION_LOCK:-/opt/weatheredge/.locks/artifact-generation.lock' in runner
+    assert "flock" in runner
+    assert "SFO_ARTIFACT_LOCK_HELD=1" in runner
+    assert "build_public_trading_signal.sh" in runner
+    assert "build_strategy_research.sh" in runner
+    assert "publish_forecaster_pages.sh" in runner
+    assert runner.index("build_public_trading_signal.sh") < runner.index("publish_forecaster_pages.sh")
+    assert "SFO_ARTIFACT_GENERATION_LOCK=/opt/weatheredge/.locks/artifact-generation.lock" in example_env
+
+
+def test_publication_cycle_hands_generation_lock_to_snapshot_copy_then_releases_before_network():
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+
+    held_idx = runner.index("export SFO_ARTIFACT_LOCK_HELD=1")
+    fd_idx = runner.index("export SFO_ARTIFACT_LOCK_FD=7")
+    build_idx = runner.index('/bin/bash "$BUILDER"')
+    publish_idx = runner.index('publish_forecaster_pages.sh')
+    assert held_idx < fd_idx < build_idx < publish_idx
+    assert "flock -u 7" not in runner
+
+    snapshot_copy_idx = publisher.index('cp "$source_path"')
+    publisher_unlock_idx = publisher.index('flock -u "$SFO_ARTIFACT_LOCK_FD"')
+    close_idx = publisher.index("exec 7>&-")
+    unset_idx = publisher.index("unset SFO_ARTIFACT_LOCK_HELD SFO_ARTIFACT_LOCK_FD")
+    git_init_idx = publisher.index("git init")
+    fetch_idx = publisher.index("git fetch")
+    assert snapshot_copy_idx < publisher_unlock_idx < close_idx < unset_idx < git_init_idx < fetch_idx
+    assert "exec 8>&-" in publisher
+
+
+def test_strategy_cycle_rebuilds_manifest_before_publishing_research():
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+
+    research_idx = runner.index("build_strategy_research.sh")
+    manifest_idx = runner.index("sfo_kalshi_quant.publication build")
+    publish_idx = runner.index("publish_forecaster_pages.sh")
+    assert research_idx < manifest_idx < publish_idx
 
 
 def test_paper_scan_pins_calibration_source():
@@ -184,6 +262,8 @@ def test_pages_publish_ships_spa_and_fresh_jsons():
     assert '${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}' in publisher
     assert '${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}' in publisher
     assert '--exclude "strategy_research.json"' in syncer
+    assert '--exclude "cities_data.json"' in syncer
+    assert '--exclude "publication_manifest.json"' in syncer
 
 
 def test_pages_deploy_key_path_matches_lightsail_setup_docs():
@@ -220,13 +300,93 @@ def test_source_sync_serializes_shared_git_cache_and_uses_current_remote():
 
 
 def test_pages_publish_is_race_safe():
-    # Two timers (hourly forecaster-refresh + 5-minute strategy-lab-refresh) run
-    # the same publish script, so it must serialize (flock) AND survive a
-    # non-fast-forward rejection with a bounded re-fetch/retry loop.
+    # The operational and Strategy Lab timers share the publisher, so it must
+    # survive a non-fast-forward rejection with a bounded re-fetch/retry loop.
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
     assert "flock" in publisher
     assert "SFO_PAGES_PUSH_ATTEMPTS" in publisher
     assert "re-fetching" in publisher  # the retry path re-fetches the fresh tip
+
+
+def test_pages_publisher_validates_manifest_and_copies_exact_validated_artifacts():
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+
+    for artifact in (
+        "trading_signal.json",
+        "forecast_data.json",
+        "weather_story_data.json",
+        "cities_data.json",
+        "publication_manifest.json",
+    ):
+        assert artifact in publisher
+
+    assert "strategy_research.json" in publisher
+    assert "--print-artifacts" in publisher
+    assert "SFO_REQUIRE_STRATEGY_ARTIFACT" in publisher
+    validate_idx = publisher.index("sfo_kalshi_quant.publication validate")
+    copy_idx = publisher.index('cp "$source_path"')
+    assert validate_idx < copy_idx
+    assert 'if [[ -e "$FORECASTER_DIR/$artifact" ]]' not in publisher
+
+
+def test_strategy_cycle_requires_research_but_operational_cycle_allows_missing():
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+
+    assert "export SFO_REQUIRE_STRATEGY_ARTIFACT=1" in runner
+    assert "--require-strategy" in publisher
+    assert runner.index("build_strategy_research.sh") < runner.index(
+        "export SFO_REQUIRE_STRATEGY_ARTIFACT=1"
+    )
+
+
+def test_pages_publisher_uses_generation_lock_separately_from_git_lock():
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+
+    assert "SFO_ARTIFACT_GENERATION_LOCK" in publisher
+    assert "SFO_ARTIFACT_LOCK_HELD" in publisher
+    assert "SFO_PAGES_LOCK" in publisher
+    assert "ARTIFACT_LOCK" in publisher
+    assert "PAGES_LOCK" in publisher
+    assert publisher.index("ARTIFACT_LOCK") < publisher.index("sfo_kalshi_quant.publication validate")
+
+
+def test_freshness_watchdog_configuration_documents_manifest_thresholds():
+    watchdog = _read(AWS_DIR / "check_forecast_db_freshness.sh")
+    example_env = _read(AWS_DIR / "sfo-weather.env.example")
+    readme = _read(AWS_DIR / "README.md")
+    lightsail = _read(AWS_DIR.parents[2] / "docs" / "aws_lightsail.md")
+
+    assert "sfo_kalshi_quant.publication validate" in watchdog
+    assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
+    assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
+    assert (
+        "SFO_PUBLICATION_MANIFEST_URL="
+        "https://jaxsonb04.github.io/weather_edge/publication_manifest.json"
+    ) in example_env
+    assert "plain-text HTTP endpoint" in watchdog
+    assert "Slack/Discord" not in watchdog
+    for documentation in (readme, lightsail):
+        assert "10 minutes" in documentation
+        assert "20 minutes" in documentation
+        assert "SFO_PUBLICATION_MANIFEST_URL" in documentation
+
+
+def test_project_docs_describe_split_publication_cadences():
+    root = AWS_DIR.parents[2]
+    documentation = (
+        _read(root / "forecaster" / "README.md"),
+        _read(root / "docs" / "operational_runbook.md"),
+    )
+
+    for text in documentation:
+        normalized = " ".join(text.split())
+        assert "sfo-operational-publish.timer" in normalized
+        assert "every five minutes" in normalized
+        assert "publication_manifest.json" in normalized
+        assert "sfo-strategy-lab-refresh.timer" in normalized
+        assert "every fifteen minutes" in normalized
+        assert "research-only" in normalized
 
 
 def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():
@@ -265,5 +425,7 @@ def test_initial_lightsail_sync_does_not_copy_local_runtime_state():
         "google_weather_cache.json",
         "trading_signal.json",
         "strategy_research.json",
+        "cities_data.json",
+        "publication_manifest.json",
     ):
         assert f"--exclude '{artifact}'" in syncer

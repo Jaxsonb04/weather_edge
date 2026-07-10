@@ -8,15 +8,13 @@ Type=oneshot
 User=__APP_USER__
 WorkingDirectory=__FORECASTER_DIR__
 EnvironmentFile=__ENV_FILE__
-# The full refresh (git sync + NWS + Google + NWP + EMOS + signal + publish) is a
-# legitimately long oneshot (~1-2 min); raise the start timeout above the 90 s default
-# so a normal run is never killed as a false "timeout" failure.
+# The external forecast refresh is a legitimately long oneshot (~1-2 min);
+# raise the start timeout above the 90 s default so a normal run is not killed.
 TimeoutStartSec=900
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 # External fetches get a '-' prefix: a transient NWS/Google hiccup must NOT abort
-# the pipeline before the local re-blend, signal build, and publish. The
-# re-blend below runs on whatever cached data did land; freshness is still gated
-# downstream by max_forecast_age_hours and the freshness watchdog.
+# the remaining refresh steps. The local re-blend runs on whatever cached data
+# did land; freshness is still gated by max_forecast_age_hours and the watchdog.
 # Station observations for every configured city (intraday context +
 # observed-high conditioning). Two local days keeps it ~30 requests per tick.
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python nws_ground_truth.py --days 2 --cities all
@@ -29,8 +27,6 @@ ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py
 # live state, and at fifteen cities a 30-minute cadence would blow the free
 # API budget. '-' prefix => a fetch hiccup never fails the refresh pipeline.
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python emos_forecast.py --serve-rolling --cities all
-ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/build_public_trading_signal.sh
-ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/publish_forecaster_pages.sh
 Nice=5
 # Contain a runaway to this unit instead of letting the kernel OOM-killer pick an
 # arbitrary victim (often the long-lived trading loop) on the no-swap 1 GB box.

@@ -107,7 +107,7 @@ def test_paper_limit_mode_fills_when_limit_crosses_visible_ask():
         assert len(store.open_paper_orders(10)) == 1
 
 
-def test_paper_limit_mode_fills_resting_order_on_later_scan():
+def test_paper_limit_mode_does_not_fill_from_a_later_visible_quote_alone():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         trader = PaperTrader(
@@ -130,12 +130,12 @@ def test_paper_limit_mode_fills_resting_order_on_later_scan():
         )
         filled_ids = trader.place_approved("2026-06-15", [later_scan])
 
-        assert filled_ids == [order_id]
+        assert filled_ids == []
         row = store.paper_order(order_id)
         assert row is not None
-        assert row["status"] == "PAPER_FILLED"
+        assert row["status"] == "PAPER_LIMIT_RESTING"
         assert row["limit_price"] == 0.74
-        assert len(store.open_paper_orders(10)) == 1
+        assert len(store.open_paper_orders(10)) == 0
 
 
 def test_with_buy_limit_exposes_limit_math_on_decision_for_reporting():

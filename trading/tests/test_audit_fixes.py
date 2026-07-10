@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
 
 
@@ -187,15 +188,26 @@ def _one_contract_yes(ticker: str, yes_ask: float) -> TradeDecision:
 
 
 def test_break_even_close_is_undecided_not_counted_as_a_loss():
-    # A YES entry at 0.30 costs 0.32 (0.30 ask + 0.02 fee). Selling at 0.34 nets
-    # 0.34 - 0.02 exit fee = 0.32 = exactly the entry cost, so realized_pnl == 0.
+    # Solve the exact July-2026 fee curve for the exit price whose net proceeds
+    # equal the persisted entry cost.
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         win_id = store.record_paper_order("2026-06-12", _one_contract_yes("KXHIGHTSFO-TEST-WIN", 0.30))
         be_id = store.record_paper_order("2026-06-12", _one_contract_yes("KXHIGHTSFO-TEST-BE", 0.30))
 
         store.close_paper_order(win_id, 0.50)  # clear profit
-        be_row = store.close_paper_order(be_id, 0.34)  # exact break-even
+        entry_cost = float(store.paper_order(be_id)["cost_per_contract"])
+        lo, hi = entry_cost, min(0.99, entry_cost + 0.10)
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            fee = quadratic_fee_average_per_contract(
+                mid, 1.0, series_ticker="KXHIGHTSFO"
+            )
+            if mid - fee < entry_cost:
+                lo = mid
+            else:
+                hi = mid
+        be_row = store.close_paper_order(be_id, hi)
 
         assert abs(be_row["realized_pnl"]) < 1e-9
         # Break-even is undecided: resolved_yes stays NULL instead of being

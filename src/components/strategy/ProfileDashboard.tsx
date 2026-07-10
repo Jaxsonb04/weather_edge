@@ -1,6 +1,7 @@
 import { Card, Chip } from "@heroui/react";
 import { Icon } from "@iconify/react";
 import { pct } from "../../lib/data";
+import { usePublication } from "../../lib/publication";
 import {
   ledgerByCity,
   ledgerForProfile,
@@ -45,6 +46,8 @@ function SubHead({ icon, title, note }: { icon: string; title: string; note?: st
 /** Everything for ONE book: its KPIs, equity, gate, signal quality, exits,
     lessons, and its own positions/ledger/monitor filtered to this profile. */
 export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) {
+  const { strategy } = usePublication();
+  const currentStateAvailable = strategy.state === "fresh";
   const rp = p.risk_profile;
   const sum = p.paper_trading?.summary;
   const resolved = s.paper_trading?.diagnostics?.by_profile?.[rp];
@@ -78,7 +81,9 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             </span>
             <div>
               <Card.Title className="text-base">{p.label}</Card.Title>
-              <p className="text-xs text-muted">{p.status?.paper_trading_status ?? "status unavailable"}</p>
+              <p className="text-xs text-muted">
+                {currentStateAvailable ? p.status?.paper_trading_status ?? "status unavailable" : "Current profile status unavailable"}
+              </p>
             </div>
           </div>
           <Chip size="sm" variant="soft" color={primary ? "warning" : "default"}>
@@ -93,7 +98,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             <Stat label="Realized P&L" value={money(pnl)} tone={pnl > 0 ? "pos" : pnl < 0 ? "neg" : "default"} />
             <Stat label="ROI · resolved" value={sum?.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum?.roi ?? 0) > 0 ? "pos" : (sum?.roi ?? 0) < 0 ? "neg" : "default"} />
             <Stat label="Capital resolved" value={resolved?.capital_resolved != null ? `$${resolved.capital_resolved.toFixed(2)}` : "—"} />
-            <Stat label="Candidates now" value={`${p.status?.latest_signal_count ?? 0}`} />
+            <Stat label="Candidates now" value={currentStateAvailable ? `${p.status?.latest_signal_count ?? 0}` : "Unavailable"} />
           </div>
         </Card.Content>
       </Card>
@@ -103,10 +108,11 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         <EquityCurve
           s={s}
           days={days}
-          startingBankroll={p.daily_summary?.starting_bankroll}
+          startingBankroll={0}
           windowDays={p.daily_summary?.window_days}
-          title={`${p.label} — paper equity`}
-          description={`This book's cumulative realized P&L · ${p.daily_summary?.window_days ?? days.length}-day window`}
+          title={`${p.label} — P&L contribution`}
+          description={`Attributed cumulative realized P&L in the one shared account · ${p.daily_summary?.window_days ?? days.length}-day view`}
+          contributionMode
         />
       )}
 
@@ -199,9 +205,13 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         </Card>
       </div>
 
-      {/* this book's live exposure */}
+      {/* this book's current exposure */}
       <div>
-        <SubHead icon="solar:folder-open-bold" title="This book right now" note="open positions + pending limits, scoped to this profile" />
+        <SubHead
+          icon="solar:folder-open-bold"
+          title="Current book state"
+          note={currentStateAvailable ? "open positions + pending limits, scoped to this profile" : "unavailable until publication recovers"}
+        />
         <OpenBook s={s} profile={rp} />
       </div>
 

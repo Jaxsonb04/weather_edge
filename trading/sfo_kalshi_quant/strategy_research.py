@@ -38,8 +38,10 @@ from .exits import (
 )
 from .fees import quadratic_fee_average_per_contract
 from .forecast import ForecastDataError, SfoForecasterAdapter
+from .forecast_scorecards import build_forecast_scorecards
 from .live_execution import LiveExecutionPolicy, readiness_status_from_checks
 from .research_shadow import build_research_shadow_report
+from .replay import replay_from_database
 from .settlement_day import settlement_today
 from .summary import build_paper_summary
 from .synthetic_blend import build_synthetic_blend_calibration
@@ -110,12 +112,20 @@ def build_strategy_research(
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
     backtest = _signal_backtest_payload(adapter, db_path)
     config_rescore = _config_rescore_payload(adapter, db_path)
-    real_money_readiness = _real_money_readiness_payload(config_rescore, active_calibration)
+    chronological_replay = replay_from_database(
+        db_path,
+        adapter.load_cli_settlement_truth(),
+        initial_capital=cfg.paper_bankroll,
+    )
+    real_money_readiness = _real_money_readiness_payload(
+        config_rescore, active_calibration, chronological_replay
+    )
     live_frequency_tuning = _live_frequency_tuning_payload(config_rescore, strategy_config_for_profile("live"))
     research_shadow = _research_shadow_payload(adapter, db_path)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
     forecast_health = _forecast_health_payload(forecaster_root, config=cfg)
+    forecast_scorecards = build_forecast_scorecards(forecaster_root / "weather.db")
     daily_summary = _daily_summary_payload(
         db_path=db_path,
         forecaster_root=forecaster_root,
@@ -135,6 +145,7 @@ def build_strategy_research(
         paper=paper,
         forecast_health=forecast_health,
     )
+    accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
 
     return {
         "schema_version": 1,
@@ -146,6 +157,7 @@ def build_strategy_research(
         "source_of_truth": "AWS Lightsail runtime artifacts after sync and refresh",
         "status": status,
         "daily_summary": daily_summary,
+        "accounting": accounting,
         "calibration_comparison": {
             "active": active_calibration,
             "challenger": challenger_calibration,
@@ -153,9 +165,11 @@ def build_strategy_research(
         },
         "prediction_replay": prediction_replay,
         "forecast_health": forecast_health,
+        "forecast_scorecards": forecast_scorecards,
         "signal_quality": signal_quality,
         "backtest_summary": backtest,
         "config_rescore": config_rescore,
+        "chronological_replay": chronological_replay,
         "real_money_readiness": real_money_readiness,
         "live_frequency_tuning": live_frequency_tuning,
         "research_shadow": research_shadow,
@@ -200,6 +214,108 @@ def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _accounting_payload(
+    daily_summary: dict[str, Any],
+    paper: dict[str, Any],
+    *,
+    db_path: Path,
+) -> dict[str, Any]:
+    """One account-level reconciliation; profiles are attribution only."""
+
+    daily_totals = daily_summary.get("totals") or {}
+    paper_summary = paper.get("summary") or {}
+    initial_capital = _to_float(
+        daily_summary.get("starting_bankroll", daily_summary.get("bankroll")),
+        default=1000.0,
+    )
+    all_time_realized = _to_float(
+        daily_totals.get("cumulative_realized_pnl", paper_summary.get("realized_pnl"))
+    )
+    window_realized = _to_float(daily_totals.get("realized_pnl"))
+    realized_equity = initial_capital + all_time_realized
+    open_cost_basis = _to_float(paper_summary.get("open_risk"))
+    reservations = _to_float(paper_summary.get("pending_limit_risk"))
+    shared_state = PaperStore(db_path, init=False).shared_account_state() if db_path.exists() else None
+    cash_balance = (
+        _to_float(shared_state.get("cash_balance"))
+        if shared_state is not None
+        else realized_equity - open_cost_basis
+    )
+    reservations = (
+        _to_float(shared_state.get("reservations"))
+        if shared_state is not None
+        else reservations
+    )
+    available_cash = (
+        _to_float(shared_state.get("available_cash"))
+        if shared_state is not None
+        else cash_balance - reservations
+    )
+    open_positions = int(_to_float(paper_summary.get("open_positions")))
+    marked_open = int(_to_float(paper_summary.get("marked_open_positions")))
+    open_value_raw = paper_summary.get("open_value")
+    unrealized_raw = paper_summary.get("unrealized_pnl")
+    marks_complete = open_positions == 0 or marked_open == open_positions
+    if open_positions == 0:
+        mark_coverage = "complete_no_open_positions"
+    elif marks_complete:
+        mark_coverage = "complete"
+    elif marked_open:
+        mark_coverage = "partial"
+    else:
+        mark_coverage = "unavailable"
+    unrealized_pnl = _round(unrealized_raw, 2) if marks_complete and unrealized_raw is not None else None
+    marked_equity = (
+        _round(cash_balance + _to_float(open_value_raw), 2)
+        if marks_complete and open_value_raw is not None
+        else (_round(realized_equity, 2) if open_positions == 0 else None)
+    )
+    resolved_capital = _to_float(paper_summary.get("capital_at_risk"))
+    profile_attribution = sum(
+        _to_float(row.get("realized_pnl")) for row in paper.get("profiles") or []
+    )
+    final_curve_pnl = (
+        _to_float((daily_summary.get("days") or [])[-1].get("cumulative_realized"))
+        if daily_summary.get("days")
+        else all_time_realized
+    )
+    reconciled = (
+        abs(profile_attribution - all_time_realized) < 0.005
+        and abs(final_curve_pnl - all_time_realized) < 0.005
+        and available_cash >= -0.005
+    )
+    return {
+        "schema_version": 1,
+        "account_id": (
+            str(shared_state.get("account_id")) if shared_state is not None else "legacy-paper-account"
+        ),
+        "accounting_cohort": (
+            "shared_account_v2" if shared_state is not None else "legacy_independent_sizing"
+        ),
+        "initial_capital": _round(initial_capital, 2),
+        "all_time_realized_pnl": _round(all_time_realized, 2),
+        "window_realized_pnl": _round(window_realized, 2),
+        "realized_equity": _round(realized_equity, 2),
+        "cash_balance": _round(cash_balance, 2),
+        "reservations": _round(reservations, 2),
+        "available_cash": _round(available_cash, 2),
+        "open_cost_basis": _round(open_cost_basis, 2),
+        "unrealized_pnl": unrealized_pnl,
+        "marked_equity": marked_equity,
+        "mark_coverage": mark_coverage,
+        "resolved_capital": _round(resolved_capital, 2),
+        "return_on_initial_capital": (
+            _round(all_time_realized / initial_capital, 6) if initial_capital > 0 else None
+        ),
+        "roi_on_resolved_capital": (
+            _round(all_time_realized / resolved_capital, 6) if resolved_capital > 0 else None
+        ),
+        "profile_attributed_pnl": _round(profile_attribution, 2),
+        "reconciliation_status": "reconciled" if reconciled else "mismatch",
+        "reconciliation_difference": _round(profile_attribution - all_time_realized, 2),
+    }
 
 
 def _load_or_build_dataset_research(*, forecaster_root: Path, db_path: Path) -> dict[str, Any] | None:
@@ -298,11 +414,14 @@ def _profile_daily_summary(
 ) -> dict[str, Any]:
     profile_total = _profile_row(daily_summary.get("profiles") or [], name)
     paper_total = _profile_row(paper.get("profiles") or [], name)
-    cumulative = 0.0
+    window_pnl = _to_float(profile_total.get("realized_pnl"))
+    all_time_pnl = _to_float(paper_total.get("realized_pnl", window_pnl))
+    cumulative = all_time_pnl - window_pnl
     days = []
     for row in daily_summary.get("days") or []:
         profile = ((row.get("profiles") or {}).get(name) or {})
         realized = _to_float(profile.get("realized_pnl"))
+        opening_attribution = cumulative
         cumulative += realized
         days.append(
             {
@@ -315,7 +434,9 @@ def _profile_daily_summary(
                 "losses": int(_to_float(profile.get("losses"))),
                 "hit_rate": profile.get("hit_rate"),
                 "realized_pnl": _round(realized, 2),
+                "opening_attributed_pnl": _round(opening_attribution, 2),
                 "cumulative_realized": _round(cumulative, 2),
+                "closing_attributed_pnl": _round(cumulative, 2),
                 "opened_spend": _round(profile.get("opened_spend"), 2),
                 "resolved_spend": _round(profile.get("resolved_spend"), 2),
                 "roi": profile.get("roi"),
@@ -333,7 +454,6 @@ def _profile_daily_summary(
     closed = sum(int(row["closed"]) for row in days)
     settled = sum(int(row["settled"]) for row in days)
     resolved_capital = _to_float(profile_total.get("capital_resolved"))
-    window_pnl = _to_float(profile_total.get("realized_pnl"))
     totals = {
         "trades_opened": opened,
         "trades_closed": closed,
@@ -341,7 +461,9 @@ def _profile_daily_summary(
         "open_positions": int(_to_float(paper_total.get("open_positions"))),
         "open_risk": _round(paper_total.get("open_risk"), 2),
         "realized_pnl": _round(window_pnl, 2),
-        "cumulative_realized_pnl": _round(paper_total.get("realized_pnl", window_pnl), 2),
+        "cumulative_realized_pnl": _round(all_time_pnl, 2),
+        "all_time_attributed_pnl": _round(all_time_pnl, 2),
+        "window_attributed_pnl": _round(window_pnl, 2),
         "capital_resolved": _round(resolved_capital, 2),
         "roi": _round(window_pnl / resolved_capital, 4) if resolved_capital > 0 else None,
         "wins": wins,
@@ -359,18 +481,10 @@ def _profile_daily_summary(
         "window_start": daily_summary.get("window_start"),
         "window_end": daily_summary.get("window_end"),
         "bankroll": daily_summary.get("bankroll"),
-        # Per-profile live equity = the shared starting notional + this profile's
-        # all-time realized PnL (paper_total["realized_pnl"], the same value the
-        # cumulative_realized_pnl total uses). Without these the equity card on a
-        # profile tab fell back to "-" because only the aggregate carried them.
-        "starting_bankroll": daily_summary.get(
-            "starting_bankroll", daily_summary.get("bankroll")
-        ),
-        "current_equity": _round(
-            _to_float(daily_summary.get("starting_bankroll", daily_summary.get("bankroll")))
-            + _to_float(paper_total.get("realized_pnl")),
-            2,
-        ),
+        # Profiles contribute P&L to one shared account. They do not each own a
+        # separate $1,000 bankroll or equity curve.
+        "opening_attributed_pnl": _round(all_time_pnl - window_pnl, 2),
+        "current_attributed_pnl": _round(all_time_pnl, 2),
         # Profile-scoped YES/NO split and exit-reason mix so these cards render on
         # a profile tab, not just the All-profiles overview (the template reads
         # these field names directly).
@@ -857,7 +971,7 @@ def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dic
     if not _db_table_exists(db_path, "decision_snapshots"):
         return {**empty, "reason": "decision_snapshots table is not available yet."}
     try:
-        settlements = adapter.load_ksfo_daily_highs()
+        settlements = adapter.load_cli_settlement_truth()
         store = PaperStore(db_path, init=False)
         rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
         by_profile: dict[str, Any] = {}
@@ -896,7 +1010,7 @@ def _research_shadow_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
     if not db_path.exists():
         return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
     try:
-        settlements = adapter.load_ksfo_daily_highs()
+        settlements = adapter.load_cli_settlement_truth()
         store = PaperStore(db_path, init=False)
         return build_research_shadow_report(store, settlements=settlements)
     except Exception as exc:  # diagnostics artifact must not fail Strategy Lab
@@ -906,6 +1020,7 @@ def _research_shadow_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
 def _real_money_readiness_payload(
     config_rescore: dict[str, Any],
     active_calibration: dict[str, Any],
+    chronological_replay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Single go/no-go gauge for promoting the LIVE profile to real money.
 
@@ -922,7 +1037,7 @@ def _real_money_readiness_payload(
             "status_reasons": [config_rescore.get("reason", "config rescore unavailable")],
             "reason": config_rescore.get("reason", "config rescore unavailable"),
         }
-    live_rescore = (config_rescore.get("by_profile") or {}).get("live")
+    live_rescore = dict((config_rescore.get("by_profile") or {}).get("live") or {})
     if not live_rescore:
         return {
             "available": False,
@@ -952,6 +1067,14 @@ def _real_money_readiness_payload(
     ]
     max_gap = max(gaps) if gaps else None
 
+    replay = chronological_replay or {}
+    live_rescore["evidence_kind"] = replay.get(
+        "evidence_kind", live_rescore.get("evidence_kind")
+    )
+    live_rescore["promotion_eligible"] = bool(replay.get("promotion_eligible"))
+    live_rescore["promotion_block_reason"] = "; ".join(
+        str(reason) for reason in replay.get("promotion_block_reasons") or []
+    )
     readiness = compute_real_money_readiness(
         live_rescore,
         calibration_cohort_brier=cohort_brier or None,
@@ -977,7 +1100,11 @@ def _real_money_readiness_payload(
         "available": True,
         "profile": "live",
         **readiness,
-        "status": operational.status,
+        "status": (
+            "REPLAY_REQUIRED"
+            if readiness.get("status") == "REPLAY_REQUIRED"
+            else operational.status
+        ),
         "status_reasons": operational.failing_checks,
         "pilot_loss_remaining": round(max(0.0, policy.pilot_max_loss + pilot_pnl), 2),
         "live_policy": {
@@ -1085,7 +1212,7 @@ def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
         return {**empty, "reason": "decision_snapshots table is not available yet."}
 
     store = PaperStore(db_path, init=False)
-    settlements = adapter.load_ksfo_daily_highs()
+    settlements = adapter.load_cli_settlement_truth()
     # Score the FIRST approved snapshot per market-side (the actual entry), not
     # the latest pre-close scan. The latest row has decayed to ~0 edge and is
     # almost never the approved one, so latest-per-market-side discarded 100% of
@@ -1305,7 +1432,8 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             """
             SELECT *
             FROM paper_orders
-            WHERE realized_pnl IS NOT NULL
+            WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+              AND realized_pnl IS NOT NULL
             ORDER BY COALESCE(closed_at, settled_at, created_at) DESC
             LIMIT 30
             """
@@ -1391,11 +1519,16 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         profile_rows = conn.execute(
             """
             SELECT COALESCE(risk_profile, 'unknown') AS risk_profile,
-                   COUNT(*) AS orders,
-                   SUM(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-                   SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) AS losses,
-                   SUM(COALESCE(realized_pnl, 0.0)) AS realized_pnl,
+                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                            THEN 1 ELSE 0 END) AS orders,
+                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                            AND realized_pnl IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
+                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                            AND realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                            AND realized_pnl < 0 THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                            THEN COALESCE(realized_pnl, 0.0) ELSE 0.0 END) AS realized_pnl,
                    SUM(CASE WHEN status = 'PAPER_FILLED'
                              AND settled_at IS NULL
                              AND closed_at IS NULL
@@ -1412,7 +1545,8 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                              AND settled_at IS NULL
                              AND closed_at IS NULL
                             THEN contracts * cost_per_contract ELSE 0.0 END) AS pending_limit_risk,
-                   SUM(CASE WHEN realized_pnl IS NOT NULL
+                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                             AND realized_pnl IS NOT NULL
                             THEN contracts * cost_per_contract ELSE 0.0 END) AS capital_resolved
             FROM paper_orders
             WHERE status != 'REJECTED'
@@ -2989,7 +3123,9 @@ def _paper_row(
     current_bid = _to_float(mark.get("bid"), None) if mark else None
     current_ask = _to_float(mark.get("ask"), None) if mark else None
     current_exit_fee = (
-        quadratic_fee_average_per_contract(current_bid, contracts)
+        quadratic_fee_average_per_contract(
+            current_bid, contracts, series_ticker=str(row["market_ticker"])
+        )
         if current_bid is not None and current_bid > 0
         else None
     )
@@ -3056,9 +3192,26 @@ def _paper_row(
             "tone": "warn",
             "monitor_action": "LIMIT_RESTING",
         }
+    elif row["status"] in {"PAPER_SETTLED", "PAPER_CLOSED"}:
+        realized = _to_float(row["realized_pnl"], 0.0)
+        mark_status = {
+            "status": "RESOLVED",
+            "label": "Resolved",
+            "tone": "good" if realized > 0 else "bad" if realized < 0 else "warn",
+            "monitor_action": "RESOLVED",
+        }
     return {
         "id": row["id"],
         "created_at": row["created_at"],
+        "filled_at": _sqlite_row_value(row, "filled_at"),
+        "cancelled_at": _sqlite_row_value(row, "cancelled_at"),
+        "expires_at": _sqlite_row_value(row, "expires_at"),
+        "account_id": _sqlite_row_value(row, "account_id"),
+        "strategy_fingerprint": (
+            _sqlite_row_value(row, "strategy_fingerprint") or "legacy_independent_sizing"
+        ),
+        "sleeve": _sqlite_row_value(row, "sleeve"),
+        "fill_model": _sqlite_row_value(row, "fill_model"),
         "target_date": row["target_date"],
         "ticker": row["market_ticker"],
         "label": row["label"],

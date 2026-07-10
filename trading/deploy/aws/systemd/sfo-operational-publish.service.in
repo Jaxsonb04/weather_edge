@@ -1,0 +1,16 @@
+[Unit]
+Description=WeatherEdge operational artifact build and publication
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__FORECASTER_DIR__
+EnvironmentFile=__ENV_FILE__
+ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
+ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh operational
+Nice=5
+MemoryHigh=400M
+MemoryMax=550M
+TimeoutStartSec=900

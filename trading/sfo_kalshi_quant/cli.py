@@ -6,7 +6,7 @@ import os
 import sys
 import uuid
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -31,6 +31,7 @@ from .dataset_research import build_dataset_research, write_dataset_research
 from .datasets import (
     KSFO_ASOS_STATION,
     KSFO_ISD_STATION,
+    DatasetResult,
     DatasetStore,
     backfill_gfs_mos,
     backfill_hrrr,
@@ -485,6 +486,11 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_backfill.add_argument("--start-date", required=True, help="YYYY-MM-DD")
     dataset_backfill.add_argument("--end-date", help="YYYY-MM-DD. Defaults to start date.")
     dataset_backfill.add_argument(
+        "--cities",
+        default=os.getenv("PAPER_CITIES", "all"),
+        help="'all' or comma-separated city slugs for station-aware sources.",
+    )
+    dataset_backfill.add_argument(
         "--isd-station",
         action="append",
         dest="isd_stations",
@@ -750,7 +756,10 @@ def build_parser() -> argparse.ArgumentParser:
         "paper-monitor",
         help="Close open paper positions if live bid hits stop-loss or take-profit thresholds",
     )
-    monitor.add_argument("--limit", type=int, default=50, help="Maximum open paper positions to inspect")
+    monitor.add_argument(
+        "--limit", type=int, default=0,
+        help="Optional cap on open positions to inspect; 0 processes the complete active book",
+    )
     monitor.add_argument(
         "--take-profit-pct",
         type=float,
@@ -2086,6 +2095,7 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
     start, end = _dataset_date_range(args)
     store = DatasetStore(args.db_path)
     sources = _dataset_sources(args.source)
+    cities = parse_city_slugs(args.cities)
     total_rows = 0
     for source in sources:
         params = _dataset_run_params(args, source, start, end)
@@ -2100,59 +2110,80 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
                     timeout=args.timeout,
                 )
             elif source == "iem-asos":
-                result = backfill_iem_asos(
-                    store,
-                    stations=args.asos_stations or [KSFO_ASOS_STATION],
-                    start=start,
-                    end=end,
-                    timeout=args.timeout,
-                )
+                if args.asos_stations:
+                    result = backfill_iem_asos(
+                        store, stations=args.asos_stations, start=start, end=end,
+                        timeout=args.timeout,
+                    )
+                else:
+                    result = _combine_dataset_results(
+                        backfill_iem_asos(
+                            store, stations=[city.nws_station_id.removeprefix("K")],
+                            canonical_station_id=city.nws_station_id,
+                            standard_utc_offset_hours=city.standard_utc_offset_hours,
+                            start=start, end=end, timeout=args.timeout,
+                        )
+                        for city in cities
+                    )
             elif source == "open-meteo-previous-runs":
-                result = backfill_open_meteo_previous_runs(
-                    store,
-                    start=start,
-                    end=end,
-                    model=args.open_meteo_model,
-                    previous_days=args.previous_days,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_open_meteo_previous_runs(
+                        store, start=start, end=end, model=args.open_meteo_model,
+                        previous_days=args.previous_days, station_id=city.nws_station_id,
+                        latitude=city.latitude, longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "open-meteo-historical-forecast":
-                result = backfill_open_meteo_historical_forecast(
-                    store,
-                    start=start,
-                    end=end,
-                    model=args.open_meteo_model,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_open_meteo_historical_forecast(
+                        store, start=start, end=end, model=args.open_meteo_model,
+                        station_id=city.nws_station_id, latitude=city.latitude,
+                        longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "lamp":
-                result = backfill_lamp(
-                    store,
-                    start=start,
-                    end=end,
-                    station_id="KSFO",
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_lamp(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "gfs-mos":
-                result = backfill_gfs_mos(
-                    store,
-                    start=start,
-                    end=end,
-                    station_id="KSFO",
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_gfs_mos(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "nbm":
-                result = backfill_nbm(
-                    store,
-                    start=start,
-                    end=end,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_nbm(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        latitude=city.latitude, longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "hrrr":
-                result = backfill_hrrr(
-                    store,
-                    start=start,
-                    end=end,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_hrrr(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        latitude=city.latitude, longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "kalshi-history":
                 result = backfill_kalshi_history(
@@ -2164,6 +2195,7 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
                     candle_interval=args.candle_interval,
                     max_pages=args.kalshi_max_pages,
                     max_trade_pages=args.kalshi_max_trade_pages,
+                    series_tickers=[city.series_ticker for city in cities],
                     timeout=args.timeout,
                 )
             else:  # pragma: no cover - argparse choices guard this
@@ -2187,6 +2219,7 @@ def cmd_dataset_status(args: argparse.Namespace) -> int:
         "dataset_kalshi_markets",
         "dataset_kalshi_candles",
         "dataset_kalshi_trades",
+        "dataset_kalshi_orderbook_events",
     )
     with store.connect() as conn:
         for table in tables:
@@ -2235,6 +2268,17 @@ def _dataset_date_range(args: argparse.Namespace) -> tuple[date, date]:
     return start, end
 
 
+def _combine_dataset_results(results) -> DatasetResult:
+    rows = list(results)
+    if not rows:
+        return DatasetResult("station-aware", 0, "no cities selected")
+    return DatasetResult(
+        rows[0].source,
+        sum(row.rows_written for row in rows),
+        f"{len(rows)} cities; " + "; ".join(row.detail for row in rows),
+    )
+
+
 def _dataset_sources(source: str) -> list[str]:
     if source == "tier1":
         return [
@@ -2256,6 +2300,7 @@ def _dataset_run_params(args: argparse.Namespace, source: str, start: date, end:
         "source": source,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
+        "cities": args.cities,
         "isd_stations": args.isd_stations or [KSFO_ISD_STATION],
         "asos_stations": args.asos_stations or [KSFO_ASOS_STATION],
         "open_meteo_model": args.open_meteo_model,
@@ -2652,9 +2697,10 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
     _validate_monitor_args(args)
 
     client = KalshiPublicClient()
+    expired = store.expire_stale_resting_orders()
     filled = _fill_resting_orders_against_live_book(store, client, color)
 
-    rows = store.open_paper_orders(args.limit)
+    rows = store.open_paper_orders(args.limit if args.limit > 0 else None)
     if not rows:
         if not filled:
             print(color.yellow("no open paper positions"))
@@ -2882,7 +2928,7 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
     print(
         color.cyan(
             f"paper monitor inspected {inspected}, closed {closed}, "
-            f"filled {filled} resting limits"
+            f"filled {filled} resting limits, expired {expired} stale limits"
         )
     )
     return 0
@@ -2891,17 +2937,7 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
 def _fill_resting_orders_against_live_book(
     store: PaperStore, client: KalshiPublicClient, color: Color
 ) -> int:
-    """Fill resting maker limits whose side ask has crossed down to the limit.
-
-    Runs on the ~2-minute monitor cadence so maker fills are recognized between
-    the 5-minute scans. FILL-MODEL LIMITATION (stated, not papered over): a
-    resting order fills here when the VISIBLE ask reaches the limit price --
-    i.e. a counterparty is displayed willing to trade at our price. Real
-    exchange fills depend on queue position and on trades that never move the
-    displayed ask, so this proxy can both miss real fills and grant generous
-    ones; the measured maker fill RATE is therefore itself a research output,
-    not ground truth.
-    """
+    """Conservative maker fill: later public trades must clear queue ahead."""
 
     filled = 0
     for row in store.resting_paper_orders():
@@ -2909,28 +2945,63 @@ def _fill_resting_orders_against_live_book(
         if limit_price is None:
             continue
         side = str(row["side"] or "YES").upper()
+        created_at = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
         try:
-            market = client.get_market(row["market_ticker"])
+            payload = client.get_trades(
+                ticker=str(row["market_ticker"]),
+                min_ts=int(created_at.timestamp()),
+                max_ts=int(datetime.now(UTC).timestamp()),
+                limit=1000,
+            )
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
             continue
-        if market.status != "active":
+        qualifying: list[dict[str, object]] = []
+        traded_quantity = 0.0
+        price_field = "yes_price_dollars" if side == "YES" else "no_price_dollars"
+        for trade in payload.get("trades", []):
+            if not isinstance(trade, dict) or trade.get("is_block_trade") is True:
+                continue
+            if str(trade.get("taker_book_side") or "").lower() != "bid":
+                continue
+            try:
+                trade_time = datetime.fromisoformat(str(trade.get("created_time")).replace("Z", "+00:00"))
+                price = float(trade.get(price_field))
+                quantity = float(trade.get("count_fp") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if trade_time <= created_at or price > float(limit_price) + 1e-12:
+                continue
+            traded_quantity += quantity
+            qualifying.append(trade)
+        queue_ahead = float(row["entry_bid_size"] or 0.0)
+        required_quantity = queue_ahead + float(row["contracts"])
+        if traded_quantity + 1e-12 < required_quantity:
             continue
-        side_ask = market.side_ask(side)
-        if side_ask <= 0.0 or side_ask > float(limit_price) + 1e-12:
-            continue
-        updated = store.fill_resting_limit_order(int(row["id"]))
+        evidence = {
+            "model": "later_trade_at_or_through_with_queue_ahead",
+            "queue_ahead": queue_ahead,
+            "required_quantity": required_quantity,
+            "qualifying_quantity": traded_quantity,
+            "trade_ids": [trade.get("trade_id") for trade in qualifying],
+        }
+        updated = store.fill_resting_limit_order(int(row["id"]), evidence=evidence)
         if updated is not None and updated["status"] == "PAPER_FILLED":
             filled += 1
             store.record_monitor_snapshot(
                 updated,
                 side=side,
                 action="LIMIT_FILLED",
-                reason=f"visible {side} ask {side_ask:.2f} crossed resting limit {float(limit_price):.2f}",
-                market_status=market.status,
+                reason=(
+                    f"later trades at/through {float(limit_price):.2f} cleared "
+                    f"estimated queue {queue_ahead:.2f}"
+                ),
+                market_status="active",
             )
             print(
                 f"filled resting order {row['id']} {row['market_ticker']} {side}: "
-                f"ask {side_ask:.2f} <= limit {float(limit_price):.2f}"
+                f"trade quantity {traded_quantity:.2f} >= queue+order {required_quantity:.2f}"
             )
     return filled
 
@@ -3097,7 +3168,7 @@ def cmd_backtest_market(args: argparse.Namespace) -> int:
 def cmd_backtest_signals(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = adapter.load_ksfo_daily_highs()
+    settlements = adapter.load_cli_settlement_truth()
     store = PaperStore(args.db_path)
     summary = store.signal_backtest_summary(
         settlements,
@@ -3170,7 +3241,7 @@ def cmd_backtest_rescore(args: argparse.Namespace) -> int:
     config = _config(args)
     profile = _risk_profile_name(args)
     adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = adapter.load_ksfo_daily_highs()
+    settlements = adapter.load_cli_settlement_truth()
     store = PaperStore(args.db_path)
     rows = store.sampled_decision_rows(
         since=args.since,

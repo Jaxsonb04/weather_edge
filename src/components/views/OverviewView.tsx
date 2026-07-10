@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
-import { useCitiesData, type City, type DashboardData } from "../../lib/data";
+import { selectCurrentTargets, useCitiesData, type City, type DashboardData } from "../../lib/data";
 import { Hero } from "../hero/Hero";
 import { SkillStrip } from "../kpi/SkillStrip";
 import { SystemHighlights } from "../overview/SystemHighlights";
 import { CityGrid } from "../overview/CityGrid";
 import { CityDetail } from "../overview/CityDetail";
 import { CitySelect } from "../overview/CitySelect";
+import { TargetStatusWarning } from "../overview/TargetStatusWarning";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
 
@@ -27,24 +28,35 @@ export function OverviewView({ data }: { data: DashboardData }) {
   const { data: citiesData, error: citiesError } = useCitiesData();
   const [selected, setSelected] = useState(DEFAULT_CITY);
 
-  const cities = citiesData?.cities ?? [];
+  const cities = useMemo(() => citiesData?.cities ?? [], [citiesData]);
   const activeCity = useMemo(() => resolveCity(cities, selected), [cities, selected]);
+  const currentTargets = useMemo(() => selectCurrentTargets(signal.targets ?? []), [signal.targets]);
+  const hasPastDueTargets = useMemo(
+    () => (signal.targets ?? []).some((target) => target.target_status === "past"),
+    [signal.targets],
+  );
 
-  if (!signal.targets.length) {
+  if (!currentTargets.length) {
     return (
-      <div className="grid min-h-[60vh] place-items-center text-sm text-muted">
-        No active forecast targets right now.
+      <div className="mx-auto grid min-h-[60vh] w-full max-w-6xl content-center gap-4 px-5 sm:px-8">
+        <TargetStatusWarning targets={signal.targets ?? []} />
+        <p className="text-center text-sm text-muted">No current forecast targets are published right now.</p>
       </div>
     );
   }
 
   // The bracket-level market surfaces are San-Francisco-only (trading_signal.json).
-  const flagshipTarget = signal.targets[0];
+  const flagshipTarget = currentTargets[0];
 
   return (
     <>
-      <Hero targets={signal.targets} />
+      <Hero targets={currentTargets} />
       <main className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
+        {hasPastDueTargets && (
+          <div className="pt-5">
+            <TargetStatusWarning targets={signal.targets ?? []} />
+          </div>
+        )}
         <SkillStrip forecast={forecast} signal={signal} />
 
         <section id="cities" className="scroll-mt-24">
@@ -64,7 +76,7 @@ export function OverviewView({ data }: { data: DashboardData }) {
             index="02"
             eyebrow="Today's call"
             title={activeCity ? `${activeCity.name}: the calibrated call` : "Today's call"}
-            sub="The selected city's next high, its official settlement and live book activity. The San Francisco flagship also publishes bracket-level model-vs-market microstructure."
+            sub="The selected city's next high, official settlement and paper-book activity. The San Francisco flagship also publishes bracket-level model-vs-market microstructure when current publication is verified."
           />
           {cities.length > 1 && (
             <Reveal className="mb-5 flex flex-wrap items-center gap-3">

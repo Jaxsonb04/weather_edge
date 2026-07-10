@@ -40,9 +40,11 @@ import math
 import sqlite3
 from dataclasses import dataclass
 
-from .config import StrategyConfig, temperature_cohort
+from .cities import city_for_market_ticker
+from .config import StrategyConfig, config_for_city, temperature_cohort
 from .models import BucketProbability, MarketBin, TradeDecision
 from .risk import TradeEvaluator
+from .settlement_truth import normalize_settlement_truth, settlement_for_market
 
 # Floor on a single day's gross return so a total-loss day (return == -1) does
 # not send log(1 + r) to negative infinity in the log-growth average.
@@ -369,8 +371,8 @@ def run_rescore(
 ) -> dict[str, object]:
     """Re-score ``rows`` under ``config`` and roll up by independent weather day."""
 
-    normalized = {str(key): float(value) for key, value in settlements.items()}
-    evaluator = TradeEvaluator(config)
+    normalized = normalize_settlement_truth(settlements)
+    evaluators: dict[str, TradeEvaluator] = {}
     scored: list[_Scored] = []
     considered = 0
     approved_under_config = 0
@@ -395,6 +397,13 @@ def run_rescore(
             approved_under_recorded += 1
 
         market = reconstruct_market(row)
+        city = city_for_market_ticker(market.ticker)
+        evaluator_key = city.series_ticker if city is not None else "legacy"
+        if evaluator_key not in evaluators:
+            evaluators[evaluator_key] = TradeEvaluator(
+                config_for_city(config, city) if city is not None else config
+            )
+        evaluator = evaluators[evaluator_key]
         probability = reconstruct_probability(row)
         side = _row_side(row)
         decision = evaluator.evaluate_market(
@@ -413,7 +422,8 @@ def run_rescore(
             approved_under_config += 1
 
         target_date = str(row["target_date"])
-        if target_date not in normalized:
+        raw_settlement = settlement_for_market(normalized, market.ticker, target_date)
+        if raw_settlement is None:
             if candidate_approved:
                 approved_no_settlement += 1
             continue
@@ -421,7 +431,7 @@ def run_rescore(
         # Kalshi settles off the INTEGER NWS daily climate value; the stored
         # ground-truth high may be fractional, so round half-up to the integer
         # bin the contract actually resolves against.
-        settlement_high = _integer_settlement_high_f(normalized[target_date])
+        settlement_high = _integer_settlement_high_f(raw_settlement)
         # Win/loss depends only on the bin, the side, and the settled high -- the
         # same for the candidate and recorded config -- so compute it once.
         resolved_yes = market.resolves_yes(settlement_high)
@@ -438,14 +448,24 @@ def run_rescore(
                     target_date=target_date,
                     side=side,
                     settlement_high_f=settlement_high,
-                    cohort=temperature_cohort(settlement_high),
+                    cohort=(
+                        temperature_cohort(settlement_high)
+                        if city is not None and city.apply_cohort_blocks
+                        else "all_temperatures"
+                    ),
                     # The regime the live block gated on. Fall back to the settled
                     # cohort only when the row carries no forecast high (legacy
                     # rows); fail-closed keeps such a row in its settled cohort.
                     forecast_cohort=(
                         temperature_cohort(forecast_high)
                         if forecast_high is not None
-                        else temperature_cohort(settlement_high)
+                        and city is not None
+                        and city.apply_cohort_blocks
+                        else (
+                            temperature_cohort(settlement_high)
+                            if city is not None and city.apply_cohort_blocks
+                            else "all_temperatures"
+                        )
                     ),
                     contracts=contracts,
                     cost=cost,
@@ -511,9 +531,13 @@ def _summarize(
     independent_days = sorted(per_day.keys())
 
     # Day-level returns for log-growth per independent day.
-    day_returns = [
-        d["pnl"] / d["capital"] for d in per_day.values() if d["capital"] > 0
-    ]
+    day_returns: list[float] = []
+    opening_equity = starting_bankroll
+    for day in sorted(per_day):
+        if per_day[day]["capital"] <= 0 or opening_equity <= 0:
+            continue
+        day_returns.append(per_day[day]["pnl"] / opening_equity)
+        opening_equity += per_day[day]["pnl"]
     log_growth_per_day = None
     geometric_growth_per_day = None
     if day_returns:
@@ -547,6 +571,9 @@ def _summarize(
     settled_trades = len(settled)
 
     return {
+        "evidence_kind": "snapshot_rescore",
+        "promotion_eligible": False,
+        "promotion_block_reason": "chronological account replay required",
         "config_basis": "paper-realism, not real-money validated",
         "starting_bankroll": round(starting_bankroll, 2),
         "counts": {
@@ -748,6 +775,23 @@ def compute_real_money_readiness(
 
     checks: list[dict[str, object]] = []
 
+    replay_eligible = (
+        rescore.get("evidence_kind") == "chronological_account_replay"
+        and rescore.get("promotion_eligible") is True
+    )
+    checks.append(
+        _readiness_check(
+            "chronological_account_replay",
+            "Chronological account replay",
+            replay_eligible,
+            (
+                "event-driven replay evidence is promotion eligible"
+                if replay_eligible
+                else "snapshot rescore is diagnostic only; chronological account replay required"
+            ),
+        )
+    )
+
     independent_days = int(counts.get("independent_days") or 0)
     checks.append(
         _readiness_check(
@@ -892,15 +936,21 @@ def compute_real_money_readiness(
     readiness_pct = round(100.0 * sum(c["progress"] for c in checks) / len(checks), 1) if checks else 0.0
     if readiness_pct >= 100.0 and not ready:
         readiness_pct = 99.0
+    verdict = "READY" if ready else ("REPLAY REQUIRED" if not replay_eligible else "NOT READY")
     return {
         "ready": ready,
-        "verdict": "READY" if ready else "NOT READY",
+        "verdict": verdict,
+        "status": "READY" if ready else ("REPLAY_REQUIRED" if not replay_eligible else "NOT_READY"),
         "readiness_pct": readiness_pct,
         "checks_passed": passed,
         "checks_total": len(checks),
         "summary": (
-            f"{readiness_pct:.0f}% ready for real money -- "
-            f"{passed}/{len(checks)} go-live checks pass"
+            f"Replay required; {passed}/{len(checks)} research checks pass"
+            if not replay_eligible
+            else (
+                f"{readiness_pct:.0f}% ready for real money -- "
+                f"{passed}/{len(checks)} go-live checks pass"
+            )
         ),
         "checks": checks,
         "thresholds": {

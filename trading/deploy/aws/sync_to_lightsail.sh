@@ -57,6 +57,8 @@ rsync -av \
   --exclude 'google_weather_cache.json' \
   --exclude 'trading_signal.json' \
   --exclude 'strategy_research.json' \
+  --exclude 'cities_data.json' \
+  --exclude 'publication_manifest.json' \
   --exclude 'dataset_research.json' \
   --exclude 'tmp_*' \
   "$LOCAL_FORECASTER_DIR/" \

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { usePublication } from "./publication";
 
 /* ---- shapes of the published artifacts (subset we render) ---- */
 
@@ -76,8 +77,11 @@ export interface Intraday {
   observation_count: number;
   latest_observed_at: string;
 }
+export type TargetStatus = "settlement_day" | "upcoming" | "past";
 export interface Target {
   target_date: string;
+  target_status?: TargetStatus;
+  market_data_at?: string | null;
   event_title?: string;
   market_available: boolean;
   best_decision: Decision;
@@ -105,6 +109,8 @@ export interface Cohort {
   avg_winning_probability: number;
 }
 export interface TradingSignal {
+  generated_at?: string;
+  market_data_at?: string | null;
   mode: string;
   disclaimer: string;
   live_orders_enabled: boolean;
@@ -134,6 +140,7 @@ export interface DashboardData {
 
 export interface CityForecast {
   target_date: string;
+  target_status?: TargetStatus;
   lead_days?: number;
   predicted_high_f: number;
   sigma_f?: number | null;
@@ -167,6 +174,7 @@ export interface City {
   station_id?: string;
   settlement_source?: string;
   civil_tz?: string;
+  settlement_today?: string;
   has_full_blend?: boolean;
   forecasts?: CityForecast[];
   latest_settlement?: CitySettlement | null;
@@ -182,50 +190,67 @@ export interface CitiesData {
 
 const BASE = import.meta.env.BASE_URL ?? "./";
 
-async function getJSON<T>(name: string): Promise<T> {
-  const res = await fetch(`${BASE}${name}`);
+async function getJSON<T>(name: string, version: string | null): Promise<T> {
+  const suffix = version ? `?v=${encodeURIComponent(version)}` : "";
+  const res = await fetch(`${BASE}${name}${suffix}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
 export function useDashboardData() {
+  const { acknowledgeArtifactLoaded, versionForArtifact } = usePublication();
+  const forecastVersion = versionForArtifact("forecast_data.json");
+  const storyVersion = versionForArtifact("weather_story_data.json");
+  const signalVersion = versionForArtifact("trading_signal.json");
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
+    setError(null);
     Promise.all([
-      getJSON<ForecastData>("forecast_data.json"),
-      getJSON<WeatherStory>("weather_story_data.json"),
-      getJSON<TradingSignal>("trading_signal.json"),
+      getJSON<ForecastData>("forecast_data.json", forecastVersion),
+      getJSON<WeatherStory>("weather_story_data.json", storyVersion),
+      getJSON<TradingSignal>("trading_signal.json", signalVersion),
     ])
       .then(([forecast, story, signal]) => {
-        if (alive) setData({ forecast, story, signal });
+        if (alive) {
+          setData({ forecast, story, signal });
+          acknowledgeArtifactLoaded("forecast_data.json", forecastVersion);
+          acknowledgeArtifactLoaded("weather_story_data.json", storyVersion);
+          acknowledgeArtifactLoaded("trading_signal.json", signalVersion);
+        }
       })
       .catch((e) => alive && setError(String(e)));
     return () => {
       alive = false;
     };
-  }, []);
+  }, [acknowledgeArtifactLoaded, forecastVersion, signalVersion, storyVersion]);
 
   return { data, error };
 }
 
 /** Generic single-resource loader (used by the lazy Methodology / Strategy views). */
 export function useResource<T>(name: string) {
+  const { acknowledgeArtifactLoaded, versionForArtifact } = usePublication();
+  const version = versionForArtifact(name);
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    setData(null);
     setError(null);
-    getJSON<T>(name)
-      .then((d) => alive && setData(d))
+    getJSON<T>(name, version)
+      .then((d) => {
+        if (alive) {
+          setData(d);
+          acknowledgeArtifactLoaded(name, version);
+        }
+      })
       .catch((e) => alive && setError(String(e)));
     return () => {
       alive = false;
     };
-  }, [name]);
+  }, [acknowledgeArtifactLoaded, name, version]);
   return { data, error };
 }
 
@@ -276,20 +301,49 @@ export function shortDateUTC(iso: string | undefined | null): string {
   return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
-/** The forecast a city leads with: earliest target strictly after the newest
-    settlement, else the earliest still-open date, else the last one. */
+/** The forecast a city leads with: backend settlement day first, then the
+    earliest target after the latest settlement, then the first published row.
+    The browser clock is not authoritative for city settlement days. */
 export function cityNextForecast(city: City): CityForecast | null {
   const sorted = [...(city.forecasts ?? [])]
     .filter((f) => typeof f?.predicted_high_f === "number" && !!f?.target_date)
     .sort((a, b) => a.target_date.localeCompare(b.target_date));
   if (!sorted.length) return null;
+  const hasPublishedStatuses = sorted.some((forecast) => forecast.target_status != null);
+  if (hasPublishedStatuses) {
+    return (
+      sorted.find((forecast) => forecast.target_status === "settlement_day") ??
+      sorted.find((forecast) => forecast.target_status === "upcoming") ??
+      null
+    );
+  }
+  if (city.settlement_today) {
+    const current = sorted.find((f) => f.target_date >= city.settlement_today!);
+    if (current) return current;
+  }
   const settledDate = city.latest_settlement?.local_date;
   if (settledDate) {
     const next = sorted.find((f) => f.target_date > settledDate);
     if (next) return next;
   }
-  const todayIso = new Date().toISOString().slice(0, 10);
-  return sorted.find((f) => f.target_date >= todayIso) ?? sorted[sorted.length - 1];
+  return sorted[0];
+}
+
+/** Status-aware display order for current market targets. Legacy artifacts that
+    predate target_status retain their published ordering. */
+export function selectCurrentTargets(targets: Target[]): Target[] {
+  const hasKnownStatus = (target: Target) =>
+    target.target_status === "settlement_day" ||
+    target.target_status === "upcoming" ||
+    target.target_status === "past";
+  const statusAware = targets.some(hasKnownStatus);
+  if (!statusAware) return targets;
+
+  const byDate = (a: Target, b: Target) => a.target_date.localeCompare(b.target_date);
+  const settlementDay = targets.filter((target) => target.target_status === "settlement_day").sort(byDate);
+  const upcoming = targets.filter((target) => target.target_status === "upcoming").sort(byDate);
+  const legacy = targets.filter((target) => !hasKnownStatus(target));
+  return [...settlementDay, ...upcoming, ...legacy];
 }
 
 const FRESH_GREEN_HOURS = 2;

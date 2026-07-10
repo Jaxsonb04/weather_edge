@@ -17,6 +17,8 @@ _TRADED_COHORTS = {"cold_below_60f", "normal_60_69f"}
 def _passing_rescore():
     """A live rescore that clears every threshold."""
     return {
+        "evidence_kind": "chronological_account_replay",
+        "promotion_eligible": True,
         "config_basis": "paper-realism, not real-money validated",
         "counts": {"settled_decisions": 45, "independent_days": 32},
         "candidate": {
@@ -57,6 +59,22 @@ def test_ready_when_every_threshold_is_cleared():
     assert result["verdict"] == "READY"
     assert result["readiness_pct"] == 100.0
     assert result["checks_passed"] == result["checks_total"]
+
+
+def test_snapshot_rescore_is_diagnostic_only_and_requires_replay():
+    rescore = _passing_rescore()
+    rescore["evidence_kind"] = "snapshot_rescore"
+    rescore["promotion_eligible"] = False
+    result = compute_real_money_readiness(
+        rescore,
+        calibration_cohort_brier=_good_calibration(),
+        calibration_cohort_brier_skill=_good_skill(),
+        max_abs_calibration_gap=0.04,
+    )
+
+    assert result["ready"] is False
+    assert result["status"] == "REPLAY_REQUIRED"
+    assert result["verdict"] == "REPLAY REQUIRED"
 
 
 def test_not_ready_and_percentage_reflects_partial_progress():

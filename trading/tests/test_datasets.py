@@ -192,6 +192,7 @@ def test_parse_noaa_station_guidance_text_emits_hourly_and_daily_high_features()
         {
             "source": "noaa-lamp",
             "model": "lamp",
+            "station_id": "KSFO",
             "issued_at": "2026-06-26T12:30:00+00:00",
             "target_date": "2026-06-26",
             "valid_time": "2026-06-26",
@@ -487,6 +488,92 @@ def test_kalshi_history_backfill_keeps_market_rows_when_optional_detail_rate_lim
     assert "candles halted by HTTP 429" in result.detail
     assert market_count == 1
     assert candle_count == 0
+
+
+def test_forecast_features_keep_two_stations_for_the_same_forecast_key():
+    with TemporaryDirectory() as tmp:
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        common = {
+            "source": "test-model",
+            "model": "baseline",
+            "issued_at": "2026-07-09T12:00:00+00:00",
+            "target_date": "2026-07-10",
+            "valid_time": "2026-07-10",
+            "variable": "temperature_2m_max",
+            "units": "degF",
+        }
+
+        store.upsert_forecast_features([
+            {**common, "station_id": "KSFO", "value": 68.0},
+            {**common, "station_id": "KNYC", "value": 87.0},
+        ])
+
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                "SELECT station_id, value FROM dataset_forecast_features ORDER BY station_id"
+            ).fetchall()
+
+    assert rows == [("KNYC", 87.0), ("KSFO", 68.0)]
+
+
+def test_forecast_feature_migration_preserves_legacy_rows_as_ksfo():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE dataset_forecast_features (
+                    source TEXT NOT NULL, model TEXT NOT NULL, issued_at TEXT NOT NULL,
+                    target_date TEXT NOT NULL, valid_time TEXT NOT NULL, lead_hours REAL,
+                    latitude REAL, longitude REAL, variable TEXT NOT NULL, value REAL NOT NULL,
+                    units TEXT, source_url TEXT, raw_json TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    PRIMARY KEY (source, model, issued_at, target_date, valid_time, variable)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dataset_forecast_features
+                VALUES ('legacy', 'baseline', '2026-07-08T12:00:00+00:00',
+                        '2026-07-09', '2026-07-09', 24, 37.6, -122.4,
+                        'temperature_2m_max', 67, 'degF', NULL, '{}',
+                        '2026-07-08T12:01:00+00:00')
+                """
+            )
+
+        DatasetStore(db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT station_id, source, value FROM dataset_forecast_features"
+            ).fetchone()
+
+    assert row == ("KSFO", "legacy", 67.0)
+
+
+def test_orderbook_events_are_idempotent_and_preserve_queue_evidence():
+    with TemporaryDirectory() as tmp:
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        event = {
+            "event_id": "book-1",
+            "ticker": "KXHIGHTSFO-26JUL10-B68.5",
+            "observed_at": "2026-07-09T18:00:00+00:00",
+            "sequence": 42,
+            "yes_bids": [[30, 12], [29, 8]],
+            "no_bids": [[69, 4]],
+            "source": "rest_snapshot",
+        }
+
+        store.upsert_kalshi_orderbook_events([event])
+        store.upsert_kalshi_orderbook_events([{**event, "yes_bids": [[30, 15]]}])
+
+        with sqlite3.connect(store.db_path) as conn:
+            row = conn.execute(
+                "SELECT event_id, sequence, yes_bids_json, source "
+                "FROM dataset_kalshi_orderbook_events"
+            ).fetchone()
+
+    assert row == ("book-1", 42, "[[30,15]]", "rest_snapshot")
 
 
 class _FakeKalshiHistoryClient:

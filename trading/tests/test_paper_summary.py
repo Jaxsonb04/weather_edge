@@ -82,6 +82,8 @@ def test_paper_summary_attributes_pnl_to_resolution_day():
         assert today_row["date"] == today
         assert today_row["settled"] == 2
         assert today_row["realized_pnl"] != 0.0
+        assert today_row["closing_equity"] == payload["current_equity"]
+        assert today_row["daily_realized_pnl"] == today_row["realized_pnl"]
         assert payload["biggest_winners"][0]["id"] == winner
         assert payload["biggest_losers"][0]["id"] == loser
         assert payload["learnings"]

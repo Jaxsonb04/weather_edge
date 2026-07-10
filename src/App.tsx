@@ -4,11 +4,14 @@ import { useDashboardData } from "./lib/data";
 import { useTheme } from "./lib/theme";
 import { useHashRoute } from "./lib/useHashRoute";
 import { TopBar } from "./components/layout/TopBar";
+import { PublicationStatusBanner } from "./components/layout/PublicationStatusBanner";
 import { CommandPalette } from "./components/layout/CommandPalette";
 import { Footer } from "./components/Footer";
 import { LoadingState, ErrorState } from "./components/States";
-import { OverviewView } from "./components/views/OverviewView";
 
+const OverviewView = lazy(() =>
+  import("./components/views/OverviewView").then((module) => ({ default: module.OverviewView })),
+);
 const MethodologyView = lazy(() => import("./components/views/MethodologyView"));
 const StrategyLabView = lazy(() => import("./components/views/StrategyLabView"));
 
@@ -49,6 +52,7 @@ export default function App() {
         repoUrl={REPO}
         liveUrl={LIVE}
       />
+      <PublicationStatusBanner />
       <CommandPalette
         open={cmdOpen}
         onOpenChange={setCmdOpen}
@@ -58,12 +62,16 @@ export default function App() {
         liveUrl={LIVE}
       />
 
-      <div ref={contentRef} tabIndex={-1} className="flex-1 outline-none">
+      <div
+        ref={contentRef}
+        tabIndex={-1}
+        className="flex-1 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--focus)]"
+      >
         {route === "lab" ? (
           <Suspense fallback={<ViewLoader />}>
             <StrategyLabView />
           </Suspense>
-        ) : error ? (
+        ) : error && !data ? (
           <ErrorState message={error} />
         ) : !data ? (
           <LoadingState />
@@ -72,7 +80,9 @@ export default function App() {
             <MethodologyView data={data} />
           </Suspense>
         ) : (
-          <OverviewView data={data} />
+          <Suspense fallback={<ViewLoader />}>
+            <OverviewView data={data} />
+          </Suspense>
         )}
       </div>
 

@@ -11,9 +11,10 @@ interface EquityCurveProps {
   windowDays?: number;
   title?: string;
   description?: string;
+  contributionMode?: boolean;
 }
 
-export function EquityCurve({ s, days, startingBankroll, windowDays, title, description }: EquityCurveProps) {
+export function EquityCurve({ s, days, startingBankroll, windowDays, title, description, contributionMode = false }: EquityCurveProps) {
   const start = startingBankroll ?? s.daily_summary.starting_bankroll ?? 1000;
   const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
   const last = series[series.length - 1]?.equity ?? start;
@@ -27,6 +28,7 @@ export function EquityCurve({ s, days, startingBankroll, windowDays, title, desc
   const pad = Math.max((hi - lo) * 0.15, 3);
   const yDomain: [number, number] = [Math.floor(lo - pad), Math.ceil(hi + pad)];
   const stroke = up ? "var(--color-success)" : "var(--color-danger)";
+  const valueName = contributionMode ? "P&L contribution" : "Equity";
   const label = `${title ?? "Paper equity curve"} over ${series.length} days, from $${start} to $${last} (${up ? "up" : "down"} over the window).`;
 
   return (
@@ -39,8 +41,8 @@ export function EquityCurve({ s, days, startingBankroll, windowDays, title, desc
           </Widget.Description>
         </div>
         <Widget.Legend>
-          <Widget.LegendItem color={stroke}>equity</Widget.LegendItem>
-          <Widget.LegendItem color="var(--color-muted)">start</Widget.LegendItem>
+          <Widget.LegendItem color={stroke}>{contributionMode ? "contribution" : "equity"}</Widget.LegendItem>
+          <Widget.LegendItem color="var(--color-muted)">{contributionMode ? "zero" : "start"}</Widget.LegendItem>
         </Widget.Legend>
       </Widget.Header>
       <Widget.Content>
@@ -66,7 +68,7 @@ export function EquityCurve({ s, days, startingBankroll, windowDays, title, desc
                   <ChartTooltip.Header>{label}</ChartTooltip.Header>
                   <ChartTooltip.Item>
                     <ChartTooltip.Indicator color={stroke} />
-                    <ChartTooltip.Label>Equity</ChartTooltip.Label>
+                    <ChartTooltip.Label>{valueName}</ChartTooltip.Label>
                     <ChartTooltip.Value>${row.equity.toLocaleString()}</ChartTooltip.Value>
                   </ChartTooltip.Item>
                   <ChartTooltip.Item>

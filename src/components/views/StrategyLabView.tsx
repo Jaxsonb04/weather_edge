@@ -18,6 +18,7 @@ import { ExitPolicyCard } from "../strategy/ExitPolicyCard";
 import { BacktestStats } from "../strategy/BacktestStats";
 import { ResearchNotes } from "../strategy/ResearchNotes";
 import { DailyActivity } from "../strategy/DailyActivity";
+import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice";
 
 function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const t = s.daily_summary?.totals;
@@ -91,6 +92,7 @@ export default function StrategyLabView() {
         sub="Two isolated risk profiles — a real-money candidate and an experimental book — shown side by side, then each with its full diagnostics: the gate funnel that rejects almost every signal, per-book signal quality and exits, and the go-live checklist the engine must pass before real money is even possible. Published straight from the AWS runtime."
       />
       <main className="mx-auto w-full max-w-6xl px-5 pb-28 pt-10 sm:px-8">
+        <StrategyPublicationNotice generatedAt={s?.generated_at} />
         {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Could not load the lab — {error}</div>}
         {!error && !s && (
           <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
@@ -146,7 +148,7 @@ export default function StrategyLabView() {
                 index="02"
                 eyebrow="Per-book diagnostics"
                 title="Inside each book"
-                sub="Switch between the live candidate and the research book. Each gets its complete treatment: its own equity, gate, signal quality, exits, lessons, live exposure, and closed ledger."
+                sub="Switch between the live candidate and the research book. Each gets its complete treatment: its own equity, gate, signal quality, exits, lessons, current exposure, and closed ledger."
               />
               <Reveal>
                 <ProfileExplorer s={s} />

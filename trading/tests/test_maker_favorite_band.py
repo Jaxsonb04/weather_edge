@@ -53,10 +53,15 @@ def test_resting_limit_quote_charges_maker_fee():
     quote = buy_limit_for_decision(_decision(), config)
     assert quote is not None
     assert not quote.would_cross  # spread > 1 tick -> quote rests below the ask
-    maker_fee = quadratic_fee_average_per_contract(quote.price, 10.0, maker=True)
-    taker_fee = quadratic_fee_average_per_contract(quote.price, 10.0, maker=False)
+    maker_fee = quadratic_fee_average_per_contract(
+        quote.price, 10.0, maker=True, series_ticker="KXHIGHNY"
+    )
+    taker_fee = quadratic_fee_average_per_contract(
+        quote.price, 10.0, maker=False, series_ticker="KXHIGHNY"
+    )
     assert quote.fee_per_contract == maker_fee
-    assert maker_fee < taker_fee  # the 25%-of-taker maker schedule actually bites
+    assert maker_fee == 0.0  # unlisted weather series have maker multiplier M=0
+    assert maker_fee < taker_fee
 
 
 def test_crossing_limit_quote_still_charges_taker_fee():
@@ -68,7 +73,7 @@ def test_crossing_limit_quote_still_charges_taker_fee():
     assert quote is not None
     assert quote.would_cross
     assert quote.fee_per_contract == quadratic_fee_average_per_contract(
-        quote.price, 10.0, maker=False
+        quote.price, 10.0, maker=False, series_ticker="KXHIGHNY"
     )
 
 
@@ -129,7 +134,7 @@ def test_live_favorite_band_rejects_coinflips_and_accepts_favorites():
     assert not research.config.favorite_band_enabled
 
 
-def test_monitor_fills_resting_limit_when_ask_crosses():
+def test_monitor_fills_resting_limit_when_later_trade_clears_queue():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         decision = _decision(limit_price=0.73)
@@ -137,12 +142,20 @@ def test_monitor_fills_resting_limit_when_ask_crosses():
             "2026-07-08", decision, status="PAPER_LIMIT_RESTING", entry_mode="limit"
         )
         assert order_id is not None
-
-        crossed = _market(0.71, 0.72)  # visible ask 0.72 <= limit 0.73
+        crossed = _market(0.71, 0.72)
 
         with patch(
             "sfo_kalshi_quant.cli.KalshiPublicClient"
         ) as client_cls, redirect_stdout(io.StringIO()) as out:
+            client_cls.return_value.get_trades.return_value = {
+                "trades": [{
+                    "trade_id": "trade-1",
+                    "count_fp": "10.00",
+                    "yes_price_dollars": "0.72",
+                    "taker_book_side": "bid",
+                    "created_time": "2099-07-08T12:00:00Z",
+                }]
+            }
             client_cls.return_value.get_market.return_value = crossed
             code = main(
                 [

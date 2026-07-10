@@ -53,6 +53,19 @@ def _write_settlement(root: Path, target: str = "2026-06-03", high: float = 67.0
     with sqlite3.connect(root / "weather.db") as conn:
         conn.execute(
             """
+            CREATE TABLE cli_settlements (
+                station_id TEXT,
+                local_date TEXT,
+                max_temperature_f REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO cli_settlements VALUES ('KSFO', ?, ?)",
+            (target, high),
+        )
+        conn.execute(
+            """
             CREATE TABLE nws_daily_high_ground_truth (
                 station_id TEXT,
                 local_date TEXT,
@@ -734,7 +747,7 @@ def test_strategy_research_surfaces_resting_limit_orders():
         assert summary["pending_limit_risk"] > 0
         pending = payload["paper_trading"]["pending_limit_orders"][0]
         assert pending["status"] == "PAPER_LIMIT_RESTING"
-        assert pending["limit_price"] == 0.29
+        assert pending["limit_price"] == 0.21
         # The current market price is now shown for resting limits.
         assert pending["current_ask"] is not None
         assert pending["current_bid"] is not None
@@ -1067,23 +1080,63 @@ def test_strategy_research_builds_isolated_profile_views():
         } == {"research"}
         assert any("research" in note for note in fast["learnings"])
 
-        # FIX E/F: per-profile live equity and YES/NO + exit breakdowns now live
-        # on each profile's daily_summary, not just the All-profiles overview.
+        # Profiles are P&L attribution slices of one account, never independent
+        # $1,000 equity accounts.
         b_summary = balanced["daily_summary"]
         f_summary = fast["daily_summary"]
-        # Equity = shared starting notional + that profile's all-time realized.
-        assert b_summary["current_equity"] == round(
-            b_summary["starting_bankroll"] + b_summary["totals"]["cumulative_realized_pnl"], 2
+        assert "current_equity" not in b_summary
+        assert "starting_bankroll" not in b_summary
+        assert b_summary["current_attributed_pnl"] > 0
+        assert f_summary["current_attributed_pnl"] < 0
+        assert payload["accounting"]["profile_attributed_pnl"] == round(
+            b_summary["current_attributed_pnl"] + f_summary["current_attributed_pnl"], 2
         )
-        # The winner is above start, the loser below -- and the two differ,
-        # proving the value is profile-scoped, not the shared aggregate.
-        assert b_summary["current_equity"] > b_summary["starting_bankroll"]
-        assert f_summary["current_equity"] < f_summary["starting_bankroll"]
-        assert b_summary["current_equity"] != f_summary["current_equity"]
         # Profile-scoped side split + exit reasons render on the profile tab.
         assert b_summary["side_performance"]["YES"]["wins"] == 1
         assert f_summary["side_performance"]["YES"]["losses"] == 1
         assert b_summary["exit_reasons"]["held_to_settlement"] == 1
+
+
+def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        store = PaperStore(db_path)
+        old_id = store.record_paper_order("2026-06-20", _approved_decision(), risk_profile="research")
+        recent_id = store.record_paper_order("2026-07-09", _approved_decision(), risk_profile="research")
+        now = datetime.now(UTC)
+        old = (now - timedelta(days=10)).isoformat()
+        recent = now.isoformat()
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_SETTLED', realized_pnl=-38.12, "
+                "settled_at=?, created_at=? WHERE id=?",
+                (old, old, old_id),
+            )
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_SETTLED', realized_pnl=-1.34, "
+                "settled_at=?, created_at=? WHERE id=?",
+                (recent, recent, recent_id),
+            )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        accounting = payload["accounting"]
+        assert accounting["all_time_realized_pnl"] == -39.46
+        assert accounting["window_realized_pnl"] == -1.34
+        assert accounting["realized_equity"] == 960.54
+        assert accounting["reconciliation_status"] == "reconciled"
+        curve = payload["daily_summary"]["days"]
+        assert curve[0]["opening_equity"] == 961.88
+        assert curve[-1]["closing_equity"] == 960.54
+        assert curve[-1]["cumulative_realized"] == -39.46
+        research = next(row for row in payload["profiles"] if row["risk_profile"] == "research")
+        assert research["daily_summary"]["days"][-1]["cumulative_realized"] == -39.46
 
 
 def test_strategy_research_includes_config_rescore():
@@ -1118,7 +1171,14 @@ def test_strategy_research_includes_config_rescore():
         readiness = payload["real_money_readiness"]
         assert readiness["available"] is True, readiness.get("reason")
         assert readiness["profile"] == "live"
-        assert readiness["status"] == "PAPER_READY"
+        assert readiness["status"] == "REPLAY_REQUIRED"
+        assert readiness["verdict"] == "REPLAY REQUIRED"
+        replay = payload["chronological_replay"]
+        assert replay["evidence_kind"] == "chronological_account_replay"
+        assert replay["promotion_eligible"] is False
+        scorecards = payload["forecast_scorecards"]
+        assert {"available", "scorecards", "challenger_gates"} <= set(scorecards)
+        assert all(gate["promotion_eligible"] is False for gate in scorecards["challenger_gates"])
         assert readiness["status_reasons"]
         assert 0.0 <= readiness["readiness_pct"] <= 100.0
         assert readiness["ready"] is False  # a one-day fixture cannot be ready

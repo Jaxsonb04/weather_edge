@@ -10,11 +10,14 @@
   scans plus the IEM archive backfill), and the station-keyed
   `nwp_model_forecasts` and `forecast_emos_daily_high` (migrated automatically
   from the single-station layout).
-- Site data artifacts: `trading_signal.json`, `forecast_data.json`,
-  `weather_story_data.json`, `strategy_research.json`, and `cities_data.json`
-  (the five JSONs published with the prebuilt SPA in `webdist`;
+- Site data artifacts: five required JSONs (`trading_signal.json`,
+  `forecast_data.json`, `weather_story_data.json`, `cities_data.json`, and
+  `publication_manifest.json`) plus optional Strategy Lab research
+  (`strategy_research.json`). They are published with the prebuilt SPA in
+  `webdist`; the manifest records validated snapshot hashes and timestamps, and
   `cities_data.json` carries per-city forecasts, latest settlement, and book
-  activity), plus `ab_test_results.json` and `model_compare_results.json`.
+  activity. Other generated results include `ab_test_results.json` and
+  `model_compare_results.json`.
 - Trained model and prediction artifacts under `forecaster/models/`.
 - Trading source package, tests, docs, AWS scripts, and small Kalshi research
   orderbook snapshots.
@@ -42,6 +45,8 @@ default:
 - `forecaster/google_weather_cache.json`
 - `forecaster/trading_signal.json`
 - `forecaster/strategy_research.json`
+- `forecaster/cities_data.json`
+- `forecaster/publication_manifest.json`
 - `forecaster/dataset_research.json` (written nightly by the dataset backfill;
   summarized into the Strategy Lab `dataset_research` section)
 - `trading/data/`
@@ -62,6 +67,7 @@ AWS runtime paths are documented in `docs/aws_lightsail.md`, typically:
 - `/opt/weatheredge/forecaster/trading_signal.json`
 - `/opt/weatheredge/forecaster/strategy_research.json`
 - `/opt/weatheredge/forecaster/cities_data.json`
+- `/opt/weatheredge/forecaster/publication_manifest.json`
 - `/opt/weatheredge/webdist/` (the prebuilt SPA that the publisher ships)
 - `/opt/weatheredge/trading/data/`
 
@@ -76,5 +82,8 @@ python3 scripts/clear_local_runtime_state.py --confirm
 
 That removes local runtime DB/cache/generated site data files and writes
 explicit AWS-runtime placeholder JSON for `forecaster/google_weather_cache.json`,
-`forecaster/trading_signal.json`, and `forecaster/strategy_research.json`. Use
-`--no-placeholders` only when you want to test missing-file behavior.
+`forecaster/trading_signal.json`, and `forecaster/strategy_research.json`. It
+also removes `forecaster/cities_data.json` and
+`forecaster/publication_manifest.json`; those remain absent locally until
+explicitly regenerated. Use `--no-placeholders` only when you want to test
+missing-file behavior.

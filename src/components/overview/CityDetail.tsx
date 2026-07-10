@@ -14,6 +14,7 @@ import {
   type CityForecast,
   type Target,
 } from "../../lib/data";
+import { usePublication } from "../../lib/publication";
 import { Finding } from "../ui/Finding";
 import { Reveal } from "../ui/Reveal";
 import { Stat } from "../ui/Stat";
@@ -48,7 +49,7 @@ function ForecastPanel({ city }: { city: City }) {
         <div>
           <Card.Title className="text-base">Calibrated forecast</Card.Title>
           <Card.Description className="text-sm text-muted">
-            {lead ? `Next settlement · ${shortDateUTC(lead.target_date)}` : "No live forecast"}
+            {lead ? `Next settlement · ${shortDateUTC(lead.target_date)}` : "No forecast published"}
           </Card.Description>
         </div>
         <Chip size="sm" variant="soft">
@@ -126,8 +127,8 @@ function ForecastPanel({ city }: { city: City }) {
   );
 }
 
-/** Settlement + provenance + live/research book activity for one city. */
-function BookPanel({ city }: { city: City }) {
+/** Settlement + provenance + paper-book activity for one city. */
+function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAvailable: boolean }) {
   const fresh = cityFreshness(city.forecasts);
   const tone = FRESH_TONE[fresh.tone] ?? FRESH_TONE.danger;
   const settled = city.latest_settlement;
@@ -138,13 +139,13 @@ function BookPanel({ city }: { city: City }) {
   const rows: { k: string; live: string; research: string }[] = [
     {
       k: "Open positions",
-      live: String(live.open_positions ?? 0),
-      research: String(research.open_positions ?? 0),
+      live: currentStateAvailable ? String(live.open_positions ?? 0) : "Unavailable",
+      research: currentStateAvailable ? String(research.open_positions ?? 0) : "Unavailable",
     },
     {
       k: "Open exposure",
-      live: money(live.open_exposure),
-      research: money(research.open_exposure),
+      live: currentStateAvailable ? money(live.open_exposure) : "Unavailable",
+      research: currentStateAvailable ? money(research.open_exposure) : "Unavailable",
     },
     {
       k: "Settled orders",
@@ -162,7 +163,7 @@ function BookPanel({ city }: { city: City }) {
     <Card className="h-full min-w-0 rounded-2xl">
       <Card.Header className="flex flex-row items-start justify-between gap-3">
         <div>
-          <Card.Title className="text-base">Settlement & live book</Card.Title>
+          <Card.Title className="text-base">Settlement & paper book</Card.Title>
           <Card.Description className="text-sm text-muted">
             {city.settlement_source ?? "Official NWS climate report"}
           </Card.Description>
@@ -178,7 +179,7 @@ function BookPanel({ city }: { city: City }) {
             label={`Last settlement · ${shortDateUTC(settled?.local_date)}`}
             value={settled ? `${round1(settled.high_f)}°` : "—"}
           />
-          <Stat label="Approved · 24h" value={String(books.approved_24h ?? 0)} />
+          <Stat label="Approved · 24h" value={currentStateAvailable ? String(books.approved_24h ?? 0) : "Unavailable"} />
         </div>
 
         <div className="overflow-x-auto">
@@ -203,9 +204,15 @@ function BookPanel({ city }: { city: City }) {
         </div>
 
         <p className="text-xs text-muted">
-          <span className="tnum font-medium text-foreground">{(books.decisions_24h ?? 0).toLocaleString()}</span>{" "}
-          gate scans in the last 24h · station{" "}
-          <span className="font-mono text-foreground">{city.station_id ?? "—"}</span>
+          {currentStateAvailable ? (
+            <>
+              <span className="tnum font-medium text-foreground">{(books.decisions_24h ?? 0).toLocaleString()}</span>{" "}
+              gate scans in the last 24h
+            </>
+          ) : (
+            "Current scan activity is unavailable until publication recovers"
+          )}{" "}
+          · station <span className="font-mono text-foreground">{city.station_id ?? "—"}</span>
         </p>
       </Card.Content>
     </Card>
@@ -214,18 +221,21 @@ function BookPanel({ city }: { city: City }) {
 
 interface CityDetailProps {
   city: City;
-  /** SF flagship market target (signal.targets[0]) — only meaningful for SFO. */
+  /** Status-selected SF flagship market target — only meaningful for SFO. */
   flagshipTarget?: Target;
   approvedCount?: number;
 }
 
 /** The selected-city drill-down. Every city publishes its calibrated forecast,
-    settlement and live book activity; the San Francisco flagship additionally
+    settlement and paper-book activity; the San Francisco flagship additionally
     publishes the full bracket-level market microstructure. */
 export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDetailProps) {
+  const { operational } = usePublication();
+  const currentStateAvailable = operational.state === "fresh";
   // The bracket-level signal artifact is San-Francisco-only, so gate on the
   // flagship blend AND the SFO slug — never attach SF's book to another city.
-  const showBrackets = !!city.has_full_blend && city.slug === "sfo" && !!flagshipTarget;
+  const isFlagship = !!city.has_full_blend && city.slug === "sfo" && !!flagshipTarget;
+  const showBrackets = isFlagship && currentStateAvailable;
   const mc = flagshipTarget?.market_consensus;
 
   return (
@@ -233,11 +243,21 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
       <Reveal>
         <div className="grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
           <ForecastPanel city={city} />
-          <BookPanel city={city} />
+          <BookPanel city={city} currentStateAvailable={currentStateAvailable} />
         </div>
       </Reveal>
 
-      {showBrackets && flagshipTarget ? (
+      {isFlagship && !currentStateAvailable ? (
+        <Reveal>
+          <div role="status" className="flex items-start gap-3 rounded-2xl bg-surface-secondary px-4 py-4 ring-1 ring-border/60">
+            <Icon icon="solar:clock-circle-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+            <p className="text-sm leading-relaxed text-muted">
+              Current bracket prices, gate decisions, and prediction-market microstructure are unavailable until publication recovers.
+              The calibrated forecast and settled history remain visible above.
+            </p>
+          </div>
+        </Reveal>
+      ) : showBrackets && flagshipTarget ? (
         <>
           <Reveal>
             <div className="flex items-center gap-2 pt-2 text-sm text-muted">
@@ -287,7 +307,7 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
       ) : (
         <Reveal>
           <p className="rounded-2xl bg-surface-secondary/70 px-4 py-4 text-sm leading-relaxed text-muted ring-1 ring-border/50">
-            {city.name} publishes its calibrated forecast, official settlement and live book activity
+            {city.name} publishes its calibrated forecast, official settlement and paper-book activity
             here. Bracket-level market microstructure — the model-vs-market bin overlay and the full
             gate trace — is published for the San Francisco flagship.
           </p>
