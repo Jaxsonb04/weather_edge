@@ -48,6 +48,17 @@ with sqlite3.connect(db, timeout=60.0) as conn:
         ON decision_snapshots (created_at, market_ticker, approved)
         """
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pre_entry
+        ON decision_snapshots (
+            target_date, market_ticker, side, approved DESC, created_at, id
+        )
+        WHERE COALESCE(intraday_is_complete, 0) = 0
+          AND market_close_time IS NOT NULL
+          AND created_at < market_close_time
+        """
+    )
     conn.execute("ANALYZE decision_snapshots")
 print(f"decision snapshot reporting index ready: {db}")
 PY

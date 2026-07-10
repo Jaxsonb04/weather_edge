@@ -345,6 +345,15 @@ DECISION_SNAPSHOT_REPORT_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_created_market
     ON decision_snapshots (created_at, market_ticker, approved)
 """
+DECISION_SNAPSHOT_SAMPLE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pre_entry
+    ON decision_snapshots (
+        target_date, market_ticker, side, approved DESC, created_at, id
+    )
+    WHERE COALESCE(intraday_is_complete, 0) = 0
+      AND market_close_time IS NOT NULL
+      AND created_at < market_close_time
+"""
 
 # DB-level backstop for the application's concurrent-open guard
 # (has_active_paper_entry). The app guard is a check-then-insert across separate
@@ -557,6 +566,7 @@ class PaperStore:
             conn.executescript(INDEXES)
             if not decision_table_existed:
                 conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
+                conn.execute(DECISION_SNAPSHOT_SAMPLE_INDEX)
             self._ensure_open_position_guard_index(conn)
             self._ensure_shared_paper_account(conn)
 
@@ -2510,6 +2520,7 @@ class PaperStore:
         since: str | None = None,
         until: str | None = None,
         approved_only: bool = False,
+        min_quality: float | None = None,
         pre_resolution_only: bool = True,
         sample_mode: str = "entry-per-market-side",
     ) -> list[sqlite3.Row]:
@@ -2530,9 +2541,45 @@ class PaperStore:
         filters, params = _date_filters(since, until)
         if approved_only:
             filters.append("approved = 1")
+        if min_quality is not None:
+            filters.append("trade_quality_score >= ?")
+            params.append(str(float(min_quality)))
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
+            if sample_mode != "all":
+                pre_filter = (
+                    "COALESCE(intraday_is_complete, 0) = 0 "
+                    "AND market_close_time IS NOT NULL AND created_at < market_close_time"
+                    if pre_resolution_only
+                    else "1 = 1"
+                )
+                ordering = (
+                    "approved DESC, created_at, id"
+                    if sample_mode == "entry-per-market-side"
+                    else "created_at DESC, id DESC"
+                )
+                ranked_where = f"{where} {'AND' if where else 'WHERE'} {pre_filter}"
+                return conn.execute(
+                    f"""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY target_date, market_ticker,
+                                   side
+                                   ORDER BY {ordering}
+                               ) AS sample_rank
+                        FROM decision_snapshots
+                        {ranked_where}
+                    )
+                    SELECT d.*
+                    FROM ranked r
+                    JOIN decision_snapshots d ON d.id = r.id
+                    WHERE r.sample_rank = 1
+                    ORDER BY d.target_date, d.created_at, d.id
+                    """,
+                    params,
+                ).fetchall()
             # Stream the cursor instead of fetchall(): decision_snapshots grows
             # by thousands of ~7KB-JSON rows per day, and materializing every
             # row memory-thrashed the 1GB refresh box. Sampling keeps at most
@@ -2580,26 +2627,44 @@ class PaperStore:
         counts = {"raw": 0, "raw_approved": 0, "pre": 0, "pre_approved": 0}
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                f"SELECT * FROM decision_snapshots {where} ORDER BY target_date, created_at",
+            raw_count_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS raw,
+                       COALESCE(SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END), 0) AS raw_approved
+                FROM decision_snapshots {where}
+                """,
                 params,
+            ).fetchone()
+            pre_where = (
+                f"{where} {'AND' if where else 'WHERE'} "
+                "COALESCE(intraday_is_complete,0)=0 "
+                "AND market_close_time IS NOT NULL AND created_at < market_close_time"
             )
-
-            def _pre_resolution_stream():
-                # Stream + tally instead of fetchall(); see sampled_decision_rows.
-                for row in cursor:
-                    counts["raw"] += 1
-                    approved = bool(int(row["approved"]))
-                    if approved:
-                        counts["raw_approved"] += 1
-                    if pre_resolution_only and not _is_pre_resolution_decision(row):
-                        continue
-                    counts["pre"] += 1
-                    if approved:
-                        counts["pre_approved"] += 1
-                    yield row
-
-            sampled_rows = _sample_decision_rows(_pre_resolution_stream(), sample_mode)
+            pre_count_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS pre,
+                       COALESCE(SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END), 0) AS pre_approved
+                FROM decision_snapshots {pre_where}
+                """,
+                params,
+            ).fetchone()
+            counts = {
+                "raw": int(raw_count_row["raw"] or 0),
+                "raw_approved": int(raw_count_row["raw_approved"] or 0),
+                "pre": int(pre_count_row["pre"] or 0),
+                "pre_approved": int(pre_count_row["pre_approved"] or 0),
+            }
+        sampled_rows = self.sampled_decision_rows(
+            since=since,
+            until=until,
+            approved_only=approved_only,
+            min_quality=min_quality,
+            pre_resolution_only=pre_resolution_only,
+            sample_mode=sample_mode,
+        )
+        if not pre_resolution_only:
+            counts["pre"] = counts["raw"]
+            counts["pre_approved"] = counts["raw_approved"]
         settled_rows = [
             row
             for row in sampled_rows
