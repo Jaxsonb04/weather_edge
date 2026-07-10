@@ -58,6 +58,11 @@ def _integer_settlement_high_f(value: object) -> float:
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    migration_key TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS forecast_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -3593,6 +3598,11 @@ _PROFILE_TABLES = ("paper_orders", "decision_snapshots")
 
 
 def _migrate_legacy_profile_names(conn: sqlite3.Connection) -> None:
+    migration_key = "legacy_profile_names_v2"
+    if conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_key=?", (migration_key,)
+    ).fetchone() is not None:
+        return
     all_legacy = tuple(
         name for names in _LEGACY_PROFILE_RENAMES.values() for name in names
     )
@@ -3623,3 +3633,7 @@ def _migrate_legacy_profile_names(conn: sqlite3.Connection) -> None:
                 f"WHERE risk_profile IN ({placeholders})",
                 (new_name, *legacy_names),
             )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",
+        (migration_key, _now()),
+    )

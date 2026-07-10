@@ -105,6 +105,9 @@ def test_legacy_stored_profile_names_are_migrated_on_init():
             conn.execute(
                 "UPDATE decision_snapshots SET risk_profile='exploratory' WHERE market_ticker='T-C'"
             )
+            conn.execute(
+                "DELETE FROM schema_migrations WHERE migration_key='legacy_profile_names_v2'"
+            )
 
         # Re-opening the store runs init() -> the one-time migration.
         PaperStore(db_path)
@@ -132,6 +135,9 @@ def test_migrated_rows_are_found_by_new_name_filters():
         store.record_paper_order("2026-06-12", _decision("T-OLD"), risk_profile="live")
         with store.connect() as conn:
             conn.execute("UPDATE paper_orders SET risk_profile='balanced' WHERE market_ticker='T-OLD'")
+            conn.execute(
+                "DELETE FROM schema_migrations WHERE migration_key='legacy_profile_names_v2'"
+            )
 
         PaperStore(db_path)  # migrate
 
