@@ -34,6 +34,8 @@ export interface PublicationContextValue {
   snapshotVersion: string | null;
   artifactHashes: Record<string, string>;
   operational: PublicationFreshness;
+  /** Manifest-only operational freshness for the route-independent global banner. */
+  operationalPipeline: PublicationFreshness;
   strategy: PublicationFreshness;
   error: string | null;
   versionForArtifact: (name: string) => string | null;
@@ -67,6 +69,7 @@ function freshnessFor(
   loadedArtifactVersions: Record<string, string>,
   maxAgeMinutes: number,
   now: number,
+  requireLoaded = true,
 ): PublicationFreshness {
   if (!manifest?.artifacts) return UNKNOWN;
 
@@ -75,7 +78,13 @@ function freshnessFor(
     const artifact = manifest.artifacts[name];
     if (!artifact || (artifact.status !== "ready" && artifact.status !== "preserved")) return UNKNOWN;
     const expectedVersion = artifact.sha256 ?? manifest.snapshot_id;
-    if (!expectedVersion || loadedArtifactVersions[name] !== expectedVersion) return UNKNOWN;
+    if (!expectedVersion) return UNKNOWN;
+    // The global banner (requireLoaded=false) reflects PIPELINE freshness from the
+    // manifest alone — it must not fire just because the current route hasn't
+    // fetched these artifacts (e.g. the Strategy Lab never loads cities_data.json).
+    // Stale-cache protection is handled by the versioned fetch URL. requireLoaded
+    // stays true for callers that render the exact data being version-checked.
+    if (requireLoaded && loadedArtifactVersions[name] !== expectedVersion) return UNKNOWN;
     const iso = artifact.generated_at;
     if (typeof iso !== "string" || !iso) return UNKNOWN;
     const time = Date.parse(iso);
@@ -166,6 +175,19 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         loadedArtifactVersions,
         OPERATIONAL_MAX_AGE_MINUTES,
         now,
+      ),
+      // Manifest-driven pipeline freshness for the GLOBAL banner: reflects whether
+      // the publishing box is current, independent of whether the active route
+      // fetched these artifacts. The load-gated `operational` above stays "unknown"
+      // off the Overview route (it never loads cities_data.json) and is only correct
+      // for components that render that exact data.
+      operationalPipeline: freshnessFor(
+        manifest,
+        ["trading_signal.json", "cities_data.json"],
+        loadedArtifactVersions,
+        OPERATIONAL_MAX_AGE_MINUTES,
+        now,
+        false,
       ),
       strategy: freshnessFor(
         manifest,

@@ -16,7 +16,10 @@ function publicationTime(iso: string | null): string | null {
 }
 
 export function PublicationStatusBanner() {
-  const { operational, manifest, error } = usePublication();
+  // Use the manifest-driven pipeline freshness (not the load-gated `operational`,
+  // which stays "unknown" on routes that never fetch cities_data.json — e.g. the
+  // Strategy Lab — and would fire this banner even though the feed is current).
+  const { operationalPipeline: operational, manifest, error } = usePublication();
 
   if (operational.state === "fresh") return null;
   if (operational.state === "unknown" && !manifest && !error) return null;
