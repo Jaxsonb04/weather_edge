@@ -178,8 +178,8 @@ def build_strategy_research(
         "dataset_research": _dataset_research_summary(dataset_research),
         "research_notes": _research_notes(),
         "disclaimer": (
-            "Paper-trading research only. The active AWS execution calibration "
-            "remains pinned to lstm; this artifact does not place live orders."
+            "Paper-trading research only — no live orders are ever placed. "
+            "Live signals are currently generated using the LSTM model."
         ),
     }
 
@@ -874,7 +874,7 @@ def _calibration_payload(
 
 
 def _comparison_summary(active: dict[str, Any], challenger: dict[str, Any]) -> dict[str, Any]:
-    recommendation = "Keep AWS execution pinned to lstm."
+    recommendation = "Keep LSTM as the live model for now."
     if not active.get("available"):
         return {
             "winner": "not_available",
@@ -2056,7 +2056,7 @@ def _dataset_action_items(
     )
     if trade_rows < minimum_trades:
         items.append("Backfill or enable Kalshi trade history before using datasets for trading weight.")
-    items.append("Keep live AWS execution pinned to LSTM until both accuracy and market gates pass.")
+    items.append("Keep LSTM as the live model until both accuracy and market gates pass.")
     return items
 
 
