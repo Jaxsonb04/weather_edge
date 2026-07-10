@@ -13,7 +13,7 @@ function SideCard({ side, pinned }: { side: CalibrationSide; pinned: boolean }) 
           <p className="mt-0.5 font-mono text-[11px] text-muted">source: {side.source ?? "—"}</p>
         </div>
         <Chip size="sm" variant="soft" color={pinned ? "success" : "default"}>
-          <Chip.Label>{pinned ? "Pinned to execution" : "Shadow only"}</Chip.Label>
+          <Chip.Label>{pinned ? "In production" : "Shadow only"}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="pt-0">
