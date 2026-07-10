@@ -179,8 +179,8 @@ def build_strategy_research(
         "dataset_research": _dataset_research_summary(dataset_research),
         "research_notes": _research_notes(),
         "disclaimer": (
-            "Paper-trading research only — no live orders are ever placed. "
-            "Live signals are currently generated using the LSTM model."
+            "Paper-trading research only — no real-money orders are ever placed. "
+            "Forecasts use a per-city NWP-ensemble EMOS model (San Francisco adds an LSTM blend)."
         ),
     }
 
