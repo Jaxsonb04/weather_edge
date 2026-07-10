@@ -31,6 +31,7 @@ from .dataset_research import build_dataset_research, write_dataset_research
 from .datasets import (
     KSFO_ASOS_STATION,
     KSFO_ISD_STATION,
+    DatasetResult,
     DatasetStore,
     backfill_gfs_mos,
     backfill_hrrr,
@@ -484,6 +485,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dataset_backfill.add_argument("--start-date", required=True, help="YYYY-MM-DD")
     dataset_backfill.add_argument("--end-date", help="YYYY-MM-DD. Defaults to start date.")
+    dataset_backfill.add_argument(
+        "--cities",
+        default=os.getenv("PAPER_CITIES", "all"),
+        help="'all' or comma-separated city slugs for station-aware sources.",
+    )
     dataset_backfill.add_argument(
         "--isd-station",
         action="append",
@@ -2089,6 +2095,7 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
     start, end = _dataset_date_range(args)
     store = DatasetStore(args.db_path)
     sources = _dataset_sources(args.source)
+    cities = parse_city_slugs(args.cities)
     total_rows = 0
     for source in sources:
         params = _dataset_run_params(args, source, start, end)
@@ -2103,59 +2110,80 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
                     timeout=args.timeout,
                 )
             elif source == "iem-asos":
-                result = backfill_iem_asos(
-                    store,
-                    stations=args.asos_stations or [KSFO_ASOS_STATION],
-                    start=start,
-                    end=end,
-                    timeout=args.timeout,
-                )
+                if args.asos_stations:
+                    result = backfill_iem_asos(
+                        store, stations=args.asos_stations, start=start, end=end,
+                        timeout=args.timeout,
+                    )
+                else:
+                    result = _combine_dataset_results(
+                        backfill_iem_asos(
+                            store, stations=[city.nws_station_id.removeprefix("K")],
+                            canonical_station_id=city.nws_station_id,
+                            standard_utc_offset_hours=city.standard_utc_offset_hours,
+                            start=start, end=end, timeout=args.timeout,
+                        )
+                        for city in cities
+                    )
             elif source == "open-meteo-previous-runs":
-                result = backfill_open_meteo_previous_runs(
-                    store,
-                    start=start,
-                    end=end,
-                    model=args.open_meteo_model,
-                    previous_days=args.previous_days,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_open_meteo_previous_runs(
+                        store, start=start, end=end, model=args.open_meteo_model,
+                        previous_days=args.previous_days, station_id=city.nws_station_id,
+                        latitude=city.latitude, longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "open-meteo-historical-forecast":
-                result = backfill_open_meteo_historical_forecast(
-                    store,
-                    start=start,
-                    end=end,
-                    model=args.open_meteo_model,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_open_meteo_historical_forecast(
+                        store, start=start, end=end, model=args.open_meteo_model,
+                        station_id=city.nws_station_id, latitude=city.latitude,
+                        longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "lamp":
-                result = backfill_lamp(
-                    store,
-                    start=start,
-                    end=end,
-                    station_id="KSFO",
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_lamp(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "gfs-mos":
-                result = backfill_gfs_mos(
-                    store,
-                    start=start,
-                    end=end,
-                    station_id="KSFO",
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_gfs_mos(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "nbm":
-                result = backfill_nbm(
-                    store,
-                    start=start,
-                    end=end,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_nbm(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        latitude=city.latitude, longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "hrrr":
-                result = backfill_hrrr(
-                    store,
-                    start=start,
-                    end=end,
-                    timeout=args.timeout,
+                result = _combine_dataset_results(
+                    backfill_hrrr(
+                        store, start=start, end=end, station_id=city.nws_station_id,
+                        latitude=city.latitude, longitude=city.longitude,
+                        standard_utc_offset_hours=city.standard_utc_offset_hours,
+                        timeout=args.timeout,
+                    )
+                    for city in cities
                 )
             elif source == "kalshi-history":
                 result = backfill_kalshi_history(
@@ -2167,6 +2195,7 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
                     candle_interval=args.candle_interval,
                     max_pages=args.kalshi_max_pages,
                     max_trade_pages=args.kalshi_max_trade_pages,
+                    series_tickers=[city.series_ticker for city in cities],
                     timeout=args.timeout,
                 )
             else:  # pragma: no cover - argparse choices guard this
@@ -2190,6 +2219,7 @@ def cmd_dataset_status(args: argparse.Namespace) -> int:
         "dataset_kalshi_markets",
         "dataset_kalshi_candles",
         "dataset_kalshi_trades",
+        "dataset_kalshi_orderbook_events",
     )
     with store.connect() as conn:
         for table in tables:
@@ -2238,6 +2268,17 @@ def _dataset_date_range(args: argparse.Namespace) -> tuple[date, date]:
     return start, end
 
 
+def _combine_dataset_results(results) -> DatasetResult:
+    rows = list(results)
+    if not rows:
+        return DatasetResult("station-aware", 0, "no cities selected")
+    return DatasetResult(
+        rows[0].source,
+        sum(row.rows_written for row in rows),
+        f"{len(rows)} cities; " + "; ".join(row.detail for row in rows),
+    )
+
+
 def _dataset_sources(source: str) -> list[str]:
     if source == "tier1":
         return [
@@ -2259,6 +2300,7 @@ def _dataset_run_params(args: argparse.Namespace, source: str, start: date, end:
         "source": source,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
+        "cities": args.cities,
         "isd_stations": args.isd_stations or [KSFO_ISD_STATION],
         "asos_stations": args.asos_stations or [KSFO_ASOS_STATION],
         "open_meteo_model": args.open_meteo_model,

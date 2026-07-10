@@ -167,7 +167,10 @@ def test_dataset_backfill_cli_accepts_lamp_source_choice():
         db_path = Path(tmp) / "paper.db"
         calls = []
 
-        def fake_lamp(store, *, start, end, station_id="KSFO", timeout=30):
+        def fake_lamp(
+            store, *, start, end, station_id="KSFO",
+            standard_utc_offset_hours=-8, timeout=30,
+        ):
             calls.append((store.db_path, start, end, station_id, timeout))
             return DatasetResult("noaa-lamp", 0, "test")
 
@@ -183,6 +186,8 @@ def test_dataset_backfill_cli_accepts_lamp_source_choice():
                     "lamp",
                     "--start-date",
                     "2026-06-26",
+                    "--cities",
+                    "sfo",
                     "--timeout",
                     "1",
                 ]

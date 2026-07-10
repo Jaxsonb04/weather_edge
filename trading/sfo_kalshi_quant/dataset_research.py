@@ -654,6 +654,7 @@ def _dataset_coverage(db_path: Path) -> dict[str, Any]:
         "dataset_kalshi_markets": 0,
         "dataset_kalshi_candles": 0,
         "dataset_kalshi_trades": 0,
+        "dataset_kalshi_orderbook_events": 0,
     }
     if not Path(db_path).exists():
         return {"available": False, "tables": tables, "forecast_feature_sources": []}

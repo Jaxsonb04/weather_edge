@@ -192,6 +192,7 @@ def test_parse_noaa_station_guidance_text_emits_hourly_and_daily_high_features()
         {
             "source": "noaa-lamp",
             "model": "lamp",
+            "station_id": "KSFO",
             "issued_at": "2026-06-26T12:30:00+00:00",
             "target_date": "2026-06-26",
             "valid_time": "2026-06-26",
@@ -548,6 +549,31 @@ def test_forecast_feature_migration_preserves_legacy_rows_as_ksfo():
             ).fetchone()
 
     assert row == ("KSFO", "legacy", 67.0)
+
+
+def test_orderbook_events_are_idempotent_and_preserve_queue_evidence():
+    with TemporaryDirectory() as tmp:
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        event = {
+            "event_id": "book-1",
+            "ticker": "KXHIGHTSFO-26JUL10-B68.5",
+            "observed_at": "2026-07-09T18:00:00+00:00",
+            "sequence": 42,
+            "yes_bids": [[30, 12], [29, 8]],
+            "no_bids": [[69, 4]],
+            "source": "rest_snapshot",
+        }
+
+        store.upsert_kalshi_orderbook_events([event])
+        store.upsert_kalshi_orderbook_events([{**event, "yes_bids": [[30, 15]]}])
+
+        with sqlite3.connect(store.db_path) as conn:
+            row = conn.execute(
+                "SELECT event_id, sequence, yes_bids_json, source "
+                "FROM dataset_kalshi_orderbook_events"
+            ).fetchone()
+
+    assert row == ("book-1", 42, "[[30,15]]", "rest_snapshot")
 
 
 class _FakeKalshiHistoryClient:

@@ -6,7 +6,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO, TextIOWrapper
 from pathlib import Path
 from typing import Any, Iterable
@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS dataset_station_observations (
     relative_humidity REAL,
     wind_speed_kt REAL,
     wind_direction_deg REAL,
+    cloud_cover_fraction REAL,
     altimeter_in REAL,
     sea_level_pressure_hpa REAL,
     source_url TEXT,
@@ -154,6 +155,20 @@ CREATE TABLE IF NOT EXISTS dataset_kalshi_trades (
     raw_json TEXT NOT NULL,
     fetched_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS dataset_kalshi_orderbook_events (
+    event_id TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    sequence INTEGER,
+    yes_bids_json TEXT NOT NULL,
+    no_bids_json TEXT NOT NULL,
+    source TEXT NOT NULL,
+    raw_json TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dataset_orderbook_ticker_time
+ON dataset_kalshi_orderbook_events(ticker, observed_at);
 """
 
 
@@ -192,6 +207,12 @@ class DatasetStore:
         with self.connect() as conn:
             conn.executescript(DATASET_SCHEMA)
             self._migrate_forecast_features_station_key(conn)
+            self._ensure_column(conn, "dataset_station_observations", "cloud_cover_fraction", "REAL")
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+        if column not in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     @staticmethod
     def _migrate_forecast_features_station_key(conn: sqlite3.Connection) -> None:
@@ -260,9 +281,10 @@ class DatasetStore:
                 INSERT INTO dataset_station_observations (
                     source, station_id, observed_at, local_date, temp_f, dewpoint_f,
                     relative_humidity, wind_speed_kt, wind_direction_deg,
-                    altimeter_in, sea_level_pressure_hpa, source_url, raw_json, fetched_at
+                    cloud_cover_fraction, altimeter_in, sea_level_pressure_hpa,
+                    source_url, raw_json, fetched_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, station_id, observed_at) DO UPDATE SET
                     local_date = excluded.local_date,
                     temp_f = excluded.temp_f,
@@ -270,6 +292,7 @@ class DatasetStore:
                     relative_humidity = excluded.relative_humidity,
                     wind_speed_kt = excluded.wind_speed_kt,
                     wind_direction_deg = excluded.wind_direction_deg,
+                    cloud_cover_fraction = excluded.cloud_cover_fraction,
                     altimeter_in = excluded.altimeter_in,
                     sea_level_pressure_hpa = excluded.sea_level_pressure_hpa,
                     source_url = excluded.source_url,
@@ -287,6 +310,7 @@ class DatasetStore:
                         row.get("relative_humidity"),
                         row.get("wind_speed_kt"),
                         row.get("wind_direction_deg"),
+                        row.get("cloud_cover_fraction"),
                         row.get("altimeter_in"),
                         row.get("sea_level_pressure_hpa"),
                         row.get("source_url"),
@@ -524,6 +548,44 @@ class DatasetStore:
             )
             return conn.total_changes - before
 
+    def upsert_kalshi_orderbook_events(self, rows: Iterable[dict[str, Any]]) -> int:
+        """Persist REST snapshots or websocket deltas used as queue evidence."""
+
+        payload = list(rows)
+        if not payload:
+            return 0
+        fetched_at = _now()
+        with self.connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT INTO dataset_kalshi_orderbook_events (
+                    event_id, ticker, observed_at, sequence, yes_bids_json,
+                    no_bids_json, source, raw_json, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    ticker = excluded.ticker,
+                    observed_at = excluded.observed_at,
+                    sequence = excluded.sequence,
+                    yes_bids_json = excluded.yes_bids_json,
+                    no_bids_json = excluded.no_bids_json,
+                    source = excluded.source,
+                    raw_json = excluded.raw_json,
+                    fetched_at = excluded.fetched_at
+                """,
+                [
+                    (
+                        row["event_id"], row["ticker"], row["observed_at"],
+                        row.get("sequence"), json.dumps(row.get("yes_bids", []), separators=(",", ":")),
+                        json.dumps(row.get("no_bids", []), separators=(",", ":")),
+                        row.get("source", "unknown"),
+                        json.dumps(row.get("raw", row), sort_keys=True), fetched_at,
+                    )
+                    for row in payload
+                ],
+            )
+            return conn.total_changes - before
+
 
 def backfill_noaa_isd(
     store: DatasetStore,
@@ -617,6 +679,8 @@ def backfill_iem_asos(
     stations: Iterable[str],
     start: date,
     end: date,
+    canonical_station_id: str | None = None,
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     rows: list[dict[str, Any]] = []
@@ -624,7 +688,7 @@ def backfill_iem_asos(
     for station in station_list:
         params = {
             "station": station,
-            "data": ["tmpf", "dwpf", "relh", "sknt", "drct", "alti"],
+            "data": ["tmpf", "dwpf", "relh", "sknt", "drct", "alti", "skyc1", "skyc2", "skyc3", "skyc4"],
             "year1": start.year,
             "month1": start.month,
             "day1": start.day,
@@ -633,7 +697,7 @@ def backfill_iem_asos(
             "day2": end.day,
             # Fixed PST so observation timestamps and daily bucketing match the
             # NWS/Kalshi settlement day; also removes DST fall-back ambiguity.
-            "tz": IANA_FIXED_PST,
+            "tz": f"Etc/GMT+{-standard_utc_offset_hours}",
             "format": "onlycomma",
             "latlon": "yes",
             "elev": "yes",
@@ -644,28 +708,38 @@ def backfill_iem_asos(
         }
         url = f"{IEM_ASOS_URL}?{urlencode(params, doseq=True)}"
         text = _http_text(url, timeout=timeout)
-        rows.extend(parse_iem_asos_csv(text, source_url=url))
+        rows.extend(
+            parse_iem_asos_csv(
+                text, source_url=url, canonical_station_id=canonical_station_id,
+                settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
+            )
+        )
     written = store.upsert_station_observations(rows)
     return DatasetResult("iem-asos", written, f"{len(rows)} parsed rows from {len(station_list)} station(s)")
 
 
-def parse_iem_asos_csv(text: str, *, source_url: str | None = None) -> list[dict[str, Any]]:
+def parse_iem_asos_csv(
+    text: str, *, source_url: str | None = None,
+    canonical_station_id: str | None = None,
+    settlement_timezone=PACIFIC_STANDARD_TZ,
+) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for row in csv.DictReader(StringIO(text)):
-        observed_at = _local_naive_to_utc(row.get("valid"))
+        observed_at = _local_naive_to_utc(row.get("valid"), local_timezone=settlement_timezone)
         if not observed_at:
             continue
         output.append(
             {
                 "source": "iem-asos",
-                "station_id": row.get("station") or "",
+                "station_id": canonical_station_id or row.get("station") or "",
                 "observed_at": observed_at,
-                "local_date": _local_date(observed_at),
+                "local_date": _local_date(observed_at, settlement_timezone=settlement_timezone),
                 "temp_f": _as_float(row.get("tmpf"), None),
                 "dewpoint_f": _as_float(row.get("dwpf"), None),
                 "relative_humidity": _as_float(row.get("relh"), None),
                 "wind_speed_kt": _as_float(row.get("sknt"), None),
                 "wind_direction_deg": _as_float(row.get("drct"), None),
+                "cloud_cover_fraction": _cloud_cover_fraction(row),
                 "altimeter_in": _as_float(row.get("alti"), None),
                 "sea_level_pressure_hpa": None,
                 "source_url": source_url,
@@ -682,6 +756,10 @@ def backfill_open_meteo_previous_runs(
     end: date,
     model: str = "best_match",
     previous_days: int = 7,
+    station_id: str = "KSFO",
+    latitude: float = KSFO_LATITUDE,
+    longitude: float = KSFO_LONGITUDE,
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     models = _open_meteo_previous_run_models(model)
@@ -689,15 +767,15 @@ def backfill_open_meteo_previous_runs(
     rows: list[dict[str, Any]] = []
     for model_name in models:
         params: dict[str, Any] = {
-            "latitude": KSFO_LATITUDE,
-            "longitude": KSFO_LONGITUDE,
+            "latitude": latitude,
+            "longitude": longitude,
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "hourly": ",".join(variables),
             "temperature_unit": "fahrenheit",
             # Hourly rows are grouped into daily highs by their local date label,
             # so the request timezone defines the settlement-day bucketing.
-            "timezone": IANA_FIXED_PST,
+            "timezone": f"Etc/GMT+{-standard_utc_offset_hours}",
         }
         if model_name and model_name != "best_match":
             params["models"] = model_name
@@ -709,6 +787,8 @@ def backfill_open_meteo_previous_runs(
                 source="open-meteo-previous-runs",
                 model=model_name,
                 source_url=url,
+                station_id=station_id,
+                settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
             )
         )
     written = store.upsert_forecast_features(rows)
@@ -734,24 +814,32 @@ def backfill_open_meteo_historical_forecast(
     start: date,
     end: date,
     model: str = "best_match",
+    station_id: str = "KSFO",
+    latitude: float = KSFO_LATITUDE,
+    longitude: float = KSFO_LONGITUDE,
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     params: dict[str, Any] = {
-        "latitude": KSFO_LATITUDE,
-        "longitude": KSFO_LONGITUDE,
+        "latitude": latitude,
+        "longitude": longitude,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "daily": "temperature_2m_max",
         "temperature_unit": "fahrenheit",
         # Daily maxima are aggregated over the request timezone; fixed PST
         # matches the NWS/Kalshi settlement day.
-        "timezone": IANA_FIXED_PST,
+        "timezone": f"Etc/GMT+{-standard_utc_offset_hours}",
     }
     if model and model != "best_match":
         params["models"] = model
     url = f"{OPEN_METEO_HISTORICAL_FORECAST_URL}?{urlencode(params)}"
     payload = _http_json(url, timeout=timeout)
-    rows = open_meteo_daily_features(payload, source="open-meteo-historical-forecast", model=model, source_url=url)
+    rows = open_meteo_daily_features(
+        payload, source="open-meteo-historical-forecast", model=model,
+        source_url=url, station_id=station_id,
+        settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
+    )
     written = store.upsert_forecast_features(rows)
     return DatasetResult("open-meteo-historical-forecast", written, f"{len(rows)} daily feature rows")
 
@@ -762,6 +850,8 @@ def open_meteo_daily_features(
     source: str,
     model: str,
     source_url: str | None = None,
+    station_id: str | None = None,
+    settlement_timezone=PACIFIC_STANDARD_TZ,
 ) -> list[dict[str, Any]]:
     daily = payload.get("daily") if isinstance(payload, dict) else None
     if not isinstance(daily, dict):
@@ -778,11 +868,10 @@ def open_meteo_daily_features(
             if idx >= len(values) or values[idx] is None:
                 continue
             target_date = date.fromisoformat(str(target))
-            rows.append(
-                {
+            row = {
                     "source": source,
                     "model": model,
-                    "issued_at": datetime.combine(target_date, datetime.min.time(), tzinfo=PACIFIC_STANDARD_TZ).astimezone(UTC).isoformat(),
+                    "issued_at": datetime.combine(target_date, datetime.min.time(), tzinfo=settlement_timezone).astimezone(UTC).isoformat(),
                     "target_date": target_date.isoformat(),
                     "valid_time": target_date.isoformat(),
                     "lead_hours": None,
@@ -794,7 +883,9 @@ def open_meteo_daily_features(
                     "source_url": source_url,
                     "raw": {"time": target, key: values[idx]},
                 }
-            )
+            if station_id:
+                row["station_id"] = station_id
+            rows.append(row)
     return rows
 
 
@@ -804,6 +895,8 @@ def open_meteo_hourly_daily_high_features(
     source: str,
     model: str,
     source_url: str | None = None,
+    station_id: str | None = None,
+    settlement_timezone=PACIFIC_STANDARD_TZ,
 ) -> list[dict[str, Any]]:
     hourly = payload.get("hourly") if isinstance(payload, dict) else None
     if not isinstance(hourly, dict):
@@ -834,10 +927,9 @@ def open_meteo_hourly_daily_high_features(
         issued_at = datetime.combine(
             target_date,
             datetime.min.time(),
-            tzinfo=PACIFIC_STANDARD_TZ,
+            tzinfo=settlement_timezone,
         ) - timedelta(hours=lead_hours or 0)
-        rows.append(
-            {
+        row = {
                 "source": source,
                 "model": model,
                 "issued_at": issued_at.astimezone(UTC).isoformat(),
@@ -856,7 +948,9 @@ def open_meteo_hourly_daily_high_features(
                     "n": len(values),
                 },
             }
-        )
+        if station_id:
+            row["station_id"] = station_id
+        rows.append(row)
     return rows
 
 
@@ -866,6 +960,7 @@ def backfill_lamp(
     start: date,
     end: date,
     station_id: str = "KSFO",
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     rows: list[dict[str, Any]] = []
@@ -889,6 +984,7 @@ def backfill_lamp(
                     model="lamp",
                     source_url=url,
                     station_id=station_id,
+                    settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
                 )
             )
     rows = _dedupe_feature_rows(rows)
@@ -905,6 +1001,7 @@ def backfill_gfs_mos(
     start: date,
     end: date,
     station_id: str = "KSFO",
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     rows: list[dict[str, Any]] = []
@@ -928,6 +1025,7 @@ def backfill_gfs_mos(
                     model="gfs-mos",
                     source_url=url,
                     station_id=station_id,
+                    settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
                 )
             )
     rows = _dedupe_feature_rows(rows)
@@ -949,6 +1047,10 @@ def backfill_nbm(
     *,
     start: date,
     end: date,
+    station_id: str = "KSFO",
+    latitude: float = KSFO_LATITUDE,
+    longitude: float = KSFO_LONGITUDE,
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     return backfill_open_meteo_previous_runs(
@@ -957,6 +1059,10 @@ def backfill_nbm(
         end=end,
         model="ncep_nbm_conus",
         previous_days=0,
+        station_id=station_id,
+        latitude=latitude,
+        longitude=longitude,
+        standard_utc_offset_hours=standard_utc_offset_hours,
         timeout=timeout,
     )
 
@@ -966,6 +1072,10 @@ def backfill_hrrr(
     *,
     start: date,
     end: date,
+    station_id: str = "KSFO",
+    latitude: float = KSFO_LATITUDE,
+    longitude: float = KSFO_LONGITUDE,
+    standard_utc_offset_hours: int = -8,
     timeout: int = 30,
 ) -> DatasetResult:
     return backfill_open_meteo_previous_runs(
@@ -974,6 +1084,10 @@ def backfill_hrrr(
         end=end,
         model="gfs_hrrr",
         previous_days=0,
+        station_id=station_id,
+        latitude=latitude,
+        longitude=longitude,
+        standard_utc_offset_hours=standard_utc_offset_hours,
         timeout=timeout,
     )
 
@@ -985,6 +1099,7 @@ def parse_noaa_station_guidance_text(
     model: str,
     source_url: str | None = None,
     station_id: str = "KSFO",
+    settlement_timezone=PACIFIC_STANDARD_TZ,
 ) -> list[dict[str, Any]]:
     """Parse NOAA station guidance text into hourly temperature and daily highs."""
 
@@ -1017,11 +1132,12 @@ def parse_noaa_station_guidance_text(
         if temp_f is None:
             continue
         valid_at = issued_at + timedelta(hours=lead_hour)
-        target = valid_at.astimezone(PACIFIC_STANDARD_TZ).date()
+        target = valid_at.astimezone(settlement_timezone).date()
         hourly_rows.append(
             {
                 "source": source,
                 "model": model,
+                "station_id": station_id,
                 "issued_at": issued_at.isoformat(),
                 "target_date": target.isoformat(),
                 "valid_time": valid_at.isoformat(),
@@ -1115,6 +1231,7 @@ def _daily_high_rows_from_hourly(
             {
                 "source": first["source"],
                 "model": first["model"],
+                "station_id": first.get("station_id", "KSFO"),
                 "issued_at": first["issued_at"],
                 "target_date": target,
                 "valid_time": target,
@@ -1161,6 +1278,7 @@ def _dedupe_feature_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = (
             row["source"],
             row["model"],
+            row.get("station_id", "KSFO"),
             row["issued_at"],
             row["target_date"],
             row["valid_time"],
@@ -1181,25 +1299,35 @@ def backfill_kalshi_history(
     limit: int = 1000,
     max_pages: int = 20,
     max_trade_pages: int = 20,
+    series_tickers: Iterable[str] = (SERIES_TICKER,),
     timeout: int = 20,
 ) -> DatasetResult:
     client = KalshiPublicClient(timeout=timeout)
     rows: list[dict[str, Any]] = []
     notes: list[str] = []
-    cursor = None
-    for page_idx in range(max_pages):
-        try:
-            payload = client.list_historical_markets(series_ticker=SERIES_TICKER, limit=limit, cursor=cursor)
-        except HTTPError as exc:
-            if exc.code == 429:
-                notes.append(f"market pagination halted by HTTP 429 after {page_idx} page(s)")
+    for series_ticker in series_tickers:
+        cursor = None
+        for page_idx in range(max_pages):
+            try:
+                payload = client.list_historical_markets(
+                    series_ticker=series_ticker, limit=limit, cursor=cursor
+                )
+            except HTTPError as exc:
+                if exc.code == 429:
+                    notes.append(
+                        f"{series_ticker} market pagination halted by HTTP 429 after {page_idx} page(s)"
+                    )
+                    break
+                raise
+            markets = payload.get("markets", [])
+            rows.extend(
+                _kalshi_market_row(row)
+                for row in markets
+                if _market_in_date_window(row, start, end)
+            )
+            cursor = payload.get("cursor")
+            if not cursor:
                 break
-            raise
-        markets = payload.get("markets", [])
-        rows.extend(_kalshi_market_row(row) for row in markets if _market_in_date_window(row, start, end))
-        cursor = payload.get("cursor")
-        if not cursor:
-            break
     written = store.upsert_kalshi_markets(rows)
     candle_rows = 0
     if include_candles:
@@ -1365,24 +1493,36 @@ def _iso_utc(value: str) -> str:
     return parsed.astimezone(UTC).isoformat()
 
 
-def _local_naive_to_utc(value: str | None) -> str | None:
-    """Naive timestamps arrive in the fixed-PST request timezone (IEM tz=)."""
+def _local_naive_to_utc(
+    value: str | None, *, local_timezone=PACIFIC_STANDARD_TZ
+) -> str | None:
+    """Interpret an IEM timestamp in the fixed-standard request timezone."""
 
     if not value:
         return None
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=PACIFIC_STANDARD_TZ)
+        parsed = parsed.replace(tzinfo=local_timezone)
     return parsed.astimezone(UTC).isoformat()
 
 
-def _local_date(observed_at: str) -> str:
-    """Settlement-day (fixed PST) date, matching the NWS climate report day."""
+def _local_date(observed_at: str, *, settlement_timezone=PACIFIC_STANDARD_TZ) -> str:
+    """Settlement-day date on the station's fixed-standard clock."""
 
     parsed = datetime.fromisoformat(observed_at)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(PACIFIC_STANDARD_TZ).date().isoformat()
+    return parsed.astimezone(settlement_timezone).date().isoformat()
+
+
+def _cloud_cover_fraction(row: dict[str, Any]) -> float | None:
+    fractions = {"CLR": 0.0, "SKC": 0.0, "FEW": 0.25, "SCT": 0.5, "BKN": 0.75, "OVC": 1.0}
+    values = [
+        fractions[str(row.get(f"skyc{layer}") or "").upper()]
+        for layer in range(1, 5)
+        if str(row.get(f"skyc{layer}") or "").upper() in fractions
+    ]
+    return max(values) if values else None
 
 
 def _as_float(value: Any, default: float | None = 0.0) -> float | None:
