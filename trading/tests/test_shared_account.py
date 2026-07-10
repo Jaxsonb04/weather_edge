@@ -97,6 +97,33 @@ def test_ledger_reserves_fills_and_settles_cash_idempotently() -> None:
         assert store.shared_account_state()["cash_balance"] == cash_once
 
 
+def test_legacy_flattening_is_folded_into_opening_cash_once() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        with store.connect() as conn:
+            conn.execute("DELETE FROM paper_account_ledger")
+            conn.execute("DELETE FROM paper_accounts")
+
+        order_id = store.record_paper_order("2026-07-10", _decision())
+        with store.connect() as conn:
+            conn.execute("UPDATE paper_orders SET account_id=NULL WHERE id=?", (order_id,))
+            conn.execute("DELETE FROM paper_account_ledger")
+        assert store.paper_order(order_id)["account_id"] is None
+        closed = store.close_paper_order(order_id, 0.50)
+        expected_equity = 1000.0 + float(closed["realized_pnl"])
+
+        cutover = PaperStore(db_path)
+        state = cutover.shared_account_state()
+        with cutover.connect() as conn:
+            ledger = conn.execute(
+                "SELECT event_type, amount FROM paper_account_ledger ORDER BY id"
+            ).fetchall()
+
+        assert round(state["cash_balance"], 6) == round(expected_equity, 6)
+        assert ledger == [("OPENING_CASH", expected_equity)]
+
+
 def test_resting_ttl_releases_reservation() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

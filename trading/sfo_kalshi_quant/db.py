@@ -1807,18 +1807,19 @@ class PaperStore:
             )
             if cursor.rowcount:
                 reserved = float(row["reserved_cost"] or 0.0)
-                self._record_ledger_event(
-                    conn, account_id=row["account_id"] or SHARED_ACCOUNT_ID,
-                    order_id=order_id, event_type="RESERVATION_RELEASE", amount=reserved,
-                    idempotency_key=f"order:{order_id}:fill-release",
-                )
-                self._record_ledger_event(
-                    conn, account_id=row["account_id"] or SHARED_ACCOUNT_ID,
-                    order_id=order_id, event_type="ENTRY_FILL",
-                    amount=-(float(row["contracts"]) * float(row["cost_per_contract"])),
-                    idempotency_key=f"order:{order_id}:entry-fill",
-                    details=evidence,
-                )
+                if row["account_id"]:
+                    self._record_ledger_event(
+                        conn, account_id=row["account_id"],
+                        order_id=order_id, event_type="RESERVATION_RELEASE", amount=reserved,
+                        idempotency_key=f"order:{order_id}:fill-release",
+                    )
+                    self._record_ledger_event(
+                        conn, account_id=row["account_id"],
+                        order_id=order_id, event_type="ENTRY_FILL",
+                        amount=-(float(row["contracts"]) * float(row["cost_per_contract"])),
+                        idempotency_key=f"order:{order_id}:entry-fill",
+                        details=evidence,
+                    )
         return self._order(order_id)
 
     def cancel_resting_limit_order(self, order_id: int, *, reason: str) -> sqlite3.Row | None:
@@ -1837,13 +1838,14 @@ class PaperStore:
                 "reserved_cost=0, outcome_diagnostics_json=? WHERE id=?",
                 (cancelled_at, json.dumps({"event": "cancellation", "reason": reason}, sort_keys=True), order_id),
             )
-            self._record_ledger_event(
-                conn, account_id=row["account_id"] or SHARED_ACCOUNT_ID,
-                order_id=order_id, event_type="RESERVATION_RELEASE",
-                amount=float(row["reserved_cost"] or 0.0),
-                idempotency_key=f"order:{order_id}:cancel-release",
-                details={"reason": reason},
-            )
+            if row["account_id"]:
+                self._record_ledger_event(
+                    conn, account_id=row["account_id"],
+                    order_id=order_id, event_type="RESERVATION_RELEASE",
+                    amount=float(row["reserved_cost"] or 0.0),
+                    idempotency_key=f"order:{order_id}:cancel-release",
+                    details={"reason": reason},
+                )
         return self._order(order_id)
 
     def expire_stale_resting_orders(self, *, now: str | None = None) -> int:
@@ -2025,14 +2027,13 @@ class PaperStore:
                     """,
                     (settled_at, settled_at, settlement_high_f, outcome_json, row["id"]),
                 )
-                self._record_ledger_event(
-                    conn,
-                    account_id=row["account_id"] or SHARED_ACCOUNT_ID,
-                    order_id=int(row["id"]),
-                    event_type="RESERVATION_RELEASE",
-                    amount=float(row["reserved_cost"] or 0.0),
-                    idempotency_key=f"order:{row['id']}:settlement-expire-release",
-                )
+                if row["account_id"]:
+                    self._record_ledger_event(
+                        conn, account_id=row["account_id"],
+                        order_id=int(row["id"]), event_type="RESERVATION_RELEASE",
+                        amount=float(row["reserved_cost"] or 0.0),
+                        idempotency_key=f"order:{row['id']}:settlement-expire-release",
+                    )
             for row in rows:
                 resolved_yes = _row_resolves_yes(row, settlement_high_f)
                 side = _row_side(row)
@@ -2082,15 +2083,14 @@ class PaperStore:
                 )
                 if cursor.rowcount:
                     proceeds = contracts if position_wins else 0.0
-                    self._record_ledger_event(
-                        conn,
-                        account_id=row["account_id"] or SHARED_ACCOUNT_ID,
-                        order_id=int(row["id"]),
-                        event_type="SETTLEMENT_PROCEEDS",
-                        amount=proceeds,
-                        idempotency_key=f"order:{row['id']}:settlement-proceeds",
-                        details={"position_won": position_wins},
-                    )
+                    if row["account_id"]:
+                        self._record_ledger_event(
+                            conn, account_id=row["account_id"],
+                            order_id=int(row["id"]), event_type="SETTLEMENT_PROCEEDS",
+                            amount=proceeds,
+                            idempotency_key=f"order:{row['id']}:settlement-proceeds",
+                            details={"position_won": position_wins},
+                        )
                 settled += cursor.rowcount
         return settled
 
@@ -2175,15 +2175,13 @@ class PaperStore:
                     f"paper order {order_id} was resolved concurrently before close"
                 )
             net_proceeds = contracts * (exit_price - exit_fee)
-            self._record_ledger_event(
-                conn,
-                account_id=row["account_id"] or SHARED_ACCOUNT_ID,
-                order_id=order_id,
-                event_type="EXIT_PROCEEDS",
-                amount=net_proceeds,
-                idempotency_key=f"order:{order_id}:exit-proceeds",
-                details={"exit_price": exit_price, "exit_fee_per_contract": exit_fee},
-            )
+            if row["account_id"]:
+                self._record_ledger_event(
+                    conn, account_id=row["account_id"], order_id=order_id,
+                    event_type="EXIT_PROCEEDS", amount=net_proceeds,
+                    idempotency_key=f"order:{order_id}:exit-proceeds",
+                    details={"exit_price": exit_price, "exit_fee_per_contract": exit_fee},
+                )
         closed = self._order(order_id)
         if closed is None:
             raise RuntimeError(f"paper order {order_id} disappeared after close")
