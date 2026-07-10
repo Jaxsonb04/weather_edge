@@ -198,7 +198,7 @@ async function getJSON<T>(name: string, version: string | null): Promise<T> {
 }
 
 export function useDashboardData() {
-  const { versionForArtifact } = usePublication();
+  const { acknowledgeArtifactLoaded, versionForArtifact } = usePublication();
   const forecastVersion = versionForArtifact("forecast_data.json");
   const storyVersion = versionForArtifact("weather_story_data.json");
   const signalVersion = versionForArtifact("trading_signal.json");
@@ -214,20 +214,25 @@ export function useDashboardData() {
       getJSON<TradingSignal>("trading_signal.json", signalVersion),
     ])
       .then(([forecast, story, signal]) => {
-        if (alive) setData({ forecast, story, signal });
+        if (alive) {
+          setData({ forecast, story, signal });
+          acknowledgeArtifactLoaded("forecast_data.json", forecastVersion);
+          acknowledgeArtifactLoaded("weather_story_data.json", storyVersion);
+          acknowledgeArtifactLoaded("trading_signal.json", signalVersion);
+        }
       })
       .catch((e) => alive && setError(String(e)));
     return () => {
       alive = false;
     };
-  }, [forecastVersion, signalVersion, storyVersion]);
+  }, [acknowledgeArtifactLoaded, forecastVersion, signalVersion, storyVersion]);
 
   return { data, error };
 }
 
 /** Generic single-resource loader (used by the lazy Methodology / Strategy views). */
 export function useResource<T>(name: string) {
-  const { versionForArtifact } = usePublication();
+  const { acknowledgeArtifactLoaded, versionForArtifact } = usePublication();
   const version = versionForArtifact(name);
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -235,12 +240,17 @@ export function useResource<T>(name: string) {
     let alive = true;
     setError(null);
     getJSON<T>(name, version)
-      .then((d) => alive && setData(d))
+      .then((d) => {
+        if (alive) {
+          setData(d);
+          acknowledgeArtifactLoaded(name, version);
+        }
+      })
       .catch((e) => alive && setError(String(e)));
     return () => {
       alive = false;
     };
-  }, [name, version]);
+  }, [acknowledgeArtifactLoaded, name, version]);
   return { data, error };
 }
 
@@ -299,6 +309,14 @@ export function cityNextForecast(city: City): CityForecast | null {
     .filter((f) => typeof f?.predicted_high_f === "number" && !!f?.target_date)
     .sort((a, b) => a.target_date.localeCompare(b.target_date));
   if (!sorted.length) return null;
+  const hasPublishedStatuses = sorted.some((forecast) => forecast.target_status != null);
+  if (hasPublishedStatuses) {
+    return (
+      sorted.find((forecast) => forecast.target_status === "settlement_day") ??
+      sorted.find((forecast) => forecast.target_status === "upcoming") ??
+      null
+    );
+  }
   if (city.settlement_today) {
     const current = sorted.find((f) => f.target_date >= city.settlement_today!);
     if (current) return current;

@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
+import { PublicationLoaded } from "../../test/PublicationLoaded";
 import { StrategyPublicationNotice } from "./StrategyPublicationNotice";
 
 const publication = (generatedAt: string | null, status = "ready"): PublicationManifest => ({
@@ -32,6 +33,7 @@ describe("StrategyPublicationNotice", () => {
     fetchMock.mockResolvedValue(ok(payload));
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["strategy_research.json"]} />
         <StrategyPublicationNotice generatedAt={generatedAt} />
       </PublicationProvider>,
     );

@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 export type PublicationState = "fresh" | "stale" | "unknown";
 
@@ -29,6 +37,7 @@ export interface PublicationContextValue {
   strategy: PublicationFreshness;
   error: string | null;
   versionForArtifact: (name: string) => string | null;
+  acknowledgeArtifactLoaded: (name: string, version: string | null) => void;
 }
 
 const POLL_INTERVAL_MS = 60_000;
@@ -55,6 +64,7 @@ function isManifest(value: unknown): value is PublicationManifest {
 function freshnessFor(
   manifest: PublicationManifest | null,
   artifactNames: string[],
+  loadedArtifactVersions: Record<string, string>,
   maxAgeMinutes: number,
   now: number,
 ): PublicationFreshness {
@@ -64,6 +74,8 @@ function freshnessFor(
   for (const name of artifactNames) {
     const artifact = manifest.artifacts[name];
     if (!artifact || (artifact.status !== "ready" && artifact.status !== "preserved")) return UNKNOWN;
+    const expectedVersion = artifact.sha256 ?? manifest.snapshot_id;
+    if (!expectedVersion || loadedArtifactVersions[name] !== expectedVersion) return UNKNOWN;
     const iso = artifact.generated_at;
     if (typeof iso !== "string" || !iso) return UNKNOWN;
     const time = Date.parse(iso);
@@ -86,13 +98,26 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
   const [manifest, setManifest] = useState<PublicationManifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [loadedArtifactVersions, setLoadedArtifactVersions] = useState<Record<string, string>>({});
+
+  const acknowledgeArtifactLoaded = useCallback((name: string, version: string | null) => {
+    if (!version) return;
+    setLoadedArtifactVersions((current) =>
+      current[name] === version ? current : { ...current, [name]: version },
+    );
+  }, []);
 
   useEffect(() => {
     let alive = true;
+    let timer: number | undefined;
+    const controller = new AbortController();
 
     const refresh = async () => {
       try {
-        const response = await fetch(`${BASE}publication_manifest.json`, { cache: "no-store" });
+        const response = await fetch(`${BASE}publication_manifest.json`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (!response.ok) throw new Error(`publication_manifest.json: HTTP ${response.status}`);
         const payload: unknown = await response.json();
         if (!isManifest(payload)) throw new Error("publication_manifest.json: invalid manifest");
@@ -102,21 +127,25 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
           setNow(Date.now());
         }
       } catch (reason) {
-        if (alive) {
+        if (alive && !controller.signal.aborted) {
           setError(String(reason));
           setNow(Date.now());
+        }
+      } finally {
+        if (alive) {
+          timer = window.setTimeout(() => {
+            setNow(Date.now());
+            void refresh();
+          }, POLL_INTERVAL_MS);
         }
       }
     };
 
     void refresh();
-    const timer = window.setInterval(() => {
-      setNow(Date.now());
-      void refresh();
-    }, POLL_INTERVAL_MS);
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
 
@@ -134,19 +163,22 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
       operational: freshnessFor(
         manifest,
         ["trading_signal.json", "cities_data.json"],
+        loadedArtifactVersions,
         OPERATIONAL_MAX_AGE_MINUTES,
         now,
       ),
       strategy: freshnessFor(
         manifest,
         ["strategy_research.json"],
+        loadedArtifactVersions,
         STRATEGY_MAX_AGE_MINUTES,
         now,
       ),
       error,
       versionForArtifact: (name: string) => artifactHashes[name] ?? snapshotVersion,
+      acknowledgeArtifactLoaded,
     };
-  }, [error, manifest, now]);
+  }, [acknowledgeArtifactLoaded, error, loadedArtifactVersions, manifest, now]);
 
   return <PublicationContext.Provider value={value}>{children}</PublicationContext.Provider>;
 }

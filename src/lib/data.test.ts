@@ -39,6 +39,35 @@ describe("cityNextForecast", () => {
 
     expect(cityNextForecast(city)?.target_date).toBe("2026-07-07");
   });
+
+  it("uses published target status and never falls back to an explicitly past row", () => {
+    const city: City = {
+      slug: "sfo",
+      name: "San Francisco",
+      series_ticker: "KXHIGHTSFO",
+      forecasts: [
+        { target_date: "2026-07-07", target_status: "past", predicted_high_f: 65 },
+        { target_date: "2026-07-10", target_status: "upcoming", predicted_high_f: 69 },
+        { target_date: "2026-07-09", target_status: "settlement_day", predicted_high_f: 68 },
+      ],
+    };
+
+    expect(cityNextForecast(city)?.target_date).toBe("2026-07-09");
+  });
+
+  it("returns no current forecast when every status-aware row is past", () => {
+    const city: City = {
+      slug: "sfo",
+      name: "San Francisco",
+      series_ticker: "KXHIGHTSFO",
+      forecasts: [
+        { target_date: "2026-07-07", target_status: "past", predicted_high_f: 65 },
+        { target_date: "2026-07-08", target_status: "past", predicted_high_f: 67 },
+      ],
+    };
+
+    expect(cityNextForecast(city)).toBeNull();
+  });
 });
 
 describe("selectCurrentTargets", () => {

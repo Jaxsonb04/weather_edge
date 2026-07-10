@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
 import type { Target } from "../../lib/data";
 import { ForecastDial } from "./ForecastDial";
+import { PublicationLoaded } from "../../test/PublicationLoaded";
 
 const target = {
   target_date: "2026-07-09",
@@ -17,6 +18,21 @@ const target = {
     remaining_forecast_high_f: 68,
     observation_count: 3,
     latest_observed_at: "2026-07-09T11:55:00Z",
+  },
+} as unknown as Target;
+
+const targetWithConsensus = {
+  ...target,
+  market_consensus: {
+    available: true,
+    distribution: [],
+    implied_high_f: 67,
+    model_high_f: 68,
+    model_minus_market_f: 1,
+    modal_bin_label: "67 to 68",
+    modal_probability: 0.3,
+    implied_stdev_f: 2,
+    overround: 1,
   },
 } as unknown as Target;
 
@@ -46,21 +62,24 @@ describe("ForecastDial publication truthfulness", () => {
     fetchMock.mockReset();
   });
 
-  async function renderDial(generatedAt: string) {
+  async function renderDial(generatedAt: string, selectedTarget: Target = target) {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
-        <ForecastDial targets={[target]} />
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json"]} />
+        <ForecastDial targets={[selectedTarget]} />
       </PublicationProvider>,
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
   }
 
   it("does not claim the market or observations are live when publication is stale", async () => {
-    await renderDial("2026-07-07T12:00:00Z");
+    await renderDial("2026-07-07T12:00:00Z", targetWithConsensus);
 
     expect(screen.queryByText("Market live")).not.toBeInTheDocument();
     expect(screen.queryByText(/Live · 3 obs/)).not.toBeInTheDocument();
+    expect(screen.queryByText("vs market")).not.toBeInTheDocument();
+    expect(screen.queryByText(/market implies/i)).not.toBeInTheDocument();
     expect(screen.getByText("Current status unavailable")).toBeInTheDocument();
   });
 

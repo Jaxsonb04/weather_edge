@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
+import { PublicationLoaded } from "../../test/PublicationLoaded";
 import type { ProfileEntry, StrategyLab } from "../../lib/strategy";
 import { ProfileDashboard } from "./ProfileDashboard";
 
@@ -69,6 +70,7 @@ describe("ProfileDashboard publication truthfulness", () => {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["strategy_research.json"]} />
         <ProfileDashboard s={strategy} p={profile} />
       </PublicationProvider>,
     );

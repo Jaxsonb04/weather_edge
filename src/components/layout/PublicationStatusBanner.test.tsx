@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
 import { PublicationStatusBanner } from "./PublicationStatusBanner";
+import { PublicationLoaded } from "../../test/PublicationLoaded";
 
 const ok = (payload: unknown) =>
   ({ ok: true, status: 200, json: async () => payload }) as Response;
@@ -34,6 +35,7 @@ describe("PublicationStatusBanner", () => {
     fetchMock.mockResolvedValue(ok(payload));
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json"]} />
         <PublicationStatusBanner />
       </PublicationProvider>,
     );

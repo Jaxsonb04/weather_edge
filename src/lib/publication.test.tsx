@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, usePublication, type PublicationManifest } from "./publication";
+import { PublicationLoaded } from "../test/PublicationLoaded";
 
 const manifest = (generatedAt: string): PublicationManifest => ({
   schema_version: 1,
@@ -52,6 +53,7 @@ describe("PublicationProvider", () => {
 
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json", "strategy_research.json"]} />
         <Probe />
       </PublicationProvider>,
     );
@@ -71,6 +73,7 @@ describe("PublicationProvider", () => {
 
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json", "strategy_research.json"]} />
         <Probe />
       </PublicationProvider>,
     );
@@ -87,6 +90,7 @@ describe("PublicationProvider", () => {
 
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json", "strategy_research.json"]} />
         <Probe />
       </PublicationProvider>,
     );
@@ -107,6 +111,7 @@ describe("PublicationProvider", () => {
 
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json", "strategy_research.json"]} />
         <Probe />
       </PublicationProvider>,
     );
@@ -116,5 +121,27 @@ describe("PublicationProvider", () => {
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
 
     expect(screen.getByText("Signal hash").nextElementSibling).toHaveTextContent("signal-hash");
+  });
+
+  it("waits for each manifest request to finish before scheduling the next poll", async () => {
+    vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
+    let resolveFirst!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => { resolveFirst = resolve; }),
+    );
+
+    render(
+      <PublicationProvider>
+        <Probe />
+      </PublicationProvider>,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveFirst(ok(manifest("2026-07-09T11:59:00Z")));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    fetchMock.mockResolvedValue(ok(manifest("2026-07-09T12:00:00Z")));
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

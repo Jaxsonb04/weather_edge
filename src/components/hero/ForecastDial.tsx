@@ -81,7 +81,7 @@ export function ForecastDial({ targets }: { targets: Target[] }) {
             </motion.div>
           </AnimatePresence>
 
-          {delta != null && mc && (
+          {currentStateAvailable && delta != null && mc && (
             <div className="mb-1 text-right">
               <TrendChip trend={delta > 0.2 ? "up" : delta < -0.2 ? "down" : "neutral"} size="sm">
                 {delta > 0 ? "+" : ""}{f1(delta)}

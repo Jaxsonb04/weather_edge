@@ -1,6 +1,7 @@
 import { act, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
+import { PublicationLoaded } from "../../test/PublicationLoaded";
 import type { City } from "../../lib/data";
 import { CityDetail } from "./CityDetail";
 
@@ -57,6 +58,7 @@ describe("CityDetail publication truthfulness", () => {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json"]} />
         <CityDetail city={city} />
       </PublicationProvider>,
     );
