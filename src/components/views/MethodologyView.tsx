@@ -78,12 +78,13 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
   return (
     <>
       <PageHeader
+        headingId="methodology-page-title"
         icon="solar:graph-up-bold"
         eyebrow="Methodology & diagnostics"
         title="How the forecast is built and tested"
         sub="The production method is one pipeline in every city: a leakage-free nine-model NWP ensemble, EMOS-calibrated per station, settled on each city's own NWS Climatological Report. San Francisco layers flagship extras — an LSTM, a Google blend, and marine-layer features — on top of that shared base."
       />
-      <main className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
         <section className="scroll-mt-24">
           <SectionHeading
             index="01"
@@ -127,7 +128,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             </div>
           ) : (
             <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
-              <Icon icon="solar:refresh-bold" className="size-4 animate-spin" aria-hidden="true" />
+              <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
               <span className="text-sm">Loading diagnostics…</span>
             </div>
           )}
@@ -156,7 +157,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
           </Reveal>
           <AccuracyFinding data={data} />
         </section>
-      </main>
+      </div>
     </>
   );
 }

@@ -41,7 +41,7 @@ function CityCard({
       aria-pressed={isActive}
       aria-label={`Show ${city.name ?? "city"} detail`}
       onClick={onSelect}
-      className={`flex h-full w-full flex-col gap-2.5 rounded-2xl p-3.5 text-left ring-1 transition-[box-shadow,transform,background-color] duration-200 hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
+      className={`flex h-full w-full flex-col gap-2.5 rounded-2xl p-3.5 text-left ring-1 transition-[box-shadow,transform,background-color] duration-200 hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none motion-reduce:hover:translate-y-0 ${
         isActive
           ? "bg-accent-soft ring-2 ring-accent"
           : "bg-surface ring-border/70 hover:ring-border"

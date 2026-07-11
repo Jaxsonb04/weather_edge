@@ -30,4 +30,15 @@ describe("offline Iconify collection", () => {
       stdio: "pipe",
     })).not.toThrow();
   });
+
+  it("preserves Solar icon attribution in generated metadata and distributed notices", () => {
+    const generated = readFileSync(resolve(process.cwd(), "src/generated/icon-collection.ts"), "utf8");
+    const notices = readFileSync(resolve(process.cwd(), "THIRD_PARTY_NOTICES.md"), "utf8");
+
+    for (const source of [generated, notices]) {
+      expect(source).toContain("480 Design");
+      expect(source).toContain("CC BY 4.0");
+      expect(source).toContain("https://creativecommons.org/licenses/by/4.0/");
+    }
+  });
 });

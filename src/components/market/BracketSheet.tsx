@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { Button } from "@heroui/react/button";
 import { Chip } from "@heroui/react/chip";
 import { Separator } from "@heroui/react/separator";
 import { Sheet } from "@heroui-pro/react/sheet";
 import { Icon } from "@iconify/react/offline";
 import { pct, type Decision } from "../../lib/data";
+import { copyText } from "../../lib/clipboard";
 import { Stat } from "../ui/Stat";
 
 interface BracketSheetProps {
@@ -14,7 +16,7 @@ interface BracketSheetProps {
 
 /** Right-side detail drawer for one bracket — rendered into a portal by Sheet. */
 export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetProps) {
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
   return (
     <Sheet isOpen={isOpen} onOpenChange={onOpenChange} placement="right">
       <Sheet.Backdrop variant="blur">
@@ -57,13 +59,13 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                     <ul className="space-y-2">
                       {(decision.reasons ?? []).map((r, i) => (
                         <li key={i} className="flex gap-2 rounded-lg bg-surface-secondary p-2.5 text-xs text-muted ring-1 ring-border/40">
-                          <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                          <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
                           <span>{r}</span>
                         </li>
                       ))}
                       {!decision.reasons?.length && (
                         <li className="flex gap-2 text-xs text-success">
-                          <Icon icon="solar:shield-check-bold" className="size-4" /> All gates passed.
+                          <Icon icon="solar:shield-check-bold" className="size-4" aria-hidden="true" /> All gates passed.
                         </li>
                       )}
                     </ul>
@@ -74,15 +76,18 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                   <Button
                     variant="outline"
                     fullWidth
-                    onPress={() => {
-                      navigator.clipboard?.writeText(decision.ticker);
-                      setCopied(true);
-                      window.setTimeout(() => setCopied(false), 1_500);
+                    onPress={async () => {
+                      const copied = await copyText(decision.ticker);
+                      setCopyStatus(copied ? "success" : "error");
+                      if (copied) window.setTimeout(() => setCopyStatus("idle"), 1_500);
                     }}
                   >
-                    <Icon icon="solar:copy-bold" className="size-4" />
-                    <span aria-live="polite">{copied ? "Copied ticker" : "Copy ticker"}</span>
+                    <Icon icon="solar:copy-bold" className="size-4" aria-hidden="true" />
+                    <span>{copyStatus === "success" ? "Copied ticker" : "Copy ticker"}</span>
                   </Button>
+                  <p role="status" aria-live="polite" className={copyStatus === "error" ? "mt-2 text-xs text-danger" : "sr-only"}>
+                    {copyStatus === "error" ? `Couldn't copy the ticker. Select ${decision.ticker} above and copy it manually.` : copyStatus === "success" ? "Ticker copied." : ""}
+                  </p>
                 </Sheet.Footer>
               </>
             )}
@@ -92,4 +97,3 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
     </Sheet>
   );
 }
-import { useState } from "react";

@@ -139,6 +139,18 @@ bun install --frozen-lockfile # HeroUI Pro registry auth required (HEROUI_PERSON
 bun run build # outputs dist/
 ```
 
+Before releasing a new SPA build, capture the initial hard-load resource list
+with browser automation and run both bundle views. The manifest report is
+structural only; the browser-observed gate is the runtime proof:
+
+```bash
+bun run bundle:report
+bun run bundle:check:observed -- /tmp/weatheredge-initial-resources.txt
+```
+
+The observed list must come from the same `dist/` build. The gate rejects stale
+chunk hashes and enforces the initial JS/CSS budgets.
+
 Production serves the prebuilt app from `/opt/weatheredge/webdist` on the EC2
 box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
 the `gh-pages` branch with the freshly generated data JSONs

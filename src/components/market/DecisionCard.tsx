@@ -32,7 +32,7 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
           <span className="shrink-0">Quality</span>
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/10">
             <div
-              className="h-full rounded-full transition-[width] duration-700 ease-out"
+              className="h-full rounded-full transition-[width] duration-700 ease-out motion-reduce:transition-none"
               style={{ width: `${Math.min(100, Math.max(0, d.trade_quality_score))}%`, background: qualityColor(d.trade_quality_score) }}
             />
           </div>

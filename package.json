@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "bundle:report": "node scripts/report_spa_bundle.mjs",
+    "bundle:check:observed": "node scripts/report_spa_bundle.mjs --observed",
     "icons:generate": "node scripts/generate_icon_collection.mjs",
     "icons:check": "node scripts/generate_icon_collection.mjs --check",
     "lint": "oxlint",
@@ -63,7 +64,6 @@
     "vitest": "^4.1.10"
   },
   "trustedDependencies": [
-    "heroui-pro",
     "@heroui-pro/react"
   ]
 }

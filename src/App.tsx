@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Icon } from "@iconify/react/offline";
 import { useDashboardData } from "./lib/data";
 import { useTheme } from "./lib/theme";
-import { useHashRoute } from "./lib/useHashRoute";
+import { ROUTES, useHashRoute } from "./lib/useHashRoute";
 import { TopBar } from "./components/layout/TopBar";
 import { PublicationStatusBanner } from "./components/layout/PublicationStatusBanner";
 import { Footer } from "./components/Footer";
@@ -25,7 +25,7 @@ const DISCLAIMER = "Paper-trading research only. No live orders are ever placed.
 function ViewLoader() {
   return (
     <div role="status" aria-live="polite" className="flex min-h-[60vh] items-center justify-center gap-2 text-muted">
-      <Icon icon="solar:refresh-bold" className="size-4 animate-spin" aria-hidden="true" />
+      <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
       <span className="text-sm">Loading…</span>
     </div>
   );
@@ -36,13 +36,25 @@ export default function App() {
   const { mode, toggle } = useTheme();
   const { route, navigate } = useHashRoute();
   const [cmdOpen, setCmdOpen] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
 
-  // SPA focus management: move focus to the new view on route change (not on first mount).
-  const contentRef = useRef<HTMLDivElement>(null);
+  // SPA focus management: move focus to the route heading after navigation,
+  // including after a lazy route chunk finishes rendering.
   const mounted = useRef(false);
   useEffect(() => {
-    if (mounted.current) contentRef.current?.focus({ preventScroll: true });
-    else mounted.current = true;
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    let attempts = 0;
+    let timer = 0;
+    const focusHeading = () => {
+      const heading = document.getElementById(`${route}-page-title`);
+      if (heading) heading.focus({ preventScroll: true });
+      else if (attempts++ < 50) timer = window.setTimeout(focusHeading, 20);
+    };
+    timer = window.setTimeout(focusHeading, 0);
+    return () => window.clearTimeout(timer);
   }, [route]);
 
   useEffect(() => {
@@ -58,6 +70,17 @@ export default function App() {
 
   return (
     <div className="grain flex min-h-screen flex-col bg-background text-foreground">
+      <a
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          mainRef.current?.focus({ preventScroll: true });
+          mainRef.current?.scrollIntoView?.();
+        }}
+        className="fixed left-4 top-3 z-50 -translate-y-20 rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background no-underline shadow-lg transition-transform duration-150 focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none"
+      >
+        Skip to main content
+      </a>
       <TopBar
         mode={mode}
         onToggleTheme={toggle}
@@ -80,10 +103,13 @@ export default function App() {
         </Suspense>
       )}
 
-      <div
-        ref={contentRef}
+      <main
+        ref={mainRef}
+        id="main-content"
         tabIndex={-1}
-        className="flex-1 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--focus)]"
+        aria-label={`${ROUTES.find((item) => item.id === route)?.label ?? "WeatherEdge"} content`}
+        aria-labelledby={`${route}-page-title`}
+        className="flex-1"
       >
         {route === "lab" ? (
           <ErrorBoundary key={route}>
@@ -108,7 +134,7 @@ export default function App() {
             </Suspense>
           </ErrorBoundary>
         )}
-      </div>
+      </main>
 
       <Footer disclaimer={data?.signal.disclaimer ?? DISCLAIMER} repoUrl={REPO} liveUrl={LIVE} />
     </div>

@@ -80,7 +80,7 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
   const flagshipTarget = currentTargets[0];
 
   return (
-      <main className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
         {hasPastDueTargets && (
           <div className="pt-5">
             <TargetStatusWarning targets={signal.targets ?? []} />
@@ -143,6 +143,6 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
             <SystemHighlights />
           </Reveal>
         </section>
-      </main>
+      </div>
   );
 }

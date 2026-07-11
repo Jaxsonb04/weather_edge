@@ -48,7 +48,7 @@ function Metric({ m }: { m: Metric }) {
   return (
     <KPI className="min-w-[9.5rem] flex-1 bg-transparent px-3 py-2 ring-0">
       <KPI.Header className="gap-1.5">
-        <Icon icon={m.icon} className="size-3.5 text-accent" />
+        <Icon icon={m.icon} className="size-3.5 text-accent" aria-hidden="true" />
         <KPI.Title className="text-xs">{m.title}</KPI.Title>
       </KPI.Header>
       <KPI.Content className="mt-1">

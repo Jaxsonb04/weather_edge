@@ -2,6 +2,7 @@ import { Icon } from "@iconify/react/offline";
 import { Reveal } from "./Reveal";
 
 interface PageHeaderProps {
+  headingId: string;
   eyebrow: string;
   title: string;
   sub: string;
@@ -9,7 +10,7 @@ interface PageHeaderProps {
 }
 
 /** Hero-less page header for the secondary routes (Methodology / Strategy Lab). */
-export function PageHeader({ eyebrow, title, sub, icon }: PageHeaderProps) {
+export function PageHeader({ eyebrow, title, sub, icon, headingId }: PageHeaderProps) {
   return (
     <header className="hero-glow relative overflow-hidden border-b border-border/60">
       <div className="grid-lines pointer-events-none absolute inset-0 opacity-40" />
@@ -17,13 +18,13 @@ export function PageHeader({ eyebrow, title, sub, icon }: PageHeaderProps) {
         <Reveal immediate>
           <div className="mb-3 flex items-center gap-2.5">
             <span className="grid size-7 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
-              <Icon icon={icon} className="size-4" />
+              <Icon icon={icon} className="size-4" aria-hidden="true" />
             </span>
             <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
               {eyebrow}
             </span>
           </div>
-          <h1 className="max-w-3xl font-display text-[2.2rem] font-bold leading-[1.05] tracking-tight text-balance sm:text-5xl">
+          <h1 id={headingId} tabIndex={-1} className="scroll-mt-24 max-w-3xl font-display text-[2.2rem] font-bold leading-[1.05] tracking-tight text-balance focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)] sm:text-5xl">
             {title}
           </h1>
           <p className="mt-4 max-w-2xl text-pretty text-base leading-relaxed text-muted">{sub}</p>

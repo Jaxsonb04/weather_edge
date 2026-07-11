@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "../ui/LinkButton";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
@@ -18,11 +18,42 @@ const iconButton =
 
 export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liveUrl }: TopBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileNavRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const nav = mobileNavRef.current;
+    const links = nav ? [...nav.querySelectorAll<HTMLAnchorElement>("a[href]")] : [];
+    links[0]?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+        return;
+      }
+      if (event.key !== "Tab" || links.length === 0) return;
+      const first = links[0];
+      const last = links[links.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-xl">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-5 sm:px-8">
         <button
+          ref={menuButtonRef}
           type="button"
           aria-label={menuOpen ? "Close menu" : "Open menu"}
           aria-expanded={menuOpen}
@@ -91,7 +122,7 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
       </div>
 
       {menuOpen && (
-        <nav id="mobile-navigation" aria-label="Mobile navigation" className="border-t border-border/60 px-5 py-3 lg:hidden">
+        <nav ref={mobileNavRef} id="mobile-navigation" aria-label="Mobile navigation" className="border-t border-border/60 px-5 py-3 lg:hidden">
           <ul className="mx-auto grid w-full max-w-6xl gap-1">
             {ROUTES.map((item) => (
               <li key={item.id}>

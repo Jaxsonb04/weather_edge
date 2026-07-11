@@ -28,7 +28,7 @@ export function Hero({ targets }: HeroProps) {
           </Reveal>
 
           <Reveal immediate delay={0.08}>
-            <h1 className="font-display text-[2.6rem] font-bold leading-[1.02] tracking-tight text-balance sm:text-6xl">
+            <h1 id="overview-page-title" tabIndex={-1} className="scroll-mt-24 font-display text-[2.6rem] font-bold leading-[1.02] tracking-tight text-balance focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)] sm:text-6xl">
               Forecasting <span className="temp-text">daily highs in fifteen cities</span>, priced on prediction markets.
             </h1>
           </Reveal>

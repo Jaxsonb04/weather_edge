@@ -136,7 +136,7 @@ function LiveStatusStrip({ s }: { s: StrategyLab }) {
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
         <span className="flex items-center gap-2">
           <span className="relative flex size-2" aria-hidden="true">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60" />
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
             <span className="relative inline-flex size-2 rounded-full bg-success" />
           </span>
           <span className="text-xs font-semibold text-foreground">Paper engine live</span>
@@ -247,17 +247,18 @@ export default function StrategyLabView() {
   return (
     <>
       <PageHeader
+        headingId="lab-page-title"
         icon="solar:test-tube-bold"
         eyebrow="Strategy Lab"
         title="Paper-trading results"
         sub="Two risk profiles run in parallel on the same signals: a strict real-money candidate and a looser experimental book. Below is each book's performance, the filters that reject most signals, per-book signal quality and exits, and the checklist the system must pass before any real capital is allowed. Generated directly by the AWS runtime."
       />
-      <main className="mx-auto w-full max-w-6xl px-5 pb-28 pt-10 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-28 pt-10 sm:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
         {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Couldn't load the Strategy Lab — {error}</div>}
         {!error && !s && (
           <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
-            <Icon icon="solar:refresh-bold" className="size-4 animate-spin" aria-hidden="true" />
+            <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             <span className="text-sm">Loading paper-trading research…</span>
           </div>
         )}
@@ -344,7 +345,7 @@ export default function StrategyLabView() {
             </section>
           </>
         )}
-      </main>
+      </div>
     </>
   );
 }
