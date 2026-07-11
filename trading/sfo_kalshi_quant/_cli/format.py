@@ -253,11 +253,12 @@ def _print_portfolio_scan(
     print(color.gray("sleeve            side label          bid   ask    p   p_lcb  edge edge_lcb q     contracts spend    decision"))
     print(color.gray("-" * 124))
     sleeve_by_key = {
-        _portfolio_decision_key(leg.decision): leg.sleeve
+        (str(leg.decision.ticker), str(leg.decision.side).upper()): leg.sleeve
         for leg in plan.legs
     }
     for decision in decisions:
-        sleeve = sleeve_by_key.get(_portfolio_decision_key(decision), "-")
+        decision_key = (str(decision.ticker), str(decision.side).upper())
+        sleeve = sleeve_by_key.get(decision_key, "-")
         status_text = color.green("TRADE") if decision.approved else color.red("NO")
         reason = "" if decision.approved else color.gray("; ".join(decision.reasons[:2]))
         spend = decision.recommended_contracts * decision.cost_per_contract

@@ -1,7 +1,8 @@
 """Direct contract tests for the CLI's extracted domain modules."""
 
-from types import SimpleNamespace
 from collections.abc import Callable
+from datetime import date
+from types import SimpleNamespace
 from typing import get_type_hints
 
 
@@ -12,6 +13,66 @@ def test_format_module_owns_pnl_formatting() -> None:
     assert _format_pnl(12.345) == "$12.35"
     assert _format_pnl(-0.5) == "$-0.50"
     assert _format_pnl.__module__ == "sfo_kalshi_quant._cli.format"
+
+
+def test_format_module_renders_a_portfolio_without_scan_module_globals(capsys) -> None:
+    from sfo_kalshi_quant._cli.format import _print_portfolio_scan
+    from sfo_kalshi_quant.colors import Color
+
+    forecast = SimpleNamespace(
+        target_date=date(2026, 7, 11),
+        predicted_high_f=70.0,
+        source_spread_f=1.0,
+        method="test",
+        lead_hours=None,
+        fresh_station_count=None,
+        raw={},
+        calls_used_today=None,
+        max_calls_per_day=None,
+        google_weight=None,
+        nws_weight=None,
+        open_meteo_weight=None,
+        history_weight=None,
+    )
+    decision = SimpleNamespace(
+        ticker="TEST",
+        side="YES",
+        label="70° or above",
+        bid=0.4,
+        ask=0.5,
+        probability=0.6,
+        probability_lcb=0.5,
+        edge=0.1,
+        edge_lcb=0.0,
+        trade_quality_score=50.0,
+        recommended_contracts=0.0,
+        cost_per_contract=0.5,
+        approved=False,
+        reasons=["test rejection"],
+    )
+    plan = SimpleNamespace(
+        approved=False,
+        run_id="test-run",
+        total_spend=0.0,
+        expected_profit=0.0,
+        worst_case_loss=0.0,
+        risk_profile="live",
+        limits=SimpleNamespace(max_daily_loss=10.0, yes_sleeve=2.0, explore_sleeve=0.0),
+        reasons=[],
+        legs=[],
+    )
+
+    _print_portfolio_scan(
+        "Test event",
+        forecast,
+        plan,
+        [decision],
+        placed_ids=[],
+        market_available=True,
+        color=Color(enabled=False),
+    )
+
+    assert "TEST" not in capsys.readouterr().out
 
 
 def test_monitor_module_owns_fill_model_and_exit_loop() -> None:
