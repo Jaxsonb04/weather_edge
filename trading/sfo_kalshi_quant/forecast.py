@@ -4,12 +4,12 @@ import json
 import math
 import sqlite3
 from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Iterable
 
 from .cities import CityConfig, get_city
-from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ
+from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ, intraday_timezone_for_city
 from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
 from .settlement_truth import load_cli_settlement_truth
@@ -207,7 +207,10 @@ class SfoForecasterAdapter:
         if intraday.remaining_forecast_high_f is not None:
             candidates.append(intraday.remaining_forecast_high_f)
         intraday_anchor = max(candidates)
-        weight = _intraday_weight(intraday.latest_observed_at)
+        weight = _intraday_weight(
+            intraday.latest_observed_at,
+            intraday_timezone_for_city(self.city),
+        )
         adjusted_high = max(
             intraday_anchor,
             weight * intraday_anchor + (1.0 - weight) * forecast.predicted_high_f,
@@ -727,12 +730,15 @@ def _cache_daily_high(cache: dict, target: date) -> dict | None:
     return None
 
 
-def _intraday_weight(observed_at: str | None) -> float:
+def _intraday_weight(
+    observed_at: str | None,
+    standard_timezone: tzinfo = SFO_TZ,
+) -> float:
     if not observed_at:
         return 0.55
     try:
         observed_dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-        local_hour = observed_dt.astimezone(SFO_TZ).hour
+        local_hour = observed_dt.astimezone(standard_timezone).hour
     except ValueError:
         return 0.55
     if local_hour < 10:

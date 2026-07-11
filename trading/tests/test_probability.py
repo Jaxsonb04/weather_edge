@@ -1,12 +1,15 @@
 from dataclasses import replace
 from datetime import date, timedelta
 
-from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.cities import get_city
+from sfo_kalshi_quant.config import StrategyConfig, intraday_timezone_for_city
 from sfo_kalshi_quant.models import ForecastOutcome, IntradaySnapshot
 from sfo_kalshi_quant.probability import (
     ResidualCalibrator,
     _market_implied_probabilities,
     _market_prior_reliability,
+    _intraday_probability_model,
+    _local_decimal_hour,
     _model_weight,
     _normalize_weather_probabilities,
 )
@@ -101,6 +104,43 @@ def test_intraday_near_boundary_before_peak_shifts_probability_to_next_bin():
     assert current.remaining_heat_risk is not None
     assert current.remaining_heat_risk > 0.50
     assert next_bin.probability > current.probability
+
+
+def test_intraday_model_uses_city_fixed_standard_time_for_diurnal_state():
+    """18Z is 13:00 EST in NYC, independent of summer DST."""
+
+    config = StrategyConfig(min_conditional_samples=20)
+    intraday = IntradaySnapshot(
+        target_date=date(2026, 7, 10),
+        observed_high_f=68.0,
+        latest_temp_f=68.0,
+        latest_observed_at="2026-07-10T18:00:00+00:00",
+        remaining_forecast_high_f=68.0,
+        forecast_fetched_at="2026-07-10T17:45:00+00:00",
+    )
+    nyc_tz = intraday_timezone_for_city(get_city("nyc"))
+    sfo_tz = intraday_timezone_for_city(get_city("sfo"))
+
+    nyc = _intraday_probability_model(
+        standard_sfo_bins(), 68.0, intraday, config=config, standard_timezone=nyc_tz
+    )
+    sfo = _intraday_probability_model(
+        standard_sfo_bins(), 68.0, intraday, config=config, standard_timezone=sfo_tz
+    )
+
+    assert _local_decimal_hour(intraday.latest_observed_at, nyc_tz) == 13.0
+    assert _local_decimal_hour(intraday.latest_observed_at, sfo_tz) == 11.0
+    assert _local_decimal_hour(
+        intraday.latest_observed_at, get_city("den").fixed_standard_timezone()
+    ) == 11.0
+    assert nyc is not None and sfo is not None
+    assert nyc.sigma_f == 0.9
+    assert sfo.sigma_f == 1.1
+    assert nyc.blend_weight == 0.55
+    assert sfo.blend_weight == 0.4
+    assert nyc.remaining_heat_risk is not None
+    assert sfo.remaining_heat_risk is not None
+    assert nyc.remaining_heat_risk < sfo.remaining_heat_risk
 
 
 def test_market_prior_uses_yes_and_no_book_bounds():

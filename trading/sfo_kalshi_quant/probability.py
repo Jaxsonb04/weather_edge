@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Iterable
 
 from .config import SFO_TZ, StrategyConfig
@@ -99,6 +99,7 @@ class ResidualCalibrator:
         ensemble: EnsembleSnapshot | None = None,
         intraday: IntradaySnapshot | None = None,
         emos_mu_sigma: tuple[float, float] | None = None,
+        standard_timezone: tzinfo = SFO_TZ,
     ) -> dict[str, BucketProbability]:
         if observed_high_f is None and intraday is not None:
             observed_high_f = intraday.observed_high_f
@@ -203,6 +204,7 @@ class ResidualCalibrator:
             intraday_center,
             intraday,
             config=self.config,
+            standard_timezone=standard_timezone,
         )
         if intraday_model is not None:
             blended_weather_probs: list[tuple[MarketBin, float, float, float, float | None]] = []
@@ -364,6 +366,7 @@ def _intraday_probability_model(
     intraday: IntradaySnapshot | None,
     *,
     config: StrategyConfig,
+    standard_timezone: tzinfo = SFO_TZ,
 ) -> IntradayProbabilityModel | None:
     if intraday is None or intraday.observed_high_f is None:
         return None
@@ -381,7 +384,7 @@ def _intraday_probability_model(
             remaining_heat_risk=0.0,
         )
 
-    local_hour = _local_decimal_hour(intraday.latest_observed_at)
+    local_hour = _local_decimal_hour(intraday.latest_observed_at, standard_timezone)
     climatology_upside_f = _climatological_remaining_heat_f(local_hour)
     # Center on the forecast-based estimates (the model's actual expectation for
     # the day's high), with observed-so-far as a hard lower bound. The old code
@@ -498,14 +501,17 @@ def _upper_boundary_gap(markets: list[MarketBin], observed_high_f: float) -> flo
     return None
 
 
-def _local_decimal_hour(observed_at: str | None) -> float | None:
+def _local_decimal_hour(
+    observed_at: str | None,
+    standard_timezone: tzinfo = SFO_TZ,
+) -> float | None:
     if not observed_at:
         return None
     try:
         observed_dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
     except ValueError:
         return None
-    local = observed_dt.astimezone(SFO_TZ)
+    local = observed_dt.astimezone(standard_timezone)
     return local.hour + local.minute / 60.0
 
 

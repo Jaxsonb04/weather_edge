@@ -1,4 +1,5 @@
 import io
+import json
 import sqlite3
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -1063,6 +1064,101 @@ def test_place_arbitrage_blocks_when_market_already_has_open_position():
 
         assert trader.place_arbitrage("2026-06-03", box, bankroll=1000.0) == []
         assert len(store.open_paper_orders(10)) == 1
+
+
+def test_place_arbitrage_preflight_rejects_existing_resting_limit_before_any_leg():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, risk_profile="research")
+        market = MarketBin(
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            event_ticker="KXHIGHTSFO-TEST",
+            title="SFO high 68 to 69",
+            yes_sub_title="68° to 69°",
+            strike_type="between",
+            floor_strike=68,
+            cap_strike=69,
+            yes_bid=0.44,
+            yes_ask=0.45,
+            no_bid=0.47,
+            no_ask=0.48,
+            yes_bid_size=20.0,
+            yes_ask_size=20.0,
+            status="active",
+        )
+        box = next(
+            opportunity
+            for opportunity in build_arbitrage_opportunities(
+                [market],
+                config=StrategyConfig(max_event_risk_pct=0.50),
+                bankroll=1000.0,
+            )
+            if opportunity.kind == "BOX_YES_NO"
+        )
+        resting = box.decisions[0]
+        assert store.record_paper_order(
+            "2026-06-03",
+            resting,
+            risk_profile="research",
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+        ) is not None
+
+        assert trader.place_arbitrage("2026-06-03", box, bankroll=1000.0) == []
+        rows = store.paper_orders(10)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "PAPER_LIMIT_RESTING"
+
+
+def test_place_arbitrage_compensates_first_leg_when_second_leg_races():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, risk_profile="research")
+        market = MarketBin(
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            event_ticker="KXHIGHTSFO-TEST",
+            title="SFO high 68 to 69",
+            yes_sub_title="68° to 69°",
+            strike_type="between",
+            floor_strike=68,
+            cap_strike=69,
+            yes_bid=0.44,
+            yes_ask=0.45,
+            no_bid=0.47,
+            no_ask=0.48,
+            yes_bid_size=20.0,
+            yes_ask_size=20.0,
+            status="active",
+        )
+        box = next(
+            opportunity
+            for opportunity in build_arbitrage_opportunities(
+                [market],
+                config=StrategyConfig(max_event_risk_pct=0.50),
+                bankroll=1000.0,
+            )
+            if opportunity.kind == "BOX_YES_NO"
+        )
+        original_record = store.record_paper_order
+        calls = 0
+
+        def race_on_second_leg(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return None
+            return original_record(*args, **kwargs)
+
+        with patch.object(store, "record_paper_order", side_effect=race_on_second_leg):
+            assert trader.place_arbitrage("2026-06-03", box, bankroll=1000.0) == []
+
+        rows = store.paper_orders(10)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "PAPER_CLOSED"
+        assert rows[0]["closed_at"] is not None
+        assert str(rows[0]["group_id"]).startswith("DEGRADED-ARB-")
+        assert json.loads(rows[0]["outcome_diagnostics_json"])["event"] == "arbitrage_compensation"
+        assert store.open_paper_orders(10) == []
 
 
 def test_place_approved_keeps_profiles_in_separate_paper_books():

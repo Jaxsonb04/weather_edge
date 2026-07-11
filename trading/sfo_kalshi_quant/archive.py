@@ -376,14 +376,21 @@ def _first_day(conn: sqlite3.Connection, table: str, merge_schemas: list[str]) -
     for schema in ["main", *merge_schemas]:
         if not _table_columns(conn, schema, table):
             continue
-        # created_at is monotone with id, so the lowest rowid carries the
-        # earliest day — O(1) instead of a full MIN() scan of a growing table.
         row = conn.execute(
-            f"SELECT created_at FROM {schema}.{table} ORDER BY id LIMIT 1"
+            f"SELECT MIN(created_at) FROM {schema}.{table}"
         ).fetchone()
         if row and row[0]:
             days.append(str(row[0])[:10])
     return min(days) if days else None
+
+
+def _source_day_count(conn: sqlite3.Connection, table: str, day: str) -> int:
+    next_day = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM main.{table} WHERE created_at >= ? AND created_at < ?",
+        (day, next_day),
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def archive_pending(
@@ -429,6 +436,21 @@ def archive_pending(
                 result = export_day(
                     conn, table, day, archive_dir, merge_schemas, id_floor=floor
                 )
+                if not merge_schemas:
+                    source_rows = _source_day_count(conn, table, day)
+                    if result.rows != source_rows and floor is not None:
+                        # A backdated/high-id insert disproves the monotone-id
+                        # optimization. Re-run this partition without the floor
+                        # before the incomplete file can enter the manifest.
+                        result = export_day(
+                            conn, table, day, archive_dir, merge_schemas, id_floor=None
+                        )
+                    if result.rows != source_rows:
+                        raise RuntimeError(
+                            f"archive coverage mismatch for {table} {day}: "
+                            f"source has {source_rows} rows, export has {result.rows}; "
+                            "refusing to record an incomplete archive"
+                        )
                 if result.max_id is not None:
                     floor = result.max_id if floor is None else max(floor, result.max_id)
                 _record(manifest, result, archive_dir, "day")
@@ -475,13 +497,30 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
     yesterday = _utc_today() - timedelta(days=1)
     missing: list[tuple[str, str]] = []
     try:
+        manifest_columns = {
+            str(row[1]) for row in manifest.execute("PRAGMA table_info(archive_files)")
+        }
+        if "rows" not in manifest_columns:
+            raise RuntimeError(
+                "archive manifest lacks verified row counts; re-export complete UTC-day "
+                "partitions before running --check-gate"
+            )
         for table in STREAM_TABLES:
             first = _first_day(conn, table, [])
             if first is None:
                 continue
-            done = _manifest_days(manifest, table)
+            coverage = {
+                str(day): int(rows)
+                for day, rows in manifest.execute(
+                    "SELECT day, rows FROM archive_files "
+                    "WHERE table_name = ? AND kind = 'day'",
+                    (table,),
+                )
+                if rows is not None
+            }
             for day in _day_range(date.fromisoformat(first), yesterday):
-                if day not in done:
+                source_rows = _source_day_count(conn, table, day)
+                if day not in coverage or coverage[day] != source_rows:
                     missing.append((table, day))
     finally:
         conn.close()

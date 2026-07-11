@@ -4,6 +4,8 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from sfo_kalshi_quant.archive import (
     archive_pending,
     build_features,
@@ -136,6 +138,63 @@ def test_gate_blocks_until_every_day_is_archived(tmp_path: Path) -> None:
     assert ("decision_snapshots", _utc_day(1)) in gate_missing_days(
         tmp_path / "paper.db", archive_dir
     )
+
+
+def test_archive_id_floor_does_not_omit_lower_id_from_later_created_day(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    older = _utc_day(2)
+    newer = _utc_day(1)
+    first_old = _insert_decision(
+        conn, created_at=f"{older}T08:00:00+00:00", target_date=older
+    )
+    newer_id = _insert_decision(
+        conn, created_at=f"{newer}T08:00:00+00:00", target_date=newer
+    )
+    backdated_high_id = _insert_decision(
+        conn, created_at=f"{older}T09:00:00+00:00", target_date=older
+    )
+    assert first_old < newer_id < backdated_high_id
+
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    newer_rows = _read_archive(
+        archive_dir / "decision_snapshots" / f"dt={newer}.jsonl.gz"
+    )
+    assert [row["id"] for row in newer_rows] == [newer_id]
+    assert gate_missing_days(tmp_path / "paper.db", archive_dir) == []
+
+
+def test_gate_blocks_when_backdated_row_outgrows_manifest_coverage(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    _insert_decision(conn, created_at=f"{day}T09:00:00+00:00", target_date=day)
+
+    assert ("decision_snapshots", day) in gate_missing_days(
+        tmp_path / "paper.db", archive_dir
+    )
+
+
+def test_gate_rejects_legacy_manifest_without_row_counts_with_reexport_guidance(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    _insert_decision(conn)
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "CREATE TABLE archive_files ("
+            "table_name TEXT, day TEXT, kind TEXT, path TEXT, "
+            "PRIMARY KEY (table_name, day, kind))"
+        )
+
+    with pytest.raises(RuntimeError, match="re-export"):
+        gate_missing_days(tmp_path / "paper.db", archive_dir)
 
 
 def test_merge_sources_recover_pruned_rows_by_id(tmp_path: Path) -> None:

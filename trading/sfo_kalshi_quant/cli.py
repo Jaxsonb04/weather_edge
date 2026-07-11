@@ -14,7 +14,7 @@ from .backtest import run_walk_forward_calibration_backtest
 from .backtest_rescore import run_rescore
 from .arbitrage import ArbitrageOpportunity, build_arbitrage_opportunities
 from .colors import Color
-from .cities import CITIES, CityConfig, get_city, parse_city_slugs
+from .cities import CITIES, CityConfig, city_for_market_ticker, get_city, parse_city_slugs
 from .config import (
     DEFAULT_DB_PATH,
     DEFAULT_FORECASTER_ROOT,
@@ -22,6 +22,7 @@ from .config import (
     SERIES_TICKER,
     StrategyConfig,
     config_for_city,
+    intraday_timezone_for_city,
     normalize_risk_profile_name,
     strategy_config_for_profile,
 )
@@ -139,6 +140,13 @@ def _env_float_default(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1353,6 +1361,7 @@ def _analyze_one_target(
         ensemble=ensemble,
         intraday=intraday,
         emos_mu_sigma=emos_lookup.get(target),
+        standard_timezone=intraday_timezone_for_city(city),
     )
     # The market's de-vigged bin ladder distilled into a consensus forecast
     # (implied high, distribution, confidence). Surfaced below and, when the
@@ -1538,6 +1547,7 @@ def _portfolio_scan_one_target(
         ensemble=ensemble,
         intraday=intraday,
         emos_mu_sigma=emos_lookup.get(target),
+        standard_timezone=intraday_timezone_for_city(city),
     )
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
@@ -1634,25 +1644,12 @@ def _portfolio_scan_one_target(
 
     placed_ids: list[int] = []
     if args.place_paper and entry_allowed and plan.approved:
-        for opportunity in plan.arbitrage_opportunities:
-            placed_ids.extend(
-                paper_trader.place_arbitrage(
-                    target.isoformat(),
-                    opportunity,
-                    bankroll=paper_bankroll,
-                )
-            )
-        directional = [
-            leg.decision
-            for leg in plan.legs
-            if leg.sleeve != "arbitrage"
-        ]
-        placed_ids.extend(
-            paper_trader.place_approved(
-                target.isoformat(),
-                directional,
-                bankroll=paper_bankroll,
-            )
+        placed_ids = _place_portfolio_orders(
+            paper_trader,
+            target.isoformat(),
+            plan,
+            bankroll=paper_bankroll,
+            warn=lambda message: print(color.yellow(message), file=sys.stderr),
         )
 
     _print_portfolio_scan(
@@ -1668,6 +1665,46 @@ def _portfolio_scan_one_target(
         entry_block_reason=entry_block_reason,
         consensus=consensus,
     )
+
+
+def _place_portfolio_orders(
+    paper_trader: PaperTrader,
+    target_date: str,
+    plan: PortfolioPlan,
+    *,
+    bankroll: float,
+    warn=print,
+) -> list[int]:
+    """Place one plan while containing an individual arbitrage-group failure."""
+
+    placed_ids: list[int] = []
+    for opportunity in plan.arbitrage_opportunities:
+        try:
+            placed_ids.extend(
+                paper_trader.place_arbitrage(
+                    target_date,
+                    opportunity,
+                    bankroll=bankroll,
+                )
+            )
+        except Exception as exc:
+            warn(
+                f"arbitrage group skipped after contained placement failure: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    directional = [
+        leg.decision
+        for leg in plan.legs
+        if leg.sleeve != "arbitrage"
+    ]
+    placed_ids.extend(
+        paper_trader.place_approved(
+            target_date,
+            directional,
+            bankroll=bankroll,
+        )
+    )
+    return placed_ids
 
 
 def _arbitrage_one_target(
@@ -1844,6 +1881,7 @@ def _tail_basket_one_target(
         ensemble=ensemble,
         intraday=intraday,
         emos_mu_sigma=emos_lookup.get(target),
+        standard_timezone=intraday_timezone_for_city(city),
     )
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
@@ -2738,6 +2776,81 @@ def _same_day_no_basket_veto_reason(
     )
 
 
+def _refresh_same_day_model_reads(
+    store: PaperStore,
+    rows,
+    *,
+    forecaster_root: Path,
+    log=print,
+) -> int:
+    """Journal fresh model reads for open same-day positions, never entries.
+
+    The regular scanner deliberately stops considering today's event after the
+    fixed-standard 14:00 entry cutoff.  When explicitly enabled, the monitor
+    keeps only the probability journal alive for positions that are already
+    open, using the latest EMOS distribution and station high-so-far.  No trade
+    evaluator or PaperTrader is constructed on this path.
+    """
+
+    groups: dict[tuple[str, str, str, str], tuple[CityConfig, date]] = {}
+    for row in rows:
+        ticker = str(row["market_ticker"])
+        city = city_for_market_ticker(ticker)
+        if city is None:
+            continue
+        try:
+            target = date.fromisoformat(str(row["target_date"]))
+        except ValueError:
+            continue
+        local_now = settlement_clock(city=city)
+        if (
+            target != local_now.date()
+            or local_now.hour < _same_day_entry_cutoff_hour()
+        ):
+            continue
+        event_ticker = ticker.rsplit("-", 1)[0]
+        profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
+        groups[(city.slug, target.isoformat(), event_ticker, profile)] = (city, target)
+
+    written = 0
+    for (_slug, target_iso, event_ticker, profile), (city, target) in groups.items():
+        try:
+            event = store.latest_market_snapshot(target_iso, event_ticker=event_ticker)
+            if event is None or not event.markets:
+                continue
+            adapter = SfoForecasterAdapter(forecaster_root, city=city)
+            config = replace(
+                config_for_city(strategy_config_for_profile(profile), city),
+                emos_distribution_enabled=True,
+            )
+            calibrator = ResidualCalibrator(
+                adapter.load_calibration_outcomes(_default_calibration_source()),
+                config,
+            )
+            forecast = adapter.latest_blend(target)
+            intraday = adapter.intraday_snapshot(target)
+            if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
+                forecast = adapter.apply_intraday_update(forecast, intraday)
+            emos = adapter.load_emos_mu_sigma(lead_days=None).get(target)
+            probabilities = calibrator.bucket_probabilities(
+                event.markets,
+                forecast.predicted_high_f,
+                source_spread_f=forecast.source_spread_f,
+                observed_high_f=intraday.observed_high_f if intraday else None,
+                intraday=intraday,
+                emos_mu_sigma=emos,
+                standard_timezone=intraday_timezone_for_city(city),
+            )
+            store.record_probabilities(target_iso, probabilities.values())
+            written += len(probabilities)
+        except (ForecastDataError, ValueError, OSError) as exc:
+            log(
+                f"same-day model heartbeat skipped {city.slug} {target_iso}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    return written
+
+
 def cmd_paper_monitor(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
@@ -2754,13 +2867,20 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
         if not filled:
             print(color.yellow("no open paper positions"))
         return 0
+    if _env_enabled("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED"):
+        _refresh_same_day_model_reads(
+            store,
+            rows,
+            forecaster_root=args.forecaster_root,
+            log=lambda message: print(color.yellow(message), file=sys.stderr),
+        )
     closed = 0
     inspected = 0
     for row in rows:
         inspected += 1
         side = str(row["side"] or ("NO" if "NO" in str(row["action"]).upper() else "YES")).upper()
         group_id = row["group_id"] if "group_id" in row.keys() else None
-        if group_id:
+        if group_id and not str(group_id).startswith("DEGRADED-"):
             # Legs of an arbitrage box/ladder or a tail basket form a single
             # guaranteed/worst-case-bounded payoff. Closing one leg early
             # converts the structure into naked directional risk, so hold every

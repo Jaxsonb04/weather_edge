@@ -431,7 +431,7 @@ class PaperTrader:
 
         tickers = {decision.ticker for decision in decisions}
         for ticker in tickers:
-            if self.store.has_open_paper_position(
+            if self.store.has_active_paper_entry(
                 target_date,
                 ticker,
                 risk_profile=self.risk_profile,
@@ -474,21 +474,56 @@ class PaperTrader:
                     strategy_config=self.config,
                 )
                 # A box must record every leg or none. If the open-position guard
-                # rejected a leg (None), abort loudly rather than book a partial,
-                # unbounded box. Preflight (has_open_paper_position) makes this
-                # unreachable in normal operation since arb legs are YES+NO.
+                # rejected a leg (None), compensate any already-booked execution
+                # and leave a visible degraded audit group. This can still happen
+                # if another writer wins after the active-entry preflight.
                 if order_id is None:
-                    raise RuntimeError(
-                        "arbitrage leg rejected by the open-position guard; "
-                        "aborting partially-recorded box"
+                    self._compensate_partial_arbitrage(
+                        order_ids,
+                        group_id=group_id,
+                        reason="arbitrage leg rejected after preflight",
                     )
+                    return []
                 order_ids.append(order_id)
         except Exception:
-            # The SQLite store autocommits each insert, so there is no safe
-            # partial rollback API here. Preflight checks above keep expected
-            # failure modes before the first insert.
+            self._compensate_partial_arbitrage(
+                order_ids,
+                group_id=group_id,
+                reason="arbitrage group recording failed mid-box",
+            )
             raise
         return order_ids
+
+    def _compensate_partial_arbitrage(
+        self,
+        order_ids: list[int],
+        *,
+        group_id: str,
+        reason: str,
+    ) -> None:
+        """Neutralize recorded legs without erasing their financial history."""
+
+        for order_id in order_ids:
+            row = self.store.paper_order(order_id)
+            if row is None:
+                continue
+            try:
+                if row["status"] == "PAPER_LIMIT_RESTING":
+                    self.store.cancel_resting_limit_order(order_id, reason=reason)
+                elif row["status"] == "PAPER_FILLED":
+                    # A filled execution is real paper state, not a row to delete.
+                    # Close it at its booked entry price; the ordinary close path
+                    # records the round-trip fee, PnL, and account ledger proceeds.
+                    self.store.close_paper_order(order_id, float(row["entry_price"]))
+            except (ValueError, RuntimeError):
+                # Settlement/monitor may have resolved the leg concurrently.
+                # The degraded marker below remains the authoritative group audit.
+                pass
+        self.store.mark_arbitrage_group_degraded(
+            order_ids,
+            group_id=group_id,
+            reason=reason,
+        )
 
     def _target_exposure_remaining(self, target_date: str, bankroll: float | None) -> float | None:
         """Cumulative per-target risk cap, persisted across scans via the DB.

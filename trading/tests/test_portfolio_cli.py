@@ -3,8 +3,14 @@ from __future__ import annotations
 import io
 from contextlib import redirect_stdout
 from datetime import date
+from types import SimpleNamespace
 
-from sfo_kalshi_quant.cli import _print_portfolio_scan, build_parser, cmd_portfolio_scan
+from sfo_kalshi_quant.cli import (
+    _place_portfolio_orders,
+    _print_portfolio_scan,
+    build_parser,
+    cmd_portfolio_scan,
+)
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.models import ForecastSnapshot
 from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
@@ -108,3 +114,40 @@ def test_portfolio_scan_prints_blocked_status_when_pause_prevents_placement() ->
     assert "research paused: daily loss cap reached" in text
     assert "portfolio=BLOCKED_BY_PAUSE" in text
     assert "portfolio=APPROVED" not in text
+
+
+def test_portfolio_order_placement_contains_one_arbitrage_failure_and_continues() -> None:
+    class _Trader:
+        def __init__(self):
+            self.arb_calls = 0
+            self.directional_called = False
+
+        def place_arbitrage(self, target_date, opportunity, *, bankroll):
+            self.arb_calls += 1
+            if self.arb_calls == 1:
+                raise RuntimeError("simulated box race")
+            return [22]
+
+        def place_approved(self, target_date, decisions, *, bankroll):
+            self.directional_called = True
+            return [33]
+
+    trader = _Trader()
+    plan = SimpleNamespace(
+        arbitrage_opportunities=[object(), object()],
+        legs=[SimpleNamespace(sleeve="directional", decision=object())],
+    )
+    warnings: list[str] = []
+
+    placed = _place_portfolio_orders(
+        trader,
+        "2026-06-03",
+        plan,
+        bankroll=1000.0,
+        warn=warnings.append,
+    )
+
+    assert placed == [22, 33]
+    assert trader.arb_calls == 2
+    assert trader.directional_called
+    assert warnings and "simulated box race" in warnings[0]

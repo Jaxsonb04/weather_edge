@@ -903,7 +903,12 @@ class PaperStore:
             )
             return int(cursor.lastrowid)
 
-    def latest_market_snapshot(self, target_date: str) -> EventSnapshot | None:
+    def latest_market_snapshot(
+        self,
+        target_date: str,
+        *,
+        event_ticker: str | None = None,
+    ) -> EventSnapshot | None:
         """Reconstruct the most recent stored Kalshi ladder for a target date.
 
         ``record_market`` persists the full Kalshi event payload (the same
@@ -915,16 +920,21 @@ class PaperStore:
         when the stored payload is unparseable.
         """
 
+        filters = ["target_date = ?"]
+        params: list[object] = [target_date]
+        if event_ticker is not None:
+            filters.append("event_ticker = ?")
+            params.append(event_ticker)
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT raw_json
                 FROM market_snapshots
-                WHERE target_date = ?
+                WHERE {' AND '.join(filters)}
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
-                (target_date,),
+                params,
             ).fetchone()
         if row is None or not row[0]:
             return None
@@ -1920,6 +1930,48 @@ class PaperStore:
                     details={"reason": reason},
                 )
         return self._order(order_id)
+
+    def mark_arbitrage_group_degraded(
+        self,
+        order_ids: list[int],
+        *,
+        group_id: str,
+        reason: str,
+    ) -> None:
+        """Keep partial-box compensation explicit in the order audit trail."""
+
+        if not order_ids:
+            return
+        degraded_group_id = f"DEGRADED-{group_id}"
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in order_ids)
+            rows = conn.execute(
+                f"SELECT id, status, outcome_diagnostics_json FROM paper_orders "
+                f"WHERE id IN ({placeholders})",
+                order_ids,
+            ).fetchall()
+            for row in rows:
+                try:
+                    details = json.loads(row["outcome_diagnostics_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    details = {}
+                if not isinstance(details, dict):
+                    details = {}
+                details.update(
+                    {
+                        "event": "arbitrage_compensation",
+                        "arbitrage_group_status": "DEGRADED",
+                        "original_group_id": group_id,
+                        "reason": reason,
+                        "compensated_status": row["status"],
+                    }
+                )
+                conn.execute(
+                    "UPDATE paper_orders SET group_id=?, outcome_diagnostics_json=? WHERE id=?",
+                    (degraded_group_id, json.dumps(details, sort_keys=True), row["id"]),
+                )
 
     def expire_stale_resting_orders(self, *, now: str | None = None) -> int:
         cutoff = now or _now()

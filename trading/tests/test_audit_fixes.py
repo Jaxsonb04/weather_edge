@@ -123,6 +123,25 @@ def test_monitor_holds_guaranteed_group_legs_to_settlement():
             assert _latest_action(store, order_id) == "HOLD_GUARANTEED_LEG"
 
 
+def test_monitor_does_not_treat_degraded_arbitrage_group_as_guaranteed():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order(
+            "2026-06-12", _yes_decision(), group_id="ARB-raced"
+        )
+        store.mark_arbitrage_group_degraded(
+            [order_id],
+            group_id="ARB-raced",
+            reason="second leg rejected after preflight",
+        )
+
+        _run_monitor(db_path, _FakeProfitClient)
+
+        assert store.paper_order(order_id)["status"] == "PAPER_CLOSED"
+        assert _latest_action(store, order_id) == "CLOSE_TAKE_PROFIT"
+
+
 def test_settlement_does_not_overwrite_a_closed_orders_pnl():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"

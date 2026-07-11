@@ -2,19 +2,32 @@
 
 import sqlite3
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from sfo_kalshi_quant.cli import main
+from sfo_kalshi_quant.cities import get_city
+from sfo_kalshi_quant.cli import _refresh_same_day_model_reads, main
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.exits import ExitSignal
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.kalshi import KalshiUnavailable
-from sfo_kalshi_quant.models import BucketProbability, MarketBin, TradeDecision
+from sfo_kalshi_quant.models import (
+    BucketProbability,
+    EventSnapshot,
+    ForecastOutcome,
+    ForecastSnapshot,
+    IntradaySnapshot,
+    MarketBin,
+    TradeDecision,
+    format_event_date_token,
+)
+from sfo_kalshi_quant.settlement_day import settlement_clock
+from sfo_kalshi_quant.standard_bins import fallback_bins
 
 
 def _probability(ticker: str, probability: float) -> BucketProbability:
@@ -490,6 +503,173 @@ def test_paper_monitor_no_stop_held_failsafe_when_no_model_read():
                 (order_id,),
             ).fetchone()[0]
         assert action == "HOLD_NO_MODEL_READ"
+
+
+def test_same_day_model_heartbeat_is_safe_off_by_default_after_scan_cutoff():
+    target = settlement_clock(city=get_city("sfo")).date()
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = replace(_stopped_no_decision(), ticker="KXHIGHTSFO-HEARTBEAT-T73")
+        order_id = store.record_paper_order(target.isoformat(), decision)
+
+        with (
+            patch.dict("os.environ", {"PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED": "false"}),
+            patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoStopClient),
+            redirect_stdout(StringIO()),
+        ):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+
+        with store.connect() as conn:
+            action = conn.execute(
+                "SELECT action FROM paper_monitor_snapshots WHERE order_id=? ORDER BY id DESC LIMIT 1",
+                (order_id,),
+            ).fetchone()[0]
+            assert conn.execute("SELECT COUNT(*) FROM probability_snapshots").fetchone()[0] == 0
+        assert action == "HOLD_NO_MODEL_READ"
+
+
+def test_same_day_model_heartbeat_does_not_run_before_entry_cutoff():
+    city = get_city("sfo")
+    before_cutoff = datetime(2026, 7, 10, 13, 59, tzinfo=city.fixed_standard_timezone())
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        rows = [
+            {
+                "market_ticker": "KXHIGHTSFO-26JUL10-B68.5",
+                "target_date": "2026-07-10",
+                "risk_profile": "live",
+            }
+        ]
+        with (
+            patch("sfo_kalshi_quant.cli.settlement_clock", return_value=before_cutoff),
+            patch.object(store, "latest_market_snapshot") as latest_market,
+            patch(
+                "sfo_kalshi_quant.cli.SfoForecasterAdapter",
+                side_effect=AssertionError("heartbeat must stay dormant before cutoff"),
+            ),
+        ):
+            assert _refresh_same_day_model_reads(
+                store, rows, forecaster_root=Path(tmp)
+            ) == 0
+        latest_market.assert_not_called()
+
+
+def test_same_day_model_heartbeat_refreshes_open_position_without_new_entry():
+    city = get_city("sfo")
+    target = settlement_clock(city=city).date()
+    event_ticker = f"KXHIGHTSFO-{format_event_date_token(target)}"
+    markets = fallback_bins(event_ticker, 69.5)
+    held_market = markets[-1]
+
+    class _HeartbeatAdapter:
+        def __init__(self, root, city=None):
+            self.city = city or get_city("sfo")
+
+        def load_calibration_outcomes(self, source):
+            return [
+                ForecastOutcome(
+                    local_date=target - timedelta(days=idx + 1),
+                    predicted_high_f=70.0,
+                    actual_high_f=70.0 + (idx % 3) - 1.0,
+                )
+                for idx in range(40)
+            ]
+
+        def latest_blend(self, requested_target):
+            return ForecastSnapshot(
+                target_date=requested_target,
+                predicted_high_f=70.0,
+                station_id="KSFO",
+                fetched_at=datetime.now(UTC).isoformat(),
+                method="heartbeat-test",
+            )
+
+        def intraday_snapshot(self, requested_target):
+            return IntradaySnapshot(
+                target_date=requested_target,
+                observed_high_f=70.0,
+                latest_temp_f=69.0,
+                latest_observed_at=datetime.now(UTC).isoformat(),
+                remaining_forecast_high_f=70.0,
+                forecast_fetched_at=datetime.now(UTC).isoformat(),
+            )
+
+        def apply_intraday_update(self, forecast, intraday):
+            return forecast
+
+        def load_emos_mu_sigma(self, lead_days=None):
+            return {target: (70.0, 1.0)}
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = replace(
+            _stopped_no_decision(),
+            ticker=held_market.ticker,
+            label=held_market.yes_sub_title,
+            strike_type=held_market.strike_type,
+            floor_strike=held_market.floor_strike,
+            cap_strike=held_market.cap_strike,
+        )
+        order_id = store.record_paper_order(target.isoformat(), decision)
+        event = EventSnapshot(
+            event_ticker=event_ticker,
+            title="heartbeat test",
+            target_date=target,
+            markets=markets,
+            raw={"event_ticker": event_ticker, "title": "heartbeat test", "markets": [m.raw for m in markets]},
+        )
+        store.record_market(event)
+        distractor_ticker = f"KXHIGHNY-{format_event_date_token(target)}"
+        distractor_markets = fallback_bins(distractor_ticker, 89.5)
+        store.record_market(
+            EventSnapshot(
+                event_ticker=distractor_ticker,
+                title="later NYC snapshot",
+                target_date=target,
+                markets=distractor_markets,
+                raw={
+                    "event_ticker": distractor_ticker,
+                    "title": "later NYC snapshot",
+                    "markets": [market.raw for market in distractor_markets],
+                },
+            )
+        )
+        with store.connect() as conn:
+            before_orders = conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0]
+
+        with (
+            patch.dict("os.environ", {"PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED": "true"}),
+            patch(
+                "sfo_kalshi_quant.cli.settlement_clock",
+                return_value=datetime(
+                    target.year,
+                    target.month,
+                    target.day,
+                    15,
+                    tzinfo=city.fixed_standard_timezone(),
+                ),
+            ),
+            patch("sfo_kalshi_quant.cli.SfoForecasterAdapter", _HeartbeatAdapter),
+            patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoStopClient),
+            redirect_stdout(StringIO()),
+        ):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+
+        with store.connect() as conn:
+            action = conn.execute(
+                "SELECT action FROM paper_monitor_snapshots WHERE order_id=? ORDER BY id DESC LIMIT 1",
+                (order_id,),
+            ).fetchone()[0]
+            after_orders = conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0]
+            heartbeat_rows = conn.execute(
+                "SELECT COUNT(*) FROM probability_snapshots WHERE target_date=? AND market_ticker=?",
+                (target.isoformat(), held_market.ticker),
+            ).fetchone()[0]
+        assert action != "HOLD_NO_MODEL_READ"
+        assert heartbeat_rows == 1
+        assert after_orders == before_orders
 
 
 def test_paper_monitor_hard_floor_disables_model_veto():

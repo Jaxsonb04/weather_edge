@@ -100,9 +100,15 @@ def test_intraday_model_centers_on_emos_mean_when_active():
     captured = {}
     original = probability_module._intraday_probability_model
 
-    def spy(markets, center, intraday, *, config):
+    def spy(markets, center, intraday, *, config, standard_timezone):
         captured["center"] = center
-        return original(markets, center, intraday, config=config)
+        return original(
+            markets,
+            center,
+            intraday,
+            config=config,
+            standard_timezone=standard_timezone,
+        )
 
     probability_module._intraday_probability_model = spy
     try:

@@ -9,7 +9,7 @@ from typing import Any
 from urllib.error import URLError
 
 from .backtest import run_walk_forward_calibration_backtest
-from .config import SERIES_TICKER, StrategyConfig
+from .config import SERIES_TICKER, StrategyConfig, intraday_timezone_for_city
 from .consensus import MarketConsensus, build_market_consensus
 from .ensemble import OpenMeteoEnsembleError, SfoEnsembleClient
 from .forecast import (
@@ -158,6 +158,7 @@ def build_target_report(
         ensemble=ensemble,
         intraday=intraday,
         emos_mu_sigma=emos_lookup.get(target),
+        standard_timezone=intraday_timezone_for_city(adapter.city),
     )
     decisions = TradeEvaluator(config).rank(
         markets,

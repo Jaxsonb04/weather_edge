@@ -12,6 +12,20 @@ SFO_TZ = ZoneInfo("America/Los_Angeles")
 DEFAULT_CITY = get_city("sfo")
 SERIES_TICKER = DEFAULT_CITY.series_ticker
 
+
+def intraday_timezone_for_city(city: CityConfig):
+    """Clock for the calibrated intraday model.
+
+    SFO is the compatibility exception: its legacy model was calibrated on
+    civil Pacific time, so changing summer observations from PDT to fixed PST
+    would alter production probabilities. All newer city models use the
+    station's fixed-standard settlement clock.
+    """
+
+    if city.slug == "sfo":
+        return SFO_TZ
+    return city.fixed_standard_timezone()
+
 COLD_COHORT = "cold_below_60f"
 NORMAL_COHORT = "normal_60_69f"
 WARM_COHORT = "warm_70_79f"

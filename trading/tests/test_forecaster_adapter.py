@@ -5,13 +5,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sfo_kalshi_quant.cli import _enforce_live_forecast_freshness
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
 from sfo_kalshi_quant.forecast import (
     ForecastDataError,
     SfoForecasterAdapter,
     has_forecaster_observed_high_adjustment,
 )
-from sfo_kalshi_quant.models import ForecastSnapshot
+from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot
 
 
 def test_latest_blend_reads_extended_forecaster_metadata():
@@ -211,3 +212,31 @@ def test_observed_high_lock_is_detected_before_second_intraday_adjustment():
         raw={"observed_high_decision": {"mode": "lock"}},
     )
     assert has_forecaster_observed_high_adjustment(forecast)
+
+
+def test_apply_intraday_update_uses_adapter_city_fixed_standard_time():
+    forecast = ForecastSnapshot(
+        target_date=date(2026, 7, 10),
+        predicted_high_f=74.0,
+        method="test",
+    )
+    intraday = IntradaySnapshot(
+        target_date=date(2026, 7, 10),
+        observed_high_f=68.0,
+        latest_temp_f=None,
+        latest_observed_at="2026-07-10T18:00:00+00:00",
+        remaining_forecast_high_f=72.0,
+        forecast_fetched_at=None,
+    )
+
+    nyc = SfoForecasterAdapter(Path("."), city=get_city("nyc")).apply_intraday_update(
+        forecast, intraday
+    )
+    sfo = SfoForecasterAdapter(Path("."), city=get_city("sfo")).apply_intraday_update(
+        forecast, intraday
+    )
+
+    assert nyc.raw["intraday_update"]["intraday_weight"] == 0.65
+    assert nyc.predicted_high_f == 72.7
+    assert sfo.raw["intraday_update"]["intraday_weight"] == 0.5
+    assert sfo.predicted_high_f == 73.0
