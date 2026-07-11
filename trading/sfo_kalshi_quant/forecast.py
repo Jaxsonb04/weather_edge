@@ -10,6 +10,10 @@ from typing import Iterable
 from ._util import _table_exists
 from .cities import CityConfig, get_city
 from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ, intraday_timezone_for_city
+from .emos_sources import (
+    ROLLING_ORIGIN_SOURCES,
+    preferred_rolling_origin_source,
+)
 from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
 from .settlement_truth import (
@@ -412,6 +416,16 @@ class SfoForecasterAdapter:
                     if _table_exists(conn, "cli_settlements")
                     else set()
                 )
+                archive_source = preferred_rolling_origin_source(
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT DISTINCT source FROM forecast_emos_daily_high "
+                        "WHERE station_id = ? AND lead_days = 1",
+                        (self.station_id,),
+                    )
+                )
+                if archive_source is None:
+                    return []
                 if "is_final" in settlement_columns:
                     query = """
                         SELECT f.target_date, f.predicted_high_f, c.max_temperature_f
@@ -421,7 +435,7 @@ class SfoForecasterAdapter:
                          AND c.local_date = f.target_date
                          AND c.is_final = 1
                          AND c.max_temperature_f IS NOT NULL
-                        WHERE f.station_id = ? AND f.source = 'rolling_origin'
+                        WHERE f.station_id = ? AND f.source = ?
                           AND f.lead_days = 1
                         ORDER BY f.target_date
                     """
@@ -429,11 +443,13 @@ class SfoForecasterAdapter:
                     query = """
                         SELECT target_date, predicted_high_f, actual_high_f
                         FROM forecast_emos_daily_high
-                        WHERE station_id = ? AND source = 'rolling_origin'
+                        WHERE station_id = ? AND source = ?
                           AND lead_days = 1 AND actual_high_f IS NOT NULL
                         ORDER BY target_date
                     """
-                rows = conn.execute(query, (self.station_id,)).fetchall()
+                rows = conn.execute(
+                    query, (self.station_id, archive_source)
+                ).fetchall()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
         return [
@@ -616,17 +632,20 @@ class SfoForecasterAdapter:
         2), so the live trader must pass ``lead_days=None`` to see both -- a fixed
         ``lead_days=1`` would silently miss the 2-day-out market entirely.
 
-        ``source`` filters the EMOS source: ``'rolling_origin'`` for leakage-safe
-        backtest/rescore reads (every value is strictly out-of-sample),
-        ``'live'`` for the served current-run forecast. When None, all sources are
-        returned with deterministic source precedence per target_date: rebuild
-        rows are applied first and ``live`` rows overwrite them, regardless of
-        a newer rolling-origin rebuild timestamp.
+        An explicit ``source`` is an exact read (including historical v1).
+        With ``source=None``, each lead uses v2 rolling-origin rows exclusively
+        when that version exists for the queried station/lead, otherwise v1;
+        the versions are never mixed. Other source families retain their prior
+        behavior, and ``live`` rows deterministically overwrite rebuild rows per
+        target regardless of timestamps.
         """
 
         if not self.weather_db.exists():
             return {}
-        query = "SELECT target_date, predicted_high_f, sigma_f FROM forecast_emos_daily_high"
+        query = (
+            "SELECT target_date, predicted_high_f, sigma_f, lead_days, source "
+            "FROM forecast_emos_daily_high"
+        )
         clauses: list[str] = []
         params: list[object] = []
         try:
@@ -665,9 +684,24 @@ class SfoForecasterAdapter:
                 rows = conn.execute(query, tuple(params)).fetchall()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read EMOS archive from {self.weather_db}: {exc}") from exc
+        if source is None:
+            rolling_by_lead: dict[int, set[str]] = {}
+            for _target_iso, _mu, _sigma, row_lead, row_source in rows:
+                if row_source in ROLLING_ORIGIN_SOURCES:
+                    rolling_by_lead.setdefault(int(row_lead), set()).add(str(row_source))
+            preferred_by_lead = {
+                row_lead: preferred_rolling_origin_source(available)
+                for row_lead, available in rolling_by_lead.items()
+            }
+            rows = [
+                row
+                for row in rows
+                if row[4] not in ROLLING_ORIGIN_SOURCES
+                or row[4] == preferred_by_lead.get(int(row[3]))
+            ]
         return {
             date.fromisoformat(target_iso): (float(mu), float(sigma))
-            for target_iso, mu, sigma in rows
+            for target_iso, mu, sigma, _row_lead, _row_source in rows
         }
 
 

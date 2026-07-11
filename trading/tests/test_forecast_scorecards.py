@@ -120,3 +120,64 @@ def test_scorecards_exclude_preliminary_settlement_rows() -> None:
         payload = build_forecast_scorecards(db)
 
     assert payload["matched_cases"] == 1
+
+
+def test_scorecards_prefer_v2_per_city_lead_method_without_double_counting() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            conn.executemany(
+                "INSERT INTO cli_settlements VALUES (?, ?, ?, 't', 'cli')",
+                [
+                    ("KSFO", "2026-07-01", 68),
+                    ("KSFO", "2026-07-02", 69),
+                    ("KNYC", "2026-07-01", 88),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO forecast_emos_daily_high VALUES (?, ?, 1, ?, 2, 8, 4, 't', 'emos_ngr', ?, NULL)",
+                [
+                    ("KSFO", "2026-07-01", 80, "rolling_origin"),
+                    ("KSFO", "2026-07-02", 81, "rolling_origin"),
+                    ("KSFO", "2026-07-02", 69, "rolling_origin_v2"),
+                    ("KNYC", "2026-07-01", 88, "rolling_origin"),
+                ],
+            )
+
+        payload = build_forecast_scorecards(db)
+
+    assert payload["matched_cases"] == 2
+    cards = {(row["station_id"], row["source"]): row for row in payload["scorecards"]}
+    assert cards[("KSFO", "rolling_origin_v2")]["cases"] == 1
+    assert cards[("KSFO", "rolling_origin_v2")]["mae_f"] == 0.0
+    assert cards[("KNYC", "rolling_origin")]["cases"] == 1
+    assert not any(station == "KSFO" and source == "rolling_origin" for station, source in cards)
+
+
+def test_scorecards_do_not_fall_back_when_scope_has_unscored_v2_rows() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES ('KSFO', '2026-07-01', 68, 't', 'cli')"
+            )
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "('KSFO', '2026-07-01', 1, 80, 2, 8, 4, 't', 'emos_ngr', "
+                "'rolling_origin', NULL)"
+            )
+            # The v2 rebuild has begun for this exact city/lead/method scope,
+            # but its target is not settled yet. Reusing v1 would silently
+            # report a different model version while labelling v2 as current.
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "('KSFO', '2026-07-02', 1, 69, 2, 8, 4, 't', 'emos_ngr', "
+                "'rolling_origin_v2', NULL)"
+            )
+
+        payload = build_forecast_scorecards(db)
+
+    assert payload["available"] is False
+    assert payload["matched_cases"] == 0

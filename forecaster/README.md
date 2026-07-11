@@ -191,6 +191,7 @@ city_truth.py                    live and IEM-backed per-city CLI settlement tru
 clisfo.py                        SFO NWS Daily Climate Report parser
 emos_forecast.py                 rolling multi-city EMOS fit and live serve
 emos_recalibration.py            EMOS recalibration research helpers
+emos_sources.py                  rolling-origin archive version-selection policy
 forecast_backtest.py             clean next-day SFO blend backtest
 forecast_postproc_backtest.py    multi-city post-processing comparison
 forecast_scoring.py              forecast scoring and proper-score helpers

@@ -5,6 +5,11 @@ markets across fifteen U.S. cities. SFO is the flagship and retains the deepest
 Google/NWS/Open-Meteo/LSTM blend; the other fourteen cities use the shared
 NWP→EMOS→CLI pipeline.
 
+The rolling-origin archive is versioned. Runtime calibration and ship scoring
+prefer the live-faithful `rolling_origin_v2` history within each relevant
+station/lead scope and fall back to `rolling_origin` only when that scope has no
+v2 rows. The two histories are never merged into one calibration or scorecard.
+
 In WeatherEdge, this module reads forecast artifacts from:
 
 ```text

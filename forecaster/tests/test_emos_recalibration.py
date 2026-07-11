@@ -171,6 +171,33 @@ def test_correction_for_serve_reads_scored_rolling_rows():
     assert len(series) == 45
 
 
+def test_v2_archive_exclusively_drives_serve_correction_when_present():
+    conn = sqlite3.connect(":memory:")
+    serve_date = _seed_db(conn, bias=-5.0, days=45)
+    # A partial v2 rebuild is a separate model version, not an extension of v1.
+    # Its positive bias must drive the correction without mixing 45 legacy rows.
+    for offset in range(42, 45):
+        day = (date(2026, 5, 1) + timedelta(days=offset)).isoformat()
+        truth = 70 + (offset % 5)
+        conn.execute(
+            "INSERT INTO forecast_emos_daily_high VALUES "
+            "('KSEA', ?, 1, ?, 2.0, 8, 1.0, 'x', 'emos_wmean', "
+            "'rolling_origin_v2', NULL)",
+            (day, truth + 2.0),
+        )
+    conn.commit()
+
+    preferred = load_scored_series(conn, "KSEA", 1)
+    legacy = load_scored_series(conn, "KSEA", 1, source="rolling_origin")
+    correction = correction_for_serve(conn, "KSEA", 1, serve_date)
+
+    assert len(preferred) == 3
+    assert all(mu - truth == 2.0 for _day, mu, _sigma, truth in preferred)
+    assert len(legacy) == 45
+    assert correction.n_window == 3
+    assert correction.bias_f > 0
+
+
 def test_scored_series_excludes_preliminary_settlement_rows():
     conn = sqlite3.connect(":memory:")
     _seed_db(conn, bias=2.0, days=3)

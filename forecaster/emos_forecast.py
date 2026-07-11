@@ -29,6 +29,7 @@ from urllib.parse import urlencode
 
 from cities import CITIES, CityConfig, get_city, parse_city_slugs
 from emos_recalibration import correction_for_serve
+from emos_sources import ROLLING_ORIGIN_V2_SOURCE
 from nwp_archive import (
     NWP_MODELS,
     NwpArchiveError,
@@ -43,7 +44,7 @@ DB_PATH = Path(__file__).resolve().parent / "weather.db"
 # inv_var = inverse-error-variance model weighting (Phase 4 winner: beat the
 # equal-weight emos_ngr out-of-sample, DM -3.60, lower CRPS in every cohort).
 DEFAULT_WEIGHT_MODE = "inv_var"
-DEFAULT_SOURCE = "rolling_origin_v2"
+DEFAULT_SOURCE = ROLLING_ORIGIN_V2_SOURCE
 
 
 def _method_tag(weight_mode: str) -> str:
@@ -73,7 +74,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             model_spread_f REAL,
             fetched_at TEXT NOT NULL,
             method TEXT NOT NULL DEFAULT 'emos_ngr',
-            source TEXT NOT NULL DEFAULT 'rolling_origin',
+            source TEXT NOT NULL DEFAULT 'rolling_origin_v2',
             actual_high_f REAL,
             PRIMARY KEY (station_id, target_date, lead_days, source)
         )
@@ -105,7 +106,7 @@ def _migrate_station_key(conn: sqlite3.Connection) -> None:
             model_spread_f REAL,
             fetched_at TEXT NOT NULL,
             method TEXT NOT NULL DEFAULT 'emos_ngr',
-            source TEXT NOT NULL DEFAULT 'rolling_origin',
+            source TEXT NOT NULL DEFAULT 'rolling_origin_v2',
             actual_high_f REAL,
             PRIMARY KEY (station_id, target_date, lead_days, source)
         )

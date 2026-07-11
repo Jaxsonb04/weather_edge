@@ -133,6 +133,39 @@ def test_load_emos_mu_sigma_prefers_live_over_newer_rolling_origin():
         assert adapter.load_emos_mu_sigma(source="rolling_origin") == {date(2025, 6, 1): (99.0, 9.0)}
 
 
+def test_load_emos_mu_sigma_prefers_v2_per_lead_without_mixing_and_live_still_wins():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "CREATE TABLE forecast_emos_daily_high "
+                "(target_date TEXT, lead_days INTEGER, predicted_high_f REAL, sigma_f REAL, "
+                " n_models INTEGER, fetched_at TEXT, method TEXT, source TEXT, actual_high_f REAL, "
+                " PRIMARY KEY (target_date, lead_days, source))"
+            )
+            conn.execute("INSERT INTO forecast_emos_daily_high VALUES ('2025-06-01',1,99,9,8,'z','m','rolling_origin',72)")
+            conn.execute("INSERT INTO forecast_emos_daily_high VALUES ('2025-06-01',1,70,2,8,'a','m','rolling_origin_v2',72)")
+            conn.execute("INSERT INTO forecast_emos_daily_high VALUES ('2025-06-02',2,73,3,8,'a','m','rolling_origin',74)")
+
+        adapter = SfoForecasterAdapter(root=root)
+        assert adapter.load_emos_mu_sigma(lead_days=1) == {
+            date(2025, 6, 1): (70.0, 2.0)
+        }
+        assert adapter.load_emos_mu_sigma(lead_days=None) == {
+            date(2025, 6, 1): (70.0, 2.0),
+            date(2025, 6, 2): (73.0, 3.0),
+        }
+        assert adapter.load_emos_mu_sigma(source="rolling_origin") == {
+            date(2025, 6, 1): (99.0, 9.0)
+        }
+
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute("INSERT INTO forecast_emos_daily_high VALUES ('2025-06-01',1,71,2.5,8,'0','m','live',NULL)")
+        assert adapter.load_emos_mu_sigma(lead_days=1) == {
+            date(2025, 6, 1): (71.0, 2.5)
+        }
+
+
 def test_load_emos_mu_sigma_missing_db_or_table_returns_empty():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -171,3 +204,36 @@ def test_load_emos_outcomes_requires_final_cli_truth_when_finality_exists():
         outcomes = adapter.load_emos_outcomes()
         assert len(outcomes) == 1
         assert outcomes[0].actual_high_f == 71.0
+
+
+def test_load_emos_outcomes_prefers_v2_without_mixing_legacy_calibration_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "CREATE TABLE forecast_emos_daily_high ("
+                "station_id TEXT, target_date TEXT, lead_days INTEGER, "
+                "predicted_high_f REAL, source TEXT, actual_high_f REAL)"
+            )
+            conn.executemany(
+                "INSERT INTO forecast_emos_daily_high VALUES (?, ?, 1, ?, ?, ?)",
+                [
+                    ("KSFO", "2026-07-09", 90, "rolling_origin", 70),
+                    ("KSFO", "2026-07-10", 91, "rolling_origin", 71),
+                    ("KSFO", "2026-07-10", 72, "rolling_origin_v2", 71),
+                ],
+            )
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f REAL, is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.executemany(
+                "INSERT INTO cli_settlements VALUES (?, ?, ?, 1)",
+                [("KSFO", "2026-07-09", 70), ("KSFO", "2026-07-10", 71)],
+            )
+
+        outcomes = SfoForecasterAdapter(root=root).load_emos_outcomes()
+
+        assert [(row.local_date, row.predicted_high_f) for row in outcomes] == [
+            (date(2026, 7, 10), 72.0)
+        ]

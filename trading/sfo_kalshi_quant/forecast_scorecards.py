@@ -11,6 +11,7 @@ from typing import Any
 
 from ._util import _table_exists
 from .cities import CITIES, CITY_BY_STATION
+from .emos_sources import ROLLING_ORIGIN_V1_SOURCE, ROLLING_ORIGIN_V2_SOURCE
 
 
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
@@ -57,6 +58,7 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
     path = Path(weather_db)
     if not path.exists():
         return _unavailable("weather database not found")
+    v2_scopes: set[tuple[str, int, str]] = set()
     try:
         with sqlite3.connect(path) as conn:
             if not _table_exists(conn, "forecast_emos_daily_high"):
@@ -67,6 +69,14 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
             truth_columns = _columns(conn, "cli_settlements")
             if "station_id" not in forecast_columns or "station_id" not in truth_columns:
                 return _unavailable("station-keyed forecast and settlement tables required")
+            v2_scopes = {
+                (str(station), int(lead), str(method))
+                for station, lead, method in conn.execute(
+                    "SELECT DISTINCT station_id, lead_days, method "
+                    "FROM forecast_emos_daily_high WHERE source = ?",
+                    (ROLLING_ORIGIN_V2_SOURCE,),
+                )
+            }
             final_filter = "AND s.is_final = 1" if "is_final" in truth_columns else ""
             rows = conn.execute(
                 f"""
@@ -87,6 +97,14 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
     except sqlite3.Error as exc:
         return _unavailable(f"{type(exc).__name__}: {exc}")
 
+    rows = [
+        row
+        for row in rows
+        if not (
+            row[6] == ROLLING_ORIGIN_V1_SOURCE
+            and (str(row[0]), int(row[2]), str(row[5])) in v2_scopes
+        )
+    ]
     if not rows:
         return _unavailable("no archived forecasts matched authoritative settlements")
 

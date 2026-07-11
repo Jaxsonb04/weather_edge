@@ -90,6 +90,10 @@ for token in sys.argv[1:-1]:
     )
 
     assert result.returncode == 0, result.stderr
+    assert "bash deploy/aws/install_systemd_notimers.sh" in result.stdout
+    assert "Inspect /etc/weatheredge.env and run manual service checks" in result.stdout
+    assert "bash deploy/aws/install_systemd.sh" in result.stdout
+    assert result.stdout.index("install_systemd_notimers.sh") < result.stdout.index("install_systemd.sh")
     invocations = [json.loads(line) for line in calls.read_text().splitlines()]
     assert len(invocations) == 3
     packaging = next(call for call in invocations if str(ROOT / "pyproject.toml") in call)

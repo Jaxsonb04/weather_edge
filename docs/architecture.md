@@ -57,6 +57,12 @@ Responsibilities:
 - read forecaster snapshots through a per-city forecaster adapter (SFO uses
   the full blend; other cities use the EMOS Gaussian snapshot, with the scored
   EMOS archive supplying calibration outcomes)
+- treat `rolling_origin_v2` as the live-faithful archive: consumers select it
+  exclusively per station/lead (and per method for scorecards) when present,
+  falling back to legacy `rolling_origin` only when that scope has no v2 rows.
+  Serve recalibration, replay, residual calibration, and ship scorecards never
+  mix or double-count the two model versions; explicit source reads remain exact
+  for historical comparisons. Live served rows still override archive rows.
 - fetch Kalshi public market/orderbook data
 - convert forecast distributions into Kalshi bin probabilities
 - apply same-day observed-high and boundary-aware intraday updates, with

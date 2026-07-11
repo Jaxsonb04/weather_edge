@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import fmean, stdev
 
+from emos_sources import preferred_rolling_origin_source
+
 # Trailing window length (days of scored rolling-origin history) for both the
 # bias and dispersion estimates. ~45 days is long enough to average over
 # synoptic noise but short enough to track a seasonal regime shift.
@@ -80,14 +82,16 @@ def load_scored_series(
     station_id: str,
     lead_days: int,
     *,
-    source: str = "rolling_origin",
+    source: str | None = None,
 ) -> list[tuple[date, float, float, float]]:
     """Chronological (target_date, mu, sigma, truth) for one station x lead.
 
     Truth comes from ``cli_settlements`` (the settlement instrument) joined at
-    read time. Missing tables degrade to an empty series -- the correction then
-    becomes a no-op rather than an error, matching the serve path's fail-soft
-    contract.
+    read time. With ``source=None``, v2 is selected exclusively when any v2 row
+    exists for this station/lead; otherwise v1 is selected exclusively. Passing
+    a source explicitly is an exact historical/debug read. Missing tables or no
+    matching rolling version degrade to an empty series, making correction a
+    no-op rather than mixing model versions.
     """
 
     for table in ("forecast_emos_daily_high", "cli_settlements"):
@@ -99,6 +103,18 @@ def load_scored_series(
     settlement_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")
     }
+    selected_source = source
+    if selected_source is None:
+        selected_source = preferred_rolling_origin_source(
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT source FROM forecast_emos_daily_high "
+                "WHERE station_id = ? AND lead_days = ?",
+                (station_id, lead_days),
+            )
+        )
+    if selected_source is None:
+        return []
     final_filter = "AND c.is_final = 1" if "is_final" in settlement_columns else ""
     rows = conn.execute(
         f"""
@@ -111,7 +127,7 @@ def load_scored_series(
           {final_filter}
         ORDER BY f.target_date
         """,
-        (station_id, lead_days, source),
+        (station_id, lead_days, selected_source),
     ).fetchall()
     return [
         (date.fromisoformat(target), float(mu), float(sigma), float(truth))
