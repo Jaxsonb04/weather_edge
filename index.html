@@ -1,22 +1,47 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem("weatheredge-theme");
+          const followsSystem = stored !== "light" && stored !== "dark";
+          const dark = stored === "dark" || (followsSystem && matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch {
+          const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        }
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WeatherEdge — Fifteen-City High-Temp Forecasting &amp; Prediction-Market Quant</title>
+    <title>WeatherEdge — 15-City Weather Forecasting &amp; Prediction-Market Research</title>
     <meta
       name="description"
-      content="A station-aligned SFO daily-high forecaster (Google/NWS/Open-Meteo blend + NWP/EMOS post-processing) feeding a calibrated temperature prediction-market probability engine. Paper-trading research."
+      content="WeatherEdge tracks daily-high forecasts and paper-trading research across 15 U.S. city prediction markets, with SFO as the flagship instrument."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-    <script type="module" crossorigin src="./assets/index-DREMUe3R.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BZV5gSso.css">
+    <meta property="og:title" content="WeatherEdge — 15-City Weather Forecasting" />
+    <meta property="og:description" content="Operational daily-high forecasting and prediction-market paper research across 15 U.S. cities, with SFO as the flagship." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://jaxsonb04.github.io/weather_edge/" />
+    <meta property="og:image" content="https://jaxsonb04.github.io/weather_edge/og-weatheredge-v2.png" />
+    <meta property="og:image:alt" content="WeatherEdge — Fifteen-city temperature forecasting. Forecast verification and paper research." />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="WeatherEdge — 15-City Weather Forecasting" />
+    <meta name="twitter:description" content="Operational daily-high forecasting and prediction-market paper research, with SFO as the flagship." />
+    <meta name="twitter:image" content="https://jaxsonb04.github.io/weather_edge/og-weatheredge-v2.png" />
+    <meta name="twitter:image:alt" content="WeatherEdge — Fifteen-city temperature forecasting. Forecast verification and paper research." />
+    <script type="module" crossorigin src="./assets/index-CTgmYl37.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/dist-DtsX8zkW.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-zayWvuuo.css">
+    <link rel="preload" href="./assets/inter-latin-wght-normal-Dx4kXJAl.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="./assets/space-grotesk-latin-wght-normal-BhU9QXUp.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body>
     <div id="root"></div>
