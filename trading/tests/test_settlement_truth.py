@@ -50,3 +50,27 @@ def test_adapter_uses_city_scoped_cli_truth_not_observation_maxima() -> None:
         assert truth[("KXHIGHTSFO", "2026-07-08")] == 67.0
         assert truth[("KXHIGHNY", "2026-07-08")] == 89.0
         assert adapter.load_ksfo_daily_highs() == {date(2026, 7, 8): 67.0}
+
+
+def test_adapter_excludes_preliminary_cli_truth_when_finality_column_exists() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "weather.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f REAL, is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.executemany(
+                "INSERT INTO cli_settlements VALUES (?, ?, ?, ?)",
+                [
+                    ("KSFO", "2026-07-08", 68.0, 0),
+                    ("KSFO", "2026-07-07", 71.0, 1),
+                ],
+            )
+
+        adapter = SfoForecasterAdapter(Path(tmp))
+
+        assert adapter.load_cli_settlement_highs() == {date(2026, 7, 7): 71.0}
+        assert adapter.load_cli_settlement_truth() == {
+            ("KXHIGHTSFO", "2026-07-07"): 71.0
+        }

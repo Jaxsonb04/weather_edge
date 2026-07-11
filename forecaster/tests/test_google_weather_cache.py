@@ -146,3 +146,16 @@ def test_missing_station_adjustment_column_degrades_to_null():
         finally:
             os.chdir(prev_cwd)
             gwc.source_mos_corrections._cached = prev_cache
+
+
+def test_sfo_cli_refresh_marks_current_settlement_day_preliminary(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    current = date(2026, 7, 10)
+    observed = datetime(2026, 7, 10, 20, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(gwc, "fetch_recent_clisfo_settlements", lambda: {current: 68})
+    monkeypatch.setattr(gwc.city_truth, "_utcnow", lambda: observed)
+
+    assert gwc.refresh_clisfo_settlements(conn) == 1
+
+    assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
+    assert gwc.clisfo_high_for(conn, current.isoformat()) is None

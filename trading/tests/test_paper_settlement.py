@@ -2,12 +2,13 @@ import io
 import sqlite3
 from contextlib import redirect_stdout
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
-from sfo_kalshi_quant.cli import main
+from sfo_kalshi_quant.cli import _completed_open_target_dates, main
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
@@ -15,6 +16,38 @@ from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBi
 from sfo_kalshi_quant.paper import PaperTrader
 
 from support import pre_resolution_event
+
+
+def test_auto_settle_waits_until_six_am_next_standard_day_in_winter():
+    targets = ["2026-01-10"]
+    sfo = get_city("sfo")
+
+    assert _completed_open_target_dates(
+        targets,
+        now=datetime(2026, 1, 11, 13, 59, tzinfo=timezone.utc),
+        city=sfo,
+    ) == []
+    assert _completed_open_target_dates(
+        targets,
+        now=datetime(2026, 1, 11, 14, 0, tzinfo=timezone.utc),
+        city=sfo,
+    ) == targets
+
+
+def test_auto_settle_grace_uses_non_sfo_city_standard_clock_and_allows_older_targets():
+    nyc = get_city("nyc")
+    targets = ["2026-01-09", "2026-01-10"]
+
+    assert _completed_open_target_dates(
+        targets,
+        now=datetime(2026, 1, 11, 10, 59, tzinfo=timezone.utc),
+        city=nyc,
+    ) == ["2026-01-09"]
+    assert _completed_open_target_dates(
+        targets,
+        now=datetime(2026, 1, 11, 11, 0, tzinfo=timezone.utc),
+        city=nyc,
+    ) == targets
 
 
 def test_settle_paper_orders_computes_realized_pnl():
@@ -529,6 +562,219 @@ def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
         row = store.paper_orders(1)[0]
         assert row["status"] == "PAPER_SETTLED"
         assert row["settlement_high_f"] == 67.0
+
+
+def test_paper_auto_settle_waits_for_grace_and_final_truth():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir()
+        weather_db = root / "weather.db"
+        with sqlite3.connect(weather_db) as conn:
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f INTEGER, fetched_at TEXT, source TEXT, "
+                "is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES "
+                "('KSFO', '2026-01-10', 68, 'early', 'nws_cli', 0)"
+            )
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.30,
+            probability_lcb=0.20,
+            yes_bid=0.02,
+            yes_ask=0.03,
+            spread=0.01,
+            fee_per_contract=0.01,
+            cost_per_contract=0.04,
+            edge=0.26,
+            edge_lcb=0.16,
+            kelly_fraction=0.01,
+            recommended_contracts=10.0,
+            expected_profit=2.6,
+            reasons=[],
+            strike_type="between",
+            floor_strike=70.0,
+            cap_strike=71.0,
+        )
+        store.record_paper_order("2026-01-10", decision)
+        sfo = get_city("sfo")
+        clock = [datetime(2026, 1, 11, 5, 59, tzinfo=sfo.fixed_standard_timezone())]
+
+        def run_auto_settle():
+            with patch(
+                "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+                lambda site, issuedby, timeout=20: {},
+            ), patch(
+                "sfo_kalshi_quant.cli.settlement_clock",
+                lambda now=None, city=None: clock[0],
+            ):
+                return main(
+                    [
+                        "--forecaster-root",
+                        str(root),
+                        "--db-path",
+                        str(db_path),
+                        "--no-color",
+                        "paper-auto-settle",
+                        "--cities",
+                        "sfo",
+                    ]
+                )
+
+        assert run_auto_settle() == 0
+        assert store.paper_orders(1)[0]["status"] == "PAPER_FILLED"
+
+        clock[0] = datetime(2026, 1, 11, 6, 0, tzinfo=sfo.fixed_standard_timezone())
+        assert run_auto_settle() == 0
+        assert store.paper_orders(1)[0]["status"] == "PAPER_FILLED"
+
+        with sqlite3.connect(weather_db) as conn:
+            conn.execute(
+                "UPDATE cli_settlements SET max_temperature_f=71, fetched_at='final', "
+                "is_final=1 WHERE station_id='KSFO' AND local_date='2026-01-10'"
+            )
+        assert run_auto_settle() == 0
+        row = store.paper_orders(1)[0]
+        assert row["status"] == "PAPER_SETTLED"
+        assert row["settlement_high_f"] == 71.0
+
+
+def test_paper_auto_settle_prefers_archived_final_over_live_preliminary_version():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir()
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f INTEGER, is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES ('KSFO', '2026-01-10', 71, 1)"
+            )
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.30,
+            probability_lcb=0.20,
+            yes_bid=0.02,
+            yes_ask=0.03,
+            spread=0.01,
+            fee_per_contract=0.01,
+            cost_per_contract=0.04,
+            edge=0.26,
+            edge_lcb=0.16,
+            kelly_fraction=0.01,
+            recommended_contracts=10.0,
+            expected_profit=2.6,
+            reasons=[],
+            strike_type="between",
+            floor_strike=70.0,
+            cap_strike=71.0,
+        )
+        store.record_paper_order("2026-01-10", decision)
+
+        with patch(
+            "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+            lambda site, issuedby, timeout=20: {date(2026, 1, 10): 68},
+        ):
+            assert main(
+                [
+                    "--forecaster-root",
+                    str(root),
+                    "--db-path",
+                    str(db_path),
+                    "--no-color",
+                    "paper-auto-settle",
+                    "--cities",
+                    "sfo",
+                ]
+            ) == 0
+
+        assert store.paper_orders(1)[0]["settlement_high_f"] == 71.0
+
+
+def test_paper_resettle_verify_flags_mismatch_without_mutating_financial_truth():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir()
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f INTEGER, fetched_at TEXT, source TEXT, "
+                "is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES "
+                "('KSFO', '2026-01-10', 71, 'final', 'nws_cli', 1)"
+            )
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.30,
+            probability_lcb=0.20,
+            yes_bid=0.02,
+            yes_ask=0.03,
+            spread=0.01,
+            fee_per_contract=0.01,
+            cost_per_contract=0.04,
+            edge=0.26,
+            edge_lcb=0.16,
+            kelly_fraction=0.01,
+            recommended_contracts=10.0,
+            expected_profit=2.6,
+            reasons=[],
+            strike_type="between",
+            floor_strike=70.0,
+            cap_strike=71.0,
+        )
+        store.record_paper_order("2026-01-10", decision)
+        assert store.settle_paper_orders("2026-01-10", 68.0) == 1
+        before = dict(store.paper_orders(1)[0])
+        argv = [
+            "--forecaster-root",
+            str(root),
+            "--db-path",
+            str(db_path),
+            "--no-color",
+            "paper-resettle",
+            "--verify",
+            "--days",
+            "365",
+        ]
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            assert main(argv) == 0
+            assert main(argv) == 0
+
+        assert "MISMATCH" in out.getvalue()
+        after = dict(store.paper_orders(1)[0])
+        for field in ("status", "settled_at", "settlement_high_f", "resolved_yes", "realized_pnl"):
+            assert after[field] == before[field]
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT booked_high_f, final_high_f, verification_status "
+                "FROM paper_settlement_verifications"
+            ).fetchone()
+            assert row == (68.0, 71.0, "MISMATCH")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM paper_settlement_verifications"
+            ).fetchone()[0] == 1
 
 
 def test_close_paper_order_computes_exit_pnl():

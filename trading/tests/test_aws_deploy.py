@@ -48,6 +48,22 @@ def test_forecaster_refresh_only_refreshes_forecast_state():
     assert "publish_forecaster_pages.sh" not in text
 
 
+def test_forecaster_refresh_updates_generic_truth_fail_soft_before_emos_serve():
+    text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
+    truth_refresh = (
+        "ExecStart=-__FORECASTER_DIR__/.venv/bin/python "
+        "__FORECASTER_DIR__/city_truth.py --db __FORECASTER_DIR__/weather.db "
+        "--refresh --cities all"
+    )
+    emos_serve = (
+        "ExecStart=-__FORECASTER_DIR__/.venv/bin/python "
+        "emos_forecast.py --serve-rolling --cities all"
+    )
+
+    assert truth_refresh in text
+    assert text.index(truth_refresh) < text.index(emos_serve)
+
+
 def test_operational_publish_service_runs_fast_builder_then_publisher():
     installer = _read(AWS_DIR / "install_systemd.sh")
     service = _read(AWS_DIR / "systemd" / "sfo-operational-publish.service.in")

@@ -300,9 +300,11 @@ def serve_live_emos(
     nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
     stored_lead = lead_days if store_lead_days is None else store_lead_days
     target_iso = target_date.isoformat()
-    if target_iso in truth:
-        # A settled day's "live" forecast is meaningless and would shadow the
-        # rolling-origin row the leakage-safe rescore depends on -- refuse.
+    if target_date < _settlement_today(city):
+        # A fully elapsed settlement day's "live" forecast is meaningless and
+        # would shadow the rolling-origin row the leakage-safe rescore depends
+        # on. A current-day CLI row may still be preliminary, so its mere
+        # presence must not freeze the same-day serve.
         return None
     history = [
         (nwp_by_date[d], truth[d])

@@ -21,6 +21,9 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python nws_ground_truth.py --days 2 --ci
 # The Google/blend stack remains SFO-only (metered API budget).
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --refresh
 ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py
+# Refresh station-keyed CLI truth before EMOS reads its training/serve history.
+# Fail-soft: a transient product outage must not freeze live forecasts.
+ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py --db __FORECASTER_DIR__/weather.db --refresh --cities all
 # Live EMOS for every city's rolling window: ONE batched Open-Meteo request
 # per city per tick. The NWP previous-runs archive and the rolling-origin EMOS
 # rebuild moved to the nightly maintenance unit -- they are training data, not

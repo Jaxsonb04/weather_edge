@@ -25,10 +25,10 @@ def test_parse_target_dates_rolling_returns_three_dates():
     assert (targets[2] - targets[1]).days == 1
 
 
-def test_completed_open_target_dates_excludes_today_and_future():
+def test_completed_open_target_dates_excludes_today_and_future_after_grace():
     targets = _completed_open_target_dates(
         ["2026-06-07", "2026-06-08", "2026-06-09"],
-        now=datetime(2026, 6, 8, 1, 30, tzinfo=SFO_TZ),
+        now=datetime(2026, 6, 8, 8, 30, tzinfo=SFO_TZ),
     )
     assert targets == ["2026-06-07"]
 

@@ -204,6 +204,16 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     outcome_diagnostics_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS paper_settlement_verifications (
+    order_id INTEGER PRIMARY KEY,
+    checked_at TEXT NOT NULL,
+    market_ticker TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    booked_high_f REAL NOT NULL,
+    final_high_f REAL NOT NULL,
+    verification_status TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS paper_accounts (
     account_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -2127,6 +2137,78 @@ class PaperStore:
                         )
                 settled += cursor.rowcount
         return settled
+
+    def verify_paper_settlements(
+        self,
+        settlements,
+        *,
+        since: str,
+    ) -> dict:
+        """Audit booked settlements against final truth without changing orders."""
+
+        truth = normalize_settlement_truth(settlements)
+        checked_at = _now()
+        checked: list[dict] = []
+        missing_truth = 0
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, market_ticker, target_date, settlement_high_f "
+                "FROM paper_orders WHERE status='PAPER_SETTLED' "
+                "AND settled_at IS NOT NULL AND settlement_high_f IS NOT NULL "
+                "AND target_date >= ? ORDER BY target_date, id",
+                (since,),
+            ).fetchall()
+            for row in rows:
+                final_high = settlement_for_market(
+                    truth, str(row["market_ticker"]), str(row["target_date"])
+                )
+                if final_high is None:
+                    missing_truth += 1
+                    continue
+                booked_high = _integer_settlement_high_f(row["settlement_high_f"])
+                final_high = _integer_settlement_high_f(final_high)
+                status = "MATCH" if booked_high == final_high else "MISMATCH"
+                result = {
+                    "order_id": int(row["id"]),
+                    "market_ticker": str(row["market_ticker"]),
+                    "target_date": str(row["target_date"]),
+                    "booked_high_f": booked_high,
+                    "final_high_f": final_high,
+                    "verification_status": status,
+                }
+                checked.append(result)
+                conn.execute(
+                    """
+                    INSERT INTO paper_settlement_verifications
+                        (order_id, checked_at, market_ticker, target_date,
+                         booked_high_f, final_high_f, verification_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(order_id) DO UPDATE SET
+                        checked_at=excluded.checked_at,
+                        market_ticker=excluded.market_ticker,
+                        target_date=excluded.target_date,
+                        booked_high_f=excluded.booked_high_f,
+                        final_high_f=excluded.final_high_f,
+                        verification_status=excluded.verification_status
+                    """,
+                    (
+                        result["order_id"],
+                        checked_at,
+                        result["market_ticker"],
+                        result["target_date"],
+                        booked_high,
+                        final_high,
+                        status,
+                    ),
+                )
+        return {
+            "checked": checked,
+            "mismatches": sum(
+                row["verification_status"] == "MISMATCH" for row in checked
+            ),
+            "missing_truth": missing_truth,
+        }
 
     def close_paper_order(self, order_id: int, exit_price: float) -> sqlite3.Row:
         if exit_price <= 0 or exit_price >= 1:

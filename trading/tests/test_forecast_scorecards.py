@@ -93,3 +93,30 @@ def test_scorecards_do_not_use_embedded_non_authoritative_actuals() -> None:
 
     assert payload["available"] is False
     assert payload["matched_cases"] == 0
+
+
+def test_scorecards_exclude_preliminary_settlement_rows() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            conn.execute(
+                "ALTER TABLE cli_settlements "
+                "ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1"
+            )
+            conn.executemany(
+                "INSERT INTO cli_settlements VALUES (?, ?, ?, 't', 'cli', ?)",
+                [
+                    ("KSFO", "2026-07-01", 68, 1),
+                    ("KSFO", "2026-07-02", 71, 0),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "('KSFO', ?, 1, ?, 2, 8, 4, 't', 'emos_ngr', 'rolling_origin', NULL)",
+                [("2026-07-01", 68), ("2026-07-02", 71)],
+            )
+
+        payload = build_forecast_scorecards(db)
+
+    assert payload["matched_cases"] == 1

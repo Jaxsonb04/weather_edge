@@ -6,7 +6,7 @@ import os
 import sys
 import uuid
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -819,6 +819,19 @@ def build_parser() -> argparse.ArgumentParser:
     settle.add_argument("--settlement-high", type=float, required=True)
     settle.add_argument("--city", default="sfo", help="city slug whose orders this high settles")
     settle.set_defaults(func=cmd_paper_settle)
+
+    resettle = sub.add_parser(
+        "paper-resettle",
+        help="Verify booked paper settlements against final CLI truth without rewriting P&L",
+    )
+    resettle.add_argument(
+        "--verify",
+        action="store_true",
+        required=True,
+        help="Record MATCH/MISMATCH audit results; never mutate settled orders",
+    )
+    resettle.add_argument("--days", type=int, default=14, help="Recent target days to verify")
+    resettle.set_defaults(func=cmd_paper_resettle)
 
     prune = sub.add_parser(
         "paper-prune",
@@ -3065,6 +3078,37 @@ def cmd_paper_settle(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_paper_resettle(args: argparse.Namespace) -> int:
+    color = Color.from_no_color(args.no_color)
+    adapter = SfoForecasterAdapter(args.forecaster_root)
+    settlements = adapter.load_cli_settlement_truth()
+    since = settlement_today() - timedelta(days=max(1, args.days))
+    result = PaperStore(args.db_path).verify_paper_settlements(
+        settlements,
+        since=since.isoformat(),
+    )
+    for row in result["checked"]:
+        if row["verification_status"] != "MISMATCH":
+            continue
+        print(
+            color.yellow(
+                "MISMATCH "
+                f"order={row['order_id']} market={row['market_ticker']} "
+                f"target={row['target_date']} booked={row['booked_high_f']:.0f}F "
+                f"final={row['final_high_f']:.0f}F"
+            )
+        )
+    print(
+        color.cyan(
+            "paper settlement verification: "
+            f"checked={len(result['checked'])} mismatches={result['mismatches']} "
+            f"missing_final_truth={result['missing_truth']} "
+            "(booked P&L unchanged)"
+        )
+    )
+    return 0
+
+
 def cmd_paper_prune(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
@@ -3096,8 +3140,40 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
         if not open_targets:
             continue
         any_open = True
-        # Primary truth: the city's live CLI product (same instrument Kalshi
-        # settles on), corrected finals shadowing preliminaries.
+        # Primary truth: weather.db rows explicitly classified final. This
+        # prevents an older preliminary product version fetched from the live
+        # endpoint from shadowing a corrected final already archived.
+        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
+        settlements = {
+            target.isoformat(): high
+            for target, high in adapter.load_cli_settlement_highs().items()
+        }
+        for target_date in open_targets:
+            if target_date not in settlements:
+                continue
+            count = store.settle_paper_orders(
+                target_date,
+                settlements[target_date],
+                series_ticker=city.series_ticker,
+            )
+            db_settled += count
+            if count:
+                print(
+                    color.cyan(
+                        f"[{city.slug}] settled {count} paper orders for {target_date} "
+                        "from archived CLI truth (final)"
+                    )
+                )
+
+        # Fallback truth: the city's live CLI product after the grace window.
+        # The delay gives the corrected final product time to replace evening
+        # preliminary versions when the archive refresh has not landed yet.
+        remaining = _completed_open_target_dates(
+            store.open_paper_target_dates(series_ticker=city.series_ticker),
+            city=city,
+        )
+        if not remaining:
+            continue
         try:
             cli_settlements = {
                 target.isoformat(): high
@@ -3113,7 +3189,7 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
                     f"{type(exc).__name__}: {exc}"
                 )
             )
-        for target_date in open_targets:
+        for target_date in remaining:
             if target_date not in cli_settlements:
                 continue
             count = store.settle_paper_orders(
@@ -3129,34 +3205,6 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
                     )
                 )
 
-        # Fallback truth: the settlement store in weather.db (IEM/CLI archive).
-        remaining = _completed_open_target_dates(
-            store.open_paper_target_dates(series_ticker=city.series_ticker),
-            city=city,
-        )
-        if not remaining:
-            continue
-        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
-        settlements = {
-            target.isoformat(): high
-            for target, high in adapter.load_cli_settlement_highs().items()
-        }
-        for target_date in remaining:
-            if target_date not in settlements:
-                continue
-            count = store.settle_paper_orders(
-                target_date,
-                settlements[target_date],
-                series_ticker=city.series_ticker,
-            )
-            db_settled += count
-            if count:
-                print(
-                    color.cyan(
-                        f"[{city.slug}] settled {count} paper orders for {target_date} "
-                        "from archived CLI truth"
-                    )
-                )
     if not any_open:
         print(color.yellow("auto-settle skipped: no completed open paper target dates"))
         return 0
@@ -3174,14 +3222,17 @@ def _completed_open_target_dates(
     now: datetime | None = None,
     city: CityConfig | None = None,
 ) -> list[str]:
-    local_today = settlement_today(now, city)
+    clock = settlement_clock(now, city)
     completed = []
     for target_date in target_dates:
         try:
             target = parse_target_date(target_date)
         except ValueError:
             continue
-        if target < local_today:
+        grace_day = target + timedelta(days=1)
+        if clock.date() > grace_day or (
+            clock.date() == grace_day and clock.time() >= time(6, 0)
+        ):
             completed.append(target_date)
     return completed
 

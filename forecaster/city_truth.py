@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -35,6 +35,10 @@ IEM_CLI_URL = "https://mesonet.agron.iastate.edu/json/cli.py?station={station}&y
 _USER_AGENT = "weatheredge-forecaster/0.2 (student research project)"
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -44,10 +48,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             max_temperature_f INTEGER,
             fetched_at TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'nws_cli',
+            is_final INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (station_id, local_date)
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
+    if "is_final" not in columns:
+        conn.execute(
+            "ALTER TABLE cli_settlements "
+            "ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cli_settlements_date ON cli_settlements(local_date)"
     )
@@ -77,16 +88,19 @@ def upsert_settlement(
     *,
     source: str = "nws_cli",
     fetched_at: str | None = None,
+    is_final: bool = True,
 ) -> None:
     conn.execute(
         """
         INSERT INTO cli_settlements
-            (station_id, local_date, max_temperature_f, fetched_at, source)
-        VALUES (?, ?, ?, ?, ?)
+            (station_id, local_date, max_temperature_f, fetched_at, source, is_final)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(station_id, local_date) DO UPDATE SET
             max_temperature_f = excluded.max_temperature_f,
             fetched_at = excluded.fetched_at,
-            source = excluded.source
+            source = excluded.source,
+            is_final = excluded.is_final
+        WHERE cli_settlements.is_final = 0 OR excluded.is_final = 1
         """,
         (
             station_id,
@@ -94,8 +108,25 @@ def upsert_settlement(
             int(max_temperature_f),
             fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
             source,
+            int(is_final),
         ),
     )
+
+
+def settlement_is_final(
+    city: CityConfig,
+    report_date: date,
+    observed_at: datetime,
+) -> bool:
+    """Whether the city's fixed-standard climate day had ended when observed."""
+
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    settlement_date = (
+        observed_at.astimezone(timezone.utc)
+        + timedelta(hours=city.standard_utc_offset_hours)
+    ).date()
+    return report_date < settlement_date
 
 
 def refresh_live(
@@ -110,6 +141,8 @@ def refresh_live(
 
     ensure_schema(conn)
     stored: dict[str, int] = {}
+    observed_at = _utcnow()
+    fetched_at = observed_at.isoformat(timespec="seconds")
     for city in cities:
         try:
             settlements = fetch_recent_cli_settlements(
@@ -119,7 +152,14 @@ def refresh_live(
             stored[city.nws_station_id] = 0
             continue
         for report_date, high in settlements.items():
-            upsert_settlement(conn, city.nws_station_id, report_date.isoformat(), high)
+            upsert_settlement(
+                conn,
+                city.nws_station_id,
+                report_date.isoformat(),
+                high,
+                fetched_at=fetched_at,
+                is_final=settlement_is_final(city, report_date, observed_at),
+            )
         stored[city.nws_station_id] = len(settlements)
     conn.commit()
     return stored
@@ -151,6 +191,8 @@ def backfill_iem(
     ensure_schema(conn)
     end = end_year or date.today().year
     written = 0
+    observed_at = _utcnow()
+    fetched_at = observed_at.isoformat(timespec="seconds")
     for year in range(start_year, end + 1):
         try:
             rows = _iem_rows(city.nws_station_id, year)
@@ -164,10 +206,17 @@ def backfill_iem(
                 continue
             try:
                 high_int = int(high)
+                report_date = date.fromisoformat(str(valid)[:10])
             except (TypeError, ValueError):
                 continue
             upsert_settlement(
-                conn, city.nws_station_id, str(valid)[:10], high_int, source="iem_cli"
+                conn,
+                city.nws_station_id,
+                report_date.isoformat(),
+                high_int,
+                source="iem_cli",
+                fetched_at=fetched_at,
+                is_final=settlement_is_final(city, report_date, observed_at),
             )
             written += 1
     conn.commit()
@@ -181,7 +230,7 @@ def load_cli_truth(conn: sqlite3.Connection, station_id: str) -> dict[str, float
     truth: dict[str, float] = {}
     for local_date, max_t in conn.execute(
         "SELECT local_date, max_temperature_f FROM cli_settlements "
-        "WHERE station_id = ? AND max_temperature_f IS NOT NULL",
+        "WHERE station_id = ? AND max_temperature_f IS NOT NULL AND is_final = 1",
         (station_id,),
     ):
         value = integer_settlement_high_f(max_t)
@@ -194,7 +243,8 @@ def cli_high_for(conn: sqlite3.Connection, station_id: str, local_date: str) -> 
     ensure_schema(conn)
     row = conn.execute(
         "SELECT max_temperature_f FROM cli_settlements "
-        "WHERE station_id = ? AND local_date = ? AND max_temperature_f IS NOT NULL",
+        "WHERE station_id = ? AND local_date = ? AND max_temperature_f IS NOT NULL "
+        "AND is_final = 1",
         (station_id, local_date),
     ).fetchone()
     return integer_settlement_high_f(row[0]) if row else None
@@ -205,7 +255,7 @@ def coverage(conn: sqlite3.Connection) -> list[tuple]:
     return conn.execute(
         """
         SELECT station_id, COUNT(*), MIN(local_date), MAX(local_date)
-        FROM cli_settlements WHERE max_temperature_f IS NOT NULL
+        FROM cli_settlements WHERE max_temperature_f IS NOT NULL AND is_final = 1
         GROUP BY station_id ORDER BY station_id
         """
     ).fetchall()

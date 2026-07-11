@@ -128,8 +128,13 @@ def run_replay(
     leads: tuple[int, ...] = LEADS,
 ) -> dict:
     with sqlite3.connect(db_path) as conn:
+        settlement_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")
+        }
+        final_filter = "AND is_final = 1" if "is_final" in settlement_columns else ""
         latest = conn.execute(
-            "SELECT MAX(local_date) FROM cli_settlements WHERE max_temperature_f IS NOT NULL"
+            "SELECT MAX(local_date) FROM cli_settlements "
+            f"WHERE max_temperature_f IS NOT NULL {final_filter}"
         ).fetchone()[0]
         if latest is None:
             raise SystemExit("cli_settlements holds no scored truth")

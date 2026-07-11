@@ -87,11 +87,14 @@ def _city_forecasts(
 def _city_settlement(conn: sqlite3.Connection, city: CityConfig) -> dict | None:
     if not _table_exists(conn, "cli_settlements"):
         return None
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
+    final_filter = "AND is_final = 1" if "is_final" in columns else ""
     row = conn.execute(
-        """
+        f"""
         SELECT local_date, max_temperature_f, fetched_at, source
         FROM cli_settlements
         WHERE station_id = ? AND max_temperature_f IS NOT NULL
+          {final_filter}
         ORDER BY local_date DESC LIMIT 1
         """,
         (city.nws_station_id,),

@@ -520,9 +520,12 @@ class SfoForecasterAdapter:
         with sqlite3.connect(self.weather_db) as conn:
             if not _table_exists(conn, "cli_settlements"):
                 return {}
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
+            final_filter = "AND is_final = 1" if "is_final" in columns else ""
             rows = conn.execute(
                 "SELECT local_date, max_temperature_f FROM cli_settlements "
-                "WHERE station_id = ? AND max_temperature_f IS NOT NULL",
+                "WHERE station_id = ? AND max_temperature_f IS NOT NULL "
+                f"{final_filter}",
                 (self.station_id,),
             ).fetchall()
         return {

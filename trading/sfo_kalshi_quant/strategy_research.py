@@ -2415,12 +2415,18 @@ def _emos_health(
     # settled day by design, so neither its absence nor its age is a failure.
     settled: set[tuple[str, str]] = set()
     if _sqlite_table_exists(conn, "cli_settlements"):
+        final_filter = (
+            "AND is_final = 1"
+            if "is_final" in _sqlite_columns(conn, "cli_settlements")
+            else ""
+        )
         settled = {
             (str(row["station_id"]), str(row["local_date"]))
             for row in conn.execute(
                 f"""
                 SELECT station_id, local_date FROM cli_settlements
                 WHERE local_date IN ({placeholders}) AND max_temperature_f IS NOT NULL
+                  {final_filter}
                 """,
                 tuple(rolling_targets),
             ).fetchall()
@@ -2546,13 +2552,19 @@ def _clisfo_health(
             )
         )
         return {"available": False, "reason": "cli_settlements table missing"}
+    final_filter = (
+        "AND is_final = 1"
+        if "is_final" in _sqlite_columns(conn, "cli_settlements")
+        else ""
+    )
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS rows,
                MAX(local_date) AS latest_date,
                MAX(fetched_at) AS latest_fetched_at
         FROM cli_settlements
         WHERE max_temperature_f IS NOT NULL
+          {final_filter}
         """
     ).fetchone()
     total_rows = int(row["rows"] or 0)
@@ -2578,10 +2590,11 @@ def _clisfo_health(
     latest_by_station = {
         str(station): latest
         for station, latest in conn.execute(
-            """
+            f"""
             SELECT station_id, MAX(local_date)
             FROM cli_settlements
             WHERE max_temperature_f IS NOT NULL
+              {final_filter}
             GROUP BY station_id
             """
         ).fetchall()

@@ -66,8 +66,9 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
             truth_columns = _columns(conn, "cli_settlements")
             if "station_id" not in forecast_columns or "station_id" not in truth_columns:
                 return _unavailable("station-keyed forecast and settlement tables required")
+            final_filter = "AND s.is_final = 1" if "is_final" in truth_columns else ""
             rows = conn.execute(
-                """
+                f"""
                 SELECT f.station_id, f.target_date, f.lead_days,
                        f.predicted_high_f, f.sigma_f, f.method, f.source,
                        s.max_temperature_f
@@ -78,6 +79,7 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
                 WHERE f.source != 'live'
                   AND f.predicted_high_f IS NOT NULL
                   AND f.sigma_f IS NOT NULL
+                  {final_filter}
                 ORDER BY f.station_id, f.lead_days, f.method, f.source, f.target_date
                 """
             ).fetchall()

@@ -60,10 +60,13 @@ def test_load_emos_archive_missing_table_returns_empty():
     assert load_emos_archive(conn, lead_days=1) == {}
 
 
-def test_serve_live_emos_with_injected_forecasts():
+def test_serve_live_emos_with_injected_forecasts(monkeypatch):
+    import emos_forecast as ef
+
     conn = sqlite3.connect(":memory:")
     _seed(conn)  # 140 settled days, all strictly before the target
     target = date(2024, 6, 1)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
     result = serve_live_emos(conn, target, live_models=live)
     assert result is not None
@@ -86,10 +89,39 @@ def test_serve_live_emos_refuses_settled_target():
     assert conn.execute("SELECT COUNT(*) FROM forecast_emos_daily_high WHERE source='live'").fetchone()[0] == 0
 
 
-def test_serve_live_emos_drops_models_unseen_in_training():
+def test_serve_live_emos_allows_current_settlement_day_truth_row(monkeypatch):
+    import emos_forecast as ef
+
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)
+    target = date(2024, 5, 19)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+
+    result = serve_live_emos(
+        conn,
+        target,
+        lead_days=1,
+        store_lead_days=0,
+        live_models=live,
+        recalibrate=False,
+    )
+
+    assert result is not None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM forecast_emos_daily_high "
+        "WHERE target_date=? AND lead_days=0 AND source='live'",
+        (target.isoformat(),),
+    ).fetchone()[0] == 1
+
+
+def test_serve_live_emos_drops_models_unseen_in_training(monkeypatch):
+    import emos_forecast as ef
+
     conn = sqlite3.connect(":memory:")
     _seed(conn)
     target = date(2024, 6, 1)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     seen = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
     with_bogus = {**seen, "bogus_unseen_model": 200.0}
     a = serve_live_emos(conn, target, live_models=with_bogus)
@@ -164,10 +196,13 @@ def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch
     assert "served=3 targets=3 cities=1 leads=0..2" in out.getvalue()
 
 
-def test_serve_live_emos_stores_lead0_row_with_lead1_fit():
+def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):
+    import emos_forecast as ef
+
     conn = sqlite3.connect(":memory:")
     _seed(conn)  # lead-1 history: 140 settled days before the target
     target = date(2024, 6, 1)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
     result = serve_live_emos(conn, target, lead_days=1, store_lead_days=0, live_models=live)
     assert result is not None
@@ -185,10 +220,13 @@ def test_serve_live_emos_stores_lead0_row_with_lead1_fit():
     assert abs(lead1[0] - result[0]) < 1e-9 and abs(lead1[1] - result[1]) < 1e-9
 
 
-def test_serve_live_emos_applies_trailing_bias_recalibration():
+def test_serve_live_emos_applies_trailing_bias_recalibration(monkeypatch):
+    import emos_forecast as ef
+
     conn = sqlite3.connect(":memory:")
     _seed(conn)  # settles 2024-01-01 .. 2024-05-19
     target = date(2024, 5, 20)  # serve date = 2024-05-19 at lead 1
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     # Rolling-origin record: a constant +2F warm error over the trailing
     # window (45 scored days ending 2024-05-18). cli_settlements was created
     # by the legacy-table migration inside _seed's first truth load.

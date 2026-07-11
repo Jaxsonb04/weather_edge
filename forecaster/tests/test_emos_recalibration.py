@@ -171,6 +171,21 @@ def test_correction_for_serve_reads_scored_rolling_rows():
     assert len(series) == 45
 
 
+def test_scored_series_excludes_preliminary_settlement_rows():
+    conn = sqlite3.connect(":memory:")
+    _seed_db(conn, bias=2.0, days=3)
+    conn.execute(
+        "ALTER TABLE cli_settlements ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1"
+    )
+    conn.execute(
+        "UPDATE cli_settlements SET is_final=0 WHERE local_date='2026-05-03'"
+    )
+
+    series = load_scored_series(conn, "KSEA", 1)
+
+    assert [row[0].isoformat() for row in series] == ["2026-05-01", "2026-05-02"]
+
+
 def test_correction_for_serve_missing_tables_is_noop():
     conn = sqlite3.connect(":memory:")
     correction = correction_for_serve(conn, "KSEA", 1, date(2026, 7, 10))

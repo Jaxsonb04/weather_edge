@@ -122,9 +122,15 @@ def load_clean_blend_rows(
 
     settlements: dict[str, float] = {}
     if _table_exists(conn, "cli_settlements"):
+        final_filter = (
+            "AND is_final = 1"
+            if _has_column(conn, "cli_settlements", "is_final")
+            else ""
+        )
         truth_cursor = conn.execute(
             "SELECT local_date, max_temperature_f FROM cli_settlements "
-            "WHERE station_id = 'KSFO' AND max_temperature_f IS NOT NULL"
+            "WHERE station_id = 'KSFO' AND max_temperature_f IS NOT NULL "
+            f"{final_filter}"
         )
     elif _table_exists(conn, "clisfo_settlements"):
         truth_cursor = conn.execute(
@@ -919,6 +925,8 @@ def clisfo_nws_divergence(conn: sqlite3.Connection) -> dict:
 
     truth_table = "cli_settlements" if has_new else "clisfo_settlements"
     truth_filter = "AND c.station_id = 'KSFO'" if has_new else ""
+    if has_new and _has_column(conn, "cli_settlements", "is_final"):
+        truth_filter += " AND c.is_final = 1"
     rows = conn.execute(
         f"""
         SELECT c.local_date, c.max_temperature_f AS clisfo, n.high_f AS nws

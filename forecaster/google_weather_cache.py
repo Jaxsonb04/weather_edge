@@ -613,7 +613,9 @@ def refresh_clisfo_settlements(conn):
     except Exception:
         return 0
     city_truth.ensure_schema(conn)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    observed_at = city_truth._utcnow()
+    now_iso = observed_at.isoformat()
+    sfo_city = next(city for city in city_truth.CITIES if city.nws_station_id == "KSFO")
     stored = 0
     for report_date, max_temperature_f in settlements.items():
         city_truth.upsert_settlement(
@@ -622,6 +624,7 @@ def refresh_clisfo_settlements(conn):
             report_date.isoformat(),
             int(max_temperature_f),
             fetched_at=now_iso,
+            is_final=city_truth.settlement_is_final(sfo_city, report_date, observed_at),
         )
         stored += 1
     return stored
@@ -1434,9 +1437,14 @@ def _dataset_guidance_corrections(db_path, target_iso, promoted_keys):
             ):
                 return {"metadata": {"mode": "disabled", "reason": "no CLI settlement table"}}
             if table_exists(conn, "cli_settlements"):
+                final_join = (
+                    " AND c.is_final = 1"
+                    if "is_final" in table_columns(conn, "cli_settlements")
+                    else ""
+                )
                 join_clause = (
                     "JOIN cli_settlements c ON c.local_date = f.target_date "
-                    "AND c.station_id = 'KSFO'"
+                    f"AND c.station_id = 'KSFO'{final_join}"
                 )
             else:
                 join_clause = "JOIN clisfo_settlements c ON c.local_date = f.target_date"
@@ -1580,10 +1588,15 @@ def latest_scored_blend_rows():
                     f"ELSE {stored_source} END"
                 )
                 if table_exists(conn, "cli_settlements"):
+                    final_join = (
+                        "AND c.is_final = 1 "
+                        if "is_final" in table_columns(conn, "cli_settlements")
+                        else ""
+                    )
                     join_clause = (
                         "LEFT JOIN cli_settlements c "
                         "ON c.local_date = b.target_date AND c.station_id = 'KSFO' "
-                        "AND c.max_temperature_f IS NOT NULL"
+                        f"AND c.max_temperature_f IS NOT NULL {final_join}"
                     )
                 else:
                     join_clause = (

@@ -96,14 +96,19 @@ def load_scored_series(
         ).fetchone()
         if row is None:
             return []
+    settlement_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")
+    }
+    final_filter = "AND c.is_final = 1" if "is_final" in settlement_columns else ""
     rows = conn.execute(
-        """
+        f"""
         SELECT f.target_date, f.predicted_high_f, f.sigma_f, c.max_temperature_f
         FROM forecast_emos_daily_high AS f
         JOIN cli_settlements AS c
           ON c.station_id = f.station_id AND c.local_date = f.target_date
         WHERE f.station_id = ? AND f.lead_days = ? AND f.source = ?
           AND c.max_temperature_f IS NOT NULL
+          {final_filter}
         ORDER BY f.target_date
         """,
         (station_id, lead_days, source),
