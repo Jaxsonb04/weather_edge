@@ -37,7 +37,12 @@ failure propagates only after services are safely quiesced. Inspect
 `/etc/weatheredge.env`, start each service manually, and only then enable the
 approved timers.
 
-The full sync does not use `--delete`. The scheduled
+The full sync first streams the canonical quiescence helper to the host and
+stops/disables every WeatherEdge timer plus its paired service before any
+remote tree mutation or source transfer. It does not assume the helper already
+exists in the old remote source tree. A failed transfer remains safely
+quiesced; rerun the sync, install, and verify before enabling timers. The full
+sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
 `forecaster-runtime.rsync-filter`, which preserves runtime databases, caches,
 their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
@@ -48,10 +53,10 @@ The full sync also deploys the root `pyproject.toml` and `README.md`; both
 installers keep the executable environment under `trading/.venv` while running
 the editable install from `/opt/weatheredge`. The scheduled forecaster-only sync
 does not reinstall that environment. After every full transfer succeeds, the
-sync removes only the obsolete `trading/pyproject.toml` and the eleven audited
-top-level forecaster scripts now housed under `forecaster/research/`. No runtime
-database, raw input, model directory, or publication artifact is part of that
-cleanup.
+sync removes only the obsolete `trading/pyproject.toml`, the two retired service
+templates under `trading/sfo_kalshi_quant/`, and the eleven audited top-level
+forecaster scripts now housed under `forecaster/research/`. No runtime database,
+raw input, model directory, or publication artifact is part of that cleanup.
 
 During an upgrade, the installer uninstalls the retired `sfo-kalshi-quant`
 distribution before installing `weatheredge`, then verifies that the old

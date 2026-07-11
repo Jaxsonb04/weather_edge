@@ -6,6 +6,8 @@ import math
 from datetime import date, timedelta
 from statistics import fmean
 
+import pytest
+
 from postproc_models import (
     _simple_ols,
     analog_ensemble_predictions,
@@ -69,6 +71,49 @@ def test_emos_is_rolling_origin_no_leakage():
             assert day in full
             assert abs(full[day][0] - prefix[day][0]) < 1e-9
             assert abs(full[day][1] - prefix[day][1]) < 1e-9
+
+
+@pytest.mark.parametrize(
+    ("lead_days", "expected_truth"),
+    [
+        (0, [60.0, 61.0, 62.0]),
+        (1, [60.0, 61.0]),
+        (2, [60.0]),
+    ],
+)
+def test_emos_truth_lag_matches_live_availability_boundary(
+    monkeypatch, lead_days, expected_truth
+):
+    """Target D can only train through D-lead-1 at its live serve time."""
+
+    import postproc_models as models
+
+    base = date(2026, 1, 1)
+    dates = [(base + timedelta(days=offset)).isoformat() for offset in range(4)]
+    truth = {day: 60.0 + offset for offset, day in enumerate(dates)}
+    nwp = {
+        day: {"a": 60.0 + offset, "b": 61.0 + offset, "c": 62.0 + offset}
+        for offset, day in enumerate(dates)
+    }
+    fitted_truth: list[list[float]] = []
+
+    def capture_fit(history, *, weight_mode="equal"):
+        fitted_truth.append([actual for _forecasts, actual in history])
+        return object()
+
+    monkeypatch.setattr(models, "fit_emos", capture_fit)
+    monkeypatch.setattr(models, "apply_emos", lambda _params, _forecasts: (70.0, 2.0))
+
+    predictions = models.emos_ngr_predictions(
+        dates,
+        truth,
+        nwp,
+        min_train=0,
+        truth_lag_days=lead_days,
+    )
+
+    assert dates[-1] in predictions
+    assert fitted_truth[-1] == expected_truth
 
 
 def test_analog_predicts_near_truth_and_is_rolling_origin():

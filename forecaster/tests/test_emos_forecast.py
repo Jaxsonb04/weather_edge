@@ -62,6 +62,29 @@ def test_build_emos_archive_roundtrip():
         "SELECT COUNT(*) FROM forecast_emos_daily_high WHERE actual_high_f IS NOT NULL"
     ).fetchone()[0]
     assert scored == written
+    assert conn.execute(
+        "SELECT DISTINCT source FROM forecast_emos_daily_high"
+    ).fetchall() == [("rolling_origin_v2",)]
+
+
+def test_build_emos_archive_replays_truth_at_the_requested_lead(monkeypatch):
+    import emos_forecast as ef
+
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)
+    captured: dict[str, int] = {}
+
+    def fake_predictions(dates, truth, nwp, *, truth_lag_days=0, **kwargs):
+        captured["truth_lag_days"] = truth_lag_days
+        return {dates[-1]: (72.0, 2.0)}
+
+    monkeypatch.setattr(ef, "emos_ngr_predictions", fake_predictions)
+
+    assert build_emos_archive(conn, lead_days=1) == 1
+    assert captured == {"truth_lag_days": 1}
+    assert conn.execute(
+        "SELECT source, predicted_high_f, sigma_f FROM forecast_emos_daily_high"
+    ).fetchall() == [("rolling_origin_v2", 72.0, 2.0)]
 
 
 def test_serve_live_emos_with_injected_forecasts(monkeypatch):

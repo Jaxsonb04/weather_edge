@@ -36,6 +36,7 @@ REMOTE_BASE="${REMOTE_BASE:-/opt/weatheredge}"
 LOCAL_TRADING_DIR="${LOCAL_TRADING_DIR:-$WEATHEREDGE_ROOT/trading}"
 LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
+QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
 
 if [[ ! "$REMOTE_BASE" =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
@@ -66,8 +67,19 @@ if [[ ! -f "$FORECASTER_EXCLUDES" ]]; then
   echo "Rsync exclude manifest not found: $FORECASTER_EXCLUDES" >&2
   exit 1
 fi
+if [[ ! -f "$QUIESCE_HELPER" ]]; then
+  echo "Systemd quiescence helper not found: $QUIESCE_HELPER" >&2
+  exit 1
+fi
 
 chmod 600 "$HOST_KEY"
+
+# The remote may still contain an older source tree, so stream the current
+# canonical helper over SSH instead of invoking a path that this sync has not
+# transferred yet. A failed transfer deliberately leaves timers disabled and
+# paired services inactive; the operator reinstalls/enables only after the
+# complete tree is present and verified.
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" "bash -s" < "$QUIESCE_HELPER"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo mkdir -p '$REMOTE_BASE' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE'"
@@ -108,6 +120,8 @@ rsync -av \
 # by TP-12/FC-7, and only after every transfer above has succeeded.
 REMOTE_RETIRED_PATHS=(
   "$REMOTE_BASE/trading/pyproject.toml"
+  "$REMOTE_BASE/trading/sfo_kalshi_quant/sfo-dataset-backfill.service.in"
+  "$REMOTE_BASE/trading/sfo_kalshi_quant/sfo-forecaster-refresh.service.in"
   "$REMOTE_BASE/forecaster/forecast_tomorrow.py"
   "$REMOTE_BASE/forecaster/load_to_db.py"
   "$REMOTE_BASE/forecaster/combine_psv.py"

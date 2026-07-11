@@ -37,6 +37,7 @@ export default function App() {
   const { route, navigate } = useHashRoute();
   const [cmdOpen, setCmdOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
+  const hasValidSignal = data != null && typeof data.signal === "object" && data.signal !== null;
 
   // SPA focus management: move focus to the route heading after navigation,
   // including after a lazy route chunk finishes rendering.
@@ -121,6 +122,8 @@ export default function App() {
           <ErrorState message={error} />
         ) : !data ? (
           <LoadingState />
+        ) : !hasValidSignal ? (
+          <ErrorState message="Published trading signal is missing or invalid." />
         ) : route === "methodology" ? (
           <ErrorBoundary key={route}>
             <Suspense fallback={<ViewLoader />}>
@@ -136,7 +139,7 @@ export default function App() {
         )}
       </main>
 
-      <Footer disclaimer={data?.signal.disclaimer ?? DISCLAIMER} repoUrl={REPO} liveUrl={LIVE} />
+      <Footer disclaimer={data?.signal?.disclaimer ?? DISCLAIMER} repoUrl={REPO} liveUrl={LIVE} />
     </div>
   );
 }

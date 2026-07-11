@@ -102,6 +102,8 @@ for token in sys.argv[1:-1]:
 
     expected_cleanup = [
         "/opt/weatheredge/trading/pyproject.toml",
+        "/opt/weatheredge/trading/sfo_kalshi_quant/sfo-dataset-backfill.service.in",
+        "/opt/weatheredge/trading/sfo_kalshi_quant/sfo-forecaster-refresh.service.in",
         "/opt/weatheredge/forecaster/forecast_tomorrow.py",
         "/opt/weatheredge/forecaster/load_to_db.py",
         "/opt/weatheredge/forecaster/combine_psv.py",
@@ -168,6 +170,58 @@ exit 0
     assert result.returncode == 23
     assert transfer_count.read_text().strip() == "2"
     assert "rm -f" not in ssh_log.read_text()
+
+
+def test_full_sync_quiesces_before_remote_mutation_and_stays_quiesced_on_transfer_failure(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    action_log = tmp_path / "actions.log"
+    transfer_count = tmp_path / "transfer-count"
+    _write_executable(
+        fake_bin / "ssh",
+        "#!/bin/sh\nprintf 'ssh|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        """#!/bin/sh
+printf 'rsync|%s\n' "$*" >> "$ACTION_LOG"
+count=0
+if [ -f "$TRANSFER_COUNT" ]; then count=$(sed -n '1p' "$TRANSFER_COUNT"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$TRANSFER_COUNT"
+if [ "$count" -eq 2 ]; then exit 23; fi
+exit 0
+""",
+    )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example",
+            "EC2_KEY": str(key),
+            "REMOTE_BASE": "/opt/weatheredge",
+            "TRANSFER_COUNT": str(transfer_count),
+            "ACTION_LOG": str(action_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 23
+    actions = action_log.read_text().splitlines()
+    assert "bash -s" in actions[0]
+    assert "mkdir -p" in actions[1] and "chown" in actions[1]
+    assert actions[2].startswith("rsync|")
+    assert not any("enable" in action or "start" in action for action in actions)
 
 
 @pytest.mark.parametrize(

@@ -10,9 +10,13 @@ not authorize production access or changes.
 - `sync_to_box.sh` is the operator-driven full source sync. It defaults to
   `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, sends the root
   `pyproject.toml`/`README.md` install inputs plus both source trees, and
-  preserves remote runtime state. After all transfers succeed, it removes only
-  the retired nested manifest and eleven audited pre-`research/` script paths;
-  it never broadly deletes either runtime tree.
+  preserves remote runtime state. Before the first remote tree mutation or
+  source transfer, it streams the canonical timer/service helper to the host
+  and quiesces every WeatherEdge timer and paired service. A transfer failure
+  intentionally leaves them quiesced for a clean retry. After all transfers
+  succeed, it removes only the retired nested manifest, two stale service
+  templates, and eleven audited pre-`research/` script paths; it never broadly
+  deletes either runtime tree.
 - `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
   for the EC2 migration window. New commands must use `sync_to_box.sh`.
 - `pull_paper_db.sh` allocates a private mode-700 directory on the remote host,
@@ -49,6 +53,9 @@ bash trading/deploy/aws/sync_to_box.sh
 source .local/ec2.env
 ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
 ```
+
+The full sync does not re-enable scheduled work. Complete the installer and
+verification steps below against the coherent synced tree before timers start.
 
 ## Install Modes
 

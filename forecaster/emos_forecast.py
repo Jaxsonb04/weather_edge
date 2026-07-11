@@ -43,7 +43,7 @@ DB_PATH = Path(__file__).resolve().parent / "weather.db"
 # inv_var = inverse-error-variance model weighting (Phase 4 winner: beat the
 # equal-weight emos_ngr out-of-sample, DM -3.60, lower CRPS in every cohort).
 DEFAULT_WEIGHT_MODE = "inv_var"
-DEFAULT_SOURCE = "rolling_origin"
+DEFAULT_SOURCE = "rolling_origin_v2"
 
 
 def _method_tag(weight_mode: str) -> str:
@@ -146,15 +146,22 @@ def build_emos_archive(
 ) -> int:
     """Compute rolling-origin EMOS (mu, sigma) over the NWP archive and upsert.
 
-    Each row is the out-of-sample prediction for its day (fit on strictly-prior
-    days), with the CLI settlement joined in where available for scoring.
+    Each row is the out-of-sample prediction for its day, replaying the truth
+    that would have been available at that lead's live serve. Version 2 uses a
+    distinct source label so historical scoreboards remain comparable.
     """
 
     ensure_schema(conn)
     station = city.nws_station_id
     truth = load_clisfo_truth(conn, station)
     nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
-    predictions = emos_ngr_predictions(sorted(nwp_by_date), truth, nwp_by_date, weight_mode=weight_mode)
+    predictions = emos_ngr_predictions(
+        sorted(nwp_by_date),
+        truth,
+        nwp_by_date,
+        weight_mode=weight_mode,
+        truth_lag_days=lead_days,
+    )
     stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     method = _method_tag(weight_mode)
 

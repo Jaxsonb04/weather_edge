@@ -34,6 +34,7 @@ there is no import cycle with either scoreboard that consumes these.
 from __future__ import annotations
 
 import math
+from datetime import date, timedelta
 from statistics import fmean, pstdev, stdev
 
 from scores import SIGMA_FLOOR_F
@@ -193,21 +194,40 @@ def emos_ngr_predictions(
     *,
     min_train: int = EMOS_MIN_TRAIN,
     weight_mode: str = "equal",
+    truth_lag_days: int = 0,
 ) -> dict[str, tuple[float, float]]:
-    """Rolling-origin EMOS predictions: each day fit on strictly-prior days."""
+    """Rolling-origin EMOS predictions with a live-availability truth boundary.
+
+    ``truth_lag_days=0`` preserves the generic rolling-origin contract: target
+    D fits through D-1. A replay for a forecast served ``lead`` days before D
+    passes that lead as the lag, restricting truth to D-lead-1 just as the live
+    serve was restricted at that moment.
+    """
+
+    if truth_lag_days < 0:
+        raise ValueError("truth_lag_days must be non-negative")
 
     preds: dict[str, tuple[float, float]] = {}
-    history: list[tuple[dict[str, float], float]] = []
+    history: list[tuple[str, dict[str, float], float]] = []
     for date_str in dates_sorted:
         models_for_day = nwp_by_date.get(date_str)
         usable = bool(models_for_day) and len(models_for_day) >= MIN_MODELS
-        if usable and len(history) >= min_train:
-            params = fit_emos(history, weight_mode=weight_mode)
+        truth_cutoff = (
+            date.fromisoformat(date_str) - timedelta(days=truth_lag_days + 1)
+        ).isoformat()
+        available_history = [
+            (past_models, actual)
+            for past_date, past_models, actual in history
+            if past_date <= truth_cutoff
+        ]
+        if usable and len(available_history) >= min_train:
+            params = fit_emos(available_history, weight_mode=weight_mode)
             if params is not None:
                 preds[date_str] = apply_emos(params, models_for_day)
-        # Append AFTER predicting so the target day never trains itself.
+        # Retain all prior candidates; the per-target availability boundary
+        # above decides when each truth could have reached a live serve.
         if usable and date_str in truth:
-            history.append((dict(models_for_day), truth[date_str]))
+            history.append((date_str, dict(models_for_day), truth[date_str]))
     return preds
 
 
