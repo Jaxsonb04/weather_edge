@@ -86,6 +86,33 @@ def test_paper_limit_mode_records_resting_order_but_not_open_position():
         assert store.settle_paper_orders("2026-06-15", 73.0) == 0
 
 
+def test_limit_mode_paper_stake_sizes_from_eventual_maker_quote():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        config = StrategyConfig(
+            limit_price_edge_lcb_buffer=0.02,
+            max_contracts_per_market=100.0,
+        )
+        trader = PaperTrader(store, config, entry_mode="limit")
+        decision = _decision(
+            ticker="KXCPI-TEST-B74.5",
+            probability_lcb=0.81,
+            entry_bid=0.29,
+            entry_ask=0.40,
+            entry_ask_size=100.0,
+        )
+
+        order_ids = trader.place_approved("2026-06-15", [decision], stake_dollars=10.0)
+
+        assert len(order_ids) == 1
+        row = store.paper_order(order_ids[0])
+        assert row is not None
+        assert row["status"] == "PAPER_LIMIT_RESTING"
+        assert row["limit_price"] == 0.30
+        assert row["contracts"] == 32.0
+        assert row["contracts"] * row["limit_cost_per_contract"] <= 10.0 + 1e-9
+
+
 def test_paper_limit_mode_fills_when_limit_crosses_visible_ask():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

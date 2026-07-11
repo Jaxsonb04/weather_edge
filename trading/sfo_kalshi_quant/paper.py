@@ -40,9 +40,18 @@ class PaperTrader:
             raise ValueError("paper stake must be greater than zero")
         if decision.ask <= 0:
             return decision
-        maker = False  # Paper stake books immediately at the visible ask.
+
+        entry_price = decision.ask
+        maker = False
+        if self.entry_mode == "limit":
+            quote = buy_limit_for_decision(decision, self.config)
+            if quote is None:
+                return with_buy_limit(decision, self.config)
+            entry_price = quote.price
+            maker = not quote.would_cross
+
         contracts = contracts_for_budget(
-            decision.ask,
+            entry_price,
             stake_dollars,
             maker=maker,
             fee_multiplier=self.config.fee_multiplier,
@@ -51,12 +60,12 @@ class PaperTrader:
             series_ticker=decision.ticker,
         )
         contracts = min(contracts, self.config.max_contracts_per_market)
-        if decision.ask_size > 0:
+        if not maker and decision.ask_size > 0:
             contracts = min(contracts, decision.ask_size)
         if not self.config.allow_fractional_contracts:
             contracts = float(int(contracts))
         fee_per_contract = quadratic_fee_average_per_contract(
-            decision.ask,
+            entry_price,
             contracts,
             maker=maker,
             fee_multiplier=self.config.fee_multiplier,
@@ -64,7 +73,7 @@ class PaperTrader:
             maker_rate=self.config.maker_fee_rate,
             series_ticker=decision.ticker,
         )
-        cost_per_contract = decision.ask + fee_per_contract
+        cost_per_contract = entry_price + fee_per_contract
         edge = decision.probability - cost_per_contract
         edge_lcb = decision.probability_lcb - cost_per_contract
         return replace(
