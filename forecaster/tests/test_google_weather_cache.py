@@ -10,6 +10,7 @@ query shape and the fail-open behaviour of ``source_mos_corrections``.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 import sqlite3
@@ -27,7 +28,7 @@ def test_cache_responsibilities_live_in_focused_modules():
     expected = {
         "google_api": "fetch_google_forecast",
         "blend_sources": "build_blend_snapshot",
-        "blend_learners": "adaptive_blend_weights",
+        "blend_learners": "compute_adaptive_blend_weights",
         "blend_archive": "archive_forecast",
     }
     for module_name, function_name in expected.items():
@@ -37,6 +38,100 @@ def test_cache_responsibilities_live_in_focused_modules():
         assert getattr(gwc, function_name) is function
 
     assert len(Path(gwc.__file__).read_text(encoding="utf-8").splitlines()) < 250
+    for function_name in (
+        "adaptive_blend_weights",
+        "source_mos_corrections",
+        "rolling_blend_residual_bias",
+    ):
+        assert str(inspect.signature(getattr(gwc, function_name))) == "()"
+
+
+def test_blend_learners_fresh_import_is_dependency_light():
+    forecaster = Path(gwc.__file__).resolve().parent
+    code = f"""
+import json, sys
+sys.path.insert(0, {str(forecaster)!r})
+import blend_learners
+print(json.dumps(sorted(sys.modules)))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    modules = set(json.loads(completed.stdout))
+    assert "blend_archive" not in modules
+    assert "google_api" not in modules
+    assert "city_truth" not in modules
+    assert "clisfo" not in modules
+
+
+def test_pure_adaptive_learner_accepts_rows_without_archive():
+    import blend_learners
+
+    rows = []
+    start = date(2026, 5, 1)
+    for offset in range(18):
+        recent = offset >= 12
+        rows.append(
+            _learner_row(
+                (start + timedelta(days=offset)).isoformat(),
+                70.0,
+                84.0 if recent else 70.0,
+                70.0 if recent else 80.0,
+            )
+        )
+
+    weights, metadata = blend_learners.compute_adaptive_blend_weights(rows)
+
+    assert weights == gwc.BLEND_WEIGHTS
+    assert metadata["mode"] == "base"
+    assert "did not improve walk-forward holdout" in metadata["reason"]
+
+
+def test_pure_rolling_bias_learner_accepts_rows_without_archive():
+    import blend_learners
+
+    rows = []
+    start = date(2026, 4, 1)
+    for offset in range(36):
+        recent = offset >= 24
+        raw = 72.0 if offset % 3 == 0 else 65.0
+        actual = raw if recent and raw >= 70.0 else raw + 2.0
+        row = _learner_row(
+            (start + timedelta(days=offset)).isoformat(),
+            actual,
+            raw,
+            raw,
+            raw,
+            raw,
+        )
+        row["predicted_high_f"] = raw
+        row["details_json"] = '{"raw_weighted_prediction_f":' + str(raw) + "}"
+        rows.append(row)
+
+    table, metadata = blend_learners.compute_rolling_blend_residual_bias(rows)
+
+    assert table == gwc.DISABLED_BIAS_TABLE
+    assert metadata["mode"] == "base"
+    assert "warm" in metadata["holdout"]["cohort_regressions"]
+
+
+def test_pure_source_mos_learner_accepts_rows_without_archive():
+    import blend_learners
+
+    rows = [
+        _learner_row("2026-07-01", 70.0, 69.0, 71.0),
+        _learner_row("2026-07-02", 71.0, 70.0, 72.0),
+    ]
+
+    corrections, metadata = blend_learners.compute_source_mos_corrections(rows)
+
+    assert corrections == {}
+    assert metadata["mode"] == "disabled"
+    assert metadata["scored_days"] == 2
+    assert "need 30" in metadata["reason"]
 
 
 def test_cache_cli_help_is_byte_compatible():

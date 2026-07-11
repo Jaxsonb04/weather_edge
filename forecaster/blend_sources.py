@@ -11,16 +11,16 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from blend_archive import table_columns, table_exists
+from blend_archive import latest_scored_blend_rows, table_columns, table_exists
 from blend_learners import (
-    adaptive_blend_weights,
     apply_source_mos,
     blend_bias_for,
     cap_magnitude,
+    compute_adaptive_blend_weights,
+    compute_rolling_blend_residual_bias,
+    compute_source_mos_corrections,
     normalize_weights,
     predicted_temperature_cohort,
-    rolling_blend_residual_bias,
-    source_mos_corrections,
 )
 from google_api import (
     finite,
@@ -55,6 +55,49 @@ from weather_cache_config import (
     SFO_POINT,
     SOURCE_MOS_CAP_F,
 )
+
+
+def adaptive_blend_weights():
+    """Compatibility adapter: acquire scored rows, then run the pure learner."""
+    cached = getattr(adaptive_blend_weights, "_cached", None)
+    if cached is not None:
+        return cached
+    result = compute_adaptive_blend_weights(latest_scored_blend_rows())
+    adaptive_blend_weights._cached = result
+    return result
+
+
+def source_mos_corrections():
+    """Fail-open compatibility adapter around the pure source-MOS learner."""
+    cached = getattr(source_mos_corrections, "_cached", None)
+    if cached is not None:
+        return cached
+    try:
+        result = compute_source_mos_corrections(latest_scored_blend_rows())
+    except Exception as exc:
+        result = (
+            {},
+            {
+                "mode": "disabled",
+                "reason": f"source MOS correction failed: {type(exc).__name__}: {exc}",
+                "scored_days": 0,
+                "cap_f": SOURCE_MOS_CAP_F,
+                "eligibility": "clean next-day scored blend rows only",
+            },
+        )
+    source_mos_corrections._cached = result
+    return result
+
+
+def rolling_blend_residual_bias():
+    """Compatibility adapter for the pure rolling residual learner."""
+    cached = getattr(rolling_blend_residual_bias, "_cached", None)
+    if cached is not None:
+        return cached
+    result = compute_rolling_blend_residual_bias(latest_scored_blend_rows())
+    rolling_blend_residual_bias._cached = result
+    return result
+
 
 def read_nws_json(url):
     request = Request(url, headers={"User-Agent": NWS_USER_AGENT})

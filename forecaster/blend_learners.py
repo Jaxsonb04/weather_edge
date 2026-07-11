@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import math
 
-from blend_archive import latest_scored_blend_rows
 from forecast_scoring import parse_details_json
-from google_api import finite
 from weather_cache_config import (
     ADAPTIVE_SOURCE_COLUMNS,
     ADAPTIVE_WEIGHT_HOLDOUT_MIN_DAYS,
@@ -30,6 +28,11 @@ from weather_cache_config import (
     SOURCE_MOS_MIN_SCORED_DAYS,
 )
 
+
+def finite(value):
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def normalize_weights(weights):
     total = sum(value for value in weights.values() if finite(value) and value > 0)
     if total <= 0:
@@ -40,15 +43,9 @@ def normalize_weights(weights):
     }
 
 
-
-
-def adaptive_blend_weights():
-    cached = getattr(adaptive_blend_weights, "_cached", None)
-    if cached is not None:
-        return cached
-
+def compute_adaptive_blend_weights(rows):
+    """Learn guarded source weights from caller-supplied scored rows."""
     base = dict(BLEND_WEIGHTS)
-    rows = latest_scored_blend_rows()
     scored_days = len({row["target_date"] for row in rows})
     truth_source_counts = {}
     for row in rows:
@@ -72,7 +69,6 @@ def adaptive_blend_weights():
 
     if scored_days < ADAPTIVE_WEIGHT_MIN_SCORED_DAYS:
         result = (base, metadata)
-        adaptive_blend_weights._cached = result
         return result
 
     # Walk-forward gate: weights learned from the older days must beat the
@@ -98,7 +94,6 @@ def adaptive_blend_weights():
             }
         )
         result = (base, metadata)
-        adaptive_blend_weights._cached = result
         return result
 
     candidate = normalize_weights(
@@ -131,7 +126,6 @@ def adaptive_blend_weights():
             }
         )
         result = (base, metadata)
-        adaptive_blend_weights._cached = result
         return result
 
     # Methodology survived the holdout; refit on all scored days for the
@@ -139,7 +133,6 @@ def adaptive_blend_weights():
     learned, source_mae, source_counts = learned_source_weights(rows, base)
     if learned is None:  # pragma: no cover - train superset cannot lose sources
         result = (base, metadata)
-        adaptive_blend_weights._cached = result
         return result
     mixed = normalize_weights(
         {
@@ -163,7 +156,6 @@ def adaptive_blend_weights():
         }
     )
     result = (mixed, metadata)
-    adaptive_blend_weights._cached = result
     return result
 
 
@@ -227,11 +219,8 @@ def blended_mae(rows, weights):
     return sum(errors) / len(errors)
 
 
-def source_mos_corrections():
-    cached = getattr(source_mos_corrections, "_cached", None)
-    if cached is not None:
-        return cached
-
+def compute_source_mos_corrections(rows):
+    """Learn guarded source-MOS corrections from caller-supplied rows."""
     metadata = {
         "mode": "disabled",
         "reason": "",
@@ -242,23 +231,19 @@ def source_mos_corrections():
 
     def _disabled(reason):
         metadata["reason"] = reason
-        result = ({}, dict(metadata))
-        source_mos_corrections._cached = result
-        return result
+        return {}, dict(metadata)
 
     if not ENABLE_SOURCE_MOS_CORRECTION:
         return _disabled("source MOS correction disabled via ENABLE_SOURCE_MOS_CORRECTION")
 
-    # Source MOS is an optional enhancement; a failure here must never take
-    # down the refresh (a crash in this path cost days of blend outage).
+    # This learner is optional; malformed caller-supplied rows fail open.
     try:
-        return _compute_source_mos_corrections(metadata, _disabled)
+        return _compute_source_mos_corrections(rows, metadata, _disabled)
     except Exception as exc:
         return _disabled(f"source MOS correction failed: {type(exc).__name__}: {exc}")
 
 
-def _compute_source_mos_corrections(metadata, _disabled):
-    rows = latest_scored_blend_rows()
+def _compute_source_mos_corrections(rows, metadata, _disabled):
     scored_days = len({row["target_date"] for row in rows})
     metadata["scored_days"] = scored_days
     if scored_days < SOURCE_MOS_MIN_SCORED_DAYS:
@@ -290,9 +275,7 @@ def _compute_source_mos_corrections(metadata, _disabled):
             "source_corrections_f": _round_source_mos_corrections(corrections),
         }
     )
-    result = (corrections, dict(metadata))
-    source_mos_corrections._cached = result
-    return result
+    return corrections, dict(metadata)
 
 
 def _learn_source_mos_corrections(rows):
@@ -547,17 +530,13 @@ def _bias_holdout_cohort_regressions(records, corrections, global_correction):
 DISABLED_BIAS_TABLE = {"global_correction": 0.0, "cohort_corrections": {}, "enabled": False}
 
 
-def rolling_blend_residual_bias() -> tuple[dict, dict]:
+def compute_rolling_blend_residual_bias(rows) -> tuple[dict, dict]:
     """Cohort-aware rolling de-bias for the final blend, gated on a holdout.
 
     Returns ``(bias_table, metadata)``. ``bias_table`` feeds ``blend_bias_for``;
     it stays disabled (zero correction) until there are enough clean CLISFO-scored
     days and the correction beats the raw blend on a walk-forward holdout.
     """
-
-    cached = getattr(rolling_blend_residual_bias, "_cached", None)
-    if cached is not None:
-        return cached
 
     metadata = {
         "mode": "disabled",
@@ -569,14 +548,12 @@ def rolling_blend_residual_bias() -> tuple[dict, dict]:
 
     def _disabled(reason):
         metadata["reason"] = reason
-        result = (dict(DISABLED_BIAS_TABLE), dict(metadata))
-        rolling_blend_residual_bias._cached = result
-        return result
+        return dict(DISABLED_BIAS_TABLE), dict(metadata)
 
     if not ENABLE_ROLLING_BLEND_BIAS:
         return _disabled("rolling blend de-bias disabled via ENABLE_ROLLING_BLEND_BIAS")
 
-    records = _bias_residual_records(latest_scored_blend_rows())
+    records = _bias_residual_records(rows)
     scored_days = len({record["target_date"] for record in records})
     metadata["scored_days"] = scored_days
     if scored_days < ROLLING_BIAS_MIN_SCORED_DAYS:
@@ -642,9 +619,7 @@ def rolling_blend_residual_bias() -> tuple[dict, dict]:
             "global_correction_f": round(global_correction, 3),
         }
     )
-    result = (table, dict(metadata))
-    rolling_blend_residual_bias._cached = result
-    return result
+    return table, dict(metadata)
 
 
 def blend_bias_for(raw_predicted: object, bias_table: dict) -> float:
