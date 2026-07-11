@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import sfo_kalshi_quant.cli as cli_module
+from sfo_kalshi_quant._cli import scan as scan_module
 
 from sfo_kalshi_quant.cli import (
     _place_portfolio_orders,
@@ -295,8 +296,8 @@ def test_analysis_and_portfolio_scans_share_one_context_builder() -> None:
     assert hasattr(cli_module, "ScanContext")
     assert hasattr(cli_module, "build_scan_context")
 
-    analyze_source = inspect.getsource(cli_module._analyze_one_target)
-    portfolio_source = inspect.getsource(cli_module._portfolio_scan_one_target)
+    analyze_source = inspect.getsource(scan_module._analyze_one_target)
+    portfolio_source = inspect.getsource(scan_module._portfolio_scan_one_target)
     assert analyze_source.count("build_scan_context(") == 1
     assert portfolio_source.count("build_scan_context(") == 1
     for duplicated_step in (

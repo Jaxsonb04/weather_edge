@@ -14,10 +14,11 @@ from unittest.mock import patch
 
 import pytest
 
-from sfo_kalshi_quant.cli import main
+from sfo_kalshi_quant.cli import build_parser, main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
+from sfo_kalshi_quant.monitor import run_paper_monitor
 from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
 
 
@@ -78,6 +79,19 @@ def _run_monitor(db_path: Path, client) -> str:
     return out.getvalue()
 
 
+def _run_monitor_engine_directly(db_path: Path, client) -> str:
+    """Exercise the extracted per-order loop without the CLI dispatcher."""
+
+    args = build_parser().parse_args(
+        ["--db-path", str(db_path), "--no-color", "paper-monitor"]
+    )
+    out = StringIO()
+    with redirect_stdout(out):
+        code = run_paper_monitor(args, client_factory=client)
+    assert code == 0
+    return out.getvalue()
+
+
 def _latest_action(store: PaperStore, order_id: int):
     with store.connect() as conn:
         row = conn.execute(
@@ -96,7 +110,7 @@ def test_take_profit_exit_is_labeled_take_profit():
         store = PaperStore(db_path)
         order_id = store.record_paper_order("2026-06-12", _yes_decision())
 
-        _run_monitor(db_path, _FakeProfitClient)
+        _run_monitor_engine_directly(db_path, _FakeProfitClient)
 
         row = store.paper_orders(1)[0]
         assert row["status"] == "PAPER_CLOSED"
