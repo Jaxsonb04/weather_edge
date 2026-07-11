@@ -3317,6 +3317,58 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _all_public_trades_for_ticker(
+    client: KalshiPublicClient,
+    *,
+    ticker: str,
+    min_ts: int,
+    max_ts: int,
+) -> list[dict[str, object]]:
+    """Exhaust the official cursor chain without exposing partial evidence."""
+
+    iterator = getattr(type(client), "iter_trades", None)
+    if callable(iterator):
+        return list(
+            client.iter_trades(
+                ticker=ticker,
+                min_ts=min_ts,
+                max_ts=max_ts,
+                limit=1000,
+            )
+        )
+
+    # Compatibility path for injected/ad-hoc clients that only implement the
+    # long-standing get_trades method. It follows the same cursor contract.
+    trades: list[dict[str, object]] = []
+    seen_trade_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    while True:
+        payload = client.get_trades(
+            ticker=ticker,
+            min_ts=min_ts,
+            max_ts=max_ts,
+            limit=1000,
+            cursor=cursor,
+        )
+        for trade in payload.get("trades", []):
+            if not isinstance(trade, dict):
+                continue
+            trade_id = str(trade.get("trade_id") or "")
+            if trade_id and trade_id in seen_trade_ids:
+                continue
+            if trade_id:
+                seen_trade_ids.add(trade_id)
+            trades.append(trade)
+        next_cursor = str(payload.get("cursor") or "")
+        if not next_cursor:
+            return trades
+        if next_cursor in seen_cursors:
+            raise KalshiUnavailable("trade pagination returned a repeated cursor")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+
 def _fill_resting_orders_against_live_book(
     store: PaperStore, client: KalshiPublicClient, color: Color
 ) -> int:
@@ -3337,15 +3389,14 @@ def _fill_resting_orders_against_live_book(
                 created_at = created_at.replace(tzinfo=UTC)
             created_times.append(created_at)
         try:
-            payload = client.get_trades(
+            trades = _all_public_trades_for_ticker(
+                client,
                 ticker=ticker,
                 min_ts=int(min(created_times).timestamp()),
                 max_ts=max_ts,
-                limit=1000,
             )
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
             continue
-        trades = payload.get("trades", [])
         for row, created_at in zip(rows, created_times):
             limit_price = (
                 row["limit_price"]

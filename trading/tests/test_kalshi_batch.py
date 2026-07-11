@@ -67,3 +67,26 @@ def test_monitor_batch_failure_falls_back_once_per_unique_ticker():
     assert client.single_calls == ["TICKER-A", "TICKER-B"]
     assert set(results) == {"TICKER-A", "TICKER-B"}
     assert all(isinstance(value, MarketBin) for value in results.values())
+
+
+def test_iter_trades_follows_cursors_and_deduplicates_trade_ids(monkeypatch):
+    client = KalshiPublicClient()
+    calls = []
+    trade_a = {"trade_id": "A"}
+    trade_b = {"trade_id": "B"}
+    trade_c = {"trade_id": "C"}
+
+    def fake_get_trades(**kwargs):
+        calls.append(kwargs.get("cursor"))
+        if kwargs.get("cursor") is None:
+            return {"trades": [trade_a, trade_b], "cursor": "next-page"}
+        return {"trades": [trade_b, trade_c], "cursor": ""}
+
+    monkeypatch.setattr(client, "get_trades", fake_get_trades)
+
+    trades = list(
+        client.iter_trades(ticker="TICKER-A", min_ts=1, max_ts=2, limit=1000)
+    )
+
+    assert calls == [None, "next-page"]
+    assert [trade["trade_id"] for trade in trades] == ["A", "B", "C"]

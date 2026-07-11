@@ -5,7 +5,7 @@ import time
 from datetime import date
 from http.client import IncompleteRead
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -199,6 +199,44 @@ class KalshiPublicClient:
         if cursor:
             params["cursor"] = cursor
         return self.get_json("markets/trades", params)
+
+    def iter_trades(
+        self,
+        *,
+        ticker: str,
+        min_ts: int,
+        max_ts: int,
+        limit: int = 1000,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield every trade page in the documented cursor chain exactly once."""
+
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        seen_trade_ids: set[str] = set()
+        while True:
+            payload = self.get_trades(
+                ticker=ticker,
+                min_ts=min_ts,
+                max_ts=max_ts,
+                limit=limit,
+                cursor=cursor,
+            )
+            for trade in payload.get("trades", []):
+                if not isinstance(trade, dict):
+                    continue
+                trade_id = str(trade.get("trade_id") or "")
+                if trade_id and trade_id in seen_trade_ids:
+                    continue
+                if trade_id:
+                    seen_trade_ids.add(trade_id)
+                yield trade
+            next_cursor = str(payload.get("cursor") or "")
+            if not next_cursor:
+                return
+            if next_cursor in seen_cursors:
+                raise KalshiUnavailable("trade pagination returned a repeated cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
 
     def list_historical_markets(
         self,

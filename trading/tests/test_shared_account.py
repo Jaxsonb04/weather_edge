@@ -305,6 +305,142 @@ def test_resting_orders_sharing_market_fetch_trades_once() -> None:
         assert client.calls == 1
 
 
+def test_resting_fill_uses_relevant_trade_from_second_page() -> None:
+    now = datetime.now(UTC).isoformat()
+
+    def trade(trade_id: str, *, price: str, quantity: str = "1.00"):
+        return {
+            "trade_id": trade_id,
+            "ticker": "KXHIGHTSFO-TEST-B68",
+            "count_fp": quantity,
+            "yes_price_dollars": price,
+            "no_price_dollars": str(1.0 - float(price)),
+            "taker_side": "yes",
+            "taker_outcome_side": "yes",
+            "taker_book_side": "bid",
+            "created_time": now,
+        }
+
+    class Client:
+        def __init__(self):
+            self.cursors = []
+
+        def get_trades(self, **kwargs):
+            cursor = kwargs.get("cursor")
+            self.cursors.append(cursor)
+            if cursor is None:
+                return {
+                    "trades": [
+                        trade(f"irrelevant-{index}", price="0.99")
+                        for index in range(1000)
+                    ],
+                    "cursor": "page-2",
+                }
+            return {
+                "trades": [trade("relevant-page-2", price="0.29", quantity="100.00")],
+                "cursor": "",
+            }
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        order_id = store.record_paper_order(
+            "2026-07-10",
+            _decision(recommended_contracts=10.0),
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        old = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET created_at=? WHERE id=?", (old, order_id)
+            )
+        client = Client()
+
+        filled = _fill_resting_orders_against_live_book(
+            store, client, Color.from_no_color(True)
+        )
+
+        assert filled == 1
+        assert client.cursors == [None, "page-2"]
+        assert store.paper_order(order_id)["status"] == "PAPER_FILLED"
+        assert "relevant-page-2" in store.paper_order(order_id)["fill_evidence_json"]
+
+
+def test_cursor_failure_discards_partial_ticker_but_continues_other_tickers() -> None:
+    now = datetime.now(UTC).isoformat()
+
+    def relevant_trade(ticker: str, trade_id: str):
+        return {
+            "trade_id": trade_id,
+            "ticker": ticker,
+            "count_fp": "100.00",
+            "yes_price_dollars": "0.29",
+            "no_price_dollars": "0.71",
+            "taker_side": "yes",
+            "taker_outcome_side": "yes",
+            "taker_book_side": "bid",
+            "created_time": now,
+        }
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def get_trades(self, **kwargs):
+            ticker = kwargs["ticker"]
+            cursor = kwargs.get("cursor")
+            self.calls.append((ticker, cursor))
+            if ticker.endswith("B68") and cursor is None:
+                return {
+                    "trades": [relevant_trade(ticker, "partial-a")],
+                    "cursor": "broken-page",
+                }
+            if ticker.endswith("B68"):
+                raise OSError("page two unavailable")
+            return {
+                "trades": [relevant_trade(ticker, "complete-b")],
+                "cursor": "",
+            }
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        first_id = store.record_paper_order(
+            "2026-07-10",
+            _decision("KXHIGHTSFO-TEST-B68", recommended_contracts=10.0),
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        second_id = store.record_paper_order(
+            "2026-07-10",
+            _decision("KXHIGHTSFO-TEST-B70", recommended_contracts=10.0),
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        old = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET created_at=? WHERE id IN (?, ?)",
+                (old, first_id, second_id),
+            )
+        client = Client()
+
+        filled = _fill_resting_orders_against_live_book(
+            store, client, Color.from_no_color(True)
+        )
+
+        assert filled == 1
+        assert store.paper_order(first_id)["status"] == "PAPER_LIMIT_RESTING"
+        assert store.paper_order(second_id)["status"] == "PAPER_FILLED"
+        assert client.calls == [
+            ("KXHIGHTSFO-TEST-B68", None),
+            ("KXHIGHTSFO-TEST-B68", "broken-page"),
+            ("KXHIGHTSFO-TEST-B70", None),
+        ]
+
+
 def test_complete_book_iteration_has_no_50_or_100_order_truncation() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

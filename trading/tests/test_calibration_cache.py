@@ -7,11 +7,14 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from sfo_kalshi_quant.backtest import run_walk_forward_calibration_backtest
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.models import ForecastOutcome
 from sfo_kalshi_quant.probability import ResidualCalibrator
 from sfo_kalshi_quant.report import calibration_diagnostics
+from sfo_kalshi_quant.standard_bins import standard_sfo_bins
 
 
 def _outcomes() -> list[ForecastOutcome]:
@@ -81,6 +84,48 @@ def test_cache_invalidates_when_strategy_config_changes(tmp_path):
     )
 
     assert result.cache_hit is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda market: replace(
+            market,
+            yes_bid=0.21,
+            yes_ask=0.24,
+            no_bid=0.76,
+            no_ask=0.79,
+        ),
+        lambda market: replace(
+            market,
+            yes_bid_size=123.0,
+            yes_ask_size=456.0,
+            raw={**market.raw, "no_bid_size_fp": "321.00"},
+        ),
+        lambda market: replace(market, status="closed"),
+    ],
+    ids=("price", "depth", "status"),
+)
+def test_cache_invalidates_on_any_normalized_market_input_change(
+    tmp_path, mutate
+):
+    outcomes = _outcomes()
+    markets = standard_sfo_bins("KXHIGHTSFO-CACHE")
+    run_walk_forward_calibration_backtest(
+        outcomes, min_train=30, markets=markets, cache_dir=tmp_path
+    )
+    changed = [mutate(markets[0]), *markets[1:]]
+
+    cached_run = run_walk_forward_calibration_backtest(
+        outcomes, min_train=30, markets=changed, cache_dir=tmp_path
+    )
+    fresh_run = run_walk_forward_calibration_backtest(
+        outcomes, min_train=30, markets=changed, cache_dir=None
+    )
+
+    assert cached_run.cache_hit is False
+    assert cached_run.brier_score == fresh_run.brier_score
+    assert replace(cached_run, cache_hit=False) == fresh_run
 
 
 def test_cache_read_failure_fails_open(tmp_path):

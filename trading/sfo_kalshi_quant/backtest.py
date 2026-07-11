@@ -205,22 +205,17 @@ def _calibration_cache_path(
         }
         for row in outcomes
     ]
-    market_rows = [
-        {
-            "ticker": row.ticker,
-            "strike_type": row.strike_type,
-            "floor_strike": row.floor_strike,
-            "cap_strike": row.cap_strike,
-        }
-        for row in markets
-    ]
+    # Fingerprint the complete normalized MarketBin, including its raw API row.
+    # An allowlist here will inevitably drift when the calibrator starts reading
+    # another price/depth/status field and can then return a stale numeric result.
+    market_rows = [asdict(row) for row in markets]
     emos_rows = sorted(
         (type(key).__name__, str(key), list(value) if isinstance(value, (list, tuple)) else value)
         for key, value in (emos_lookup or {}).items()
     )
     material = {
         "schema": _CACHE_SCHEMA_VERSION,
-        "algorithm": "walk-forward-calibration-v1",
+        "algorithm": "walk-forward-calibration-v2-full-market-input",
         "stations": sorted({row.station_id for row in outcomes}),
         "sources": sorted({row.model_name for row in outcomes}),
         "min_train": min_train,
