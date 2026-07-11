@@ -1,92 +1,48 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .._util import (
-    _date_from_string,
     _db_table_exists,
-    _env_float,
-    _json_list,
-    _json_object,
     _load_json_optional,
-    _null_metric,
-    _parse_timestamp,
     _round,
-    _round_dict,
-    _row_value as _sqlite_row_value,
-    _table_exists,
     _to_float,
 )
-from ..backtest import run_walk_forward_calibration_backtest
-from ..backtest_rescore import compute_real_money_readiness, run_rescore
-from ..cities import CITIES
 from ..config import (
     DEFAULT_DB_PATH,
     DEFAULT_FORECASTER_ROOT,
-    SFO_TZ,
     StrategyConfig,
-    normalize_risk_profile_name,
     strategy_config_for_profile,
 )
 from ..db import PaperStore
-from ..dataset_research import (
-    DEFAULT_MIN_AFTER_COST_TRADES,
-    DEFAULT_MIN_MATCHED_ROWS,
-    build_dataset_research as build_dataset_research_payload,
-)
-from ..exits import (
-    DEFAULT_NO_STOP_LOSS_PCT,
-    DEFAULT_NO_TAKE_PROFIT_PCT,
-    DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
-    DEFAULT_STOP_LOSS_PCT,
-    DEFAULT_TAKE_PROFIT_PCT,
-    DEFAULT_YES_STOP_LOSS_PCT,
-    DEFAULT_YES_TAKE_PROFIT_PCT,
-    convergence_take_profit_net,
-    decide_exit,
-    exit_bid_for_net,
-)
-from ..fees import quadratic_fee_average_per_contract
+from ..dataset_research import build_dataset_research as build_dataset_research_payload
 from ..forecast import ForecastDataError, SfoForecasterAdapter
 from ..forecast_scorecards import build_forecast_scorecards
-from ..live_execution import LiveExecutionPolicy, readiness_status_from_checks
-from ..research_shadow import build_research_shadow_report
 from ..replay import replay_from_database
-from ..settlement_day import settlement_today
-from ..settlement_truth import is_pre_resolution_decision as _is_strategy_pre_resolution
 from ..summary import build_paper_summary
-from ..synthetic_blend import build_synthetic_blend_calibration
-from . import (
-    ACTIVE_CALIBRATION_SOURCE,
-    CHALLENGER_CALIBRATION_SOURCE,
-    DEFAULT_MODEL_VETO_BUFFER,
-    DEFAULT_MODEL_VETO_MAX_LOSS_PCT,
-    EXPERIMENTAL_PROFILES,
-    FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS,
-    FORECAST_HEALTH_MAX_EMOS_AGE,
-    FORECAST_HEALTH_MAX_NWP_AGE,
-    FORECAST_HEALTH_MIN_NWP_MODELS,
-    FORECAST_HEALTH_ROLLING_DAYS,
-    FORECAST_LEAD_MODE_LABELS,
-    MIN_CLEAN_WINNER_SAMPLE,
-    PRIMARY_PROFILE,
+from . import CHALLENGER_CALIBRATION_SOURCE
+from .calibration import (
+    _calibration_payload,
+    _comparison_summary,
+    _config_rescore_payload,
+    _prediction_replay_payload,
+    _research_shadow_payload,
+    _signal_backtest_payload,
+    _signal_quality_payload,
 )
-
-_sqlite_table_exists = _table_exists
-
-from .calibration import (_calibration_payload, _comparison_summary, _config_rescore_payload, _prediction_replay_payload, _research_shadow_payload, _signal_backtest_payload, _signal_quality_payload)
 from .dataset_summary import _dataset_research_summary
 from .forecast_health import _forecast_health_payload
 from .paper_card import _paper_payload
 from .profiles import _default_profile, _profile_views
 from .readiness import _live_frequency_tuning_payload, _real_money_readiness_payload
 from .status_alerts import _status_payload
+
+
 def build_strategy_research(
     *,
     forecaster_root: Path = DEFAULT_FORECASTER_ROOT,
@@ -386,4 +342,3 @@ def _research_notes() -> list[dict[str, str]]:
         {"term": "Paper trading", "note": "Simulated positions recorded for research. No live money is placed."},
         {"term": "Challenger model", "note": "A research calibration compared against the active execution calibration."},
     ]
-

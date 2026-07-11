@@ -2,88 +2,41 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .._util import (
-    _date_from_string,
     _db_table_exists,
-    _env_float,
     _json_list,
-    _json_object,
-    _load_json_optional,
     _null_metric,
-    _parse_timestamp,
     _round,
     _round_dict,
     _row_value as _sqlite_row_value,
-    _table_exists,
     _to_float,
 )
 from ..backtest import run_walk_forward_calibration_backtest
-from ..backtest_rescore import compute_real_money_readiness, run_rescore
-from ..cities import CITIES
-from ..config import (
-    DEFAULT_DB_PATH,
-    DEFAULT_FORECASTER_ROOT,
-    SFO_TZ,
-    StrategyConfig,
-    normalize_risk_profile_name,
-    strategy_config_for_profile,
-)
+from ..backtest_rescore import run_rescore
+from ..config import StrategyConfig, strategy_config_for_profile
 from ..db import PaperStore
-from ..dataset_research import (
-    DEFAULT_MIN_AFTER_COST_TRADES,
-    DEFAULT_MIN_MATCHED_ROWS,
-    build_dataset_research as build_dataset_research_payload,
-)
-from ..exits import (
-    DEFAULT_NO_STOP_LOSS_PCT,
-    DEFAULT_NO_TAKE_PROFIT_PCT,
-    DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
-    DEFAULT_STOP_LOSS_PCT,
-    DEFAULT_TAKE_PROFIT_PCT,
-    DEFAULT_YES_STOP_LOSS_PCT,
-    DEFAULT_YES_TAKE_PROFIT_PCT,
-    convergence_take_profit_net,
-    decide_exit,
-    exit_bid_for_net,
-)
-from ..fees import quadratic_fee_average_per_contract
 from ..forecast import ForecastDataError, SfoForecasterAdapter
-from ..forecast_scorecards import build_forecast_scorecards
-from ..live_execution import LiveExecutionPolicy, readiness_status_from_checks
 from ..research_shadow import build_research_shadow_report
-from ..replay import replay_from_database
-from ..settlement_day import settlement_today
 from ..settlement_truth import is_pre_resolution_decision as _is_strategy_pre_resolution
-from ..summary import build_paper_summary
 from ..synthetic_blend import build_synthetic_blend_calibration
-from . import (
-    ACTIVE_CALIBRATION_SOURCE,
-    CHALLENGER_CALIBRATION_SOURCE,
-    DEFAULT_MODEL_VETO_BUFFER,
-    DEFAULT_MODEL_VETO_MAX_LOSS_PCT,
-    EXPERIMENTAL_PROFILES,
-    FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS,
-    FORECAST_HEALTH_MAX_EMOS_AGE,
-    FORECAST_HEALTH_MAX_NWP_AGE,
-    FORECAST_HEALTH_MIN_NWP_MODELS,
-    FORECAST_HEALTH_ROLLING_DAYS,
-    FORECAST_LEAD_MODE_LABELS,
-    MIN_CLEAN_WINNER_SAMPLE,
-    PRIMARY_PROFILE,
-)
-
-_sqlite_table_exists = _table_exists
-
+from . import FORECAST_LEAD_MODE_LABELS, MIN_CLEAN_WINNER_SAMPLE, PRIMARY_PROFILE
 from .consensus_offline import _market_consensus_payload
 from .paper_card import _row_risk_profile
-from .profiles import _edge_by_market_bucket, _probability_market_points, _profile_key, _profile_sort_key, _quality_distribution
+from .profiles import (
+    _edge_by_market_bucket,
+    _probability_market_points,
+    _profile_key,
+    _profile_sort_key,
+    _quality_distribution,
+)
 from .status_alerts import _decision_reason, _is_probability_only_ticker
+
+
 def _calibration_payload(
     adapter: SfoForecasterAdapter,
     *,
