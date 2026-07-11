@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -112,3 +114,65 @@ def _drop_none(value: object):
                 cleaned.append(cleaned_item)
         return cleaned
     return value
+
+
+def _load_json_optional(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _db_table_exists(db_path: Path, table_name: str) -> bool:
+    try:
+        with sqlite3.connect(db_path) as conn:
+            return _table_exists(conn, table_name)
+    except sqlite3.Error:
+        return False
+
+
+def _date_from_string(value: object):
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return None
+
+
+def _to_float(value: object, default: float = 0.0) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _round(value: object, digits: int = 4):
+    if value is None:
+        return None
+    number = _to_float(value, default=math.nan)
+    if not math.isfinite(number):
+        return None
+    return round(number, digits)
+
+
+def _round_dict(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: _round(value, 4) if isinstance(value, float) else value for key, value in row.items()}
+
+
+def _null_metric(value: object, digits: int = 4):
+    return None
+
+
+def _env_float(name: str) -> float | None:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
