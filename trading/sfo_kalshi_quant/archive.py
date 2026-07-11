@@ -41,6 +41,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -1147,17 +1148,17 @@ def _restore_record(
         return False
 
 
-def _read_restore_partition(
+def _iter_verified_restore_partition(
     archive_dir: Path,
     table: str,
     file_info: tuple,
-) -> list[dict[str, object]]:
+) -> Iterator[dict[str, object]]:
     day, rel_path, expected_rows, expected_sha256, _, _, _ = file_info
     path = archive_dir / str(rel_path)
     if not path.exists():
         raise RuntimeError(f"archive restore requires verified local file {path}")
     digest = hashlib.sha256()
-    records: list[dict[str, object]] = []
+    rows = 0
     try:
         with gzip.open(path, "rb") as inp:
             for line in inp:
@@ -1165,76 +1166,63 @@ def _read_restore_partition(
                 record = json.loads(line)
                 if not isinstance(record, dict):
                     raise ValueError("archive row is not an object")
-                records.append(record)
+                rows += 1
+                yield record
     except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"archive restore found corrupt {table} partition {day}: {exc}"
         ) from exc
-    if len(records) != int(expected_rows) or digest.hexdigest() != str(
-        expected_sha256
-    ):
+    if rows != int(expected_rows) or digest.hexdigest() != str(expected_sha256):
         raise RuntimeError(f"archive restore verification failed for {table} {day}")
-    return records
 
 
-def _restore_parent_records(
+def _restore_partition_intersects_ids(
+    table: str,
+    required_ids: set[int],
+    file_info: tuple,
+) -> bool:
+    if not required_ids:
+        return False
+    day, _, rows, _, raw_ranges, min_id, max_id = file_info
+    ranges = _decode_id_ranges(
+        raw_ranges,
+        table,
+        str(day),
+        archived_rows=int(rows),
+        min_id=min_id,
+        max_id=max_id,
+    )
+    return any(
+        start <= parent_id <= end
+        for parent_id in required_ids
+        for start, end in ranges
+    )
+
+
+def _verify_restore_parent_ids(
     archive_dir: Path,
     table: str,
     required_ids: set[int],
     files: list[tuple],
-    cache: dict[tuple[str, str], list[dict[str, object]]],
-) -> list[dict[str, object]]:
+) -> None:
     if not required_ids:
-        return []
-    found: dict[int, dict[str, object]] = {}
+        return
+    found: set[int] = set()
     for file_info in files:
-        day, _, rows, _, raw_ranges, min_id, max_id = file_info
-        ranges = _decode_id_ranges(
-            raw_ranges,
-            table,
-            str(day),
-            archived_rows=int(rows),
-            min_id=min_id,
-            max_id=max_id,
-        )
-        if not any(
-            start <= parent_id <= end
-            for parent_id in required_ids
-            for start, end in ranges
-        ):
+        if not _restore_partition_intersects_ids(table, required_ids, file_info):
             continue
-        key = (table, str(day))
-        records = cache.get(key)
-        if records is None:
-            records = _read_restore_partition(archive_dir, table, file_info)
-            cache[key] = records
-        for record in records:
+        for record in _iter_verified_restore_partition(
+            archive_dir, table, file_info
+        ):
             row_id = record.get("id")
             if isinstance(row_id, int) and row_id in required_ids:
-                found[row_id] = record
-    missing = sorted(required_ids - set(found))
+                found.add(row_id)
+    missing = sorted(required_ids - found)
     if missing:
         raise RuntimeError(
             f"missing archived {table} parent id(s): "
             + ", ".join(str(value) for value in missing)
         )
-    return [found[row_id] for row_id in sorted(found)]
-
-
-def _merge_restore_records(
-    current: list[dict[str, object]],
-    additions: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    by_id = {
-        int(record["id"]): record
-        for record in current
-        if isinstance(record.get("id"), int)
-    }
-    for record in additions:
-        row_id = record.get("id")
-        if isinstance(row_id, int):
-            by_id[row_id] = record
-    return [by_id[row_id] for row_id in sorted(by_id)]
 
 
 def restore_archive_days(
@@ -1252,6 +1240,7 @@ def restore_archive_days(
 
     manifest = open_manifest(archive_dir)
     try:
+        backfill_manifest_id_coverage(manifest, archive_dir, log=log)
         backfill_manifest_context_ref_coverage(manifest, archive_dir, log=log)
         missing = _archived_context_link_missing_days(manifest)
         if missing:
@@ -1272,64 +1261,66 @@ def restore_archive_days(
     finally:
         manifest.close()
 
-    cache: dict[tuple[str, str], list[dict[str, object]]] = {}
-    restore_records: dict[str, list[dict[str, object]]] = {
-        table: [] for table in RESTORE_TABLE_ORDER
+    required_ids: dict[str, set[int]] = {
+        "forecast_snapshots": set(),
+        "market_snapshots": set(),
+        "scan_context_snapshots": set(),
     }
-    for table in RESTORE_TABLE_ORDER:
-        for file_info in files[table]:
-            day = str(file_info[0])
-            if selected and day not in selected:
-                continue
-            records = _read_restore_partition(archive_dir, table, file_info)
-            cache[(table, day)] = records
-            restore_records[table].extend(records)
-
     if selected:
-        context_ids = {
-            int(record["scan_context_id"])
-            for record in restore_records["decision_snapshots"]
-            if isinstance(record.get("scan_context_id"), int)
-        }
-        contexts = _restore_parent_records(
-            archive_dir,
-            "scan_context_snapshots",
-            context_ids,
-            files["scan_context_snapshots"],
-            cache,
+        for file_info in files["decision_snapshots"]:
+            if str(file_info[0]) not in selected:
+                continue
+            for record in _iter_verified_restore_partition(
+                archive_dir, "decision_snapshots", file_info
+            ):
+                context_id = record.get("scan_context_id")
+                if isinstance(context_id, int):
+                    required_ids["scan_context_snapshots"].add(context_id)
+
+        found_context_ids: set[int] = set()
+        for file_info in files["scan_context_snapshots"]:
+            selected_partition = str(file_info[0]) in selected
+            if not selected_partition and not _restore_partition_intersects_ids(
+                "scan_context_snapshots",
+                required_ids["scan_context_snapshots"],
+                file_info,
+            ):
+                continue
+            for record in _iter_verified_restore_partition(
+                archive_dir, "scan_context_snapshots", file_info
+            ):
+                row_id = record.get("id")
+                if not selected_partition and row_id not in required_ids[
+                    "scan_context_snapshots"
+                ]:
+                    continue
+                if isinstance(row_id, int):
+                    found_context_ids.add(row_id)
+                forecast_id = record.get("forecast_snapshot_id")
+                market_id = record.get("market_snapshot_id")
+                if isinstance(forecast_id, int):
+                    required_ids["forecast_snapshots"].add(forecast_id)
+                if isinstance(market_id, int):
+                    required_ids["market_snapshots"].add(market_id)
+        missing_contexts = sorted(
+            required_ids["scan_context_snapshots"] - found_context_ids
         )
-        restore_records["scan_context_snapshots"] = _merge_restore_records(
-            restore_records["scan_context_snapshots"], contexts
-        )
-        forecast_ids = {
-            int(record["forecast_snapshot_id"])
-            for record in restore_records["scan_context_snapshots"]
-            if isinstance(record.get("forecast_snapshot_id"), int)
-        }
-        market_ids = {
-            int(record["market_snapshot_id"])
-            for record in restore_records["scan_context_snapshots"]
-            if isinstance(record.get("market_snapshot_id"), int)
-        }
-        forecasts = _restore_parent_records(
+        if missing_contexts:
+            raise RuntimeError(
+                "missing archived scan_context_snapshots parent id(s): "
+                + ", ".join(str(value) for value in missing_contexts)
+            )
+        _verify_restore_parent_ids(
             archive_dir,
             "forecast_snapshots",
-            forecast_ids,
+            required_ids["forecast_snapshots"],
             files["forecast_snapshots"],
-            cache,
         )
-        markets = _restore_parent_records(
+        _verify_restore_parent_ids(
             archive_dir,
             "market_snapshots",
-            market_ids,
+            required_ids["market_snapshots"],
             files["market_snapshots"],
-            cache,
-        )
-        restore_records["forecast_snapshots"] = _merge_restore_records(
-            restore_records["forecast_snapshots"], forecasts
-        )
-        restore_records["market_snapshots"] = _merge_restore_records(
-            restore_records["market_snapshots"], markets
         )
 
     conn = sqlite3.connect(db_path, timeout=30.0)
@@ -1341,14 +1332,28 @@ def restore_archive_days(
                 destination_columns = set(_table_columns(conn, "main", table))
                 if not destination_columns:
                     continue
-                for record in restore_records[table]:
-                    inserted = _restore_record(
-                        conn,
-                        table,
-                        record,
-                        destination_columns,
-                    )
-                    restored[table] += 1 if inserted else 0
+                table_required_ids = required_ids.get(table, set())
+                for file_info in files[table]:
+                    selected_partition = not selected or str(file_info[0]) in selected
+                    if not selected_partition and not _restore_partition_intersects_ids(
+                        table, table_required_ids, file_info
+                    ):
+                        continue
+                    for record in _iter_verified_restore_partition(
+                        archive_dir, table, file_info
+                    ):
+                        if (
+                            not selected_partition
+                            and record.get("id") not in table_required_ids
+                        ):
+                            continue
+                        inserted = _restore_record(
+                            conn,
+                            table,
+                            record,
+                            destination_columns,
+                        )
+                        restored[table] += 1 if inserted else 0
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise RuntimeError(

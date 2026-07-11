@@ -419,6 +419,98 @@ def test_restore_missing_cross_day_parent_is_actionable_and_atomic(
         assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_restore_streams_large_partitions_without_retaining_decoded_rows(
+    tmp_path: Path,
+) -> None:
+    iterator = getattr(archive_module, "_iter_verified_restore_partition", None)
+    assert callable(iterator), "restore must expose the verified streaming iterator"
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    for index in range(500):
+        _insert_decision(
+            conn,
+            created_at=f"{day}T10:{index % 60:02d}:00+00:00",
+            target_date=day,
+            market_ticker=f"STREAM-{index}",
+        )
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    active = 0
+    peak = 0
+
+    class TrackedRecord(dict):
+        def __init__(self, value):
+            nonlocal active, peak
+            super().__init__(value)
+            active += 1
+            peak = max(peak, active)
+
+        def __del__(self):
+            nonlocal active
+            active -= 1
+
+    def tracked_iterator(*args, **kwargs):
+        for record in iterator(*args, **kwargs):
+            yield TrackedRecord(record)
+
+    with patch(
+        "sfo_kalshi_quant.archive._iter_verified_restore_partition",
+        side_effect=tracked_iterator,
+    ):
+        selected = archive_module.restore_archive_days(
+            archive_dir,
+            tmp_path / "selected.db",
+            days=[day],
+            log=lambda *_: None,
+        )
+        full = archive_module.restore_archive_days(
+            archive_dir,
+            tmp_path / "full.db",
+            log=lambda *_: None,
+        )
+
+    assert selected["decision_snapshots"] == 500
+    assert full["decision_snapshots"] == 500
+    assert peak <= 4
+    assert active == 0
+
+
+def test_restore_backfills_legacy_null_id_coverage_before_decoding(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    _insert_decision(
+        conn,
+        created_at=f"{day}T10:00:00+00:00",
+        target_date=day,
+    )
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=NULL "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+
+    result = archive_module.restore_archive_days(
+        archive_dir,
+        tmp_path / "restored.db",
+        days=[day],
+        log=lambda *_: None,
+    )
+
+    assert result["decision_snapshots"] == 1
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        coverage = manifest.execute(
+            "SELECT id_coverage_json FROM archive_files "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        ).fetchone()[0]
+    assert json.loads(coverage) == [[1, 1]]
+
+
 def test_gate_blocks_until_every_day_is_archived(tmp_path: Path) -> None:
     _, conn = _make_store(tmp_path)
     _insert_decision(conn)
