@@ -138,6 +138,12 @@ class PaperStore:
             pass
         return conn
 
+    def init(self) -> None:
+        init_store(self)
+
+    def _ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
+        ensure_open_position_guard_index(self, conn)
+
     def foreign_key_violations(
         self,
         *,
@@ -2058,6 +2064,14 @@ class PaperStore:
             rows = conn.execute(query, params).fetchall()
         return [str(row[0]) for row in rows]
 
+    def market_backtest_summary(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, float]:
+        return market_backtest_summary(self, since=since, until=until)
+
     def paper_equity(self, starting_bankroll: float, *, risk_profile: str | None = None) -> float:
         """Live paper equity = starting bankroll + realized PnL to date.
 
@@ -2172,6 +2186,50 @@ class PaperStore:
             )
         return None
 
+    def sampled_decision_rows(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        approved_only: bool = False,
+        min_quality: float | None = None,
+        pre_resolution_only: bool = True,
+        sample_mode: str = "entry-per-market-side",
+    ) -> list[sqlite3.Row]:
+        return sampled_decision_rows(
+            self,
+            since=since,
+            until=until,
+            approved_only=approved_only,
+            min_quality=min_quality,
+            pre_resolution_only=pre_resolution_only,
+            sample_mode=sample_mode,
+        )
+
+    def signal_backtest_summary(
+        self,
+        settlements: dict[object, float],
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        approved_only: bool = False,
+        min_quality: float | None = None,
+        pre_resolution_only: bool = True,
+        sample_mode: str = "latest-per-market-side",
+        sampled_rows: list[sqlite3.Row] | None = None,
+    ) -> dict[str, object]:
+        return signal_backtest_summary(
+            self,
+            settlements,
+            since=since,
+            until=until,
+            approved_only=approved_only,
+            min_quality=min_quality,
+            pre_resolution_only=pre_resolution_only,
+            sample_mode=sample_mode,
+            sampled_rows=sampled_rows,
+        )
+
     def _open_order(self, order_id: int) -> sqlite3.Row | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -2209,10 +2267,3 @@ def _paper_profile_filter(risk_profile: str | None) -> tuple[str, tuple[str, ...
         "AND COALESCE(risk_profile, 'live') = ?",
         (normalize_risk_profile_name(risk_profile),),
     )
-
-
-PaperStore.init = init_store
-PaperStore._ensure_open_position_guard_index = ensure_open_position_guard_index
-PaperStore.market_backtest_summary = market_backtest_summary
-PaperStore.sampled_decision_rows = sampled_decision_rows
-PaperStore.signal_backtest_summary = signal_backtest_summary
