@@ -46,6 +46,10 @@ if [[ ! -d "$LOCAL_TRADING_DIR/sfo_kalshi_quant" ]]; then
   echo "Trading source not found: $LOCAL_TRADING_DIR" >&2
   exit 1
 fi
+if [[ ! -f "$WEATHEREDGE_ROOT/pyproject.toml" || ! -f "$WEATHEREDGE_ROOT/README.md" ]]; then
+  echo "Root Python project not found: $WEATHEREDGE_ROOT" >&2
+  exit 1
+fi
 if [[ ! -f "$FORECASTER_EXCLUDES" ]]; then
   echo "Rsync exclude manifest not found: $FORECASTER_EXCLUDES" >&2
   exit 1
@@ -55,6 +59,16 @@ chmod 600 "$HOST_KEY"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo mkdir -p '$REMOTE_BASE' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE'"
+
+# The sole Python manifest lives at the repository root and reads README.md
+# while discovering the package below trading/. Send those build inputs before
+# either installer runs; the package source itself is synced in the next rsync.
+rsync -av \
+  -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
+  -- \
+  "$WEATHEREDGE_ROOT/pyproject.toml" \
+  "$WEATHEREDGE_ROOT/README.md" \
+  "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/"
 
 rsync -av \
   -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
@@ -77,7 +91,7 @@ rsync -av \
   "$LOCAL_TRADING_DIR/" \
   "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/trading/"
 
-echo "Synced forecaster and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
+echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"
 echo "Next:"
 echo "  ssh -i \"$HOST_KEY\" $REMOTE_USER@$HOST_IP"

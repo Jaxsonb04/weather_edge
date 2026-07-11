@@ -410,8 +410,75 @@ def test_timezone_failure_cannot_be_ignored(installer: str) -> None:
     assert "timedatectl show -p Timezone --value" in text
 
 
+@pytest.mark.parametrize("installer", ["install_systemd.sh", "install_systemd_notimers.sh"])
+def test_installer_editable_install_uses_synced_root_project(
+    installer: str, tmp_path: Path
+) -> None:
+    base = tmp_path / "remote base"
+    trading = base / "trading"
+    forecaster = base / "forecaster"
+    (trading / "sfo_kalshi_quant").mkdir(parents=True)
+    forecaster.mkdir()
+    (forecaster / "google_weather_cache.py").touch()
+    (base / "pyproject.toml").write_text("[project]\nname='weatheredge'\nversion='0'\n")
+    (base / "README.md").write_text("# WeatherEdge\n")
+    env_file = tmp_path / "weatheredge.env"
+    env_file.write_text("GOOGLE_WEATHER_API_KEY=test\n")
+
+    pip_log = tmp_path / "pip.log"
+    for venv in (trading / ".venv", forecaster / ".venv"):
+        (venv / "bin").mkdir(parents=True)
+        _write_executable(
+            venv / "bin/python",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\n",
+        )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "timedatectl", "#!/bin/sh\nprintf 'America/Los_Angeles\\n'\n")
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/sh
+if [ "$1" = show ]; then printf 'not-found\n'; exit 0; fi
+if [ "$1" = is-active ]; then printf 'inactive\n'; exit 3; fi
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        """#!/bin/sh
+if [ "$1" = grep ]; then exit 1; fi
+if [ "$1" = tee ]; then while IFS= read -r _line; do :; done; fi
+exit 0
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / installer)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BASE_DIR": str(base),
+            "ENV_FILE": str(env_file),
+            "PIP_LOG": str(pip_log),
+            "SYSTEMCTL_BIN": str(fake_bin / "systemctl"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = pip_log.read_text().splitlines()
+    assert f"-m pip install -e {base}" in calls
+    assert f"-m pip install -e {trading}" not in calls
+
+
 def test_installer_timezone_failure_aborts_before_dependencies(tmp_path: Path) -> None:
     base = tmp_path / "base"
+    (base / "pyproject.toml").parent.mkdir(parents=True)
+    (base / "pyproject.toml").touch()
+    (base / "README.md").touch()
     (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
     (base / "forecaster").mkdir()
     (base / "forecaster" / "google_weather_cache.py").touch()
@@ -445,6 +512,9 @@ def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
     tmp_path: Path,
 ) -> None:
     base = tmp_path / "base"
+    (base / "pyproject.toml").parent.mkdir(parents=True)
+    (base / "pyproject.toml").touch()
+    (base / "README.md").touch()
     (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
     (base / "forecaster").mkdir()
     (base / "forecaster" / "google_weather_cache.py").touch()
@@ -484,6 +554,9 @@ def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
 
 def test_regular_installer_refuses_timezone_mismatch_without_mutation(tmp_path: Path) -> None:
     base = tmp_path / "base"
+    (base / "pyproject.toml").parent.mkdir(parents=True)
+    (base / "pyproject.toml").touch()
+    (base / "README.md").touch()
     (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
     (base / "forecaster").mkdir()
     (base / "forecaster" / "google_weather_cache.py").touch()
@@ -510,6 +583,9 @@ def test_regular_installer_refuses_timezone_mismatch_without_mutation(tmp_path: 
 
 def test_timerless_timezone_mismatch_quiesces_before_set(tmp_path: Path) -> None:
     base = tmp_path / "base"
+    (base / "pyproject.toml").parent.mkdir(parents=True)
+    (base / "pyproject.toml").touch()
+    (base / "README.md").touch()
     (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
     (base / "forecaster").mkdir()
     (base / "forecaster" / "google_weather_cache.py").touch()

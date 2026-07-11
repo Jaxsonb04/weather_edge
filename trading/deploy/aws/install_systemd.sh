@@ -8,6 +8,11 @@ FORECASTER_DIR="${FORECASTER_DIR:-$BASE_DIR/forecaster}"
 ENV_FILE="${ENV_FILE:-/etc/weatheredge.env}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+if [[ ! -f "$BASE_DIR/pyproject.toml" || ! -f "$BASE_DIR/README.md" ]]; then
+  echo "missing root Python project at $BASE_DIR; run sync_to_box.sh first" >&2
+  exit 1
+fi
+
 if [[ ! -d "$TRADING_DIR/sfo_kalshi_quant" ]]; then
   echo "missing trading repo at $TRADING_DIR" >&2
   exit 1
@@ -40,7 +45,7 @@ if [[ ! -d "$TRADING_DIR/.venv" ]]; then
   python3 -m venv "$TRADING_DIR/.venv"
 fi
 "$TRADING_DIR/.venv/bin/python" -m pip install --upgrade pip
-"$TRADING_DIR/.venv/bin/python" -m pip install -e "$TRADING_DIR"
+"$TRADING_DIR/.venv/bin/python" -m pip install -e "$BASE_DIR"
 
 if [[ ! -d "$FORECASTER_DIR/.venv" ]]; then
   python3 -m venv "$FORECASTER_DIR/.venv"

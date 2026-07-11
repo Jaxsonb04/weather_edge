@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -32,6 +33,62 @@ SERVICES = tuple(timer.removesuffix(".timer") + ".service" for timer in TIMERS)
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
+
+
+def test_full_sync_transfers_root_install_inputs_from_arbitrary_cwd(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "fake bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "rsync-calls.jsonl"
+    _write_executable(fake_bin / "ssh", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "rsync",
+        f"""#!{sys.executable}
+import json, os, shutil, sys
+from pathlib import Path
+with open(os.environ['RSYNC_CALLS'], 'a', encoding='utf-8') as handle:
+    handle.write(json.dumps(sys.argv[1:]) + '\\n')
+remote = Path(os.environ['FAKE_REMOTE_BASE'])
+remote.mkdir(parents=True, exist_ok=True)
+for token in sys.argv[1:-1]:
+    source = Path(token)
+    if source.is_file() and source.name in {{'pyproject.toml', 'README.md'}}:
+        shutil.copy2(source, remote / source.name)
+""",
+    )
+    key = tmp_path / "operator key.pem"
+    key.write_text("test key")
+    arbitrary_cwd = tmp_path / "unrelated cwd"
+    arbitrary_cwd.mkdir()
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=arbitrary_cwd,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example",
+            "EC2_KEY": str(key),
+            "REMOTE_USER": "ubuntu",
+            "REMOTE_BASE": "/opt/weatheredge",
+            "RSYNC_CALLS": str(calls),
+            "FAKE_REMOTE_BASE": str(tmp_path / "remote base"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    invocations = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(invocations) == 3
+    packaging = next(call for call in invocations if str(ROOT / "pyproject.toml") in call)
+    assert str(ROOT / "README.md") in packaging
+    assert packaging[-1] == "ubuntu@ec2.example:/opt/weatheredge/"
+    assert str(key) in " ".join(packaging)
+    remote = tmp_path / "remote base"
+    assert (remote / "pyproject.toml").read_text() == (ROOT / "pyproject.toml").read_text()
+    assert (remote / "README.md").read_text() == (ROOT / "README.md").read_text()
 
 
 def _fake_transfer_tools(tmp_path: Path) -> tuple[Path, Path]:

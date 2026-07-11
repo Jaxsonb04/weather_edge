@@ -44,6 +44,10 @@ their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
 `STALE_FORECAST`, and `models/`. The committed `forecast_data.json` and
 `weather_story_data.json` inputs are deployed by both sync paths; they are
 source-controlled inputs, unlike their runtime-produced JSON siblings.
+The full sync also deploys the root `pyproject.toml` and `README.md`; both
+installers keep the executable environment under `trading/.venv` while running
+the editable install from `/opt/weatheredge`. The scheduled forecaster-only sync
+does not reinstall that environment.
 
 During the EC2 migration window, `sync_to_lightsail.sh` remains as a deprecated
 forwarding wrapper to `sync_to_box.sh`. It has no deployment logic of its own;
@@ -54,6 +58,8 @@ new operator commands and automation must use `sync_to_box.sh` directly.
 ```text
 /opt/weatheredge/forecaster
 /opt/weatheredge/trading
+/opt/weatheredge/pyproject.toml
+/opt/weatheredge/README.md
 /opt/weatheredge/trading/data/archive
 /opt/weatheredge/webdist
 /opt/weatheredge/.cache/main

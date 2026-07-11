@@ -8,8 +8,9 @@ not authorize production access or changes.
 ## Runtime Contract
 
 - `sync_to_box.sh` is the operator-driven full source sync. It defaults to
-  `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, and preserves remote runtime
-  state.
+  `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, sends the root
+  `pyproject.toml`/`README.md` install inputs plus both source trees, and
+  preserves remote runtime state.
 - `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
   for the EC2 migration window. New commands must use `sync_to_box.sh`.
 - `pull_paper_db.sh` allocates a private mode-700 directory on the remote host,
@@ -19,9 +20,10 @@ not authorize production access or changes.
 - `sync_forecaster_source.sh` is the scheduled, source-only Git refresh. It uses
   `--delete` for tracked forecaster source but shares
   `forecaster-runtime.rsync-filter` with the full sync.
-- The intentional difference is scope: full sync sends both local source trees
-  without deleting remote-only files; source sync refreshes only the committed
-  `forecaster/` subtree from `main`.
+- The intentional difference is scope: full sync sends the root packaging
+  inputs and both local source trees without deleting remote-only files; source
+  sync refreshes only the committed `forecaster/` subtree from `main`. The
+  scheduled source sync never reinstalls the trading environment.
 - Runtime DBs and their SQLite `-wal`/`-shm` sidecars, publication JSONs,
   `STALE_FORECAST`, and `models/` are never clobbered. The tracked
   `forecast_data.json` and `weather_story_data.json` inputs are intentionally
@@ -62,6 +64,11 @@ a mismatched timezone before installing dependencies and units. Preflight,
 inspection, stop, disable, timezone-set, or quiescence failures propagate. After
 manual service checks, use `install_systemd.sh` for the established full timer
 set.
+
+Both modes keep the trading virtual environment at
+`/opt/weatheredge/trading/.venv`, but install the sole editable Python project
+from `/opt/weatheredge`, where the full sync places `pyproject.toml` and its
+`README.md` build input.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
 formed command is `python -m pip install certifi numpy pandas`. Heavy training
