@@ -100,7 +100,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             <Stat label="Hit rate" value={sum?.hit_rate == null ? "—" : `${pct(sum.hit_rate, 1)} · ${sum.win_count}–${sum.loss_count}`} />
             <Stat label="Realized P&L" value={money(pnl)} tone={pnl > 0 ? "pos" : pnl < 0 ? "neg" : "default"} />
             <Stat label="ROI · resolved" value={sum?.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum?.roi ?? 0) > 0 ? "pos" : (sum?.roi ?? 0) < 0 ? "neg" : "default"} />
-            <Stat label="Capital resolved" value={resolved?.capital_resolved != null ? `$${resolved.capital_resolved.toFixed(2)}` : "—"} />
+            <Stat label="Capital resolved" value={money(resolved?.capital_resolved, { sign: "negative-only" })} />
             <Stat label="Candidates now" value={currentStateAvailable ? `${p.status?.latest_signal_count ?? 0}` : "Unavailable"} />
           </div>
         </Card.Content>

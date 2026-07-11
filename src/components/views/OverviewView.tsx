@@ -7,7 +7,7 @@ const OverviewBelowFold = lazy(() =>
   import("./OverviewBelowFold").then((module) => ({ default: module.OverviewBelowFold })),
 );
 
-function BelowFoldBoundary({ data }: { data: DashboardData }) {
+export function BelowFoldBoundary({ data }: { data: DashboardData }) {
   const [ready, setReady] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -21,19 +21,29 @@ function BelowFoldBoundary({ data }: { data: DashboardData }) {
           observer.disconnect();
         }
       },
-      { rootMargin: "600px 0px", threshold: 0 },
+      { rootMargin: "0px", threshold: 0 },
     );
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
 
   return (
-    <div ref={ref} className={ready ? undefined : "min-h-[72rem]"} aria-busy={!ready}>
+    <div className={ready ? undefined : "relative min-h-[72rem]"} aria-busy={!ready}>
       {ready ? (
         <Suspense fallback={<BelowFoldSkeleton />}>
           <OverviewBelowFold data={data} />
         </Suspense>
-      ) : <BelowFoldSkeleton />}
+      ) : (
+        <>
+          <BelowFoldSkeleton />
+          <div
+            ref={ref}
+            data-testid="overview-below-fold-sentinel"
+            className="pointer-events-none absolute inset-x-0 top-80 h-px"
+            aria-hidden="true"
+          />
+        </>
+      )}
     </div>
   );
 }

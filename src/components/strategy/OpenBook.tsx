@@ -64,7 +64,7 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
           </div>
           <div className="shrink-0 text-right">
             <p className={`tnum text-sm font-semibold ${(r.unrealized_pnl ?? 0) > 0 ? "text-success" : (r.unrealized_pnl ?? 0) < 0 ? "text-danger" : "text-foreground"}`}>
-              {kind === "open" ? money(r.unrealized_pnl) : r.risk != null ? `$${r.risk.toFixed(2)} risk` : "—"}
+              {kind === "open" ? money(r.unrealized_pnl) : r.risk != null ? `${money(r.risk, { sign: "negative-only" })} risk` : "—"}
             </p>
             {kind === "open" && r.current_bid != null && (
               <p className="font-mono text-[11px] text-muted">bid {cents(r.current_bid)}</p>
@@ -93,17 +93,17 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
       {profile ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat label="Open positions" value={currentStateAvailable ? `${open.length}` : "Unavailable"} />
-          <Stat label="Open risk" value={currentStateAvailable ? `$${sumRisk(open).toFixed(2)}` : "Unavailable"} />
+          <Stat label="Open risk" value={currentStateAvailable ? money(sumRisk(open), { sign: "negative-only" }) : "Unavailable"} />
           <Stat label="Pending limits" value={currentStateAvailable ? `${pending.length}` : "Unavailable"} />
-          <Stat label="Pending risk" value={currentStateAvailable ? `$${sumRisk(pending).toFixed(2)}` : "Unavailable"} />
+          <Stat label="Pending risk" value={currentStateAvailable ? money(sumRisk(pending), { sign: "negative-only" }) : "Unavailable"} />
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Open positions" value={currentStateAvailable ? `${sum?.open_positions ?? open.length}` : "Unavailable"} />
-          <Stat label="Open risk" value={currentStateAvailable ? (sum?.open_risk != null ? `$${sum.open_risk.toFixed(2)}` : "$0.00") : "Unavailable"} />
+          <Stat label="Open risk" value={currentStateAvailable ? money(sum?.open_risk ?? 0, { sign: "negative-only" }) : "Unavailable"} />
           <Stat label="Pending limits" value={currentStateAvailable ? `${sum?.pending_limit_orders ?? pending.length}` : "Unavailable"} />
-          <Stat label="Pending risk" value={currentStateAvailable ? (sum?.pending_limit_risk != null ? `$${sum.pending_limit_risk.toFixed(2)}` : "$0.00") : "Unavailable"} />
-          <Stat label="Capital at risk · window" value={currentStateAvailable ? (sum?.capital_at_risk != null ? `$${sum.capital_at_risk.toFixed(2)}` : "—") : "Unavailable"} />
+          <Stat label="Pending risk" value={currentStateAvailable ? money(sum?.pending_limit_risk ?? 0, { sign: "negative-only" }) : "Unavailable"} />
+          <Stat label="Capital at risk · window" value={currentStateAvailable ? money(sum?.capital_at_risk, { sign: "negative-only" }) : "Unavailable"} />
           <Stat label="Last monitor action" value={relTime(sum?.latest_monitor_action_at)} />
         </div>
       )}

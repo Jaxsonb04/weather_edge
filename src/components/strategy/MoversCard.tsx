@@ -1,6 +1,6 @@
 import { Card } from "@heroui/react/card";
 import { Icon } from "@iconify/react/offline";
-import type { StrategyLab, WinnerLoser } from "../../lib/strategy";
+import { money, type StrategyLab, type WinnerLoser } from "../../lib/strategy";
 
 function Row({ m }: { m: WinnerLoser }) {
   const pos = m.realized_pnl >= 0;
@@ -13,7 +13,7 @@ function Row({ m }: { m: WinnerLoser }) {
         </p>
       </div>
       <span className={`tnum shrink-0 text-sm font-semibold ${pos ? "text-success" : "text-danger"}`}>
-        {pos ? "+" : "−"}${Math.abs(m.realized_pnl).toFixed(2)}
+        {money(m.realized_pnl)}
       </span>
     </li>
   );
@@ -26,7 +26,7 @@ export function MoversCard({ s }: { s: StrategyLab }) {
     <div className="grid gap-5 sm:grid-cols-2">
       <Card className="rounded-2xl">
         <Card.Header className="flex flex-row items-center gap-2">
-          <Icon icon="solar:arrow-up-bold" className="size-4 text-success" />
+          <Icon icon="solar:arrow-up-bold" className="size-4 text-success" aria-hidden="true" />
           <Card.Title className="text-base">Best trades</Card.Title>
         </Card.Header>
         <Card.Content className="pt-0">
@@ -35,7 +35,7 @@ export function MoversCard({ s }: { s: StrategyLab }) {
       </Card>
       <Card className="rounded-2xl">
         <Card.Header className="flex flex-row items-center gap-2">
-          <Icon icon="solar:arrow-down-bold" className="size-4 text-danger" />
+          <Icon icon="solar:arrow-down-bold" className="size-4 text-danger" aria-hidden="true" />
           <Card.Title className="text-base">Worst trades</Card.Title>
         </Card.Header>
         <Card.Content className="pt-0">

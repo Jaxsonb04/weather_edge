@@ -4,7 +4,7 @@ import { KPIGroup } from "@heroui-pro/react/kpi-group";
 import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
-import type { StrategyLab } from "../../lib/strategy";
+import { money, type StrategyLab } from "../../lib/strategy";
 
 export function PnlHeader({ s }: { s: StrategyLab }) {
   const sum = s.paper_trading.summary;
@@ -34,7 +34,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               />
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:wallet-bold" title="Realized equity" hint={`from $${(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 1000).toLocaleString()}`}>
+            <Kpi icon="solar:wallet-bold" title="Realized equity" hint={`from ${money(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 1000, { digits: 0, sign: "negative-only" })}`}>
               <AnimatedNumber
                 className="font-display text-2xl font-semibold"
                 value={account?.realized_equity ?? s.daily_summary.current_equity}
@@ -82,7 +82,7 @@ function Kpi({ icon, title, hint, children }: { icon: string; title: string; hin
   return (
     <KPI className="min-w-[9.5rem] flex-1 bg-transparent px-3 py-2 ring-0">
       <KPI.Header className="gap-1.5">
-        <Icon icon={icon} className="size-3.5 text-accent" />
+        <Icon icon={icon} className="size-3.5 text-accent" aria-hidden="true" />
         <KPI.Title className="text-xs">{title}</KPI.Title>
       </KPI.Header>
       <KPI.Content className="mt-1">

@@ -3,7 +3,7 @@ import { ReferenceLine } from "recharts";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { LineChart } from "@heroui-pro/react/line-chart";
 import { Widget } from "@heroui-pro/react/widget";
-import { equitySeries, equitySeriesFromDays, type DayRow, type StrategyLab } from "../../lib/strategy";
+import { equitySeries, equitySeriesFromDays, money, type DayRow, type StrategyLab } from "../../lib/strategy";
 
 type Emphasis = "headline" | "secondary" | "normal";
 
@@ -34,11 +34,8 @@ const EMPHASIS_RING: Record<Emphasis, string> = {
 };
 
 /** −$80 / $0 / +$3 — whole-dollar money for axis ticks + aria text. */
-const axisMoney = (v: number, signed = false) => {
-  const r = Math.round(v);
-  const sign = r < 0 ? "−" : signed && r > 0 ? "+" : "";
-  return `${sign}$${Math.abs(r)}`;
-};
+const axisMoney = (v: number, signed = false) =>
+  money(v, { digits: 0, sign: signed ? "except-zero" : "negative-only" });
 
 export function EquityCurve({
   s,
@@ -122,15 +119,15 @@ export function EquityCurve({
                     <ChartTooltip.Item>
                       <ChartTooltip.Indicator color={stroke} />
                       <ChartTooltip.Label>{valueName}</ChartTooltip.Label>
-                      <ChartTooltip.Value>{row.pnl >= 0 ? "+" : "−"}${Math.abs(row.equity).toFixed(2)}</ChartTooltip.Value>
+                      <ChartTooltip.Value>{money(row.equity)}</ChartTooltip.Value>
                     </ChartTooltip.Item>
                     <ChartTooltip.Item>
                       <ChartTooltip.Label>Cum. P&L</ChartTooltip.Label>
-                      <ChartTooltip.Value>{row.pnl >= 0 ? "+" : "−"}${Math.abs(row.pnl).toFixed(2)}</ChartTooltip.Value>
+                      <ChartTooltip.Value>{money(row.pnl)}</ChartTooltip.Value>
                     </ChartTooltip.Item>
                     <ChartTooltip.Item>
                       <ChartTooltip.Label>Daily P&L</ChartTooltip.Label>
-                      <ChartTooltip.Value>{row.dailyPnl >= 0 ? "+" : "−"}${Math.abs(row.dailyPnl).toFixed(2)}</ChartTooltip.Value>
+                      <ChartTooltip.Value>{money(row.dailyPnl)}</ChartTooltip.Value>
                     </ChartTooltip.Item>
                   </ChartTooltip>
                 );

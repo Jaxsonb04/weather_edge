@@ -516,9 +516,30 @@ export function ledgerByCity(rows: ClosedPosition[]): CityLedgerGroup[] {
   return [...map.values()].sort((a, b) => b.trades - a.trades || b.pnl - a.pnl);
 }
 
-/** Signed money string: +$1.23 / −$4.56 (true minus sign). */
-export const money = (n: number | null | undefined, digits = 2) =>
-  n == null || Number.isNaN(n) ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toFixed(digits)}`;
+export interface MoneyFormatOptions {
+  digits?: number;
+  /** always: +$1 / −$1 / +$0; except-zero: +$1 / −$1 / $0; negative-only: $1 / −$1 / $0 */
+  sign?: "always" | "except-zero" | "negative-only";
+}
+
+/** Canonical USD formatter for every strategy surface (true minus sign). */
+export function money(
+  n: number | null | undefined,
+  options: MoneyFormatOptions | number = {},
+): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const normalized = typeof options === "number" ? { digits: options } : options;
+  const digits = normalized.digits ?? 2;
+  const sign = normalized.sign ?? "always";
+  const magnitude = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(Math.abs(n));
+  const prefix = n < 0 ? "−" : sign === "always" || (sign === "except-zero" && n > 0) ? "+" : "";
+  return `${prefix}${magnitude}`;
+}
 
 /** Contract price as cents: 0.92 → 92¢ (true minus sign for defensive negative input). */
 export const cents = (p: number | null | undefined) =>

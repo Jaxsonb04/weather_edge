@@ -55,7 +55,7 @@ export function SidePerformanceList({ side, emptyNote }: { side?: Record<string,
             <span className={`tnum font-medium ${v.realized_pnl >= 0 ? "text-success" : "text-danger"}`}>
               {money(v.realized_pnl)}
             </span>{" "}
-            on ${v.capital.toFixed(2)}
+            on {money(v.capital, { sign: "negative-only" })}
           </span>
         </li>
       ))}

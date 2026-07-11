@@ -1,7 +1,7 @@
 import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
-import type { ReadinessCheck, StrategyLab } from "../../lib/strategy";
+import { money, type ReadinessCheck, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
 
 function CheckRow({ c }: { c: ReadinessCheck }) {
@@ -107,12 +107,12 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
               <div className="grid grid-cols-2 gap-3">
                 <Stat label="Live orders" value={policy.enabled ? "Enabled" : "Disabled"} tone={policy.enabled ? "pos" : "default"} />
                 <Stat label="Dry run" value={policy.dry_run ? "On" : "Off"} />
-                <Stat label="Per-trade risk" value={policy.per_trade_risk != null ? `$${policy.per_trade_risk}` : "—"} />
-                <Stat label="Daily loss cap" value={policy.daily_loss != null ? `$${policy.daily_loss}` : "—"} />
+                <Stat label="Per-trade risk" value={money(policy.per_trade_risk, { sign: "negative-only" })} />
+                <Stat label="Daily loss cap" value={money(policy.daily_loss, { sign: "negative-only" })} />
               </div>
               {r.pilot_loss_remaining != null && policy.pilot_max_loss != null && (
                 <p className="mt-2 text-xs text-muted">
-                  Pilot kill-switch: hard stop after ${policy.pilot_max_loss} of losses (${r.pilot_loss_remaining} remaining).
+                  Pilot kill-switch: hard stop after {money(policy.pilot_max_loss, { sign: "negative-only" })} of losses ({money(r.pilot_loss_remaining, { sign: "negative-only" })} remaining).
                 </p>
               )}
             </div>

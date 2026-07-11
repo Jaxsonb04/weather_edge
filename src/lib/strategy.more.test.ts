@@ -80,6 +80,22 @@ describe("canonical financial formatters", () => {
   });
 
   it.each([
+    [2.5, "$2.50"],
+    [0, "$0.00"],
+    [-2.5, "−$2.50"],
+  ])("formats unsigned totals %s through the same money helper as %s", (value, expected) => {
+    expect(money(value, { sign: "negative-only" })).toBe(expected);
+  });
+
+  it.each([
+    [2.5, "+$3"],
+    [0, "$0"],
+    [-2.5, "−$3"],
+  ])("formats signed non-zero whole-dollar chart values %s as %s", (value, expected) => {
+    expect(money(value, { digits: 0, sign: "except-zero" })).toBe(expected);
+  });
+
+  it.each([
     [0.923, "92¢"],
     [-0.125, "−13¢"],
     [null, "—"],
