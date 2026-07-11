@@ -193,6 +193,7 @@ def test_paper_scan_pins_calibration_source():
     # local runs stay comparable to the historical taker journal.
     assert "PAPER_ENTRY_MODE=limit" in example_env
     assert "PAPER_CITIES=all" in example_env
+    assert "SFO_PAPER_SCAN_LOCK=/tmp/sfo-paper-scan.lock" in example_env
     assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
     assert "SFO_PORTFOLIO_MIN_PROFIT=0.01" in example_env
     assert "balanced,fast-feedback,exploratory" not in example_env
@@ -245,6 +246,10 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"' in runner
     default_sources = "SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history"
     assert default_sources in example_env
+    assert (
+        "SFO_DATASET_RESEARCH_PATH=/opt/weatheredge/forecaster/dataset_research.json"
+        in example_env
+    )
     assert "dataset-backfill" in runner
     assert "--source noaa-isd" not in runner
     assert 'SFO_DATASET_DB:-${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}' in runner

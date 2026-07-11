@@ -3,7 +3,6 @@
 ## Tracked Inputs And Fixtures
 
 - Forecaster and trading source.
-- Raw KSFO NOAA station history under `forecaster/2016-2026 weather data/`.
 - `forecaster/ab_test_results.json` and
   `forecaster/model_compare_results.json`, the committed model-comparison inputs.
 - `forecaster/forecast_data.json` and
@@ -22,6 +21,13 @@ For a machine that must keep a tracked fixture locally unchanged during normal
 development, an operator may use `git update-index --skip-worktree <path>` and
 later reverse it with `--no-skip-worktree`. This is local state only and must not
 replace review of intentional fixture updates.
+
+## Local Ignored Raw Data
+
+The raw KSFO NOAA station history under
+`forecaster/2016-2026 weather data/` is a local rebuild/research input. It is
+untracked by design and ignored at the repository root; preserve it locally,
+but do not treat it as a committed project input or production runtime artifact.
 
 ## Ignored Runtime State
 
