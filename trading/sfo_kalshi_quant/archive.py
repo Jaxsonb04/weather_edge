@@ -637,27 +637,40 @@ def backfill_manifest_context_ref_coverage(
         path = archive_dir / str(rel_path)
         temporary: Path | None = None
         source = path
-        if not path.exists():
-            if not upload_target:
-                raise RuntimeError(
-                    f"decision archive {day} lacks scan-context reference metadata and "
-                    f"its verified file is unavailable at {path}; restore it before the gate"
-                )
-            with tempfile.NamedTemporaryFile(
-                prefix="weatheredge-context-ref-", suffix=".jsonl.gz", delete=False
-            ) as tmp:
-                temporary = Path(tmp.name)
-            cp = _aws(
-                ["s3", "cp", str(upload_target), str(temporary), "--only-show-errors"]
-            )
-            if cp.returncode != 0:
-                temporary.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"could not fetch verified decision archive {day}: "
-                    f"{cp.stderr.strip()}"
-                )
-            source = temporary
         try:
+            if not path.exists():
+                if not upload_target:
+                    raise RuntimeError(
+                        f"decision archive {day} lacks scan-context reference metadata and "
+                        f"its verified file is unavailable at {path}; restore it before the gate"
+                    )
+                with tempfile.NamedTemporaryFile(
+                    prefix="weatheredge-context-ref-",
+                    suffix=".jsonl.gz",
+                    delete=False,
+                ) as tmp:
+                    temporary = Path(tmp.name)
+                try:
+                    cp = _aws(
+                        [
+                            "s3",
+                            "cp",
+                            str(upload_target),
+                            str(temporary),
+                            "--only-show-errors",
+                        ]
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise RuntimeError(
+                        "archive context-reference recovery could not fetch verified "
+                        f"upload for decision_snapshots {day}: {exc}"
+                    ) from exc
+                if cp.returncode != 0:
+                    raise RuntimeError(
+                        "archive context-reference recovery could not fetch verified "
+                        f"upload for decision_snapshots {day}: {cp.stderr.strip()}"
+                    )
+                source = temporary
             ranges = _context_ref_ranges_from_verified_archive(
                 source,
                 day=str(day),
@@ -1134,6 +1147,96 @@ def _restore_record(
         return False
 
 
+def _read_restore_partition(
+    archive_dir: Path,
+    table: str,
+    file_info: tuple,
+) -> list[dict[str, object]]:
+    day, rel_path, expected_rows, expected_sha256, _, _, _ = file_info
+    path = archive_dir / str(rel_path)
+    if not path.exists():
+        raise RuntimeError(f"archive restore requires verified local file {path}")
+    digest = hashlib.sha256()
+    records: list[dict[str, object]] = []
+    try:
+        with gzip.open(path, "rb") as inp:
+            for line in inp:
+                digest.update(line)
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("archive row is not an object")
+                records.append(record)
+    except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"archive restore found corrupt {table} partition {day}: {exc}"
+        ) from exc
+    if len(records) != int(expected_rows) or digest.hexdigest() != str(
+        expected_sha256
+    ):
+        raise RuntimeError(f"archive restore verification failed for {table} {day}")
+    return records
+
+
+def _restore_parent_records(
+    archive_dir: Path,
+    table: str,
+    required_ids: set[int],
+    files: list[tuple],
+    cache: dict[tuple[str, str], list[dict[str, object]]],
+) -> list[dict[str, object]]:
+    if not required_ids:
+        return []
+    found: dict[int, dict[str, object]] = {}
+    for file_info in files:
+        day, _, rows, _, raw_ranges, min_id, max_id = file_info
+        ranges = _decode_id_ranges(
+            raw_ranges,
+            table,
+            str(day),
+            archived_rows=int(rows),
+            min_id=min_id,
+            max_id=max_id,
+        )
+        if not any(
+            start <= parent_id <= end
+            for parent_id in required_ids
+            for start, end in ranges
+        ):
+            continue
+        key = (table, str(day))
+        records = cache.get(key)
+        if records is None:
+            records = _read_restore_partition(archive_dir, table, file_info)
+            cache[key] = records
+        for record in records:
+            row_id = record.get("id")
+            if isinstance(row_id, int) and row_id in required_ids:
+                found[row_id] = record
+    missing = sorted(required_ids - set(found))
+    if missing:
+        raise RuntimeError(
+            f"missing archived {table} parent id(s): "
+            + ", ".join(str(value) for value in missing)
+        )
+    return [found[row_id] for row_id in sorted(found)]
+
+
+def _merge_restore_records(
+    current: list[dict[str, object]],
+    additions: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    by_id = {
+        int(record["id"]): record
+        for record in current
+        if isinstance(record.get("id"), int)
+    }
+    for record in additions:
+        row_id = record.get("id")
+        if isinstance(row_id, int):
+            by_id[row_id] = record
+    return [by_id[row_id] for row_id in sorted(by_id)]
+
+
 def restore_archive_days(
     archive_dir: Path,
     db_path: Path,
@@ -1159,7 +1262,8 @@ def restore_archive_days(
         selected = set(days or [])
         files = {
             table: manifest.execute(
-                "SELECT day, path, rows, sha256 FROM archive_files "
+                "SELECT day, path, rows, sha256, id_coverage_json, min_id, max_id "
+                "FROM archive_files "
                 "WHERE table_name=? AND kind='day' ORDER BY day",
                 (table,),
             ).fetchall()
@@ -1167,6 +1271,66 @@ def restore_archive_days(
         }
     finally:
         manifest.close()
+
+    cache: dict[tuple[str, str], list[dict[str, object]]] = {}
+    restore_records: dict[str, list[dict[str, object]]] = {
+        table: [] for table in RESTORE_TABLE_ORDER
+    }
+    for table in RESTORE_TABLE_ORDER:
+        for file_info in files[table]:
+            day = str(file_info[0])
+            if selected and day not in selected:
+                continue
+            records = _read_restore_partition(archive_dir, table, file_info)
+            cache[(table, day)] = records
+            restore_records[table].extend(records)
+
+    if selected:
+        context_ids = {
+            int(record["scan_context_id"])
+            for record in restore_records["decision_snapshots"]
+            if isinstance(record.get("scan_context_id"), int)
+        }
+        contexts = _restore_parent_records(
+            archive_dir,
+            "scan_context_snapshots",
+            context_ids,
+            files["scan_context_snapshots"],
+            cache,
+        )
+        restore_records["scan_context_snapshots"] = _merge_restore_records(
+            restore_records["scan_context_snapshots"], contexts
+        )
+        forecast_ids = {
+            int(record["forecast_snapshot_id"])
+            for record in restore_records["scan_context_snapshots"]
+            if isinstance(record.get("forecast_snapshot_id"), int)
+        }
+        market_ids = {
+            int(record["market_snapshot_id"])
+            for record in restore_records["scan_context_snapshots"]
+            if isinstance(record.get("market_snapshot_id"), int)
+        }
+        forecasts = _restore_parent_records(
+            archive_dir,
+            "forecast_snapshots",
+            forecast_ids,
+            files["forecast_snapshots"],
+            cache,
+        )
+        markets = _restore_parent_records(
+            archive_dir,
+            "market_snapshots",
+            market_ids,
+            files["market_snapshots"],
+            cache,
+        )
+        restore_records["forecast_snapshots"] = _merge_restore_records(
+            restore_records["forecast_snapshots"], forecasts
+        )
+        restore_records["market_snapshots"] = _merge_restore_records(
+            restore_records["market_snapshots"], markets
+        )
 
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1177,38 +1341,14 @@ def restore_archive_days(
                 destination_columns = set(_table_columns(conn, "main", table))
                 if not destination_columns:
                     continue
-                for day, rel_path, expected_rows, expected_sha256 in files[table]:
-                    if selected and str(day) not in selected:
-                        continue
-                    path = archive_dir / str(rel_path)
-                    if not path.exists():
-                        raise RuntimeError(
-                            f"archive restore requires verified local file {path}"
-                        )
-                    digest = hashlib.sha256()
-                    rows = 0
-                    with gzip.open(path, "rb") as inp:
-                        for line in inp:
-                            digest.update(line)
-                            record = json.loads(line)
-                            if not isinstance(record, dict):
-                                raise RuntimeError(
-                                    f"archive restore found non-object row in {path}"
-                                )
-                            inserted = _restore_record(
-                                conn,
-                                table,
-                                record,
-                                destination_columns,
-                            )
-                            restored[table] += 1 if inserted else 0
-                            rows += 1
-                    if rows != int(expected_rows) or digest.hexdigest() != str(
-                        expected_sha256
-                    ):
-                        raise RuntimeError(
-                            f"archive restore verification failed for {table} {day}"
-                        )
+                for record in restore_records[table]:
+                    inserted = _restore_record(
+                        conn,
+                        table,
+                        record,
+                        destination_columns,
+                    )
+                    restored[table] += 1 if inserted else 0
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise RuntimeError(

@@ -852,6 +852,13 @@ def build_parser() -> argparse.ArgumentParser:
     prune.add_argument("--dedup-days", type=int, default=45)
     prune.set_defaults(func=cmd_paper_prune)
 
+    fk_check = sub.add_parser(
+        "paper-check-foreign-keys",
+        help="Explicit capped foreign-key integrity audit for deploy/health checks",
+    )
+    fk_check.add_argument("--limit", type=int, default=100)
+    fk_check.set_defaults(func=cmd_paper_check_foreign_keys)
+
     archive = sub.add_parser(
         "paper-archive",
         help="Append-only lossless day export of the journal; gates paper-prune (see archive.py)",
@@ -3320,6 +3327,25 @@ def cmd_paper_prune(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def cmd_paper_check_foreign_keys(args: argparse.Namespace) -> int:
+    violations = PaperStore(args.db_path).foreign_key_violations(limit=args.limit)
+    if not violations:
+        print("foreign key audit ok")
+        return 0
+    print(
+        f"FOREIGN KEY AUDIT FAILED: showing {len(violations)} violation(s) "
+        f"(limit={args.limit})",
+        file=sys.stderr,
+    )
+    for violation in violations:
+        print(
+            f"{violation['table']} rowid={violation['rowid']} -> "
+            f"{violation['parent']} (fk={violation['foreign_key_id']})",
+            file=sys.stderr,
+        )
+    return 1
 
 
 def cmd_paper_auto_settle(args: argparse.Namespace) -> int:

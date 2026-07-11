@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import json
 import sqlite3
+import tempfile as stdlib_tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,11 +19,25 @@ from sfo_kalshi_quant.archive import (
     open_manifest,
 )
 from sfo_kalshi_quant.db import PaperStore
-from test_scan_context_normalization import _decision, _record
+from test_scan_context_normalization import _decision, _forecast, _record
+from support import pre_resolution_event
+
+ARCHIVE_PRUNE_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "aws"
+    / "run_archive_then_prune.sh"
+)
 
 
 def _utc_day(days_ago: int) -> str:
     return (datetime.now(UTC).date() - timedelta(days=days_ago)).isoformat()
+
+
+def test_archive_prune_wrapper_runs_explicit_fk_audit_before_prune() -> None:
+    script = ARCHIVE_PRUNE_SCRIPT.read_text()
+    assert "paper-check-foreign-keys" in script
+    assert script.index("paper-check-foreign-keys") < script.index("\n  paper-prune --")
 
 
 def _insert_decision(conn: sqlite3.Connection, **overrides) -> int:
@@ -86,6 +101,49 @@ def _make_store(tmp_path: Path) -> tuple[PaperStore, sqlite3.Connection]:
     store = PaperStore(tmp_path / "paper.db")
     conn = sqlite3.connect(tmp_path / "paper.db")
     return store, conn
+
+
+def _archive_midnight_split(tmp_path: Path) -> tuple[Path, str, str]:
+    store, conn = _make_store(tmp_path)
+    decision = _decision(1)
+    forecast = _forecast()
+    event = pre_resolution_event([decision])
+    forecast_id = store.record_forecast(forecast)
+    market_id = store.record_market(event)
+    store.record_decisions(
+        "2026-06-20",
+        [decision],
+        forecast=forecast,
+        event=event,
+        risk_profile="live",
+        forecast_snapshot_id=forecast_id,
+        market_snapshot_id=market_id,
+    )
+    child_day = _utc_day(2)
+    parent_day = _utc_day(3)
+    conn.execute(
+        "UPDATE decision_snapshots SET created_at=?",
+        (f"{child_day}T00:01:00+00:00",),
+    )
+    for table in (
+        "forecast_snapshots",
+        "market_snapshots",
+        "scan_context_snapshots",
+    ):
+        conn.execute(
+            f"UPDATE {table} SET created_at=?",
+            (f"{parent_day}T23:59:00+00:00",),
+        )
+    conn.execute(
+        "INSERT INTO scan_context_snapshots "
+        "(created_at, target_date, prediction_features_json, schema_version) "
+        "VALUES (?, 'unrelated', '{}', 1)",
+        (f"{parent_day}T12:00:00+00:00",),
+    )
+    conn.commit()
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    return archive_dir, child_day, parent_day
 
 
 def test_export_roundtrip_is_lossless(tmp_path: Path) -> None:
@@ -309,6 +367,55 @@ def test_restore_accepts_only_exact_existing_rows_idempotently(tmp_path: Path) -
     with sqlite3.connect(restored_db) as restored:
         assert restored.execute("SELECT COUNT(*) FROM scan_context_snapshots").fetchone()[0] == 1
         assert restored.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 1
+        assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_restore_selected_day_closes_cross_day_parent_dependencies(
+    tmp_path: Path,
+) -> None:
+    archive_dir, child_day, _ = _archive_midnight_split(tmp_path)
+    restored_db = tmp_path / "restored.db"
+
+    result = archive_module.restore_archive_days(
+        archive_dir, restored_db, days=[child_day], log=lambda *_: None
+    )
+
+    assert result["forecast_snapshots"] == 1
+    assert result["market_snapshots"] == 1
+    assert result["scan_context_snapshots"] == 1
+    assert result["decision_snapshots"] == 1
+    with sqlite3.connect(restored_db) as restored:
+        assert restored.execute(
+            "SELECT COUNT(*) FROM scan_context_snapshots"
+        ).fetchone()[0] == 1
+        assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_restore_missing_cross_day_parent_is_actionable_and_atomic(
+    tmp_path: Path,
+) -> None:
+    archive_dir, child_day, parent_day = _archive_midnight_split(tmp_path)
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "DELETE FROM archive_files WHERE table_name='forecast_snapshots' "
+            "AND day=? AND kind='day'",
+            (parent_day,),
+        )
+    restored_db = tmp_path / "restored.db"
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"missing archived forecast_snapshots parent id",
+    ):
+        archive_module.restore_archive_days(
+            archive_dir, restored_db, days=[child_day], log=lambda *_: None
+        )
+
+    with sqlite3.connect(restored_db) as restored:
+        assert restored.execute(
+            "SELECT COUNT(*) FROM scan_context_snapshots"
+        ).fetchone()[0] == 0
+        assert restored.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 0
         assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -566,6 +673,48 @@ def test_context_ref_backfill_fetches_verified_uploaded_decision_copy(
             (day,),
         ).fetchone()[0]
     assert json.loads(coverage) == [[context_id, context_id]]
+
+
+def test_context_ref_fetch_failure_wraps_error_and_removes_temporary_file(
+    tmp_path: Path,
+) -> None:
+    store, conn = _make_store(tmp_path)
+    _record(store, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T08:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T08:00:00+00:00",))
+    conn.commit()
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    path = archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET context_ref_coverage_json=NULL, "
+            "upload_target='s3://verified/decision.jsonl.gz' "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+    path.unlink()
+    real_named_temp = stdlib_tempfile.NamedTemporaryFile
+
+    def local_named_temp(*args, **kwargs):
+        kwargs["dir"] = tmp_path
+        return real_named_temp(*args, **kwargs)
+
+    with (
+        patch(
+            "sfo_kalshi_quant.archive.tempfile.NamedTemporaryFile",
+            side_effect=local_named_temp,
+        ),
+        patch(
+            "sfo_kalshi_quant.archive._aws",
+            side_effect=FileNotFoundError("aws executable missing"),
+        ),
+        pytest.raises(RuntimeError, match="context-reference recovery could not fetch"),
+    ):
+        archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    assert list(tmp_path.glob("weatheredge-context-ref-*")) == []
 
 
 def test_manifest_coverage_backfill_requires_one_time_original_restore(

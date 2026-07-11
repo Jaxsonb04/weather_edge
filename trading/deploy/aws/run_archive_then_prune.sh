@@ -33,11 +33,15 @@ $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-archive --archive-dir "$ARCHIVE_DIR" --check-gate
 
-# 5. Only now may retention delete anything.
+# 5. Explicit integrity audit (kept out of normal PaperStore initialization).
+$PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
+  paper-check-foreign-keys --limit "${SFO_FK_AUDIT_LIMIT:-100}"
+
+# 6. Only now may retention delete anything.
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-prune --full-days "${SFO_PRUNE_FULL_DAYS:-1}" --dedup-days "${SFO_PRUNE_DEDUP_DAYS:-45}"
 
-# 6. Ring buffer: drop local copies >keep-days old ONLY if verifiably uploaded.
+# 7. Ring buffer: drop local copies >keep-days old ONLY if verifiably uploaded.
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-archive --archive-dir "$ARCHIVE_DIR" --cleanup --keep-days "${SFO_ARCHIVE_KEEP_DAYS:-30}" \
   || echo "WARN: ring-buffer cleanup failed" >&2

@@ -32,7 +32,10 @@ It runs:
   `run_archive_then_prune.sh`. Its ordering is the safety gate: lossless archive
   and verification must succeed before pruning. Production uses
   `SFO_PRUNE_FULL_DAYS=1`, keeps last-per-market-side-day rows to 45 days, and
-  keeps approved rows indefinitely. Do not add or invoke a bare scheduled
+  keeps approved rows indefinitely. The wrapper also runs the explicit capped
+  `paper-check-foreign-keys` integrity audit immediately before pruning; routine
+  `PaperStore` initialization intentionally does not scan the full journal.
+  Do not add or invoke a bare scheduled
   `paper-prune`; the CLI command is low-level/manual recovery tooling.
 - Kalshi paper scan: every 5 minutes, around the clock, looping all cities.
   Each run live-fetches the current Kalshi order books and makes paper-trade

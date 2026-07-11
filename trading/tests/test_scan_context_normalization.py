@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import argparse
 import json
-import logging
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
 import pytest
+import sfo_kalshi_quant.cli as cli_module
 
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.consensus import MarketConsensus
@@ -398,9 +399,8 @@ def test_every_paper_store_connection_enforces_foreign_keys(tmp_path: Path) -> N
             )
 
 
-def test_init_reports_but_preserves_legacy_foreign_key_violations(
+def test_explicit_audit_preserves_legacy_foreign_key_violations(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     db_path = tmp_path / "legacy-orphan.db"
     PaperStore(db_path)
@@ -411,11 +411,8 @@ def test_init_reports_but_preserves_legacy_foreign_key_violations(
             scan_context_id=999,
         )
 
-    with caplog.at_level(logging.ERROR, logger="sfo_kalshi_quant.db"):
-        store = PaperStore(db_path)
+    store = PaperStore(db_path)
 
-    assert "foreign key integrity violation" in caplog.text.lower()
-    assert "decision_snapshots" in caplog.text
     assert store.foreign_key_violations() == [
         {
             "table": "decision_snapshots",
@@ -478,3 +475,42 @@ def test_partial_legacy_scan_context_migrates_to_actionable_read_error(
 
     with pytest.raises(RuntimeError, match="partial scan context 7"):
         store.record_paper_order("2026-06-20", decision, risk_profile="live")
+
+
+def test_normal_store_init_does_not_run_full_foreign_key_audit(tmp_path: Path) -> None:
+    statements: list[str] = []
+
+    class TracedStore(PaperStore):
+        def connect(self) -> sqlite3.Connection:
+            conn = super().connect()
+            conn.set_trace_callback(statements.append)
+            return conn
+
+    TracedStore(tmp_path / "paper.db")
+
+    assert not any("foreign_key_check" in sql.lower() for sql in statements)
+
+
+def test_explicit_fk_audit_command_detects_legacy_violation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    command = getattr(cli_module, "cmd_paper_check_foreign_keys", None)
+    assert callable(command), "explicit paper FK audit command is required"
+    db_path = tmp_path / "legacy-orphan.db"
+    PaperStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_decision_with_context(
+            conn,
+            ticker="LEGACY-ORPHAN",
+            scan_context_id=999,
+        )
+
+    result = command(
+        argparse.Namespace(db_path=db_path, limit=1, no_color=True)
+    )
+
+    output = capsys.readouterr()
+    assert result == 1
+    assert "decision_snapshots" in output.err
+    assert "scan_context_snapshots" in output.err

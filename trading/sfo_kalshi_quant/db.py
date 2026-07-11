@@ -706,39 +706,30 @@ class PaperStore:
                 )
             self._ensure_open_position_guard_index(conn)
             self._ensure_shared_paper_account(conn)
-            self._report_foreign_key_violations(conn)
 
-    @staticmethod
-    def _report_foreign_key_violations(conn: sqlite3.Connection) -> None:
-        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if not violations:
-            return
-        details = "; ".join(
-            f"{table} rowid={rowid} -> {parent} (fk={fk_id})"
-            for table, rowid, parent, fk_id in violations[:20]
-        )
-        logger.error(
-            "foreign key integrity violations detected (%d); data was preserved. "
-            "Repair or restore the referenced parent rows before new writes: %s",
-            len(violations),
-            details,
-        )
+    def foreign_key_violations(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        """Explicit, output-capped FK audit without modifying journal data."""
 
-    def foreign_key_violations(self) -> list[dict[str, object]]:
-        """Return actionable FK diagnostics without modifying journal data."""
-
+        if limit < 1:
+            raise ValueError("foreign key audit limit must be positive")
         with self.connect() as conn:
-            return [
-                {
+            violations: list[dict[str, object]] = []
+            for table, rowid, parent, fk_id in conn.execute(
+                "PRAGMA foreign_key_check"
+            ):
+                violations.append({
                     "table": str(table),
                     "rowid": rowid,
                     "parent": str(parent),
                     "foreign_key_id": int(fk_id),
-                }
-                for table, rowid, parent, fk_id in conn.execute(
-                    "PRAGMA foreign_key_check"
-                ).fetchall()
-            ]
+                })
+                if len(violations) >= limit:
+                    break
+            return violations
 
     def _ensure_shared_paper_account(self, conn: sqlite3.Connection) -> None:
         if conn.execute(
