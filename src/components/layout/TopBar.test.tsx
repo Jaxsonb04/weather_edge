@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@iconify/react/offline", () => ({ Icon: () => null }));
@@ -41,18 +41,46 @@ describe("TopBar mobile menu keyboard behavior", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("wraps keyboard focus inside the open mobile menu", () => {
-    render(<TopBar {...props} />);
+  it("lets natural Tab order leave the non-modal mobile menu", () => {
+    render(
+      <>
+        <TopBar {...props} />
+        <button type="button">After navigation</button>
+      </>,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
 
     const menu = screen.getByRole("navigation", { name: "Mobile navigation" });
-    const first = within(menu).getByRole("link", { name: "Overview" });
     const last = within(menu).getByRole("link", { name: "Source on GitHub" });
+    const sentinel = screen.getByRole("button", { name: "After navigation" });
     last.focus();
-    fireEvent.keyDown(document, { key: "Tab" });
-    expect(first).toHaveFocus();
+    const tab = createEvent.keyDown(last, { key: "Tab", bubbles: true, cancelable: true });
+    fireEvent(last, tab);
+    if (!tab.defaultPrevented) sentinel.focus();
 
-    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
-    expect(last).toHaveFocus();
+    expect(tab.defaultPrevented).toBe(false);
+    expect(sentinel).toHaveFocus();
+  });
+
+  it("closes an already-active route and restores the menu trigger", () => {
+    render(<TopBar {...props} />);
+    const trigger = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(trigger);
+
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Overview" }));
+
+    expect(screen.queryByRole("navigation", { name: "Mobile navigation" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("does not restore trigger focus when selecting a different route", () => {
+    render(<TopBar {...props} />);
+    const trigger = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(trigger);
+
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Methodology" }));
+
+    expect(screen.queryByRole("navigation", { name: "Mobile navigation" })).not.toBeInTheDocument();
+    expect(trigger).not.toHaveFocus();
   });
 });

@@ -32,17 +32,6 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
         event.preventDefault();
         setMenuOpen(false);
         menuButtonRef.current?.focus();
-        return;
-      }
-      if (event.key !== "Tab" || links.length === 0) return;
-      const first = links[0];
-      const last = links[links.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -135,7 +124,13 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
                 <a
                   href={`#/${item.id}`}
                   aria-current={route === item.id ? "page" : undefined}
-                  onClick={() => setMenuOpen(false)}
+                  onClick={(event) => {
+                    setMenuOpen(false);
+                    if (item.id === route) {
+                      event.preventDefault();
+                      menuButtonRef.current?.focus();
+                    }
+                  }}
                   className={`flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
                     route === item.id ? "bg-accent-soft text-[color:var(--accent-text)]" : "text-foreground hover:bg-default"
                   }`}
