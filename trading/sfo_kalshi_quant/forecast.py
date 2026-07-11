@@ -547,7 +547,8 @@ class SfoForecasterAdapter:
 
         This is the same instrument Kalshi settles on (live CLI + IEM archive),
         unlike the observation-derived daily high below, which runs a few
-        degrees low of the CLI on some days and must not settle orders.
+        degrees low of the CLI on some days and must not settle orders. Legacy
+        schemas without explicit finality fail closed.
         """
 
         if not self.weather_db.exists():
@@ -556,11 +557,12 @@ class SfoForecasterAdapter:
             if not _table_exists(conn, "cli_settlements"):
                 return {}
             columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
-            final_filter = "AND is_final = 1" if "is_final" in columns else ""
+            if "is_final" not in columns:
+                return {}
             rows = conn.execute(
                 "SELECT local_date, max_temperature_f FROM cli_settlements "
                 "WHERE station_id = ? AND max_temperature_f IS NOT NULL "
-                f"{final_filter}",
+                "AND is_final = 1",
                 (self.station_id,),
             ).fetchall()
         return {

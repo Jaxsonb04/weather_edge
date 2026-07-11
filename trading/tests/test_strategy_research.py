@@ -57,12 +57,13 @@ def _write_settlement(root: Path, target: str = "2026-06-03", high: float = 67.0
             CREATE TABLE cli_settlements (
                 station_id TEXT,
                 local_date TEXT,
-                max_temperature_f REAL
+                max_temperature_f REAL,
+                is_final INTEGER NOT NULL DEFAULT 1
             )
             """
         )
         conn.execute(
-            "INSERT INTO cli_settlements VALUES ('KSFO', ?, ?)",
+            "INSERT INTO cli_settlements VALUES ('KSFO', ?, ?, 1)",
             (target, high),
         )
         conn.execute(

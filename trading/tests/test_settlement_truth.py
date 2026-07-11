@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.settlement_truth import (
+    load_cli_settlement_truth,
     normalize_settlement_truth,
     settlement_for_market,
 )
@@ -17,7 +18,7 @@ def test_date_only_legacy_truth_can_only_settle_sfo() -> None:
     assert settlement_for_market(truth, "KXHIGHNY-26JUL08-B87", "2026-07-08") is None
 
 
-def test_adapter_uses_city_scoped_cli_truth_not_observation_maxima() -> None:
+def test_legacy_cli_schema_fails_closed_for_settlement_sensitive_loaders() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "weather.db"
         with sqlite3.connect(db_path) as conn:
@@ -45,11 +46,11 @@ def test_adapter_uses_city_scoped_cli_truth_not_observation_maxima() -> None:
             )
 
         adapter = SfoForecasterAdapter(Path(tmp))
-        truth = adapter.load_cli_settlement_truth()
-
-        assert truth[("KXHIGHTSFO", "2026-07-08")] == 67.0
-        assert truth[("KXHIGHNY", "2026-07-08")] == 89.0
-        assert adapter.load_ksfo_daily_highs() == {date(2026, 7, 8): 67.0}
+        assert adapter.load_cli_settlement_highs() == {}
+        assert adapter.load_cli_settlement_truth() == {}
+        assert adapter.load_ksfo_daily_highs() == {}
+        with sqlite3.connect(db_path) as conn:
+            assert load_cli_settlement_truth(conn) == {}
 
 
 def test_adapter_excludes_preliminary_cli_truth_when_finality_column_exists() -> None:

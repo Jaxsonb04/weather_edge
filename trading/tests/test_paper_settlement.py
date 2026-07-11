@@ -489,10 +489,26 @@ def test_paper_auto_settle_leaves_order_open_without_archived_final_truth():
         row = store.paper_orders(1)[0]
         assert row["status"] == "PAPER_FILLED"
         assert row["settlement_high_f"] is None
+
+        assert store.settle_paper_orders("2026-06-03", 67.0) == 1
+        verify_out = io.StringIO()
+        with redirect_stdout(verify_out):
+            assert main(
+                [
+                    "--forecaster-root", str(root),
+                    "--db-path", str(db_path),
+                    "--no-color", "paper-resettle", "--verify", "--days", "365",
+                ]
+            ) == 0
+        assert "MISSING_FINAL" in verify_out.getvalue()
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute(
+                "SELECT verification_status FROM paper_settlement_verifications"
+            ).fetchone()[0] == "MISSING_FINAL"
         assert row["realized_pnl"] is None
 
 
-def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
+def test_paper_auto_settle_fails_closed_for_legacy_cli_schema():
     with TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         root.mkdir()
@@ -559,10 +575,10 @@ def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
             )
 
         assert code == 0
-        assert "archived CLI truth" in out.getvalue()
+        assert "no CLI truth" in out.getvalue()
         row = store.paper_orders(1)[0]
-        assert row["status"] == "PAPER_SETTLED"
-        assert row["settlement_high_f"] == 67.0
+        assert row["status"] == "PAPER_FILLED"
+        assert row["settlement_high_f"] is None
 
 
 def test_paper_auto_settle_waits_for_grace_and_final_truth():

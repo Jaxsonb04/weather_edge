@@ -53,13 +53,14 @@ def settlement_for_market(
 
 
 def load_cli_settlement_truth(conn) -> dict[SettlementKey, float]:
-    """Load authoritative CLI outcomes, dropping unknown/retired stations."""
+    """Load final CLI outcomes; legacy schemas without finality fail closed."""
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
-    final_filter = "AND is_final = 1" if "is_final" in columns else ""
+    if "is_final" not in columns:
+        return {}
     rows = conn.execute(
         "SELECT station_id, local_date, max_temperature_f FROM cli_settlements "
-        f"WHERE max_temperature_f IS NOT NULL {final_filter}"
+        "WHERE max_temperature_f IS NOT NULL AND is_final = 1"
     ).fetchall()
     truth: dict[SettlementKey, float] = {}
     for station_id, local_date, high in rows:

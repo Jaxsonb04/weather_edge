@@ -219,10 +219,11 @@ def test_features_rollup_entry_labels_and_histogram(tmp_path: Path) -> None:
     weather_db = tmp_path / "weather.db"
     w = sqlite3.connect(weather_db)
     w.execute(
-        "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, max_temperature_f REAL)"
+        "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+        "max_temperature_f REAL, is_final INTEGER NOT NULL DEFAULT 1)"
     )
     w.execute(
-        "INSERT INTO cli_settlements VALUES ('KSFO', ?, 68.0)", (day,)
+        "INSERT INTO cli_settlements VALUES ('KSFO', ?, 68.0, 1)", (day,)
     )
     w.commit()
     w.close()
