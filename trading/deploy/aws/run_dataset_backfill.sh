@@ -104,19 +104,28 @@ for raw_source in "${sources[@]}"; do
   fi
 done
 
-if [[ "${#failed_sources[@]}" -gt 0 ]]; then
-  echo "warning: dataset backfill skipped failed source(s): ${failed_sources[*]}" >&2
-fi
-
 # Evaluate the collected datasets right after every backfill so the research
 # verdict (promote vs collect-only) ships with the Strategy Lab artifact
 # instead of sitting unused in the DB.
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
 RESEARCH_OUTPUT="${SFO_DATASET_RESEARCH_PATH:-$FORECASTER_DIR/dataset_research.json}"
 echo "running dataset research output=$RESEARCH_OUTPUT"
-"$PYTHON_BIN" -m sfo_kalshi_quant.cli \
-  --no-color \
-  --db-path "$DB_PATH" \
-  --forecaster-root "$FORECASTER_DIR" \
-  dataset-research \
-  --output "$RESEARCH_OUTPUT" >/dev/null
+research_failed=0
+if ! "$PYTHON_BIN" -m sfo_kalshi_quant.cli \
+    --no-color \
+    --db-path "$DB_PATH" \
+    --forecaster-root "$FORECASTER_DIR" \
+    dataset-research \
+    --output "$RESEARCH_OUTPUT" >/dev/null; then
+  research_failed=1
+  echo "ERROR: dataset research failed" >&2
+fi
+
+if [[ "${#failed_sources[@]}" -gt 0 ]]; then
+  failed_list="$(IFS=,; echo "${failed_sources[*]}")"
+  echo "ERROR: ${#failed_sources[@]} dataset source(s) failed: $failed_list" >&2
+fi
+
+if (( ${#failed_sources[@]} > 0 || research_failed > 0 )); then
+  exit 1
+fi

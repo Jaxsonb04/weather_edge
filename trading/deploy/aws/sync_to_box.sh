@@ -59,8 +59,6 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 rsync -av \
   -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
   --exclude-from="$FORECASTER_EXCLUDES" \
-  --exclude "forecast_data.json" \
-  --exclude "weather_story_data.json" \
   "$LOCAL_FORECASTER_DIR/" \
   "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/forecaster/"
 

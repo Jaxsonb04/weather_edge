@@ -228,7 +228,7 @@ approved paper PnL, and quality-bucket diagnostics.
 Run tests without installing extra packages:
 
 ```bash
-python3 trading/tests/run_tests.py
+PYTHONPATH=trading:forecaster python3 -m pytest trading/tests forecaster/tests -q
 ```
 
 Settle paper orders once the final CLISFO value is known:

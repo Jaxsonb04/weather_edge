@@ -1,0 +1,8 @@
+[Unit]
+Description=WeatherEdge failure alert for %i
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+EnvironmentFile=__ENV_FILE__
+ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/send_systemd_failure_alert.sh %i %n

@@ -193,7 +193,7 @@ def test_paper_scan_pins_calibration_source():
     # local runs stay comparable to the historical taker journal.
     assert "PAPER_ENTRY_MODE=limit" in example_env
     assert "PAPER_CITIES=all" in example_env
-    assert "SFO_PAPER_SCAN_LOCK=/tmp/sfo-paper-scan.lock" in example_env
+    assert "SFO_PAPER_SCAN_LOCK=/opt/weatheredge/.locks/paper-scan.lock" in example_env
     assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
     assert "SFO_PORTFOLIO_MIN_PROFIT=0.01" in example_env
     assert "balanced,fast-feedback,exploratory" not in example_env
@@ -433,7 +433,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
         "SFO_PUBLICATION_MANIFEST_URL="
         "https://jaxsonb04.github.io/weather_edge/publication_manifest.json"
     ) in example_env
-    assert "plain-text HTTP endpoint" in watchdog
+    assert "JSON webhook endpoint" in watchdog
     assert "Slack/Discord" not in watchdog
     for documentation in (readme, deployment):
         assert "10 minutes" in documentation
@@ -531,7 +531,7 @@ def test_full_box_sync_does_not_copy_local_runtime_state():
     assert "--exclude 'data'" in syncer
 
 
-def test_tracked_forecaster_fixtures_are_explicitly_preserved_on_the_box():
+def test_tracked_forecaster_inputs_are_copied_to_the_box():
     full_sync = _read(AWS_DIR / "sync_to_box.sh")
     source_sync = _read(AWS_DIR / "sync_forecaster_source.sh")
 
@@ -539,8 +539,8 @@ def test_tracked_forecaster_fixtures_are_explicitly_preserved_on_the_box():
         "forecast_data.json",
         "weather_story_data.json",
     ):
-        assert f'--exclude "{artifact}"' in full_sync
-        assert f'--exclude "{artifact}"' in source_sync
+        assert f'--exclude "{artifact}"' not in full_sync
+        assert f'--exclude "{artifact}"' not in source_sync
 
 
 def test_retired_forecaster_refresh_gate_is_absent():

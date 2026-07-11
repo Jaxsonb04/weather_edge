@@ -6,11 +6,12 @@
 # manifest cannot reset the operational clocks recorded inside it.
 #
 # Wire a real push alert by setting SFO_FRESHNESS_ALERT_URL in /etc/weatheredge.env
-# to a plain-text HTTP endpoint, such as an ntfy.sh topic.
+# to a JSON webhook endpoint, such as an ntfy.sh topic.
 set -uo pipefail
 
-FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
-TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
+BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-/opt/weatheredge}}"
+FORECASTER_DIR="${SFO_FORECASTER_ROOT:-$BASE_DIR/forecaster}"
+TRADING_DIR="${SFO_TRADING_ROOT:-$BASE_DIR/trading}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB="${SFO_FORECAST_DB:-$FORECASTER_DIR/weather.db}"
 MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
@@ -21,9 +22,27 @@ OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
+DISK_MAX_PERCENT="${SFO_DISK_USAGE_MAX_PERCENT:-85}"
 
 now=$(date +%s)
 failures=()
+disk_percent="n/a"
+
+if [[ ! "$DISK_MAX_PERCENT" =~ ^[0-9]+$ ]] || (( DISK_MAX_PERCENT < 1 || DISK_MAX_PERCENT > 100 )); then
+  failures+=("disk usage threshold malformed: $DISK_MAX_PERCENT")
+elif ! disk_output="$(df -P "$BASE_DIR" 2>&1)"; then
+  failures+=("disk usage check failed for $BASE_DIR: $disk_output")
+else
+  disk_field="$(printf '%s\n' "$disk_output" | awk 'NR == 2 { print $5 }')"
+  if [[ ! "$disk_field" =~ ^[0-9]+%$ ]]; then
+    failures+=("disk usage output malformed for $BASE_DIR: ${disk_field:-missing percentage}")
+  else
+    disk_percent="${disk_field%%%}"
+    if (( disk_percent >= DISK_MAX_PERCENT )); then
+      failures+=("disk usage ${disk_percent}% at $BASE_DIR reached threshold ${DISK_MAX_PERCENT}%")
+    fi
+  fi
+fi
 
 if [[ "$PUBLISH_PAGES" == "1" && -z "$PUBLIC_MANIFEST_URL" ]]; then
   failures+=("SFO_PUBLICATION_MANIFEST_URL is required when SFO_PUBLISH_PAGES=1")
@@ -96,6 +115,7 @@ fi
 rm -f "$MARKER" 2>/dev/null || true
 echo "OK: forecast DB fresh (${age_h}h old, threshold ${MAX_AGE_HOURS}h)"
 echo "OK: publication manifest valid (operational <=${OPERATIONAL_MAX_MINUTES}m, strategy <=${STRATEGY_MAX_MINUTES}m)"
+echo "OK: disk usage ${disk_percent}% at $BASE_DIR (threshold <${DISK_MAX_PERCENT}%)"
 if [[ -n "$PUBLIC_MANIFEST_URL" ]]; then
   echo "OK: public publication manifest valid ($PUBLIC_MANIFEST_URL)"
 fi

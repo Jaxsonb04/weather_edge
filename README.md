@@ -49,7 +49,7 @@ cd /path/to/WeatherEdge
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-python trading/tests/run_tests.py
+python -m pytest trading/tests forecaster/tests -q
 ```
 
 Without installing first, use the helper:

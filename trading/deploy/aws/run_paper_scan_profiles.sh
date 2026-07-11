@@ -6,8 +6,11 @@ set -euo pipefail
 # finishes; WAL keeps the DB consistent but does not stop two scans doing
 # duplicate logical work or both placing paper entries. flock is a no-op where
 # unavailable (local macOS dev).
-SCAN_LOCK="${SFO_PAPER_SCAN_LOCK:-${TMPDIR:-/tmp}/sfo-paper-scan.lock}"
+TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
+BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-$(dirname "$TRADING_DIR")}}"
+SCAN_LOCK="${SFO_PAPER_SCAN_LOCK:-$BASE_DIR/.locks/paper-scan.lock}"
 if command -v flock >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$SCAN_LOCK")"
   exec 9>"$SCAN_LOCK"
   if ! flock -n 9; then
     echo "previous paper scan still running; skipping this tick"
@@ -15,7 +18,6 @@ if command -v flock >/dev/null 2>&1; then
   fi
 fi
 
-TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB_PATH="${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}"
@@ -30,7 +32,8 @@ PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"
 PAPER_PLACE_ORDERS="${SFO_PAPER_PLACE_ORDERS:-1}"
 
 truthy() {
-  case "${1,,}" in
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
     1 | true | yes | y | on) return 0 ;;
     *) return 1 ;;
   esac

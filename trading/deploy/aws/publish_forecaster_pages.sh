@@ -16,6 +16,7 @@ fi
 
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
+BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-$(dirname "$TRADING_DIR")}}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 WEBDIST_DIR="${SFO_WEBDIST_DIR:-/opt/weatheredge/webdist}"
 REMOTE_URL="${SFO_FORECASTER_GIT_REMOTE:-git@github.com:Jaxsonb04/weather_edge.git}"
@@ -143,8 +144,9 @@ export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKe
 # Keep the pages Git lock distinct from the artifact-generation lock. The
 # artifact snapshot above is already immutable, so slow fetch/push retries do
 # not block the next generator.
-PAGES_LOCK="${SFO_PAGES_LOCK:-${TMPDIR:-/tmp}/sfo-weather-pages.lock}"
+PAGES_LOCK="${SFO_PAGES_LOCK:-$BASE_DIR/.locks/pages-publish.lock}"
 if command -v flock >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$PAGES_LOCK")"
   exec 9>"$PAGES_LOCK"
   flock 9
 fi

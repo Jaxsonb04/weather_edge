@@ -66,6 +66,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
+        "SFO_BASE_DIR": str(root.parent),
         "SFO_FORECASTER_ROOT": str(root),
         "SFO_FORECAST_DB": str(root / "weather.db"),
         "SFO_FORECAST_MAX_AGE_HOURS": "6",

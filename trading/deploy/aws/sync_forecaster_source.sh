@@ -51,12 +51,8 @@ if [[ ! -f "$FORECASTER_EXCLUDES" ]]; then
   exit 1
 fi
 
-# These two tracked files are public-site fixtures today. They stay remote-owned
-# until the committed-input migration intentionally removes this pair.
 rsync -a --delete \
   --exclude-from="$FORECASTER_EXCLUDES" \
-  --exclude "forecast_data.json" \
-  --exclude "weather_story_data.json" \
   "$RSYNC_SOURCE" "$FORECASTER_DIR"/
 
 echo "synced $REMOTE_URL#$BRANCH:$SOURCE_SUBDIR into $FORECASTER_DIR"

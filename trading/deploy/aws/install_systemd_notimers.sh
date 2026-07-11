@@ -25,7 +25,7 @@ fi
 # known timer before changing dependencies or units; real failures abort.
 bash "$SCRIPT_DIR/disable_systemd_timers.sh"
 
-sudo timedatectl set-timezone America/Los_Angeles || true
+sudo timedatectl set-timezone America/Los_Angeles
 sudo apt-get update
 sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
 
@@ -68,8 +68,9 @@ render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-monitor.service.in" /etc/syste
 render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-settle.service.in" /etc/systemd/system/sfo-kalshi-paper-settle.service
 render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-prune.service.in" /etc/systemd/system/sfo-kalshi-paper-prune.service
 render_unit "$SCRIPT_DIR/systemd/sfo-forecast-freshness.service.in" /etc/systemd/system/sfo-forecast-freshness.service
+render_unit "$SCRIPT_DIR/systemd/sfo-alert@.service.in" /etc/systemd/system/sfo-alert@.service
 
-chmod +x "$SCRIPT_DIR/check_forecast_db_freshness.sh" 2>/dev/null || true
+chmod +x "$SCRIPT_DIR/check_forecast_db_freshness.sh" "$SCRIPT_DIR/send_systemd_failure_alert.sh" 2>/dev/null || true
 
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.timer" /etc/systemd/system/sfo-forecaster-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-operational-publish.timer" /etc/systemd/system/sfo-operational-publish.timer

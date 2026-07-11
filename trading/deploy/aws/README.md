@@ -24,8 +24,8 @@ not authorize production access or changes.
   `forecaster/` subtree from `main`.
 - Runtime DBs and their SQLite `-wal`/`-shm` sidecars, publication JSONs,
   `STALE_FORECAST`, and `models/` are never clobbered. The tracked
-  `forecast_data.json` and `weather_story_data.json`
-  fixtures remain explicit exclusions until the committed-input migration.
+  `forecast_data.json` and `weather_story_data.json` inputs are intentionally
+  copied by both sync paths.
 - The served committed model-evaluation input is
   `forecaster/ab_test_results.json`. There are zero committed files under
   `forecaster/models/`.
@@ -81,7 +81,9 @@ dependencies do not belong on the production box.
 
 Publication is finality-aware and race-safe: builders share
 `SFO_ARTIFACT_GENERATION_LOCK`; the publisher validates the manifest before it
-copies exact artifacts, then serializes Git work with `SFO_PAGES_LOCK`. Configure
+copies exact artifacts, then serializes Git work with `SFO_PAGES_LOCK`.
+Both publisher and paper-scan locks default under `/opt/weatheredge/.locks` so
+reboots clean temporary storage without weakening overlap protection. Configure
 the deploy key as `/home/ubuntu/.ssh/sfo_weather_pages_deploy` and the Git source
 as `git@github.com:Jaxsonb04/weather_edge.git`.
 
@@ -125,9 +127,11 @@ Restore only to a new DB while paper services are stopped, using the tested
 Set
 `SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json`.
 The watchdog rejects operational artifacts older than 10 minutes, Strategy Lab
-research older than 20 minutes, missing files, invalid schemas, and checksum
-mismatches. It writes `STALE_FORECAST` for the local alarm path; sync excludes
-preserve that marker.
+research older than 20 minutes, disk usage at or above 85%, missing files,
+invalid schemas, and checksum mismatches. It writes `STALE_FORECAST` for the
+local alarm path; sync excludes preserve that marker. Every operational service
+also routes failures through `sfo-alert@.service`, which posts JSON to
+`SFO_FRESHNESS_ALERT_URL` without putting the endpoint in process arguments.
 
 The canonical environment reference is `sfo-weather.env.example`. It contains
 safe defaults for the five live-execution gates, publication paths and locks,

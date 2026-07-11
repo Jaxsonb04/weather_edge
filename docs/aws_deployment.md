@@ -38,9 +38,9 @@ The full sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
 `forecaster-runtime.rsync-filter`, which preserves runtime databases, caches,
 their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
-`STALE_FORECAST`, and `models/`. The committed
-`forecast_data.json` and `weather_story_data.json` fixtures are also excluded
-explicitly until their planned committed-input migration.
+`STALE_FORECAST`, and `models/`. The committed `forecast_data.json` and
+`weather_story_data.json` inputs are deployed by both sync paths; they are
+source-controlled inputs, unlike their runtime-produced JSON siblings.
 
 During the EC2 migration window, `sync_to_lightsail.sh` remains as a deprecated
 forwarding wrapper to `sync_to_box.sh`. It has no deployment logic of its own;
@@ -56,6 +56,12 @@ new operator commands and automation must use `sync_to_box.sh` directly.
 /opt/weatheredge/.cache/main
 /opt/weatheredge/.locks
 ```
+
+Publication and paper-scan locks default under `/opt/weatheredge/.locks`, so
+they persist independently of temporary-directory cleanup. The freshness
+watchdog fails at 85% filesystem usage by default, and operational service
+failures post JSON through the non-recursive `sfo-alert@.service` template when
+`SFO_FRESHNESS_ALERT_URL` is configured.
 
 The environment installed at `/etc/weatheredge.env` is based on
 `trading/deploy/aws/sfo-weather.env.example`.

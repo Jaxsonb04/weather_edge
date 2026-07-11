@@ -2,6 +2,7 @@
 Description=SFO Kalshi paper trading scan
 Wants=network-online.target
 After=network-online.target
+OnFailure=sfo-alert@%n.service
 
 [Service]
 Type=oneshot

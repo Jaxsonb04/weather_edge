@@ -2,6 +2,7 @@
 Description=WeatherEdge nightly dataset + multi-city archive maintenance
 Wants=network-online.target
 After=network-online.target
+OnFailure=sfo-alert@%n.service
 
 [Service]
 Type=oneshot

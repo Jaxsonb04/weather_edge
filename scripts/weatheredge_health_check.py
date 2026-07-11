@@ -21,7 +21,6 @@ REQUIRED_PATHS = (
     "forecaster/forecast_data.json",
     "forecaster/weather_story_data.json",
     "scripts/run_tests.sh",
-    "trading/tests/run_tests.py",
     "trading/sfo_kalshi_quant/config.py",
 )
 

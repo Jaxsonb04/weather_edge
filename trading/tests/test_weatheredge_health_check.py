@@ -49,7 +49,6 @@ def _make_minimal_project(root: Path) -> Path:
     _write(root, "forecaster/forecast_data.json", "{}\n")
     _write(root, "forecaster/weather_story_data.json", "{}\n")
     _write(root, "scripts/run_tests.sh", "#!/usr/bin/env bash\n")
-    _write(root, "trading/tests/run_tests.py", "def main(): return 0\n")
     _write(
         root,
         "trading/sfo_kalshi_quant/config.py",
