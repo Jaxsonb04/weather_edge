@@ -12,10 +12,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pytest
+
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
+from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
 
 
 def _yes_decision(ticker: str = "KXHIGHTSFO-TEST-B75.5", *, yes_ask: float = 0.08) -> TradeDecision:
@@ -135,6 +138,38 @@ def test_monitor_does_not_treat_degraded_arbitrage_group_as_guaranteed():
             group_id="ARB-raced",
             reason="second leg rejected after preflight",
         )
+
+        _run_monitor(db_path, _FakeProfitClient)
+
+        assert store.paper_order(order_id)["status"] == "PAPER_CLOSED"
+        assert _latest_action(store, order_id) == "CLOSE_TAKE_PROFIT"
+
+
+def test_fatal_arbitrage_containment_degrades_active_leg_before_next_monitor():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        trader = PaperTrader(store)
+        group_id = "ARB-fatal-race"
+        order_id = store.record_paper_order(
+            "2026-06-12", _yes_decision(), group_id=group_id
+        )
+
+        with (
+            patch.object(
+                store,
+                "close_paper_order",
+                side_effect=RuntimeError("simulated unresolved close race"),
+            ),
+            pytest.raises(ArbitrageContainmentError),
+        ):
+            trader._compensate_partial_arbitrage(
+                [order_id], group_id=group_id, reason="second leg rejected"
+            )
+
+        active = store.paper_order(order_id)
+        assert active["status"] == "PAPER_FILLED"
+        assert str(active["group_id"]).startswith("DEGRADED-ARB-")
 
         _run_monitor(db_path, _FakeProfitClient)
 

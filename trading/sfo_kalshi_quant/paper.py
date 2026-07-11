@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import replace
+from typing import NoReturn
 
 from .arbitrage import ArbitrageOpportunity
 from .config import StrategyConfig
@@ -509,13 +510,22 @@ class PaperTrader:
     ) -> None:
         """Drive every partial leg to a terminal state before degrading the group."""
 
+        def fail_containment(message: str) -> NoReturn:
+            # Fatal containment must remove the guaranteed-group signal before
+            # control unwinds. Any unresolved active leg is then managed as
+            # directional risk on the very next monitor pass.
+            self.store.mark_arbitrage_group_degraded(
+                order_ids,
+                group_id=group_id,
+                reason=f"{reason}; fatal containment: {message}",
+            )
+            raise ArbitrageContainmentError(message)
+
         for order_id in order_ids:
             for _attempt in range(5):
                 row = self.store.paper_order(order_id)
                 if row is None:
-                    raise ArbitrageContainmentError(
-                        f"arbitrage containment lost order {order_id}"
-                    )
+                    fail_containment(f"arbitrage containment lost order {order_id}")
                 status = str(row["status"])
                 if status not in {"PAPER_LIMIT_RESTING", "PAPER_FILLED"}:
                     break
@@ -527,7 +537,7 @@ class PaperTrader:
 
                 exit_price = row["entry_bid"]
                 if exit_price is None or not 0.0 < float(exit_price) < 1.0:
-                    raise ArbitrageContainmentError(
+                    fail_containment(
                         f"filled arbitrage leg {order_id} has no executable stored side bid"
                     )
                 try:
@@ -544,12 +554,11 @@ class PaperTrader:
                 "PAPER_LIMIT_RESTING",
                 "PAPER_FILLED",
             }:
-                raise ArbitrageContainmentError(
+                fail_containment(
                     f"arbitrage leg {order_id} remains active after containment attempts"
                 )
 
-        # Only terminal groups may be relabeled degraded. An active ARB group
-        # remains visibly guaranteed until a fatal error stops further placement.
+        # Successful containment also keeps the partial group visibly degraded.
         self.store.mark_arbitrage_group_degraded(
             order_ids,
             group_id=group_id,

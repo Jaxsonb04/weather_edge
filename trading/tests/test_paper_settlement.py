@@ -1287,7 +1287,7 @@ def test_arbitrage_compensation_raises_fatal_when_active_leg_cannot_be_contained
             )
 
         assert store.paper_order(order_id)["status"] == "PAPER_LIMIT_RESTING"
-        assert store.paper_order(order_id)["group_id"] == "ARB-stuck"
+        assert str(store.paper_order(order_id)["group_id"]).startswith("DEGRADED-ARB-")
 
 
 def test_place_approved_keeps_profiles_in_separate_paper_books():
