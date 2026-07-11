@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import date
 from http.client import IncompleteRead
@@ -48,12 +49,22 @@ class KalshiPublicClient:
 
     def __init__(
         self,
-        base_url: str = PROD_BASE_URL,
+        base_url: str | None = None,
         timeout: int = 20,
         *,
         retries: int = 3,
         backoff: float = 0.5,
     ) -> None:
+        if base_url is None:
+            environment = os.getenv("KALSHI_ENV", "").strip().lower()
+            if environment in ("", "prod"):
+                base_url = PROD_BASE_URL
+            elif environment == "demo":
+                base_url = DEMO_BASE_URL
+            else:
+                raise ValueError(
+                    f"Unsupported KALSHI_ENV={environment!r}; expected 'demo' or 'prod'"
+                )
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = max(1, retries)
