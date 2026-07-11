@@ -6,12 +6,13 @@ import argparse
 import os
 import sys
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from urllib.error import URLError
 
 from ..arbitrage import build_arbitrage_opportunities
-from ..cities import CityConfig, get_city
+from ..cities import CityConfig, get_city, parse_city_slugs
 from ..colors import Color
 from ..config import (
     SERIES_TICKER,
@@ -19,6 +20,7 @@ from ..config import (
     config_for_city,
     intraday_timezone_for_city,
     normalize_risk_profile_name,
+    strategy_config_for_profile,
 )
 from ..consensus import MarketConsensus, build_market_consensus
 from ..db import PaperStore
@@ -1168,3 +1170,303 @@ def _same_day_entry_cutoff_hour() -> int:
     except ValueError:
         return DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR
     return min(23, max(0, value))
+
+
+@dataclass(frozen=True)
+class ScanCommandDependencies:
+    """Patchable command wiring kept separate from the scan engine."""
+
+    cities_for_args: Callable
+    config_for_args: Callable
+    resolve_targets: Callable
+    client_factory: Callable
+    store_factory: Callable
+    city_config_factory: Callable
+    adapter_factory: Callable
+    calibrator_factory: Callable
+    sizing_model_factory: Callable
+    analyze_target: Callable
+    tail_basket_target: Callable
+    arbitrage_target: Callable
+    portfolio_target: Callable
+    city_lookup: Callable
+
+
+def _command_cities_for_args(args: argparse.Namespace):
+    value = getattr(args, "cities", None) or os.getenv("PAPER_CITIES", "all")
+    return parse_city_slugs(value)
+
+
+def _command_config_for_args(args: argparse.Namespace) -> StrategyConfig:
+    base = strategy_config_for_profile(getattr(args, "risk_profile", None))
+    bankroll = getattr(args, "bankroll", None)
+    return base if bankroll is None else replace(base, paper_bankroll=bankroll)
+
+
+def default_scan_command_dependencies() -> ScanCommandDependencies:
+    return ScanCommandDependencies(
+        cities_for_args=_command_cities_for_args,
+        config_for_args=_command_config_for_args,
+        resolve_targets=_resolve_analysis_targets,
+        client_factory=KalshiPublicClient,
+        store_factory=PaperStore,
+        city_config_factory=config_for_city,
+        adapter_factory=SfoForecasterAdapter,
+        calibrator_factory=ResidualCalibrator,
+        sizing_model_factory=_build_sizing_model,
+        analyze_target=_analyze_one_target,
+        tail_basket_target=_tail_basket_one_target,
+        arbitrage_target=_arbitrage_one_target,
+        portfolio_target=_portfolio_scan_one_target,
+        city_lookup=get_city,
+    )
+
+
+def cmd_analyze(
+    args: argparse.Namespace,
+    *,
+    dependencies: ScanCommandDependencies | None = None,
+) -> int:
+    dependencies = dependencies or default_scan_command_dependencies()
+    color = Color.from_no_color(args.no_color)
+    if args.paper_stake is not None and args.daily_budget is not None:
+        raise ValueError("use either --paper-stake or --daily-budget, not both")
+    base_config = dependencies.config_for_args(args)
+    kalshi_client = dependencies.client_factory()
+    store = dependencies.store_factory(args.db_path)
+    scanned_any = False
+    for city_idx, city in enumerate(dependencies.cities_for_args(args)):
+        if city_idx:
+            print("")
+            print("#" * 92)
+            print("")
+        config = dependencies.city_config_factory(base_config, city)
+        targets, live_events_by_target = dependencies.resolve_targets(
+            args, color, kalshi_client, city
+        )
+        if not targets:
+            print(color.yellow(f"[{city.slug}] no eligible target dates found"))
+            continue
+        adapter = dependencies.adapter_factory(args.forecaster_root, city=city)
+        try:
+            outcomes = adapter.load_calibration_outcomes(args.calibration_source)
+            calibrator = dependencies.calibrator_factory(outcomes, config)
+        except (ForecastDataError, ValueError) as exc:
+            print(
+                color.yellow(f"[{city.slug}] skipped: calibration unavailable ({exc})"),
+                file=sys.stderr,
+            )
+            continue
+
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
+        sizing_model = dependencies.sizing_model_factory(config, store)
+        pause_reasons: dict[tuple[str, str], str | None] = {}
+
+        for idx, target in enumerate(targets):
+            if idx:
+                print("")
+                print("=" * 92)
+                print("")
+            try:
+                dependencies.analyze_target(
+                    args,
+                    target,
+                    adapter,
+                    calibrator,
+                    config,
+                    store,
+                    color,
+                    city=city,
+                    event_hint=live_events_by_target.get(target),
+                    event_lookup_done=target in live_events_by_target,
+                    kalshi_client=kalshi_client,
+                    emos_lookup=emos_lookup,
+                    sizing_model=sizing_model,
+                    pause_reasons=pause_reasons,
+                )
+                scanned_any = True
+            except ForecastDataError as exc:
+                print(
+                    color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
+                    file=sys.stderr,
+                )
+    if not scanned_any:
+        print(color.yellow("no city produced an analyzable target"))
+    return 0
+
+
+def cmd_tail_basket(
+    args: argparse.Namespace,
+    *,
+    dependencies: ScanCommandDependencies | None = None,
+) -> int:
+    dependencies = dependencies or default_scan_command_dependencies()
+    color = Color.from_no_color(args.no_color)
+    city = dependencies.city_lookup(getattr(args, "city", None) or "sfo")
+    config = dependencies.city_config_factory(dependencies.config_for_args(args), city)
+    kalshi_client = dependencies.client_factory()
+    targets, live_events_by_target = dependencies.resolve_targets(
+        args, color, kalshi_client, city
+    )
+    if not targets:
+        print(color.yellow("no eligible target dates found"))
+        return 0
+    adapter = dependencies.adapter_factory(args.forecaster_root, city=city)
+    outcomes = adapter.load_calibration_outcomes(args.calibration_source)
+    calibrator = dependencies.calibrator_factory(outcomes, config)
+    store = dependencies.store_factory(args.db_path)
+    emos_lookup = (
+        adapter.load_emos_mu_sigma(lead_days=None)
+        if config.emos_distribution_enabled
+        else {}
+    )
+    sizing_model = dependencies.sizing_model_factory(config, store)
+    pause_reasons: dict[tuple[str, str], str | None] = {}
+
+    for idx, target in enumerate(targets):
+        if idx:
+            print("")
+            print("=" * 92)
+            print("")
+        dependencies.tail_basket_target(
+            args,
+            target,
+            adapter,
+            calibrator,
+            config,
+            store,
+            color,
+            city=city,
+            event_hint=live_events_by_target.get(target),
+            event_lookup_done=target in live_events_by_target,
+            kalshi_client=kalshi_client,
+            emos_lookup=emos_lookup,
+            sizing_model=sizing_model,
+            pause_reasons=pause_reasons,
+        )
+    return 0
+
+
+def cmd_arbitrage(
+    args: argparse.Namespace,
+    *,
+    dependencies: ScanCommandDependencies | None = None,
+) -> int:
+    dependencies = dependencies or default_scan_command_dependencies()
+    color = Color.from_no_color(args.no_color)
+    city = dependencies.city_lookup(getattr(args, "city", None) or "sfo")
+    config = dependencies.city_config_factory(dependencies.config_for_args(args), city)
+    kalshi_client = dependencies.client_factory()
+    targets, live_events_by_target = dependencies.resolve_targets(
+        args, color, kalshi_client, city
+    )
+    if not targets:
+        print(color.yellow("no eligible target dates found"))
+        return 0
+    store = dependencies.store_factory(args.db_path)
+    pause_reasons: dict[tuple[str, str], str | None] = {}
+
+    for idx, target in enumerate(targets):
+        if idx:
+            print("")
+            print("=" * 92)
+            print("")
+        dependencies.arbitrage_target(
+            args,
+            target,
+            config,
+            store,
+            color,
+            city=city,
+            event_hint=live_events_by_target.get(target),
+            event_lookup_done=target in live_events_by_target,
+            kalshi_client=kalshi_client,
+            pause_reasons=pause_reasons,
+        )
+    return 0
+
+
+def cmd_portfolio_scan(
+    args: argparse.Namespace,
+    *,
+    dependencies: ScanCommandDependencies | None = None,
+) -> int:
+    dependencies = dependencies or default_scan_command_dependencies()
+    color = Color.from_no_color(args.no_color)
+    base_config = dependencies.config_for_args(args)
+    kalshi_client = dependencies.client_factory()
+    store = dependencies.store_factory(args.db_path)
+    scanned_any = False
+    fatal_containment = False
+    for city_idx, city in enumerate(dependencies.cities_for_args(args)):
+        if city_idx:
+            print("")
+            print("#" * 92)
+            print("")
+        config = dependencies.city_config_factory(base_config, city)
+        targets, live_events_by_target = dependencies.resolve_targets(
+            args, color, kalshi_client, city
+        )
+        if not targets:
+            print(color.yellow(f"[{city.slug}] no eligible target dates found"))
+            continue
+        adapter = dependencies.adapter_factory(args.forecaster_root, city=city)
+        try:
+            outcomes = adapter.load_calibration_outcomes(args.calibration_source)
+            calibrator = dependencies.calibrator_factory(outcomes, config)
+        except (ForecastDataError, ValueError) as exc:
+            print(
+                color.yellow(f"[{city.slug}] skipped: calibration unavailable ({exc})"),
+                file=sys.stderr,
+            )
+            continue
+
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
+        sizing_model = dependencies.sizing_model_factory(config, store)
+        pause_reasons: dict[tuple[str, str], str | None] = {}
+
+        for idx, target in enumerate(targets):
+            if idx:
+                print("")
+                print("=" * 92)
+                print("")
+            try:
+                dependencies.portfolio_target(
+                    args,
+                    target,
+                    adapter,
+                    calibrator,
+                    config,
+                    store,
+                    color,
+                    city=city,
+                    event_hint=live_events_by_target.get(target),
+                    event_lookup_done=target in live_events_by_target,
+                    kalshi_client=kalshi_client,
+                    emos_lookup=emos_lookup,
+                    sizing_model=sizing_model,
+                    pause_reasons=pause_reasons,
+                )
+                scanned_any = True
+            except ArbitrageContainmentError as exc:
+                fatal_containment = True
+                print(
+                    color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
+                    file=sys.stderr,
+                )
+            except ForecastDataError as exc:
+                print(
+                    color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
+                    file=sys.stderr,
+                )
+    if not scanned_any:
+        print(color.yellow("no city produced a scannable target"))
+    return 1 if fatal_containment else 0

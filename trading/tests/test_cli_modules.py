@@ -1,5 +1,7 @@
 """Direct contract tests for the CLI's extracted domain modules."""
 
+from types import SimpleNamespace
+
 
 def test_format_module_owns_pnl_formatting() -> None:
     from sfo_kalshi_quant._cli.format import _format_pnl
@@ -21,9 +23,27 @@ def test_monitor_module_owns_fill_model_and_exit_loop() -> None:
 
 
 def test_scan_module_owns_target_orchestration() -> None:
-    from sfo_kalshi_quant._cli.scan import _resolve_analysis_targets
+    from sfo_kalshi_quant._cli.scan import (
+        _resolve_analysis_targets,
+        cmd_analyze,
+        cmd_arbitrage,
+        cmd_portfolio_scan,
+        cmd_tail_basket,
+    )
 
     assert _resolve_analysis_targets.__module__ == "sfo_kalshi_quant._cli.scan"
+    for command in (cmd_analyze, cmd_tail_basket, cmd_arbitrage, cmd_portfolio_scan):
+        assert command.__module__ == "sfo_kalshi_quant._cli.scan"
+
+
+def test_scan_command_defaults_honor_cli_city_and_bankroll_arguments() -> None:
+    from sfo_kalshi_quant._cli.scan import default_scan_command_dependencies
+
+    dependencies = default_scan_command_dependencies()
+    args = SimpleNamespace(cities="nyc", risk_profile="research", bankroll=123.0)
+
+    assert [city.slug for city in dependencies.cities_for_args(args)] == ["nyc"]
+    assert dependencies.config_for_args(args).paper_bankroll == 123.0
 
 
 def test_paper_module_owns_settlement_commands() -> None:
@@ -42,3 +62,10 @@ def test_parser_module_owns_argument_registration() -> None:
     from sfo_kalshi_quant._cli.parser import build_parser
 
     assert build_parser.__module__ == "sfo_kalshi_quant._cli.parser"
+
+
+def test_data_module_owns_dataset_execution() -> None:
+    from sfo_kalshi_quant._cli.data import cmd_collect, cmd_dataset_backfill
+
+    assert cmd_collect.__module__ == "sfo_kalshi_quant._cli.data"
+    assert cmd_dataset_backfill.__module__ == "sfo_kalshi_quant._cli.data"
