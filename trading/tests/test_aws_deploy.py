@@ -98,6 +98,8 @@ def test_strategy_lab_refresh_runs_only_heavy_builder_every_fifteen_minutes():
     assert "run_publication_cycle.sh strategy" in service
     assert "build_public_trading_signal.sh" not in service
     assert "google_weather_cache.py --refresh" not in service
+    assert "OnActiveSec=4min" in timer
+    assert "OnBootSec=" not in timer
     assert "OnUnitActiveSec=15min" in timer
     assert "Unit=sfo-strategy-lab-refresh.service" in timer
 
