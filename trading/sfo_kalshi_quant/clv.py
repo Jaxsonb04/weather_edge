@@ -35,6 +35,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .settlement_truth import bin_resolves_yes
+
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "paper_trading.db"
 
 # Temperature cohort edges -- mirror config.temperature_cohort so this read-only
@@ -51,29 +53,6 @@ def temperature_cohort(high_f: float) -> str:
     if high_f <= _WARM_MAX_F:
         return "warm_70_79f"
     return "hot_80f_plus"
-
-
-def bin_resolves_yes(
-    strike_type: str | None,
-    floor_strike: float | None,
-    cap_strike: float | None,
-    settlement_high_f: float,
-) -> bool:
-    """Whether a Kalshi bin resolves YES at a settlement high.
-
-    Mirrors ``models.MarketBin.resolves_yes`` exactly; replicated as a pure
-    function so this measurement tool stays decoupled from the market model.
-    """
-
-    if strike_type == "less":
-        return cap_strike is not None and settlement_high_f < cap_strike
-    if strike_type == "greater":
-        return floor_strike is not None and settlement_high_f > floor_strike
-    return (
-        floor_strike is not None
-        and cap_strike is not None
-        and floor_strike <= settlement_high_f <= cap_strike
-    )
 
 
 def side_won(

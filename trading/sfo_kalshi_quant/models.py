@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
+from .settlement_truth import bin_resolves_yes
+
 
 def _as_float(value: Any, default: float = 0.0) -> float:
     if value in (None, ""):
@@ -239,14 +241,11 @@ class MarketBin:
         return (self.floor_strike - 0.5, self.cap_strike + 0.5)
 
     def resolves_yes(self, settlement_high_f: float) -> bool:
-        if self.strike_type == "less":
-            return self.cap_strike is not None and settlement_high_f < self.cap_strike
-        if self.strike_type == "greater":
-            return self.floor_strike is not None and settlement_high_f > self.floor_strike
-        return (
-            self.floor_strike is not None
-            and self.cap_strike is not None
-            and self.floor_strike <= settlement_high_f <= self.cap_strike
+        return bin_resolves_yes(
+            self.strike_type,
+            self.floor_strike,
+            self.cap_strike,
+            settlement_high_f,
         )
 
 

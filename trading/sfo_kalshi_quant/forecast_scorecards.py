@@ -9,6 +9,7 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from ._util import _table_exists
 from .cities import CITIES, CITY_BY_STATION
 
 
@@ -238,12 +239,6 @@ def _unavailable(reason: str) -> dict[str, Any]:
         "scorecards": [],
         "challenger_gates": _challenger_gates([]),
     }
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone() is not None
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:

@@ -8,6 +8,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._util import (
+    _json_list,
+    _json_object,
+    _parse_timestamp,
+    _row_value as _sqlite_row_value,
+    _table_exists,
+)
 from .backtest import run_walk_forward_calibration_backtest
 from .backtest_rescore import compute_real_money_readiness, run_rescore
 from .cities import CITIES
@@ -44,11 +51,13 @@ from .live_execution import LiveExecutionPolicy, readiness_status_from_checks
 from .research_shadow import build_research_shadow_report
 from .replay import replay_from_database
 from .settlement_day import settlement_today
+from .settlement_truth import is_pre_resolution_decision as _is_strategy_pre_resolution
 from .summary import build_paper_summary
 from .synthetic_blend import build_synthetic_blend_calibration
 
 
 ACTIVE_CALIBRATION_SOURCE = "lstm"
+_sqlite_table_exists = _table_exists
 CHALLENGER_CALIBRATION_SOURCE = "clean-blend/combined"
 MIN_CLEAN_WINNER_SAMPLE = 60
 # Exit-threshold percentage defaults are owned by exits.py (the single source
@@ -2757,14 +2766,6 @@ def _health_warning(
     return row
 
 
-def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
 def _sqlite_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
@@ -2967,25 +2968,6 @@ def _forecast_lead_mode(
     if lead >= 18.0:
         return "day_ahead"
     return "same_day_prelock"
-
-
-def _is_strategy_pre_resolution(row: sqlite3.Row) -> bool:
-    if _sqlite_row_value(row, "intraday_is_complete", 0):
-        return False
-    created_at = _parse_timestamp(_sqlite_row_value(row, "created_at"))
-    close_time = _parse_timestamp(_sqlite_row_value(row, "market_close_time"))
-    if created_at is None:
-        return True
-    if close_time is None:
-        return False
-    return created_at < close_time
-
-
-def _sqlite_row_value(row: sqlite3.Row, key: str, default=None):
-    try:
-        return row[key]
-    except (IndexError, KeyError):
-        return default
 
 
 def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
@@ -4184,18 +4166,6 @@ def _date_from_string(value: object):
         return None
 
 
-def _parse_timestamp(value: object) -> datetime | None:
-    if value is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
 def _age_label(delta: timedelta) -> str:
     total_minutes = max(0, int(delta.total_seconds() // 60))
     if total_minutes < 60:
@@ -4349,30 +4319,6 @@ def _market_consensus_payload(db_path: Path) -> dict[str, Any]:
     if payload.get("available"):
         payload = {**payload, "target_date": target_date}
     return payload
-
-
-def _json_list(value: object) -> list[str]:
-    if not value:
-        return []
-    try:
-        payload = json.loads(str(value))
-    except json.JSONDecodeError:
-        return []
-    if isinstance(payload, list):
-        return [str(item) for item in payload]
-    return []
-
-
-def _json_object(value: object) -> dict[str, Any]:
-    if not value:
-        return {}
-    if isinstance(value, dict):
-        return value
-    try:
-        payload = json.loads(str(value))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
 def _round_dict(row: dict[str, Any]) -> dict[str, Any]:

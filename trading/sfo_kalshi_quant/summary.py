@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._util import _parse_timestamp, _row_value, _table_exists
 from .config import SFO_TZ, StrategyConfig
 from .forecast import ForecastDataError, SfoForecasterAdapter
 
@@ -444,13 +445,6 @@ def _window_profile_totals(
             }
         )
     return rows
-
-
-def _row_value(row: sqlite3.Row, key: str) -> Any:
-    try:
-        return row[key]
-    except (IndexError, KeyError):
-        return None
 
 
 def _load_orders(db_path: Path) -> list[dict[str, Any]]:
@@ -954,26 +948,6 @@ def _local_day(timestamp: object) -> str:
     if parsed is None:
         return ""
     return parsed.astimezone(SFO_TZ).date().isoformat()
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:

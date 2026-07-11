@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import re
 import sqlite3
 from typing import Any
 
+from ._util import _optional_float
 from .db import PaperStore
-from .settlement_truth import normalize_settlement_truth, settlement_for_market
+from .settlement_truth import (
+    normalize_settlement_truth,
+    row_resolves_yes as _row_resolves_yes,
+    settlement_for_market,
+)
 
 
 def build_research_shadow_report(
@@ -181,50 +185,6 @@ def _row_side(row: sqlite3.Row) -> str:
     if side and str(side).upper() in {"YES", "NO"}:
         return str(side).upper()
     return "NO" if "NO" in str(row["action"]).upper() else "YES"
-
-
-def _row_resolves_yes(row: sqlite3.Row, settlement_high_f: float) -> bool:
-    strike_type = row["strike_type"]
-    floor_strike = row["floor_strike"]
-    cap_strike = row["cap_strike"]
-    if strike_type:
-        normalized = str(strike_type).lower()
-        floor_value = _optional_float(floor_strike)
-        cap_value = _optional_float(cap_strike)
-        if normalized == "less":
-            return cap_value is not None and settlement_high_f < cap_value
-        if normalized == "greater":
-            return floor_value is not None and settlement_high_f > floor_value
-        if normalized == "between":
-            return (
-                floor_value is not None
-                and cap_value is not None
-                and floor_value <= settlement_high_f <= cap_value
-            )
-    return _label_resolves_yes(str(row["label"]), settlement_high_f)
-
-
-def _label_resolves_yes(label: str, settlement_high_f: float) -> bool:
-    if "or below" in label:
-        match = re.search(r"(\d+)", label)
-        return bool(match and settlement_high_f <= float(match.group(1)))
-    if "or above" in label:
-        match = re.search(r"(\d+)", label)
-        return bool(match and settlement_high_f >= float(match.group(1)))
-    match = re.search(r"(\d+).+?(\d+)", label)
-    if match:
-        lo, hi = float(match.group(1)), float(match.group(2))
-        return lo <= settlement_high_f <= hi
-    return False
-
-
-def _optional_float(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _as_float(value: object, default: float) -> float:

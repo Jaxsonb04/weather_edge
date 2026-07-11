@@ -6,9 +6,20 @@ import math
 import re
 import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Iterable
 
+from ._util import (
+    _drop_none,
+    _json_list,
+    _json_object,
+    _json_safe_value,
+    _optional_float,
+    _parse_timestamp,
+    _round_number,
+    _row_value as _shared_row_value,
+)
 from .config import StrategyConfig, normalize_risk_profile_name
 from .account import (
     AGGREGATE_RISK_PCT,
@@ -35,26 +46,18 @@ from .fees import (
 )
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .prediction_features import build_prediction_feature_snapshot
-from .settlement_truth import normalize_settlement_truth, settlement_for_market
+from .settlement_truth import (
+    integer_settlement_high_f as _integer_settlement_high_f,
+    is_pre_resolution_decision as _is_pre_resolution_decision,
+    label_resolves_yes as _label_resolves_yes,
+    normalize_settlement_truth,
+    row_resolves_yes as _row_resolves_yes,
+    settlement_for_market,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _integer_settlement_high_f(value: object) -> float:
-    """Round a raw daily high to the integer °F Kalshi/CLISFO settle on.
-
-    Mirrors ``forecast._integer_settlement_high_f`` (kept here to avoid a
-    circular import). Every settlement and signal-scoring path must resolve
-    bins against this integer, not a fractional NWS/provisional high, so the
-    paper ledger, win-rate, Brier, and calibration all agree with the
-    backtest/rescore path. ``floor(x + 0.5)`` is round-half-up and idempotent
-    on values that are already integers (e.g. official CLISFO highs).
-    """
-
-    high = float(value)
-    if not math.isfinite(high):
-        raise ValueError("settlement high must be finite")
-    return float(math.floor(high + 0.5))
+_decision_row_resolves_yes = _row_resolves_yes
+_row_value = partial(_shared_row_value, default_on_none=True)
 
 
 SCHEMA = """
@@ -3761,85 +3764,12 @@ def _win_loss_reason(
     return f"{side} position {verb} because the market resolved {market_result}."
 
 
-def _json_object(value: object) -> dict[str, object]:
-    if not value:
-        return {}
-    if isinstance(value, dict):
-        return value
-    try:
-        payload = json.loads(str(value))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _json_text(value: object) -> str | None:
     return json.dumps(value, sort_keys=True) if value is not None else None
 
 
 def _json_optional_object(value: object) -> dict[str, object] | None:
     return _json_object(value) if value else None
-
-
-def _json_list(value: object) -> list[str]:
-    if not value:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    try:
-        payload = json.loads(str(value))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    if isinstance(payload, list):
-        return [str(item) for item in payload]
-    return []
-
-
-def _optional_float(value: object) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _round_number(value: object) -> float | int | None:
-    number = _optional_float(value)
-    if number is None:
-        return None
-    rounded = round(number, 6)
-    if rounded.is_integer() and isinstance(value, int):
-        return int(rounded)
-    return rounded
-
-
-def _json_safe_value(value: object) -> object:
-    if isinstance(value, tuple):
-        return [_json_safe_value(item) for item in value]
-    if isinstance(value, list):
-        return [_json_safe_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _json_safe_value(item) for key, item in value.items()}
-    if isinstance(value, (str, bool, int)) or value is None:
-        return value
-    if isinstance(value, float):
-        return _round_number(value)
-    return str(value)
-
-
-def _drop_none(value):
-    if isinstance(value, dict):
-        cleaned = {}
-        for key, item in value.items():
-            cleaned_item = _drop_none(item)
-            if cleaned_item is not None:
-                cleaned[key] = cleaned_item
-        return cleaned
-    if isinstance(value, list):
-        return [_drop_none(item) for item in value if _drop_none(item) is not None]
-    return value
 
 
 def _date_filters(since: str | None, until: str | None) -> tuple[list[str], list[str]]:
@@ -3895,88 +3825,6 @@ def _row_sort_time(row: sqlite3.Row) -> tuple[str, int]:
     return (str(row["created_at"]), int(row["id"]))
 
 
-def _is_pre_resolution_decision(row: sqlite3.Row) -> bool:
-    if _row_value(row, "intraday_is_complete", 0):
-        return False
-
-    created_at = _parse_timestamp(_row_value(row, "created_at"))
-    close_time = _parse_timestamp(_row_value(row, "market_close_time"))
-    # Conservative on an unknown close time: a row we cannot prove was written
-    # before its market resolved must NOT be scored as a pre-resolution signal,
-    # or look-ahead leakage (a decision recorded after the market closed) slips
-    # past the guard whenever market_close_time is NULL. Keep only rows we can
-    # affirmatively place before close. An undateable row (no created_at, which
-    # is NOT NULL in production) keeps the prior lenient default so pathological
-    # legacy fixtures are not silently dropped.
-    if created_at is None:
-        return True
-    if close_time is None:
-        return False
-    return created_at < close_time
-
-
-def _row_value(row: sqlite3.Row, key: str, default=None):
-    try:
-        value = row[key]
-    except (IndexError, KeyError):
-        return default
-    return default if value is None else value
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _label_resolves_yes(label: str, settlement_high_f: float) -> bool:
-    if "or below" in label:
-        match = re.search(r"(\d+)", label)
-        if not match:
-            return False
-        return settlement_high_f <= float(match.group(1))
-    if "or above" in label:
-        match = re.search(r"(\d+)", label)
-        if not match:
-            return False
-        return settlement_high_f >= float(match.group(1))
-    match = re.search(r"(\d+).+?(\d+)", label)
-    if match:
-        lo, hi = float(match.group(1)), float(match.group(2))
-        return lo <= settlement_high_f <= hi
-    return False
-
-
-def _row_resolves_yes(row: sqlite3.Row, settlement_high_f: float) -> bool:
-    try:
-        strike_type = row["strike_type"]
-        floor_strike = row["floor_strike"]
-        cap_strike = row["cap_strike"]
-    except (IndexError, KeyError):
-        strike_type = floor_strike = cap_strike = None
-    if strike_type:
-        normalized = str(strike_type).lower()
-        floor_value = float(floor_strike) if floor_strike is not None else None
-        cap_value = float(cap_strike) if cap_strike is not None else None
-        if normalized == "less":
-            return cap_value is not None and settlement_high_f < cap_value
-        if normalized == "greater":
-            return floor_value is not None and settlement_high_f > floor_value
-        if normalized == "between":
-            return (
-                floor_value is not None
-                and cap_value is not None
-                and floor_value <= settlement_high_f <= cap_value
-            )
-    return _label_resolves_yes(row["label"], settlement_high_f)
-
-
 def _row_side(row: sqlite3.Row) -> str:
     try:
         side = row["side"]
@@ -4028,27 +3876,6 @@ def _decision_row_position_won(row: sqlite3.Row, settlement_high_f: float) -> bo
     resolved_yes = _decision_row_resolves_yes(row, settlement_high_f)
     side = str(row["side"]).upper()
     return resolved_yes if side == "YES" else not resolved_yes
-
-
-def _decision_row_resolves_yes(row: sqlite3.Row, settlement_high_f: float) -> bool:
-    strike_type = row["strike_type"]
-    floor_strike = row["floor_strike"]
-    cap_strike = row["cap_strike"]
-    if strike_type:
-        normalized = str(strike_type).lower()
-        floor_value = float(floor_strike) if floor_strike is not None else None
-        cap_value = float(cap_strike) if cap_strike is not None else None
-        if normalized == "less":
-            return cap_value is not None and settlement_high_f < cap_value
-        if normalized == "greater":
-            return floor_value is not None and settlement_high_f > floor_value
-        if normalized == "between":
-            return (
-                floor_value is not None
-                and cap_value is not None
-                and floor_value <= settlement_high_f <= cap_value
-            )
-    return _label_resolves_yes(row["label"], settlement_high_f)
 
 
 def _decision_row_pnl(row: sqlite3.Row, position_won: bool) -> float:

@@ -16,7 +16,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
-from .settlement_truth import normalize_settlement_truth, settlement_for_market
+from ._util import _json_object, _row_value, _table_exists
+from .settlement_truth import (
+    normalize_settlement_truth,
+    row_resolves_yes as _resolves_yes,
+    settlement_for_market,
+)
 
 
 @dataclass(frozen=True)
@@ -379,36 +384,3 @@ def _parse_time(value) -> datetime | None:
         return as_utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except ValueError:
         return None
-
-
-def _row_value(row: sqlite3.Row, key: str):
-    return row[key] if key in row.keys() else None
-
-
-def _json_object(value) -> dict[str, object]:
-    import json
-
-    try:
-        payload = json.loads(value or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _resolves_yes(row: sqlite3.Row, high: float) -> bool:
-    strike = str(row["strike_type"] or "").lower()
-    floor = row["floor_strike"]
-    cap = row["cap_strike"]
-    if strike == "less":
-        return cap is not None and high < float(cap)
-    if strike == "greater":
-        return floor is not None and high > float(floor)
-    if strike == "between":
-        return floor is not None and cap is not None and float(floor) <= high <= float(cap)
-    return False
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone() is not None

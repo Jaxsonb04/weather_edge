@@ -17,18 +17,10 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from ._util import _table_exists
 from .cities import CITIES, CityConfig, city_for_market_ticker
 from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, normalize_risk_profile_name
 from .settlement_day import settlement_today
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-        ).fetchone()
-        is not None
-    )
 
 
 def _target_status(target: str, today: date) -> str:

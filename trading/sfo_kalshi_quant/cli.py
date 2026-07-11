@@ -6,7 +6,7 @@ import math
 import os
 import sys
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -66,10 +66,13 @@ from .forecast import (
 )
 from .kalshi import KalshiPublicClient, KalshiUnavailable, load_event_snapshots
 from .models import (
+    BucketProbability,
     EnsembleSnapshot,
     EventSnapshot,
+    ForecastSnapshot,
     IntradaySnapshot,
     MarketBin,
+    TradeDecision,
     format_event_date_token,
     target_date_from_event_ticker,
 )
@@ -1365,6 +1368,139 @@ def _rolling_live_event_targets(
     return targets, {target: events_by_target[target] for target in targets}
 
 
+@dataclass(frozen=True)
+class ScanContext:
+    city: CityConfig
+    series_ticker: str
+    forecast: ForecastSnapshot
+    intraday: IntradaySnapshot | None
+    ensemble: EnsembleSnapshot | None
+    event: EventSnapshot | None
+    markets: list[MarketBin]
+    event_title: str
+    market_available: bool
+    probabilities: dict[str, BucketProbability]
+    consensus: MarketConsensus
+    risk_profile: str
+    paper_bankroll: float
+    decisions: list[TradeDecision]
+
+
+def build_scan_context(
+    args: argparse.Namespace,
+    target: date,
+    adapter: SfoForecasterAdapter,
+    calibrator: ResidualCalibrator,
+    config: StrategyConfig,
+    store: PaperStore,
+    color: Color,
+    *,
+    city: CityConfig | None = None,
+    event_hint: EventSnapshot | None = None,
+    event_lookup_done: bool = False,
+    kalshi_client: KalshiPublicClient | None = None,
+    emos_lookup: dict | None = None,
+    sizing_model=_UNSET,
+    fallback_event_title: str,
+) -> ScanContext:
+    """Build the common forecast/market/probability context for both scan modes."""
+
+    city = city or get_city("sfo")
+    series_ticker = city.series_ticker
+    forecast = adapter.latest_blend(target)
+    _enforce_live_forecast_freshness(forecast, config)
+    intraday = _intraday_for_target(args, target, adapter, city=city)
+    observed_high_f = intraday.observed_high_f if intraday else None
+    if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
+        forecast = adapter.apply_intraday_update(forecast, intraday)
+    # Ensemble sharpening is SFO-validated and too quota-expensive for all cities.
+    ensemble = (
+        _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
+        if city.has_full_blend
+        else None
+    )
+    event = event_hint
+    if event_lookup_done:
+        pass
+    elif args.offline_events:
+        events = load_event_snapshots(args.offline_events, target)
+        event = events[0] if events else None
+    else:
+        try:
+            client = kalshi_client or KalshiPublicClient()
+            event = client.find_event_by_date(target, series_ticker=series_ticker)
+        except (URLError, OSError) as exc:
+            print(
+                color.yellow(
+                    f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"
+                ),
+                file=sys.stderr,
+            )
+            event = None
+
+    if event:
+        markets = event.active_markets or event.markets
+        event_title = event.title
+    else:
+        markets = fallback_bins(
+            f"{series_ticker}-{format_event_date_token(target)}-PAPER",
+            forecast.predicted_high_f,
+        )
+        event_title = fallback_event_title
+
+    if emos_lookup is None:
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
+    probabilities = calibrator.bucket_probabilities(
+        markets,
+        forecast.predicted_high_f,
+        source_spread_f=forecast.source_spread_f,
+        observed_high_f=observed_high_f,
+        ensemble=ensemble,
+        intraday=intraday,
+        emos_mu_sigma=emos_lookup.get(target),
+        standard_timezone=intraday_timezone_for_city(city),
+    )
+    consensus = build_market_consensus(markets)
+    risk_profile = _risk_profile_name(args)
+    paper_bankroll = _sizing_bankroll(store, config, risk_profile)
+    evaluator = TradeEvaluator(
+        config,
+        sizing_model=(
+            _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
+        ),
+    )
+    decisions = evaluator.rank(
+        markets,
+        probabilities,
+        bankroll=paper_bankroll,
+        sides=_analysis_sides(args.side),
+        source_spread_f=forecast.source_spread_f,
+        forecast_high_f=forecast.predicted_high_f,
+        forecast_sigma_f=forecast.source_spread_f,
+        market_consensus=consensus,
+    )
+    return ScanContext(
+        city=city,
+        series_ticker=series_ticker,
+        forecast=forecast,
+        intraday=intraday,
+        ensemble=ensemble,
+        event=event,
+        markets=markets,
+        event_title=event_title,
+        market_available=event is not None,
+        probabilities=probabilities,
+        consensus=consensus,
+        risk_profile=risk_profile,
+        paper_bankroll=paper_bankroll,
+        decisions=decisions,
+    )
+
+
 def _analyze_one_target(
     args: argparse.Namespace,
     target,
@@ -1382,92 +1518,34 @@ def _analyze_one_target(
     sizing_model=_UNSET,
     pause_reasons: dict[tuple[str, str], str | None] | None = None,
 ) -> None:
-    city = city or get_city("sfo")
-    series_ticker = city.series_ticker
-    forecast = adapter.latest_blend(target)
-    _enforce_live_forecast_freshness(forecast, config)
-    intraday = _intraday_for_target(args, target, adapter, city=city)
-    observed_high_f = intraday.observed_high_f if intraday else None
-    if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
-        forecast = adapter.apply_intraday_update(forecast, intraday)
-    # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
-    # calls per target); at fifteen cities on a 5-minute cadence it would blow
-    # the free ensemble quota, so EMOS-only cities run without it -- their
-    # sigma already comes from the calibrated EMOS fit.
-    ensemble = (
-        _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
-        if city.has_full_blend
-        else None
-    )
-    event = event_hint
-    if event_lookup_done:
-        pass
-    elif args.offline_events:
-        events = load_event_snapshots(args.offline_events, target)
-        event = events[0] if events else None
-    else:
-        try:
-            client = kalshi_client or KalshiPublicClient()
-            event = client.find_event_by_date(target, series_ticker=series_ticker)
-        except (URLError, OSError) as exc:
-            print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
-            event = None
-
-    if event:
-        markets = event.active_markets or event.markets
-        event_title = event.title
-    else:
-        markets = fallback_bins(
-            f"{series_ticker}-{format_event_date_token(target)}-PAPER",
-            forecast.predicted_high_f,
-        )
-        event_title = "No live Kalshi event found; probability-only fallback ladder"
-
-    # lead_days=None: the live serve writes each rolling target at its TRUE lead
-    # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
-    # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
-    if emos_lookup is None:
-        emos_lookup = (
-            adapter.load_emos_mu_sigma(lead_days=None)
-            if config.emos_distribution_enabled
-            else {}
-        )
-    probabilities = calibrator.bucket_probabilities(
-        markets,
-        forecast.predicted_high_f,
-        source_spread_f=forecast.source_spread_f,
-        observed_high_f=observed_high_f,
-        ensemble=ensemble,
-        intraday=intraday,
-        emos_mu_sigma=emos_lookup.get(target),
-        standard_timezone=intraday_timezone_for_city(city),
-    )
-    # The market's de-vigged bin ladder distilled into a consensus forecast
-    # (implied high, distribution, confidence). Surfaced below and, when the
-    # profile enables it, anchored into sizing via the consensus guard in rank().
-    consensus = build_market_consensus(markets)
-    risk_profile = _risk_profile_name(args)
-    paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(
+    context = build_scan_context(
+        args,
+        target,
+        adapter,
+        calibrator,
         config,
-        sizing_model=(
-            _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
-        ),
+        store,
+        color,
+        city=city,
+        event_hint=event_hint,
+        event_lookup_done=event_lookup_done,
+        kalshi_client=kalshi_client,
+        emos_lookup=emos_lookup,
+        sizing_model=sizing_model,
+        fallback_event_title="No live Kalshi event found; probability-only fallback ladder",
     )
-    decisions = evaluator.rank(
-        markets,
-        probabilities,
-        bankroll=paper_bankroll,
-        sides=_analysis_sides(args.side),
-        source_spread_f=forecast.source_spread_f,
-        forecast_high_f=forecast.predicted_high_f,
-        # The day's source disagreement is the comfort-edge uncertainty proxy:
-        # on a calm (low-spread) day the band floors to ~3F block / ~6F full;
-        # on a disagreement day it widens, so near-forecast NO is blocked further
-        # out. Floored inside the assessment so it never collapses.
-        forecast_sigma_f=forecast.source_spread_f,
-        market_consensus=consensus,
-    )
+    city = context.city
+    series_ticker = context.series_ticker
+    forecast = context.forecast
+    intraday = context.intraday
+    ensemble = context.ensemble
+    event = context.event
+    event_title = context.event_title
+    probabilities = context.probabilities
+    consensus = context.consensus
+    risk_profile = context.risk_profile
+    paper_bankroll = context.paper_bankroll
+    decisions = context.decisions
     entry_allowed = True
     entry_block_reason = None
     if args.place_paper:
@@ -1579,87 +1657,36 @@ def _portfolio_scan_one_target(
     sizing_model=_UNSET,
     pause_reasons: dict[tuple[str, str], str | None] | None = None,
 ) -> None:
-    city = city or get_city("sfo")
-    series_ticker = city.series_ticker
-    forecast = adapter.latest_blend(target)
-    _enforce_live_forecast_freshness(forecast, config)
-    intraday = _intraday_for_target(args, target, adapter, city=city)
-    observed_high_f = intraday.observed_high_f if intraday else None
-    if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
-        forecast = adapter.apply_intraday_update(forecast, intraday)
-    # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
-    # calls per target); at fifteen cities on a 5-minute cadence it would blow
-    # the free ensemble quota, so EMOS-only cities run without it -- their
-    # sigma already comes from the calibrated EMOS fit.
-    ensemble = (
-        _ensemble_for_target(args, target, forecast.predicted_high_f, color, city=city)
-        if city.has_full_blend
-        else None
-    )
-    event = event_hint
-    if event_lookup_done:
-        pass
-    elif args.offline_events:
-        events = load_event_snapshots(args.offline_events, target)
-        event = events[0] if events else None
-    else:
-        try:
-            client = kalshi_client or KalshiPublicClient()
-            event = client.find_event_by_date(target, series_ticker=series_ticker)
-        except (URLError, OSError) as exc:
-            print(color.yellow(f"warning: live Kalshi lookup failed ({exc}); using probability-only ladder"), file=sys.stderr)
-            event = None
-
-    if event:
-        markets = event.active_markets or event.markets
-        event_title = event.title
-        market_available = True
-    else:
-        markets = fallback_bins(
-            f"{series_ticker}-{format_event_date_token(target)}-PAPER",
-            forecast.predicted_high_f,
-        )
-        event_title = "No live Kalshi event found; portfolio scan is research-only"
-        market_available = False
-
-    # lead_days=None: the live serve writes each rolling target at its TRUE lead
-    # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
-    # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
-    if emos_lookup is None:
-        emos_lookup = (
-            adapter.load_emos_mu_sigma(lead_days=None)
-            if config.emos_distribution_enabled
-            else {}
-        )
-    probabilities = calibrator.bucket_probabilities(
-        markets,
-        forecast.predicted_high_f,
-        source_spread_f=forecast.source_spread_f,
-        observed_high_f=observed_high_f,
-        ensemble=ensemble,
-        intraday=intraday,
-        emos_mu_sigma=emos_lookup.get(target),
-        standard_timezone=intraday_timezone_for_city(city),
-    )
-    consensus = build_market_consensus(markets)
-    risk_profile = _risk_profile_name(args)
-    paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(
+    context = build_scan_context(
+        args,
+        target,
+        adapter,
+        calibrator,
         config,
-        sizing_model=(
-            _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
-        ),
+        store,
+        color,
+        city=city,
+        event_hint=event_hint,
+        event_lookup_done=event_lookup_done,
+        kalshi_client=kalshi_client,
+        emos_lookup=emos_lookup,
+        sizing_model=sizing_model,
+        fallback_event_title="No live Kalshi event found; portfolio scan is research-only",
     )
-    decisions = evaluator.rank(
-        markets,
-        probabilities,
-        bankroll=paper_bankroll,
-        sides=_analysis_sides(args.side),
-        source_spread_f=forecast.source_spread_f,
-        forecast_high_f=forecast.predicted_high_f,
-        forecast_sigma_f=forecast.source_spread_f,
-        market_consensus=consensus,
-    )
+    city = context.city
+    series_ticker = context.series_ticker
+    forecast = context.forecast
+    intraday = context.intraday
+    ensemble = context.ensemble
+    event = context.event
+    markets = context.markets
+    event_title = context.event_title
+    market_available = context.market_available
+    probabilities = context.probabilities
+    consensus = context.consensus
+    risk_profile = context.risk_profile
+    paper_bankroll = context.paper_bankroll
+    decisions = context.decisions
     opportunities = build_arbitrage_opportunities(
         markets,
         config=config,

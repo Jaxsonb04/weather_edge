@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from ._util import _parse_timestamp, _table_exists
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .models import ForecastOutcome
 
@@ -796,26 +797,6 @@ def _table_count(conn: sqlite3.Connection, table: str) -> int:
     if not _table_exists(conn, table):
         return 0
     return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def _parse_timestamp(value: Any) -> datetime | None:
-    if value in (None, ""):
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _age_hours(now: datetime, timestamp: datetime | None) -> float | None:

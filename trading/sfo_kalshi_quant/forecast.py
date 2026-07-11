@@ -8,11 +8,15 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Iterable
 
+from ._util import _table_exists
 from .cities import CityConfig, get_city
 from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ, intraday_timezone_for_city
 from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
-from .settlement_truth import load_cli_settlement_truth
+from .settlement_truth import (
+    integer_settlement_high_f as _integer_settlement_high_f,
+    load_cli_settlement_truth,
+)
 
 
 class ForecastDataError(RuntimeError):
@@ -708,21 +712,6 @@ def _is_clean_next_day_blend(target_iso: object, fetched_at: object, details_jso
     decision = details.get("observed_high_decision") if isinstance(details, dict) else None
     mode = decision.get("mode") if isinstance(decision, dict) else None
     return str(mode).lower() not in {"floor", "lock"}
-
-
-def _integer_settlement_high_f(value: object) -> float:
-    high = float(value)
-    if not math.isfinite(high):
-        raise ValueError("settlement high must be finite")
-    return float(math.floor(high + 0.5))
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _cache_daily_high(cache: dict, target: date) -> dict | None:

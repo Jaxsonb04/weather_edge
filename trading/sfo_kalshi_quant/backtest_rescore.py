@@ -39,16 +39,23 @@ import json
 import math
 import sqlite3
 from dataclasses import dataclass
+from functools import partial
 
+from ._util import _row_value as _shared_row_value
 from .cities import city_for_market_ticker
 from .config import StrategyConfig, config_for_city, temperature_cohort
 from .models import BucketProbability, MarketBin, TradeDecision
 from .risk import TradeEvaluator
-from .settlement_truth import normalize_settlement_truth, settlement_for_market
+from .settlement_truth import (
+    integer_settlement_high_f as _integer_settlement_high_f,
+    normalize_settlement_truth,
+    settlement_for_market,
+)
 
 # Floor on a single day's gross return so a total-loss day (return == -1) does
 # not send log(1 + r) to negative infinity in the log-growth average.
 _RETURN_FLOOR = 1e-9
+_row_value = partial(_shared_row_value, default_on_none=True)
 
 
 @dataclass(frozen=True)
@@ -165,14 +172,6 @@ def reconstruct_market(row: sqlite3.Row) -> MarketBin:
     )
 
 
-def _row_value(row: sqlite3.Row, key: str, default):
-    try:
-        value = row[key]
-    except (IndexError, KeyError):
-        return default
-    return default if value is None else value
-
-
 def _to_yes_frame(side_value: float | None, side: str) -> float | None:
     """Invert a side-frame probability back to the YES frame (NO -> 1 - p)."""
 
@@ -269,14 +268,6 @@ class _Scored:
     pnl: float
     won: bool
     sleeve: str
-
-
-def _integer_settlement_high_f(high: float) -> float:
-    """Round a (possibly fractional) ground-truth high to the integer Kalshi
-    settles off (the NWS Daily Climate Report value). Half-up, matching
-    backtest.py / synthetic_blend.py so resolution is consistent repo-wide."""
-
-    return float(math.floor(high + 0.5))
 
 
 def _recorded_pnl(row: sqlite3.Row, won: bool) -> tuple[float, float]:

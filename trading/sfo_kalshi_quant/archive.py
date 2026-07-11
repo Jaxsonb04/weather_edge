@@ -49,6 +49,7 @@ from pathlib import Path
 
 from .cities import city_for_market_ticker
 from .settlement_truth import (
+    bin_resolves_yes as _resolves_yes,
     load_cli_settlement_truth,
     settlement_key_for_market,
 )
@@ -1555,17 +1556,6 @@ def _coalesce(*values: object) -> object:
         if value is not None:
             return value
     return None
-
-
-def _resolves_yes(strike_type: str | None, floor: float | None, cap: float | None, high: float) -> bool:
-    strike = str(strike_type or "").lower()
-    if strike == "less":
-        return cap is not None and high < float(cap)
-    if strike == "greater":
-        return floor is not None and high > float(floor)
-    if strike == "between":
-        return floor is not None and cap is not None and float(floor) <= high <= float(cap)
-    return False
 
 
 class _GroupAccumulator:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 from contextlib import redirect_stdout
 from datetime import date
 from types import SimpleNamespace
@@ -288,3 +289,21 @@ def test_pause_reason_cache_is_keyed_by_exact_profile_and_target():
     assert next_target == "paused"
     assert other_profile is None
     assert store.paper_entry_pause_reason.call_count == 3
+
+
+def test_analysis_and_portfolio_scans_share_one_context_builder() -> None:
+    assert hasattr(cli_module, "ScanContext")
+    assert hasattr(cli_module, "build_scan_context")
+
+    analyze_source = inspect.getsource(cli_module._analyze_one_target)
+    portfolio_source = inspect.getsource(cli_module._portfolio_scan_one_target)
+    assert analyze_source.count("build_scan_context(") == 1
+    assert portfolio_source.count("build_scan_context(") == 1
+    for duplicated_step in (
+        "adapter.latest_blend(",
+        "calibrator.bucket_probabilities(",
+        "build_market_consensus(",
+        "evaluator.rank(",
+    ):
+        assert duplicated_step not in analyze_source
+        assert duplicated_step not in portfolio_source
