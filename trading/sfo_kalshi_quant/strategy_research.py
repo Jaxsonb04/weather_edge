@@ -88,6 +88,7 @@ def build_strategy_research(
     forecaster_root = Path(forecaster_root)
     db_path = Path(db_path)
     cfg = config or strategy_config_for_profile(None)
+    fast_publication = _env_truthy("SFO_STRATEGY_FAST_PUBLICATION")
     adapter = SfoForecasterAdapter(forecaster_root)
     trading_signal = _load_json_optional(forecaster_root / "trading_signal.json")
     dataset_research = _load_or_build_dataset_research(
@@ -111,8 +112,23 @@ def build_strategy_research(
     )
     comparison = _comparison_summary(active_calibration, challenger_calibration)
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
-    backtest = _signal_backtest_payload(adapter, db_path)
-    config_rescore = _config_rescore_payload(adapter, db_path)
+    if fast_publication:
+        deferred_reason = (
+            "Deferred from the 15-minute public artifact; run the offline full "
+            "research job for counterfactual decision-journal rescoring."
+        )
+        backtest = _signal_backtest_payload(adapter, Path("/__weatheredge_deferred__"))
+        backtest["reason"] = deferred_reason
+        config_rescore = {
+            "available": False,
+            "by_profile": {},
+            "settlement_days": 0,
+            "sampled_snapshots": 0,
+            "reason": deferred_reason,
+        }
+    else:
+        backtest = _signal_backtest_payload(adapter, db_path)
+        config_rescore = _config_rescore_payload(adapter, db_path)
     chronological_replay = replay_from_database(
         db_path,
         adapter.load_cli_settlement_truth(),
@@ -156,6 +172,7 @@ def build_strategy_research(
         "default_profile": _default_profile(profiles),
         "generated_at": datetime.now(UTC).isoformat(),
         "source_of_truth": "AWS Lightsail runtime artifacts after sync and refresh",
+        "publication_mode": "fast_public" if fast_publication else "full_research",
         "status": status,
         "daily_summary": daily_summary,
         "accounting": accounting,
@@ -4332,3 +4349,7 @@ def _env_float(name: str) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
