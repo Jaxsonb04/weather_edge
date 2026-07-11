@@ -9,13 +9,182 @@ query shape and the fail-open behaviour of ``source_mos_corrections``.
 
 from __future__ import annotations
 
+import importlib
+import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import google_weather_cache as gwc
+
+
+def test_cache_responsibilities_live_in_focused_modules():
+    expected = {
+        "google_api": "fetch_google_forecast",
+        "blend_sources": "build_blend_snapshot",
+        "blend_learners": "adaptive_blend_weights",
+        "blend_archive": "archive_forecast",
+    }
+    for module_name, function_name in expected.items():
+        module = importlib.import_module(module_name)
+        function = getattr(module, function_name)
+        assert function.__module__ == module_name
+        assert getattr(gwc, function_name) is function
+
+    assert len(Path(gwc.__file__).read_text(encoding="utf-8").splitlines()) < 250
+
+
+def test_cache_cli_help_is_byte_compatible():
+    completed = subprocess.run(
+        [sys.executable, gwc.__file__, "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stderr == ""
+    assert completed.stdout == (
+        "usage: google_weather_cache.py [-h] [--refresh] [--force]\n"
+        "\n"
+        "options:\n"
+        "  -h, --help  show this help message and exit\n"
+        "  --refresh   fetch a fresh Google forecast\n"
+        "  --force     ignore a valid cache\n"
+    )
+
+
+def test_missing_key_cache_artifact_and_output_are_deterministic(
+    tmp_path, monkeypatch, capsys
+):
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage = {
+        "daily_event_budget": 260,
+        "daily_events": 17,
+        "monthly_event_budget": 8000,
+        "monthly_events": 611,
+    }
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-11")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(usage))
+    monkeypatch.setattr(gwc, "api_key", lambda: None)
+    monkeypatch.setattr(
+        gwc,
+        "score_archive",
+        lambda: {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0},
+    )
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py"])
+
+    gwc.main()
+
+    expected = {
+        "available": False,
+        "reason": "Google Weather cache unavailable.",
+        "target_date": "2026-07-11",
+        "max_calls_per_day": 260,
+        "calls_used_today": 17,
+        "max_google_events_per_month": 8000,
+        "google_events_used_month": 611,
+        "fetched_at": None,
+    }
+    assert cache_path.read_text(encoding="utf-8") == json.dumps(expected, indent=2) + "\n"
+    assert capsys.readouterr().out == (
+        "missing GOOGLE_WEATHER_API_KEY; Google cache not refreshed; scored 0\n"
+    )
+
+
+def test_google_event_reservation_adjustment_is_exact(tmp_path, monkeypatch):
+    monkeypatch.setattr(gwc, "USAGE_PATH", tmp_path / "usage.json")
+    usage = {
+        "date": "2026-07-11",
+        "month": "2026-07",
+        "daily_events": 17,
+        "monthly_events": 611,
+        "daily_event_budget": 260,
+        "monthly_event_budget": 8000,
+        "limit": 260,
+    }
+
+    reserved = gwc.reserve_google_weather_events(dict(usage), 5)
+    adjusted = gwc.adjust_reserved_google_weather_events(reserved, 5, 3)
+
+    assert adjusted["daily_events"] == 20
+    assert adjusted["monthly_events"] == 614
+    assert adjusted["calls"] == 20
+    assert adjusted["limit"] == 260
+
+
+def _learner_row(target_date, actual, google, nws, open_meteo=80.0, history=80.0):
+    return {
+        "target_date": target_date,
+        "actual_high_f": actual,
+        "predicted_high_f": 72.0,
+        "google_high_f": google,
+        "nws_high_f": nws,
+        "open_meteo_high_f": open_meteo,
+        "history_high_f": history,
+        "station_adjustment_f": 0.0,
+        "details_json": "{}",
+        "effective_truth_source": "clisfo",
+    }
+
+
+def test_adaptive_weight_walk_forward_gate_rejects_recent_regression(monkeypatch):
+    rows = []
+    start = date(2026, 5, 1)
+    for offset in range(18):
+        recent = offset >= 12
+        rows.append(
+            _learner_row(
+                (start + timedelta(days=offset)).isoformat(),
+                70.0,
+                84.0 if recent else 70.0,
+                70.0 if recent else 80.0,
+            )
+        )
+    monkeypatch.setattr(gwc, "latest_scored_blend_rows", lambda: rows)
+    monkeypatch.delattr(gwc.adaptive_blend_weights, "_cached", raising=False)
+
+    weights, metadata = gwc.adaptive_blend_weights()
+
+    assert weights == gwc.BLEND_WEIGHTS
+    assert metadata["mode"] == "base"
+    assert "did not improve walk-forward holdout" in metadata["reason"]
+
+
+def test_rolling_bias_walk_forward_gate_rejects_tail_regression(monkeypatch):
+    rows = []
+    start = date(2026, 4, 1)
+    for offset in range(36):
+        recent = offset >= 24
+        raw = 72.0 if offset % 3 == 0 else 65.0
+        # Training suggests +1.5 F everywhere. On the holdout that still helps
+        # normal days overall, but worsens already-perfect warm tail days.
+        actual = raw if recent and raw >= 70.0 else raw + 2.0
+        row = _learner_row(
+            (start + timedelta(days=offset)).isoformat(),
+            actual,
+            raw,
+            raw,
+            raw,
+            raw,
+        )
+        row["predicted_high_f"] = raw
+        row["details_json"] = '{"raw_weighted_prediction_f":' + str(raw) + "}"
+        rows.append(row)
+    monkeypatch.setattr(gwc, "latest_scored_blend_rows", lambda: rows)
+    monkeypatch.delattr(gwc.rolling_blend_residual_bias, "_cached", raising=False)
+
+    table, metadata = gwc.rolling_blend_residual_bias()
+
+    assert table == gwc.DISABLED_BIAS_TABLE
+    assert metadata["mode"] == "base"
+    assert "regressed cohort(s)" in metadata["reason"]
+    assert "warm" in metadata["holdout"]["cohort_regressions"]
 
 
 @contextmanager

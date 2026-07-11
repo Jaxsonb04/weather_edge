@@ -202,7 +202,12 @@ forecast_postproc_backtest.py    multi-city post-processing comparison
 forecast_scoring.py              forecast scoring and proper-score helpers
 forecast_tomorrow.py             static month/day forecast lookup
 forecast_validation.py           artifact and forecast validation checks
-google_weather_cache.py          SFO live blend, cache, archive, and site JSON
+google_weather_cache.py          stable SFO refresh CLI and import facade
+google_api.py                    Google fetch/parsing and paid-event budget ledger
+blend_sources.py                 public source adapters and final blend assembly
+blend_learners.py                walk-forward weight, MOS, and residual learners
+blend_archive.py                 cache archive schema, migrations, and scoring
+weather_cache_config.py          shared SFO blend paths and control settings
 load_to_db.py                    cleaned station CSV -> SQLite
 lstm_model.py                    PyTorch LSTM training
 nwp_archive.py                   point-in-time multi-model NWP archive
