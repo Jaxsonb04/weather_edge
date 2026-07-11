@@ -40,6 +40,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -409,7 +410,15 @@ def _source_day_count(conn: sqlite3.Connection, table: str, day: str) -> int:
     return int(row[0] or 0)
 
 
-def _decode_id_ranges(raw: object, table: str, day: str) -> list[tuple[int, int]]:
+def _decode_id_ranges(
+    raw: object,
+    table: str,
+    day: str,
+    *,
+    archived_rows: int | None = None,
+    min_id: int | None = None,
+    max_id: int | None = None,
+) -> list[tuple[int, int]]:
     if raw is None:
         raise RuntimeError(
             f"archive manifest lacks exact ID coverage for {table} {day}; "
@@ -431,7 +440,145 @@ def _decode_id_ranges(raw: object, table: str, day: str) -> list[tuple[int, int]
                 "re-export the UTC-day partition before running --check-gate"
             )
         previous_end = end
+    if archived_rows is not None:
+        covered_rows = sum(end - start + 1 for start, end in ranges)
+        endpoints_match = (
+            (archived_rows == 0 and not ranges and min_id is None and max_id is None)
+            or (
+                archived_rows > 0
+                and bool(ranges)
+                and ranges[0][0] == min_id
+                and ranges[-1][1] == max_id
+            )
+        )
+        if covered_rows != archived_rows or not endpoints_match:
+            raise RuntimeError(
+                f"archive manifest has invalid ID coverage for {table} {day}; "
+                "re-export the UTC-day partition before running --check-gate"
+            )
     return ranges
+
+
+def _ranges_from_verified_archive(
+    path: Path,
+    *,
+    table: str,
+    day: str,
+    expected_rows: int,
+    expected_sha256: str,
+) -> list[tuple[int, int]]:
+    digest = hashlib.sha256()
+    ids: list[int] = []
+    try:
+        with gzip.open(path, "rb") as inp:
+            for line in inp:
+                digest.update(line)
+                payload = json.loads(line)
+                if not isinstance(payload, dict) or not isinstance(payload.get("id"), int):
+                    raise ValueError("archive row has no integer id")
+                ids.append(int(payload["id"]))
+    except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"archive coverage recovery found corrupt {table} {day}: {exc}; "
+            "restore the original verified partition and rerun paper-archive"
+        ) from exc
+    if len(ids) != expected_rows or digest.hexdigest() != expected_sha256:
+        raise RuntimeError(
+            f"archive coverage recovery mismatch for {table} {day}: "
+            f"file rows/hash do not match manifest; restore the original verified "
+            "partition and rerun paper-archive"
+        )
+    ranges: list[tuple[int, int]] = []
+    for row_id in ids:
+        if ranges and row_id == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], row_id)
+        elif ranges and row_id <= ranges[-1][1]:
+            raise RuntimeError(
+                f"archive coverage recovery found unordered/duplicate IDs for {table} {day}; "
+                "restore the original verified partition and rerun paper-archive"
+            )
+        else:
+            ranges.append((row_id, row_id))
+    return ranges
+
+
+def backfill_manifest_id_coverage(
+    manifest: sqlite3.Connection,
+    archive_dir: Path,
+    *,
+    log=print,
+) -> int:
+    """Derive missing ID ranges only from the original verified archive bytes."""
+
+    pending = manifest.execute(
+        "SELECT table_name, day, path, rows, sha256, upload_target, min_id, max_id "
+        "FROM archive_files WHERE kind='day' AND id_coverage_json IS NULL "
+        "ORDER BY table_name, day"
+    ).fetchall()
+    updated = 0
+    for table, day, rel_path, rows, sha256, upload_target, min_id, max_id in pending:
+        local = archive_dir / str(rel_path)
+        temporary: Path | None = None
+        source = local
+        if not local.exists():
+            if not upload_target:
+                raise RuntimeError(
+                    f"archive coverage metadata is missing for {table} {day}, and the "
+                    f"original file is unavailable. Restore it once to {local} (or set "
+                    "its verified upload_target), then rerun paper-archive"
+                )
+            with tempfile.NamedTemporaryFile(
+                prefix="weatheredge-archive-coverage-", suffix=".jsonl.gz", delete=False
+            ) as tmp:
+                temporary = Path(tmp.name)
+            try:
+                cp = _aws(
+                    ["s3", "cp", str(upload_target), str(temporary), "--only-show-errors"]
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                temporary.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"archive coverage recovery could not fetch verified upload for "
+                    f"{table} {day}: {exc}; restore {local} once and rerun paper-archive"
+                ) from exc
+            if cp.returncode != 0:
+                temporary.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"archive coverage recovery could not fetch verified upload for "
+                    f"{table} {day}: {cp.stderr.strip()}; restore {local} once and rerun "
+                    "paper-archive"
+                )
+            source = temporary
+        try:
+            ranges = _ranges_from_verified_archive(
+                source,
+                table=str(table),
+                day=str(day),
+                expected_rows=int(rows),
+                expected_sha256=str(sha256),
+            )
+            coverage_json = json.dumps(ranges, separators=(",", ":"))
+            _decode_id_ranges(
+                coverage_json,
+                str(table),
+                str(day),
+                archived_rows=int(rows),
+                min_id=min_id,
+                max_id=max_id,
+            )
+            manifest.execute(
+                "UPDATE archive_files SET id_coverage_json=? "
+                "WHERE table_name=? AND day=? AND kind='day' "
+                "AND id_coverage_json IS NULL",
+                (coverage_json, table, day),
+            )
+            manifest.commit()
+            updated += 1
+            log(f"backfilled archive ID coverage for {table} dt={day}")
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    return updated
 
 
 def _surviving_ids_are_covered(
@@ -468,6 +615,11 @@ def archive_pending(
     """Export every unarchived complete UTC day; returns count of new files."""
 
     manifest = open_manifest(archive_dir)
+    try:
+        backfill_manifest_id_coverage(manifest, archive_dir, log=log)
+    except Exception:
+        manifest.close()
+        raise
     conn = connect_readonly(db_path)
     merge_schemas: list[str] = []
     for idx, merge_path in enumerate(merge_dbs or []):
@@ -575,9 +727,9 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
             if first is None:
                 continue
             coverage = {
-                str(day): (int(rows), id_coverage_json)
-                for day, rows, id_coverage_json in manifest.execute(
-                    "SELECT day, rows, id_coverage_json FROM archive_files "
+                str(day): (int(rows), id_coverage_json, min_id, max_id)
+                for day, rows, id_coverage_json, min_id, max_id in manifest.execute(
+                    "SELECT day, rows, id_coverage_json, min_id, max_id FROM archive_files "
                     "WHERE table_name = ? AND kind = 'day'",
                     (table,),
                 )
@@ -588,8 +740,15 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
                 if day not in coverage:
                     missing.append((table, day))
                     continue
-                archived_rows, raw_ranges = coverage[day]
-                ranges = _decode_id_ranges(raw_ranges, table, day)
+                archived_rows, raw_ranges, min_id, max_id = coverage[day]
+                ranges = _decode_id_ranges(
+                    raw_ranges,
+                    table,
+                    day,
+                    archived_rows=archived_rows,
+                    min_id=min_id,
+                    max_id=max_id,
+                )
                 if (
                     archived_rows < source_rows
                     or not _surviving_ids_are_covered(conn, table, day, ranges)

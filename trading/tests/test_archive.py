@@ -1,8 +1,11 @@
 import gzip
+import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -228,6 +231,174 @@ def test_gate_rejects_manifest_without_exact_id_coverage_metadata(tmp_path: Path
         manifest.execute("UPDATE archive_files SET id_coverage_json = NULL")
 
     with pytest.raises(RuntimeError, match="re-export"):
+        gate_missing_days(tmp_path / "paper.db", archive_dir)
+
+
+def test_scheduled_archive_backfills_preupgrade_manifest_from_original_file(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    ids = [
+        _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day),
+        _insert_decision(conn, created_at=f"{day}T09:00:00+00:00", target_date=day),
+    ]
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    path = archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    original_bytes = path.read_bytes()
+    original_hash = hashlib.sha256(original_bytes).hexdigest()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=NULL "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+
+    assert archive_pending(
+        tmp_path / "paper.db", archive_dir, log=lambda *_: None
+    ) == 0
+
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == original_hash
+    assert path.read_bytes() == original_bytes
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        rows, coverage = manifest.execute(
+            "SELECT rows, id_coverage_json FROM archive_files "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        ).fetchone()
+    assert rows == len(ids)
+    assert json.loads(coverage) == [[ids[0], ids[-1]]]
+    assert gate_missing_days(tmp_path / "paper.db", archive_dir) == []
+
+
+def test_manifest_coverage_backfill_refuses_corrupted_original_file(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    path = archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=NULL "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+    with gzip.open(path, "wt", encoding="utf-8") as out:
+        out.write(json.dumps({"id": 999999}) + "\n")
+
+    with pytest.raises(RuntimeError, match="recovery|corrupt|mismatch"):
+        archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+
+def test_manifest_coverage_backfill_fetches_verified_uploaded_copy(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    row_id = _insert_decision(
+        conn, created_at=f"{day}T08:00:00+00:00", target_date=day
+    )
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    path = archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    uploaded_bytes = path.read_bytes()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=NULL, "
+            "upload_target='s3://verified/archive.jsonl.gz' "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+    path.unlink()
+
+    def fake_aws(args: list[str]) -> SimpleNamespace:
+        assert args[:3] == ["s3", "cp", "s3://verified/archive.jsonl.gz"]
+        Path(args[3]).write_bytes(uploaded_bytes)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    with patch("sfo_kalshi_quant.archive._aws", side_effect=fake_aws) as aws:
+        assert archive_pending(
+            tmp_path / "paper.db", archive_dir, log=lambda *_: None
+        ) == 0
+
+    aws.assert_called_once()
+    assert not path.exists()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        coverage = manifest.execute(
+            "SELECT id_coverage_json FROM archive_files "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        ).fetchone()[0]
+    assert json.loads(coverage) == [[row_id, row_id]]
+
+
+def test_manifest_coverage_backfill_requires_one_time_original_restore(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    path = archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=NULL, upload_target=NULL "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+    path.unlink()
+
+    with pytest.raises(RuntimeError, match="Restore it once|verified upload_target"):
+        archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+
+def test_manifest_coverage_backfill_refuses_manifest_endpoint_mismatch(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    row_id = _insert_decision(
+        conn, created_at=f"{day}T08:00:00+00:00", target_date=day
+    )
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=NULL, max_id=? "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (row_id + 1, day),
+        )
+
+    with pytest.raises(RuntimeError, match="invalid ID coverage|re-export"):
+        archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        assert manifest.execute(
+            "SELECT id_coverage_json FROM archive_files "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        ).fetchone()[0] is None
+
+
+def test_gate_rejects_widened_id_ranges_not_matching_manifest_count_and_endpoints(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    row_id = _insert_decision(
+        conn, created_at=f"{day}T08:00:00+00:00", target_date=day
+    )
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET id_coverage_json=? "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (json.dumps([[row_id, row_id + 10]]), day),
+        )
+
+    with pytest.raises(RuntimeError, match="invalid ID coverage|re-export"):
         gate_missing_days(tmp_path / "paper.db", archive_dir)
 
 

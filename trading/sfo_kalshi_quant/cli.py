@@ -1109,6 +1109,7 @@ def cmd_portfolio_scan(args: argparse.Namespace) -> int:
     kalshi_client = KalshiPublicClient()
     store = PaperStore(args.db_path)
     scanned_any = False
+    fatal_containment = False
     for city_idx, city in enumerate(_cities_for_args(args)):
         if city_idx:
             print("")
@@ -1152,14 +1153,20 @@ def cmd_portfolio_scan(args: argparse.Namespace) -> int:
                     kalshi_client=kalshi_client,
                 )
                 scanned_any = True
-            except (ForecastDataError, ArbitrageContainmentError) as exc:
+            except ArbitrageContainmentError as exc:
+                fatal_containment = True
+                print(
+                    color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
+                    file=sys.stderr,
+                )
+            except ForecastDataError as exc:
                 print(
                     color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
                     file=sys.stderr,
                 )
     if not scanned_any:
         print(color.yellow("no city produced a scannable target"))
-    return 0
+    return 1 if fatal_containment else 0
 
 
 def _resolve_analysis_targets(

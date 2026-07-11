@@ -4,6 +4,7 @@ import io
 from contextlib import redirect_stdout
 from datetime import date
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -14,6 +15,7 @@ from sfo_kalshi_quant.cli import (
     cmd_portfolio_scan,
 )
 from sfo_kalshi_quant.colors import Color
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.models import ForecastSnapshot
 from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
 from sfo_kalshi_quant.paper import ArbitrageContainmentError
@@ -182,3 +184,34 @@ def test_portfolio_order_placement_stops_target_on_fatal_arbitrage_containment()
         )
 
     assert trader.directional_called is False
+
+
+def test_portfolio_scan_returns_nonzero_after_fatal_containment_but_continues_city_loop():
+    args = build_parser().parse_args(
+        ["--risk-profile", "live", "portfolio-scan", "--cities", "sfo,nyc"]
+    )
+    target = date(2026, 7, 10)
+    adapter = Mock()
+    adapter.load_calibration_outcomes.return_value = [object()] * 30
+
+    with (
+        patch(
+            "sfo_kalshi_quant.cli._cities_for_args",
+            return_value=(get_city("sfo"), get_city("nyc")),
+        ),
+        patch(
+            "sfo_kalshi_quant.cli._resolve_analysis_targets",
+            return_value=([target], {}),
+        ),
+        patch("sfo_kalshi_quant.cli.SfoForecasterAdapter", return_value=adapter),
+        patch("sfo_kalshi_quant.cli.ResidualCalibrator", return_value=object()),
+        patch("sfo_kalshi_quant.cli.KalshiPublicClient"),
+        patch(
+            "sfo_kalshi_quant.cli._portfolio_scan_one_target",
+            side_effect=[ArbitrageContainmentError("residual exposure"), None],
+        ) as scan_target,
+    ):
+        code = cmd_portfolio_scan(args)
+
+    assert code == 1
+    assert scan_target.call_count == 2
