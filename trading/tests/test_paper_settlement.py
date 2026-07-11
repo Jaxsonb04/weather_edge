@@ -421,7 +421,7 @@ def test_settle_paper_orders_prefers_structured_strikes_over_labels():
         assert row["realized_pnl"] > 0
 
 
-def test_paper_auto_settle_prefers_clisfo_over_weatheredge_ground_truth():
+def test_paper_auto_settle_leaves_order_open_without_archived_final_truth():
     with TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         root.mkdir()
@@ -470,7 +470,7 @@ def test_paper_auto_settle_prefers_clisfo_over_weatheredge_ground_truth():
 
         out = io.StringIO()
         with patch(
-            "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+            "sfo_kalshi_quant.settlement.fetch_recent_cli_settlements",
             lambda site, issuedby, timeout=20: {date(2026, 6, 3): 64},
         ), redirect_stdout(out):
             code = main(
@@ -485,10 +485,11 @@ def test_paper_auto_settle_prefers_clisfo_over_weatheredge_ground_truth():
             )
 
         assert code == 0
-        assert "from CLI" in out.getvalue()
+        assert "no CLI truth" in out.getvalue()
         row = store.paper_orders(1)[0]
-        assert row["status"] == "PAPER_SETTLED"
-        assert row["settlement_high_f"] == 64.0
+        assert row["status"] == "PAPER_FILLED"
+        assert row["settlement_high_f"] is None
+        assert row["realized_pnl"] is None
 
 
 def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
@@ -543,7 +544,7 @@ def test_paper_auto_settle_falls_back_to_weatheredge_ground_truth():
 
         out = io.StringIO()
         with patch(
-            "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+            "sfo_kalshi_quant.settlement.fetch_recent_cli_settlements",
             lambda site, issuedby, timeout=20: {},
         ), redirect_stdout(out):
             code = main(
@@ -609,7 +610,7 @@ def test_paper_auto_settle_waits_for_grace_and_final_truth():
 
         def run_auto_settle():
             with patch(
-                "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+                "sfo_kalshi_quant.settlement.fetch_recent_cli_settlements",
                 lambda site, issuedby, timeout=20: {},
             ), patch(
                 "sfo_kalshi_quant.cli.settlement_clock",
@@ -685,7 +686,7 @@ def test_paper_auto_settle_prefers_archived_final_over_live_preliminary_version(
         store.record_paper_order("2026-01-10", decision)
 
         with patch(
-            "sfo_kalshi_quant.cli.fetch_recent_cli_settlements",
+            "sfo_kalshi_quant.settlement.fetch_recent_cli_settlements",
             lambda site, issuedby, timeout=20: {date(2026, 1, 10): 68},
         ):
             assert main(
@@ -744,7 +745,9 @@ def test_paper_resettle_verify_flags_mismatch_without_mutating_financial_truth()
         )
         store.record_paper_order("2026-01-10", decision)
         assert store.settle_paper_orders("2026-01-10", 68.0) == 1
-        before = dict(store.paper_orders(1)[0])
+        store.record_paper_order("2026-01-11", decision)
+        assert store.settle_paper_orders("2026-01-11", 69.0) == 1
+        before = {row["id"]: dict(row) for row in store.paper_orders(10)}
         argv = [
             "--forecaster-root",
             str(root),
@@ -763,31 +766,38 @@ def test_paper_resettle_verify_flags_mismatch_without_mutating_financial_truth()
             assert main(argv) == 0
 
         assert "MISMATCH" in out.getvalue()
-        after = dict(store.paper_orders(1)[0])
-        for field in ("status", "settled_at", "settlement_high_f", "resolved_yes", "realized_pnl"):
-            assert after[field] == before[field]
+        assert "MISSING_FINAL" in out.getvalue()
+        after = {row["id"]: dict(row) for row in store.paper_orders(10)}
+        for order_id in before:
+            for field in ("status", "settled_at", "settlement_high_f", "resolved_yes", "realized_pnl"):
+                assert after[order_id][field] == before[order_id][field]
         with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 "SELECT booked_high_f, final_high_f, verification_status "
-                "FROM paper_settlement_verifications"
-            ).fetchone()
-            assert row == (68.0, 71.0, "MISMATCH")
+                "FROM paper_settlement_verifications ORDER BY target_date"
+            ).fetchall()
+            assert rows == [
+                (68.0, 71.0, "MISMATCH"),
+                (69.0, None, "MISSING_FINAL"),
+            ]
             assert conn.execute(
                 "SELECT COUNT(*) FROM paper_settlement_verifications"
-            ).fetchone()[0] == 1
+            ).fetchone()[0] == 2
 
 
 def test_paper_resettle_days_cutoff_is_exactly_n_inclusive_calendar_dates():
     with TemporaryDirectory() as tmp:
         captured = {}
 
-        def fake_verify(self, settlements, *, since):
-            captured["since"] = since
+        def fake_verify(self, settlements, *, intervals):
+            captured["intervals"] = intervals
             return {"checked": [], "mismatches": 0, "missing_truth": 0}
 
         with patch(
             "sfo_kalshi_quant.cli.settlement_today",
-            lambda now=None, city=None: date(2026, 7, 10),
+            lambda now=None, city=None: (
+                date(2026, 7, 11) if city and city.slug == "nyc" else date(2026, 7, 10)
+            ),
         ), patch.object(PaperStore, "verify_paper_settlements", fake_verify):
             assert main(
                 [
@@ -803,7 +813,39 @@ def test_paper_resettle_days_cutoff_is_exactly_n_inclusive_calendar_dates():
                 ]
             ) == 0
 
-        assert captured["since"] == "2026-07-09"
+        assert captured["intervals"]["KXHIGHTSFO"] == (
+            "2026-07-09", "2026-07-10"
+        )
+        assert captured["intervals"]["KXHIGHNY"] == (
+            "2026-07-10", "2026-07-11"
+        )
+
+
+def test_verify_paper_settlements_applies_closed_series_interval_to_actual_rows():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5", label="70° to 71°", action="BUY_YES",
+            approved=True, probability=0.3, probability_lcb=0.2, yes_bid=0.02,
+            yes_ask=0.03, spread=0.01, fee_per_contract=0.01,
+            cost_per_contract=0.04, edge=0.26, edge_lcb=0.16,
+            kelly_fraction=0.01, recommended_contracts=1.0, expected_profit=0.26,
+            reasons=[], strike_type="between", floor_strike=70.0, cap_strike=71.0,
+        )
+        truth = {}
+        for target in ("2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11"):
+            store.record_paper_order(target, decision)
+            store.settle_paper_orders(target, 71, series_ticker="KXHIGHTSFO")
+            truth[("KXHIGHTSFO", target)] = 71
+
+        result = store.verify_paper_settlements(
+            truth,
+            intervals={"KXHIGHTSFO": ("2026-07-09", "2026-07-10")},
+        )
+
+        assert [row["target_date"] for row in result["checked"]] == [
+            "2026-07-09", "2026-07-10"
+        ]
 
 
 def test_paper_resettle_rejects_nonpositive_days():

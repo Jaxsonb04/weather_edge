@@ -41,8 +41,10 @@ It runs:
 - Paper exit monitor: every 2 minutes around the clock. It also fills resting
   maker limit entries when the visible ask crosses (a proxy fill model, no
   queue position).
-- Paper settle: per-city; auto-settle walks each city's own NWS CLI product,
-  with archived CLI truth as fallback.
+- Paper settle: per-city; auto-settle uses only durable weather.db CLI rows with
+  `is_final=1`, after 06:00 on the next fixed-standard settlement day. Raw live
+  products are never booked. Use `paper-resettle --verify --days N` for a
+  non-mutating audit of matches, mismatches, and missing final truth.
 
 The services are paper-only. They do not contain a live-order path.
 

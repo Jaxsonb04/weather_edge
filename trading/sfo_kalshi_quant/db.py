@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS paper_settlement_verifications (
     market_ticker TEXT NOT NULL,
     target_date TEXT NOT NULL,
     booked_high_f REAL NOT NULL,
-    final_high_f REAL NOT NULL,
+    final_high_f REAL,
     verification_status TEXT NOT NULL
 );
 
@@ -528,6 +528,35 @@ class PaperStore:
                 "WHERE type='table' AND name='decision_snapshots'"
             ).fetchone() is not None
             conn.executescript(SCHEMA)
+            verification_columns = {
+                row[1]: row
+                for row in conn.execute(
+                    "PRAGMA table_info(paper_settlement_verifications)"
+                ).fetchall()
+            }
+            if verification_columns.get("final_high_f", (None,) * 4)[3]:
+                conn.execute(
+                    "ALTER TABLE paper_settlement_verifications "
+                    "RENAME TO paper_settlement_verifications_legacy"
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE paper_settlement_verifications (
+                        order_id INTEGER PRIMARY KEY,
+                        checked_at TEXT NOT NULL,
+                        market_ticker TEXT NOT NULL,
+                        target_date TEXT NOT NULL,
+                        booked_high_f REAL NOT NULL,
+                        final_high_f REAL,
+                        verification_status TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO paper_settlement_verifications SELECT * "
+                    "FROM paper_settlement_verifications_legacy"
+                )
+                conn.execute("DROP TABLE paper_settlement_verifications_legacy")
             existing = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()
@@ -2142,7 +2171,7 @@ class PaperStore:
         self,
         settlements,
         *,
-        since: str,
+        intervals: dict[str, tuple[str, str]],
     ) -> dict:
         """Audit booked settlements against final truth without changing orders."""
 
@@ -2152,23 +2181,31 @@ class PaperStore:
         missing_truth = 0
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
+            clauses = []
+            params: list[str] = []
+            for series, (lower, upper) in intervals.items():
+                clauses.append("(market_ticker LIKE ? AND target_date BETWEEN ? AND ?)")
+                params.extend((f"{series}-%", lower, upper))
+            if not clauses:
+                return {"checked": [], "mismatches": 0, "missing_truth": 0}
             rows = conn.execute(
                 "SELECT id, market_ticker, target_date, settlement_high_f "
                 "FROM paper_orders WHERE status='PAPER_SETTLED' "
                 "AND settled_at IS NOT NULL AND settlement_high_f IS NOT NULL "
-                "AND target_date >= ? ORDER BY target_date, id",
-                (since,),
+                f"AND ({' OR '.join(clauses)}) ORDER BY target_date, id",
+                params,
             ).fetchall()
             for row in rows:
                 final_high = settlement_for_market(
                     truth, str(row["market_ticker"]), str(row["target_date"])
                 )
+                booked_high = _integer_settlement_high_f(row["settlement_high_f"])
                 if final_high is None:
                     missing_truth += 1
-                    continue
-                booked_high = _integer_settlement_high_f(row["settlement_high_f"])
-                final_high = _integer_settlement_high_f(final_high)
-                status = "MATCH" if booked_high == final_high else "MISMATCH"
+                    status = "MISSING_FINAL"
+                else:
+                    final_high = _integer_settlement_high_f(final_high)
+                    status = "MATCH" if booked_high == final_high else "MISMATCH"
                 result = {
                     "order_id": int(row["id"]),
                     "market_ticker": str(row["market_ticker"]),

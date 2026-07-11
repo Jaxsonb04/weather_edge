@@ -152,7 +152,15 @@ def test_sfo_cli_refresh_marks_current_settlement_day_preliminary(monkeypatch):
     conn = sqlite3.connect(":memory:")
     current = date(2026, 7, 10)
     observed = datetime(2026, 7, 10, 20, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(gwc, "fetch_recent_clisfo_settlements", lambda: {current: 68})
+    import clisfo
+
+    monkeypatch.setattr(
+        gwc,
+        "fetch_recent_cli_reports",
+        lambda site, issuedby: {
+            current: clisfo.CliReport(current, 68, "VALID AS OF 5 PM LOCAL TIME", True)
+        },
+    )
     monkeypatch.setattr(gwc.city_truth, "_utcnow", lambda: observed)
 
     assert gwc.refresh_clisfo_settlements(conn) == 1

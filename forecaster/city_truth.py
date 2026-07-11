@@ -27,12 +27,16 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from cities import CITIES, CityConfig, parse_city_slugs
-from clisfo import fetch_recent_cli_settlements
+from clisfo import fetch_recent_cli_reports, parse_cli_report
 from settlement_calendar import integer_settlement_high_f
 
 DB_PATH = Path(__file__).resolve().parent / "weather.db"
 IEM_CLI_URL = "https://mesonet.agron.iastate.edu/json/cli.py?station={station}&year={year}"
 _USER_AGENT = "weatheredge-forecaster/0.2 (student research project)"
+# IEM rows generally lack trustworthy product issuance/finality metadata. Keep
+# yesterday preliminary and require two fixed-standard date rollovers before an
+# unconfirmed archive row becomes eligible as final truth.
+IEM_UNCONFIRMED_STABILITY_DAYS = 2
 
 
 def _utcnow() -> datetime:
@@ -54,7 +58,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
-    if "is_final" not in columns:
+    migrated_finality = "is_final" not in columns
+    if migrated_finality:
         conn.execute(
             "ALTER TABLE cli_settlements "
             "ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1"
@@ -77,6 +82,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             """
         )
         conn.execute("DROP TABLE clisfo_settlements")
+        migrated_finality = True
+    if migrated_finality:
+        observed_at = _utcnow()
+        for city in CITIES:
+            unsafe_from = _settlement_date(city, observed_at) - timedelta(days=1)
+            conn.execute(
+                "UPDATE cli_settlements SET is_final=0 "
+                "WHERE station_id=? AND local_date>=?",
+                (city.nws_station_id, unsafe_from.isoformat()),
+            )
         conn.commit()
 
 
@@ -122,11 +137,17 @@ def settlement_is_final(
 
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
-    settlement_date = (
+    settlement_date = _settlement_date(city, observed_at)
+    return report_date < settlement_date
+
+
+def _settlement_date(city: CityConfig, observed_at: datetime) -> date:
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    return (
         observed_at.astimezone(timezone.utc)
         + timedelta(hours=city.standard_utc_offset_hours)
     ).date()
-    return report_date < settlement_date
 
 
 def refresh_live(
@@ -145,22 +166,25 @@ def refresh_live(
     fetched_at = observed_at.isoformat(timespec="seconds")
     for city in cities:
         try:
-            settlements = fetch_recent_cli_settlements(
+            reports = fetch_recent_cli_reports(
                 city.cli_site, city.cli_issuedby, versions=versions, timeout=timeout
             )
         except Exception:  # noqa: BLE001 - network truth refresh is best-effort
             stored[city.nws_station_id] = 0
             continue
-        for report_date, high in settlements.items():
+        for report_date, report in reports.items():
             upsert_settlement(
                 conn,
                 city.nws_station_id,
                 report_date.isoformat(),
-                high,
+                int(report.max_temperature_f),
                 fetched_at=fetched_at,
-                is_final=settlement_is_final(city, report_date, observed_at),
+                is_final=(
+                    not report.is_preliminary
+                    and settlement_is_final(city, report_date, observed_at)
+                ),
             )
-        stored[city.nws_station_id] = len(settlements)
+        stored[city.nws_station_id] = len(reports)
     conn.commit()
     return stored
 
@@ -172,6 +196,26 @@ def _iem_rows(station_id: str, year: int, *, timeout: int = 45) -> list[dict]:
         payload = json.loads(response.read().decode("utf-8"))
     rows = payload.get("results")
     return rows if isinstance(rows, list) else []
+
+
+def _iem_is_final(
+    row: dict,
+    city: CityConfig,
+    report_date: date,
+    observed_at: datetime,
+) -> bool:
+    raw = row.get("raw_text") or row.get("product")
+    if raw and parse_cli_report(str(raw)).is_preliminary:
+        return False
+    if "is_final" in row:
+        marker = row.get("is_final")
+        confirmed = marker is True or marker == 1 or str(marker).lower() in {
+            "true", "final", "confirmed"
+        }
+        return confirmed and settlement_is_final(city, report_date, observed_at)
+    return report_date <= _settlement_date(city, observed_at) - timedelta(
+        days=IEM_UNCONFIRMED_STABILITY_DAYS
+    )
 
 
 def backfill_iem(
@@ -216,7 +260,7 @@ def backfill_iem(
                 high_int,
                 source="iem_cli",
                 fetched_at=fetched_at,
-                is_final=settlement_is_final(city, report_date, observed_at),
+                is_final=_iem_is_final(row, city, report_date, observed_at),
             )
             written += 1
     conn.commit()

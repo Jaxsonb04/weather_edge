@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import city_truth
-from clisfo import fetch_recent_clisfo_settlements
+from clisfo import fetch_recent_cli_reports
 from forecast_scoring import is_clean_next_day_forecast, parse_details_json
 from settlement_calendar import (
     integer_settlement_high_f,
@@ -609,7 +609,7 @@ def refresh_clisfo_settlements(conn):
     if os.getenv("SFO_DISABLE_CLISFO", "0").strip().lower() in {"1", "true", "yes", "on"}:
         return 0
     try:
-        settlements = fetch_recent_clisfo_settlements()
+        reports = fetch_recent_cli_reports("MTR", "SFO")
     except Exception:
         return 0
     city_truth.ensure_schema(conn)
@@ -617,14 +617,17 @@ def refresh_clisfo_settlements(conn):
     now_iso = observed_at.isoformat()
     sfo_city = next(city for city in city_truth.CITIES if city.nws_station_id == "KSFO")
     stored = 0
-    for report_date, max_temperature_f in settlements.items():
+    for report_date, report in reports.items():
         city_truth.upsert_settlement(
             conn,
             "KSFO",
             report_date.isoformat(),
-            int(max_temperature_f),
+            int(report.max_temperature_f),
             fetched_at=now_iso,
-            is_final=city_truth.settlement_is_final(sfo_city, report_date, observed_at),
+            is_final=(
+                not report.is_preliminary
+                and city_truth.settlement_is_final(sfo_city, report_date, observed_at)
+            ),
         )
         stored += 1
     return stored

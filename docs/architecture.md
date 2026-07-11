@@ -28,7 +28,9 @@ Responsibilities:
   Open-Meteo previous-runs archive (9 models, leads 1-3) and rolling-origin
   EMOS per city
 - maintain CLI settlement truth in the station-keyed `cli_settlements` table,
-  fed by live CLI scans plus the IEM archive backfill
+  fed by live CLI scans plus the IEM archive backfill; only confirmed products
+  without preliminary `AS OF` markers become `is_final=1`, while unconfirmed
+  IEM rows observe a conservative stability delay
   (`forecaster/city_truth.py`)
 - generate the site data JSONs consumed by the public SPA
 - keep forecast archive tables in `weather.db`; `nwp_model_forecasts` and
@@ -64,8 +66,11 @@ Responsibilities:
   maker fee (25% of the quadratic taker rate); the monitor fills a resting
   limit when the visible ask crosses (a proxy fill model, no queue position)
 - keep exposure caps and settlement series-scoped, so one city's high can
-  never settle another city's bins; auto-settle walks each city's own CLI
-  product with archived CLI truth as fallback
+  never settle another city's bins; auto-settle uses only durable
+  `cli_settlements.is_final=1` truth after the next-day 06:00 fixed-standard
+  grace window, never a raw live product
+- audit booked settlements with non-mutating `paper-resettle --verify`, including
+  durable mismatch and missing-final records
 - record and monitor paper-only trades
 - run walk-forward calibration on either LSTM held-out outcomes or clean
   archived blend outcomes (SFO); warm/hot cohort blocks and GFS-ensemble

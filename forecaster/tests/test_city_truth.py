@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 import city_truth
+import clisfo
 from cities import get_city
 
 
@@ -42,6 +43,25 @@ def test_migrates_existing_cli_settlements_with_final_default():
     # Idempotent: a second ensure_schema is a no-op.
     city_truth.ensure_schema(conn)
     assert city_truth.cli_high_for(conn, "KSFO", "2026-06-01") == 67.0
+
+
+def test_migration_demotes_current_day_legacy_row(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+        "max_temperature_f INTEGER, fetched_at TEXT, source TEXT, "
+        "PRIMARY KEY (station_id, local_date))"
+    )
+    conn.execute(
+        "INSERT INTO cli_settlements VALUES ('KSFO', '2026-07-10', 68, 't', 'legacy')"
+    )
+    monkeypatch.setattr(
+        city_truth, "_utcnow", lambda: datetime(2026, 7, 10, 20, tzinfo=timezone.utc)
+    )
+
+    city_truth.ensure_schema(conn)
+
+    assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
 
 
 def test_upsert_is_keyed_by_station_and_date():
@@ -157,6 +177,42 @@ def test_backfill_iem_marks_in_progress_settlement_day_preliminary(monkeypatch):
     assert city_truth.load_cli_truth(conn, "KSFO") == {}
 
 
+def test_backfill_iem_keeps_unconfirmed_yesterday_preliminary(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    sfo = get_city("sfo")
+    monkeypatch.setattr(
+        city_truth,
+        "_utcnow",
+        lambda: datetime(2026, 7, 11, 16, 0, tzinfo=timezone.utc),
+    )
+    with patch.object(
+        city_truth,
+        "_iem_rows",
+        return_value=[{"valid": "2026-07-10", "high": 68}],
+    ):
+        city_truth.backfill_iem(conn, sfo, start_year=2026, end_year=2026)
+
+    assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
+
+
+def test_backfill_iem_never_promotes_explicit_preliminary_marker(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    sfo = get_city("sfo")
+    monkeypatch.setattr(
+        city_truth,
+        "_utcnow",
+        lambda: datetime(2026, 7, 15, 16, 0, tzinfo=timezone.utc),
+    )
+    with patch.object(
+        city_truth,
+        "_iem_rows",
+        return_value=[{"valid": "2026-07-10", "high": 68, "is_final": False}],
+    ):
+        city_truth.backfill_iem(conn, sfo, start_year=2026, end_year=2026)
+
+    assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
+
+
 def test_backfill_iem_skips_malformed_local_date_fail_soft():
     conn = sqlite3.connect(":memory:")
     sfo = get_city("sfo")
@@ -178,11 +234,10 @@ def test_refresh_live_is_fail_soft_per_city():
     def fake_fetch(site, issuedby, **kwargs):
         if issuedby == "SFO":
             raise OSError("wfo outage")
-        from datetime import date
+        report = clisfo.CliReport(date(2026, 6, 1), 85, "final", False)
+        return {report.report_date: report}
 
-        return {date(2026, 6, 1): 85}
-
-    with patch.object(city_truth, "fetch_recent_cli_settlements", side_effect=fake_fetch):
+    with patch.object(city_truth, "fetch_recent_cli_reports", side_effect=fake_fetch):
         stored = city_truth.refresh_live(conn, cities)
 
     assert stored == {"KSFO": 0, "KNYC": 1}
@@ -199,10 +254,54 @@ def test_refresh_live_marks_in_progress_settlement_day_preliminary(monkeypatch):
     )
     with patch.object(
         city_truth,
-        "fetch_recent_cli_settlements",
-        return_value={date(2026, 7, 10): 68},
+        "fetch_recent_cli_reports",
+        return_value={
+            date(2026, 7, 10): clisfo.CliReport(
+                date(2026, 7, 10), 68, "preliminary", True
+            )
+        },
     ):
         city_truth.refresh_live(conn, (sfo,))
 
     assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
     assert city_truth.cli_high_for(conn, "KSFO", "2026-07-10") is None
+
+
+def test_refresh_live_keeps_stale_preliminary_preliminary_after_midnight(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    sfo = get_city("sfo")
+    report = clisfo.CliReport(
+        report_date=date(2026, 7, 10),
+        max_temperature_f=68,
+        raw_text="VALID AS OF 500 PM LOCAL TIME",
+        is_preliminary=True,
+    )
+    monkeypatch.setattr(
+        city_truth, "_utcnow", lambda: datetime(2026, 7, 11, 16, tzinfo=timezone.utc)
+    )
+    with patch.object(city_truth, "fetch_recent_cli_reports", return_value={report.report_date: report}):
+        city_truth.refresh_live(conn, (sfo,))
+
+    assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
+
+
+def test_refresh_live_promotes_confirmed_final_after_day_end(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    sfo = get_city("sfo")
+    city_truth.ensure_schema(conn)
+    city_truth.upsert_settlement(conn, "KSFO", "2026-07-10", 68, is_final=False)
+    report = clisfo.CliReport(
+        report_date=date(2026, 7, 10),
+        max_temperature_f=71,
+        raw_text="FINAL CLIMATE SUMMARY",
+        is_preliminary=False,
+    )
+    monkeypatch.setattr(
+        city_truth, "_utcnow", lambda: datetime(2026, 7, 11, 16, tzinfo=timezone.utc)
+    )
+    with patch.object(city_truth, "fetch_recent_cli_reports", return_value={report.report_date: report}):
+        city_truth.refresh_live(conn, (sfo,))
+
+    assert conn.execute(
+        "SELECT max_temperature_f, is_final FROM cli_settlements"
+    ).fetchone() == (71, 1)

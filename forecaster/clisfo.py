@@ -13,12 +13,21 @@ cannot be misread as the daily high.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from urllib.request import Request, urlopen
 
 
 CLISFO_URL = "https://forecast.weather.gov/product.php?site=MTR&product=CLI&issuedby=SFO&format=txt"
 CLISFO_VERSION_URL = CLISFO_URL + "&version={version}"
+
+
+@dataclass(frozen=True)
+class CliReport:
+    report_date: date | None
+    max_temperature_f: int | None
+    raw_text: str
+    is_preliminary: bool
 
 
 def cli_product_url(site: str, issuedby: str) -> str:
@@ -37,16 +46,32 @@ def fetch_recent_cli_settlements(
     final report always shadows the preliminary one.
     """
 
-    settlements: dict[date, int] = {}
+    return {
+        report_date: int(report.max_temperature_f)
+        for report_date, report in fetch_recent_cli_reports(
+            site, issuedby, timeout=timeout, versions=versions
+        ).items()
+        if report.max_temperature_f is not None
+    }
+
+
+def fetch_recent_cli_reports(
+    site: str, issuedby: str, *, timeout: int = 20, versions: int = 10
+) -> dict[date, CliReport]:
+    """Newest confirmed-final report per date, or newest preliminary if alone."""
+
+    reports: dict[date, CliReport] = {}
     for url in _recent_cli_urls(cli_product_url(site, issuedby), versions):
         try:
-            report_date, max_temperature = _fetch_clisfo_url(url, timeout=timeout)
+            report = _fetch_cli_report(url, timeout=timeout)
         except OSError:
             continue
-        if report_date is None or max_temperature is None:
+        if report.report_date is None or report.max_temperature_f is None:
             continue
-        settlements.setdefault(report_date, max_temperature)
-    return settlements
+        current = reports.get(report.report_date)
+        if current is None or (current.is_preliminary and not report.is_preliminary):
+            reports[report.report_date] = report
+    return reports
 
 
 def _recent_cli_urls(base_url: str, versions: int) -> list[str]:
@@ -58,27 +83,37 @@ def _recent_cli_urls(base_url: str, versions: int) -> list[str]:
 def fetch_recent_clisfo_settlements(*, timeout: int = 20, versions: int = 10) -> dict[date, int]:
     """Return settlement-high (F) by report date across recent CLISFO versions."""
 
-    settlements: dict[date, int] = {}
-    for url in _recent_clisfo_urls(versions):
-        try:
-            report_date, max_temperature = _fetch_clisfo_url(url, timeout=timeout)
-        except OSError:
-            continue
-        if report_date is None or max_temperature is None:
-            continue
-        settlements.setdefault(report_date, max_temperature)
-    return settlements
+    return fetch_recent_cli_settlements(
+        "MTR", "SFO", timeout=timeout, versions=versions
+    )
 
 
 def parse_clisfo(text: str) -> tuple[date | None, int | None]:
     return _parse_report_date(text), _parse_max_temperature(text)
 
 
-def _fetch_clisfo_url(url: str, *, timeout: int) -> tuple[date | None, int | None]:
+def parse_cli_report(text: str) -> CliReport:
+    report_date, high = parse_clisfo(text)
+    preliminary = bool(
+        re.search(
+            r"\b(?:VALID\b[^\n]*\b)?AS OF\s+\d{1,4}(?::\d{2})?\s*(?:AM|PM)?(?:[^\n]*LOCAL TIME)?",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    return CliReport(report_date, high, text, preliminary)
+
+
+def _fetch_cli_report(url: str, *, timeout: int) -> CliReport:
     request = Request(url, headers={"user-agent": "sfo-weatheredge-forecaster/0.1"})
     with urlopen(request, timeout=timeout) as response:
         text = response.read().decode("utf-8", errors="replace")
-    return parse_clisfo(text)
+    return parse_cli_report(text)
+
+
+def _fetch_clisfo_url(url: str, *, timeout: int) -> tuple[date | None, int | None]:
+    report = _fetch_cli_report(url, timeout=timeout)
+    return report.report_date, report.max_temperature_f
 
 
 def _recent_clisfo_urls(versions: int) -> list[str]:

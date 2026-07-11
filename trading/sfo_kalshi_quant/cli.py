@@ -77,7 +77,6 @@ from .report import build_daily_report, write_report
 from .posterior_kelly import load_posterior_kelly_model
 from .risk import TradeEvaluator
 from .settlement_day import settlement_clock, settlement_today
-from .settlement import fetch_recent_cli_settlements
 from .standard_bins import fallback_bins
 from .strategy_research import build_strategy_research, write_strategy_research
 from .summary import build_paper_summary, write_paper_summary, write_paper_summary_csv
@@ -877,9 +876,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     auto_settle = sub.add_parser(
         "paper-auto-settle",
-        help="Settle open paper orders per city from its live CLI report, archived CLI truth as fallback",
+        help="Settle eligible paper orders only from durable is_final=1 CLI truth",
     )
-    auto_settle.add_argument("--timeout", type=int, default=20, help="Seconds to wait per CLI product")
+    auto_settle.add_argument(
+        "--timeout", type=int, default=20,
+        help="Deprecated compatibility option; auto-settle performs no live CLI fetch",
+    )
     auto_settle.add_argument(
         "--cities",
         default=None,
@@ -3084,22 +3086,34 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
         raise ValueError("--days must be at least 1")
     adapter = SfoForecasterAdapter(args.forecaster_root)
     settlements = adapter.load_cli_settlement_truth()
-    since = settlement_today() - timedelta(days=args.days - 1)
+    intervals = {}
+    for city in CITIES:
+        city_today = settlement_today(city=city)
+        intervals[city.series_ticker] = (
+            (city_today - timedelta(days=args.days - 1)).isoformat(),
+            city_today.isoformat(),
+        )
     result = PaperStore(args.db_path).verify_paper_settlements(
         settlements,
-        since=since.isoformat(),
+        intervals=intervals,
     )
     for row in result["checked"]:
-        if row["verification_status"] != "MISMATCH":
+        if row["verification_status"] == "MATCH":
             continue
-        print(
-            color.yellow(
+        if row["verification_status"] == "MISSING_FINAL":
+            detail = (
+                "MISSING_FINAL "
+                f"order={row['order_id']} market={row['market_ticker']} "
+                f"target={row['target_date']} booked={row['booked_high_f']:.0f}F"
+            )
+        else:
+            detail = (
                 "MISMATCH "
                 f"order={row['order_id']} market={row['market_ticker']} "
                 f"target={row['target_date']} booked={row['booked_high_f']:.0f}F "
                 f"final={row['final_high_f']:.0f}F"
             )
-        )
+        print(color.yellow(detail))
     print(
         color.cyan(
             "paper settlement verification: "
@@ -3132,7 +3146,6 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     store = PaperStore(args.db_path)
     cities = _cities_for_args(args)
     any_open = False
-    clisfo_settled = 0
     db_settled = 0
     for city in cities:
         open_targets = _completed_open_target_dates(
@@ -3167,50 +3180,10 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
                     )
                 )
 
-        # Fallback truth: the city's live CLI product after the grace window.
-        # The delay gives the corrected final product time to replace evening
-        # preliminary versions when the archive refresh has not landed yet.
-        remaining = _completed_open_target_dates(
-            store.open_paper_target_dates(series_ticker=city.series_ticker),
-            city=city,
-        )
-        if not remaining:
-            continue
-        try:
-            cli_settlements = {
-                target.isoformat(): high
-                for target, high in fetch_recent_cli_settlements(
-                    city.cli_site, city.cli_issuedby, timeout=args.timeout
-                ).items()
-            }
-        except (OSError, TimeoutError, URLError) as exc:
-            cli_settlements = {}
-            print(
-                color.yellow(
-                    f"[{city.slug}] recent CLI settlement lookup skipped: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-            )
-        for target_date in remaining:
-            if target_date not in cli_settlements:
-                continue
-            count = store.settle_paper_orders(
-                target_date,
-                float(cli_settlements[target_date]),
-                series_ticker=city.series_ticker,
-            )
-            clisfo_settled += count
-            if count:
-                print(
-                    color.cyan(
-                        f"[{city.slug}] settled {count} paper orders for {target_date} from CLI"
-                    )
-                )
-
     if not any_open:
         print(color.yellow("auto-settle skipped: no completed open paper target dates"))
         return 0
-    total = clisfo_settled + db_settled
+    total = db_settled
     if total:
         print(color.cyan(f"auto-settled {total} paper orders across cities"))
     else:

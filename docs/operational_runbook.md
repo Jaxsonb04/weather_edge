@@ -159,12 +159,23 @@ Replace `67` with the official resolved high for that city and date.
 Settlement is series-scoped: one city's high can never settle another city's
 bins.
 
-AWS can also settle automatically. Auto-settle walks each city's own NWS CLI
-product, with archived CLI truth (the `cli_settlements` table) as fallback:
+AWS can also settle automatically. Auto-settle reads only durable rows from
+`weather.db` whose `cli_settlements.is_final=1`; it never books a raw live CLI
+response. A target becomes eligible at 06:00 on the next fixed-standard
+settlement day, and remains open if confirmed-final truth has not arrived:
 
 ```bash
 python -m sfo_kalshi_quant.cli --no-color paper-auto-settle
 ```
+
+Audit recently booked settlements without rewriting their P&L or outcome:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --days 14
+```
+
+The sweep records `MATCH`, `MISMATCH`, and `MISSING_FINAL` results in
+`paper_settlement_verifications` using each city's fixed-standard date window.
 
 ## Edge Scan Diagnostic
 
