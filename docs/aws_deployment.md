@@ -69,10 +69,10 @@ systemd failure produces exactly one JSON webhook and a manual run stays local.
 
 `deploy_web_app.sh` uses rsync 3.x `--protect-args` when available. Apple's
 legacy openrsync may deploy to the shell-safe default `/opt/weatheredge`, but
-the script rejects whitespace, quotes, or backslashes in `REMOTE_BASE` before
-building when protect-args is unavailable. The deployer uses a temporary
-no-space SSH wrapper and removes it on every exit, so SSH key paths may contain
-spaces in either mode.
+without protect-args `REMOTE_BASE` must match the conservative absolute-path
+allowlist `^/[A-Za-z0-9._/-]+$` and contain no `..` component. Violations are
+rejected before build or SSH. The deployer uses a temporary no-space SSH wrapper
+and removes it on every exit, so SSH key paths may contain spaces in either mode.
 
 The environment installed at `/etc/weatheredge.env` is based on
 `trading/deploy/aws/sfo-weather.env.example`.

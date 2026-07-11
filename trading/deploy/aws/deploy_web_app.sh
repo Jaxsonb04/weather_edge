@@ -57,9 +57,16 @@ fi
 RSYNC_HAS_PROTECT_ARGS=0
 if "$RSYNC_BIN" --protect-args --version >/dev/null 2>&1; then
   RSYNC_HAS_PROTECT_ARGS=1
-elif [[ "$BASE" == *[[:space:]]* || "$BASE" == *\"* || "$BASE" == *\'* || "$BASE" == *\\* ]]; then
-  echo "rsync at $RSYNC_BIN does not support --protect-args and REMOTE_BASE contains unsafe shell characters; install rsync 3.x or use a path without whitespace, quotes, or backslashes" >&2
-  exit 1
+else
+  if [[ ! "$BASE" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+    echo "rsync at $RSYNC_BIN does not support --protect-args; REMOTE_BASE must match ^/[A-Za-z0-9._/-]+$" >&2
+    exit 1
+  fi
+  BASE_COMPONENTS="/${BASE#/}/"
+  if [[ "$BASE_COMPONENTS" == */../* ]]; then
+    echo "rsync at $RSYNC_BIN does not support --protect-args; REMOTE_BASE must not contain a '..' path component" >&2
+    exit 1
+  fi
 fi
 
 # Rsync tokenizes -e itself, so a quoted key path in an -e string is unsafe on

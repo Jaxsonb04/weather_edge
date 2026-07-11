@@ -138,9 +138,9 @@ manual run reports locally without duplicating the webhook.
 
 The workstation web deploy uses rsync 3.x `--protect-args` when available.
 Apple openrsync remains supported for the shell-safe default remote base; an
-unsafe base containing whitespace, quotes, or backslashes is rejected before
-building. A temporary no-space SSH wrapper keeps spaced key paths intact in
-both modes.
+unprotected base must match `^/[A-Za-z0-9._/-]+$` and contain no `..` path
+component. Anything else is rejected before build or SSH. A temporary no-space
+SSH wrapper keeps spaced key paths intact in both modes.
 
 The canonical environment reference is `sfo-weather.env.example`. It contains
 safe defaults for the five live-execution gates, publication paths and locks,

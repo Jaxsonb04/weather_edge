@@ -28,9 +28,41 @@ OPERATIONAL_SERVICES = {
 }
 
 
+def _system_rsync_is_macos_openrsync() -> bool:
+    if sys.platform != "darwin" or not Path("/usr/bin/rsync").exists():
+        return False
+    result = subprocess.run(
+        ["/usr/bin/rsync", "--version"], capture_output=True, text=True, check=False
+    )
+    return result.returncode == 0 and "openrsync" in result.stdout.lower()
+
+
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _write_fake_legacy_rsync(path: Path) -> None:
+    _write_executable(
+        path,
+        """#!/bin/sh
+if [ "$1" = --protect-args ] && [ "$2" = --version ]; then exit 1; fi
+wrapper=
+destination=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -e ]; then
+    wrapper="$2"
+    shift 2
+  else
+    destination="$1"
+    shift
+  fi
+done
+remote_host=${destination%%:*}
+remote_path=${destination#*:}
+"$wrapper" "$remote_host" rsync --server "$remote_path"
+""",
+    )
 
 
 def test_all_and_only_operational_services_alert_without_recursion() -> None:
@@ -592,7 +624,7 @@ printf '\n' >> "$CALL_LOG"
     assert "Done" in result.stdout
 
 
-def test_openrsync_rejects_spaced_remote_path_before_build(tmp_path: Path) -> None:
+def test_legacy_rsync_rejects_spaced_remote_path_before_build(tmp_path: Path) -> None:
     key = tmp_path / "operator key.pem"
     key.touch()
     env_file = tmp_path / "target env"
@@ -601,6 +633,7 @@ def test_openrsync_rejects_spaced_remote_path_before_build(tmp_path: Path) -> No
     )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_fake_legacy_rsync(fake_bin / "legacy-rsync")
     build_log = tmp_path / "build.log"
     _write_executable(fake_bin / "bun", "#!/bin/sh\necho built > \"$BUILD_LOG\"\n")
     result = subprocess.run(
@@ -609,7 +642,7 @@ def test_openrsync_rejects_spaced_remote_path_before_build(tmp_path: Path) -> No
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "RSYNC_BIN": "/usr/bin/rsync",
+            "RSYNC_BIN": str(fake_bin / "legacy-rsync"),
             "BUILD_LOG": str(build_log),
         },
         capture_output=True,
@@ -617,17 +650,18 @@ def test_openrsync_rejects_spaced_remote_path_before_build(tmp_path: Path) -> No
     )
     assert result.returncode != 0
     assert "does not support --protect-args" in result.stderr
-    assert "REMOTE_BASE contains unsafe shell characters" in result.stderr
+    assert "REMOTE_BASE must match" in result.stderr
     assert not build_log.exists()
 
 
-def test_openrsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) -> None:
+def test_legacy_rsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) -> None:
     key = tmp_path / "operator key.pem"
     key.touch()
     env_file = tmp_path / "target env"
     env_file.write_text(f"EC2_IP=host.example\nEC2_KEY='{key}'\n")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_fake_legacy_rsync(fake_bin / "legacy-rsync")
     build_log = tmp_path / "build.log"
     ssh_log = tmp_path / "ssh.jsonl"
     _write_executable(fake_bin / "bun", "#!/bin/sh\necho built > \"$BUILD_LOG\"\n")
@@ -645,7 +679,7 @@ raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "RSYNC_BIN": "/usr/bin/rsync",
+            "RSYNC_BIN": str(fake_bin / "legacy-rsync"),
             "BUILD_LOG": str(build_log),
             "SSH_LOG": str(ssh_log),
         },
@@ -660,7 +694,10 @@ raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
     assert rsync_call[-1] == "/opt/weatheredge/webdist/"
 
 
-@pytest.mark.skipif(not Path("/usr/bin/rsync").exists(), reason="system rsync required")
+@pytest.mark.skipif(
+    not _system_rsync_is_macos_openrsync(),
+    reason="requires macOS /usr/bin/openrsync",
+)
 def test_macos_rsync_parser_preserves_spaced_key_and_remote_path(tmp_path: Path) -> None:
     probe_dir = Path(tempfile.mkdtemp(prefix="weatheredge-rsync-probe-", dir="/tmp"))
     try:
@@ -702,6 +739,62 @@ def test_macos_rsync_parser_preserves_spaced_key_and_remote_path(tmp_path: Path)
         assert " " not in str(wrapper)
     finally:
         shutil.rmtree(probe_dir)
+
+
+@pytest.mark.parametrize(
+    "remote_base",
+    [
+        "/opt/weatheredge;touch",
+        "/opt/$HOME",
+        "/opt/`id`",
+        "/opt/weather*",
+        "/opt/weather?",
+        "/opt/weather|edge",
+        "/opt/weather<edge",
+        "/opt/weather>edge",
+        "/opt/weather edge",
+        '/opt/weather"edge',
+        "/opt/weather'edge",
+        "/opt/weather\\edge",
+        "relative/path",
+        "/opt/../weatheredge",
+        "/../opt/weatheredge",
+        "/opt/weatheredge/..",
+    ],
+)
+def test_legacy_rsync_rejects_unsafe_remote_base_before_any_action(
+    tmp_path: Path, remote_base: str
+) -> None:
+    key = tmp_path / "operator key.pem"
+    key.touch()
+    env_file = tmp_path / "target env"
+    env_file.write_text(f"EC2_IP=host.example\nEC2_KEY='{key}'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    legacy_rsync = fake_bin / "legacy-rsync"
+    _write_fake_legacy_rsync(legacy_rsync)
+    action_log = tmp_path / "actions.log"
+    for command in ("bun", "ssh"):
+        _write_executable(
+            fake_bin / command,
+            f"#!/bin/sh\necho {command} >> \"$ACTION_LOG\"\nexit 77\n",
+        )
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "deploy_web_app.sh"), str(env_file)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "RSYNC_BIN": str(legacy_rsync),
+            "REMOTE_BASE": remote_base,
+            "ACTION_LOG": str(action_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "REMOTE_BASE" in result.stderr
+    assert not action_log.exists()
 
 
 def test_deploy_uses_ephemeral_keyless_ssh_wrapper() -> None:
