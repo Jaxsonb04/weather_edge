@@ -159,3 +159,69 @@ def test_sfo_cli_refresh_marks_current_settlement_day_preliminary(monkeypatch):
 
     assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
     assert gwc.clisfo_high_for(conn, current.isoformat()) is None
+
+
+def test_scoring_does_not_use_fallback_when_preliminary_cli_row_exists():
+    conn = sqlite3.connect(":memory:")
+    gwc.create_blend_archive_table(conn)
+    gwc.city_truth.ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO forecast_blend_daily_high "
+        "(fetched_at, target_date, method, predicted_high_f) "
+        "VALUES ('2026-07-09T18:00:00+00:00', '2026-07-10', 'blend', 70)"
+    )
+    conn.execute(
+        "CREATE TABLE nws_daily_high_ground_truth "
+        "(station_id TEXT, local_date TEXT, high_f REAL, is_complete INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO nws_daily_high_ground_truth VALUES ('KSFO', '2026-07-10', 68, 1)"
+    )
+    gwc.city_truth.upsert_settlement(
+        conn, "KSFO", "2026-07-10", 68, is_final=False
+    )
+
+    assert gwc.update_scores_for_table(conn, "forecast_blend_daily_high") == 0
+    assert conn.execute(
+        "SELECT actual_high_f FROM forecast_blend_daily_high"
+    ).fetchone()[0] is None
+
+    gwc.city_truth.upsert_settlement(
+        conn, "KSFO", "2026-07-10", 71, is_final=True
+    )
+    assert gwc.update_scores_for_table(conn, "forecast_blend_daily_high") == 1
+    assert conn.execute(
+        "SELECT actual_high_f, truth_source FROM forecast_blend_daily_high"
+    ).fetchone() == (71.0, "clisfo")
+
+
+def test_adaptive_training_does_not_fallback_to_embedded_actual_for_preliminary_cli():
+    prev_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        try:
+            with sqlite3.connect("weather.db") as conn:
+                gwc.create_blend_archive_table(conn)
+                gwc.city_truth.ensure_schema(conn)
+                conn.execute(
+                    "INSERT INTO forecast_blend_daily_high "
+                    "(fetched_at, target_date, method, predicted_high_f, details_json, "
+                    "actual_high_f, abs_error_f, truth_source) VALUES "
+                    "('2026-07-09T18:00:00+00:00', '2026-07-10', 'blend', 70, '{}', "
+                    "68, 2, 'nws_daily')"
+                )
+                gwc.city_truth.upsert_settlement(
+                    conn, "KSFO", "2026-07-10", 71, is_final=False
+                )
+
+            assert gwc.latest_scored_blend_rows() == []
+
+            with sqlite3.connect("weather.db") as conn:
+                gwc.city_truth.upsert_settlement(
+                    conn, "KSFO", "2026-07-10", 71, is_final=True
+                )
+            rows = gwc.latest_scored_blend_rows()
+            assert len(rows) == 1
+            assert rows[0]["actual_high_f"] == 71.0
+        finally:
+            os.chdir(prev_cwd)

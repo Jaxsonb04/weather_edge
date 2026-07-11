@@ -392,17 +392,36 @@ class SfoForecasterAdapter:
 
         if not self.weather_db.exists():
             raise ForecastDataError(f"Missing forecast archive: {self.weather_db}")
-        query = """
-            SELECT target_date, predicted_high_f, actual_high_f
-            FROM forecast_emos_daily_high
-            WHERE station_id = ? AND source = 'rolling_origin' AND lead_days = 1
-              AND actual_high_f IS NOT NULL
-            ORDER BY target_date
-        """
         try:
             with sqlite3.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_emos_daily_high"):
                     return []
+                settlement_columns = (
+                    {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
+                    if _table_exists(conn, "cli_settlements")
+                    else set()
+                )
+                if "is_final" in settlement_columns:
+                    query = """
+                        SELECT f.target_date, f.predicted_high_f, c.max_temperature_f
+                        FROM forecast_emos_daily_high AS f
+                        JOIN cli_settlements AS c
+                          ON c.station_id = f.station_id
+                         AND c.local_date = f.target_date
+                         AND c.is_final = 1
+                         AND c.max_temperature_f IS NOT NULL
+                        WHERE f.station_id = ? AND f.source = 'rolling_origin'
+                          AND f.lead_days = 1
+                        ORDER BY f.target_date
+                    """
+                else:
+                    query = """
+                        SELECT target_date, predicted_high_f, actual_high_f
+                        FROM forecast_emos_daily_high
+                        WHERE station_id = ? AND source = 'rolling_origin'
+                          AND lead_days = 1 AND actual_high_f IS NOT NULL
+                        ORDER BY target_date
+                    """
                 rows = conn.execute(query, (self.station_id,)).fetchall()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
@@ -465,22 +484,38 @@ class SfoForecasterAdapter:
 
         if not self.weather_db.exists():
             raise ForecastDataError(f"Missing forecast archive: {self.weather_db}")
-        query = """
-            SELECT
-                target_date,
-                predicted_high_f,
-                actual_high_f,
-                fetched_at,
-                details_json
-            FROM forecast_blend_daily_high
-            WHERE actual_high_f IS NOT NULL
-              AND abs_error_f IS NOT NULL
-            ORDER BY target_date, fetched_at
-        """
         try:
             with sqlite3.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_blend_daily_high"):
                     raise ForecastDataError("forecast_blend_daily_high archive table is missing")
+                settlement_columns = (
+                    {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
+                    if _table_exists(conn, "cli_settlements")
+                    else set()
+                )
+                if "is_final" in settlement_columns:
+                    query = """
+                        SELECT b.target_date, b.predicted_high_f, c.max_temperature_f,
+                               b.fetched_at, b.details_json
+                        FROM forecast_blend_daily_high AS b
+                        JOIN cli_settlements AS c
+                          ON c.station_id = 'KSFO'
+                         AND c.local_date = b.target_date
+                         AND c.is_final = 1
+                         AND c.max_temperature_f IS NOT NULL
+                        WHERE b.actual_high_f IS NOT NULL
+                          AND b.abs_error_f IS NOT NULL
+                        ORDER BY b.target_date, b.fetched_at
+                    """
+                else:
+                    query = """
+                        SELECT target_date, predicted_high_f, actual_high_f,
+                               fetched_at, details_json
+                        FROM forecast_blend_daily_high
+                        WHERE actual_high_f IS NOT NULL
+                          AND abs_error_f IS NOT NULL
+                        ORDER BY target_date, fetched_at
+                    """
                 rows = conn.execute(query).fetchall()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc

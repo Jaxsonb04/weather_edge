@@ -3080,9 +3080,11 @@ def cmd_paper_settle(args: argparse.Namespace) -> int:
 
 def cmd_paper_resettle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
+    if args.days <= 0:
+        raise ValueError("--days must be at least 1")
     adapter = SfoForecasterAdapter(args.forecaster_root)
     settlements = adapter.load_cli_settlement_truth()
-    since = settlement_today() - timedelta(days=max(1, args.days))
+    since = settlement_today() - timedelta(days=args.days - 1)
     result = PaperStore(args.db_path).verify_paper_settlements(
         settlements,
         since=since.isoformat(),

@@ -777,6 +777,52 @@ def test_paper_resettle_verify_flags_mismatch_without_mutating_financial_truth()
             ).fetchone()[0] == 1
 
 
+def test_paper_resettle_days_cutoff_is_exactly_n_inclusive_calendar_dates():
+    with TemporaryDirectory() as tmp:
+        captured = {}
+
+        def fake_verify(self, settlements, *, since):
+            captured["since"] = since
+            return {"checked": [], "mismatches": 0, "missing_truth": 0}
+
+        with patch(
+            "sfo_kalshi_quant.cli.settlement_today",
+            lambda now=None, city=None: date(2026, 7, 10),
+        ), patch.object(PaperStore, "verify_paper_settlements", fake_verify):
+            assert main(
+                [
+                    "--forecaster-root",
+                    tmp,
+                    "--db-path",
+                    str(Path(tmp) / "paper.db"),
+                    "--no-color",
+                    "paper-resettle",
+                    "--verify",
+                    "--days",
+                    "2",
+                ]
+            ) == 0
+
+        assert captured["since"] == "2026-07-09"
+
+
+def test_paper_resettle_rejects_nonpositive_days():
+    with TemporaryDirectory() as tmp:
+        assert main(
+            [
+                "--forecaster-root",
+                tmp,
+                "--db-path",
+                str(Path(tmp) / "paper.db"),
+                "--no-color",
+                "paper-resettle",
+                "--verify",
+                "--days",
+                "0",
+            ]
+        ) == 1
+
+
 def test_close_paper_order_computes_exit_pnl():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

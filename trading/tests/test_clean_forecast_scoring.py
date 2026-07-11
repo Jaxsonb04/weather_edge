@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +26,7 @@ from settlement_calendar import (
     utc_window_for_local_standard_date,
 )
 from sfo_kalshi_quant.datasets import DatasetStore
-from sfo_kalshi_quant.forecast import SfoForecasterAdapter
+from sfo_kalshi_quant.forecast import ForecastDataError, SfoForecasterAdapter
 
 
 SFO_TZ = ZoneInfo("America/Los_Angeles")
@@ -434,6 +435,38 @@ def test_clean_blend_outcomes_are_point_in_time_last_prior_day_rows():
         assert outcomes[0].predicted_high_f == 69
         assert outcomes[0].actual_high_f == 70
         assert outcomes[0].model_name == "clean_blend"
+
+
+def test_clean_blend_outcomes_require_final_cli_truth_when_finality_exists():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with sqlite3.connect(root / "weather.db") as conn:
+            _create_blend_table(conn)
+            target = date(2026, 7, 10)
+            _insert_blend(
+                conn,
+                target=target,
+                fetched_at=_fetched_iso(target - timedelta(days=1), 23),
+                predicted=70,
+                actual=68,
+            )
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f REAL, is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES ('KSFO', '2026-07-10', 71, 0)"
+            )
+        adapter = SfoForecasterAdapter(root)
+
+        with pytest.raises(ForecastDataError, match="No clean next-day blend outcomes"):
+            adapter.load_clean_blend_outcomes()
+
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute("UPDATE cli_settlements SET is_final=1")
+        outcomes = adapter.load_clean_blend_outcomes()
+        assert len(outcomes) == 1
+        assert outcomes[0].actual_high_f == 71.0
 
 
 def test_auto_calibration_prefers_clean_blend_when_enough_rows():

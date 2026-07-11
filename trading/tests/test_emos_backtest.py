@@ -140,3 +140,34 @@ def test_load_emos_mu_sigma_missing_db_or_table_returns_empty():
         assert adapter.load_emos_mu_sigma() == {}  # no weather.db at all
         sqlite3.connect(root / "weather.db").close()  # db exists, table does not
         assert adapter.load_emos_mu_sigma() == {}
+
+
+def test_load_emos_outcomes_requires_final_cli_truth_when_finality_exists():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "CREATE TABLE forecast_emos_daily_high ("
+                "station_id TEXT, target_date TEXT, lead_days INTEGER, "
+                "predicted_high_f REAL, source TEXT, actual_high_f REAL)"
+            )
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "('KSFO', '2026-07-10', 1, 70, 'rolling_origin', 68)"
+            )
+            conn.execute(
+                "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+                "max_temperature_f REAL, is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.execute(
+                "INSERT INTO cli_settlements VALUES ('KSFO', '2026-07-10', 71, 0)"
+            )
+        adapter = SfoForecasterAdapter(root=root)
+
+        assert adapter.load_emos_outcomes() == []
+
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute("UPDATE cli_settlements SET is_final=1")
+        outcomes = adapter.load_emos_outcomes()
+        assert len(outcomes) == 1
+        assert outcomes[0].actual_high_f == 71.0

@@ -665,9 +665,12 @@ def actual_high_from_ground_truth(conn, target_iso):
     # truth the trader resolves on -- so forecast skill and the learned source
     # weights are scored against the real Kalshi outcome, not the max of hourly
     # observations (which can differ by ~1F and flip an integer-bin membership).
+    finality_authoritative = "is_final" in table_columns(conn, "cli_settlements")
     clisfo_high = clisfo_high_for(conn, target_iso)
     if clisfo_high is not None:
         return clisfo_high
+    if finality_authoritative:
+        return None
     return nws_daily_complete_high(conn, target_iso)
 
 
@@ -681,9 +684,12 @@ def actual_high_with_source(conn, target_iso: str) -> tuple[float | None, str | 
     fallback -- the fallback can diverge from CLISFO by ~1F and flip a bin.
     """
 
+    finality_authoritative = "is_final" in table_columns(conn, "cli_settlements")
     clisfo_high = clisfo_high_for(conn, target_iso)
     if clisfo_high is not None:
         return clisfo_high, "clisfo"
+    if finality_authoritative:
+        return None, None
     nws_daily = nws_daily_complete_high(conn, target_iso)
     if nws_daily is not None:
         return nws_daily, "nws_daily"
@@ -1570,6 +1576,10 @@ def latest_scored_blend_rows():
             has_clisfo = table_exists(conn, "cli_settlements") or table_exists(
                 conn, "clisfo_settlements"
             )
+            finality_authoritative = (
+                table_exists(conn, "cli_settlements")
+                and "is_final" in table_columns(conn, "cli_settlements")
+            )
             blend_columns = table_columns(conn, "forecast_blend_daily_high")
             has_truth_source = "truth_source" in blend_columns
             conn.row_factory = sqlite3.Row
@@ -1582,7 +1592,11 @@ def latest_scored_blend_rows():
                 # Prefer the CLISFO settlement directly so learned weights track
                 # the real Kalshi outcome even when a row's stored actual_high_f
                 # predates the late CLISFO arrival.
-                actual_expr = "COALESCE(c.max_temperature_f, b.actual_high_f)"
+                actual_expr = (
+                    "c.max_temperature_f"
+                    if finality_authoritative
+                    else "COALESCE(c.max_temperature_f, b.actual_high_f)"
+                )
                 effective_source_expr = (
                     f"CASE WHEN c.max_temperature_f IS NOT NULL THEN 'clisfo' "
                     f"ELSE {stored_source} END"
@@ -1608,6 +1622,12 @@ def latest_scored_blend_rows():
                 effective_source_expr = stored_source
                 join_clause = ""
 
+            truth_filter = (
+                "c.max_temperature_f IS NOT NULL"
+                if finality_authoritative
+                else "b.actual_high_f IS NOT NULL"
+            )
+
             rows = conn.execute(
                 f"""
                 SELECT b.target_date,
@@ -1623,7 +1643,7 @@ def latest_scored_blend_rows():
                        {effective_source_expr} AS effective_truth_source
                 FROM forecast_blend_daily_high b
                 {join_clause}
-                WHERE b.actual_high_f IS NOT NULL
+                WHERE {truth_filter}
                   AND b.abs_error_f IS NOT NULL
                 ORDER BY b.target_date, b.fetched_at
                 """
