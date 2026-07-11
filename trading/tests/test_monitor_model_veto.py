@@ -443,7 +443,7 @@ def test_latest_model_probability_reads_no_side_decision_journal():
 
 
 def test_latest_model_probability_prefers_decision_over_probability_snapshot():
-    """When both tables have the market, the live decision journal wins."""
+    """When both tables have the market, the newer decision journal wins."""
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         store.record_probabilities(
@@ -453,6 +453,89 @@ def test_latest_model_probability_prefers_decision_over_probability_snapshot():
         value = store.latest_model_probability("2026-06-18", "KXHIGHTSFO-TEST-B82.5")
         assert value is not None
         assert abs(value - 0.10) < 1e-9
+
+
+def test_latest_model_probability_uses_newer_probability_heartbeat_over_decision():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        ticker = "KXHIGHTSFO-TEST-B82.5"
+        _record_decision_model_read(store, "2026-06-18", ticker, "YES", 0.80)
+        older = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+        with store.connect() as conn:
+            conn.execute("UPDATE decision_snapshots SET created_at = ?", (older,))
+        store.record_probabilities("2026-06-18", [_probability(ticker, 0.20)])
+
+        assert store.latest_model_probability("2026-06-18", ticker) == 0.20
+
+
+def test_latest_model_probability_rejects_excessively_future_decision():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        ticker = "KXHIGHTSFO-TEST-B82.5"
+        store.record_probabilities("2026-06-18", [_probability(ticker, 0.20)])
+        _record_decision_model_read(store, "2026-06-18", ticker, "YES", 0.80)
+        future = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+        with store.connect() as conn:
+            conn.execute("UPDATE decision_snapshots SET created_at = ?", (future,))
+
+        assert store.latest_model_probability("2026-06-18", ticker) == 0.20
+
+
+def test_latest_model_probability_falls_back_within_journal_after_future_row():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        ticker = "KXHIGHTSFO-TEST-B82.5"
+        _record_decision_model_read(store, "2026-06-18", ticker, "YES", 0.30)
+        _record_decision_model_read(store, "2026-06-18", ticker, "YES", 0.80)
+        future = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+        with store.connect() as conn:
+            latest_id = conn.execute(
+                "SELECT MAX(id) FROM decision_snapshots"
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE decision_snapshots SET created_at = ? WHERE id = ?",
+                (future, latest_id),
+            )
+
+        assert store.latest_model_probability("2026-06-18", ticker) == 0.30
+
+
+def test_paper_monitor_uses_newer_probability_heartbeat_over_decision():
+    class _ProfitableYesClient(_FakeKalshiClient):
+        yes_bid = 0.30
+        yes_ask = 0.32
+        no_bid = 0.68
+        no_ask = 0.70
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = _cheap_yes_decision()
+        order_id = store.record_paper_order("2026-06-12", decision)
+        _record_decision_model_read(store, "2026-06-12", decision.ticker, "YES", 0.80)
+        older = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+        with store.connect() as conn:
+            conn.execute("UPDATE decision_snapshots SET created_at = ?", (older,))
+        store.record_probabilities(
+            "2026-06-12", [_probability(decision.ticker, 0.20)]
+        )
+
+        with (
+            patch("sfo_kalshi_quant.cli.KalshiPublicClient", _ProfitableYesClient),
+            redirect_stdout(StringIO()),
+        ):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+
+        assert store.paper_order(order_id)["status"] == "PAPER_CLOSED"
+        with store.connect() as conn:
+            action = conn.execute(
+                "SELECT action FROM paper_monitor_snapshots WHERE order_id=? ORDER BY id DESC LIMIT 1",
+                (order_id,),
+            ).fetchone()[0]
+        assert action == "CLOSE_TAKE_PROFIT"
 
 
 def test_paper_monitor_no_veto_uses_decision_journal_model_read():

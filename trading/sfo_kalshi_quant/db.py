@@ -998,25 +998,29 @@ class PaperStore:
         the model's own conviction rather than the book it is trying to beat.
         Older rows that predate model_probability fall back to the blend.
 
-        Source of truth is ``decision_snapshots`` (written on EVERY scan tick).
+        Candidates come from ``decision_snapshots`` (written on EVERY scan tick)
+        and ``probability_snapshots`` (including monitor heartbeats). The newest
+        valid timestamp wins across both journals.
         ``probability_snapshots`` is only written on the first command of the
         first profile per tick (the ``--skip-context-snapshots`` dedup); when a
-        scan run never reaches that path the context tables flatline while the
-        decision journal keeps flowing -- which silently disabled this veto from
-        2026-06-16 and let the naked price-stop whipsaw NO favorites the model
-        still expected to win. Read the live decision journal first (normalizing
-        the per-side ``model_probability`` back to the YES frame), and fall back
-        to ``probability_snapshots`` only when no fresh decision row exists.
+        scan run never reaches that path the context tables can flatline while
+        the decision journal keeps flowing. Conversely, after the same-day entry
+        cutoff the heartbeat can be newer than the last decision row. Comparing
+        timestamps prevents either journal from shadowing fresher model state.
         """
 
-        fresh = self._latest_model_probability_from_decisions(
-            target_date, market_ticker, max_age_minutes=max_age_minutes
-        )
-        if fresh is not None:
-            return fresh
-        return self._latest_model_probability_from_snapshots(
-            target_date, market_ticker, max_age_minutes=max_age_minutes
-        )
+        candidates = [
+            self._latest_model_probability_from_decisions(
+                target_date, market_ticker, max_age_minutes=max_age_minutes
+            ),
+            self._latest_model_probability_from_snapshots(
+                target_date, market_ticker, max_age_minutes=max_age_minutes
+            ),
+        ]
+        valid = [candidate for candidate in candidates if candidate is not None]
+        if not valid:
+            return None
+        return max(valid, key=lambda candidate: candidate[0])[1]
 
     def _latest_model_probability_from_decisions(
         self,
@@ -1024,32 +1028,35 @@ class PaperStore:
         market_ticker: str,
         *,
         max_age_minutes: float,
-    ) -> float | None:
-        """Latest decision-journal model probability, normalized to the YES frame.
+    ) -> tuple[datetime, float] | None:
+        """Latest valid decision model read, normalized to the YES frame."""
 
-        ``decision_snapshots`` stores ``model_probability`` per SIDE (a BUY_NO
-        row carries the NO-side model probability), so flip NO rows back to YES.
-        """
-
+        now = datetime.now(UTC)
+        lower = (now - timedelta(minutes=max_age_minutes)).isoformat()
+        upper = (now + timedelta(minutes=5)).isoformat()
         with self.connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
                 SELECT created_at, side, COALESCE(model_probability, probability)
                 FROM decision_snapshots
                 WHERE target_date = ? AND market_ticker = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
+                  AND julianday(created_at) >= julianday(?)
+                  AND julianday(created_at) <= julianday(?)
+                ORDER BY julianday(created_at) DESC, id DESC
                 """,
-                (target_date, market_ticker),
-            ).fetchone()
-        if row is None or row[2] is None:
-            return None
-        if not self._snapshot_is_fresh(row[0], max_age_minutes):
-            return None
-        value = float(row[2])
-        side = str(row[1]).upper()
-        yes_probability = value if side == "YES" else 1.0 - value
-        return max(0.0, min(1.0, yes_probability))
+                (target_date, market_ticker, lower, upper),
+            ).fetchall()
+        for row in rows:
+            if row[2] is None:
+                continue
+            created = self._valid_snapshot_timestamp(row[0], max_age_minutes)
+            if created is None:
+                continue
+            value = float(row[2])
+            side = str(row[1]).upper()
+            yes_probability = value if side == "YES" else 1.0 - value
+            return created, max(0.0, min(1.0, yes_probability))
+        return None
 
     def _latest_model_probability_from_snapshots(
         self,
@@ -1057,34 +1064,55 @@ class PaperStore:
         market_ticker: str,
         *,
         max_age_minutes: float,
-    ) -> float | None:
+    ) -> tuple[datetime, float] | None:
+        now = datetime.now(UTC)
+        lower = (now - timedelta(minutes=max_age_minutes)).isoformat()
+        upper = (now + timedelta(minutes=5)).isoformat()
         with self.connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
                 SELECT created_at, COALESCE(model_probability, probability)
                 FROM probability_snapshots
                 WHERE target_date = ? AND market_ticker = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
+                  AND julianday(created_at) >= julianday(?)
+                  AND julianday(created_at) <= julianday(?)
+                ORDER BY julianday(created_at) DESC, id DESC
                 """,
-                (target_date, market_ticker),
-            ).fetchone()
-        if row is None or row[1] is None:
-            return None
-        if not self._snapshot_is_fresh(row[0], max_age_minutes):
-            return None
-        return float(row[1])
+                (target_date, market_ticker, lower, upper),
+            ).fetchall()
+        for row in rows:
+            if row[1] is None:
+                continue
+            created = self._valid_snapshot_timestamp(row[0], max_age_minutes)
+            if created is not None:
+                return created, max(0.0, min(1.0, float(row[1])))
+        return None
 
     @staticmethod
-    def _snapshot_is_fresh(created_at: object, max_age_minutes: float) -> bool:
+    def _valid_snapshot_timestamp(
+        created_at: object,
+        max_age_minutes: float,
+        *,
+        max_future_minutes: float = 5.0,
+    ) -> datetime | None:
         try:
             created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
         except ValueError:
-            return False
+            return None
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
+        created = created.astimezone(UTC)
         age_minutes = (datetime.now(UTC) - created).total_seconds() / 60.0
-        return age_minutes <= max_age_minutes
+        if age_minutes > max_age_minutes or age_minutes < -max_future_minutes:
+            return None
+        return created
+
+    @staticmethod
+    def _snapshot_is_fresh(created_at: object, max_age_minutes: float) -> bool:
+        return (
+            PaperStore._valid_snapshot_timestamp(created_at, max_age_minutes)
+            is not None
+        )
 
     def record_decisions(
         self,

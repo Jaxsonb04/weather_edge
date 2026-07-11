@@ -5,6 +5,8 @@ from contextlib import redirect_stdout
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from sfo_kalshi_quant.cli import (
     _place_portfolio_orders,
     _print_portfolio_scan,
@@ -14,6 +16,7 @@ from sfo_kalshi_quant.cli import (
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.models import ForecastSnapshot
 from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
+from sfo_kalshi_quant.paper import ArbitrageContainmentError
 
 
 def test_portfolio_scan_parser_is_paper_only_by_default() -> None:
@@ -151,3 +154,31 @@ def test_portfolio_order_placement_contains_one_arbitrage_failure_and_continues(
     assert trader.arb_calls == 2
     assert trader.directional_called
     assert warnings and "simulated box race" in warnings[0]
+
+
+def test_portfolio_order_placement_stops_target_on_fatal_arbitrage_containment():
+    class _Trader:
+        directional_called = False
+
+        def place_arbitrage(self, target_date, opportunity, *, bankroll):
+            raise ArbitrageContainmentError("naked filled leg remains")
+
+        def place_approved(self, target_date, decisions, *, bankroll):
+            self.directional_called = True
+            return [99]
+
+    trader = _Trader()
+    plan = SimpleNamespace(
+        arbitrage_opportunities=[object()],
+        legs=[SimpleNamespace(sleeve="directional", decision=object())],
+    )
+
+    with pytest.raises(ArbitrageContainmentError):
+        _place_portfolio_orders(
+            trader,
+            "2026-06-03",
+            plan,
+            bankroll=1000.0,
+        )
+
+    assert trader.directional_called is False

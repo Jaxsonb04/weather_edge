@@ -15,6 +15,10 @@ from .execution import buy_limit_for_decision, with_buy_limit
 from .models import TradeDecision
 
 
+class ArbitrageContainmentError(RuntimeError):
+    """A partial arbitrage group still has active financial exposure."""
+
+
 class PaperTrader:
     def __init__(
         self,
@@ -485,6 +489,8 @@ class PaperTrader:
                     )
                     return []
                 order_ids.append(order_id)
+        except ArbitrageContainmentError:
+            raise
         except Exception:
             self._compensate_partial_arbitrage(
                 order_ids,
@@ -501,24 +507,49 @@ class PaperTrader:
         group_id: str,
         reason: str,
     ) -> None:
-        """Neutralize recorded legs without erasing their financial history."""
+        """Drive every partial leg to a terminal state before degrading the group."""
 
         for order_id in order_ids:
-            row = self.store.paper_order(order_id)
-            if row is None:
-                continue
-            try:
-                if row["status"] == "PAPER_LIMIT_RESTING":
+            for _attempt in range(5):
+                row = self.store.paper_order(order_id)
+                if row is None:
+                    raise ArbitrageContainmentError(
+                        f"arbitrage containment lost order {order_id}"
+                    )
+                status = str(row["status"])
+                if status not in {"PAPER_LIMIT_RESTING", "PAPER_FILLED"}:
+                    break
+                if status == "PAPER_LIMIT_RESTING":
+                    # The returned row is authoritative: a fill can win between
+                    # our stale read and cancel's BEGIN IMMEDIATE transaction.
                     self.store.cancel_resting_limit_order(order_id, reason=reason)
-                elif row["status"] == "PAPER_FILLED":
-                    # A filled execution is real paper state, not a row to delete.
-                    # Close it at its booked entry price; the ordinary close path
-                    # records the round-trip fee, PnL, and account ledger proceeds.
-                    self.store.close_paper_order(order_id, float(row["entry_price"]))
-            except (ValueError, RuntimeError):
-                # Settlement/monitor may have resolved the leg concurrently.
-                # The degraded marker below remains the authoritative group audit.
-                pass
+                    continue
+
+                exit_price = row["entry_bid"]
+                if exit_price is None or not 0.0 < float(exit_price) < 1.0:
+                    raise ArbitrageContainmentError(
+                        f"filled arbitrage leg {order_id} has no executable stored side bid"
+                    )
+                try:
+                    # Cross back out at the executable side bid, never the entry
+                    # ask. The ordinary close path records spread loss, exit fee,
+                    # realized PnL, and account-ledger proceeds.
+                    self.store.close_paper_order(order_id, float(exit_price))
+                except (ValueError, RuntimeError):
+                    # A concurrent resolver may have won. Re-read and confirm;
+                    # an actually-still-open leg loops and retries.
+                    continue
+            current = self.store.paper_order(order_id)
+            if current is None or str(current["status"]) in {
+                "PAPER_LIMIT_RESTING",
+                "PAPER_FILLED",
+            }:
+                raise ArbitrageContainmentError(
+                    f"arbitrage leg {order_id} remains active after containment attempts"
+                )
+
+        # Only terminal groups may be relabeled degraded. An active ARB group
+        # remains visibly guaranteed until a fatal error stops further placement.
         self.store.mark_arbitrage_group_degraded(
             order_ids,
             group_id=group_id,

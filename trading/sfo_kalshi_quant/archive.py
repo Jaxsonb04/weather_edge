@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS archive_files (
     sha256 TEXT NOT NULL,             -- of the uncompressed JSONL payload
     min_id INTEGER,
     max_id INTEGER,
+    id_coverage_json TEXT,           -- exact inclusive id ranges for subset proof after prune
     created_at TEXT NOT NULL,
     uploaded_at TEXT,
     upload_target TEXT,
@@ -157,6 +158,10 @@ def open_manifest(archive_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(MANIFEST_DDL)
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(archive_files)")}
+    if "id_coverage_json" not in columns:
+        conn.execute("ALTER TABLE archive_files ADD COLUMN id_coverage_json TEXT")
+        conn.commit()
     return conn
 
 
@@ -185,6 +190,7 @@ class ExportResult:
     sha256: str
     min_id: int | None
     max_id: int | None
+    id_ranges: list[tuple[int, int]]
 
 
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> list[str]:
@@ -275,6 +281,7 @@ def export_day(
     rows = 0
     min_id: int | None = None
     max_id: int | None = None
+    id_ranges: list[tuple[int, int]] = []
     cursor = _day_select(conn, table, day, merge_schemas or [], columns, id_floor)
     with _gzip_writer(tmp_path) as out:
         while True:
@@ -294,6 +301,10 @@ def export_day(
                 if isinstance(row_id, int):
                     min_id = row_id if min_id is None else min(min_id, row_id)
                     max_id = row_id if max_id is None else max(max_id, row_id)
+                    if id_ranges and row_id == id_ranges[-1][1] + 1:
+                        id_ranges[-1] = (id_ranges[-1][0], row_id)
+                    else:
+                        id_ranges.append((row_id, row_id))
 
     # Integrity check: re-read the finished file from disk and require the
     # same row count and payload hash before the manifest may record it.
@@ -319,6 +330,7 @@ def export_day(
         sha256=digest.hexdigest(),
         min_id=min_id,
         max_id=max_id,
+        id_ranges=id_ranges,
     )
 
 
@@ -353,19 +365,23 @@ def export_full_table(
         table=table, day=day, path=final_path, rows=rows,
         bytes=final_path.stat().st_size, sha256=digest.hexdigest(),
         min_id=None, max_id=None,
+        id_ranges=[],
     )
 
 
 def _record(manifest: sqlite3.Connection, result: ExportResult, archive_dir: Path, kind: str) -> None:
     manifest.execute(
         "INSERT OR REPLACE INTO archive_files "
-        "(table_name, day, kind, path, rows, bytes, sha256, min_id, max_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(table_name, day, kind, path, rows, bytes, sha256, min_id, max_id, "
+        "id_coverage_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             result.table, result.day, kind,
             str(result.path.relative_to(archive_dir)),
             result.rows, result.bytes, result.sha256,
-            result.min_id, result.max_id, _now_iso(),
+            result.min_id, result.max_id,
+            json.dumps(result.id_ranges, separators=(",", ":")) if kind == "day" else None,
+            _now_iso(),
         ),
     )
     manifest.commit()
@@ -391,6 +407,55 @@ def _source_day_count(conn: sqlite3.Connection, table: str, day: str) -> int:
         (day, next_day),
     ).fetchone()
     return int(row[0] or 0)
+
+
+def _decode_id_ranges(raw: object, table: str, day: str) -> list[tuple[int, int]]:
+    if raw is None:
+        raise RuntimeError(
+            f"archive manifest lacks exact ID coverage for {table} {day}; "
+            "re-export the UTC-day partition before running --check-gate"
+        )
+    try:
+        payload = json.loads(str(raw))
+        ranges = [(int(start), int(end)) for start, end in payload]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise RuntimeError(
+            f"archive manifest has invalid ID coverage for {table} {day}; "
+            "re-export the UTC-day partition before running --check-gate"
+        )
+    previous_end: int | None = None
+    for start, end in ranges:
+        if start > end or (previous_end is not None and start <= previous_end):
+            raise RuntimeError(
+                f"archive manifest has invalid ID coverage for {table} {day}; "
+                "re-export the UTC-day partition before running --check-gate"
+            )
+        previous_end = end
+    return ranges
+
+
+def _surviving_ids_are_covered(
+    conn: sqlite3.Connection,
+    table: str,
+    day: str,
+    ranges: list[tuple[int, int]],
+) -> bool:
+    next_day = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    cursor = conn.execute(
+        f"SELECT id FROM main.{table} WHERE created_at >= ? AND created_at < ? ORDER BY id",
+        (day, next_day),
+    )
+    range_idx = 0
+    for (row_id,) in cursor:
+        value = int(row_id)
+        while range_idx < len(ranges) and ranges[range_idx][1] < value:
+            range_idx += 1
+        if range_idx >= len(ranges):
+            return False
+        start, end = ranges[range_idx]
+        if value < start or value > end:
+            return False
+    return True
 
 
 def archive_pending(
@@ -500,7 +565,7 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
         manifest_columns = {
             str(row[1]) for row in manifest.execute("PRAGMA table_info(archive_files)")
         }
-        if "rows" not in manifest_columns:
+        if "rows" not in manifest_columns or "id_coverage_json" not in manifest_columns:
             raise RuntimeError(
                 "archive manifest lacks verified row counts; re-export complete UTC-day "
                 "partitions before running --check-gate"
@@ -510,9 +575,9 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
             if first is None:
                 continue
             coverage = {
-                str(day): int(rows)
-                for day, rows in manifest.execute(
-                    "SELECT day, rows FROM archive_files "
+                str(day): (int(rows), id_coverage_json)
+                for day, rows, id_coverage_json in manifest.execute(
+                    "SELECT day, rows, id_coverage_json FROM archive_files "
                     "WHERE table_name = ? AND kind = 'day'",
                     (table,),
                 )
@@ -520,7 +585,15 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
             }
             for day in _day_range(date.fromisoformat(first), yesterday):
                 source_rows = _source_day_count(conn, table, day)
-                if day not in coverage or coverage[day] != source_rows:
+                if day not in coverage:
+                    missing.append((table, day))
+                    continue
+                archived_rows, raw_ranges = coverage[day]
+                ranges = _decode_id_ranges(raw_ranges, table, day)
+                if (
+                    archived_rows < source_rows
+                    or not _surviving_ids_are_covered(conn, table, day, ranges)
+                ):
                     missing.append((table, day))
     finally:
         conn.close()

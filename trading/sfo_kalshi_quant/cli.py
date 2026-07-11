@@ -72,7 +72,7 @@ from .models import (
     format_event_date_token,
     target_date_from_event_ticker,
 )
-from .paper import PaperTrader
+from .paper import ArbitrageContainmentError, PaperTrader
 from .portfolio import PortfolioPlan, allocate_portfolio
 from .probability import ResidualCalibrator
 from .report import build_daily_report, write_report
@@ -1152,7 +1152,7 @@ def cmd_portfolio_scan(args: argparse.Namespace) -> int:
                     kalshi_client=kalshi_client,
                 )
                 scanned_any = True
-            except ForecastDataError as exc:
+            except (ForecastDataError, ArbitrageContainmentError) as exc:
                 print(
                     color.yellow(f"[{city.slug}] {target.isoformat()}: skipped ({exc})"),
                     file=sys.stderr,
@@ -1689,6 +1689,8 @@ def _place_portfolio_orders(
                     bankroll=bankroll,
                 )
             )
+        except ArbitrageContainmentError:
+            raise
         except Exception as exc:
             warn(
                 f"arbitrage group skipped after contained placement failure: "

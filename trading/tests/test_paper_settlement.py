@@ -7,6 +7,8 @@ from datetime import date, datetime, timezone
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pytest
+
 from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
 from sfo_kalshi_quant.cli import _completed_open_target_dates, main
 from sfo_kalshi_quant.cities import get_city
@@ -14,7 +16,7 @@ from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBin, TradeDecision
-from sfo_kalshi_quant.paper import PaperTrader
+from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
 
 from support import pre_resolution_event
 
@@ -1159,6 +1161,133 @@ def test_place_arbitrage_compensates_first_leg_when_second_leg_races():
         assert str(rows[0]["group_id"]).startswith("DEGRADED-ARB-")
         assert json.loads(rows[0]["outcome_diagnostics_json"])["event"] == "arbitrage_compensation"
         assert store.open_paper_orders(10) == []
+
+
+def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, risk_profile="research")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            label="68° to 69°",
+            action="ARBITRAGE_BUY_YES",
+            approved=True,
+            probability=0.60,
+            probability_lcb=0.55,
+            yes_bid=0.40,
+            yes_ask=0.45,
+            spread=0.05,
+            fee_per_contract=0.01,
+            cost_per_contract=0.46,
+            edge=0.14,
+            edge_lcb=0.09,
+            kelly_fraction=0.01,
+            recommended_contracts=20.0,
+            expected_profit=2.8,
+            reasons=[],
+            side="YES",
+            entry_bid=0.40,
+            entry_ask=0.45,
+            strike_type="between",
+            floor_strike=68,
+            cap_strike=69,
+        )
+        group_id = "ARB-fill-race"
+        order_id = store.record_paper_order(
+            "2026-06-03",
+            decision,
+            risk_profile="research",
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            group_id=group_id,
+            strategy_config=StrategyConfig(),
+        )
+        assert order_id is not None
+
+        def fill_before_cancel(current_order_id: int, *, reason: str):
+            return store.fill_resting_limit_order(
+                current_order_id,
+                evidence={"race": "filled_before_cancel", "reason": reason},
+            )
+
+        with patch.object(
+            store,
+            "cancel_resting_limit_order",
+            side_effect=fill_before_cancel,
+        ):
+            trader._compensate_partial_arbitrage(
+                [order_id], group_id=group_id, reason="second leg failed"
+            )
+
+        row = store.paper_order(order_id)
+        assert row["status"] == "PAPER_CLOSED"
+        assert row["exit_price"] == row["entry_bid"] == 0.40
+        assert row["realized_pnl"] < 0
+        assert str(row["group_id"]).startswith("DEGRADED-ARB-")
+        state = store.shared_account_state()
+        assert abs(state["realized_equity"] - (1000.0 + row["realized_pnl"])) < 1e-9
+        with store.connect() as conn:
+            ledger = conn.execute(
+                "SELECT event_type, amount FROM paper_account_ledger "
+                "WHERE order_id=? ORDER BY id",
+                (order_id,),
+            ).fetchall()
+        event_types = [event_type for event_type, _amount in ledger]
+        assert event_types == [
+            "RESERVE",
+            "RESERVATION_RELEASE",
+            "ENTRY_FILL",
+            "EXIT_PROCEEDS",
+        ]
+        assert sum(amount for _event_type, amount in ledger) == row["realized_pnl"]
+
+
+def test_arbitrage_compensation_raises_fatal_when_active_leg_cannot_be_contained():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            label="68° to 69°",
+            action="ARBITRAGE_BUY_YES",
+            approved=True,
+            probability=0.60,
+            probability_lcb=0.55,
+            yes_bid=0.40,
+            yes_ask=0.45,
+            spread=0.05,
+            fee_per_contract=0.01,
+            cost_per_contract=0.46,
+            edge=0.14,
+            edge_lcb=0.09,
+            kelly_fraction=0.01,
+            recommended_contracts=20.0,
+            expected_profit=2.8,
+            reasons=[],
+            side="YES",
+            entry_bid=0.40,
+            entry_ask=0.45,
+        )
+        order_id = store.record_paper_order(
+            "2026-06-03",
+            decision,
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            group_id="ARB-stuck",
+        )
+        assert order_id is not None
+
+        with patch.object(
+            store,
+            "cancel_resting_limit_order",
+            return_value=store.paper_order(order_id),
+        ), pytest.raises(ArbitrageContainmentError):
+            trader._compensate_partial_arbitrage(
+                [order_id], group_id="ARB-stuck", reason="cannot cancel"
+            )
+
+        assert store.paper_order(order_id)["status"] == "PAPER_LIMIT_RESTING"
+        assert store.paper_order(order_id)["group_id"] == "ARB-stuck"
 
 
 def test_place_approved_keeps_profiles_in_separate_paper_books():

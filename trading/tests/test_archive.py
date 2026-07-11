@@ -179,6 +179,58 @@ def test_gate_blocks_when_backdated_row_outgrows_manifest_coverage(tmp_path: Pat
     )
 
 
+def test_gate_accepts_archive_superset_after_intentional_live_prune(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    kept = _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day)
+    pruned = _insert_decision(conn, created_at=f"{day}T09:00:00+00:00", target_date=day)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    conn.execute("DELETE FROM decision_snapshots WHERE id = ?", (pruned,))
+    conn.commit()
+
+    assert kept != pruned
+    assert gate_missing_days(tmp_path / "paper.db", archive_dir) == []
+
+
+def test_gate_accepts_merge_archive_superset_when_all_live_ids_are_covered(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    live_id = _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day)
+    backup_only_id = _insert_decision(
+        conn, created_at=f"{day}T09:00:00+00:00", target_date=day
+    )
+    backup = tmp_path / "backup.db"
+    with sqlite3.connect(tmp_path / "paper.db") as src, sqlite3.connect(backup) as dst:
+        src.backup(dst)
+    conn.execute("DELETE FROM decision_snapshots WHERE id = ?", (backup_only_id,))
+    conn.commit()
+
+    archive_dir = tmp_path / "archive"
+    archive_pending(
+        tmp_path / "paper.db",
+        archive_dir,
+        merge_dbs=[backup],
+        log=lambda *_: None,
+    )
+
+    assert live_id != backup_only_id
+    assert gate_missing_days(tmp_path / "paper.db", archive_dir) == []
+
+
+def test_gate_rejects_manifest_without_exact_id_coverage_metadata(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    _insert_decision(conn)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute("UPDATE archive_files SET id_coverage_json = NULL")
+
+    with pytest.raises(RuntimeError, match="re-export"):
+        gate_missing_days(tmp_path / "paper.db", archive_dir)
+
+
 def test_gate_rejects_legacy_manifest_without_row_counts_with_reexport_guidance(
     tmp_path: Path,
 ) -> None:
