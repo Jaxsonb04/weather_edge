@@ -21,11 +21,14 @@ if [[ ! -f "$FORECASTER_DIR/google_weather_cache.py" ]]; then
   exit 1
 fi
 
+# Timezone is part of the timer contract. Validate it before stopping timers or
+# mutating dependencies/units so a failed setup leaves the host unchanged.
+sudo timedatectl set-timezone America/Los_Angeles
+
 # Established hosts may already have enabled timers. Stop and disable every
-# known timer before changing dependencies or units; real failures abort.
+# known timer only after timezone setup succeeds; real failures abort.
 bash "$SCRIPT_DIR/disable_systemd_timers.sh"
 
-sudo timedatectl set-timezone America/Los_Angeles
 sudo apt-get update
 sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
 

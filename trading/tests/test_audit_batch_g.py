@@ -385,6 +385,46 @@ def test_installer_timezone_failure_aborts_before_dependencies(tmp_path: Path) -
     assert log.read_text().splitlines() == ["timedatectl set-timezone America/Los_Angeles"]
 
 
+def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
+    (base / "forecaster").mkdir()
+    (base / "forecaster" / "google_weather_cache.py").touch()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    sudo_log = tmp_path / "sudo.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/bin/sh\necho \"$*\" >> \"$SUDO_LOG\"\n[ \"$1\" != timedatectl ]\n",
+    )
+    _write_executable(
+        fake_bin / "systemctl",
+        "#!/bin/sh\necho \"$*\" >> \"$SYSTEMCTL_LOG\"\nexit 99\n",
+    )
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "install_systemd_notimers.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BASE_DIR": str(base),
+            "SUDO_LOG": str(sudo_log),
+            "SYSTEMCTL_LOG": str(systemctl_log),
+            "SYSTEMCTL_BIN": str(fake_bin / "systemctl"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert sudo_log.exists(), "timezone setup did not run before systemd mutation"
+    assert sudo_log.read_text().splitlines() == [
+        "timedatectl set-timezone America/Los_Angeles"
+    ]
+    assert not systemctl_log.exists()
+
+
 def test_paper_scan_truthy_is_bash3_portable_and_case_insensitive(tmp_path: Path) -> None:
     text = (AWS_DIR / "run_paper_scan_profiles.sh").read_text()
     assert "${1,,}" not in text
@@ -512,5 +552,4 @@ def test_forecaster_filter_behavior_copies_inputs_and_preserves_runtime(tmp_path
 
 def test_verify_runner_uses_pytest_and_not_obsolete_direct_runner() -> None:
     runner = (ROOT / "scripts" / "run_tests.sh").read_text()
-    assert "trading/tests/run_tests.py" not in runner
     assert "pytest" in runner

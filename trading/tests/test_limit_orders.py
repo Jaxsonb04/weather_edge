@@ -177,8 +177,7 @@ def test_with_buy_limit_exposes_limit_math_on_decision_for_reporting():
 
 
 def test_analyze_entry_mode_defaults_from_environment():
-    # Fixture-free so it runs under both pytest and the no-arg run_tests.py
-    # runner used by verify_project.sh / CI.
+    # Fixture-free so it stays a lightweight pytest check in verify_project/CI.
     with patch.dict(os.environ, {"PAPER_ENTRY_MODE": "limit"}):
         args = build_parser().parse_args(["analyze"])
 

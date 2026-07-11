@@ -54,7 +54,7 @@
 **Files:**
 - No source files unless verification exposes a defect.
 
-- [ ] Run `python3 trading/tests/run_tests.py`.
+- [ ] Run `PYTHONPATH=trading:forecaster python3 -m pytest trading/tests forecaster/tests -q`.
 - [ ] Run `bash scripts/verify_project.sh`.
 - [ ] Run a local no-live-market or offline command check for the new arbitrage CLI if available.
 - [ ] Historical: sync to the then-current Lightsail host when credentials are available.
