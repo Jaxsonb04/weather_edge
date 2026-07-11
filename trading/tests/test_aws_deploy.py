@@ -495,8 +495,10 @@ def test_box_sync_prefers_ec2_env_with_legacy_variable_fallback():
     assert ".local/ec2.env" in syncer
     assert 'HOST_IP="${EC2_IP:-${LIGHTSAIL_IP:-}}"' in syncer
     assert 'HOST_KEY="${EC2_KEY:-${LIGHTSAIL_KEY:-}}"' in syncer
-    retired_name = "sync_to_" + "lightsail.sh"
-    assert not (AWS_DIR / retired_name).exists()
+
+    compatibility_wrapper = _read(AWS_DIR / "sync_to_lightsail.sh")
+    assert "DEPRECATED" in compatibility_wrapper
+    assert 'exec "$SCRIPT_DIR/sync_to_box.sh" "$@"' in compatibility_wrapper
 
 
 def test_forecaster_syncs_share_runtime_exclude_manifest():

@@ -21,6 +21,10 @@ if [[ ! -f "$FORECASTER_DIR/google_weather_cache.py" ]]; then
   exit 1
 fi
 
+# Established hosts may already have enabled timers. Stop and disable every
+# known timer before changing dependencies or units; real failures abort.
+bash "$SCRIPT_DIR/disable_systemd_timers.sh"
+
 sudo timedatectl set-timezone America/Los_Angeles || true
 sudo apt-get update
 sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
@@ -78,4 +82,4 @@ sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-kalshi-paper-prune.timer" /etc/syst
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecast-freshness.timer" /etc/systemd/system/sfo-forecast-freshness.timer
 
 sudo systemctl daemon-reload
-echo "units rendered and installed; NOT enabling timers yet (cutover-safe mode)"
+echo "units rendered and installed; all WeatherEdge timers remain disabled"

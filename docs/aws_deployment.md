@@ -27,17 +27,23 @@ cd /opt/weatheredge/trading
 bash deploy/aws/install_systemd_notimers.sh
 ```
 
-`install_systemd_notimers.sh` is the cutover-safe installer: it renders every
-service and timer but enables none. Inspect `/etc/weatheredge.env`, start each
+`install_systemd_notimers.sh` is the cutover-safe installer: it first stops and
+disables every existing WeatherEdge timer, fails on real systemctl errors, then
+renders every service and timer while enabling none. Inspect `/etc/weatheredge.env`, start each
 service manually, and only then enable the approved timers. For an established
 host, `install_systemd.sh` installs and enables the full timer set.
 
 The full sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
 `forecaster-runtime.rsync-filter`, which preserves runtime databases, caches,
-generated publication JSON, `STALE_FORECAST`, and `models/`. The committed
+their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
+`STALE_FORECAST`, and `models/`. The committed
 `forecast_data.json` and `weather_story_data.json` fixtures are also excluded
 explicitly until their planned committed-input migration.
+
+During the EC2 migration window, `sync_to_lightsail.sh` remains as a deprecated
+forwarding wrapper to `sync_to_box.sh`. It has no deployment logic of its own;
+new operator commands and automation must use `sync_to_box.sh` directly.
 
 ## Runtime Layout
 
@@ -55,9 +61,9 @@ The environment installed at `/etc/weatheredge.env` is based on
 
 ## Timers
 
-- `sfo-forecaster-refresh.timer`: every 30 minutes; refreshes NWS truth, Google
-  Weather within budget, NWP/EMOS forecast state for all fifteen cities, and no
-  public artifacts.
+- `sfo-forecaster-refresh.timer`: twice hourly from 05:10 through 18:40 PT and
+  hourly overnight; refreshes NWS truth, Google Weather within budget, NWP/EMOS
+  forecast state for all fifteen cities, and no public artifacts.
 - `sfo-operational-publish.timer`: every five minutes; builds and validates the
   operational JSON snapshot, then publishes it.
 - `sfo-strategy-lab-refresh.timer`: every fifteen minutes; research-only build
@@ -135,4 +141,5 @@ not part of local verification.
 
 WeatherEdge ran on a 1 GB AWS Lightsail instance until 2026-07-10. That host and
 its old env names are retired; deploy scripts accept the old IP/key variable
-names only as a temporary compatibility fallback during EC2 migration.
+names, and the forwarding-only sync wrapper, only as temporary compatibility
+during EC2 migration.

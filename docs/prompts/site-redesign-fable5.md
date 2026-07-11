@@ -1,5 +1,9 @@
 # WeatherEdge site redesign — multi-city reframe + Strategy Lab overhaul
 
+> Safety revision (2026-07-11): this reusable prompt intentionally differs from
+> its original archived copy so delivery cannot bypass branch review or operator
+> control.
+
 You are redesigning the public website of **WeatherEdge**, a solo quant's paper-trading
 research project. This is a portfolio piece: recruiters and technical peers look at it to
 judge whether the person can build a real forecasting-and-trading system and present it
@@ -18,7 +22,7 @@ impressive than the site makes it look. Your job is to close that gap: make the 
 present the fifteen-city, two-profile, Maker-first reality clearly, honestly, and with
 design quality that reads as intentional rather than templated.
 
-Read `CLAUDE.md` for how to reach the infrastructure, and read the WeatherEdge memory
+Read `CLAUDE.md` for repository context, and read the WeatherEdge memory
 files (especially `weatheredge-multicity-2026-07-06`, `weatheredge-ui-heroui-pro`, and
 `weatheredge-recovery-2026-07-06`) for accumulated context and hard-won gotchas before you
 touch anything. Then verify the current state with your own eyes — do not take the flaw
@@ -45,7 +49,18 @@ browser at desktop and mobile sizes (not just a successful build):
   truthful about data status. It never uses the word "Kalshi" — always "prediction
   market(s)". It is built with HeroUI Pro components used correctly (props verified via the
   MCP, not guessed) and reflects the HeroUI design-taste principles.
-- It is deployed to production and you confirmed the live site serves the new version.
+- It is deployment-ready and verified locally; production rollout remains an
+  operator-controlled follow-up.
+
+## Safe delivery workflow
+
+- Start from an up-to-date `codex/` feature branch or isolated worktree. Never
+  work directly on `main`.
+- Run the full test suite, production build, and real browser verification at
+  the desktop/mobile widths below, preserving screenshots and DOM evidence.
+- Request an independent review of the final diff, address blocking feedback,
+  and open a pull request. Do not merge or push directly to `main`.
+- Merging, pushing `main`, and any production deploy require explicit operator approval.
 
 ## Current state — verify this yourself, then improve it
 
@@ -182,15 +197,16 @@ multi-city EMOS record is backtest-grade with limited live history; don't overcl
   de-rainbowed cool→hot thermal ramp via `tempColor()`/`.temp-text`, indigo model-vs-market
   series). Green/red is reserved for P&L by trading convention.
 
-## Build, verify, deploy (Mac-only; read the memory first)
+## Build and verify locally; prepare an operator handoff
 
 - **The build runs on the remote Mac, never in GitHub Actions** (the HeroUI Pro CI token is
   rejected). `bun` is at `~/.bun/bin/bun`. Build with `bun run build`; the repo is at
   `~/develop/WeatherEdge`. Your local file tools see the laptop, not the Mac — edit through
   the remote as the memory describes.
-- **Deploy** with `trading/deploy/aws/deploy_web_app.sh` (builds `dist`, rsyncs to the box
-  `webdist`, publishes gh-pages). The GitHub Pages URL is CDN-cached; verify against the
-  `gh-pages` branch content if the public URL lags.
+- `trading/deploy/aws/deploy_web_app.sh` is the operator-owned production path.
+  Do not run it from this task. Include the reviewed commit, test/browser
+  evidence, and rollback notes in the handoff so an operator can approve or
+  reject deployment separately.
 - **Entrance animations are CSS-driven via `src/components/ui/Reveal.tsx`, NOT
   framer-motion** — framer pauses in backgrounded/headless tabs and leaves content stuck
   invisible. Keep that pattern.
@@ -218,9 +234,9 @@ multi-city EMOS record is backtest-grade with limited live history; don't overcl
 - Don't over-build: no speculative abstractions, no framework for hypothetical future
   cities, no refactor of code the task doesn't touch. Keep components focused (aim under
   ~300 lines; hard cap 800). Do the simplest thing that reads as intentional.
-- Do not rewrite public git history or force-push. Commit to `main` with clear messages and
-  push; the box auto-pulls forecaster source but the SPA and trading code deploy via the
-  scripts above.
+- Do not rewrite public git history or force-push. Commit only to the feature
+  branch/worktree. Submit a reviewed pull request; do not merge, push `main`, or
+  run production deployment scripts without explicit operator approval.
 
 ## How to operate
 
@@ -236,8 +252,9 @@ against this brief. Keep a short Markdown notes file for the run (one lesson per
 what worked, what failed, why) and read it back before major decisions.
 
 Before reporting progress, audit every claim against an actual result — a build output, a
-DOM probe, a screenshot, a deployed-and-fetched response. If something is unverified, say
-so. Local build success is not production proof; verify the live site.
+DOM probe, or a screenshot. If something is unverified, say so. Local build success is not
+production proof; label production verification as pending unless an operator separately
+approved and performed the rollout.
 
 ## Definition of done (verify each; this is the bar, not a suggestion)
 
@@ -257,6 +274,7 @@ so. Local build success is not production proof; verify the live site.
 6. HeroUI Pro components used with MCP-verified APIs; design-taste principles visibly
    applied (side-by-side comparison, summary-first hierarchy, tabular numerals, surface
    hierarchy, restrained borders, operational-instrument aesthetic).
-7. Built on the Mac, committed to `main` and pushed, deployed via `deploy_web_app.sh`, and
-   confirmed live in a real browser at desktop and mobile. Report the final commit and what
-   you observed on the live site, with evidence.
+7. Built and fully tested on the Mac, committed to a feature branch, independently
+   reviewed, and submitted as a pull request with desktop/mobile evidence. Report the
+   candidate commit and explicitly state that merge and production deploy await operator
+   approval.

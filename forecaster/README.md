@@ -108,7 +108,8 @@ now automated end to end:
    workflow even when the laptop is asleep. There is no local launchd job; the
    cloud machine is the single automation source.
 3. **Scheduled jobs**: systemd timers refresh NWS ground truth, fetch Google
-   Weather within the event budget, and rebuild the blended forecast. The
+   Weather within the event budget, and rebuild the blended forecast twice
+   hourly from 05:10 through 18:40 PT and hourly overnight. The
    `sfo-operational-publish.timer` runs every five minutes to generate
    `trading_signal.json`, `cities_data.json`, and
    `publication_manifest.json`, validate the snapshot, and republish the site.

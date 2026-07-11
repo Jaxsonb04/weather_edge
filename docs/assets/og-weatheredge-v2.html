@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1200, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+    body {
+      color: #f4f4f5;
+      background:
+        radial-gradient(circle at 84% 18%, rgba(71, 111, 160, .16), transparent 30%),
+        radial-gradient(circle at 18% 100%, rgba(242, 145, 54, .10), transparent 33%),
+        #090b0e;
+      font-family: Inter, sans-serif;
+    }
+    .card { position: relative; width: 100%; height: 100%; padding: 54px 62px; overflow: hidden; }
+    .grid {
+      position: absolute; inset: 0; opacity: .4;
+      background-image: linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px);
+      background-size: 58px 58px;
+      mask-image: linear-gradient(90deg, #000, rgba(0,0,0,.5));
+    }
+    .brand { position: relative; z-index: 2; display: flex; align-items: center; gap: 15px; font-family: Space Grotesk, sans-serif; font-size: 25px; font-weight: 600; }
+    .mark { width: 38px; height: 38px; border: 1px solid rgba(234, 179, 62, .35); border-radius: 11px; background: rgba(234,179,62,.10); display: grid; place-items: center; }
+    .mark::before { content: ""; width: 7px; height: 20px; border: 2px solid #eab33e; border-radius: 8px; box-shadow: 0 10px 0 -3px #eab33e; }
+    .edge { color: #f29a38; }
+    main { position: relative; z-index: 2; width: 710px; margin-top: 94px; }
+    h1 { margin: 0; max-width: 760px; font-family: Space Grotesk, sans-serif; font-size: 72px; line-height: .98; letter-spacing: -3.1px; font-weight: 650; text-wrap: balance; }
+    h1 span { color: #7ca8d9; }
+    .sub { margin-top: 40px; color: #afb3bd; font-family: JetBrains Mono, monospace; font-size: 19px; letter-spacing: .04em; }
+    .instrument { position: absolute; z-index: 2; right: 62px; top: 88px; width: 332px; height: 456px; border: 1px solid rgba(255,255,255,.10); border-radius: 28px; background: linear-gradient(145deg, rgba(34,37,43,.92), rgba(16,18,22,.96)); box-shadow: 0 30px 90px rgba(0,0,0,.42); overflow: hidden; }
+    .instrument::before { content: ""; position: absolute; inset: 28px; border: 1px solid rgba(255,255,255,.055); border-radius: 50%; }
+    .orbit { position: absolute; left: 62px; top: 72px; width: 208px; height: 208px; border: 1px solid rgba(124,168,217,.26); border-radius: 50%; }
+    .orbit::before, .orbit::after { content: ""; position: absolute; border-radius: 50%; border: 1px solid rgba(242,154,56,.26); }
+    .orbit::before { inset: 28px; } .orbit::after { inset: 60px; border-color: rgba(255,255,255,.12); }
+    .needle { position: absolute; width: 112px; height: 2px; left: 104px; top: 174px; background: linear-gradient(90deg, #7ca8d9, #f29a38); transform: rotate(-31deg); transform-origin: right center; box-shadow: 0 0 18px rgba(242,154,56,.45); }
+    .dot { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: #f29a38; box-shadow: 0 0 24px rgba(242,154,56,.75); left: 207px; top: 169px; }
+    .trace { position: absolute; left: 36px; right: 36px; bottom: 42px; height: 118px; border-top: 1px solid rgba(255,255,255,.07); }
+    .trace svg { width: 100%; height: 100%; overflow: visible; }
+    .rule { position: absolute; left: 0; bottom: 0; width: 7px; height: 112px; background: linear-gradient(#7ca8d9 0 35%, #eab33e 35% 67%, #ef663f 67%); border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="grid"></div>
+    <div class="brand"><span class="mark"></span><span>Weather<span class="edge">Edge</span></span></div>
+    <main>
+      <h1>Fifteen-city <span>temperature forecasting</span></h1>
+      <div class="sub">Forecast verification · paper research</div>
+    </main>
+    <aside class="instrument" aria-hidden="true">
+      <div class="orbit"></div><div class="needle"></div><div class="dot"></div>
+      <div class="trace">
+        <div class="rule"></div>
+        <svg viewBox="0 0 250 118" fill="none"><path d="M18 80 C48 68, 56 88, 83 64 S128 35, 151 49 S190 91, 231 27" stroke="#7ca8d9" stroke-width="3"/><path d="M18 91 C52 90, 79 74, 107 80 S157 101, 231 53" stroke="#f29a38" stroke-width="2" opacity=".75"/></svg>
+      </div>
+    </aside>
+  </div>
+</body>
+</html>

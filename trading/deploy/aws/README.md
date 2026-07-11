@@ -10,14 +10,17 @@ not authorize production access or changes.
 - `sync_to_box.sh` is the operator-driven full source sync. It defaults to
   `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, and preserves remote runtime
   state.
+- `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
+  for the EC2 migration window. New commands must use `sync_to_box.sh`.
 - `sync_forecaster_source.sh` is the scheduled, source-only Git refresh. It uses
   `--delete` for tracked forecaster source but shares
   `forecaster-runtime.rsync-filter` with the full sync.
 - The intentional difference is scope: full sync sends both local source trees
   without deleting remote-only files; source sync refreshes only the committed
   `forecaster/` subtree from `main`.
-- Runtime DBs, publication JSONs, `STALE_FORECAST`, and `models/` are never
-  clobbered. The tracked `forecast_data.json` and `weather_story_data.json`
+- Runtime DBs and their SQLite `-wal`/`-shm` sidecars, publication JSONs,
+  `STALE_FORECAST`, and `models/` are never clobbered. The tracked
+  `forecast_data.json` and `weather_story_data.json`
   fixtures remain explicit exclusions until the committed-input migration.
 - The served committed model-evaluation input is
   `forecaster/ab_test_results.json`. There are zero committed files under
@@ -48,8 +51,10 @@ cd /opt/weatheredge/trading
 bash deploy/aws/install_systemd_notimers.sh
 ```
 
-It installs dependencies, both virtual environments, rendered units, and timer
-files, then deliberately leaves all timers disabled. After manual service
+It first stops and disables the complete existing WeatherEdge timer set, then
+installs dependencies, both virtual environments, rendered units, and timer
+files. Real disable errors abort the install, and all timers remain disabled.
+After manual service
 checks, use `install_systemd.sh` for the established full timer set.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
@@ -58,7 +63,8 @@ dependencies do not belong on the production box.
 
 ## Cadence And Responsibilities
 
-- Forecast refresh: every 30 minutes; all fifteen cities, SFO flagship.
+- Forecast refresh: twice hourly from 05:10 through 18:40 PT and hourly
+  overnight; all fifteen cities, SFO flagship.
 - Operational publication: every five minutes; builds
   `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.
 - Strategy Lab publication: every 15 minutes; research-only artifact build.
