@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -114,7 +115,9 @@ def test_alert_script_curl_failure_is_visible(tmp_path: Path) -> None:
     assert "secret.example" not in result.stderr
 
 
-def _freshness_result(tmp_path: Path, df_output: str) -> subprocess.CompletedProcess[str]:
+def _freshness_result(
+    tmp_path: Path, df_output: str, *, alert_url: str = ""
+) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     db = tmp_path / "weather.db"
@@ -127,7 +130,10 @@ def _freshness_result(tmp_path: Path, df_output: str) -> subprocess.CompletedPro
         fake_bin / "df",
         f"#!{sys.executable}\nprint({df_output!r}.replace('\\\\n', '\\n'))\n",
     )
-    _write_executable(fake_bin / "curl", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "curl",
+        "#!/bin/sh\necho called >> \"$CURL_LOG\"\nexit 0\n",
+    )
     return subprocess.run(
         ["bash", str(AWS_DIR / "check_forecast_db_freshness.sh")],
         env={
@@ -141,6 +147,8 @@ def _freshness_result(tmp_path: Path, df_output: str) -> subprocess.CompletedPro
             "SFO_PUBLICATION_MANIFEST_PATH": str(manifest),
             "SFO_FORECAST_STALE_MARKER": str(tmp_path / "STALE"),
             "SFO_DISK_USAGE_MAX_PERCENT": "85",
+            "SFO_FRESHNESS_ALERT_URL": alert_url,
+            "CURL_LOG": str(tmp_path / "curl.log"),
         },
         capture_output=True,
         text=True,
@@ -163,6 +171,18 @@ def test_freshness_disk_threshold_and_malformed_df(
         assert "disk usage 84%" in result.stdout
     else:
         assert "disk usage" in result.stderr
+
+
+def test_manual_freshness_failure_does_not_post_duplicate_webhook(tmp_path: Path) -> None:
+    result = _freshness_result(
+        tmp_path,
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\\n"
+        "/dev/fake 100 85 15 85% /",
+        alert_url="https://secret.example/topic",
+    )
+    assert result.returncode != 0
+    assert "STALE:" in result.stderr
+    assert not (tmp_path / "curl.log").exists()
 
 
 def _fake_backfill_python(path: Path) -> None:
@@ -355,7 +375,7 @@ raise SystemExit(0)
 def test_timezone_failure_cannot_be_ignored(installer: str) -> None:
     text = (AWS_DIR / installer).read_text()
     assert "timedatectl set-timezone America/Los_Angeles || true" not in text
-    assert "timedatectl set-timezone America/Los_Angeles" in text
+    assert "timedatectl show -p Timezone --value" in text
 
 
 def test_installer_timezone_failure_aborts_before_dependencies(tmp_path: Path) -> None:
@@ -365,24 +385,28 @@ def test_installer_timezone_failure_aborts_before_dependencies(tmp_path: Path) -
     (base / "forecaster" / "google_weather_cache.py").touch()
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    log = tmp_path / "sudo.log"
+    preflight_log = tmp_path / "timedatectl.log"
+    mutation_log = tmp_path / "sudo.log"
     _write_executable(
-        fake_bin / "sudo",
-        "#!/bin/sh\necho \"$*\" >> \"$SUDO_LOG\"\n[ \"$1\" != timedatectl ]\n",
+        fake_bin / "timedatectl",
+        "#!/bin/sh\necho \"$*\" >> \"$PREFLIGHT_LOG\"\nexit 42\n",
     )
+    _write_executable(fake_bin / "sudo", "#!/bin/sh\necho \"$*\" >> \"$MUTATION_LOG\"\n")
     result = subprocess.run(
         ["bash", str(AWS_DIR / "install_systemd.sh")],
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "BASE_DIR": str(base),
-            "SUDO_LOG": str(log),
+            "PREFLIGHT_LOG": str(preflight_log),
+            "MUTATION_LOG": str(mutation_log),
         },
         capture_output=True,
         text=True,
     )
-    assert result.returncode != 0
-    assert log.read_text().splitlines() == ["timedatectl set-timezone America/Los_Angeles"]
+    assert result.returncode == 42
+    assert preflight_log.read_text().splitlines() == ["show -p Timezone --value"]
+    assert not mutation_log.exists()
 
 
 def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
@@ -394,12 +418,14 @@ def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
     (base / "forecaster" / "google_weather_cache.py").touch()
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    preflight_log = tmp_path / "timedatectl.log"
     sudo_log = tmp_path / "sudo.log"
     systemctl_log = tmp_path / "systemctl.log"
     _write_executable(
-        fake_bin / "sudo",
-        "#!/bin/sh\necho \"$*\" >> \"$SUDO_LOG\"\n[ \"$1\" != timedatectl ]\n",
+        fake_bin / "timedatectl",
+        "#!/bin/sh\necho \"$*\" >> \"$PREFLIGHT_LOG\"\nexit 42\n",
     )
+    _write_executable(fake_bin / "sudo", "#!/bin/sh\necho \"$*\" >> \"$SUDO_LOG\"\n")
     _write_executable(
         fake_bin / "systemctl",
         "#!/bin/sh\necho \"$*\" >> \"$SYSTEMCTL_LOG\"\nexit 99\n",
@@ -410,6 +436,7 @@ def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "BASE_DIR": str(base),
+            "PREFLIGHT_LOG": str(preflight_log),
             "SUDO_LOG": str(sudo_log),
             "SYSTEMCTL_LOG": str(systemctl_log),
             "SYSTEMCTL_BIN": str(fake_bin / "systemctl"),
@@ -417,12 +444,81 @@ def test_timerless_installer_timezone_failure_precedes_all_system_mutation(
         capture_output=True,
         text=True,
     )
-    assert result.returncode != 0
-    assert sudo_log.exists(), "timezone setup did not run before systemd mutation"
-    assert sudo_log.read_text().splitlines() == [
-        "timedatectl set-timezone America/Los_Angeles"
-    ]
+    assert result.returncode == 42
+    assert preflight_log.read_text().splitlines() == ["show -p Timezone --value"]
+    assert not sudo_log.exists()
     assert not systemctl_log.exists()
+
+
+def test_regular_installer_refuses_timezone_mismatch_without_mutation(tmp_path: Path) -> None:
+    base = tmp_path / "base"
+    (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
+    (base / "forecaster").mkdir()
+    (base / "forecaster" / "google_weather_cache.py").touch()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "timedatectl", "#!/bin/sh\nprintf 'UTC\\n'\n")
+    mutation_log = tmp_path / "mutation.log"
+    _write_executable(fake_bin / "sudo", "#!/bin/sh\necho \"$*\" >> \"$MUTATION_LOG\"\n")
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "install_systemd.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BASE_DIR": str(base),
+            "MUTATION_LOG": str(mutation_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "install_systemd_notimers.sh" in result.stderr
+    assert not mutation_log.exists()
+
+
+def test_timerless_timezone_mismatch_quiesces_before_set(tmp_path: Path) -> None:
+    base = tmp_path / "base"
+    (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
+    (base / "forecaster").mkdir()
+    (base / "forecaster" / "google_weather_cache.py").touch()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    order_log = tmp_path / "order.log"
+    _write_executable(
+        fake_bin / "timedatectl",
+        "#!/bin/sh\necho \"timedatectl $*\" >> \"$ORDER_LOG\"\nprintf 'UTC\\n'\n",
+    )
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/sh
+echo "systemctl $*" >> "$ORDER_LOG"
+if [ "$1" = show ]; then echo loaded; exit 0; fi
+if [ "$1" = is-active ]; then echo inactive; exit 3; fi
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/bin/sh\necho \"sudo $*\" >> \"$ORDER_LOG\"\nexit 55\n",
+    )
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "install_systemd_notimers.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BASE_DIR": str(base),
+            "SYSTEMCTL_BIN": str(fake_bin / "systemctl"),
+            "ORDER_LOG": str(order_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 55
+    calls = order_log.read_text().splitlines()
+    assert calls[0] == "timedatectl show -p Timezone --value"
+    assert any(call.startswith("systemctl stop ") for call in calls[1:-1])
+    assert calls[-1] == "sudo timedatectl set-timezone America/Los_Angeles"
+    assert not any("apt-get" in call for call in calls)
 
 
 def test_paper_scan_truthy_is_bash3_portable_and_case_insensitive(tmp_path: Path) -> None:
@@ -454,11 +550,21 @@ def test_deploy_web_app_works_from_arbitrary_cwd_and_space_paths(tmp_path: Path)
     fake_bin = tmp_path / "fake bin"
     fake_bin.mkdir()
     log = tmp_path / "calls.log"
-    for command in ("bun", "ssh", "rsync"):
+    for command in ("bun", "ssh"):
         _write_executable(
             fake_bin / command,
             f"#!/bin/sh\nprintf '{command} cwd=%s args=' \"$PWD\" >> \"$CALL_LOG\"\nprintf '<%s>' \"$@\" >> \"$CALL_LOG\"\nprintf '\\n' >> \"$CALL_LOG\"\n[ \"${{FAIL_COMMAND:-}}\" != {command} ]\n",
         )
+    _write_executable(
+        fake_bin / "rsync",
+        """#!/bin/sh
+if [ "$1" = --protect-args ] && [ "$2" = --version ]; then exit 0; fi
+printf 'rsync cwd=%s args=' "$PWD" >> "$CALL_LOG"
+printf '<%s>' "$@" >> "$CALL_LOG"
+printf '\n' >> "$CALL_LOG"
+[ "${FAIL_COMMAND:-}" != rsync ]
+""",
+    )
     key = tmp_path / "operator key.pem"
     key.write_text("key")
     env_file = tmp_path / "target env"
@@ -476,16 +582,144 @@ def test_deploy_web_app_works_from_arbitrary_cwd_and_space_paths(tmp_path: Path)
     calls = log.read_text().splitlines()
     assert calls[0].startswith(f"bun cwd={ROOT} args=<run><build>")
     assert calls[1].startswith("ssh ")
-    assert "operator\\ key.pem" in calls[2]
-    assert "weather\\ edge/webdist/" in calls[2]
+    assert "operator key.pem" not in calls[2]
+    assert "<--protect-args>" in calls[2]
+    assert "<deploy@host.example:/srv/weather edge/webdist/>" in calls[2]
+    wrapper_path = calls[2].split("<-e><", 1)[1].split(">", 1)[0]
+    assert " " not in wrapper_path
+    assert not Path(wrapper_path).exists()
     assert calls[-1].startswith("ssh ")
     assert "Done" in result.stdout
+
+
+def test_openrsync_rejects_spaced_remote_path_before_build(tmp_path: Path) -> None:
+    key = tmp_path / "operator key.pem"
+    key.touch()
+    env_file = tmp_path / "target env"
+    env_file.write_text(
+        f"EC2_IP=host.example\nEC2_KEY='{key}'\nREMOTE_BASE='/srv/weather edge'\n"
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    build_log = tmp_path / "build.log"
+    _write_executable(fake_bin / "bun", "#!/bin/sh\necho built > \"$BUILD_LOG\"\n")
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "deploy_web_app.sh"), str(env_file)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "RSYNC_BIN": "/usr/bin/rsync",
+            "BUILD_LOG": str(build_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "does not support --protect-args" in result.stderr
+    assert "REMOTE_BASE contains unsafe shell characters" in result.stderr
+    assert not build_log.exists()
+
+
+def test_openrsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) -> None:
+    key = tmp_path / "operator key.pem"
+    key.touch()
+    env_file = tmp_path / "target env"
+    env_file.write_text(f"EC2_IP=host.example\nEC2_KEY='{key}'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    build_log = tmp_path / "build.log"
+    ssh_log = tmp_path / "ssh.jsonl"
+    _write_executable(fake_bin / "bun", "#!/bin/sh\necho built > \"$BUILD_LOG\"\n")
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ['SSH_LOG'], 'a') as stream: stream.write(json.dumps(sys.argv[1:]) + '\\n')
+raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
+""",
+    )
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "deploy_web_app.sh"), str(env_file)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "RSYNC_BIN": "/usr/bin/rsync",
+            "BUILD_LOG": str(build_log),
+            "SSH_LOG": str(ssh_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 19
+    assert build_log.exists()
+    calls = [json.loads(line) for line in ssh_log.read_text().splitlines()]
+    rsync_call = next(call for call in calls if "rsync" in call)
+    assert rsync_call[rsync_call.index("-i") + 1] == str(key)
+    assert rsync_call[-1] == "/opt/weatheredge/webdist/"
+
+
+@pytest.mark.skipif(not Path("/usr/bin/rsync").exists(), reason="system rsync required")
+def test_macos_rsync_parser_preserves_spaced_key_and_remote_path(tmp_path: Path) -> None:
+    probe_dir = Path(tempfile.mkdtemp(prefix="weatheredge-rsync-probe-", dir="/tmp"))
+    try:
+        source = tmp_path / "source dir"
+        source.mkdir()
+        (source / "index.html").touch()
+        key = tmp_path / "operator key.pem"
+        key.touch()
+        log = tmp_path / "ssh-args.json"
+        fake_ssh = probe_dir / "ssh-probe"
+        wrapper = probe_dir / "ssh-wrapper"
+        _write_executable(
+            fake_ssh,
+            f"#!{sys.executable}\nimport json, os, sys\nopen(os.environ['SSH_ARGS_LOG'], 'w').write(json.dumps(sys.argv[1:]))\nraise SystemExit(19)\n",
+        )
+        _write_executable(
+            wrapper,
+            "#!/bin/sh\nexec \"$FAKE_SSH\" -i \"$WEATHEREDGE_RSYNC_SSH_KEY\" -o StrictHostKeyChecking=accept-new \"$@\"\n",
+        )
+        remote_path = "/srv/weather edge/webdist/"
+        result = subprocess.run(
+            [
+                "/usr/bin/rsync", "-a", "-e", str(wrapper),
+                f"{source}/", f"deploy@host:{remote_path}",
+            ],
+            env={
+                **os.environ,
+                "FAKE_SSH": str(fake_ssh),
+                "WEATHEREDGE_RSYNC_SSH_KEY": str(key),
+                "SSH_ARGS_LOG": str(log),
+            },
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 19
+        args = json.loads(log.read_text())
+        assert args[args.index("-i") + 1] == str(key)
+        assert args[-1] == remote_path
+        assert " " not in str(wrapper)
+    finally:
+        shutil.rmtree(probe_dir)
+
+
+def test_deploy_uses_ephemeral_keyless_ssh_wrapper() -> None:
+    deployer = (AWS_DIR / "deploy_web_app.sh").read_text()
+    assert "--protect-args" in deployer
+    assert "printf -v RSYNC_RSH" not in deployer
+    assert "WEATHEREDGE_RSYNC_SSH_KEY" in deployer
+    assert "trap" in deployer
 
 
 def test_deploy_web_app_failure_never_reports_success(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _write_executable(fake_bin / "bun", "#!/bin/sh\nexit 23\n")
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\n[ \"$1\" = --protect-args ] && [ \"$2\" = --version ]\n",
+    )
     key = tmp_path / "key"
     key.touch()
     env_file = tmp_path / "env"

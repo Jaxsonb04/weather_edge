@@ -27,12 +27,15 @@ cd /opt/weatheredge/trading
 bash deploy/aws/install_systemd_notimers.sh
 ```
 
-`install_systemd_notimers.sh` is the cutover-safe installer: it first stops and
-disables every existing WeatherEdge timer, stops each paired service, verifies
-the services are inactive, and fails on real systemctl errors. It then renders
-every service and timer while enabling none. Inspect `/etc/weatheredge.env`,
-start each service manually, and only then enable the approved timers. For an
-established host, `install_systemd.sh` installs and enables the full timer set.
+Both installers first read the host timezone without mutating it. The regular
+installer proceeds only when it is already `America/Los_Angeles`; otherwise it
+refuses and directs the operator to the cutover-safe timerless installer.
+`install_systemd_notimers.sh` quiesces every existing WeatherEdge timer and
+paired service before changing a mismatched timezone, then renders every unit
+while enabling none. A preflight failure changes nothing; a timezone-set
+failure propagates only after services are safely quiesced. Inspect
+`/etc/weatheredge.env`, start each service manually, and only then enable the
+approved timers.
 
 The full sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
@@ -61,7 +64,15 @@ Publication and paper-scan locks default under `/opt/weatheredge/.locks`, so
 they persist independently of temporary-directory cleanup. The freshness
 watchdog fails at 85% filesystem usage by default, and operational service
 failures post JSON through the non-recursive `sfo-alert@.service` template when
-`SFO_FRESHNESS_ALERT_URL` is configured.
+`SFO_FRESHNESS_ALERT_URL` is configured. The watchdog itself never posts, so a
+systemd failure produces exactly one JSON webhook and a manual run stays local.
+
+`deploy_web_app.sh` uses rsync 3.x `--protect-args` when available. Apple's
+legacy openrsync may deploy to the shell-safe default `/opt/weatheredge`, but
+the script rejects whitespace, quotes, or backslashes in `REMOTE_BASE` before
+building when protect-args is unavailable. The deployer uses a temporary
+no-space SSH wrapper and removes it on every exit, so SSH key paths may contain
+spaces in either mode.
 
 The environment installed at `/etc/weatheredge.env` is based on
 `trading/deploy/aws/sfo-weather.env.example`.

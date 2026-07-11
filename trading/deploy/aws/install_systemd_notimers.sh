@@ -21,13 +21,24 @@ if [[ ! -f "$FORECASTER_DIR/google_weather_cache.py" ]]; then
   exit 1
 fi
 
-# Timezone is part of the timer contract. Validate it before stopping timers or
-# mutating dependencies/units so a failed setup leaves the host unchanged.
-sudo timedatectl set-timezone America/Los_Angeles
+# Timezone is part of the timer contract. Read it before stopping timers so a
+# failed preflight leaves the host unchanged.
+TARGET_TIMEZONE="America/Los_Angeles"
+if CURRENT_TIMEZONE="$(timedatectl show -p Timezone --value)"; then
+  :
+else
+  status=$?
+  echo "failed to read host timezone; no changes made" >&2
+  exit "$status"
+fi
 
 # Established hosts may already have enabled timers. Stop and disable every
-# known timer only after timezone setup succeeds; real failures abort.
+# known timer only after the read-only preflight succeeds; real failures abort.
 bash "$SCRIPT_DIR/disable_systemd_timers.sh"
+
+if [[ "$CURRENT_TIMEZONE" != "$TARGET_TIMEZONE" ]]; then
+  sudo timedatectl set-timezone "$TARGET_TIMEZONE"
+fi
 
 sudo apt-get update
 sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync

@@ -48,16 +48,50 @@ fi
 REMOTE_USER_NAME="${REMOTE_USER:-ubuntu}"
 BASE="${REMOTE_BASE:-/opt/weatheredge}"
 SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
-printf -v RSYNC_RSH 'ssh -i %q -o StrictHostKeyChecking=accept-new' "$HOST_KEY"
-printf -v REMOTE_WEBDIST '%q' "$BASE/webdist/"
 printf -v REMOTE_MKDIR 'mkdir -p %q' "$BASE/webdist"
+RSYNC_BIN="${RSYNC_BIN:-$(command -v rsync || true)}"
+if [[ -z "$RSYNC_BIN" ]]; then
+  echo "rsync is required" >&2
+  exit 1
+fi
+RSYNC_HAS_PROTECT_ARGS=0
+if "$RSYNC_BIN" --protect-args --version >/dev/null 2>&1; then
+  RSYNC_HAS_PROTECT_ARGS=1
+elif [[ "$BASE" == *[[:space:]]* || "$BASE" == *\"* || "$BASE" == *\'* || "$BASE" == *\\* ]]; then
+  echo "rsync at $RSYNC_BIN does not support --protect-args and REMOTE_BASE contains unsafe shell characters; install rsync 3.x or use a path without whitespace, quotes, or backslashes" >&2
+  exit 1
+fi
+
+# Rsync tokenizes -e itself, so a quoted key path in an -e string is unsafe on
+# macOS openrsync. Use a no-space executable path and pass the key via the
+# environment; the wrapper contains no endpoint or key value.
+SSH_WRAPPER_DIR="$(mktemp -d /tmp/weatheredge-rsync-ssh.XXXXXX)"
+SSH_WRAPPER="$SSH_WRAPPER_DIR/ssh"
+cleanup_ssh_wrapper() {
+  rm -rf "$SSH_WRAPPER_DIR"
+}
+trap cleanup_ssh_wrapper EXIT HUP INT TERM
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  ': "${WEATHEREDGE_RSYNC_SSH_KEY:?missing rsync SSH key}"' \
+  'exec ssh -i "$WEATHEREDGE_RSYNC_SSH_KEY" -o StrictHostKeyChecking=accept-new "$@"' \
+  >"$SSH_WRAPPER"
+chmod 700 "$SSH_WRAPPER"
+export WEATHEREDGE_RSYNC_SSH_KEY="$HOST_KEY"
 
 echo "==> building dist"
 bun run build
 
 echo "==> syncing dist -> $REMOTE_USER_NAME@$HOST_IP:$BASE/webdist"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER_NAME@$HOST_IP" "$REMOTE_MKDIR"
-rsync -az --delete -e "$RSYNC_RSH" dist/ "$REMOTE_USER_NAME@$HOST_IP:$REMOTE_WEBDIST"
+if (( RSYNC_HAS_PROTECT_ARGS )); then
+  "$RSYNC_BIN" -az --delete --protect-args -e "$SSH_WRAPPER" \
+    dist/ "$REMOTE_USER_NAME@$HOST_IP:$BASE/webdist/"
+else
+  "$RSYNC_BIN" -az --delete -e "$SSH_WRAPPER" \
+    dist/ "$REMOTE_USER_NAME@$HOST_IP:$BASE/webdist/"
+fi
 
 echo "==> publishing to GitHub Pages"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER_NAME@$HOST_IP" \

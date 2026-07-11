@@ -55,12 +55,13 @@ cd /opt/weatheredge/trading
 bash deploy/aws/install_systemd_notimers.sh
 ```
 
-It first stops and disables the complete existing WeatherEdge timer set, stops
-every paired service, and verifies each loaded service is inactive. It then
-installs dependencies, both virtual environments, rendered units, and timer
-files. Inspection, stop, disable, or quiescence failures abort the install;
-all timers remain disabled. After manual service checks, use
-`install_systemd.sh` for the established full timer set.
+Both installers begin with a read-only timezone preflight. The regular installer
+refuses to mutate a host that is not already on `America/Los_Angeles`. The
+timerless installer first quiesces the complete timer/service set, then changes
+a mismatched timezone before installing dependencies and units. Preflight,
+inspection, stop, disable, timezone-set, or quiescence failures propagate. After
+manual service checks, use `install_systemd.sh` for the established full timer
+set.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
 formed command is `python -m pip install certifi numpy pandas`. Heavy training
@@ -132,6 +133,14 @@ invalid schemas, and checksum mismatches. It writes `STALE_FORECAST` for the
 local alarm path; sync excludes preserve that marker. Every operational service
 also routes failures through `sfo-alert@.service`, which posts JSON to
 `SFO_FRESHNESS_ALERT_URL` without putting the endpoint in process arguments.
+The watchdog never posts directly: systemd gets one common JSON alert, while a
+manual run reports locally without duplicating the webhook.
+
+The workstation web deploy uses rsync 3.x `--protect-args` when available.
+Apple openrsync remains supported for the shell-safe default remote base; an
+unsafe base containing whitespace, quotes, or backslashes is rejected before
+building. A temporary no-space SSH wrapper keeps spaced key paths intact in
+both modes.
 
 The canonical environment reference is `sfo-weather.env.example`. It contains
 safe defaults for the five live-execution gates, publication paths and locks,

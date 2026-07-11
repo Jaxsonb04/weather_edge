@@ -433,7 +433,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
         "SFO_PUBLICATION_MANIFEST_URL="
         "https://jaxsonb04.github.io/weather_edge/publication_manifest.json"
     ) in example_env
-    assert "JSON webhook endpoint" in watchdog
+    assert "shared sfo-alert@.service JSON" in watchdog
     assert "Slack/Discord" not in watchdog
     for documentation in (readme, deployment):
         assert "10 minutes" in documentation

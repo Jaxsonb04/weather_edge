@@ -18,7 +18,19 @@ if [[ ! -f "$FORECASTER_DIR/google_weather_cache.py" ]]; then
   exit 1
 fi
 
-sudo timedatectl set-timezone America/Los_Angeles
+TARGET_TIMEZONE="America/Los_Angeles"
+if CURRENT_TIMEZONE="$(timedatectl show -p Timezone --value)"; then
+  :
+else
+  status=$?
+  echo "failed to read host timezone; no changes made" >&2
+  exit "$status"
+fi
+if [[ "$CURRENT_TIMEZONE" != "$TARGET_TIMEZONE" ]]; then
+  echo "host timezone is $CURRENT_TIMEZONE, expected $TARGET_TIMEZONE; use install_systemd_notimers.sh for a safe timezone cutover" >&2
+  exit 1
+fi
+
 sudo apt-get update
 sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
 

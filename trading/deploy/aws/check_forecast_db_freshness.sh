@@ -5,8 +5,8 @@
 # weather.db cannot hide a frozen signal/cities artifact, and rebuilding only the
 # manifest cannot reset the operational clocks recorded inside it.
 #
-# Wire a real push alert by setting SFO_FRESHNESS_ALERT_URL in /etc/weatheredge.env
-# to a JSON webhook endpoint, such as an ntfy.sh topic.
+# Under systemd, a nonzero exit triggers the shared sfo-alert@.service JSON
+# webhook. Manual runs only report failures locally and never post a duplicate.
 set -uo pipefail
 
 BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-/opt/weatheredge}}"
@@ -16,7 +16,6 @@ PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB="${SFO_FORECAST_DB:-$FORECASTER_DIR/weather.db}"
 MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
 MARKER="${SFO_FORECAST_STALE_MARKER:-$FORECASTER_DIR/STALE_FORECAST}"
-ALERT_URL="${SFO_FRESHNESS_ALERT_URL:-}"
 MANIFEST="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
 OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
@@ -101,14 +100,6 @@ if (( ${#failures[@]} > 0 )); then
     date -u +%Y-%m-%dT%H:%M:%SZ
     echo "$msg"
   } > "$MARKER" 2>/dev/null || true
-  if [[ -n "$ALERT_URL" ]]; then
-    if curl -fsS -m 15 -X POST -H "Content-Type: text/plain" \
-        --data "WeatherEdge ALERT: $msg" "$ALERT_URL" >/dev/null 2>&1; then
-      echo "alert posted to SFO_FRESHNESS_ALERT_URL"
-    else
-      echo "alert POST failed (check SFO_FRESHNESS_ALERT_URL)" >&2
-    fi
-  fi
   exit 1
 fi
 
