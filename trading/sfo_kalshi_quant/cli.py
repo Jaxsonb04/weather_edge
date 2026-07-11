@@ -822,7 +822,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     prune = sub.add_parser(
         "paper-prune",
-        help="Retention for decision snapshots (full 7d, per-day dedup to 45d, approved kept)",
+        help=(
+            "Low-level/manual; use the archive-gated service for scheduled retention"
+        ),
     )
     prune.add_argument("--full-days", type=int, default=7)
     prune.add_argument("--dedup-days", type=int, default=45)

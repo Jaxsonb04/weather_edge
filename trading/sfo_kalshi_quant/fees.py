@@ -125,14 +125,31 @@ def quadratic_fee_average_per_contract(
     ) / contracts
 
 
-def contracts_for_budget(price: float, budget: float) -> float:
+def contracts_for_budget(
+    price: float,
+    budget: float,
+    *,
+    maker: bool = False,
+    fee_multiplier: float = 1.0,
+    taker_rate: float = 0.07,
+    maker_rate: float = 0.0175,
+    series_ticker: str | None = None,
+) -> float:
     if price <= 0 or price >= 1 or budget <= 0:
         return 0.0
     lo = 0.0
     hi = budget / price
     for _ in range(48):
         mid = (lo + hi) / 2.0
-        cost = price * mid + quadratic_fee_total(price, mid)
+        cost = price * mid + quadratic_fee_total(
+            price,
+            mid,
+            maker=maker,
+            fee_multiplier=fee_multiplier,
+            taker_rate=taker_rate,
+            maker_rate=maker_rate,
+            series_ticker=series_ticker,
+        )
         if cost <= budget:
             lo = mid
         else:

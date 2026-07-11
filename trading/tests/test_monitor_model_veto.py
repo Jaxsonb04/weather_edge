@@ -181,6 +181,8 @@ class _FakeNoConvergedClient(_FakeKalshiClient):
     no_ask = 0.96
     yes_sub_title = "82° or above"
     strike_type = "above"
+    floor_strike = 82.0
+    cap_strike = None
 
 
 def test_monitor_decide_exit_uses_series_and_profile_config_fee_semantics():
@@ -219,8 +221,6 @@ def test_monitor_decide_exit_uses_series_and_profile_config_fee_semantics():
         )
 
     assert captured["net_exit"] == _BoundaryClient.yes_bid - expected_fee
-    floor_strike = 82.0
-    cap_strike = None
 
 
 class _FakeNoBasketClient:

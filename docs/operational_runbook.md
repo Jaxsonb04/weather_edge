@@ -185,17 +185,20 @@ The nightly dataset unit (02:25 Pacific) additionally runs:
 - IEM CLI settlement-truth refresh
 - NWP archive update (`--daily --cities all`)
 - EMOS rolling-origin rebuild (leads 1 and 2)
-- `paper-prune` (decision-snapshot retention)
 
-## Paper Prune
+## Archive-Gated Paper Retention
 
-```bash
-python -m sfo_kalshi_quant.cli --no-color paper-prune
-```
+Production retention belongs only to the dedicated
+`sfo-kalshi-paper-prune.timer` / `sfo-kalshi-paper-prune.service`. The service
+runs `trading/deploy/aws/run_archive_then_prune.sh`, which losslessly archives
+and verifies every complete UTC day before its final prune step. If archival or
+the explicit archive gate fails, pruning does not run.
 
-Decision-snapshot retention: 7 days of full snapshots, last-per-market-side-day
-rows kept to 45 days, approved rows kept forever. Without pruning, fifteen
-cities write roughly 60k rejection snapshots (~0.5 GB) per day.
+Production sets `SFO_PRUNE_FULL_DAYS=1`; last-per-market-side-day rows remain for
+45 days and approved rows remain indefinitely. Fifteen cities otherwise write
+roughly 60k rejection snapshots (~0.5 GB) per day. Do not schedule or routinely
+run bare `paper-prune`: it is a low-level/manual command for recovery work only,
+after an operator has independently completed and verified the archive gate.
 
 ## Signal Backtest
 

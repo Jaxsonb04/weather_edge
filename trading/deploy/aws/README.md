@@ -26,10 +26,14 @@ It runs:
   and publishes without calling the paid Google Weather refresh path.
 - Compact dataset backfill: nightly at 02:25 Pacific time. The nightly unit
   also runs the IEM CLI settlement-truth refresh, the NWP archive update
-  (`--daily --cities all`), the EMOS rolling-origin rebuild (leads 1 and 2),
-  and `paper-prune` snapshot retention (7 days of full decision snapshots,
-  last-per-market-side-day rows to 45 days, approved rows forever — fifteen
-  cities would otherwise write ~60k rejection snapshots/~0.5 GB per day).
+  (`--daily --cities all`), and the EMOS rolling-origin rebuild (leads 1 and 2).
+- Decision-snapshot retention: the dedicated
+  `sfo-kalshi-paper-prune.timer` / `sfo-kalshi-paper-prune.service` invokes
+  `run_archive_then_prune.sh`. Its ordering is the safety gate: lossless archive
+  and verification must succeed before pruning. Production uses
+  `SFO_PRUNE_FULL_DAYS=1`, keeps last-per-market-side-day rows to 45 days, and
+  keeps approved rows indefinitely. Do not add or invoke a bare scheduled
+  `paper-prune`; the CLI command is low-level/manual recovery tooling.
 - Kalshi paper scan: every 5 minutes, around the clock, looping all cities.
   Each run live-fetches the current Kalshi order books and makes paper-trade
   entries on fresh market data (it is not a dashboard rebuild), so a

@@ -933,6 +933,40 @@ def test_paper_stake_uses_series_and_config_fee_rounding():
         assert adjusted.fee_per_contract == expected_fee
 
 
+def test_paper_stake_budget_solver_uses_final_booking_fee_semantics():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        config = StrategyConfig(
+            taker_fee_rate=0.70,
+            fee_multiplier=2.0,
+            max_contracts_per_market=100.0,
+        )
+        trader = PaperTrader(store, config)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.90,
+            probability_lcb=0.80,
+            yes_bid=0.39,
+            yes_ask=0.40,
+            spread=0.01,
+            fee_per_contract=0.01,
+            cost_per_contract=0.41,
+            edge=0.49,
+            edge_lcb=0.39,
+            kelly_fraction=0.01,
+            recommended_contracts=3.0,
+            expected_profit=1.47,
+            reasons=[],
+        )
+
+        adjusted = trader.with_paper_stake(decision, 10.0)
+
+        assert adjusted.recommended_contracts * adjusted.cost_per_contract <= 10.0 + 1e-9
+
+
 def test_paper_stake_caps_contracts_at_visible_ask_size():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

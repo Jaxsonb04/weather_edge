@@ -30,6 +30,13 @@ def test_portfolio_scan_parser_is_paper_only_by_default() -> None:
     assert args.min_profit == 0.01
 
 
+def test_paper_prune_help_marks_command_low_level_and_points_to_scheduled_service() -> None:
+    help_text = build_parser().format_help()
+
+    assert "Low-level/manual" in help_text
+    assert "archive-gated service" in help_text
+
+
 def test_portfolio_scan_parser_keeps_diagnostics_flags_available() -> None:
     args = build_parser().parse_args(
         [

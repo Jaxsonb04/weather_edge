@@ -40,7 +40,16 @@ class PaperTrader:
             raise ValueError("paper stake must be greater than zero")
         if decision.ask <= 0:
             return decision
-        contracts = contracts_for_budget(decision.ask, stake_dollars)
+        maker = False  # Paper stake books immediately at the visible ask.
+        contracts = contracts_for_budget(
+            decision.ask,
+            stake_dollars,
+            maker=maker,
+            fee_multiplier=self.config.fee_multiplier,
+            taker_rate=self.config.taker_fee_rate,
+            maker_rate=self.config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
         contracts = min(contracts, self.config.max_contracts_per_market)
         if decision.ask_size > 0:
             contracts = min(contracts, decision.ask_size)
@@ -49,6 +58,7 @@ class PaperTrader:
         fee_per_contract = quadratic_fee_average_per_contract(
             decision.ask,
             contracts,
+            maker=maker,
             fee_multiplier=self.config.fee_multiplier,
             taker_rate=self.config.taker_fee_rate,
             maker_rate=self.config.maker_fee_rate,
