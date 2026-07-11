@@ -31,7 +31,8 @@ from sfo_kalshi_quant.strategy_lab import (
 
 
 def test_strategy_research_is_a_thin_compatibility_shim():
-    assert strategy_research.build_strategy_research is build.build_strategy_research
+    assert strategy_research.build_strategy_research is not build.build_strategy_research
+    assert strategy_research._build_strategy_research is build.build_strategy_research
     assert strategy_research._calibration_payload is calibration._calibration_payload
     assert strategy_research._forecast_health_payload is forecast_health._forecast_health_payload
     assert strategy_research._paper_payload is paper_card._paper_payload
@@ -42,7 +43,8 @@ def test_strategy_research_is_a_thin_compatibility_shim():
     assert strategy_research._market_consensus_payload is consensus_offline._market_consensus_payload
 
     shim = Path(strategy_research.__file__).read_text(encoding="utf-8")
-    assert len(shim.splitlines()) < 100
+    assert len(shim.splitlines()) < 300
+    assert "globals().update" not in shim
 
 
 def test_strategy_research_preserves_historical_uppercase_imports():

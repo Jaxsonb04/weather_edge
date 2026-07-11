@@ -9,6 +9,9 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from sfo_kalshi_quant import strategy_research as strategy_research_module
 from sfo_kalshi_quant.cities import CITIES
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
@@ -25,6 +28,11 @@ from sfo_kalshi_quant.strategy_research import (
     _strategy_alerts,
     _status_target_date,
     build_strategy_research,
+)
+from sfo_kalshi_quant.strategy_lab import (
+    build as strategy_build_module,
+    calibration as strategy_calibration_module,
+    forecast_health as strategy_forecast_health_module,
 )
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.paper import PaperTrader
@@ -167,6 +175,79 @@ def test_strategy_research_does_not_create_missing_paper_db():
         assert payload["calibration_comparison"]["active"]["available"] is True
         assert payload["status"]["active_calibration_source"] == "lstm"
         assert not missing_db.exists()
+
+
+def test_facade_build_forwards_historical_monkeypatches_and_restores(tmp_path, monkeypatch):
+    root = tmp_path / "forecaster"
+    _write_lstm_fixture(root)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 7, 11, 12, 0, tzinfo=UTC)
+            return value if tz is None else value.astimezone(tz)
+
+    original_build_datetime = strategy_build_module.datetime
+    original_calibration_datetime = strategy_calibration_module.datetime
+    original_forecast_datetime = strategy_forecast_health_module.datetime
+    original_walk = strategy_calibration_module.run_walk_forward_calibration_backtest
+    original_rolling_days = strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS
+    calls = 0
+
+    def counted_walk(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_walk(*args, **kwargs)
+
+    monkeypatch.setattr(strategy_research_module, "datetime", FrozenDateTime)
+    monkeypatch.setattr(
+        strategy_research_module,
+        "run_walk_forward_calibration_backtest",
+        counted_walk,
+    )
+    monkeypatch.setattr(strategy_research_module, "FORECAST_HEALTH_ROLLING_DAYS", 1)
+
+    payload = strategy_research_module.build_strategy_research(
+        forecaster_root=root,
+        db_path=tmp_path / "missing.db",
+        calibration_min_train=40,
+    )
+
+    assert payload["generated_at"] == "2026-07-11T12:00:00+00:00"
+    assert len(payload["forecast_health"]["rolling_targets"]) == 1
+    assert calls >= 1
+    assert strategy_build_module.datetime is original_build_datetime
+    assert strategy_calibration_module.datetime is original_calibration_datetime
+    assert strategy_forecast_health_module.datetime is original_forecast_datetime
+    assert strategy_calibration_module.run_walk_forward_calibration_backtest is original_walk
+    assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == original_rolling_days
+
+
+def test_facade_build_restores_forwarded_bindings_after_exception(tmp_path, monkeypatch):
+    root = tmp_path / "forecaster"
+    _write_lstm_fixture(root)
+    original_walk = strategy_calibration_module.run_walk_forward_calibration_backtest
+    original_rolling_days = strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS
+
+    def fail_walk(*args, **kwargs):
+        raise RuntimeError("compatibility probe")
+
+    monkeypatch.setattr(
+        strategy_research_module,
+        "run_walk_forward_calibration_backtest",
+        fail_walk,
+    )
+    monkeypatch.setattr(strategy_research_module, "FORECAST_HEALTH_ROLLING_DAYS", 1)
+
+    with pytest.raises(RuntimeError, match="compatibility probe"):
+        strategy_research_module.build_strategy_research(
+            forecaster_root=root,
+            db_path=tmp_path / "missing.db",
+            calibration_min_train=40,
+        )
+
+    assert strategy_calibration_module.run_walk_forward_calibration_backtest is original_walk
+    assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == original_rolling_days
 
 
 def test_strategy_research_reads_decisions_and_open_paper_positions():
