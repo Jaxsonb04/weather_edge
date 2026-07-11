@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
+from typing import Iterable, Sequence
 
-from .config import StrategyConfig
+from .config import StrategyConfig, normalize_risk_profile_name
 
 SHARED_ACCOUNT_ID = "paper-shared"
 INITIAL_CAPITAL = 1000.0
@@ -43,6 +44,77 @@ REGION_BY_SERIES = {
     "KXHIGHTBOS": "northeast",
     "KXHIGHDEN": "mountain",
 }
+
+
+def policy_capacity(
+    *,
+    state: dict[str, object],
+    active_rows: Iterable[Sequence[object]],
+    daily_pnl: float,
+    target_date: str,
+    market_ticker: str,
+    risk_profile: str | None,
+    requested_spend: float,
+) -> dict[str, object]:
+    """Apply shared-account risk policy to already-loaded account state.
+
+    Database reads deliberately stay in ``PaperStore``; this function is pure
+    policy math so caps and pause behavior can be tested without SQLite.
+    """
+
+    equity = float(state["realized_equity"])
+    drawdown = float(state["drawdown"])
+    if drawdown >= 0.15:
+        return {"allowed_spend": 0.0, "reason": "15% account drawdown pause"}
+    if daily_pnl <= -DAILY_LOSS_PCT * equity:
+        return {"allowed_spend": 0.0, "reason": "2% shared-account daily loss pause"}
+
+    rows = list(active_rows)
+    series = market_ticker.split("-", 1)[0].upper()
+    region = REGION_BY_SERIES.get(series, "unknown")
+    profile = normalize_risk_profile_name(risk_profile) if risk_profile else "live"
+    aggregate = sum(float(row[3] or 0.0) for row in rows)
+    research_risk = sum(float(row[3] or 0.0) for row in rows if str(row[2]) == "research")
+    main_risk = aggregate - research_risk
+    city_risk = sum(
+        float(row[3] or 0.0)
+        for row in rows
+        if str(row[0]).startswith(series + "-") and str(row[1]) == target_date
+    )
+    region_risk = sum(
+        float(row[3] or 0.0)
+        for row in rows
+        if REGION_BY_SERIES.get(str(row[0]).split("-", 1)[0].upper(), "unknown") == region
+        and str(row[1]) == target_date
+    )
+    position_cap = (
+        RESEARCH_POSITION_PCT * equity
+        if profile == "research"
+        else min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * equity)
+    )
+    if drawdown >= 0.10:
+        position_cap *= 0.5
+    total_room = AGGREGATE_RISK_PCT * equity - aggregate
+    if profile == "research":
+        sleeve_room = RESEARCH_SLEEVE_PCT * equity - research_risk
+    else:
+        sleeve_room = MAIN_SLEEVE_PCT * equity - main_risk + max(
+            0.0, RESEARCH_SLEEVE_PCT * equity - research_risk
+        )
+    allowed = min(
+        requested_spend,
+        position_cap,
+        total_room,
+        sleeve_room,
+        CITY_TARGET_PCT * equity - city_risk,
+        REGION_DAY_PCT * equity - region_risk,
+        float(state["available_cash"]),
+    )
+    if requested_spend < MIN_EXECUTABLE_NOTIONAL:
+        return {"allowed_spend": 0.0, "reason": "recommendation below $5 executable minimum"}
+    if allowed < MIN_EXECUTABLE_NOTIONAL:
+        return {"allowed_spend": 0.0, "reason": "account risk room below $5 executable minimum"}
+    return {"allowed_spend": max(0.0, allowed), "reason": None}
 
 
 def strategy_fingerprint(config: StrategyConfig | None, *, entry_mode: str) -> str:
