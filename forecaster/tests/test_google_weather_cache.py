@@ -13,6 +13,7 @@ import importlib
 import inspect
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -26,24 +27,49 @@ import google_weather_cache as gwc
 
 def test_cache_responsibilities_live_in_focused_modules():
     expected = {
-        "google_api": "fetch_google_forecast",
-        "blend_sources": "build_blend_snapshot",
-        "blend_learners": "compute_adaptive_blend_weights",
-        "blend_archive": "archive_forecast",
+        "google_api": ("fetch_google_forecast", True),
+        "blend_sources": ("build_blend_snapshot", True),
+        "blend_learners": ("compute_adaptive_blend_weights", False),
+        "blend_archive": ("archive_forecast", True),
     }
-    for module_name, function_name in expected.items():
+    for module_name, (function_name, facade_exported) in expected.items():
         module = importlib.import_module(module_name)
         function = getattr(module, function_name)
         assert function.__module__ == module_name
-        assert getattr(gwc, function_name) is function
+        assert hasattr(gwc, function_name) is facade_exported
+        if facade_exported:
+            assert getattr(gwc, function_name) is function
 
     assert len(Path(gwc.__file__).read_text(encoding="utf-8").splitlines()) < 250
-    for function_name in (
-        "adaptive_blend_weights",
-        "source_mos_corrections",
-        "rolling_blend_residual_bias",
-    ):
-        assert str(inspect.signature(getattr(gwc, function_name))) == "()"
+
+
+def test_facade_callable_signatures_match_frozen_monolith_inventory():
+    inventory_path = Path(__file__).with_name("google_weather_cache_signatures.json")
+    expected = json.loads(inventory_path.read_text(encoding="utf-8"))
+    actual_names = {
+        name
+        for name, value in vars(gwc).items()
+        if not name.startswith("__") and callable(value)
+    }
+    assert actual_names == set(expected)
+
+    for name, contract in expected.items():
+        value = getattr(gwc, name)
+        try:
+            signature = re.sub(
+                r"0x[0-9a-fA-F]+", "0x…", str(inspect.signature(value))
+            )
+            signature_error = None
+        except (TypeError, ValueError) as exc:
+            signature = None
+            signature_error = type(exc).__name__
+        annotations = {
+            key: repr(annotation)
+            for key, annotation in getattr(value, "__annotations__", {}).items()
+        }
+        assert signature == contract["signature"], name
+        assert signature_error == contract["signature_error"], name
+        assert annotations == contract["annotations"], name
 
 
 def test_blend_learners_fresh_import_is_dependency_light():
@@ -132,6 +158,32 @@ def test_pure_source_mos_learner_accepts_rows_without_archive():
     assert metadata["mode"] == "disabled"
     assert metadata["scored_days"] == 2
     assert "need 30" in metadata["reason"]
+
+
+def test_disabled_source_mos_does_not_acquire_archive_rows(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gwc, "ENABLE_SOURCE_MOS_CORRECTION", False)
+    monkeypatch.setattr(gwc, "latest_scored_blend_rows", lambda: calls.append(True))
+    monkeypatch.delattr(gwc.source_mos_corrections, "_cached", raising=False)
+
+    corrections, metadata = gwc.source_mos_corrections()
+
+    assert calls == []
+    assert corrections == {}
+    assert metadata["mode"] == "disabled"
+
+
+def test_disabled_rolling_bias_does_not_acquire_archive_rows(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gwc, "ENABLE_ROLLING_BLEND_BIAS", False)
+    monkeypatch.setattr(gwc, "latest_scored_blend_rows", lambda: calls.append(True))
+    monkeypatch.delattr(gwc.rolling_blend_residual_bias, "_cached", raising=False)
+
+    table, metadata = gwc.rolling_blend_residual_bias()
+
+    assert calls == []
+    assert table == gwc.DISABLED_BIAS_TABLE
+    assert metadata["mode"] == "disabled"
 
 
 def test_cache_cli_help_is_byte_compatible():

@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timezone
-from types import ModuleType
+from types import ModuleType as _ModuleType
 
 import blend_archive as _blend_archive
 import blend_learners as _blend_learners
@@ -28,17 +28,25 @@ _IMPLEMENTATION_MODULES = (
     _blend_learners,
     _blend_sources,
 )
-_EXPORT_OWNERS: dict[str, tuple[ModuleType, ...]] = {}
+_EXPORT_OWNERS: dict[str, tuple[_ModuleType, ...]] = {}
+_IMPLEMENTATION_ONLY_NAMES = {
+    "compute_adaptive_blend_weights",
+    "compute_rolling_blend_residual_bias",
+    "compute_source_mos_corrections",
+    "_compute_source_mos_corrections_from_rows",
+}
 
 for _module in _IMPLEMENTATION_MODULES:
     for _name in dir(_module):
         if _name.startswith("__"):
             continue
+        if _name in _IMPLEMENTATION_ONLY_NAMES:
+            continue
         _EXPORT_OWNERS[_name] = _EXPORT_OWNERS.get(_name, ()) + (_module,)
         globals().setdefault(_name, getattr(_module, _name))
 
 
-class _CompatibilityModule(ModuleType):
+class _CompatibilityModule(_ModuleType):
     """Propagate legacy facade assignments to every implementation owner."""
 
     def __setattr__(self, name, value):
@@ -48,6 +56,8 @@ class _CompatibilityModule(ModuleType):
 
 
 sys.modules[__name__].__class__ = _CompatibilityModule
+del _CompatibilityModule
+del _ModuleType
 
 
 def main():

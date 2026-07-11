@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Public forecast sources and final SFO blend orchestration."""
 
-from __future__ import annotations
-
 import json
 import os
 import sqlite3
@@ -13,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from blend_archive import latest_scored_blend_rows, table_columns, table_exists
 from blend_learners import (
+    _compute_source_mos_corrections_from_rows,
     apply_source_mos,
     blend_bias_for,
     cap_magnitude,
@@ -44,6 +43,8 @@ from weather_cache_config import (
     DURATION_RE,
     ENABLE_GOOGLE_CURRENT_CONDITIONS,
     ENABLE_GOOGLE_DAILY_FORECAST,
+    ENABLE_ROLLING_BLEND_BIAS,
+    ENABLE_SOURCE_MOS_CORRECTION,
     FORECAST_DATA_PATH,
     FRESH_OBSERVATION_MINUTES,
     GOOGLE_DAILY_DISAGREEMENT_WARN_F,
@@ -73,7 +74,9 @@ def source_mos_corrections():
     if cached is not None:
         return cached
     try:
-        result = compute_source_mos_corrections(latest_scored_blend_rows())
+        result = compute_source_mos_corrections(
+            [] if not ENABLE_SOURCE_MOS_CORRECTION else latest_scored_blend_rows()
+        )
     except Exception as exc:
         result = (
             {},
@@ -89,14 +92,23 @@ def source_mos_corrections():
     return result
 
 
-def rolling_blend_residual_bias():
+def rolling_blend_residual_bias() -> tuple[dict, dict]:
     """Compatibility adapter for the pure rolling residual learner."""
     cached = getattr(rolling_blend_residual_bias, "_cached", None)
     if cached is not None:
         return cached
-    result = compute_rolling_blend_residual_bias(latest_scored_blend_rows())
+    result = compute_rolling_blend_residual_bias(
+        [] if not ENABLE_ROLLING_BLEND_BIAS else latest_scored_blend_rows()
+    )
     rolling_blend_residual_bias._cached = result
     return result
+
+
+def _compute_source_mos_corrections(metadata, _disabled):
+    """Compatibility adapter for the historical private helper signature."""
+    return _compute_source_mos_corrections_from_rows(
+        latest_scored_blend_rows(), metadata, _disabled
+    )
 
 
 def read_nws_json(url):

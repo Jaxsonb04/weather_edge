@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Blend learners and walk-forward promotion gates."""
 
-from __future__ import annotations
-
 import math
 
 from forecast_scoring import parse_details_json
@@ -238,12 +236,12 @@ def compute_source_mos_corrections(rows):
 
     # This learner is optional; malformed caller-supplied rows fail open.
     try:
-        return _compute_source_mos_corrections(rows, metadata, _disabled)
+        return _compute_source_mos_corrections_from_rows(rows, metadata, _disabled)
     except Exception as exc:
         return _disabled(f"source MOS correction failed: {type(exc).__name__}: {exc}")
 
 
-def _compute_source_mos_corrections(rows, metadata, _disabled):
+def _compute_source_mos_corrections_from_rows(rows, metadata, _disabled):
     scored_days = len({row["target_date"] for row in rows})
     metadata["scored_days"] = scored_days
     if scored_days < SOURCE_MOS_MIN_SCORED_DAYS:

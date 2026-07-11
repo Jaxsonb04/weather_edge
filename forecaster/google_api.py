@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Google Weather API fetch, parse, cache, and paid-event budget mechanics."""
 
-from __future__ import annotations
-
 import json
 import math
 import os

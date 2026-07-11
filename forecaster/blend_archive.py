@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """SQLite archive schema, migrations, settlement refresh, and scoring."""
 
-from __future__ import annotations
-
 import json
 import os
 import sqlite3
