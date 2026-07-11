@@ -41,6 +41,18 @@ def test_max_temperature_is_anchored_to_the_temperature_section():
     assert max_temperature == 63
 
 
+def test_headerless_fallback_parses_negative_maximum_temperature():
+    _, max_temperature = clisfo.parse_clisfo("CLIMATE REPORT\n MAXIMUM -4\n MINIMUM -12\n")
+
+    assert max_temperature == -4
+
+
+def test_headerless_fallback_parses_single_digit_maximum_temperature():
+    _, max_temperature = clisfo.parse_clisfo("CLIMATE REPORT\n MAX TEMP 7\n MINIMUM 1\n")
+
+    assert max_temperature == 7
+
+
 def test_fetch_recent_clisfo_settlements_reads_versioned_reports():
     payloads = [
         b"...CLIMATE SUMMARY FOR JUNE 7 2026...\nTEMPERATURE (F)\n MAXIMUM 67 12:29 PM\n",

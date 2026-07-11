@@ -115,9 +115,9 @@ def _parse_max_temperature(text: str) -> int | None:
         if anchored:
             return int(anchored.group(1))
     for pattern in (
-        r"MAXIMUM\s+(\d{2,3})\b",
-        r"MAX TEMP(?:ERATURE)?\s+(\d{2,3})\b",
-        r"\bMAX\s+(\d{2,3})\b",
+        r"MAXIMUM\s+(-?\d{1,3})\b",
+        r"MAX TEMP(?:ERATURE)?\s+(-?\d{1,3})\b",
+        r"\bMAX\s+(-?\d{1,3})\b",
     ):
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:

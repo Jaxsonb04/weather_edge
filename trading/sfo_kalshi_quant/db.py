@@ -2592,10 +2592,11 @@ class PaperStore:
                         SELECT id,
                                ROW_NUMBER() OVER (
                                    PARTITION BY target_date, market_ticker,
-                                   UPPER(COALESCE(side, CASE
+                                   CASE
+                                       WHEN UPPER(side) IN ('YES', 'NO') THEN UPPER(side)
                                        WHEN instr(UPPER(action), 'NO') > 0 THEN 'NO'
                                        ELSE 'YES'
-                                   END))
+                                   END
                                    ORDER BY {ordering}
                                ) AS sample_rank
                         FROM decision_snapshots
