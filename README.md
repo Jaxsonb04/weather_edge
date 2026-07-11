@@ -107,15 +107,15 @@ python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --side both
 
 ## Forecast Workflow
 
-Run forecaster commands from `forecaster/` because the legacy scripts use
-project-relative paths:
+Run forecaster commands from `forecaster/` because the offline research tools
+use project-relative data and artifact paths:
 
 ```bash
 cd /path/to/WeatherEdge/forecaster
-python combine_psv.py --dir "2016-2026 weather data" --out combined_weather.csv
-python load_to_db.py
-python features.py
-python forecast_tomorrow.py
+python research/combine_psv.py --dir "2016-2026 weather data" --out combined_weather.csv
+python research/load_to_db.py
+python research/features.py
+python research/forecast_tomorrow.py
 python nws_ground_truth.py --days 14
 python google_weather_cache.py
 ```
@@ -164,7 +164,9 @@ the flagship. To ship a new app build, copy `dist/` to
 ## Kalshi Workflow
 
 Run trading commands from the repository root after installing with
-`pip install -e .`, or from `trading/` with its local package layout.
+`pip install -e .`. The root `pyproject.toml` is the repository's sole Python
+install manifest and owns both the `sfo_kalshi_quant` package and the
+`sfo-kalshi` console script.
 
 Important commands:
 

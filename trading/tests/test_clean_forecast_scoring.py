@@ -19,7 +19,7 @@ if str(FORECASTER) not in sys.path:
 
 import google_weather_cache
 from forecast_scoring import is_clean_next_day_forecast
-from forecast_validation import chronological_unit_split_masks, forecast_unit_dates
+from research.forecast_validation import chronological_unit_split_masks, forecast_unit_dates
 from settlement_calendar import (
     integer_settlement_high_f,
     local_standard_date,

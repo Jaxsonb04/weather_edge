@@ -44,17 +44,6 @@ DEFAULT_CITY = get_city("sfo")
 
 OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 
-# Fixed PST (POSIX sign is inverted: Etc/GMT+8 == UTC-8). SFO legacy constant;
-# per-city code uses CityConfig.settlement_tz_name (each station's climate day
-# runs midnight-to-midnight in ITS OWN standard time).
-SETTLEMENT_TZ = "Etc/GMT+8"
-
-# KSFO coordinates -- kept as the canonical SFO grid cell (moving it would
-# invalidate every learned per-model EMOS bias). Per-city code reads
-# CityConfig.latitude/longitude.
-KSFO_LATITUDE = DEFAULT_CITY.latitude
-KSFO_LONGITUDE = DEFAULT_CITY.longitude
-
 # Models verified to return an SFO daily max via Open-Meteo on 2026-06-25.
 # Ordered by expected value: the US MOS gold-standard (NBM) and ECMWF first, then
 # GFS/ICON/GEM globals, the AI models, and the remaining globals. EMOS/QRF in

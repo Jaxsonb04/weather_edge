@@ -124,7 +124,7 @@ def test_consensus_floor_excludes_thin_days_and_uses_sample_sigma():
         "2025-06-11": {"a": 60.0, "b": 65.0, "c": 70.0},    # 3 models -> scored
     }
     assert MIN_CONSENSUS_MODELS == 3
-    predict = make_nwp_consensus_predictor(nwp, fallback_sigma=3.0)
+    predict = make_nwp_consensus_predictor(nwp)
     assert predict("2025-06-10", None) is None
     assert predict("2099-01-01", None) is None  # no models
     mu, sigma = predict("2025-06-11", None)

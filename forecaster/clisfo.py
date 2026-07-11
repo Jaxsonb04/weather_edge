@@ -18,10 +18,6 @@ from datetime import date, datetime
 from urllib.request import Request, urlopen
 
 
-CLISFO_URL = "https://forecast.weather.gov/product.php?site=MTR&product=CLI&issuedby=SFO&format=txt"
-CLISFO_VERSION_URL = CLISFO_URL + "&version={version}"
-
-
 @dataclass(frozen=True)
 class CliReport:
     report_date: date | None
@@ -80,14 +76,6 @@ def _recent_cli_urls(base_url: str, versions: int) -> list[str]:
     return [base_url, *[f"{base_url}&version={v}" for v in range(2, versions + 1)]]
 
 
-def fetch_recent_clisfo_settlements(*, timeout: int = 20, versions: int = 10) -> dict[date, int]:
-    """Return settlement-high (F) by report date across recent CLISFO versions."""
-
-    return fetch_recent_cli_settlements(
-        "MTR", "SFO", timeout=timeout, versions=versions
-    )
-
-
 def parse_clisfo(text: str) -> tuple[date | None, int | None]:
     return _parse_report_date(text), _parse_max_temperature(text)
 
@@ -109,17 +97,6 @@ def _fetch_cli_report(url: str, *, timeout: int) -> CliReport:
     with urlopen(request, timeout=timeout) as response:
         text = response.read().decode("utf-8", errors="replace")
     return parse_cli_report(text)
-
-
-def _fetch_clisfo_url(url: str, *, timeout: int) -> tuple[date | None, int | None]:
-    report = _fetch_cli_report(url, timeout=timeout)
-    return report.report_date, report.max_temperature_f
-
-
-def _recent_clisfo_urls(versions: int) -> list[str]:
-    if versions <= 1:
-        return [CLISFO_URL]
-    return [CLISFO_URL, *[CLISFO_VERSION_URL.format(version=v) for v in range(2, versions + 1)]]
 
 
 def _parse_report_date(text: str) -> date | None:

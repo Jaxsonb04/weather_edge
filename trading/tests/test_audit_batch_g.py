@@ -856,6 +856,8 @@ def test_forecaster_filter_behavior_copies_inputs_and_preserves_runtime(tmp_path
     target = tmp_path / "target"
     source.mkdir()
     target.mkdir()
+    (source / "research").mkdir()
+    (source / "research/features.py").write_text("offline research source")
     (source / "forecast_data.json").write_text("committed forecast")
     (source / "weather_story_data.json").write_text("committed story")
     for name in ("trading_signal.json", "weather.db", "STALE_FORECAST"):
@@ -873,6 +875,7 @@ def test_forecaster_filter_behavior_copies_inputs_and_preserves_runtime(tmp_path
     assert result.returncode == 0, result.stderr
     assert (target / "forecast_data.json").read_text() == "committed forecast"
     assert (target / "weather_story_data.json").read_text() == "committed story"
+    assert (target / "research/features.py").read_text() == "offline research source"
     for name in ("trading_signal.json", "weather.db", "STALE_FORECAST"):
         assert (target / name).read_text() == "production runtime"
 

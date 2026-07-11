@@ -53,7 +53,7 @@ def test_headerless_fallback_parses_single_digit_maximum_temperature():
     assert max_temperature == 7
 
 
-def test_fetch_recent_clisfo_settlements_reads_versioned_reports():
+def test_generic_cli_fetch_reads_sfo_versioned_reports():
     payloads = [
         b"...CLIMATE SUMMARY FOR JUNE 7 2026...\nTEMPERATURE (F)\n MAXIMUM 67 12:29 PM\n",
         b"...CLIMATE SUMMARY FOR JUNE 6 2026...\nTEMPERATURE (F)\n MAXIMUM 64 11:11 AM\n",
@@ -75,8 +75,10 @@ def test_fetch_recent_clisfo_settlements_reads_versioned_reports():
         return FakeResponse(payloads[len(urls) - 1])
 
     with patch.object(clisfo, "urlopen", fake_urlopen):
-        rows = clisfo.fetch_recent_clisfo_settlements(timeout=1, versions=2)
+        rows = clisfo.fetch_recent_cli_settlements(
+            "MTR", "SFO", timeout=1, versions=2
+        )
 
     assert rows == {date(2026, 6, 7): 67, date(2026, 6, 6): 64}
-    assert urls[0] == clisfo.CLISFO_URL
+    assert urls[0] == clisfo.cli_product_url("MTR", "SFO")
     assert urls[1].endswith("&version=2")

@@ -186,36 +186,37 @@ Other limits:
 ## File Map
 
 ```text
-ab_test.py                       paired significance tests and bootstrap lift
 cities.py                        canonical fifteen-city market/station registry
 city_truth.py                    live and IEM-backed per-city CLI settlement truth
 clisfo.py                        SFO NWS Daily Climate Report parser
-combine_psv.py                   NOAA PSV files -> clean hourly CSV
-compare_models.py                head-to-head metrics and calibration plots
-eda.py                           exploratory plots
 emos_forecast.py                 rolling multi-city EMOS fit and live serve
 emos_recalibration.py            EMOS recalibration research helpers
-features.py                      feature engineering and prediction targets
-fetch_inland_history.py          inland-station history acquisition helper
 forecast_backtest.py             clean next-day SFO blend backtest
 forecast_postproc_backtest.py    multi-city post-processing comparison
 forecast_scoring.py              forecast scoring and proper-score helpers
-forecast_tomorrow.py             static month/day forecast lookup
-forecast_validation.py           artifact and forecast validation checks
 google_weather_cache.py          stable SFO refresh CLI and import facade
 google_api.py                    Google fetch/parsing and paid-event budget ledger
 blend_sources.py                 public source adapters and final blend assembly
 blend_learners.py                walk-forward weight, MOS, and residual learners
 blend_archive.py                 cache archive schema, migrations, and scoring
 weather_cache_config.py          shared SFO blend paths and control settings
-load_to_db.py                    cleaned station CSV -> SQLite
-lstm_model.py                    PyTorch LSTM training
 nwp_archive.py                   point-in-time multi-model NWP archive
 nws_ground_truth.py              NWS observations and daily-high truth
 postproc_models.py               empirical/EMOS post-processing models
 recalibration_replay.py          point-in-time recalibration replay
 settlement_calendar.py           fixed-standard settlement-day calculations
-xgboost_model.py                 XGBoost training, baselines, and diagnostics
+research/                        offline-only data preparation, training, and evaluation
+research/ab_test.py              paired significance tests and bootstrap lift
+research/combine_psv.py          NOAA PSV files -> clean hourly CSV
+research/compare_models.py       head-to-head metrics and calibration plots
+research/eda.py                  exploratory plots
+research/features.py             feature engineering and prediction targets
+research/fetch_inland_history.py inland-station history acquisition helper
+research/forecast_tomorrow.py    static month/day forecast lookup
+research/forecast_validation.py  artifact and forecast validation checks
+research/load_to_db.py           cleaned station CSV -> SQLite
+research/lstm_model.py           PyTorch LSTM training
+research/xgboost_model.py        XGBoost training, baselines, and diagnostics
 ```
 
 `model_compare_results.json` and `ab_test_results.json` are retained committed
@@ -242,20 +243,23 @@ python3 -m venv venv
 source venv/bin/activate
 pip install pandas numpy matplotlib seaborn scikit-learn xgboost torch scipy
 
-python combine_psv.py --dir "2016-2026 weather data" --out combined_weather.csv
-python load_to_db.py
-python features.py
-python xgboost_model.py
-python lstm_model.py
-python compare_models.py
-python ab_test.py
-python forecast_tomorrow.py
+python research/combine_psv.py --dir "2016-2026 weather data" --out combined_weather.csv
+python research/load_to_db.py
+python research/features.py
+python research/xgboost_model.py
+python research/lstm_model.py
+python research/compare_models.py
+python research/ab_test.py
+python research/forecast_tomorrow.py
 python nws_ground_truth.py --days 14
 python google_weather_cache.py --refresh
 ```
 
 Each step writes its outputs to disk so upstream data prep does not need to be
-rerun for every experiment.
+rerun for every experiment. Keep `forecaster/` as the working directory; the
+`research/` tools deliberately write the same project-relative artifacts as
+before the package move. Lightweight helpers are also importable as
+`research.features` and `research.forecast_validation`.
 
 For the Google fetch, put `GOOGLE_WEATHER_API_KEY=...` in `.env` first. The
 `.env` file is ignored by git.

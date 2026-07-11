@@ -9,7 +9,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
-from features import load_data, engineer_features
+try:
+    from .features import load_data, engineer_features
+except ImportError:  # Direct invocation: python research/eda.py
+    from features import load_data, engineer_features
 
 FEATURES_PATH = "weather_features.csv"
 PLOTS_DIR     = Path("plots")

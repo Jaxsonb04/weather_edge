@@ -173,7 +173,7 @@ survives a leg crossing the take-profit/stop-loss band.
   `json.JSONDecodeError`) and add bounded retry/backoff + 429 `Retry-After`
   handling inside the client.
 - **A/B test treats thousands of autocorrelated hourly rows as independent
-  "days"** (ab_test.py 124–178 with `forecast_unit_dates` returning per-hour
+  "days"** (`forecaster/research/ab_test.py` 124–178 with `forecast_unit_dates` returning per-hour
   timestamps for the 24h target), so the groupby is a no-op and the paired
   t-test / Wilcoxon / i.i.d. bootstrap report inflated significance that reaches
   the dashboard as `__N_DAYS__`/`__SPOT_*__`. *Fix:* evaluate at true daily

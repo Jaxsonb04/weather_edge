@@ -6,7 +6,7 @@ import pandas as pd
 
 
 # Fixed PST: forecast units must match the settlement-day labels built in
-# features.py (local_standard_date), or rows from the 23:00-24:00 PST hour
+# research/features.py (local_standard_date), or rows from the 23:00-24:00 PST hour
 # leak across split boundaries during DST.
 SETTLEMENT_TZ = "Etc/GMT+8"
 

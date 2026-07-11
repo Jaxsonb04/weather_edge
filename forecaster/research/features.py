@@ -1,8 +1,17 @@
 """Build the hourly feature matrix used by the forecasting models."""
 
 import sqlite3
+import sys
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
+
+# Direct invocation sets sys.path[0] to forecaster/research. Add the forecaster
+# directory so this offline package can reuse the production settlement clock
+# without duplicating it.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from settlement_calendar import integer_settlement_high_f, local_standard_date
 
@@ -12,7 +21,8 @@ SFO_TZ       = "America/Los_Angeles"
 SFO_STATION_ID = "USW00023234"
 # Inland upstream predictor: Concord leads SFO next-day heat (a hot Concord day
 # precedes an SFO day ~7F warmer than average). Stored as a second station_id in
-# the weather table by fetch_inland_history.py; joined onto the SFO hourly grid.
+# the weather table by research/fetch_inland_history.py; joined onto the SFO
+# hourly grid.
 INLAND_STATION_ID = "KCCR"
 
 # Marine-layer / sea-breeze regime is the dominant driver of the SFO daily high

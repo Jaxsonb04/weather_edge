@@ -12,10 +12,16 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from sklearn.metrics import mean_absolute_error
 
-from forecast_validation import (
-    chronological_unit_split_masks,
-    forecast_unit_dates as split_forecast_unit_dates,
-)
+try:
+    from .forecast_validation import (
+        chronological_unit_split_masks,
+        forecast_unit_dates as split_forecast_unit_dates,
+    )
+except ImportError:  # Direct invocation: python research/ab_test.py
+    from forecast_validation import (
+        chronological_unit_split_masks,
+        forecast_unit_dates as split_forecast_unit_dates,
+    )
 
 FEATURES_PATH = "weather_features.csv"
 MODELS_DIR = Path("models")

@@ -11,7 +11,6 @@ from datetime import date, timedelta
 from emos_forecast import (
     build_emos_archive,
     fetch_live_model_forecasts,
-    load_emos_archive,
     main,
     serve_live_emos,
 )
@@ -37,16 +36,19 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def test_build_and_load_emos_archive_roundtrip():
+def test_build_emos_archive_roundtrip():
     conn = sqlite3.connect(":memory:")
     _seed(conn)
 
     written = build_emos_archive(conn, lead_days=1)
     assert written > 60  # most days past warm-up get an out-of-sample EMOS forecast
 
-    loaded = load_emos_archive(conn, lead_days=1)
+    loaded = conn.execute(
+        "SELECT predicted_high_f, sigma_f FROM forecast_emos_daily_high "
+        "WHERE lead_days = 1 AND station_id = 'KSFO'"
+    ).fetchall()
     assert len(loaded) == written
-    for mu, sigma in loaded.values():
+    for mu, sigma in loaded:
         assert 60.0 < mu < 80.0
         assert sigma >= 1.5  # sigma respects the floor
 
@@ -60,11 +62,6 @@ def test_build_and_load_emos_archive_roundtrip():
         "SELECT COUNT(*) FROM forecast_emos_daily_high WHERE actual_high_f IS NOT NULL"
     ).fetchone()[0]
     assert scored == written
-
-
-def test_load_emos_archive_missing_table_returns_empty():
-    conn = sqlite3.connect(":memory:")
-    assert load_emos_archive(conn, lead_days=1) == {}
 
 
 def test_serve_live_emos_with_injected_forecasts(monkeypatch):

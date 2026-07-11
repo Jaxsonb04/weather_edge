@@ -187,26 +187,6 @@ def build_emos_archive(
     return len(rows)
 
 
-def load_emos_archive(
-    conn: sqlite3.Connection, lead_days: int = 1, station_id: str = "KSFO"
-) -> dict[str, tuple[float, float]]:
-    """target_date -> (mu, sigma) from the persisted EMOS archive."""
-
-    if conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_emos_daily_high'"
-    ).fetchone() is None:
-        return {}
-    ensure_schema(conn)
-    out: dict[str, tuple[float, float]] = {}
-    for target_date, mu, sigma in conn.execute(
-        "SELECT target_date, predicted_high_f, sigma_f FROM forecast_emos_daily_high "
-        "WHERE lead_days = ? AND station_id = ?",
-        (lead_days, station_id),
-    ):
-        out[target_date] = (float(mu), float(sigma))
-    return out
-
-
 def fetch_live_model_forecasts(
     target_date: date,
     *,

@@ -11,7 +11,10 @@ from scipy import stats
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from pathlib import Path
 
-from forecast_validation import chronological_unit_split_masks
+try:
+    from .forecast_validation import chronological_unit_split_masks
+except ImportError:  # Direct invocation: python research/compare_models.py
+    from forecast_validation import chronological_unit_split_masks
 
 FEATURES_PATH = "weather_features.csv"
 MODELS_DIR    = Path("models")

@@ -10,7 +10,10 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 import json
 from pathlib import Path
 
-from forecast_validation import chronological_unit_split_masks
+try:
+    from .forecast_validation import chronological_unit_split_masks
+except ImportError:  # Direct invocation: python research/lstm_model.py
+    from forecast_validation import chronological_unit_split_masks
 
 FEATURES_PATH = "weather_features.csv"
 MODELS_DIR    = Path("models")
@@ -263,4 +266,4 @@ if __name__ == "__main__":
     print("\nlstm summary")
     for target, r in results.items():
         print(f"  {target}:  mae {r['mae']:.2f}F   rmse {r['rmse']:.2f}F")
-    print("\nrun compare_models.py next to see xgboost vs lstm head-to-head.")
+    print("\nrun research/compare_models.py next to see xgboost vs lstm head-to-head.")

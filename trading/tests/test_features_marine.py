@@ -12,7 +12,7 @@ FORECASTER = ROOT / "forecaster"
 if str(FORECASTER) not in sys.path:
     sys.path.insert(0, str(FORECASTER))
 
-import features
+from research import features
 
 
 def _synthetic_raw(

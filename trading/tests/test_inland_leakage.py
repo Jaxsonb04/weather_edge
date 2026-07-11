@@ -13,7 +13,7 @@ FORECASTER = ROOT / "forecaster"
 if str(FORECASTER) not in sys.path:
     sys.path.insert(0, str(FORECASTER))
 
-import features
+from research import features
 
 
 def _raw_with_inland(hours: int = 24 * 16) -> pd.DataFrame:
@@ -77,7 +77,7 @@ def test_inland_high_so_far_resets_each_settlement_day():
 
 
 def test_no_negative_shift_on_inland_columns_in_source():
-    src = (FORECASTER / "features.py").read_text()
+    src = (FORECASTER / "research/features.py").read_text()
     # The only legitimate negative shifts are the target_* definitions.
     for line in src.splitlines():
         if "inland" in line and ".shift(" in line:

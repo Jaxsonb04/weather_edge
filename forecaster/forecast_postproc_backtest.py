@@ -149,7 +149,7 @@ def make_blend_predictor(blend_preds, blend_sigma):
     return predict
 
 
-def make_nwp_consensus_predictor(nwp_by_date, fallback_sigma):
+def make_nwp_consensus_predictor(nwp_by_date):
     """Mean of the multi-model day-ahead highs; cross-model spread as sigma.
 
     The spread-as-sigma is the whole point of carrying many models: on days the
@@ -169,7 +169,6 @@ def make_nwp_consensus_predictor(nwp_by_date, fallback_sigma):
         sigma = stdev(highs)  # sample (n-1) spread = unbiased predictive sigma
         return mu, max(sigma, SIGMA_FLOOR_F)
 
-    predict.fallback_sigma = fallback_sigma  # retained for API stability
     return predict
 
 
@@ -360,7 +359,7 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
     predictors = {
         "climatology": make_climatology_predictor(climatology),
         "baseline_blend": make_blend_predictor(blend_preds, blend_sigma),
-        "nwp_consensus": make_nwp_consensus_predictor(nwp_by_date, blend_sigma),
+        "nwp_consensus": make_nwp_consensus_predictor(nwp_by_date),
         "emos_ngr": make_lookup_predictor(emos_preds),
         "analog_ens": make_lookup_predictor(analog_preds),
         "emos_wmean": make_lookup_predictor(emos_wmean_preds),

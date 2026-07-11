@@ -12,7 +12,10 @@ from sklearn.model_selection import TimeSeriesSplit
 from pathlib import Path
 from itertools import product
 
-from forecast_validation import chronological_unit_split_masks
+try:
+    from .forecast_validation import chronological_unit_split_masks
+except ImportError:  # Direct invocation: python research/xgboost_model.py
+    from forecast_validation import chronological_unit_split_masks
 
 FEATURES_PATH = "weather_features.csv"
 PLOTS_DIR     = Path("plots")
