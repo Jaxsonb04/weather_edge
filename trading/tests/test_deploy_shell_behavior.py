@@ -764,6 +764,27 @@ exit 0
     assert "remains active" in result.stderr
 
 
+def test_no_timers_helper_accepts_loaded_service_in_failed_state(tmp_path: Path) -> None:
+    helper = AWS_DIR / "disable_systemd_timers.sh"
+    fake = tmp_path / "systemctl"
+    _write_executable(
+        fake,
+        """#!/usr/bin/env bash
+if [[ "$1" == show ]]; then echo loaded; exit 0; fi
+if [[ "$1" == is-active ]]; then echo failed; exit 3; fi
+exit 0
+""",
+    )
+    result = subprocess.run(
+        ["bash", str(helper)],
+        env={**os.environ, "SYSTEMCTL_BIN": str(fake)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "existing WeatherEdge timers disabled" in result.stdout
+
+
 def test_deprecated_sync_wrapper_only_forwards_to_box() -> None:
     wrapper = AWS_DIR / "sync_to_lightsail.sh"
     text = wrapper.read_text()

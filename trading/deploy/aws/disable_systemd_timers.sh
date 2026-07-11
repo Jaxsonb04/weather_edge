@@ -44,7 +44,7 @@ for pair in "${UNIT_PAIRS[@]}"; do
     service_state=""
     service_status=0
     service_state="$("${SYSTEMCTL[@]}" is-active "$service")" || service_status=$?
-    if [[ "$service_state" != "inactive" || "$service_status" -ne 3 ]]; then
+    if [[ ( "$service_state" != "inactive" && "$service_state" != "failed" ) || "$service_status" -ne 3 ]]; then
       echo "systemd service remains active or unverifiable: $service ($service_state)" >&2
       exit 1
     fi
