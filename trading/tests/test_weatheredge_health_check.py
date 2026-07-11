@@ -107,6 +107,20 @@ def test_generated_frontend_dependencies_are_excluded_from_secret_scan():
         )
 
 
+def test_expected_local_state_directories_are_excluded_from_secret_scan():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        _write(root, ".local/deploy-key.pem", "local operator credential\n")
+        _write(root, ".venv-dev/site-packages/certifi/cacert.pem", "certificate bundle\n")
+
+        results = health.run_checks(root)
+
+        assert not any(
+            result.name == "local secret files" and result.status == "FAIL"
+            for result in results
+        )
+
+
 def test_local_runtime_artifact_is_a_warning():
     with tempfile.TemporaryDirectory() as tmp:
         root = _make_minimal_project(Path(tmp))

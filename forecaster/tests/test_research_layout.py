@@ -49,7 +49,7 @@ def test_root_manifest_is_the_only_install_manifest():
     manifests = sorted(
         path.relative_to(ROOT)
         for path in ROOT.rglob("pyproject.toml")
-        if ".venv" not in path.parts
+        if not any(part.startswith(".venv") for part in path.relative_to(ROOT).parts)
     )
     assert manifests == [Path("pyproject.toml")]
 

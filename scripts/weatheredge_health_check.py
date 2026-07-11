@@ -26,7 +26,10 @@ REQUIRED_PATHS = (
 
 EXCLUDED_DIR_PARTS = {
     ".git",
+    ".local",
     ".venv",
+    ".venv-dev",
+    ".venv-test",
     "venv",
     "__pycache__",
     ".pytest_cache",
