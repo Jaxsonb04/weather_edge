@@ -850,7 +850,8 @@ def build_features(
             acc = groups[key] = _GroupAccumulator()
         acc.add(row)
 
-    # Labels: CLI settlement truth (weather.db) first, settled paper orders fill gaps.
+    # Labels come only from confirmed-final CLI truth. Booked paper settlement
+    # values may be manual, legacy, or MISSING_FINAL and must never train models.
     truth: dict[tuple[str, str], float] = {}
     if weather_db is not None and Path(weather_db).exists():
         wconn = connect_readonly(Path(weather_db))
@@ -864,17 +865,13 @@ def build_features(
     if paper_db is not None and Path(paper_db).exists():
         pconn = connect_readonly(Path(paper_db))
         try:
-            for tick, target, side, profile, order_id, pnl, high in pconn.execute(
+            for tick, target, side, profile, order_id, pnl in pconn.execute(
                 "SELECT market_ticker, target_date, side, COALESCE(risk_profile,''), "
-                "MIN(id), SUM(realized_pnl), MAX(settlement_high_f) FROM paper_orders "
+                "MIN(id), SUM(realized_pnl) FROM paper_orders "
                 "WHERE target_date >= ? GROUP BY market_ticker, target_date, side, risk_profile",
                 (min(targets),),
             ):
                 orders[(str(target), str(tick), str(side), str(profile))] = (order_id, pnl)
-                if high is not None:
-                    key = settlement_key_for_market(str(tick), str(target))
-                    if key is not None and key not in truth:
-                        truth[key] = float(high)
         finally:
             pconn.close()
 

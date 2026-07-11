@@ -257,6 +257,69 @@ def test_features_rollup_entry_labels_and_histogram(tmp_path: Path) -> None:
     assert first  # silence lint on unused id
 
 
+def test_features_exclude_booked_high_until_cli_truth_is_final(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    _insert_decision(
+        conn, created_at=f"{day}T10:05:00+00:00", target_date=day,
+        approved=1, side="NO", risk_profile="live",
+    )
+    conn.execute(
+        """
+        INSERT INTO paper_orders (
+            created_at, target_date, market_ticker, label, action, side,
+            contracts, yes_ask, fee_per_contract, cost_per_contract,
+            probability, probability_lcb, edge, edge_lcb, expected_profit,
+            status, reasons_json, settled_at, settlement_high_f, realized_pnl
+        ) VALUES (?, ?, 'KXHIGHTSFO-TEST-B68.5', '68-69', 'BUY_NO', 'NO',
+                  1, .36, .02, .66, .7, .6, .04, .01, 0,
+                  'PAPER_SETTLED', '[]', ?, 69, -.66)
+        """,
+        (f"{day}T10:05:00+00:00", day, f"{day}T23:30:00+00:00"),
+    )
+    order_id = conn.execute("SELECT id FROM paper_orders").fetchone()[0]
+    conn.execute(
+        "INSERT INTO paper_settlement_verifications "
+        "(order_id, checked_at, market_ticker, target_date, booked_high_f, "
+        "final_high_f, verification_status) VALUES (?, ?, ?, ?, 69, NULL, 'MISSING_FINAL')",
+        (order_id, f"{day}T23:40:00+00:00", "KXHIGHTSFO-TEST-B68.5", day),
+    )
+    conn.commit()
+
+    weather_db = tmp_path / "weather.db"
+    with sqlite3.connect(weather_db) as w:
+        w.execute(
+            "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+            "max_temperature_f REAL, is_final INTEGER NOT NULL DEFAULT 1)"
+        )
+        w.execute(
+            "INSERT INTO cli_settlements VALUES ('KSFO', ?, 70, 0)", (day,)
+        )
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    features_db = tmp_path / "features.db"
+
+    build_features(
+        archive_dir, features_db, weather_db, tmp_path / "paper.db",
+        log=lambda *_: None,
+    )
+    with sqlite3.connect(features_db) as f:
+        assert f.execute(
+            "SELECT settlement_high_f FROM market_side_day"
+        ).fetchone()[0] is None
+
+    with sqlite3.connect(weather_db) as w:
+        w.execute("UPDATE cli_settlements SET is_final=1")
+    build_features(
+        archive_dir, features_db, weather_db, tmp_path / "paper.db",
+        log=lambda *_: None,
+    )
+    with sqlite3.connect(features_db) as f:
+        assert f.execute(
+            "SELECT settlement_high_f FROM market_side_day"
+        ).fetchone()[0] == 70.0
+
+
 def test_cleanup_deletes_only_uploaded_files(tmp_path: Path) -> None:
     _, conn = _make_store(tmp_path)
     old_day = (datetime.now(UTC).date() - timedelta(days=40)).isoformat()
