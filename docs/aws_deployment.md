@@ -47,7 +47,19 @@ source-controlled inputs, unlike their runtime-produced JSON siblings.
 The full sync also deploys the root `pyproject.toml` and `README.md`; both
 installers keep the executable environment under `trading/.venv` while running
 the editable install from `/opt/weatheredge`. The scheduled forecaster-only sync
-does not reinstall that environment.
+does not reinstall that environment. After every full transfer succeeds, the
+sync removes only the obsolete `trading/pyproject.toml` and the eleven audited
+top-level forecaster scripts now housed under `forecaster/research/`. No runtime
+database, raw input, model directory, or publication artifact is part of that
+cleanup.
+
+During an upgrade, the installer uninstalls the retired `sfo-kalshi-quant`
+distribution before installing `weatheredge`, then verifies that the old
+distribution is absent and the `sfo-kalshi` console entry belongs to
+`weatheredge`. It removes only the old generated
+`trading/sfo_kalshi_quant.egg-info` metadata that pip's legacy editable
+uninstall leaves behind. A surviving nested trading manifest is a hard
+preflight failure.
 
 During the EC2 migration window, `sync_to_lightsail.sh` remains as a deprecated
 forwarding wrapper to `sync_to_box.sh`. It has no deployment logic of its own;

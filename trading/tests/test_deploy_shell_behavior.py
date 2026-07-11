@@ -39,7 +39,15 @@ def test_full_sync_transfers_root_install_inputs_from_arbitrary_cwd(tmp_path: Pa
     fake_bin = tmp_path / "fake bin"
     fake_bin.mkdir()
     calls = tmp_path / "rsync-calls.jsonl"
-    _write_executable(fake_bin / "ssh", "#!/bin/sh\nexit 0\n")
+    ssh_calls = tmp_path / "ssh-calls.jsonl"
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ['SSH_CALLS'], 'a', encoding='utf-8') as handle:
+    handle.write(json.dumps(sys.argv[1:]) + '\\n')
+""",
+    )
     _write_executable(
         fake_bin / "rsync",
         f"""#!{sys.executable}
@@ -73,6 +81,7 @@ for token in sys.argv[1:-1]:
             "REMOTE_USER": "ubuntu",
             "REMOTE_BASE": "/opt/weatheredge",
             "RSYNC_CALLS": str(calls),
+            "SSH_CALLS": str(ssh_calls),
             "FAKE_REMOTE_BASE": str(tmp_path / "remote base"),
         },
         capture_output=True,
@@ -89,6 +98,191 @@ for token in sys.argv[1:-1]:
     remote = tmp_path / "remote base"
     assert (remote / "pyproject.toml").read_text() == (ROOT / "pyproject.toml").read_text()
     assert (remote / "README.md").read_text() == (ROOT / "README.md").read_text()
+
+    expected_cleanup = [
+        "/opt/weatheredge/trading/pyproject.toml",
+        "/opt/weatheredge/forecaster/forecast_tomorrow.py",
+        "/opt/weatheredge/forecaster/load_to_db.py",
+        "/opt/weatheredge/forecaster/combine_psv.py",
+        "/opt/weatheredge/forecaster/eda.py",
+        "/opt/weatheredge/forecaster/lstm_model.py",
+        "/opt/weatheredge/forecaster/xgboost_model.py",
+        "/opt/weatheredge/forecaster/ab_test.py",
+        "/opt/weatheredge/forecaster/compare_models.py",
+        "/opt/weatheredge/forecaster/features.py",
+        "/opt/weatheredge/forecaster/forecast_validation.py",
+        "/opt/weatheredge/forecaster/fetch_inland_history.py",
+    ]
+    remote_calls = [json.loads(line) for line in ssh_calls.read_text().splitlines()]
+    cleanup = next(call for call in remote_calls if "rm" in call)
+    assert cleanup[cleanup.index("--") + 1 :] == expected_cleanup
+    assert not any(
+        marker in path
+        for path in expected_cleanup
+        for marker in ("weather.db", "data/", "models/", "2016-2026 weather data")
+    )
+
+
+def test_full_sync_transfer_failure_never_runs_remote_cleanup(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    transfer_count = tmp_path / "transfer-count"
+    ssh_log = tmp_path / "ssh.log"
+    _write_executable(
+        fake_bin / "ssh",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSH_LOG\"\n",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        """#!/bin/sh
+count=0
+if [ -f "$TRANSFER_COUNT" ]; then count=$(sed -n '1p' "$TRANSFER_COUNT"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$TRANSFER_COUNT"
+if [ "$count" -eq 2 ]; then exit 23; fi
+exit 0
+""",
+    )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example",
+            "EC2_KEY": str(key),
+            "REMOTE_BASE": "/opt/weatheredge",
+            "TRANSFER_COUNT": str(transfer_count),
+            "SSH_LOG": str(ssh_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 23
+    assert transfer_count.read_text().strip() == "2"
+    assert "rm -f" not in ssh_log.read_text()
+
+
+@pytest.mark.parametrize("remote_base", ["/opt/weather edge", "/opt/weatheredge/../etc"])
+def test_full_sync_rejects_unsafe_remote_base_before_any_action(
+    remote_base: str, tmp_path: Path
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    action_log = tmp_path / "actions.log"
+    for name in ("ssh", "rsync"):
+        _write_executable(
+            fake_bin / name,
+            "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$ACTION_LOG\"\n",
+        )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example",
+            "EC2_KEY": str(key),
+            "REMOTE_BASE": remote_base,
+            "ACTION_LOG": str(action_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "REMOTE_BASE" in result.stderr
+    assert not action_log.exists()
+
+
+def test_real_legacy_editable_upgrade_leaves_one_owner_and_console_script(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "remote base"
+    legacy = base / "trading"
+    package = legacy / "sfo_kalshi_quant"
+    shutil.copytree(ROOT / "trading/sfo_kalshi_quant", package)
+    shutil.copy2(ROOT / "pyproject.toml", base / "pyproject.toml")
+    shutil.copy2(ROOT / "README.md", base / "README.md")
+    shutil.copy2(ROOT / "trading/README.md", legacy / "README.md")
+    (legacy / "pyproject.toml").write_text(
+        "[project]\n"
+        "name = 'sfo-kalshi-quant'\n"
+        "version = '0.1.0'\n"
+        "readme = 'README.md'\n"
+        "requires-python = '>=3.11'\n"
+        "dependencies = []\n\n"
+        "[project.scripts]\n"
+        "sfo-kalshi = 'sfo_kalshi_quant.cli:main'\n\n"
+        "[tool.setuptools.packages.find]\n"
+        "include = ['sfo_kalshi_quant*']\n"
+    )
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+    python = venv / "bin/python"
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "--quiet", "-e", str(legacy)],
+        check=True,
+    )
+    before = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "from importlib.metadata import distribution; print(distribution('sfo-kalshi-quant').metadata['Name'])",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert before.stdout.strip() == "sfo-kalshi-quant"
+    legacy_metadata = legacy / "sfo_kalshi_quant.egg-info"
+    assert legacy_metadata.is_dir()
+
+    # This is the exact state transition performed by sync_to_box.sh before an
+    # installer runs: source stays in place, only the retired manifest is gone.
+    (legacy / "pyproject.toml").unlink()
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(AWS_DIR / "install_trading_project.sh"),
+            str(base),
+            str(python),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not legacy_metadata.exists()
+    owners = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "from importlib.metadata import distributions; print(','.join(sorted({d.metadata['Name'] for d in distributions() if d.metadata['Name'].lower() in {'weatheredge','sfo-kalshi-quant'}})))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert owners.stdout.strip() == "weatheredge"
+    help_result = subprocess.run(
+        [str(venv / "bin/sfo-kalshi"), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "usage: sfo-kalshi" in help_result.stdout
 
 
 def _fake_transfer_tools(tmp_path: Path) -> tuple[Path, Path]:

@@ -38,6 +38,17 @@ LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
 
+if [[ ! "$REMOTE_BASE" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+  echo "REMOTE_BASE must match ^/[A-Za-z0-9._/-]+$: $REMOTE_BASE" >&2
+  exit 1
+fi
+case "/${REMOTE_BASE#/}/" in
+  */../*)
+    echo "REMOTE_BASE must not contain a '..' path component: $REMOTE_BASE" >&2
+    exit 1
+    ;;
+esac
+
 if [[ ! -f "$LOCAL_FORECASTER_DIR/google_weather_cache.py" ]]; then
   echo "Forecaster source not found: $LOCAL_FORECASTER_DIR" >&2
   exit 1
@@ -90,6 +101,25 @@ rsync -av \
   --exclude 'tmp_*' \
   "$LOCAL_TRADING_DIR/" \
   "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/trading/"
+
+# Full sync intentionally avoids broad --delete semantics because production
+# runtime state shares these trees. Remove only the audited source paths retired
+# by TP-12/FC-7, and only after every transfer above has succeeded.
+REMOTE_RETIRED_PATHS=(
+  "$REMOTE_BASE/trading/pyproject.toml"
+  "$REMOTE_BASE/forecaster/forecast_tomorrow.py"
+  "$REMOTE_BASE/forecaster/load_to_db.py"
+  "$REMOTE_BASE/forecaster/combine_psv.py"
+  "$REMOTE_BASE/forecaster/eda.py"
+  "$REMOTE_BASE/forecaster/lstm_model.py"
+  "$REMOTE_BASE/forecaster/xgboost_model.py"
+  "$REMOTE_BASE/forecaster/ab_test.py"
+  "$REMOTE_BASE/forecaster/compare_models.py"
+  "$REMOTE_BASE/forecaster/features.py"
+  "$REMOTE_BASE/forecaster/forecast_validation.py"
+  "$REMOTE_BASE/forecaster/fetch_inland_history.py"
+)
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" rm -f -- "${REMOTE_RETIRED_PATHS[@]}"
 
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"

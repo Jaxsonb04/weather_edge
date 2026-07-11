@@ -15,6 +15,14 @@ if [[ ! -f "$BASE_DIR/pyproject.toml" || ! -f "$BASE_DIR/README.md" ]]; then
   echo "missing root Python project at $BASE_DIR; run sync_to_box.sh first" >&2
   exit 1
 fi
+if [[ -f "$TRADING_DIR/pyproject.toml" ]]; then
+  echo "legacy nested Python manifest remains at $TRADING_DIR/pyproject.toml; run sync_to_box.sh first" >&2
+  exit 1
+fi
+if [[ ! -f "$SCRIPT_DIR/install_trading_project.sh" ]]; then
+  echo "missing trading project installer: $SCRIPT_DIR/install_trading_project.sh" >&2
+  exit 1
+fi
 
 if [[ ! -d "$TRADING_DIR/sfo_kalshi_quant" ]]; then
   echo "missing trading repo at $TRADING_DIR" >&2
@@ -54,7 +62,7 @@ if [[ ! -d "$TRADING_DIR/.venv" ]]; then
   python3 -m venv "$TRADING_DIR/.venv"
 fi
 "$TRADING_DIR/.venv/bin/python" -m pip install --upgrade pip
-"$TRADING_DIR/.venv/bin/python" -m pip install -e "$BASE_DIR"
+bash "$SCRIPT_DIR/install_trading_project.sh" "$BASE_DIR" "$TRADING_DIR/.venv/bin/python"
 
 if [[ ! -d "$FORECASTER_DIR/.venv" ]]; then
   python3 -m venv "$FORECASTER_DIR/.venv"

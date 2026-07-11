@@ -470,8 +470,47 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     calls = pip_log.read_text().splitlines()
+    uninstall = "-m pip uninstall -y sfo-kalshi-quant"
+    assert uninstall in calls
     assert f"-m pip install -e {base}" in calls
     assert f"-m pip install -e {trading}" not in calls
+    assert calls.index(uninstall) < calls.index(f"-m pip install -e {base}")
+
+
+@pytest.mark.parametrize("installer", ["install_systemd.sh", "install_systemd_notimers.sh"])
+def test_installer_rejects_legacy_nested_manifest_before_mutation(
+    installer: str, tmp_path: Path
+) -> None:
+    base = tmp_path / "base"
+    (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
+    (base / "forecaster").mkdir()
+    (base / "forecaster/google_weather_cache.py").touch()
+    (base / "pyproject.toml").touch()
+    (base / "README.md").touch()
+    (base / "trading/pyproject.toml").write_text("[project]\nname='sfo-kalshi-quant'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    mutation_log = tmp_path / "mutation.log"
+    _write_executable(
+        fake_bin / "timedatectl",
+        "#!/bin/sh\nprintf 'timedatectl\\n' >> \"$MUTATION_LOG\"\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / installer)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BASE_DIR": str(base),
+            "MUTATION_LOG": str(mutation_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "legacy nested Python manifest" in result.stderr
+    assert not mutation_log.exists()
 
 
 def test_installer_timezone_failure_aborts_before_dependencies(tmp_path: Path) -> None:

@@ -10,7 +10,9 @@ not authorize production access or changes.
 - `sync_to_box.sh` is the operator-driven full source sync. It defaults to
   `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, sends the root
   `pyproject.toml`/`README.md` install inputs plus both source trees, and
-  preserves remote runtime state.
+  preserves remote runtime state. After all transfers succeed, it removes only
+  the retired nested manifest and eleven audited pre-`research/` script paths;
+  it never broadly deletes either runtime tree.
 - `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
   for the EC2 migration window. New commands must use `sync_to_box.sh`.
 - `pull_paper_db.sh` allocates a private mode-700 directory on the remote host,
@@ -68,7 +70,14 @@ set.
 Both modes keep the trading virtual environment at
 `/opt/weatheredge/trading/.venv`, but install the sole editable Python project
 from `/opt/weatheredge`, where the full sync places `pyproject.toml` and its
-`README.md` build input.
+`README.md` build input. An upgrade first uninstalls the retired
+`sfo-kalshi-quant` distribution, then verifies through package metadata that
+`weatheredge` is the sole project owner and still provides `sfo-kalshi`.
+The migration also removes the exact generated
+`trading/sfo_kalshi_quant.egg-info` directory that legacy editable uninstalls
+leave in the source tree.
+Installers refuse to proceed if the obsolete `trading/pyproject.toml` survives,
+so a partial or manual sync cannot recreate split ownership.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
 formed command is `python -m pip install certifi numpy pandas`. Heavy training
