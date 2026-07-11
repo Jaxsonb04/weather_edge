@@ -517,4 +517,3 @@ def _color_status(color: Color, status: str) -> str:
     if status == "REJECTED":
         return color.red(status)
     return color.yellow(status)
-

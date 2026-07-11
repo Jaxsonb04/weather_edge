@@ -6,9 +6,11 @@ import argparse
 import os
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Protocol
 from urllib.error import URLError
 
 from ..arbitrage import build_arbitrage_opportunities
@@ -37,6 +39,7 @@ from ..models import (
     BucketProbability,
     EnsembleSnapshot,
     EventSnapshot,
+    ForecastOutcome,
     ForecastSnapshot,
     IntradaySnapshot,
     MarketBin,
@@ -1172,27 +1175,76 @@ def _same_day_entry_cutoff_hour() -> int:
     return min(23, max(0, value))
 
 
+class AdapterFactory(Protocol):
+    def __call__(
+        self, forecaster_root: Path, *, city: CityConfig
+    ) -> SfoForecasterAdapter: ...
+
+
+class ScanTarget(Protocol):
+    def __call__(
+        self,
+        args: argparse.Namespace,
+        target: date,
+        adapter: SfoForecasterAdapter,
+        calibrator: ResidualCalibrator,
+        config: StrategyConfig,
+        store: PaperStore,
+        color: Color,
+        *,
+        city: CityConfig,
+        event_hint: EventSnapshot | None,
+        event_lookup_done: bool,
+        kalshi_client: KalshiPublicClient,
+        emos_lookup: dict[date, tuple[float, float]],
+        sizing_model: object,
+        pause_reasons: dict[tuple[str, str], str | None],
+    ) -> None: ...
+
+
+class ArbitrageTarget(Protocol):
+    def __call__(
+        self,
+        args: argparse.Namespace,
+        target: date,
+        config: StrategyConfig,
+        store: PaperStore,
+        color: Color,
+        *,
+        city: CityConfig,
+        event_hint: EventSnapshot | None,
+        event_lookup_done: bool,
+        kalshi_client: KalshiPublicClient,
+        pause_reasons: dict[tuple[str, str], str | None],
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class ScanCommandDependencies:
     """Patchable command wiring kept separate from the scan engine."""
 
-    cities_for_args: Callable
-    config_for_args: Callable
-    resolve_targets: Callable
-    client_factory: Callable
-    store_factory: Callable
-    city_config_factory: Callable
-    adapter_factory: Callable
-    calibrator_factory: Callable
-    sizing_model_factory: Callable
-    analyze_target: Callable
-    tail_basket_target: Callable
-    arbitrage_target: Callable
-    portfolio_target: Callable
-    city_lookup: Callable
+    cities_for_args: Callable[[argparse.Namespace], tuple[CityConfig, ...]]
+    config_for_args: Callable[[argparse.Namespace], StrategyConfig]
+    resolve_targets: Callable[
+        [argparse.Namespace, Color, KalshiPublicClient, CityConfig | None],
+        tuple[list[date], dict[date, EventSnapshot]],
+    ]
+    client_factory: Callable[[], KalshiPublicClient]
+    store_factory: Callable[[Path], PaperStore]
+    city_config_factory: Callable[[StrategyConfig, CityConfig], StrategyConfig]
+    adapter_factory: "AdapterFactory"
+    calibrator_factory: Callable[
+        [Iterable[ForecastOutcome], StrategyConfig], ResidualCalibrator
+    ]
+    sizing_model_factory: Callable[[StrategyConfig, PaperStore], object | None]
+    analyze_target: "ScanTarget"
+    tail_basket_target: "ScanTarget"
+    arbitrage_target: "ArbitrageTarget"
+    portfolio_target: "ScanTarget"
+    city_lookup: Callable[[str], CityConfig]
 
 
-def _command_cities_for_args(args: argparse.Namespace):
+def _command_cities_for_args(args: argparse.Namespace) -> tuple[CityConfig, ...]:
     value = getattr(args, "cities", None) or os.getenv("PAPER_CITIES", "all")
     return parse_city_slugs(value)
 

@@ -83,7 +83,6 @@ def cmd_backtest_calibration(args: argparse.Namespace) -> int:
             )
     return 0
 
-
 def cmd_synthetic_blend_calibration(args: argparse.Namespace) -> int:
     config = _config(args)
     ab_test_path = args.ab_test_path or args.forecaster_root / "ab_test_results.json"
@@ -305,4 +304,3 @@ def cmd_backtest_rescore(args: argparse.Namespace) -> int:
                 f"{_fmt_opt(bucket['hit_rate'], '{:.3f}')}"
             )
     return 0
-

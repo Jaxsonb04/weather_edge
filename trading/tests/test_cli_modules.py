@@ -1,6 +1,8 @@
 """Direct contract tests for the CLI's extracted domain modules."""
 
 from types import SimpleNamespace
+from collections.abc import Callable
+from typing import get_type_hints
 
 
 def test_format_module_owns_pnl_formatting() -> None:
@@ -44,6 +46,14 @@ def test_scan_command_defaults_honor_cli_city_and_bankroll_arguments() -> None:
 
     assert [city.slug for city in dependencies.cities_for_args(args)] == ["nyc"]
     assert dependencies.config_for_args(args).paper_bankroll == 123.0
+
+
+def test_scan_command_dependencies_have_parameterized_callable_types() -> None:
+    from sfo_kalshi_quant._cli.scan import ScanCommandDependencies
+
+    hints = get_type_hints(ScanCommandDependencies)
+    assert hints
+    assert all(hint is not Callable for hint in hints.values())
 
 
 def test_paper_module_owns_settlement_commands() -> None:
