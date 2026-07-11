@@ -1,10 +1,12 @@
 """Decision-snapshot retention: full window intact, dedup window keeps the
 last row per market-side-day plus approvals, old rejections drop."""
 
+import argparse
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.cli import cmd_paper_prune
 
 
 def _insert(conn, created_at, ticker, side, approved, signal_approved=0):
@@ -107,3 +109,22 @@ def test_prune_removes_only_unreferenced_contexts_without_dangling_refs():
         assert result["contexts_dropped"] == 1
         assert remaining_contexts == {kept_context}
         assert dangling == 0
+
+
+def test_prune_cli_reports_context_rows_dropped(capsys):
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "p.db"
+        store = PaperStore(db_path)
+        with store.connect() as conn:
+            _context(conn, "2026-01-01T00:00:00+00:00")
+
+        assert cmd_paper_prune(
+            argparse.Namespace(
+                db_path=db_path,
+                full_days=7,
+                dedup_days=45,
+                no_color=True,
+            )
+        ) == 0
+
+    assert "1 contexts dropped" in capsys.readouterr().out

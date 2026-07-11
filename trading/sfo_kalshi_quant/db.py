@@ -354,7 +354,8 @@ CREATE INDEX IF NOT EXISTS idx_paper_orders_group
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market
     ON decision_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_scan_context
-    ON decision_snapshots (scan_context_id);
+    ON decision_snapshots (scan_context_id)
+    WHERE scan_context_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
     ON probability_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
@@ -522,8 +523,21 @@ MONITOR_AUDIT_COLUMNS = {
 }
 
 SCAN_CONTEXT_AUDIT_COLUMNS = {
+    "created_at": "TEXT",
+    "target_date": "TEXT",
+    "risk_profile": "TEXT",
     "station_id": "TEXT",
+    "event_ticker": "TEXT",
+    "bankroll": "REAL",
+    "forecast_snapshot_id": "INTEGER REFERENCES forecast_snapshots(id)",
+    "market_snapshot_id": "INTEGER REFERENCES market_snapshots(id)",
+    "forecast_json": "TEXT",
+    "intraday_json": "TEXT",
     "market_json": "TEXT",
+    "market_consensus_json": "TEXT",
+    "prediction_features_json": "TEXT",
+    "strategy_config_json": "TEXT",
+    "schema_version": "INTEGER",
 }
 
 
@@ -563,6 +577,7 @@ class PaperStore:
         # "database is locked" on the default 5s rollback-journal connection.
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
@@ -660,6 +675,16 @@ class PaperStore:
                 {"station_id": "TEXT DEFAULT 'KSFO'"},
             )
             _migrate_legacy_profile_names(conn)
+            scan_context_index = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND name='idx_decision_snapshots_scan_context'"
+            ).fetchone()
+            if (
+                scan_context_index is not None
+                and "WHERE SCAN_CONTEXT_ID IS NOT NULL"
+                not in str(scan_context_index[0] or "").upper()
+            ):
+                conn.execute("DROP INDEX IF EXISTS idx_decision_snapshots_scan_context")
             conn.executescript(INDEXES)
             if not decision_table_existed:
                 conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
@@ -681,6 +706,39 @@ class PaperStore:
                 )
             self._ensure_open_position_guard_index(conn)
             self._ensure_shared_paper_account(conn)
+            self._report_foreign_key_violations(conn)
+
+    @staticmethod
+    def _report_foreign_key_violations(conn: sqlite3.Connection) -> None:
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if not violations:
+            return
+        details = "; ".join(
+            f"{table} rowid={rowid} -> {parent} (fk={fk_id})"
+            for table, rowid, parent, fk_id in violations[:20]
+        )
+        logger.error(
+            "foreign key integrity violations detected (%d); data was preserved. "
+            "Repair or restore the referenced parent rows before new writes: %s",
+            len(violations),
+            details,
+        )
+
+    def foreign_key_violations(self) -> list[dict[str, object]]:
+        """Return actionable FK diagnostics without modifying journal data."""
+
+        with self.connect() as conn:
+            return [
+                {
+                    "table": str(table),
+                    "rowid": rowid,
+                    "parent": str(parent),
+                    "foreign_key_id": int(fk_id),
+                }
+                for table, rowid, parent, fk_id in conn.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchall()
+            ]
 
     def _ensure_shared_paper_account(self, conn: sqlite3.Connection) -> None:
         if conn.execute(
@@ -3526,6 +3584,8 @@ def _latest_entry_decision_snapshot(
     return conn.execute(
         f"""
         SELECT d.*,
+               c.id AS scan_context_joined_id,
+               c.schema_version AS scan_context_schema_version,
                c.created_at AS scan_context_created_at,
                c.target_date AS scan_context_target_date,
                c.risk_profile AS scan_context_risk_profile,
@@ -3554,9 +3614,42 @@ def _entry_decision_ref_payload(row: sqlite3.Row | None) -> dict[str, object] | 
     if row is None:
         return None
     diagnostics = _json_object(_row_value(row, "diagnostics_json"))
+    context_id = _row_value(row, "scan_context_id")
+    if context_id is not None:
+        snapshot_id = _row_value(row, "id")
+        if _row_value(row, "scan_context_joined_id") is None:
+            raise RuntimeError(
+                f"decision snapshot {snapshot_id} references missing scan context {context_id}"
+            )
+        required = {
+            "schema_version": _row_value(row, "scan_context_schema_version"),
+            "created_at": _row_value(row, "scan_context_created_at"),
+            "target_date": _row_value(row, "scan_context_target_date"),
+            "prediction_features_json": _row_value(
+                row, "scan_context_prediction_features_json"
+            ),
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise RuntimeError(
+                f"decision snapshot {snapshot_id} references partial scan context "
+                f"{context_id}; missing {', '.join(missing)}"
+            )
+        schema_version = required["schema_version"]
+        if schema_version != 1:
+            raise RuntimeError(
+                "decision snapshot "
+                f"{snapshot_id} has unsupported scan context schema_version "
+                f"{schema_version!r} (context {context_id})"
+            )
+        if str(required["target_date"]) != str(_row_value(row, "target_date")):
+            raise RuntimeError(
+                f"decision snapshot {snapshot_id} target_date does not match "
+                f"scan context {context_id}"
+            )
     if (
         diagnostics.get("kind") == "trade_decision_signal"
-        and _row_value(row, "scan_context_id") is not None
+        and context_id is not None
     ):
         markets = _json_object(_row_value(row, "scan_context_market_json"))
         market = markets.get(str(_row_value(row, "market_ticker")))

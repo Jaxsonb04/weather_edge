@@ -3315,7 +3315,8 @@ def cmd_paper_prune(args: argparse.Namespace) -> int:
         color.cyan(
             f"pruned decision snapshots: {result['deduped']} deduped "
             f"(kept last per market-side-day), {result['dropped']} dropped "
-            f"beyond {args.dedup_days}d; approved rows untouched"
+            f"beyond {args.dedup_days}d; {result['contexts_dropped']} contexts dropped; "
+            "approved rows untouched"
         )
     )
     return 0

@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS archive_files (
     min_id INTEGER,
     max_id INTEGER,
     id_coverage_json TEXT,           -- exact inclusive id ranges for subset proof after prune
+    context_ref_coverage_json TEXT, -- exact scan_context_id ranges referenced by decisions
     created_at TEXT NOT NULL,
     uploaded_at TEXT,
     upload_target TEXT,
@@ -164,6 +165,7 @@ MANIFEST_COLUMN_TYPES = {
     "min_id": "INTEGER",
     "max_id": "INTEGER",
     "id_coverage_json": "TEXT",
+    "context_ref_coverage_json": "TEXT",
     "created_at": "TEXT",
     "uploaded_at": "TEXT",
     "upload_target": "TEXT",
@@ -216,11 +218,43 @@ class ExportResult:
     min_id: int | None
     max_id: int | None
     id_ranges: list[tuple[int, int]]
+    context_ref_ranges: list[tuple[int, int]]
+
+
+def _ranges_for_ids(ids: set[int]) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for row_id in sorted(ids):
+        if ranges and row_id == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], row_id)
+        else:
+            ranges.append((row_id, row_id))
+    return ranges
 
 
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> list[str]:
-    rows = conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
+    rows = conn.execute(
+        f"PRAGMA {_quote_identifier(schema)}.table_info({_quote_identifier(table)})"
+    ).fetchall()
     return [str(r[1]) for r in rows]
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _table_union_columns(
+    conn: sqlite3.Connection,
+    schemas: list[str],
+    table: str,
+) -> list[str]:
+    columns: list[str] = []
+    seen: set[str] = set()
+    for schema in schemas:
+        for column in _table_columns(conn, schema, table):
+            if column not in seen:
+                seen.add(column)
+                columns.append(column)
+    return columns
 
 
 def _json_default(value: object) -> object:
@@ -262,27 +296,34 @@ def _day_select(
         have = set(_table_columns(conn, schema, table))
         if not have:
             continue
+        source = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
         select_cols = ", ".join(
-            (f"{schema}.{table}.{c}" if c in have else f"NULL AS {c}")
+            (
+                f"{source}.{_quote_identifier(c)}"
+                if c in have
+                else f"NULL AS {_quote_identifier(c)}"
+            )
             for c in columns
         )
-        where = [f"{schema}.{table}.created_at >= ?", f"{schema}.{table}.created_at < ?"]
+        where = [f'{source}."created_at" >= ?', f'{source}."created_at" < ?']
         params.extend([day, next_day])
         if id_floor is not None and schema == "main" and not merge_schemas:
-            where.append(f"{schema}.{table}.id > ?")
+            where.append(f'{source}."id" > ?')
             params.append(id_floor)
         for prev in schemas[:idx]:
             if not _table_columns(conn, prev, table):
                 continue
+            previous = f"{_quote_identifier(prev)}.{_quote_identifier(table)}"
             where.append(
-                f"{schema}.{table}.id NOT IN ("
-                f"SELECT id FROM {prev}.{table} WHERE created_at >= ? AND created_at < ?)"
+                f'{source}."id" NOT IN ('
+                f'SELECT "id" FROM {previous} '
+                f'WHERE "created_at" >= ? AND "created_at" < ?)'
             )
             params.extend([day, next_day])
         parts.append(
-            f"SELECT {select_cols} FROM {schema}.{table} WHERE {' AND '.join(where)}"
+            f"SELECT {select_cols} FROM {source} WHERE {' AND '.join(where)}"
         )
-    sql = " UNION ALL ".join(parts) + " ORDER BY id"
+    sql = " UNION ALL ".join(parts) + ' ORDER BY "id"'
     return conn.execute(sql, params)
 
 
@@ -296,7 +337,7 @@ def export_day(
 ) -> ExportResult:
     """Write one complete UTC day of ``table`` to JSONL.gz, atomically."""
 
-    columns = _table_columns(conn, "main", table)
+    columns = _table_union_columns(conn, ["main", *(merge_schemas or [])], table)
     out_dir = archive_dir / table
     out_dir.mkdir(parents=True, exist_ok=True)
     final_path = out_dir / f"dt={day}.jsonl.gz"
@@ -307,6 +348,7 @@ def export_day(
     min_id: int | None = None
     max_id: int | None = None
     id_ranges: list[tuple[int, int]] = []
+    context_refs: set[int] = set()
     cursor = _day_select(conn, table, day, merge_schemas or [], columns, id_floor)
     with _gzip_writer(tmp_path) as out:
         while True:
@@ -330,6 +372,9 @@ def export_day(
                         id_ranges[-1] = (id_ranges[-1][0], row_id)
                     else:
                         id_ranges.append((row_id, row_id))
+                context_ref = record.get("scan_context_id")
+                if table == "decision_snapshots" and isinstance(context_ref, int):
+                    context_refs.add(context_ref)
 
     # Integrity check: re-read the finished file from disk and require the
     # same row count and payload hash before the manifest may record it.
@@ -356,6 +401,7 @@ def export_day(
         min_id=min_id,
         max_id=max_id,
         id_ranges=id_ranges,
+        context_ref_ranges=_ranges_for_ids(context_refs),
     )
 
 
@@ -391,6 +437,7 @@ def export_full_table(
         bytes=final_path.stat().st_size, sha256=digest.hexdigest(),
         min_id=None, max_id=None,
         id_ranges=[],
+        context_ref_ranges=[],
     )
 
 
@@ -398,14 +445,19 @@ def _record(manifest: sqlite3.Connection, result: ExportResult, archive_dir: Pat
     manifest.execute(
         "INSERT OR REPLACE INTO archive_files "
         "(table_name, day, kind, path, rows, bytes, sha256, min_id, max_id, "
-        "id_coverage_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "id_coverage_json, context_ref_coverage_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             result.table, result.day, kind,
             str(result.path.relative_to(archive_dir)),
             result.rows, result.bytes, result.sha256,
             result.min_id, result.max_id,
             json.dumps(result.id_ranges, separators=(",", ":")) if kind == "day" else None,
+            (
+                json.dumps(result.context_ref_ranges, separators=(",", ":"))
+                if kind == "day" and result.table == "decision_snapshots"
+                else None
+            ),
             _now_iso(),
         ),
     )
@@ -526,6 +578,106 @@ def _ranges_from_verified_archive(
     return ranges
 
 
+def _context_ref_ranges_from_verified_archive(
+    path: Path,
+    *,
+    day: str,
+    expected_rows: int,
+    expected_sha256: str,
+) -> list[tuple[int, int]]:
+    digest = hashlib.sha256()
+    rows = 0
+    refs: set[int] = set()
+    try:
+        with gzip.open(path, "rb") as inp:
+            for line in inp:
+                digest.update(line)
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    raise ValueError("archive row is not an object")
+                context_ref = payload.get("scan_context_id")
+                if context_ref is not None:
+                    if not isinstance(context_ref, int):
+                        raise ValueError("scan_context_id is not an integer")
+                    refs.add(context_ref)
+                rows += 1
+    except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"archive context-reference recovery found corrupt decision_snapshots "
+            f"{day}: {exc}; restore the original verified partition"
+        ) from exc
+    if rows != expected_rows or digest.hexdigest() != expected_sha256:
+        raise RuntimeError(
+            "archive context-reference recovery mismatch for decision_snapshots "
+            f"{day}; file rows/hash do not match manifest"
+        )
+    return _ranges_for_ids(refs)
+
+
+def backfill_manifest_context_ref_coverage(
+    manifest: sqlite3.Connection,
+    archive_dir: Path,
+    *,
+    log=print,
+) -> int:
+    """Recover decision->context reference ranges from verified archive bytes."""
+
+    pending = manifest.execute(
+        "SELECT day, path, rows, sha256, upload_target FROM archive_files "
+        "WHERE table_name='decision_snapshots' AND kind='day' "
+        "AND context_ref_coverage_json IS NULL ORDER BY day"
+    ).fetchall()
+    updated = 0
+    for day, rel_path, rows, sha256, upload_target in pending:
+        if rel_path is None or rows is None or not sha256:
+            raise RuntimeError(
+                f"decision archive {day} lacks metadata required to recover "
+                "scan-context references; restore or re-export it"
+            )
+        path = archive_dir / str(rel_path)
+        temporary: Path | None = None
+        source = path
+        if not path.exists():
+            if not upload_target:
+                raise RuntimeError(
+                    f"decision archive {day} lacks scan-context reference metadata and "
+                    f"its verified file is unavailable at {path}; restore it before the gate"
+                )
+            with tempfile.NamedTemporaryFile(
+                prefix="weatheredge-context-ref-", suffix=".jsonl.gz", delete=False
+            ) as tmp:
+                temporary = Path(tmp.name)
+            cp = _aws(
+                ["s3", "cp", str(upload_target), str(temporary), "--only-show-errors"]
+            )
+            if cp.returncode != 0:
+                temporary.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"could not fetch verified decision archive {day}: "
+                    f"{cp.stderr.strip()}"
+                )
+            source = temporary
+        try:
+            ranges = _context_ref_ranges_from_verified_archive(
+                source,
+                day=str(day),
+                expected_rows=int(rows),
+                expected_sha256=str(sha256),
+            )
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        manifest.execute(
+            "UPDATE archive_files SET context_ref_coverage_json=? "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (json.dumps(ranges, separators=(",", ":")), day),
+        )
+        manifest.commit()
+        updated += 1
+        log(f"backfilled archive context-reference coverage for dt={day}")
+    return updated
+
+
 def backfill_manifest_id_coverage(
     manifest: sqlite3.Connection,
     archive_dir: Path,
@@ -635,6 +787,33 @@ def _surviving_ids_are_covered(
     return True
 
 
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _ranges_are_covered(
+    required: list[tuple[int, int]],
+    available: list[tuple[int, int]],
+) -> bool:
+    available = _merge_ranges(available)
+    idx = 0
+    for start, end in _merge_ranges(required):
+        while idx < len(available) and available[idx][1] < start:
+            idx += 1
+        if idx >= len(available):
+            return False
+        parent_start, parent_end = available[idx]
+        if start < parent_start or end > parent_end:
+            return False
+    return True
+
+
 def archive_pending(
     db_path: Path,
     archive_dir: Path,
@@ -647,6 +826,7 @@ def archive_pending(
     manifest = open_manifest(archive_dir)
     try:
         backfill_manifest_id_coverage(manifest, archive_dir, log=log)
+        backfill_manifest_context_ref_coverage(manifest, archive_dir, log=log)
     except Exception:
         manifest.close()
         raise
@@ -740,6 +920,13 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
     """
 
     manifest = open_manifest(archive_dir)
+    try:
+        backfill_manifest_context_ref_coverage(
+            manifest, archive_dir, log=lambda *_: None
+        )
+    except Exception:
+        manifest.close()
+        raise
     conn = connect_readonly(db_path)
     yesterday = _utc_today() - timedelta(days=1)
     missing: list[tuple[str, str]] = []
@@ -796,10 +983,187 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
                     or not _surviving_ids_are_covered(conn, table, day, ranges)
                 ):
                     missing.append((table, day))
+
+        archived_context_ranges: list[tuple[int, int]] = []
+        for day, rows, raw_ranges, min_id, max_id in manifest.execute(
+            "SELECT day, rows, id_coverage_json, min_id, max_id FROM archive_files "
+            "WHERE table_name='scan_context_snapshots' AND kind='day'"
+        ):
+            archived_context_ranges.extend(
+                _decode_id_ranges(
+                    raw_ranges,
+                    "scan_context_snapshots",
+                    str(day),
+                    archived_rows=int(rows),
+                    min_id=min_id,
+                    max_id=max_id,
+                )
+            )
+
+        for day, raw_refs in manifest.execute(
+            "SELECT day, context_ref_coverage_json FROM archive_files "
+            "WHERE table_name='decision_snapshots' AND kind='day'"
+        ):
+            refs = _decode_id_ranges(
+                raw_refs,
+                "decision_snapshots.scan_context_id",
+                str(day),
+            )
+            if refs and not _ranges_are_covered(refs, archived_context_ranges):
+                missing.append(("scan_context_snapshots", str(day)))
+
+        decision_columns = set(
+            _table_columns(conn, "main", "decision_snapshots")
+        )
+        if {"scan_context_id", "created_at"} <= decision_columns:
+            for context_id, created_day in conn.execute(
+                "SELECT DISTINCT scan_context_id, substr(created_at, 1, 10) "
+                "FROM decision_snapshots WHERE scan_context_id IS NOT NULL "
+                "AND created_at < ?",
+                (_utc_today().isoformat(),),
+            ):
+                refs = [(int(context_id), int(context_id))]
+                if not _ranges_are_covered(refs, archived_context_ranges):
+                    missing.append(("scan_context_snapshots", str(created_day)))
     finally:
         conn.close()
         manifest.close()
+    return list(dict.fromkeys(missing))
+
+
+RESTORE_TABLE_ORDER: tuple[str, ...] = (
+    "forecast_snapshots",
+    "market_snapshots",
+    "scan_context_snapshots",
+    "decision_snapshots",
+    "probability_snapshots",
+    "paper_monitor_snapshots",
+)
+
+
+def _archived_context_link_missing_days(manifest: sqlite3.Connection) -> list[str]:
+    context_ranges: list[tuple[int, int]] = []
+    for day, rows, raw_ranges, min_id, max_id in manifest.execute(
+        "SELECT day, rows, id_coverage_json, min_id, max_id FROM archive_files "
+        "WHERE table_name='scan_context_snapshots' AND kind='day'"
+    ):
+        context_ranges.extend(
+            _decode_id_ranges(
+                raw_ranges,
+                "scan_context_snapshots",
+                str(day),
+                archived_rows=int(rows),
+                min_id=min_id,
+                max_id=max_id,
+            )
+        )
+    missing: list[str] = []
+    for day, raw_refs in manifest.execute(
+        "SELECT day, context_ref_coverage_json FROM archive_files "
+        "WHERE table_name='decision_snapshots' AND kind='day'"
+    ):
+        refs = _decode_id_ranges(
+            raw_refs,
+            "decision_snapshots.scan_context_id",
+            str(day),
+        )
+        if refs and not _ranges_are_covered(refs, context_ranges):
+            missing.append(str(day))
     return missing
+
+
+def restore_archive_days(
+    archive_dir: Path,
+    db_path: Path,
+    *,
+    days: list[str] | None = None,
+    log=print,
+) -> dict[str, int]:
+    """Restore verified day archives with FK parents inserted before children."""
+
+    from .db import PaperStore
+
+    PaperStore(db_path)
+
+    manifest = open_manifest(archive_dir)
+    try:
+        backfill_manifest_context_ref_coverage(manifest, archive_dir, log=log)
+        missing = _archived_context_link_missing_days(manifest)
+        if missing:
+            raise RuntimeError(
+                "archive restore refused: decision scan-context parents are missing "
+                f"for day(s) {', '.join(missing)}"
+            )
+        selected = set(days or [])
+        files = {
+            table: manifest.execute(
+                "SELECT day, path, rows, sha256 FROM archive_files "
+                "WHERE table_name=? AND kind='day' ORDER BY day",
+                (table,),
+            ).fetchall()
+            for table in RESTORE_TABLE_ORDER
+        }
+    finally:
+        manifest.close()
+
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA foreign_keys=ON")
+    restored = {table: 0 for table in RESTORE_TABLE_ORDER}
+    try:
+        with conn:
+            for table in RESTORE_TABLE_ORDER:
+                destination_columns = set(_table_columns(conn, "main", table))
+                if not destination_columns:
+                    continue
+                for day, rel_path, expected_rows, expected_sha256 in files[table]:
+                    if selected and str(day) not in selected:
+                        continue
+                    path = archive_dir / str(rel_path)
+                    if not path.exists():
+                        raise RuntimeError(
+                            f"archive restore requires verified local file {path}"
+                        )
+                    digest = hashlib.sha256()
+                    rows = 0
+                    with gzip.open(path, "rb") as inp:
+                        for line in inp:
+                            digest.update(line)
+                            record = json.loads(line)
+                            if not isinstance(record, dict):
+                                raise RuntimeError(
+                                    f"archive restore found non-object row in {path}"
+                                )
+                            columns = [
+                                name for name in record if name in destination_columns
+                            ]
+                            if not columns:
+                                raise RuntimeError(
+                                    f"archive restore found no compatible columns for {table}"
+                                )
+                            marks = ", ".join("?" for _ in columns)
+                            cursor = conn.execute(
+                                f"INSERT OR IGNORE INTO {_quote_identifier(table)} "
+                                f"({', '.join(_quote_identifier(c) for c in columns)}) "
+                                f"VALUES ({marks})",
+                                tuple(record[column] for column in columns),
+                            )
+                            restored[table] += max(0, cursor.rowcount)
+                            rows += 1
+                    if rows != int(expected_rows) or digest.hexdigest() != str(
+                        expected_sha256
+                    ):
+                        raise RuntimeError(
+                            f"archive restore verification failed for {table} {day}"
+                        )
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    "archive restore foreign_key_check failed; transaction rolled back: "
+                    + "; ".join(str(row) for row in violations[:20])
+                )
+    finally:
+        conn.close()
+    return restored
 
 
 # --------------------------------------------------------------------------

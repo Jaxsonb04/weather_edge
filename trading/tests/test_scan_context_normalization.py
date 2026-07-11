@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -15,6 +16,35 @@ from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, TradeDec
 from sfo_kalshi_quant.prediction_features import build_prediction_feature_snapshot
 
 from support import pre_resolution_event
+
+
+def _insert_decision_with_context(
+    conn: sqlite3.Connection,
+    *,
+    ticker: str,
+    scan_context_id: int,
+) -> int:
+    return int(
+        conn.execute(
+            """
+            INSERT INTO decision_snapshots (
+                created_at, target_date, market_ticker, label, action, side,
+                approved, probability, probability_lcb, yes_bid, yes_ask, spread,
+                fee_per_contract, cost_per_contract, edge, edge_lcb, kelly_fraction,
+                recommended_contracts, recommended_spend, expected_profit,
+                trade_quality_score, intraday_is_complete, scan_context_id,
+                diagnostics_json, reasons_json
+            ) VALUES (
+                '2026-06-20T12:00:00+00:00', '2026-06-20', ?, '60 to 61',
+                'BUY_YES', 'YES', 1, .72, .64, .24, .26, .02, .01, .27, .45,
+                .37, .04, 3, .81, 1.35, 81, 0, ?,
+                '{"schema_version": 2, "kind": "trade_decision_signal", "signal": {}}',
+                '[]'
+            )
+            """,
+            (ticker, scan_context_id),
+        ).lastrowid
+    )
 
 
 def _decision(index: int) -> TradeDecision:
@@ -303,3 +333,148 @@ def test_init_concurrently_migrates_legacy_decision_schema(tmp_path: Path) -> No
         indexes = {row[1] for row in conn.execute("PRAGMA index_list(decision_snapshots)")}
     assert "scan_context_id" in columns
     assert "idx_decision_snapshots_scan_context" in indexes
+
+
+def test_scan_context_index_is_partial_and_skips_legacy_null_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    store = PaperStore(db_path)
+    with store.connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO decision_snapshots (
+                created_at, target_date, market_ticker, label, action, side,
+                approved, probability, probability_lcb, yes_bid, yes_ask, spread,
+                fee_per_contract, cost_per_contract, edge, edge_lcb, kelly_fraction,
+                recommended_contracts, recommended_spend, expected_profit,
+                trade_quality_score, intraday_is_complete, reasons_json
+            ) VALUES (
+                '2026-06-20T12:00:00+00:00', '2026-06-20', ?, 'legacy',
+                'BUY_YES', 'YES', 0, .5, .4, .2, .3, .1, .01, .31, .1, .05,
+                .01, 0, 0, 0, 0, 0, '[]'
+            )
+            """,
+            [(f"LEGACY-{i}",) for i in range(500)],
+        )
+
+    PaperStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='idx_decision_snapshots_scan_context'"
+        ).fetchone()[0]
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM decision_snapshots "
+            "WHERE scan_context_id = 42"
+        ).fetchall()
+        prune_plan = conn.execute(
+            "EXPLAIN QUERY PLAN DELETE FROM scan_context_snapshots AS c "
+            "WHERE NOT EXISTS (SELECT 1 FROM decision_snapshots AS d "
+            "WHERE d.scan_context_id=c.id)"
+        ).fetchall()
+        indexed_rows = conn.execute(
+            "SELECT COUNT(*) FROM decision_snapshots "
+            "INDEXED BY idx_decision_snapshots_scan_context "
+            "WHERE scan_context_id IS NOT NULL"
+        ).fetchone()[0]
+    assert "WHERE scan_context_id IS NOT NULL" in sql
+    assert any("idx_decision_snapshots_scan_context" in str(row) for row in plan)
+    assert any(
+        "idx_decision_snapshots_scan_context" in str(row) for row in prune_plan
+    )
+    assert indexed_rows == 0
+
+
+def test_every_paper_store_connection_enforces_foreign_keys(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+
+    with store.connect() as conn:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            _insert_decision_with_context(
+                conn,
+                ticker="ORPHAN-WRITE",
+                scan_context_id=999,
+            )
+
+
+def test_init_reports_but_preserves_legacy_foreign_key_violations(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    db_path = tmp_path / "legacy-orphan.db"
+    PaperStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        orphan_id = _insert_decision_with_context(
+            conn,
+            ticker="LEGACY-ORPHAN",
+            scan_context_id=999,
+        )
+
+    with caplog.at_level(logging.ERROR, logger="sfo_kalshi_quant.db"):
+        store = PaperStore(db_path)
+
+    assert "foreign key integrity violation" in caplog.text.lower()
+    assert "decision_snapshots" in caplog.text
+    assert store.foreign_key_violations() == [
+        {
+            "table": "decision_snapshots",
+            "rowid": orphan_id,
+            "parent": "scan_context_snapshots",
+            "foreign_key_id": 0,
+        }
+    ]
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT scan_context_id FROM decision_snapshots WHERE id=?",
+            (orphan_id,),
+        ).fetchone()[0] == 999
+
+
+def test_corrupt_legacy_context_reference_is_visible_on_read(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-orphan.db"
+    store = PaperStore(db_path)
+    decision = _decision(0)
+    with sqlite3.connect(db_path) as conn:
+        _insert_decision_with_context(
+            conn,
+            ticker=decision.ticker,
+            scan_context_id=999,
+        )
+
+    with pytest.raises(RuntimeError, match="missing scan context 999"):
+        store.record_paper_order("2026-06-20", decision, risk_profile="live")
+
+
+def test_unsupported_scan_context_schema_is_visible_on_read(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    decision = _decision(0)
+    _record(store, [decision])
+    with store.connect() as conn:
+        conn.execute("UPDATE scan_context_snapshots SET schema_version=99")
+
+    with pytest.raises(RuntimeError, match="unsupported scan context schema_version 99"):
+        store.record_paper_order("2026-06-20", decision, risk_profile="live")
+
+
+def test_partial_legacy_scan_context_migrates_to_actionable_read_error(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "partial-context.db"
+    PaperStore(db_path)
+    decision = _decision(0)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DROP TABLE scan_context_snapshots")
+        conn.execute("CREATE TABLE scan_context_snapshots (id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO scan_context_snapshots VALUES (7)")
+        _insert_decision_with_context(
+            conn,
+            ticker=decision.ticker,
+            scan_context_id=7,
+        )
+
+    store = PaperStore(db_path)
+
+    with pytest.raises(RuntimeError, match="partial scan context 7"):
+        store.record_paper_order("2026-06-20", decision, risk_profile="live")

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import sfo_kalshi_quant.archive as archive_module
 
 from sfo_kalshi_quant.archive import (
     archive_pending,
@@ -160,6 +161,85 @@ def test_scan_context_is_archived_gated_and_recoverable_with_decisions(tmp_path:
         recovery_dir / "scan_context_snapshots" / f"dt={day}.jsonl.gz"
     )
     assert recovered_decisions[0]["scan_context_id"] == recovered_contexts[0]["id"]
+
+
+def test_gate_rejects_surviving_decision_with_missing_context_parent(tmp_path: Path) -> None:
+    store, conn = _make_store(tmp_path)
+    _record(store, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DELETE FROM scan_context_snapshots")
+    conn.commit()
+
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    assert ("scan_context_snapshots", day) in gate_missing_days(
+        tmp_path / "paper.db", archive_dir
+    )
+
+
+def test_gate_rejects_archived_decision_when_context_manifest_is_missing(
+    tmp_path: Path,
+) -> None:
+    store, conn = _make_store(tmp_path)
+    _record(store, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.commit()
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DELETE FROM decision_snapshots")
+    conn.execute("DELETE FROM scan_context_snapshots")
+    conn.commit()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "DELETE FROM archive_files WHERE table_name='scan_context_snapshots' "
+            "AND day=? AND kind='day'",
+            (day,),
+        )
+
+    assert ("scan_context_snapshots", day) in gate_missing_days(
+        tmp_path / "paper.db", archive_dir
+    )
+
+
+def test_restore_archive_inserts_context_parent_first_and_is_fk_clean(
+    tmp_path: Path,
+) -> None:
+    restore = getattr(archive_module, "restore_archive_days", None)
+    assert callable(restore), "restore_archive_days is required"
+    source, conn = _make_store(tmp_path)
+    _record(source, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.commit()
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    restored_db = tmp_path / "restored.db"
+    result = restore(archive_dir, restored_db, days=[day], log=lambda *_: None)
+
+    with sqlite3.connect(restored_db) as restored:
+        restored.execute("PRAGMA foreign_keys=ON")
+        context_id = restored.execute(
+            "SELECT id FROM scan_context_snapshots"
+        ).fetchone()[0]
+        decision_context_id = restored.execute(
+            "SELECT scan_context_id FROM decision_snapshots"
+        ).fetchone()[0]
+        violations = restored.execute("PRAGMA foreign_key_check").fetchall()
+    assert result["scan_context_snapshots"] == 1
+    assert result["decision_snapshots"] == 1
+    assert decision_context_id == context_id
+    assert violations == []
 
 
 def test_gate_blocks_until_every_day_is_archived(tmp_path: Path) -> None:
@@ -374,6 +454,50 @@ def test_manifest_coverage_backfill_fetches_verified_uploaded_copy(tmp_path: Pat
     assert json.loads(coverage) == [[row_id, row_id]]
 
 
+def test_context_ref_backfill_fetches_verified_uploaded_decision_copy(
+    tmp_path: Path,
+) -> None:
+    store, conn = _make_store(tmp_path)
+    _record(store, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T08:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T08:00:00+00:00",))
+    conn.commit()
+    context_id = conn.execute("SELECT id FROM scan_context_snapshots").fetchone()[0]
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    path = archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    uploaded_bytes = path.read_bytes()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "UPDATE archive_files SET context_ref_coverage_json=NULL, "
+            "upload_target='s3://verified/decision.jsonl.gz' "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        )
+    path.unlink()
+
+    def fake_aws(args: list[str]) -> SimpleNamespace:
+        assert args[:3] == ["s3", "cp", "s3://verified/decision.jsonl.gz"]
+        Path(args[3]).write_bytes(uploaded_bytes)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    with patch("sfo_kalshi_quant.archive._aws", side_effect=fake_aws) as aws:
+        assert archive_pending(
+            tmp_path / "paper.db", archive_dir, log=lambda *_: None
+        ) == 0
+
+    aws.assert_called_once()
+    assert not path.exists()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        coverage = manifest.execute(
+            "SELECT context_ref_coverage_json FROM archive_files "
+            "WHERE table_name='decision_snapshots' AND day=? AND kind='day'",
+            (day,),
+        ).fetchone()[0]
+    assert json.loads(coverage) == [[context_id, context_id]]
+
+
 def test_manifest_coverage_backfill_requires_one_time_original_restore(
     tmp_path: Path,
 ) -> None:
@@ -557,6 +681,109 @@ def test_merge_source_missing_columns_yields_null(tmp_path: Path) -> None:
     assert legacy["market_ticker"] == "KXHIGHTSFO-OLD-B60.5"
     assert legacy["diagnostics_json"] is None
     assert legacy["risk_profile"] is None
+
+
+def test_gate_accepts_legacy_decision_schema_without_context_column(
+    tmp_path: Path,
+) -> None:
+    day = _utc_day(2)
+    legacy_db = tmp_path / "legacy.db"
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute(
+            "CREATE TABLE decision_snapshots (id INTEGER PRIMARY KEY, "
+            "created_at TEXT, target_date TEXT, market_ticker TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO decision_snapshots VALUES (1, ?, ?, 'LEGACY')",
+            (f"{day}T10:00:00+00:00", day),
+        )
+    archive_dir = tmp_path / "archive"
+    archive_pending(
+        legacy_db, archive_dir, include_full=False, log=lambda *_: None
+    )
+
+    assert gate_missing_days(legacy_db, archive_dir) == []
+
+
+def test_merge_exports_table_missing_from_old_main_schema(tmp_path: Path) -> None:
+    main = tmp_path / "old-main.db"
+    with sqlite3.connect(main):
+        pass
+    backup_store = PaperStore(tmp_path / "normalized-backup.db")
+    _record(backup_store, [_decision(1)])
+    day = _utc_day(2)
+    with backup_store.connect() as conn:
+        conn.execute(
+            "UPDATE decision_snapshots SET created_at=?",
+            (f"{day}T10:00:00+00:00",),
+        )
+        conn.execute(
+            "UPDATE scan_context_snapshots SET created_at=?",
+            (f"{day}T10:00:00+00:00",),
+        )
+
+    archive_dir = tmp_path / "archive"
+    archive_pending(
+        main,
+        archive_dir,
+        merge_dbs=[tmp_path / "normalized-backup.db"],
+        include_full=False,
+        log=lambda *_: None,
+    )
+
+    decisions = _read_archive(
+        archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    contexts = _read_archive(
+        archive_dir / "scan_context_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    assert decisions[0]["scan_context_id"] == contexts[0]["id"]
+    assert contexts[0]["schema_version"] == 1
+
+
+def test_merge_exports_ordered_union_of_old_main_and_new_backup_columns(
+    tmp_path: Path,
+) -> None:
+    day = _utc_day(2)
+    main = tmp_path / "old-main.db"
+    with sqlite3.connect(main) as conn:
+        conn.execute(
+            "CREATE TABLE decision_snapshots (id INTEGER PRIMARY KEY, "
+            "created_at TEXT, target_date TEXT, market_ticker TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO decision_snapshots VALUES "
+            "(1, ?, ?, 'OLD-MAIN')",
+            (f"{day}T09:00:00+00:00", day),
+        )
+
+    backup_store = PaperStore(tmp_path / "new-backup.db")
+    _record(backup_store, [_decision(1)])
+    with sqlite3.connect(tmp_path / "new-backup.db") as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("UPDATE scan_context_snapshots SET id=77, created_at=?", (f"{day}T10:00:00+00:00",))
+        conn.execute(
+            "UPDATE decision_snapshots SET id=999, scan_context_id=77, created_at=?",
+            (f"{day}T10:00:00+00:00",),
+        )
+
+    archive_dir = tmp_path / "archive"
+    archive_pending(
+        main,
+        archive_dir,
+        merge_dbs=[tmp_path / "new-backup.db"],
+        include_full=False,
+        log=lambda *_: None,
+    )
+
+    rows = _read_archive(
+        archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    assert [row["id"] for row in rows] == [1, 999]
+    assert rows[0]["scan_context_id"] is None
+    assert rows[0]["diagnostics_json"] is None
+    assert rows[1]["scan_context_id"] == 77
+    assert json.loads(rows[1]["diagnostics_json"])["schema_version"] == 2
 
 
 def test_features_rollup_entry_labels_and_histogram(tmp_path: Path) -> None:
