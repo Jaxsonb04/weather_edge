@@ -12,6 +12,10 @@ not authorize production access or changes.
   state.
 - `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
   for the EC2 migration window. New commands must use `sync_to_box.sh`.
+- `pull_paper_db.sh` allocates a private mode-700 directory on the remote host,
+  writes and verifies a mode-600 SQLite backup there, verifies the downloaded
+  copy, and removes the complete temporary directory before publishing the
+  local database atomically.
 - `sync_forecaster_source.sh` is the scheduled, source-only Git refresh. It uses
   `--delete` for tracked forecaster source but shares
   `forecaster-runtime.rsync-filter` with the full sync.
@@ -51,11 +55,12 @@ cd /opt/weatheredge/trading
 bash deploy/aws/install_systemd_notimers.sh
 ```
 
-It first stops and disables the complete existing WeatherEdge timer set, then
+It first stops and disables the complete existing WeatherEdge timer set, stops
+every paired service, and verifies each loaded service is inactive. It then
 installs dependencies, both virtual environments, rendered units, and timer
-files. Real disable errors abort the install, and all timers remain disabled.
-After manual service
-checks, use `install_systemd.sh` for the established full timer set.
+files. Inspection, stop, disable, or quiescence failures abort the install;
+all timers remain disabled. After manual service checks, use
+`install_systemd.sh` for the established full timer set.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
 formed command is `python -m pip install certifi numpy pandas`. Heavy training

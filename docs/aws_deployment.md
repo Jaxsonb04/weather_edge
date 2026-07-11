@@ -28,10 +28,11 @@ bash deploy/aws/install_systemd_notimers.sh
 ```
 
 `install_systemd_notimers.sh` is the cutover-safe installer: it first stops and
-disables every existing WeatherEdge timer, fails on real systemctl errors, then
-renders every service and timer while enabling none. Inspect `/etc/weatheredge.env`, start each
-service manually, and only then enable the approved timers. For an established
-host, `install_systemd.sh` installs and enables the full timer set.
+disables every existing WeatherEdge timer, stops each paired service, verifies
+the services are inactive, and fails on real systemctl errors. It then renders
+every service and timer while enabling none. Inspect `/etc/weatheredge.env`,
+start each service manually, and only then enable the approved timers. For an
+established host, `install_systemd.sh` installs and enables the full timer set.
 
 The full sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
