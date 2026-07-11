@@ -47,6 +47,17 @@ if [[ ! -f "$HOST_KEY" ]]; then
 fi
 REMOTE_USER_NAME="${REMOTE_USER:-ubuntu}"
 BASE="${REMOTE_BASE:-/opt/weatheredge}"
+if [[ "$BASE" != /* || "$BASE" == "/" || "$BASE" == */ || "$BASE" == *//* ]]; then
+  echo "REMOTE_BASE must be a non-root canonical absolute path: $BASE" >&2
+  exit 1
+fi
+IFS='/' read -r -a BASE_COMPONENTS <<<"${BASE#/}"
+for component in "${BASE_COMPONENTS[@]}"; do
+  if [[ "$component" == "." || "$component" == ".." ]]; then
+    echo "REMOTE_BASE must not contain '.' or '..' path components: $BASE" >&2
+    exit 1
+  fi
+done
 SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
 printf -v REMOTE_MKDIR 'mkdir -p %q' "$BASE/webdist"
 RSYNC_BIN="${RSYNC_BIN:-$(command -v rsync || true)}"
@@ -60,11 +71,6 @@ if "$RSYNC_BIN" --protect-args --version >/dev/null 2>&1; then
 else
   if [[ ! "$BASE" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
     echo "rsync at $RSYNC_BIN does not support --protect-args; REMOTE_BASE must match ^/[A-Za-z0-9._/-]+$" >&2
-    exit 1
-  fi
-  BASE_COMPONENTS="/${BASE#/}/"
-  if [[ "$BASE_COMPONENTS" == */../* ]]; then
-    echo "rsync at $RSYNC_BIN does not support --protect-args; REMOTE_BASE must not contain a '..' path component" >&2
     exit 1
   fi
 fi

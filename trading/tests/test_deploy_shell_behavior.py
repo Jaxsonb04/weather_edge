@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import shutil
 import sqlite3
@@ -169,7 +170,20 @@ exit 0
     assert "rm -f" not in ssh_log.read_text()
 
 
-@pytest.mark.parametrize("remote_base", ["/opt/weather edge", "/opt/weatheredge/../etc"])
+@pytest.mark.parametrize(
+    "remote_base",
+    [
+        "/",
+        "//",
+        "/opt/weather edge",
+        "/opt//weatheredge",
+        "/opt/weatheredge/",
+        "/opt/./weatheredge",
+        "/opt/weatheredge/.",
+        "/./.",
+        "/opt/weatheredge/../etc",
+    ],
+)
 def test_full_sync_rejects_unsafe_remote_base_before_any_action(
     remote_base: str, tmp_path: Path
 ) -> None:
@@ -206,9 +220,54 @@ def test_full_sync_rejects_unsafe_remote_base_before_any_action(
     assert not action_log.exists()
 
 
+def _install_verifier_module():
+    path = AWS_DIR / "verify_trading_install.py"
+    spec = importlib.util.spec_from_file_location("verify_trading_install", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _FakeEntry:
+    def __init__(self, name: str, value: str, group: str = "console_scripts") -> None:
+        self.name = name
+        self.value = value
+        self.group = group
+
+
+class _FakeDistribution:
+    def __init__(self, name: str, entries: list[_FakeEntry]) -> None:
+        self.metadata = {"Name": name}
+        self.entry_points = entries
+
+
+def test_install_verifier_rejects_duplicate_identical_distribution_metadata() -> None:
+    verifier = _install_verifier_module()
+    entry = _FakeEntry("sfo-kalshi", "sfo_kalshi_quant.cli:main")
+    with pytest.raises(ValueError, match="exactly one WeatherEdge distribution"):
+        verifier.validate_install(
+            [_FakeDistribution("weatheredge", [entry]), _FakeDistribution("weatheredge", [entry])]
+        )
+
+
+def test_install_verifier_rejects_duplicate_identical_console_entries() -> None:
+    verifier = _install_verifier_module()
+    entry = _FakeEntry("sfo-kalshi", "sfo_kalshi_quant.cli:main")
+    with pytest.raises(ValueError, match="exactly one sfo-kalshi console entry"):
+        verifier.validate_install([_FakeDistribution("weatheredge", [entry, entry])])
+
+
+def test_install_verifier_accepts_one_weatheredge_owner_and_entry() -> None:
+    verifier = _install_verifier_module()
+    entry = _FakeEntry("sfo-kalshi", "sfo_kalshi_quant.cli:main")
+    verifier.validate_install([_FakeDistribution("WeatherEdge", [entry])])
+
+
 def test_real_legacy_editable_upgrade_leaves_one_owner_and_console_script(
     tmp_path: Path,
 ) -> None:
+    clean_python_env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     base = tmp_path / "remote base"
     legacy = base / "trading"
     package = legacy / "sfo_kalshi_quant"
@@ -234,6 +293,7 @@ def test_real_legacy_editable_upgrade_leaves_one_owner_and_console_script(
     subprocess.run(
         [str(python), "-m", "pip", "install", "--quiet", "-e", str(legacy)],
         check=True,
+        env=clean_python_env,
     )
     before = subprocess.run(
         [
@@ -244,6 +304,7 @@ def test_real_legacy_editable_upgrade_leaves_one_owner_and_console_script(
         capture_output=True,
         text=True,
         check=True,
+        env=clean_python_env,
     )
     assert before.stdout.strip() == "sfo-kalshi-quant"
     legacy_metadata = legacy / "sfo_kalshi_quant.egg-info"
@@ -269,17 +330,19 @@ def test_real_legacy_editable_upgrade_leaves_one_owner_and_console_script(
         [
             str(python),
             "-c",
-            "from importlib.metadata import distributions; print(','.join(sorted({d.metadata['Name'] for d in distributions() if d.metadata['Name'].lower() in {'weatheredge','sfo-kalshi-quant'}})))",
+            "from importlib.metadata import distributions; print(','.join(sorted(d.metadata['Name'] for d in distributions() if d.metadata['Name'].lower() in {'weatheredge','sfo-kalshi-quant'})))",
         ],
         capture_output=True,
         text=True,
         check=True,
+        env=clean_python_env,
     )
     assert owners.stdout.strip() == "weatheredge"
     help_result = subprocess.run(
         [str(venv / "bin/sfo-kalshi"), "--help"],
         capture_output=True,
         text=True,
+        env=clean_python_env,
     )
     assert help_result.returncode == 0, help_result.stderr
     assert "usage: sfo-kalshi" in help_result.stdout

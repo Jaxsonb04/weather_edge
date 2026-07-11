@@ -38,16 +38,17 @@ LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
 
-if [[ ! "$REMOTE_BASE" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
-  echo "REMOTE_BASE must match ^/[A-Za-z0-9._/-]+$: $REMOTE_BASE" >&2
+if [[ ! "$REMOTE_BASE" =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
+  echo "REMOTE_BASE must be a canonical conservative absolute path: $REMOTE_BASE" >&2
   exit 1
 fi
-case "/${REMOTE_BASE#/}/" in
-  */../*)
-    echo "REMOTE_BASE must not contain a '..' path component: $REMOTE_BASE" >&2
+IFS='/' read -r -a REMOTE_BASE_COMPONENTS <<<"${REMOTE_BASE#/}"
+for component in "${REMOTE_BASE_COMPONENTS[@]}"; do
+  if [[ "$component" == "." || "$component" == ".." ]]; then
+    echo "REMOTE_BASE must not contain '.' or '..' path components: $REMOTE_BASE" >&2
     exit 1
-    ;;
-esac
+  fi
+done
 
 if [[ ! -f "$LOCAL_FORECASTER_DIR/google_weather_cache.py" ]]; then
   echo "Forecaster source not found: $LOCAL_FORECASTER_DIR" >&2

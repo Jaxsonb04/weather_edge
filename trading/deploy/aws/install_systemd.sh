@@ -20,6 +20,10 @@ if [[ ! -f "$SCRIPT_DIR/install_trading_project.sh" ]]; then
   echo "missing trading project installer: $SCRIPT_DIR/install_trading_project.sh" >&2
   exit 1
 fi
+if [[ ! -f "$SCRIPT_DIR/verify_trading_install.py" ]]; then
+  echo "missing trading install verifier: $SCRIPT_DIR/verify_trading_install.py" >&2
+  exit 1
+fi
 
 if [[ ! -d "$TRADING_DIR/sfo_kalshi_quant" ]]; then
   echo "missing trading repo at $TRADING_DIR" >&2

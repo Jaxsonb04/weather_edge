@@ -769,6 +769,46 @@ def test_legacy_rsync_rejects_spaced_remote_path_before_build(tmp_path: Path) ->
     assert not build_log.exists()
 
 
+@pytest.mark.parametrize(
+    "remote_base",
+    ["/", "//", "/srv//weatheredge", "/srv/weatheredge/", "/srv/./weatheredge", "/srv/../weatheredge"],
+)
+def test_web_deploy_rejects_noncanonical_base_before_rsync_or_build(
+    remote_base: str, tmp_path: Path
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    action_log = tmp_path / "actions.log"
+    for name in ("bun", "ssh", "rsync"):
+        _write_executable(
+            fake_bin / name,
+            "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$ACTION_LOG\"\n",
+        )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+    env_file = tmp_path / "env"
+    env_file.write_text(
+        f"EC2_IP=ec2.example\nEC2_KEY='{key}'\nREMOTE_BASE='{remote_base}'\n"
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "deploy_web_app.sh"), str(env_file)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "ACTION_LOG": str(action_log),
+            "RSYNC_BIN": str(fake_bin / "rsync"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "REMOTE_BASE" in result.stderr
+    assert not action_log.exists()
+
+
 def test_legacy_rsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) -> None:
     key = tmp_path / "operator key.pem"
     key.touch()

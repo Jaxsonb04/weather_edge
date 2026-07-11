@@ -58,8 +58,13 @@ distribution before installing `weatheredge`, then verifies that the old
 distribution is absent and the `sfo-kalshi` console entry belongs to
 `weatheredge`. It removes only the old generated
 `trading/sfo_kalshi_quant.egg-info` metadata that pip's legacy editable
-uninstall leaves behind. A surviving nested trading manifest is a hard
-preflight failure.
+uninstall leaves behind and the transient `trading/weatheredge.egg-info`
+created during the replacement build. Verification requires exactly one
+WeatherEdge distribution metadata record and one correctly owned console
+entry. A surviving nested trading manifest is a hard preflight failure.
+
+`sync_to_box.sh` rejects noncanonical `REMOTE_BASE` spellings before any remote
+action, including root, repeated/trailing slashes, and `.` or `..` components.
 
 During the EC2 migration window, `sync_to_lightsail.sh` remains as a deprecated
 forwarding wrapper to `sync_to_box.sh`. It has no deployment logic of its own;
@@ -91,6 +96,9 @@ without protect-args `REMOTE_BASE` must match the conservative absolute-path
 allowlist `^/[A-Za-z0-9._/-]+$` and contain no `..` component. Violations are
 rejected before build or SSH. The deployer uses a temporary no-space SSH wrapper
 and removes it on every exit, so SSH key paths may contain spaces in either mode.
+Every rsync mode rejects root and noncanonical aliases (repeated/trailing
+slashes or `.`/`..` components) before build; protect-args mode still permits
+spaces within otherwise canonical path components.
 
 The environment installed at `/etc/weatheredge.env` is based on
 `trading/deploy/aws/sfo-weather.env.example`.

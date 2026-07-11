@@ -75,9 +75,14 @@ from `/opt/weatheredge`, where the full sync places `pyproject.toml` and its
 `weatheredge` is the sole project owner and still provides `sfo-kalshi`.
 The migration also removes the exact generated
 `trading/sfo_kalshi_quant.egg-info` directory that legacy editable uninstalls
-leave in the source tree.
+leave in the source tree, plus the transient `trading/weatheredge.egg-info`
+created while building the replacement editable wheel. Verification requires
+exactly one matching distribution metadata object and exactly one console entry.
 Installers refuse to proceed if the obsolete `trading/pyproject.toml` survives,
 so a partial or manual sync cannot recreate split ownership.
+The full sync accepts only canonical conservative absolute `REMOTE_BASE` paths:
+no root path, repeated or trailing slash, or `.`/`..` component reaches SSH or
+rsync.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
 formed command is `python -m pip install certifi numpy pandas`. Heavy training
@@ -157,6 +162,9 @@ Apple openrsync remains supported for the shell-safe default remote base; an
 unprotected base must match `^/[A-Za-z0-9._/-]+$` and contain no `..` path
 component. Anything else is rejected before build or SSH. A temporary no-space
 SSH wrapper keeps spaced key paths intact in both modes.
+All rsync modes reject root and noncanonical aliases (repeated/trailing slashes
+or `.`/`..` components) before build. Protect-args mode continues to permit
+spaces within otherwise canonical path components.
 
 The canonical environment reference is `sfo-weather.env.example`. It contains
 safe defaults for the five live-execution gates, publication paths and locks,
