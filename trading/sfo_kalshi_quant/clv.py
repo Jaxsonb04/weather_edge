@@ -30,7 +30,6 @@ recorded high are reported as uncovered rather than guessed.
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path

@@ -1368,7 +1368,7 @@ def _rolling_live_event_targets(
     return targets, {target: events_by_target[target] for target in targets}
 
 
-@dataclass(frozen=True)
+@dataclass
 class ScanContext:
     city: CityConfig
     series_ticker: str

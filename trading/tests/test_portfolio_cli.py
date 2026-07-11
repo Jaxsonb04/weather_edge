@@ -307,3 +307,82 @@ def test_analysis_and_portfolio_scans_share_one_context_builder() -> None:
     ):
         assert duplicated_step not in analyze_source
         assert duplicated_step not in portfolio_source
+
+
+def test_build_scan_context_preserves_event_fallback_and_injected_sizing_model() -> None:
+    target = date(2026, 7, 12)
+    city = get_city("nyc")
+    forecast = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=82.0,
+        source_spread_override_f=3.0,
+        method="fixture",
+    )
+    market = cli_module.fallback_bins("KXHIGHNY-26JUL12", 82.0)[0]
+    event = cli_module.EventSnapshot(
+        event_ticker="KXHIGHNY-26JUL12",
+        title="NY fixture",
+        target_date=target,
+        markets=[market],
+    )
+    adapter = Mock()
+    adapter.latest_blend.return_value = forecast
+    adapter.load_emos_mu_sigma.return_value = {target: (82.0, 3.0)}
+    calibrator = Mock()
+    probabilities = {market.ticker: object()}
+    calibrator.bucket_probabilities.return_value = probabilities
+    store = Mock()
+    evaluator = Mock()
+    decisions = [object()]
+    evaluator.rank.return_value = decisions
+    sizing_model = object()
+    args = SimpleNamespace(offline_events=None, side="both")
+
+    with (
+        patch("sfo_kalshi_quant.cli._enforce_live_forecast_freshness"),
+        patch("sfo_kalshi_quant.cli._intraday_for_target", return_value=None),
+        patch("sfo_kalshi_quant.cli.build_market_consensus", return_value="consensus"),
+        patch("sfo_kalshi_quant.cli._risk_profile_name", return_value="live"),
+        patch("sfo_kalshi_quant.cli._sizing_bankroll", return_value=750.0),
+        patch("sfo_kalshi_quant.cli._build_sizing_model") as build_sizing,
+        patch("sfo_kalshi_quant.cli.TradeEvaluator", return_value=evaluator) as evaluator_type,
+    ):
+        listed = cli_module.build_scan_context(
+            args,
+            target,
+            adapter,
+            calibrator,
+            StrategyConfig(emos_distribution_enabled=True),
+            store,
+            Color.from_no_color(True),
+            city=city,
+            event_hint=event,
+            event_lookup_done=True,
+            sizing_model=sizing_model,
+            fallback_event_title="fallback",
+        )
+        fallback = cli_module.build_scan_context(
+            args,
+            target,
+            adapter,
+            calibrator,
+            StrategyConfig(emos_distribution_enabled=True),
+            store,
+            Color.from_no_color(True),
+            city=city,
+            event_lookup_done=True,
+            sizing_model=sizing_model,
+            fallback_event_title="fallback",
+        )
+
+    assert listed.event is event
+    assert listed.event_title == "NY fixture"
+    assert listed.market_available is True
+    assert listed.paper_bankroll == 750.0
+    assert listed.decisions is decisions
+    assert fallback.event is None
+    assert fallback.event_title == "fallback"
+    assert fallback.market_available is False
+    build_sizing.assert_not_called()
+    assert evaluator_type.call_count == 2
+    assert all(call.kwargs["sizing_model"] is sizing_model for call in evaluator_type.call_args_list)

@@ -3,6 +3,8 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from sfo_kalshi_quant import archive, db, strategy_research
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.models import MarketBin
@@ -143,6 +145,46 @@ def test_unknown_strike_with_bounds_uses_canonical_between_semantics_everywhere(
     assert db._row_resolves_yes(row, 71.0) is expected
     assert db._decision_row_resolves_yes(row, 71.0) is expected
     assert archive._resolves_yes("future_range_name", 70.0, 72.0, 71.0) is expected
+
+
+@pytest.mark.parametrize(
+    ("strike", "floor", "cap", "high", "expected"),
+    [
+        ("less", None, "70", 69.0, True),
+        ("less", None, "70", 70.0, False),
+        ("greater", "72", None, 73.0, True),
+        ("greater", "72", None, 72.0, False),
+        ("between", "70", "72", 71.0, True),
+        ("between", "70", "72", 73.0, False),
+    ],
+)
+def test_archive_adapter_safely_coerces_numeric_string_strikes(
+    strike: str,
+    floor: str | None,
+    cap: str | None,
+    high: float,
+    expected: bool,
+) -> None:
+    assert archive._resolves_yes(strike, floor, cap, high) is expected
+
+
+@pytest.mark.parametrize(
+    ("strike", "floor", "cap", "high"),
+    [
+        ("LESS", None, 70.0, 69.0),
+        ("GREATER", 72.0, None, 73.0),
+    ],
+)
+def test_canonical_strike_keywords_remain_case_sensitive(
+    strike: str,
+    floor: float | None,
+    cap: float | None,
+    high: float,
+) -> None:
+    market = _market_bin(strike_type=strike, floor_strike=floor, cap_strike=cap)
+
+    assert market.resolves_yes(high) is False
+    assert archive._resolves_yes(strike, floor, cap, high) is False
 
 
 def test_all_bin_resolution_adapters_match_market_bin_boundaries() -> None:

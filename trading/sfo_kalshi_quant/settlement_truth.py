@@ -31,22 +31,24 @@ def integer_settlement_high_f(value: object) -> float:
 
 def bin_resolves_yes(
     strike_type: str | None,
-    floor_strike: float | None,
-    cap_strike: float | None,
+    floor_strike: object,
+    cap_strike: object,
     settlement_high_f: float,
 ) -> bool:
     """Canonical typed-bin rule used by ``MarketBin.resolves_yes`` and rows."""
 
-    strike = str(strike_type or "").lower()
+    strike = str(strike_type or "")
+    floor_value = _optional_float(floor_strike)
+    cap_value = _optional_float(cap_strike)
     if strike == "less":
-        return cap_strike is not None and settlement_high_f < cap_strike
+        return cap_value is not None and settlement_high_f < cap_value
     if strike == "greater":
-        return floor_strike is not None and settlement_high_f > floor_strike
+        return floor_value is not None and settlement_high_f > floor_value
     # MarketBin has always treated every other typed strike as a bounded bin.
     return (
-        floor_strike is not None
-        and cap_strike is not None
-        and floor_strike <= settlement_high_f <= cap_strike
+        floor_value is not None
+        and cap_value is not None
+        and floor_value <= settlement_high_f <= cap_value
     )
 
 

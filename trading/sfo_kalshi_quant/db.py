@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import re
 import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
@@ -16,7 +15,6 @@ from ._util import (
     _json_object,
     _json_safe_value,
     _optional_float,
-    _parse_timestamp,
     _round_number,
     _row_value as _shared_row_value,
 )
