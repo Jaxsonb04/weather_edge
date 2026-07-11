@@ -10,6 +10,7 @@ ROLLING_ORIGIN_V2_SOURCE = "rolling_origin_v2"
 ROLLING_ORIGIN_SOURCES = frozenset(
     {ROLLING_ORIGIN_V1_SOURCE, ROLLING_ORIGIN_V2_SOURCE}
 )
+LIVE_SOURCE = "live"
 
 
 def preferred_rolling_origin_source(sources: Iterable[str]) -> str | None:
@@ -21,3 +22,15 @@ def preferred_rolling_origin_source(sources: Iterable[str]) -> str | None:
     if ROLLING_ORIGIN_V1_SOURCE in available:
         return ROLLING_ORIGIN_V1_SOURCE
     return None
+
+
+def forecast_source_precedence(source: str) -> int:
+    """Public/live read priority before freshness within the same source."""
+
+    if source == LIVE_SOURCE:
+        return 3
+    if source == ROLLING_ORIGIN_V2_SOURCE:
+        return 2
+    if source == ROLLING_ORIGIN_V1_SOURCE:
+        return 1
+    return 0

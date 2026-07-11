@@ -62,7 +62,9 @@ Responsibilities:
   falling back to legacy `rolling_origin` only when that scope has no v2 rows.
   Serve recalibration, replay, residual calibration, and ship scorecards never
   mix or double-count the two model versions; explicit source reads remain exact
-  for historical comparisons. Live served rows still override archive rows.
+  for historical comparisons. Public Coverage, the trading adapter, and the
+  offline edge scan rank live > v2 > v1 before comparing timestamps. Health
+  queries that order by timestamp are explicitly filtered to `source='live'`.
 - fetch Kalshi public market/orderbook data
 - convert forecast distributions into Kalshi bin probabilities
 - apply same-day observed-high and boundary-aware intraday updates, with

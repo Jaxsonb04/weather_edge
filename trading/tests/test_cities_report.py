@@ -153,15 +153,16 @@ def test_cities_payload_includes_city_settlement_day_and_forecast_target_status(
                     n_models INTEGER,
                     model_spread_f REAL,
                     fetched_at TEXT NOT NULL,
-                    method TEXT
+                    method TEXT,
+                    source TEXT NOT NULL
                 )
                 """
             )
             conn.executemany(
-                "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
-                    ("KSFO", "2026-07-09", 0, 68.0, 2.0, 4, 1.0, "2026-07-09T11:00:00+00:00", "emos"),
-                    ("KSFO", "2026-07-10", 1, 69.0, 2.1, 4, 1.1, "2026-07-09T11:00:00+00:00", "emos"),
+                    ("KSFO", "2026-07-09", 0, 68.0, 2.0, 4, 1.0, "2026-07-09T11:00:00+00:00", "emos", "live"),
+                    ("KSFO", "2026-07-10", 1, 69.0, 2.1, 4, 1.1, "2026-07-09T11:00:00+00:00", "emos", "live"),
                 ],
             )
 
@@ -178,6 +179,47 @@ def test_cities_payload_includes_city_settlement_day_and_forecast_target_status(
         "settlement_day",
         "upcoming",
     ]
+
+
+def test_public_coverage_prefers_live_then_v2_then_v1_before_timestamp():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir()
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                """
+                CREATE TABLE forecast_emos_daily_high (
+                    station_id TEXT NOT NULL, target_date TEXT NOT NULL,
+                    lead_days INTEGER, predicted_high_f REAL NOT NULL,
+                    sigma_f REAL NOT NULL, n_models INTEGER,
+                    model_spread_f REAL, fetched_at TEXT NOT NULL,
+                    method TEXT, source TEXT NOT NULL
+                )
+                """
+            )
+            conn.executemany(
+                "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?, ?, 2, 8, 1, ?, 'emos', ?)",
+                [
+                    # Live wins even though both rolling rebuilds are newer.
+                    ("KSFO", "2026-07-09", 0, 68, "2026-07-09T09:00:00+00:00", "live"),
+                    ("KSFO", "2026-07-09", 0, 88, "2026-07-09T11:00:00+00:00", "rolling_origin_v2"),
+                    ("KSFO", "2026-07-09", 0, 98, "2026-07-09T12:00:00+00:00", "rolling_origin"),
+                    # Without live, v2 wins over a newer v1 rebuild.
+                    ("KSFO", "2026-07-10", 1, 69, "2026-07-09T09:00:00+00:00", "rolling_origin_v2"),
+                    ("KSFO", "2026-07-10", 1, 99, "2026-07-09T12:00:00+00:00", "rolling_origin"),
+                    # A v1-only target remains available as the compatibility fallback.
+                    ("KSFO", "2026-07-11", 2, 70, "2026-07-09T12:00:00+00:00", "rolling_origin"),
+                ],
+            )
+
+        payload = cities_report.build_cities_data(
+            root,
+            Path(tmp) / "missing-paper.db",
+            now=NOW,
+        )
+
+    sfo = next(city for city in payload["cities"] if city["slug"] == "sfo")
+    assert [row["predicted_high_f"] for row in sfo["forecasts"]] == [68.0, 69.0, 70.0]
 
 
 def test_decision_aggregation_query_uses_created_market_covering_index():

@@ -20,6 +20,7 @@ from pathlib import Path
 from ._util import _table_exists
 from .cities import CITIES, CityConfig, city_for_market_ticker
 from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, normalize_risk_profile_name
+from .emos_sources import forecast_source_precedence
 from .settlement_day import settlement_today
 
 
@@ -47,19 +48,25 @@ def _city_forecasts(
     rows = conn.execute(
         """
         SELECT target_date, lead_days, predicted_high_f, sigma_f, n_models,
-               model_spread_f, fetched_at, method
+               model_spread_f, fetched_at, method, source
         FROM forecast_emos_daily_high
         WHERE station_id = ? AND target_date >= ?
-        ORDER BY target_date, fetched_at DESC
+        ORDER BY target_date
         """,
         (city.nws_station_id, today.isoformat()),
     ).fetchall()
-    seen: set[str] = set()
+    preferred: dict[str, tuple[tuple[int, str], tuple]] = {}
+    for row in rows:
+        target, _lead, _mu, _sigma, _n_models, _spread, fetched_at, _method, source = row
+        rank = (forecast_source_precedence(str(source)), str(fetched_at))
+        current = preferred.get(str(target))
+        if current is None or rank > current[0]:
+            preferred[str(target)] = (rank, row)
+
     out: list[dict] = []
-    for target, lead, mu, sigma, n_models, spread, fetched_at, method in rows:
-        if target in seen:
-            continue  # freshest row per target wins (ordered DESC)
-        seen.add(target)
+    for target in sorted(preferred):
+        _rank, row = preferred[target]
+        target, lead, mu, sigma, n_models, spread, fetched_at, method, _source = row
         out.append(
             {
                 "target_date": target,

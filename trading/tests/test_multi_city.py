@@ -146,6 +146,28 @@ def test_emos_snapshot_prefers_live_over_newer_rolling_origin_rebuild():
         assert snapshot.raw["emos"]["sigma"] == 2.1
 
 
+def test_emos_snapshot_prefers_v2_over_newer_v1_when_live_is_absent():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _seed_emos(root)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "('KNYC', '2026-07-09', 1, 86.0, 2.2, 8, 4.0, "
+                "'2026-07-07T12:00:00+00:00', 'emos_wmean', 'rolling_origin_v2', 80)"
+            )
+            conn.execute(
+                "INSERT INTO forecast_emos_daily_high VALUES "
+                "('KNYC', '2026-07-09', 1, 99.0, 9.0, 8, 8.0, "
+                "'2026-07-07T13:00:00+00:00', 'emos_wmean', 'rolling_origin', 80)"
+            )
+
+        snapshot = SfoForecasterAdapter(root, city=get_city("nyc")).latest_blend(date(2026, 7, 9))
+
+        assert snapshot.predicted_high_f == 86.0
+        assert snapshot.raw["emos"]["sigma"] == 2.2
+
+
 def test_emos_only_city_with_no_forecast_raises_not_guesses():
     from sfo_kalshi_quant.forecast import ForecastDataError
 

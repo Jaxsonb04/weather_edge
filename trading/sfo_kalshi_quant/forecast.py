@@ -12,6 +12,7 @@ from .cities import CityConfig, get_city
 from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ, intraday_timezone_for_city
 from .emos_sources import (
     ROLLING_ORIGIN_SOURCES,
+    forecast_source_precedence,
     preferred_rolling_origin_source,
 )
 from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
@@ -345,12 +346,9 @@ class SfoForecasterAdapter:
             return None
         query = """
             SELECT predicted_high_f, sigma_f, n_models, model_spread_f,
-                   fetched_at, method, lead_days
+                   fetched_at, method, lead_days, source
             FROM forecast_emos_daily_high
             WHERE station_id = ? AND target_date = ?
-            ORDER BY CASE WHEN source = 'live' THEN 1 ELSE 0 END DESC,
-                     fetched_at DESC
-            LIMIT 1
         """
         try:
             with sqlite3.connect(self.weather_db) as conn:
@@ -362,12 +360,19 @@ class SfoForecasterAdapter:
                 }
                 if "station_id" not in columns:
                     return None
-                row = conn.execute(query, (self.station_id, target.isoformat())).fetchone()
+                rows = conn.execute(query, (self.station_id, target.isoformat())).fetchall()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
-        if row is None:
+        if not rows:
             return None
-        mu, sigma, n_models, model_spread, fetched_at, method, lead_days = row
+        row = max(
+            rows,
+            key=lambda candidate: (
+                forecast_source_precedence(str(candidate[7])),
+                str(candidate[4]),
+            ),
+        )
+        mu, sigma, n_models, model_spread, fetched_at, method, lead_days, _source = row
         return ForecastSnapshot(
             target_date=target,
             predicted_high_f=float(mu),

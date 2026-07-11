@@ -1,9 +1,12 @@
 """edge_scan internals: maker post pricing, bin probability, sample-size math."""
 
 import math
+import sqlite3
+from pathlib import Path
 
 from sfo_kalshi_quant.edge_scan import (
     _bin_yes_probability,
+    _load_live_emos,
     _maker_post_price,
     required_sample_size,
     summarize,
@@ -89,3 +92,29 @@ def test_summarize_counts_and_percentiles():
     assert summary["distinct_city_days"] == 1
     assert summary["model_edge_mean"] == 0.01
     assert summary["sample_size_note"]["n_at_literature_priors"] == 619
+
+
+def test_offline_edge_scan_prefers_live_then_v2_then_v1(tmp_path: Path):
+    db = tmp_path / "weather.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE forecast_emos_daily_high ("
+            "station_id TEXT, target_date TEXT, predicted_high_f REAL, "
+            "sigma_f REAL, fetched_at TEXT, source TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO forecast_emos_daily_high VALUES ('KSFO', ?, ?, 2, ?, ?)",
+            [
+                ("2026-07-09", 68, "2026-07-09T09:00:00+00:00", "live"),
+                ("2026-07-09", 88, "2026-07-09T12:00:00+00:00", "rolling_origin_v2"),
+                ("2026-07-10", 69, "2026-07-09T09:00:00+00:00", "rolling_origin_v2"),
+                ("2026-07-10", 99, "2026-07-09T12:00:00+00:00", "rolling_origin"),
+                ("2026-07-11", 70, "2026-07-09T12:00:00+00:00", "rolling_origin"),
+            ],
+        )
+
+    assert _load_live_emos(db, "KSFO") == {
+        "2026-07-09": (68.0, 2.0),
+        "2026-07-10": (69.0, 2.0),
+        "2026-07-11": (70.0, 2.0),
+    }

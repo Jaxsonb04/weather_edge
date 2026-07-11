@@ -39,6 +39,7 @@ from urllib.error import URLError
 
 from .cities import CityConfig, parse_city_slugs
 from .config import DEFAULT_FORECASTER_ROOT
+from .emos_sources import forecast_source_precedence
 from .fees import quadratic_fee_average_per_contract
 from .kalshi import KalshiPublicClient
 from .models import EventSnapshot, MarketBin
@@ -74,7 +75,7 @@ def _load_live_emos(
 
     if not weather_db.exists():
         return {}
-    out: dict[str, tuple[float, float]] = {}
+    preferred: dict[str, tuple[tuple[int, str], tuple[float, float]]] = {}
     with sqlite3.connect(weather_db) as conn:
         if (
             conn.execute(
@@ -89,13 +90,17 @@ def _load_live_emos(
         }
         if "station_id" not in columns:
             return {}
-        for target_date, mu, sigma in conn.execute(
-            "SELECT target_date, predicted_high_f, sigma_f FROM forecast_emos_daily_high "
-            "WHERE station_id = ? ORDER BY fetched_at",
+        for target_date, mu, sigma, fetched_at, source in conn.execute(
+            "SELECT target_date, predicted_high_f, sigma_f, fetched_at, source "
+            "FROM forecast_emos_daily_high WHERE station_id = ?",
             (station_id,),
         ):
-            out[str(target_date)] = (float(mu), float(sigma))
-    return out
+            target = str(target_date)
+            rank = (forecast_source_precedence(str(source)), str(fetched_at))
+            current = preferred.get(target)
+            if current is None or rank > current[0]:
+                preferred[target] = (rank, (float(mu), float(sigma)))
+    return {target: value for target, (_rank, value) in preferred.items()}
 
 
 def _maker_post_price(side_bid: float, side_ask: float) -> float | None:
