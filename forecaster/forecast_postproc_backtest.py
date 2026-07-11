@@ -38,8 +38,6 @@ from statistics import fmean, pstdev, stdev
 
 from forecast_backtest import (
     COHORTS,
-    SIGMA_FLOOR_F,
-    _multicat_brier,
     _residual_sigma,
     cohort_sigmas,
     diebold_mariano,
@@ -53,7 +51,14 @@ from postproc_models import (
     emos_ngr_predictions,
     make_lookup_predictor,
 )
+from postproc_recalibration import fit_by_cohort
+from scores import (
+    SIGMA_FLOOR_F,
+    gaussian_crps,
+    multicategory_brier as _multicat_brier,
+)
 from settlement_calendar import integer_settlement_high_f
+from truth_store import load_clisfo_truth, load_nwp_forecasts
 
 DB_PATH = Path(__file__).resolve().parent / "weather.db"
 CLIMATOLOGY_WINDOW_DAYS = 15
@@ -77,81 +82,6 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         ).fetchone()
         is not None
     )
-
-
-# --------------------------------------------------------------------------- #
-# Proper scores
-# --------------------------------------------------------------------------- #
-
-def _normal_pdf(x: float) -> float:
-    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
-
-
-def _normal_cdf(x: float) -> float:
-    return 0.5 * math.erfc(-x / math.sqrt(2.0))
-
-
-def gaussian_crps(mu: float, sigma: float, y: float) -> float:
-    """Closed-form CRPS of a Gaussian predictive distribution (Gneiting 2005).
-
-    CRPS(N(mu, sigma), y) = sigma * [ z(2 Phi(z) - 1) + 2 phi(z) - 1/sqrt(pi) ],
-    z = (y - mu)/sigma. Lower is better; it jointly penalises a wrong centre and
-    a mis-stated spread, which is exactly what we want a trading distribution to
-    get right.
-    """
-
-    sigma = max(sigma, SIGMA_FLOOR_F)
-    z = (y - mu) / sigma
-    return sigma * (z * (2.0 * _normal_cdf(z) - 1.0) + 2.0 * _normal_pdf(z) - 1.0 / math.sqrt(math.pi))
-
-
-# --------------------------------------------------------------------------- #
-# Loaders
-# --------------------------------------------------------------------------- #
-
-def load_clisfo_truth(
-    conn: sqlite3.Connection, station_id: str = "KSFO"
-) -> dict[str, float]:
-    """Settlement truth for one station from the station-keyed cli_settlements.
-
-    The name is kept for its many call sites; the table behind it migrated from
-    the SFO-only ``clisfo_settlements`` to the multi-city ``cli_settlements``
-    (city_truth.ensure_schema performs the one-time migration).
-    """
-
-    import city_truth
-
-    city_truth.ensure_schema(conn)
-    return city_truth.load_cli_truth(conn, station_id)
-
-
-def load_nwp_forecasts(
-    conn: sqlite3.Connection, lead_days: int, station_id: str = "KSFO"
-) -> dict[str, dict[str, float]]:
-    """target_date -> {model: day-ahead daily high} for one lead horizon."""
-
-    out: dict[str, dict[str, float]] = {}
-    if not _table_exists(conn, "nwp_model_forecasts"):
-        return out
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(nwp_model_forecasts)")}
-    if "station_id" not in columns:
-        # Pre-migration DB: every row is KSFO by construction.
-        if station_id != "KSFO":
-            return out
-        cursor = conn.execute(
-            "SELECT target_date, model, predicted_high_f FROM nwp_model_forecasts "
-            "WHERE lead_days = ? AND predicted_high_f IS NOT NULL",
-            (lead_days,),
-        )
-    else:
-        cursor = conn.execute(
-            "SELECT target_date, model, predicted_high_f FROM nwp_model_forecasts "
-            "WHERE lead_days = ? AND station_id = ? AND predicted_high_f IS NOT NULL",
-            (lead_days, station_id),
-        )
-    for target_date, model, value in cursor:
-        out.setdefault(target_date, {})[model] = float(value)
-    return out
 
 
 def load_blend_predictions(conn: sqlite3.Connection) -> tuple[dict[str, float], float]:
@@ -390,8 +320,6 @@ def recalibrated_lookup_predictions(
     through unchanged. This is the honest OOS test of whether the recalibration
     earns the blocked warm/hot cohorts back before it is wired into the engine.
     """
-
-    from sfo_kalshi_quant.recalibration import fit_by_cohort  # trading-layer core
 
     out: dict[str, tuple[float, float]] = {}
     history: list[tuple[float, float, float, str]] = []  # (mu, sigma, realized, cohort)

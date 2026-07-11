@@ -27,8 +27,8 @@ out-of-sample on subtle leakage):
 * A warm-up minimum-training guard: early days return no prediction (excluded and
   counted by the scoreboard) rather than being fit on too little history.
 
-Pure standard library; depends only on ``forecast_backtest.SIGMA_FLOOR_F`` so
-there is no import cycle with the scoreboard that consumes these.
+Pure standard library; depends only on the small scoring primitives module so
+there is no import cycle with either scoreboard that consumes these.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from __future__ import annotations
 import math
 from statistics import fmean, pstdev, stdev
 
-from forecast_backtest import SIGMA_FLOOR_F
+from scores import SIGMA_FLOOR_F
 
 # A predictive day needs at least this many models for an honest ensemble
 # mean/spread, matching the scoreboard's consensus floor.

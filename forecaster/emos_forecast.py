@@ -29,7 +29,6 @@ from urllib.parse import urlencode
 
 from cities import CITIES, CityConfig, get_city, parse_city_slugs
 from emos_recalibration import correction_for_serve
-from forecast_postproc_backtest import load_clisfo_truth, load_nwp_forecasts
 from nwp_archive import (
     NWP_MODELS,
     NwpArchiveError,
@@ -38,6 +37,7 @@ from nwp_archive import (
 
 DEFAULT_CITY = get_city("sfo")
 from postproc_models import EMOS_MIN_TRAIN, MIN_MODELS, apply_emos, emos_ngr_predictions, fit_emos
+from truth_store import load_clisfo_truth, load_nwp_forecasts
 
 DB_PATH = Path(__file__).resolve().parent / "weather.db"
 # inv_var = inverse-error-variance model weighting (Phase 4 winner: beat the

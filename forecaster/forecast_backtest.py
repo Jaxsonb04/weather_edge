@@ -41,12 +41,16 @@ from google_weather_cache import (
     cap_magnitude,
     predicted_temperature_cohort,
 )
+from scores import (
+    SIGMA_FLOOR_F,
+    gaussian_integer_bin_probs as _gaussian_bin_probs,
+    multicategory_brier as _multicat_brier,
+)
 
 
 DB_PATH = Path("weather.db")
 FORECAST_DATA_PATH = Path("forecast_data.json")
 RESULTS_PATH = Path("forecast_backtest_results.json")
-SIGMA_FLOOR_F = 1.5
 COHORTS = ("cold", "normal", "warm", "hot")
 LEAD_BUCKETS = ((0.0, 24.0, "<=24h"), (24.0, 30.0, "24-30h"), (30.0, math.inf, ">30h"))
 SPREAD_BUCKETS = ((0.0, 2.0, "<=2F"), (2.0, 4.0, "2-4F"), (4.0, math.inf, ">4F"))
@@ -465,10 +469,6 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
 
 
-def _normal_cdf(x: float) -> float:
-    return 0.5 * math.erfc(-x / math.sqrt(2.0))
-
-
 def diebold_mariano(deltas: list[float]) -> dict:
     """Newey-West Diebold-Mariano test on paired loss deltas (pure-Python).
 
@@ -534,23 +534,6 @@ def _load_climatology(path: Path = FORECAST_DATA_PATH) -> dict:
         return json.loads(path.read_text()).get("table", {})
     except (json.JSONDecodeError, OSError):
         return {}
-
-
-def _gaussian_bin_probs(mu: float, sigma: float) -> dict[int, float]:
-    sigma = max(sigma, SIGMA_FLOOR_F)
-    lo = int(math.floor(mu - 4 * sigma))
-    hi = int(math.ceil(mu + 4 * sigma))
-    probs = {}
-    for b in range(lo, hi + 1):
-        probs[b] = _normal_cdf((b + 0.5 - mu) / sigma) - _normal_cdf((b - 0.5 - mu) / sigma)
-    return probs
-
-
-def _multicat_brier(mu: float, sigma: float, realized_bin: int) -> float:
-    probs = _gaussian_bin_probs(mu, sigma)
-    p_realized = probs.get(realized_bin, 0.0)
-    sum_sq = sum(p * p for p in probs.values())
-    return 1.0 - 2.0 * p_realized + sum_sq
 
 
 def _residual_sigma(signed_errors: list[float]) -> float:
