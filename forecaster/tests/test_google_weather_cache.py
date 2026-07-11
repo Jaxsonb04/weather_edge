@@ -13,7 +13,6 @@ import importlib
 import inspect
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -23,6 +22,36 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import google_weather_cache as gwc
+
+
+def _assert_facade_callable_contract(expected):
+    actual_names = {
+        name
+        for name, value in vars(gwc).items()
+        if not name.startswith("__") and callable(value)
+    }
+    assert actual_names == set(expected)
+
+    for name, contract in expected.items():
+        value = getattr(gwc, name)
+        if contract["kind"] == "imported":
+            module_name, attribute = contract["identity"].split(":", 1)
+            assert value is getattr(importlib.import_module(module_name), attribute), name
+            continue
+
+        try:
+            signature = str(inspect.signature(value))
+            signature_error = None
+        except (TypeError, ValueError) as exc:
+            signature = None
+            signature_error = type(exc).__name__
+        annotations = {
+            key: repr(annotation)
+            for key, annotation in getattr(value, "__annotations__", {}).items()
+        }
+        assert signature == contract["signature"], name
+        assert signature_error == contract["signature_error"], name
+        assert annotations == contract["annotations"], name
 
 
 def test_cache_responsibilities_live_in_focused_modules():
@@ -46,30 +75,30 @@ def test_cache_responsibilities_live_in_focused_modules():
 def test_facade_callable_signatures_match_frozen_monolith_inventory():
     inventory_path = Path(__file__).with_name("google_weather_cache_signatures.json")
     expected = json.loads(inventory_path.read_text(encoding="utf-8"))
-    actual_names = {
-        name
-        for name, value in vars(gwc).items()
-        if not name.startswith("__") and callable(value)
-    }
-    assert actual_names == set(expected)
+    _assert_facade_callable_contract(expected)
 
-    for name, contract in expected.items():
-        value = getattr(gwc, name)
-        try:
-            signature = re.sub(
-                r"0x[0-9a-fA-F]+", "0x…", str(inspect.signature(value))
-            )
-            signature_error = None
-        except (TypeError, ValueError) as exc:
-            signature = None
-            signature_error = type(exc).__name__
-        annotations = {
-            key: repr(annotation)
-            for key, annotation in getattr(value, "__annotations__", {}).items()
-        }
-        assert signature == contract["signature"], name
-        assert signature_error == contract["signature_error"], name
-        assert annotations == contract["annotations"], name
+
+def test_imported_callable_contracts_do_not_freeze_runtime_signatures():
+    inventory_path = Path(__file__).with_name("google_weather_cache_signatures.json")
+    contract = json.loads(inventory_path.read_text(encoding="utf-8"))["urlopen"]
+
+    assert contract["kind"] == "imported"
+    assert "signature" not in contract
+    assert contract["identity"] == "urllib.request:urlopen"
+
+
+def test_imported_contract_validation_ignores_version_specific_signature(monkeypatch):
+    inventory_path = Path(__file__).with_name("google_weather_cache_signatures.json")
+    expected = json.loads(inventory_path.read_text(encoding="utf-8"))
+    real_signature = inspect.signature
+
+    def simulated_version_signature(value):
+        if value is gwc.urlopen:
+            raise AssertionError("simulated Python-version signature drift")
+        return real_signature(value)
+
+    monkeypatch.setattr(inspect, "signature", simulated_version_signature)
+    _assert_facade_callable_contract(expected)
 
 
 def test_blend_learners_fresh_import_is_dependency_light():
