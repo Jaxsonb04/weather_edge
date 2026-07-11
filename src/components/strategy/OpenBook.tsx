@@ -1,5 +1,5 @@
-import { Card } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Icon } from "@iconify/react/offline";
 import { cityForTicker } from "../../lib/data";
 import { cents, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
 import { usePublication } from "../../lib/publication";

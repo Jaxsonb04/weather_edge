@@ -5,21 +5,25 @@ import type { ReactNode } from "react";
 import type { ForecastData, TradingSignal } from "../../lib/data";
 import { SkillStrip } from "./SkillStrip";
 
-vi.mock("@heroui/react", () => {
+vi.mock("@heroui/react/card", () => {
   const Card = ({ children }: { children: ReactNode }) => <div>{children}</div>;
   Card.Content = ({ children }: { children: ReactNode }) => <div>{children}</div>;
   return { Card };
 });
 
-vi.mock("@heroui-pro/react", () => {
+vi.mock("@heroui-pro/react/kpi", () => {
   const KPI = ({ children }: { children: ReactNode }) => <section>{children}</section>;
   KPI.Header = ({ children }: { children: ReactNode }) => <header>{children}</header>;
   KPI.Title = ({ children }: { children: ReactNode }) => <span>{children}</span>;
   KPI.Content = ({ children }: { children: ReactNode }) => <div>{children}</div>;
   KPI.Progress = () => <div />;
+  return { KPI };
+});
+
+vi.mock("@heroui-pro/react/kpi-group", () => {
   const KPIGroup = ({ children }: { children: ReactNode }) => <div>{children}</div>;
   KPIGroup.Separator = () => <hr />;
-  return { KPI, KPIGroup };
+  return { KPIGroup };
 });
 
 vi.mock("../ui/Reveal", () => ({

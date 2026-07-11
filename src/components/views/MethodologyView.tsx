@@ -1,4 +1,5 @@
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
+import "../../styles/pro-methodology.css";
 import { pct, round1, type DashboardData } from "../../lib/data";
 import { useDiagnostics, type Diagnostics } from "../../lib/diagnostics";
 import { PageHeader } from "../ui/PageHeader";
@@ -126,7 +127,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             </div>
           ) : (
             <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
-              <Icon icon="solar:refresh-linear" className="size-4 animate-spin" aria-hidden="true" />
+              <Icon icon="solar:refresh-bold" className="size-4 animate-spin" aria-hidden="true" />
               <span className="text-sm">Loading diagnostics…</span>
             </div>
           )}

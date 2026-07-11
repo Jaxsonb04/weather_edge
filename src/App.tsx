@@ -1,11 +1,10 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { useDashboardData } from "./lib/data";
 import { useTheme } from "./lib/theme";
 import { useHashRoute } from "./lib/useHashRoute";
 import { TopBar } from "./components/layout/TopBar";
 import { PublicationStatusBanner } from "./components/layout/PublicationStatusBanner";
-import { CommandPalette } from "./components/layout/CommandPalette";
 import { Footer } from "./components/Footer";
 import { LoadingState, ErrorState } from "./components/States";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -15,6 +14,9 @@ const OverviewView = lazy(() =>
 );
 const MethodologyView = lazy(() => import("./components/views/MethodologyView"));
 const StrategyLabView = lazy(() => import("./components/views/StrategyLabView"));
+const CommandPalette = lazy(() =>
+  import("./components/layout/CommandPalette").then((module) => ({ default: module.CommandPalette })),
+);
 
 const REPO = "https://github.com/Jaxsonb04/weather_edge";
 const LIVE = "https://jaxsonb04.github.io/weather_edge/";
@@ -23,7 +25,7 @@ const DISCLAIMER = "Paper-trading research only. No live orders are ever placed.
 function ViewLoader() {
   return (
     <div role="status" aria-live="polite" className="flex min-h-[60vh] items-center justify-center gap-2 text-muted">
-      <Icon icon="solar:refresh-linear" className="size-4 animate-spin" aria-hidden="true" />
+      <Icon icon="solar:refresh-bold" className="size-4 animate-spin" aria-hidden="true" />
       <span className="text-sm">Loading…</span>
     </div>
   );
@@ -43,6 +45,17 @@ export default function App() {
     else mounted.current = true;
   }, [route]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCmdOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <div className="grain flex min-h-screen flex-col bg-background text-foreground">
       <TopBar
@@ -54,14 +67,18 @@ export default function App() {
         liveUrl={LIVE}
       />
       <PublicationStatusBanner />
-      <CommandPalette
-        open={cmdOpen}
-        onOpenChange={setCmdOpen}
-        onToggleTheme={toggle}
-        onNavigate={navigate}
-        repoUrl={REPO}
-        liveUrl={LIVE}
-      />
+      {cmdOpen && (
+        <Suspense fallback={null}>
+          <CommandPalette
+            open={cmdOpen}
+            onOpenChange={setCmdOpen}
+            onToggleTheme={toggle}
+            onNavigate={navigate}
+            repoUrl={REPO}
+            liveUrl={LIVE}
+          />
+        </Suspense>
+      )}
 
       <div
         ref={contentRef}

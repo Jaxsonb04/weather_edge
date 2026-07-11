@@ -77,6 +77,7 @@ describe("CityDetail publication truthfulness", () => {
     await renderDetail("2026-07-09T11:59:00Z");
 
     expect(screen.getByRole("row", { name: /Open positions/i })).toHaveTextContent("2");
-    expect(screen.getByRole("row", { name: /Open exposure/i })).toHaveTextContent("$20.00");
+    expect(screen.getByRole("row", { name: /Open exposure/i })).toHaveTextContent("+$20.00");
+    expect(screen.getByRole("row", { name: /Settled P&L/i })).toHaveTextContent("+$3.00");
   });
 });

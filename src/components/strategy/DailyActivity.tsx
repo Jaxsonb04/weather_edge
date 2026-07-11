@@ -1,4 +1,4 @@
-import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
+import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { money, type DayRow, type StrategyLab } from "../../lib/strategy";
 
 const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";

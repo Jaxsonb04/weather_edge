@@ -1,4 +1,6 @@
-import { BarChart, ChartTooltip, Widget } from "@heroui-pro/react";
+import { BarChart } from "@heroui-pro/react/bar-chart";
+import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { Widget } from "@heroui-pro/react/widget";
 import { featureSeries, type Diagnostics } from "../../lib/diagnostics";
 
 /** XGBoost feature attribution — what the model leans on most. */

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Chip } from "@heroui/react";
-import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
+import { Chip } from "@heroui/react/chip";
+import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { pct, qualityColor, signedPct, type Decision, type Target } from "../../lib/data";
 import { BracketSheet } from "./BracketSheet";
 

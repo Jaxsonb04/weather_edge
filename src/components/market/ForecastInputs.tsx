@@ -1,6 +1,6 @@
-import { Card } from "@heroui/react";
-import { HoverCard } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { HoverCard } from "@heroui-pro/react/hover-card";
+import { Icon } from "@iconify/react/offline";
 import { f1, num, predictedHigh, targetLabel, type Target } from "../../lib/data";
 
 export function ForecastInputs({ target }: { target: Target }) {
@@ -41,7 +41,7 @@ export function ForecastInputs({ target }: { target: Target }) {
                         aria-label={`${r.k} detail: ${r.hint}`}
                         className="grid place-items-center rounded text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-[color:var(--focus)]"
                       >
-                        <Icon icon="solar:info-circle-linear" className="size-3.5" />
+                        <Icon icon="solar:info-circle-bold" className="size-3.5" />
                       </button>
                     </HoverCard.Trigger>
                     <HoverCard.Content className="max-w-[16rem]">

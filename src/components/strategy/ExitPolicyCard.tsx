@@ -1,5 +1,5 @@
-import { Card } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import { money, type SideStats, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";

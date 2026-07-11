@@ -1,5 +1,6 @@
-import { Icon } from "@iconify/react";
-import { Chip } from "@heroui/react";
+import { Icon } from "@iconify/react/offline";
+import "../../styles/pro-strategy.css";
+import { Chip } from "@heroui/react/chip";
 import { pct } from "../../lib/data";
 import {
   findProfile,
@@ -256,7 +257,7 @@ export default function StrategyLabView() {
         {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Couldn't load the Strategy Lab — {error}</div>}
         {!error && !s && (
           <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
-            <Icon icon="solar:refresh-linear" className="size-4 animate-spin" aria-hidden="true" />
+            <Icon icon="solar:refresh-bold" className="size-4 animate-spin" aria-hidden="true" />
             <span className="text-sm">Loading paper-trading research…</span>
           </div>
         )}

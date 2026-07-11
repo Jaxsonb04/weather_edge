@@ -1,4 +1,4 @@
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { Reveal } from "./Reveal";
 
 interface PageHeaderProps {

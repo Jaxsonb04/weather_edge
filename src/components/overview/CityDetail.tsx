@@ -1,5 +1,6 @@
-import { Card, Chip } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Chip } from "@heroui/react/chip";
+import { Icon } from "@iconify/react/offline";
 import {
   cityFreshness,
   cityNextForecast,
@@ -15,6 +16,7 @@ import {
   type Target,
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
+import { money } from "../../lib/strategy";
 import { Finding } from "../ui/Finding";
 import { Reveal } from "../ui/Reveal";
 import { Stat } from "../ui/Stat";
@@ -23,15 +25,13 @@ import { ForecastInputs } from "../market/ForecastInputs";
 import { DecisionCard } from "../market/DecisionCard";
 import { EdgeChart } from "../market/EdgeChart";
 import { MarketBook } from "../market/MarketBook";
+import "../../styles/pro-city-detail.css";
 
 const FRESH_TONE: Record<string, { dot: string; text: string }> = {
   success: { dot: "bg-success", text: "text-success" },
   warning: { dot: "bg-warning", text: "text-warning" },
   danger: { dot: "bg-danger", text: "text-danger" },
 };
-
-const money = (n: number | undefined | null) =>
-  n == null || Number.isNaN(n) ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(n).toFixed(2)}`;
 
 const methodLabel = (m: string | undefined) =>
   m === "emos_wmean" ? "EMOS weighted mean" : m ? m.replace(/_/g, " ") : "—";

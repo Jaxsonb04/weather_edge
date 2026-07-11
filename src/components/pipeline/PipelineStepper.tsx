@@ -1,6 +1,6 @@
-import { Card } from "@heroui/react";
-import { Stepper } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Stepper } from "@heroui-pro/react/stepper";
+import { Icon } from "@iconify/react/offline";
 import { Reveal } from "../ui/Reveal";
 
 const STEPS = [

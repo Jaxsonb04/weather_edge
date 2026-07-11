@@ -1,5 +1,5 @@
-import { Chip } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Chip } from "@heroui/react/chip";
+import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "../ui/LinkButton";
 import { Reveal } from "../ui/Reveal";
 import { ForecastDial } from "./ForecastDial";
@@ -44,10 +44,10 @@ export function Hero({ targets }: HeroProps) {
 
           <Reveal immediate delay={0.24} className="mt-7 flex flex-wrap items-center gap-3">
             <LinkButton href="#/lab" external={false} variant="primary" className="gap-2">
-              Open the Strategy Lab <Icon icon="solar:arrow-right-linear" className="size-4" />
+              Open the Strategy Lab <Icon icon="solar:arrow-right-bold" className="size-4" />
             </LinkButton>
             <LinkButton href="#/methodology" external={false} variant="outline" className="gap-2">
-              <Icon icon="solar:graph-up-linear" className="size-4" /> See the methodology
+              <Icon icon="solar:graph-up-bold" className="size-4" /> See the methodology
             </LinkButton>
           </Reveal>
         </div>

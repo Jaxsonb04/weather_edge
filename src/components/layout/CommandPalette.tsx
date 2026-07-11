@@ -1,8 +1,8 @@
 import { useEffect } from "react";
-import { Command } from "@heroui-pro/react";
-import { toast } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Command } from "@heroui-pro/react/command";
+import { Icon } from "@iconify/react/offline";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
+import "../../styles/pro-command.css";
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -42,7 +42,7 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
           <Command.Dialog>
             <Command.InputGroup>
               <Command.InputGroup.Prefix>
-                <Icon icon="solar:magnifer-linear" className="size-4 text-muted" />
+                <Icon icon="solar:magnifer-bold" className="size-4 text-muted" />
               </Command.InputGroup.Prefix>
               <Command.InputGroup.Input placeholder="Go to a view, open links, toggle theme…" />
               <Command.InputGroup.ClearButton />
@@ -63,7 +63,7 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
                 </Command.Item>
                 <Command.Item
                   textValue="Copy flagship SFO market ticker"
-                  onAction={() => { navigator.clipboard?.writeText("KXHIGHTSFO"); toast.success("Copied KXHIGHTSFO"); onOpenChange(false); }}
+                  onAction={() => { navigator.clipboard?.writeText("KXHIGHTSFO"); onOpenChange(false); }}
                 >
                   <Icon icon="solar:copy-bold" className="size-4 text-muted" />
                   <span>Copy flagship ticker (SFO)</span>
@@ -71,11 +71,11 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
               </Command.Group>
               <Command.Group heading="Links">
                 <Command.Item textValue="Open live dashboard" onAction={() => openUrl(liveUrl)}>
-                  <Icon icon="solar:square-top-down-linear" className="size-4 text-muted" />
+                  <Icon icon="solar:square-top-down-bold" className="size-4 text-muted" />
                   <span>Open live dashboard</span>
                 </Command.Item>
                 <Command.Item textValue="View source on GitHub" onAction={() => openUrl(repoUrl)}>
-                  <Icon icon="mdi:github" className="size-4 text-muted" />
+                  <Icon icon="solar:code-square-bold" className="size-4 text-muted" />
                   <span>View source on GitHub</span>
                 </Command.Item>
               </Command.Group>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Tooltip } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Tooltip } from "@heroui/react/tooltip";
+import { Icon } from "@iconify/react/offline";
 import { f1, num, type Target } from "../../lib/data";
 
 const SOURCE_META: Record<string, { label: string; color: string }> = {
@@ -55,7 +55,7 @@ export function SourceBlend({ target }: { target: Target }) {
         >
           <span className="tnum font-medium">Source spread {f1(spread)}</span>
           {wide && <span>· over 7° gate threshold</span>}
-          <Icon icon="solar:info-circle-linear" className="size-3.5 opacity-70" />
+          <Icon icon="solar:info-circle-bold" className="size-3.5 opacity-70" />
         </button>
         <Tooltip.Content showArrow placement="top" className="max-w-[15rem]">
           <Tooltip.Arrow />

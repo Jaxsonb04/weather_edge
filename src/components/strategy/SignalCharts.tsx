@@ -11,7 +11,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChartTooltip, Widget } from "@heroui-pro/react";
+import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { Widget } from "@heroui-pro/react/widget";
 import { pct, signedPct } from "../../lib/data";
 import type { EdgeBucket, ScatterPoint } from "../../lib/strategy";
 

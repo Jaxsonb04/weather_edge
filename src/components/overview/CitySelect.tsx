@@ -1,4 +1,6 @@
-import { Label, ListBox, Select } from "@heroui/react";
+import { Label } from "@heroui/react/label";
+import { ListBox } from "@heroui/react/list-box";
+import { Select } from "@heroui/react/select";
 import type { City } from "../../lib/data";
 
 interface CitySelectProps {

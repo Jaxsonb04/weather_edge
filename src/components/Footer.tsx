@@ -1,4 +1,4 @@
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "./ui/LinkButton";
 
 interface FooterProps {
@@ -21,10 +21,10 @@ export function Footer({ disclaimer, repoUrl, liveUrl }: FooterProps) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <LinkButton href={liveUrl} variant="ghost" size="sm" className="gap-1.5">
-            <Icon icon="solar:square-top-down-linear" className="size-4" /> Live dashboard
+            <Icon icon="solar:square-top-down-bold" className="size-4" /> Live dashboard
           </LinkButton>
           <LinkButton href={repoUrl} variant="outline" size="sm" className="gap-1.5">
-            <Icon icon="mdi:github" className="size-4" /> GitHub
+            <Icon icon="solar:code-square-bold" className="size-4" /> GitHub
           </LinkButton>
         </div>
       </div>

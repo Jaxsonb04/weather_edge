@@ -1,5 +1,6 @@
-import { Card, Chip } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Chip } from "@heroui/react/chip";
+import { Icon } from "@iconify/react/offline";
 import type { ReadinessCheck, StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
 

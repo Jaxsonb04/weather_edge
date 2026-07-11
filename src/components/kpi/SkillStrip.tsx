@@ -1,6 +1,7 @@
-import { Card } from "@heroui/react";
-import { KPI, KPIGroup } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { KPI } from "@heroui-pro/react/kpi";
+import { KPIGroup } from "@heroui-pro/react/kpi-group";
+import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
 import { skillStatus, type ForecastData, type TradingSignal } from "../../lib/data";
@@ -18,7 +19,7 @@ export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signa
   const metrics: Metric[] = [
     { icon: "solar:target-bold", title: "Brier skill", value: c?.brier_skill ?? null, kind: "pct", hint: "vs climatology" },
     { icon: "solar:ranking-bold", title: "Rank-prob. skill", value: c?.ranked_probability_skill ?? null, kind: "pct", hint: "ordered bins" },
-    { icon: "solar:bullseye-bold", title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct", hint: "modal bracket" },
+    { icon: "solar:radar-2-bold", title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct", hint: "modal bracket" },
     { icon: "solar:checklist-minimalistic-bold", title: "Settled bins", value: c?.n ?? null, kind: "count", hint: "scored out-of-sample" },
     { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} days` },
     { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: "held-out residual" },

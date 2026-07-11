@@ -1,4 +1,4 @@
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { usePublication } from "../../lib/publication";
 
 function formatTime(iso: string | null | undefined): string | null {

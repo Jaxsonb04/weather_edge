@@ -1,4 +1,6 @@
-import { AreaChart, ChartTooltip, Widget } from "@heroui-pro/react";
+import { AreaChart } from "@heroui-pro/react/area-chart";
+import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { Widget } from "@heroui-pro/react/widget";
 import { climatologySeries, type ForecastData } from "../../lib/data";
 
 export function ClimatologyChart({ forecast }: { forecast: ForecastData }) {

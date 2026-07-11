@@ -1,8 +1,11 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Card, Chip, Separator } from "@heroui/react";
-import { Segment, TrendChip } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Chip } from "@heroui/react/chip";
+import { Separator } from "@heroui/react/separator";
+import { Segment } from "@heroui-pro/react/segment";
+import { TrendChip } from "@heroui-pro/react/trend-chip";
+import { Icon } from "@iconify/react/offline";
 import { f1, predictedHigh, selectCurrentTargets, targetLabel, type Target } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
 import { SourceBlend } from "./SourceBlend";
@@ -109,7 +112,7 @@ export function ForecastDial({ targets }: { targets: Target[] }) {
             <div className="mt-2 flex items-baseline gap-2">
               <span className="text-xs text-muted">Observed high so far</span>
               <span className="tnum font-display text-xl font-semibold">{f1(intraday.observed_high_f)}</span>
-              <Icon icon="solar:arrow-right-up-linear" className="size-3.5 text-success" />
+              <Icon icon="solar:arrow-right-up-bold" className="size-3.5 text-success" />
             </div>
           </div>
         )}

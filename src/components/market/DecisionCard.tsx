@@ -1,5 +1,7 @@
-import { Card, Chip, Separator } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Chip } from "@heroui/react/chip";
+import { Separator } from "@heroui/react/separator";
+import { Icon } from "@iconify/react/offline";
 import { f1, num, pct, qualityColor, signedPct, type Target } from "../../lib/data";
 import { Stat } from "../ui/Stat";
 
@@ -41,7 +43,7 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
           <ul className="mt-4 space-y-1.5">
             {d.reasons.slice(0, 3).map((r, i) => (
               <li key={i} className="flex gap-2 text-xs text-muted">
-                <Icon icon="solar:shield-warning-linear" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" />
                 <span>{r}</span>
               </li>
             ))}

@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -53,6 +54,7 @@ const UNKNOWN: PublicationFreshness = {
 };
 
 const PublicationContext = createContext<PublicationContextValue | null>(null);
+const PublicationClockContext = createContext<number | null>(null);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -103,11 +105,40 @@ function freshnessFor(
   };
 }
 
+function staleDeadlineFor(
+  manifest: PublicationManifest | null,
+  artifactNames: string[],
+  maxAgeMinutes: number,
+): number | null {
+  if (!manifest?.artifacts) return null;
+  const generatedTimes: number[] = [];
+  for (const name of artifactNames) {
+    const artifact = manifest.artifacts[name];
+    if (!artifact || (artifact.status !== "ready" && artifact.status !== "preserved")) return null;
+    const parsed = Date.parse(artifact.generated_at ?? "");
+    if (Number.isNaN(parsed)) return null;
+    generatedTimes.push(parsed);
+  }
+  return Math.min(...generatedTimes) + maxAgeMinutes * 60_000 + 1;
+}
+
+function PublicationClockProvider({ children }: { children: ReactNode }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return <PublicationClockContext.Provider value={now}>{children}</PublicationClockContext.Provider>;
+}
+
 export function PublicationProvider({ children }: { children: ReactNode }) {
   const [manifest, setManifest] = useState<PublicationManifest | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [freshnessNow, setFreshnessNow] = useState(() => Date.now());
   const [loadedArtifactVersions, setLoadedArtifactVersions] = useState<Record<string, string>>({});
+  const manifestSignature = useRef<string | null>(null);
 
   const acknowledgeArtifactLoaded = useCallback((name: string, version: string | null) => {
     if (!version) return;
@@ -131,19 +162,21 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         const payload: unknown = await response.json();
         if (!isManifest(payload)) throw new Error("publication_manifest.json: invalid manifest");
         if (alive) {
-          setManifest(payload);
+          const nextSignature = JSON.stringify(payload);
+          if (nextSignature !== manifestSignature.current) {
+            manifestSignature.current = nextSignature;
+            setManifest(payload);
+            setFreshnessNow(Date.now());
+          }
           setError(null);
-          setNow(Date.now());
         }
       } catch (reason) {
         if (alive && !controller.signal.aborted) {
           setError(String(reason));
-          setNow(Date.now());
         }
       } finally {
         if (alive) {
           timer = window.setTimeout(() => {
-            setNow(Date.now());
             void refresh();
           }, POLL_INTERVAL_MS);
         }
@@ -157,6 +190,25 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
+
+  // Freshness only changes the main publication value at a semantic boundary.
+  // The minute-by-minute age clock lives in PublicationClockContext below.
+  useEffect(() => {
+    const deadlines = [
+      staleDeadlineFor(
+        manifest,
+        ["trading_signal.json", "cities_data.json"],
+        OPERATIONAL_MAX_AGE_MINUTES,
+      ),
+      staleDeadlineFor(manifest, ["strategy_research.json"], STRATEGY_MAX_AGE_MINUTES),
+    ].filter((deadline): deadline is number => deadline != null && deadline > Date.now());
+    if (!deadlines.length) return;
+    const timer = window.setTimeout(
+      () => setFreshnessNow(Date.now()),
+      Math.max(0, Math.min(...deadlines) - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [freshnessNow, loadedArtifactVersions, manifest]);
 
   const value = useMemo<PublicationContextValue>(() => {
     const artifactHashes: Record<string, string> = {};
@@ -174,7 +226,7 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         ["trading_signal.json", "cities_data.json"],
         loadedArtifactVersions,
         OPERATIONAL_MAX_AGE_MINUTES,
-        now,
+        freshnessNow,
       ),
       // Manifest-driven pipeline freshness for the GLOBAL banner: reflects whether
       // the publishing box is current, independent of whether the active route
@@ -186,7 +238,7 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         ["trading_signal.json", "cities_data.json"],
         loadedArtifactVersions,
         OPERATIONAL_MAX_AGE_MINUTES,
-        now,
+        freshnessNow,
         false,
       ),
       strategy: freshnessFor(
@@ -194,15 +246,19 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         ["strategy_research.json"],
         loadedArtifactVersions,
         STRATEGY_MAX_AGE_MINUTES,
-        now,
+        freshnessNow,
       ),
       error,
       versionForArtifact: (name: string) => artifactHashes[name] ?? snapshotVersion,
       acknowledgeArtifactLoaded,
     };
-  }, [acknowledgeArtifactLoaded, error, loadedArtifactVersions, manifest, now]);
+  }, [acknowledgeArtifactLoaded, error, freshnessNow, loadedArtifactVersions, manifest]);
 
-  return <PublicationContext.Provider value={value}>{children}</PublicationContext.Provider>;
+  return (
+    <PublicationContext.Provider value={value}>
+      <PublicationClockProvider>{children}</PublicationClockProvider>
+    </PublicationContext.Provider>
+  );
 }
 
 // Provider and hook intentionally share one public module.
@@ -210,5 +266,13 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
 export function usePublication(): PublicationContextValue {
   const value = useContext(PublicationContext);
   if (!value) throw new Error("usePublication must be used inside PublicationProvider");
+  return value;
+}
+
+// Small status surfaces opt into this clock; data/view consumers stay isolated.
+// oxlint-disable-next-line react/only-export-components
+export function usePublicationClock(): number {
+  const value = useContext(PublicationClockContext);
+  if (value == null) throw new Error("usePublicationClock must be used inside PublicationProvider");
   return value;
 }

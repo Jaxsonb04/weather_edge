@@ -520,5 +520,6 @@ export function ledgerByCity(rows: ClosedPosition[]): CityLedgerGroup[] {
 export const money = (n: number | null | undefined, digits = 2) =>
   n == null || Number.isNaN(n) ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toFixed(digits)}`;
 
-/** Contract price as cents: 0.92 → 92¢. */
-export const cents = (p: number | null | undefined) => (p == null ? "—" : `${Math.round(p * 100)}¢`);
+/** Contract price as cents: 0.92 → 92¢ (true minus sign for defensive negative input). */
+export const cents = (p: number | null | undefined) =>
+  p == null || Number.isNaN(p) ? "—" : `${p < 0 ? "−" : ""}${Math.round(Math.abs(p) * 100)}¢`;

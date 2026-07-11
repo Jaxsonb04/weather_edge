@@ -1,4 +1,4 @@
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { useCitiesData } from "../../lib/data";
 import { Reveal } from "../ui/Reveal";
 import { Finding } from "../ui/Finding";
@@ -101,7 +101,7 @@ export function ForecastPipeline() {
         <div className="flex items-center gap-3" aria-hidden="true">
           <span className="h-px flex-1 bg-border/60" />
           <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
-            <Icon icon="solar:arrow-down-linear" className="size-3.5" />
+            <Icon icon="solar:arrow-down-bold" className="size-3.5" />
             layered on top for the flagship only
           </span>
           <span className="h-px flex-1 bg-border/60" />

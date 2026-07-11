@@ -1,4 +1,4 @@
-import { Skeleton } from "@heroui/react";
+import { Skeleton } from "@heroui/react/skeleton";
 import { useCitiesData, type City } from "../../lib/data";
 
 const TH = "px-3 py-2 text-left font-mono text-[10px] font-semibold uppercase tracking-wider text-muted";

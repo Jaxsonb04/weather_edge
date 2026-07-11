@@ -1,5 +1,7 @@
 import { Cell } from "recharts";
-import { BarChart, ChartTooltip, Widget } from "@heroui-pro/react";
+import { BarChart } from "@heroui-pro/react/bar-chart";
+import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { Widget } from "@heroui-pro/react/widget";
 import { histogramSeries, tempColor, type ForecastData, type WeatherStory } from "../../lib/data";
 
 export function HistogramChart({ story, forecast }: { story: WeatherStory; forecast: ForecastData }) {

@@ -1,5 +1,6 @@
 import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
-import { ChartTooltip, Widget } from "@heroui-pro/react";
+import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { Widget } from "@heroui-pro/react/widget";
 import { heldOutSeries, type Diagnostics } from "../../lib/diagnostics";
 
 /** Held-out predicted (LSTM) vs actual high — points hugging the dashed y=x line

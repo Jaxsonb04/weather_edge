@@ -1,5 +1,5 @@
-import { Card } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Icon } from "@iconify/react/offline";
 import type { HealthAlert, StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
 

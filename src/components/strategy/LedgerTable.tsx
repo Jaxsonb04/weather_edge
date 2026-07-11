@@ -1,5 +1,5 @@
-import { Chip } from "@heroui/react";
-import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
+import { Chip } from "@heroui/react/chip";
+import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { cityForTicker, pct, qualityColor, signedPct } from "../../lib/data";
 import { cents, closedLedger, money, type ClosedPosition, type StrategyLab } from "../../lib/strategy";
 

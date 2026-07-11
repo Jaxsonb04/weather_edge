@@ -1,5 +1,6 @@
-import { ItemCard, ItemCardGroup } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { ItemCard } from "@heroui-pro/react/item-card";
+import { ItemCardGroup } from "@heroui-pro/react/item-card-group";
+import { Icon } from "@iconify/react/offline";
 import type { StrategyLab } from "../../lib/strategy";
 
 /** Glossary the lab publishes so the numbers are read with the right caveats. */

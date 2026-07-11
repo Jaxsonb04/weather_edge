@@ -1,7 +1,22 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem("weatheredge-theme");
+          const followsSystem = stored !== "light" && stored !== "dark";
+          const dark = stored === "dark" || (followsSystem && matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch {
+          const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        }
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WeatherEdge — 15-City Weather Forecasting &amp; Prediction-Market Research</title>
@@ -22,12 +37,6 @@
     <meta name="twitter:description" content="Operational daily-high forecasting and prediction-market paper research, with SFO as the flagship." />
     <meta name="twitter:image" content="https://jaxsonb04.github.io/weather_edge/og-weatheredge-v2.png" />
     <meta name="twitter:image:alt" content="WeatherEdge — Fifteen-city temperature forecasting. Forecast verification and paper research." />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
   </head>
   <body>
     <div id="root"></div>

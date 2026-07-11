@@ -1,6 +1,11 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PublicationProvider, usePublication, type PublicationManifest } from "./publication";
+import {
+  PublicationProvider,
+  usePublication,
+  usePublicationClock,
+  type PublicationManifest,
+} from "./publication";
 import { PublicationLoaded } from "../test/PublicationLoaded";
 
 const manifest = (generatedAt: string): PublicationManifest => ({
@@ -143,5 +148,40 @@ describe("PublicationProvider", () => {
     fetchMock.mockResolvedValue(ok(manifest("2026-07-09T12:00:00Z")));
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps ordinary consumers still on an age tick while the status banner rerenders", async () => {
+    vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
+    fetchMock.mockResolvedValue(ok(manifest("2026-07-09T10:00:00Z")));
+    let consumerRenders = 0;
+    let bannerRenders = 0;
+    const { PublicationStatusBanner } = await import("../components/layout/PublicationStatusBanner");
+    function CountedConsumer() {
+      const publication = usePublication();
+      consumerRenders += 1;
+      return <p>snapshot: {publication.snapshotVersion}</p>;
+    }
+    function CountedBanner() {
+      usePublicationClock();
+      bannerRenders += 1;
+      return <PublicationStatusBanner />;
+    }
+
+    render(
+      <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json"]} />
+        <CountedConsumer />
+        <CountedBanner />
+      </PublicationProvider>,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    consumerRenders = 0;
+    bannerRenders = 0;
+
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/2h 1m ago/i);
+    expect(consumerRenders).toBe(0);
+    expect(bannerRenders).toBeGreaterThan(0);
   });
 });

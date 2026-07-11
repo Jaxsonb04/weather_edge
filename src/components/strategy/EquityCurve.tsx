@@ -1,6 +1,8 @@
 import { useId } from "react";
 import { ReferenceLine } from "recharts";
-import { ChartTooltip, LineChart, Widget } from "@heroui-pro/react";
+import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { LineChart } from "@heroui-pro/react/line-chart";
+import { Widget } from "@heroui-pro/react/widget";
 import { equitySeries, equitySeriesFromDays, type DayRow, type StrategyLab } from "../../lib/strategy";
 
 type Emphasis = "headline" | "secondary" | "normal";

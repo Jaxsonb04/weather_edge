@@ -1,5 +1,5 @@
-import { Icon } from "@iconify/react";
-import { usePublication } from "../../lib/publication";
+import { Icon } from "@iconify/react/offline";
+import { usePublication, usePublicationClock } from "../../lib/publication";
 
 function publicationTime(iso: string | null): string | null {
   if (!iso) return null;
@@ -15,17 +15,30 @@ function publicationTime(iso: string | null): string | null {
   });
 }
 
+function publicationAge(iso: string | null, now: number): string | null {
+  if (!iso) return null;
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return null;
+  const minutes = Math.max(0, Math.floor((now - parsed) / 60_000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `${hours}h${remainder ? ` ${remainder}m` : ""} ago`;
+}
+
 export function PublicationStatusBanner() {
   // Use the manifest-driven pipeline freshness (not the load-gated `operational`,
   // which stays "unknown" on routes that never fetch cities_data.json — e.g. the
   // Strategy Lab — and would fire this banner even though the feed is current).
   const { operationalPipeline: operational, manifest, error } = usePublication();
+  const now = usePublicationClock();
 
   if (operational.state === "fresh") return null;
   if (operational.state === "unknown" && !manifest && !error) return null;
 
   if (operational.state === "stale") {
     const generated = publicationTime(operational.generatedAt);
+    const age = publicationAge(operational.generatedAt, now);
     return (
       <div role="alert" className="border-b border-danger/35 bg-danger-soft text-foreground">
         <div className="mx-auto flex w-full max-w-6xl items-start gap-3 px-5 py-3 sm:px-8">
@@ -36,7 +49,8 @@ export function PublicationStatusBanner() {
               Real-time prediction-market and open-position data is paused until the feed catches up.
               {generated && (
                 <>
-                  {" "}Last operational publication: <time dateTime={operational.generatedAt ?? undefined}>{generated}</time>.
+                  {" "}Last operational publication: <time dateTime={operational.generatedAt ?? undefined}>{generated}</time>
+                  {age ? ` (${age})` : ""}.
                 </>
               )}
             </p>

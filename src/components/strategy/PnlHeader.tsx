@@ -1,6 +1,7 @@
-import { Card } from "@heroui/react";
-import { KPI, KPIGroup } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { KPI } from "@heroui-pro/react/kpi";
+import { KPIGroup } from "@heroui-pro/react/kpi-group";
+import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
 import type { StrategyLab } from "../../lib/strategy";

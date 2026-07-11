@@ -1,5 +1,5 @@
-import { Card } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Card } from "@heroui/react/card";
+import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "../ui/LinkButton";
 
 interface Pillar {

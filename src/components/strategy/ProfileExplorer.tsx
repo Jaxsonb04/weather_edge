@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Segment } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Segment } from "@heroui-pro/react/segment";
+import { Icon } from "@iconify/react/offline";
 import { type StrategyLab } from "../../lib/strategy";
 import { ProfileDashboard } from "./ProfileDashboard";
 

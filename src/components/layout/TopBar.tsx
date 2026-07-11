@@ -1,7 +1,5 @@
 import { useState } from "react";
-import { Navbar } from "@heroui-pro/react";
-import { Button, Tooltip } from "@heroui/react";
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "../ui/LinkButton";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
 import type { ThemeMode } from "../../lib/theme";
@@ -15,112 +13,114 @@ interface TopBarProps {
   liveUrl: string;
 }
 
+const iconButton =
+  "inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-muted transition-colors duration-200 hover:bg-default hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] active:bg-default-hover";
+
 export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liveUrl }: TopBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <Navbar
-      position="sticky"
-      maxWidth="xl"
-      isMenuOpen={menuOpen}
-      onMenuOpenChange={setMenuOpen}
-      className="border-b border-border/60 bg-background/70 backdrop-blur-xl"
-    >
-      <Navbar.Header>
-        <Navbar.MenuToggle aria-label={menuOpen ? "Close menu" : "Open menu"} className="lg:hidden" />
+    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-xl">
+      <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-5 sm:px-8">
+        <button
+          type="button"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={menuOpen}
+          aria-controls="mobile-navigation"
+          className={`${iconButton} -ml-2 lg:hidden`}
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <Icon icon={menuOpen ? "solar:close-circle-bold" : "solar:widget-5-bold"} className="size-5" aria-hidden="true" />
+        </button>
 
-        <Navbar.Brand className="gap-2.5">
-          <a href="#/overview" className="flex items-center gap-2.5 no-underline">
-            <span className="relative grid size-7 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
-              <Icon icon="solar:temperature-bold" className="size-4" />
-            </span>
-            <span className="hidden font-display text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
-              Weather<span className="temp-text">Edge</span>
-            </span>
-          </a>
-        </Navbar.Brand>
+        <a href="#/overview" className="flex min-w-0 items-center gap-2.5 no-underline">
+          <span className="relative grid size-7 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
+            <Icon icon="solar:temperature-bold" className="size-4" aria-hidden="true" />
+          </span>
+          <span className="hidden font-display text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
+            Weather<span className="temp-text">Edge</span>
+          </span>
+        </a>
 
-        <Navbar.Content className="ml-6 hidden lg:flex">
-          {ROUTES.map((r) => (
-            <Navbar.Item key={r.id} href={`#/${r.id}`} isCurrent={route === r.id} className="no-underline">
-              {r.label}
-            </Navbar.Item>
-          ))}
-        </Navbar.Content>
-
-        <Navbar.Spacer />
-
-        <div className="flex items-center gap-1.5">
-          <Button isIconOnly variant="ghost" size="sm" className="lg:hidden" aria-label="Open command palette" onPress={onOpenCommand}>
-            <Icon icon="solar:magnifer-linear" className="size-4" />
-          </Button>
-          <Button variant="outline" size="sm" className="hidden gap-2 text-muted lg:inline-flex" onPress={onOpenCommand}>
-            <Icon icon="solar:magnifer-linear" className="size-4" />
-            <span className="text-sm">Search</span>
-            <kbd className="rounded border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
-          </Button>
-
-          <Tooltip delay={0}>
-            <Button isIconOnly variant="ghost" size="sm" onPress={onToggleTheme} aria-label="Toggle theme">
-              <Icon icon={mode === "dark" ? "solar:sun-2-bold" : "solar:moon-stars-bold"} className="size-4" />
-            </Button>
-            <Tooltip.Content showArrow placement="bottom">
-              <Tooltip.Arrow />
-              <p className="text-xs">{mode === "dark" ? "Light mode" : "Dark mode"}</p>
-            </Tooltip.Content>
-          </Tooltip>
-
-          <LinkButton href={liveUrl} variant="ghost" size="sm" className="hidden gap-1.5 sm:inline-flex">
-            <Icon icon="solar:square-top-down-linear" className="size-4" /> Live
-          </LinkButton>
-          <LinkButton href={repoUrl} variant="primary" size="sm" className="gap-1.5">
-            <Icon icon="mdi:github" className="size-4" /> <span className="hidden sm:inline">Source</span>
-          </LinkButton>
-        </div>
-      </Navbar.Header>
-
-      {/* Mobile / tablet navigation (below lg the route links collapse here). */}
-      <Navbar.Menu className="lg:hidden">
-        {ROUTES.map((r) => (
-          <Navbar.MenuItem key={r.id}>
+        <nav aria-label="Primary navigation" className="ml-5 hidden items-center gap-1 lg:flex">
+          {ROUTES.map((item) => (
             <a
-              href={`#/${r.id}`}
-              aria-current={route === r.id ? "page" : undefined}
-              onClick={() => setMenuOpen(false)}
-              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium no-underline ${
-                route === r.id ? "bg-accent-soft text-[color:var(--accent-text)]" : "text-foreground"
+              key={item.id}
+              href={`#/${item.id}`}
+              aria-current={route === item.id ? "page" : undefined}
+              className={`rounded-lg px-3 py-2 text-sm no-underline transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
+                route === item.id ? "bg-default text-foreground" : "text-muted hover:text-foreground"
               }`}
             >
-              <Icon icon={r.icon} className="size-5" aria-hidden="true" />
-              {r.label}
+              {item.label}
             </a>
-          </Navbar.MenuItem>
-        ))}
-        <Navbar.MenuItem>
-          <a
-            href={liveUrl}
-            target="_blank"
-            rel="noreferrer"
-            onClick={() => setMenuOpen(false)}
-            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-base text-muted no-underline"
+          ))}
+        </nav>
+
+        <div className="ml-auto flex min-w-0 items-center gap-1 sm:gap-1.5">
+          <button type="button" className={`${iconButton} lg:hidden`} aria-label="Open command palette" onClick={onOpenCommand}>
+            <Icon icon="solar:magnifer-bold" className="size-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="hidden h-10 cursor-pointer items-center gap-2 rounded-lg border border-border bg-transparent px-3 text-muted transition-colors duration-200 hover:bg-default hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] lg:inline-flex"
+            onClick={onOpenCommand}
           >
-            <Icon icon="solar:square-top-down-linear" className="size-5" aria-hidden="true" />
-            Live dashboard
-          </a>
-        </Navbar.MenuItem>
-        <Navbar.MenuItem>
-          <a
-            href={repoUrl}
-            target="_blank"
-            rel="noreferrer"
-            onClick={() => setMenuOpen(false)}
-            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-base text-muted no-underline"
+            <Icon icon="solar:magnifer-bold" className="size-4" aria-hidden="true" />
+            <span className="text-sm">Search</span>
+            <kbd className="rounded border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
+          </button>
+
+          <button
+            type="button"
+            className={iconButton}
+            onClick={onToggleTheme}
+            aria-label={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            title={mode === "dark" ? "Light mode" : "Dark mode"}
           >
-            <Icon icon="mdi:github" className="size-5" aria-hidden="true" />
-            Source on GitHub
-          </a>
-        </Navbar.MenuItem>
-      </Navbar.Menu>
-    </Navbar>
+            <Icon icon={mode === "dark" ? "solar:sun-2-bold" : "solar:moon-stars-bold"} className="size-4" aria-hidden="true" />
+          </button>
+
+          <LinkButton href={liveUrl} variant="ghost" size="sm" className="hidden min-h-10 gap-1.5 sm:inline-flex">
+            <Icon icon="solar:square-top-down-bold" className="size-4" aria-hidden="true" /> Live
+          </LinkButton>
+          <LinkButton href={repoUrl} variant="primary" size="sm" className="min-h-10 gap-1.5">
+            <Icon icon="solar:code-square-bold" className="size-4" aria-hidden="true" /> <span className="hidden sm:inline">Source</span>
+          </LinkButton>
+        </div>
+      </div>
+
+      {menuOpen && (
+        <nav id="mobile-navigation" aria-label="Mobile navigation" className="border-t border-border/60 px-5 py-3 lg:hidden">
+          <ul className="mx-auto grid w-full max-w-6xl gap-1">
+            {ROUTES.map((item) => (
+              <li key={item.id}>
+                <a
+                  href={`#/${item.id}`}
+                  aria-current={route === item.id ? "page" : undefined}
+                  onClick={() => setMenuOpen(false)}
+                  className={`flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
+                    route === item.id ? "bg-accent-soft text-[color:var(--accent-text)]" : "text-foreground hover:bg-default"
+                  }`}
+                >
+                  <Icon icon={item.icon} className="size-5" aria-hidden="true" />
+                  {item.label}
+                </a>
+              </li>
+            ))}
+            <li className="mt-1 border-t border-border/60 pt-1">
+              <a href={liveUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-base text-muted no-underline hover:bg-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]">
+                <Icon icon="solar:square-top-down-bold" className="size-5" aria-hidden="true" /> Live dashboard
+              </a>
+            </li>
+            <li>
+              <a href={repoUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-base text-muted no-underline hover:bg-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]">
+                <Icon icon="solar:code-square-bold" className="size-5" aria-hidden="true" /> Source on GitHub
+              </a>
+            </li>
+          </ul>
+        </nav>
+      )}
+    </header>
   );
 }

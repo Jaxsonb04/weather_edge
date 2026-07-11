@@ -1,4 +1,4 @@
-import { Card } from "@heroui/react";
+import { Card } from "@heroui/react/card";
 import { pct } from "../../lib/data";
 import { money, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";

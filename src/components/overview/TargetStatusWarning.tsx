@@ -1,4 +1,4 @@
-import { Icon } from "@iconify/react";
+import { Icon } from "@iconify/react/offline";
 import { selectCurrentTargets, type Target } from "../../lib/data";
 
 export function TargetStatusWarning({ targets }: { targets: Target[] }) {

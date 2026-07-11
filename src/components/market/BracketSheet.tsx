@@ -1,6 +1,8 @@
-import { Button, Chip, Separator, toast } from "@heroui/react";
-import { Sheet } from "@heroui-pro/react";
-import { Icon } from "@iconify/react";
+import { Button } from "@heroui/react/button";
+import { Chip } from "@heroui/react/chip";
+import { Separator } from "@heroui/react/separator";
+import { Sheet } from "@heroui-pro/react/sheet";
+import { Icon } from "@iconify/react/offline";
 import { pct, type Decision } from "../../lib/data";
 import { Stat } from "../ui/Stat";
 
@@ -12,6 +14,7 @@ interface BracketSheetProps {
 
 /** Right-side detail drawer for one bracket — rendered into a portal by Sheet. */
 export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetProps) {
+  const [copied, setCopied] = useState(false);
   return (
     <Sheet isOpen={isOpen} onOpenChange={onOpenChange} placement="right">
       <Sheet.Backdrop variant="blur">
@@ -54,13 +57,13 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                     <ul className="space-y-2">
                       {(decision.reasons ?? []).map((r, i) => (
                         <li key={i} className="flex gap-2 rounded-lg bg-surface-secondary p-2.5 text-xs text-muted ring-1 ring-border/40">
-                          <Icon icon="solar:shield-warning-linear" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                          <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" />
                           <span>{r}</span>
                         </li>
                       ))}
                       {!decision.reasons?.length && (
                         <li className="flex gap-2 text-xs text-success">
-                          <Icon icon="solar:shield-check-linear" className="size-4" /> All gates passed.
+                          <Icon icon="solar:shield-check-bold" className="size-4" /> All gates passed.
                         </li>
                       )}
                     </ul>
@@ -73,10 +76,12 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                     fullWidth
                     onPress={() => {
                       navigator.clipboard?.writeText(decision.ticker);
-                      toast.success(`Copied ${decision.ticker}`);
+                      setCopied(true);
+                      window.setTimeout(() => setCopied(false), 1_500);
                     }}
                   >
-                    <Icon icon="solar:copy-linear" className="size-4" /> Copy ticker
+                    <Icon icon="solar:copy-bold" className="size-4" />
+                    <span aria-live="polite">{copied ? "Copied ticker" : "Copy ticker"}</span>
                   </Button>
                 </Sheet.Footer>
               </>
@@ -87,3 +92,4 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
     </Sheet>
   );
 }
+import { useState } from "react";
