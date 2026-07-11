@@ -3,11 +3,14 @@ from __future__ import annotations
 import io
 import json
 from contextlib import redirect_stdout
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
 from sfo_kalshi_quant.cli import main
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import MarketBin
@@ -272,6 +275,47 @@ def test_arbitrage_cli_can_place_grouped_paper_orders_from_offline_event() -> No
         rows = PaperStore(db_path).paper_orders(20)
         assert len(rows) >= 2
         assert all(str(row["action"]).startswith("ARBITRAGE_BUY_") for row in rows)
+
+
+def test_nyc_arbitrage_entry_gate_blocks_at_20z_fixed_est_cutoff() -> None:
+    city = get_city("nyc")
+    instant = datetime(2026, 7, 10, 20, 0, tzinfo=UTC)
+
+    def fixed_clock(now=None, selected_city=None):
+        selected = selected_city or get_city("sfo")
+        return instant.astimezone(selected.fixed_standard_timezone())
+
+    with TemporaryDirectory() as tmp:
+        event_path = Path(tmp) / "event.json"
+        db_path = Path(tmp) / "paper.db"
+        _write_event_fixture(event_path, "KXHIGHNY-26JUL10")
+
+        with (
+            patch("sfo_kalshi_quant.cli.settlement_clock", side_effect=fixed_clock),
+            redirect_stdout(io.StringIO()),
+        ):
+            code = main(
+                [
+                    "--db-path",
+                    str(db_path),
+                    "--bankroll",
+                    "1000",
+                    "--no-color",
+                    "arbitrage",
+                    "--city",
+                    city.slug,
+                    "--target-date",
+                    "2026-07-10",
+                    "--offline-events",
+                    str(event_path),
+                    "--max-arb-spend",
+                    "5",
+                    "--place-paper",
+                ]
+            )
+
+        assert code == 0
+        assert PaperStore(db_path).paper_orders(20) == []
 
 
 def _write_event_fixture(path: Path, event_ticker: str) -> None:

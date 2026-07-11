@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.cli import _refresh_same_day_model_reads, main
@@ -555,6 +555,134 @@ def test_same_day_model_heartbeat_does_not_run_before_entry_cutoff():
         latest_market.assert_not_called()
 
 
+def _heartbeat_monitor_fixture(tmp: str, target):
+    event_ticker = f"KXHIGHTSFO-{format_event_date_token(target)}"
+    markets = fallback_bins(event_ticker, 69.5)
+    held_market = markets[-1]
+    db_path = Path(tmp) / "paper.db"
+    store = PaperStore(db_path)
+    decision = replace(
+        _stopped_no_decision(),
+        ticker=held_market.ticker,
+        label=held_market.yes_sub_title,
+        strike_type=held_market.strike_type,
+        floor_strike=held_market.floor_strike,
+        cap_strike=held_market.cap_strike,
+    )
+    order_id = store.record_paper_order(target.isoformat(), decision)
+    store.record_market(
+        EventSnapshot(
+            event_ticker=event_ticker,
+            title="heartbeat input gate test",
+            target_date=target,
+            markets=markets,
+            raw={
+                "event_ticker": event_ticker,
+                "title": "heartbeat input gate test",
+                "markets": [market.raw for market in markets],
+            },
+        )
+    )
+    return db_path, store, order_id, held_market
+
+
+def _heartbeat_adapter(target, *, observed_at: str):
+    adapter = Mock()
+    adapter.load_calibration_outcomes.return_value = [
+        ForecastOutcome(
+            local_date=target - timedelta(days=idx + 1),
+            predicted_high_f=70.0,
+            actual_high_f=70.0 + (idx % 3) - 1.0,
+        )
+        for idx in range(40)
+    ]
+    forecast = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=70.0,
+        station_id="KSFO",
+        fetched_at=datetime.now(UTC).isoformat(),
+        method="heartbeat-test",
+        source_count=4,
+        raw={"emos": {"mu": 70.0, "sigma": 1.0}},
+    )
+    adapter.latest_emos_snapshot.return_value = forecast
+    adapter.intraday_snapshot.return_value = IntradaySnapshot(
+        target_date=target,
+        observed_high_f=70.0,
+        latest_temp_f=69.0,
+        latest_observed_at=observed_at,
+        remaining_forecast_high_f=70.0,
+        forecast_fetched_at=datetime.now(UTC).isoformat(),
+    )
+    adapter.apply_intraday_update.return_value = forecast
+    return adapter
+
+
+def _run_enabled_heartbeat_monitor(db_path: Path, target, adapter) -> None:
+    city = get_city("sfo")
+    with (
+        patch.dict("os.environ", {"PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED": "true"}),
+        patch(
+            "sfo_kalshi_quant.cli.settlement_clock",
+            return_value=datetime(
+                target.year,
+                target.month,
+                target.day,
+                15,
+                tzinfo=city.fixed_standard_timezone(),
+            ),
+        ),
+        patch("sfo_kalshi_quant.cli.SfoForecasterAdapter", return_value=adapter),
+        patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoStopClient),
+        redirect_stdout(StringIO()),
+    ):
+        assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+
+
+def test_same_day_model_heartbeat_missing_emos_retains_no_model_read_hold():
+    target = settlement_clock(city=get_city("sfo")).date()
+    with TemporaryDirectory() as tmp:
+        db_path, store, order_id, held_market = _heartbeat_monitor_fixture(tmp, target)
+        adapter = _heartbeat_adapter(target, observed_at=datetime.now(UTC).isoformat())
+        adapter.latest_emos_snapshot.return_value = None
+
+        _run_enabled_heartbeat_monitor(db_path, target, adapter)
+
+        with store.connect() as conn:
+            action = conn.execute(
+                "SELECT action FROM paper_monitor_snapshots WHERE order_id=? ORDER BY id DESC LIMIT 1",
+                (order_id,),
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM probability_snapshots WHERE market_ticker=?",
+                (held_market.ticker,),
+            ).fetchone()[0]
+        assert rows == 0
+        assert action == "HOLD_NO_MODEL_READ"
+
+
+def test_same_day_model_heartbeat_stale_observed_high_retains_no_model_read_hold():
+    target = settlement_clock(city=get_city("sfo")).date()
+    with TemporaryDirectory() as tmp:
+        db_path, store, order_id, held_market = _heartbeat_monitor_fixture(tmp, target)
+        stale = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        adapter = _heartbeat_adapter(target, observed_at=stale)
+
+        _run_enabled_heartbeat_monitor(db_path, target, adapter)
+
+        with store.connect() as conn:
+            action = conn.execute(
+                "SELECT action FROM paper_monitor_snapshots WHERE order_id=? ORDER BY id DESC LIMIT 1",
+                (order_id,),
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM probability_snapshots WHERE market_ticker=?",
+                (held_market.ticker,),
+            ).fetchone()[0]
+        assert rows == 0
+        assert action == "HOLD_NO_MODEL_READ"
+
+
 def test_same_day_model_heartbeat_refreshes_open_position_without_new_entry():
     city = get_city("sfo")
     target = settlement_clock(city=city).date()
@@ -576,13 +704,15 @@ def test_same_day_model_heartbeat_refreshes_open_position_without_new_entry():
                 for idx in range(40)
             ]
 
-        def latest_blend(self, requested_target):
+        def latest_emos_snapshot(self, requested_target):
             return ForecastSnapshot(
                 target_date=requested_target,
                 predicted_high_f=70.0,
                 station_id="KSFO",
                 fetched_at=datetime.now(UTC).isoformat(),
                 method="heartbeat-test",
+                source_count=4,
+                raw={"emos": {"mu": 70.0, "sigma": 1.0}},
             )
 
         def intraday_snapshot(self, requested_target):
@@ -597,9 +727,6 @@ def test_same_day_model_heartbeat_refreshes_open_position_without_new_entry():
 
         def apply_intraday_update(self, forecast, intraday):
             return forecast
-
-        def load_emos_mu_sigma(self, lead_days=None):
-            return {target: (70.0, 1.0)}
 
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"

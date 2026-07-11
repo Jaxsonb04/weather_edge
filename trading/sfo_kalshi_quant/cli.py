@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import uuid
@@ -92,6 +93,7 @@ from .tail_basket import TailBasket, build_tail_basket
 DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
 DEFAULT_MODEL_VETO_MAX_LOSS_PCT = 60.0
 DEFAULT_MODEL_VETO_BUFFER = 0.08
+SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES = 90.0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1770,7 +1772,9 @@ def _arbitrage_one_target(
             entry_allowed = False
             entry_block_reason = "paper arbitrage disabled: Kalshi event has no active markets"
         else:
-            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(target, None, None)
+            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
+                target, None, None, city=city
+            )
 
     paper_trader = PaperTrader(store, config, risk_profile=risk_profile)
     if args.place_paper and entry_allowed:
@@ -1915,7 +1919,9 @@ def _tail_basket_one_target(
             entry_allowed = False
             entry_block_reason = "paper entry disabled: Kalshi event has no active markets"
         else:
-            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(target, forecast, intraday)
+            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
+                target, forecast, intraday, city=city
+            )
 
     if args.place_paper and entry_allowed:
         pause_reason = store.paper_entry_pause_reason(
@@ -2827,16 +2833,48 @@ def _refresh_same_day_model_reads(
                 adapter.load_calibration_outcomes(_default_calibration_source()),
                 config,
             )
-            forecast = adapter.latest_blend(target)
+            forecast = adapter.latest_emos_snapshot(target)
+            if forecast is None:
+                raise ForecastDataError("same-day heartbeat has no live EMOS snapshot")
+            if forecast.target_date != target or forecast.station_id != city.nws_station_id:
+                raise ForecastDataError(
+                    "same-day heartbeat EMOS snapshot does not match city/target"
+                )
+            age_hours = forecast.age_hours()
+            if (
+                age_hours is None
+                or age_hours < -(5.0 / 60.0)
+                or age_hours > config.max_forecast_age_hours
+            ):
+                raise ForecastDataError("same-day heartbeat EMOS snapshot is stale or undated")
+            if forecast.source_count < 2:
+                raise ForecastDataError("same-day heartbeat EMOS snapshot is single-source")
+            emos_payload = forecast.raw.get("emos") if isinstance(forecast.raw, dict) else None
+            if not isinstance(emos_payload, dict):
+                raise ForecastDataError("same-day heartbeat EMOS distribution is missing")
+            try:
+                emos = (float(emos_payload["mu"]), float(emos_payload["sigma"]))
+            except (KeyError, TypeError, ValueError):
+                raise ForecastDataError("same-day heartbeat EMOS distribution is malformed")
+            if not all(math.isfinite(value) for value in emos) or emos[1] <= 0:
+                raise ForecastDataError("same-day heartbeat EMOS distribution is invalid")
             intraday = adapter.intraday_snapshot(target)
-            if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
+            if (
+                intraday is None
+                or intraday.target_date != target
+                or intraday.observed_high_f is None
+                or not _heartbeat_timestamp_is_fresh(intraday.latest_observed_at)
+            ):
+                raise ForecastDataError(
+                    "same-day heartbeat observed high is missing, stale, or mismatched"
+                )
+            if not has_forecaster_observed_high_adjustment(forecast):
                 forecast = adapter.apply_intraday_update(forecast, intraday)
-            emos = adapter.load_emos_mu_sigma(lead_days=None).get(target)
             probabilities = calibrator.bucket_probabilities(
                 event.markets,
                 forecast.predicted_high_f,
                 source_spread_f=forecast.source_spread_f,
-                observed_high_f=intraday.observed_high_f if intraday else None,
+                observed_high_f=intraday.observed_high_f,
                 intraday=intraday,
                 emos_mu_sigma=emos,
                 standard_timezone=intraday_timezone_for_city(city),
@@ -2849,6 +2887,19 @@ def _refresh_same_day_model_reads(
                 f"{type(exc).__name__}: {exc}"
             )
     return written
+
+
+def _heartbeat_timestamp_is_fresh(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        observed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    age_minutes = (datetime.now(UTC) - observed.astimezone(UTC)).total_seconds() / 60.0
+    return -5.0 <= age_minutes <= SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES
 
 
 def cmd_paper_monitor(args: argparse.Namespace) -> int:

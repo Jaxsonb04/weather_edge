@@ -1,6 +1,7 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sfo_kalshi_quant.cli import _paper_entry_gate_for_target
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import SFO_TZ
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot
 
@@ -29,6 +30,24 @@ def test_single_source_forecast_blocks_paper_entry():
 def test_same_day_entry_gate_blocks_after_peak_window():
     now = datetime(2026, 6, 8, 15, 1, tzinfo=SFO_TZ)
     allowed, reason = _paper_entry_gate_for_target(now.date(), _forecast(now.date()), None, now=now)
+
+    assert allowed is False
+    assert reason is not None
+    assert "local peak/high window has passed" in reason
+
+
+def test_nyc_same_day_entry_gate_uses_fixed_est_cutoff_at_20z():
+    city = get_city("nyc")
+    now = datetime(2026, 7, 10, 20, 0, tzinfo=UTC)  # 15:00 fixed EST
+    target = datetime.fromtimestamp(now.timestamp(), city.fixed_standard_timezone()).date()
+
+    allowed, reason = _paper_entry_gate_for_target(
+        target,
+        _forecast(target),
+        None,
+        city=city,
+        now=now,
+    )
 
     assert allowed is False
     assert reason is not None

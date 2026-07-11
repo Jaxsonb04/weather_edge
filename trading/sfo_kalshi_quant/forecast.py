@@ -384,6 +384,11 @@ class SfoForecasterAdapter:
             },
         )
 
+    def latest_emos_snapshot(self, target: date) -> ForecastSnapshot | None:
+        """Public live-EMOS read for fail-closed monitor refreshes."""
+
+        return self._latest_emos_snapshot(target)
+
     def load_emos_outcomes(self) -> list[ForecastOutcome]:
         """Scored rolling-origin EMOS outcomes for this station.
 
