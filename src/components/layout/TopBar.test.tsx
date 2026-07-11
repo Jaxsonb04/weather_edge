@@ -15,6 +15,19 @@ const props = {
 };
 
 describe("TopBar mobile menu keyboard behavior", () => {
+  it("keeps brand and source link names explicit when responsive text is hidden", () => {
+    render(<TopBar {...props} />);
+
+    expect(screen.getByRole("link", { name: "WeatherEdge overview" })).toHaveAttribute(
+      "aria-label",
+      "WeatherEdge overview",
+    );
+    expect(screen.getByRole("link", { name: "WeatherEdge source on GitHub" })).toHaveAttribute(
+      "aria-label",
+      "WeatherEdge source on GitHub",
+    );
+  });
+
   it("focuses the first link on open and restores the trigger on Escape", () => {
     render(<TopBar {...props} />);
     const trigger = screen.getByRole("button", { name: "Open menu" });

@@ -64,7 +64,7 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
           <Icon icon={menuOpen ? "solar:close-circle-bold" : "solar:widget-5-bold"} className="size-5" aria-hidden="true" />
         </button>
 
-        <a href="#/overview" className="flex min-w-0 items-center gap-2.5 no-underline">
+        <a href="#/overview" aria-label="WeatherEdge overview" className="flex min-w-0 items-center gap-2.5 no-underline">
           <span className="relative grid size-7 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
             <Icon icon="solar:temperature-bold" className="size-4" aria-hidden="true" />
           </span>
@@ -115,7 +115,13 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
           <LinkButton href={liveUrl} variant="ghost" size="sm" className="hidden min-h-10 gap-1.5 sm:inline-flex">
             <Icon icon="solar:square-top-down-bold" className="size-4" aria-hidden="true" /> Live
           </LinkButton>
-          <LinkButton href={repoUrl} variant="primary" size="sm" className="min-h-10 gap-1.5">
+          <LinkButton
+            href={repoUrl}
+            aria-label="WeatherEdge source on GitHub"
+            variant="primary"
+            size="sm"
+            className="min-h-10 gap-1.5"
+          >
             <Icon icon="solar:code-square-bold" className="size-4" aria-hidden="true" /> <span className="hidden sm:inline">Source</span>
           </LinkButton>
         </div>
