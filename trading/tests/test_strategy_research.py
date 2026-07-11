@@ -4,6 +4,7 @@ import io
 import json
 import sqlite3
 import tempfile
+import threading
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -248,6 +249,80 @@ def test_facade_build_restores_forwarded_bindings_after_exception(tmp_path, monk
 
     assert strategy_calibration_module.run_walk_forward_calibration_backtest is original_walk
     assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == original_rolling_days
+
+
+def test_facade_compatibility_forwarding_serializes_overlapping_threads():
+    original_facade = strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS
+    original_domain = strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_inside = threading.Event()
+    errors: list[BaseException] = []
+    first_seen: list[int] = []
+    second_seen: list[int] = []
+
+    def first_worker():
+        try:
+            with strategy_research_module._forward_build_compatibility():
+                first_seen.append(strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS)
+                first_inside.set()
+                assert release_first.wait(timeout=2)
+                first_seen.append(strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def second_worker():
+        try:
+            second_started.set()
+            with strategy_research_module._forward_build_compatibility():
+                second_seen.append(strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS)
+                second_inside.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    try:
+        strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS = 1
+        first = threading.Thread(target=first_worker)
+        first.start()
+        assert first_inside.wait(timeout=2)
+
+        strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS = 2
+        second = threading.Thread(target=second_worker)
+        second.start()
+        assert second_started.wait(timeout=2)
+        assert not second_inside.wait(timeout=0.1)
+
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        assert not first.is_alive()
+        assert not second.is_alive()
+    finally:
+        release_first.set()
+        strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS = original_facade
+
+    assert not errors
+    assert first_seen == [1, 1]
+    assert second_seen == [2]
+    assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == original_domain
+
+
+def test_facade_compatibility_forwarding_is_reentrant_for_nested_builds():
+    original_facade = strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS
+    original_domain = strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS
+    try:
+        strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS = 1
+        with strategy_research_module._forward_build_compatibility():
+            assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == 1
+            strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS = 2
+            with strategy_research_module._forward_build_compatibility():
+                assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == 2
+            assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == 1
+    finally:
+        strategy_research_module.FORECAST_HEALTH_ROLLING_DAYS = original_facade
+
+    assert strategy_forecast_health_module.FORECAST_HEALTH_ROLLING_DAYS == original_domain
 
 
 def test_strategy_research_reads_decisions_and_open_paper_positions():

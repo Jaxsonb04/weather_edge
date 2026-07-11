@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Iterator
 
 from ._util import (
@@ -229,21 +230,23 @@ _BUILD_COMPAT_DEPENDENCIES = {
     "_real_money_readiness_payload": (build,),
     "_status_payload": (build,),
 }
+_BUILD_COMPAT_LOCK = RLock()
 
 
 @contextmanager
 def _forward_build_compatibility() -> Iterator[None]:
-    originals: list[tuple[object, str, object]] = []
-    try:
-        for name, owners in _BUILD_COMPAT_DEPENDENCIES.items():
-            value = globals()[name]
-            for owner in owners:
-                originals.append((owner, name, getattr(owner, name)))
+    with _BUILD_COMPAT_LOCK:
+        originals: list[tuple[object, str, object]] = []
+        try:
+            for name, owners in _BUILD_COMPAT_DEPENDENCIES.items():
+                value = globals()[name]
+                for owner in owners:
+                    originals.append((owner, name, getattr(owner, name)))
+                    setattr(owner, name, value)
+            yield
+        finally:
+            for owner, name, value in reversed(originals):
                 setattr(owner, name, value)
-        yield
-    finally:
-        for owner, name, value in reversed(originals):
-            setattr(owner, name, value)
 
 
 def build_strategy_research(
