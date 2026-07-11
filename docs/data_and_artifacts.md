@@ -1,89 +1,111 @@
 # Data And Artifacts
 
-## Local Artifacts
+## Tracked Inputs And Fixtures
 
-- Forecaster source scripts.
-- Raw KSFO NOAA GHCNh station files from `2016-2026 weather data/`.
-- Optional local `weather.db` forecast archive. Treat it as disposable runtime
-  state unless it was just regenerated for the current task. Multi-city tables:
-  `cli_settlements` (station-keyed NWS CLI settlement truth, fed by live CLI
-  scans plus the IEM archive backfill), and the station-keyed
-  `nwp_model_forecasts` and `forecast_emos_daily_high` (migrated automatically
-  from the single-station layout).
-- Site data artifacts: five required JSONs (`trading_signal.json`,
-  `forecast_data.json`, `weather_story_data.json`, `cities_data.json`, and
-  `publication_manifest.json`) plus optional Strategy Lab research
-  (`strategy_research.json`). They are published with the prebuilt SPA in
-  `webdist`; the manifest records validated snapshot hashes and timestamps, and
-  `cities_data.json` carries per-city forecasts, latest settlement, and book
-  activity. Other generated results include `ab_test_results.json` and
-  `model_compare_results.json`.
-- Trained model and prediction artifacts under `forecaster/models/`.
-- Trading source package, tests, docs, AWS scripts, and small Kalshi research
-  orderbook snapshots.
+- Forecaster and trading source.
+- Raw KSFO NOAA station history under `forecaster/2016-2026 weather data/`.
+- `forecaster/ab_test_results.json` and
+  `forecaster/model_compare_results.json`, the committed model-comparison inputs.
+- `forecaster/forecast_data.json` and
+  `forecaster/weather_story_data.json`, intentionally tracked public dashboard
+  fixtures. Update them only as an explicit fixture change; do not mistake them
+  for production runtime truth.
+- Public fixture copies under `public/` used by local builds and missing-live-data
+  fallbacks.
 
-## Excluded From Git
+`model_compare_results.json` and `ab_test_results.json` are manually reviewed
+research outputs. Together they are used to manually produce
+`public/diagnostics.json`; that file is not an automatic training pipeline. No
+files under `forecaster/models/` are committed.
 
-- `.git`
-- virtual environments
-- `__pycache__`
-- `.DS_Store`
-- private `.env`
-- Google usage ledger
-- logs
-- generated `combined_weather.csv`, `weather_features.csv`, and `output.csv`
-- Google Weather cache and public trading signal
-- live Kalshi `paper_trading.db`
+For a machine that must keep a tracked fixture locally unchanged during normal
+development, an operator may use `git update-index --skip-worktree <path>` and
+later reverse it with `--no-skip-worktree`. This is local state only and must not
+replace review of intentional fixture updates.
 
-## Git Policy
+## Ignored Runtime State
 
-The root `.gitignore` keeps large local data and live runtime state out of git by
-default:
+Live databases, API caches, publication output, logs, virtual environments,
+training intermediates, and `trading/data/` are ignored. In particular:
 
 - `forecaster/weather.db`
-- `forecaster/2016-2026 weather data/`
 - `forecaster/google_weather_cache.json`
 - `forecaster/trading_signal.json`
 - `forecaster/strategy_research.json`
 - `forecaster/cities_data.json`
 - `forecaster/publication_manifest.json`
-- `forecaster/dataset_research.json` (written nightly by the dataset backfill;
-  summarized into the Strategy Lab `dataset_research` section)
+- `forecaster/dataset_research.json`
 - `trading/data/`
 
-This keeps large local data, generated site data, and runtime state out of
-public commits unless they are intentionally published.
+## Runtime Authority
 
-## Runtime Source Of Truth
+After sync and refresh, the EC2 host is authoritative. Relevant paths are:
 
-For live dashboard/API/cache state, AWS is authoritative after sync and refresh.
-Local ignored artifacts can be old MacBook leftovers, so local checks and smoke
-tests must not treat them as production evidence.
+```text
+/opt/weatheredge/forecaster/weather.db
+/opt/weatheredge/forecaster/google_weather_cache.json
+/opt/weatheredge/forecaster/trading_signal.json
+/opt/weatheredge/forecaster/strategy_research.json
+/opt/weatheredge/forecaster/cities_data.json
+/opt/weatheredge/forecaster/publication_manifest.json
+/opt/weatheredge/trading/data/paper_trading.db
+/opt/weatheredge/trading/data/archive
+/opt/weatheredge/webdist
+```
 
-AWS runtime paths are documented in `docs/aws_lightsail.md`, typically:
+See [AWS Deployment](aws_deployment.md). `sync_to_box.sh` and
+`sync_forecaster_source.sh` share `forecaster-runtime.rsync-filter`, so local
+stale runtime files, models, and the watchdog marker cannot overwrite or delete
+EC2 state.
 
-- `/opt/weatheredge/forecaster/weather.db`
-- `/opt/weatheredge/forecaster/google_weather_cache.json`
-- `/opt/weatheredge/forecaster/trading_signal.json`
-- `/opt/weatheredge/forecaster/strategy_research.json`
-- `/opt/weatheredge/forecaster/cities_data.json`
-- `/opt/weatheredge/forecaster/publication_manifest.json`
-- `/opt/weatheredge/webdist/` (the prebuilt SPA that the publisher ships)
-- `/opt/weatheredge/trading/data/`
-
-The initial Lightsail sync excludes these local runtime artifacts so stale local
-state does not overwrite AWS-side refreshed state.
-
-Before local dashboard design verification, run this from the repository root:
+Before local dashboard verification:
 
 ```bash
 python3 scripts/clear_local_runtime_state.py --confirm
+bun run build
 ```
 
-That removes local runtime DB/cache/generated site data files and writes
-explicit AWS-runtime placeholder JSON for `forecaster/google_weather_cache.json`,
-`forecaster/trading_signal.json`, and `forecaster/strategy_research.json`. It
-also removes `forecaster/cities_data.json` and
-`forecaster/publication_manifest.json`; those remain absent locally until
-explicitly regenerated. Use `--no-placeholders` only when you want to test
-missing-file behavior.
+The cleanup writes explicit AWS-authority placeholders for ignored cache/signal
+artifacts and removes other ignored publication output. It does not delete the
+tracked dashboard fixtures.
+
+## Archive Layer
+
+Paper-journal retention uses
+`/opt/weatheredge/trading/data/archive` by default. Daily gzip JSONL partitions
+sit under per-table `dt=YYYY-MM-DD` paths. `manifest.db` records hashes, byte and
+row counts, exact inclusive ID ranges, and decision-to-scan-context reference
+coverage.
+
+`run_archive_then_prune.sh` is the scheduled safety wrapper. It archives,
+derives features, optionally uploads, requires exact-ID/reference coverage,
+runs an explicit foreign-key audit, prunes, and finally cleans only verified
+uploaded local partitions. Missing or corrupt archive evidence stops pruning.
+
+S3 is optional and safe-off:
+
+```text
+SFO_ARCHIVE_DIR
+SFO_ARCHIVE_KEEP_DAYS
+SFO_ARCHIVE_S3_BUCKET
+SFO_ARCHIVE_S3_PREFIX
+SFO_ARCHIVE_AWS_CLI
+```
+
+Health gate:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color --db-path trading/data/paper_trading.db paper-archive --archive-dir trading/data/archive --check-gate
+python -m sfo_kalshi_quant.cli --no-color --db-path trading/data/paper_trading.db paper-check-foreign-keys --limit 100
+```
+
+Restore into a new database while writers are stopped with the tested API:
+
+```bash
+PYTHONPATH=trading python -c 'from pathlib import Path; from sfo_kalshi_quant.archive import restore_archive_days; print(restore_archive_days(Path("trading/data/archive"), Path("trading/data/restored.db")))'
+python -m sfo_kalshi_quant.cli --no-color --db-path trading/data/restored.db paper-check-foreign-keys --limit 100
+```
+
+The restore verifies partition hashes, inserts parents before children, and
+rolls back on `PRAGMA foreign_key_check` failures. Never restore over the live
+journal.

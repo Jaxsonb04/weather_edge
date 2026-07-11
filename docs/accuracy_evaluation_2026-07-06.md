@@ -1,7 +1,7 @@
 # Forecast accuracy evaluation — 2026-07-06
 
-Point-in-time evaluation of the production forecast candidates on the live
-Lightsail archive (`/opt/weatheredge/forecaster/weather.db`), run with
+Point-in-time evaluation of the production forecast candidates on the
+historical former-Lightsail archive (`/opt/weatheredge/forecaster/weather.db`), run with
 `forecast_postproc_backtest.py` on 2026-07-06 (UTC). All predictors are
 rolling-origin (no look-ahead): each day is scored with parameters fit only on
 strictly earlier days, against the integer CLISFO/Kalshi settlement high.

@@ -1,6 +1,6 @@
 # WeatherEdge — deploy target and access
 
-## Production runtime: AWS EC2 (migrated from Lightsail 2026-07-10)
+## Production runtime: AWS EC2
 
 The trading + forecaster runtime lives on an EC2 instance, NOT on this Mac and
 NOT on the laptop. Reach it via a **double hop**: laptop -> `ssh jaxson-build`
@@ -17,8 +17,8 @@ ssh -i "$EC2_KEY" -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$EC2_IP"
   the rest of this AWS account, noted at migration time; not worth relaunching
   over).
 - OS: Ubuntu 24.04.4 LTS, arm64 (aarch64). Python 3.12.3 (system default).
-- App root: `/opt/weatheredge/{trading,forecaster}`, same layout as the old
-  Lightsail box — deploy scripts in `trading/deploy/aws/` and systemd units
+- App root: `/opt/weatheredge/{trading,forecaster}` — deploy scripts in
+  `trading/deploy/aws/` and systemd units
   (`sfo-*.service`/`.timer`) are unchanged and portable.
 - Security group allows SSH (22) from one IP only — the operator's, not
   0.0.0.0/0. Credit specification is `standard` (not `unlimited`), so the
@@ -27,12 +27,10 @@ ssh -i "$EC2_KEY" -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$EC2_IP"
   mechanism as before — check `publish_forecaster_pages.sh` if it needs
   rotating.
 
-## Superseded: Lightsail
+## Platform history
 
-`.local/lightsail.env` still exists for reference/rollback during the
-migration window but the Lightsail instance is being decommissioned. Do not
-deploy new changes there once cutover is confirmed complete — check
-`.local/ec2.env` first for the current target.
+WeatherEdge ran on a 1 GB Lightsail instance until 2026-07-10. The EC2 host and
+`.local/ec2.env` are the only current deployment target and operator config.
 
 ## Archive layer (2026-07-10)
 

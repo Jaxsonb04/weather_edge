@@ -261,7 +261,7 @@ def test_index_maintenance_script_builds_the_same_named_index():
     deploy_readme = (trading_root / "deploy" / "aws" / "README.md").read_text(
         encoding="utf-8"
     )
-    aws_notes = (trading_root.parent / "docs" / "aws_lightsail.md").read_text(
+    aws_notes = (trading_root.parent / "docs" / "aws_deployment.md").read_text(
         encoding="utf-8"
     )
 

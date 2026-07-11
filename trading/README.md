@@ -1,7 +1,9 @@
-# SFO Kalshi Weather Quant
+# WeatherEdge Prediction-Market Engine
 
-Paper-trading and backtesting engine for Kalshi's San Francisco daily high
-temperature market, `KXHIGHTSFO`.
+Paper-trading and backtesting engine for daily-high temperature prediction
+markets across fifteen U.S. cities. SFO is the flagship and retains the deepest
+Google/NWS/Open-Meteo/LSTM blend; the other fourteen cities use the shared
+NWP→EMOS→CLI pipeline.
 
 In WeatherEdge, this module reads forecast artifacts from:
 
@@ -9,9 +11,10 @@ In WeatherEdge, this module reads forecast artifacts from:
 /path/to/WeatherEdge/forecaster
 ```
 
-It reads the latest blended SFO forecast, applies same-day observed-high
-constraints, blends the weather model with market-implied probabilities,
-subtracts estimated fees/spread, and records paper-only trades.
+It reads the per-city forecast, applies each station's settlement clock and
+same-day observed-high constraints, blends weather and market-implied
+probabilities, subtracts estimated fees/spread, and records paper-only trades.
+The default city selection is all registered markets (`PAPER_CITIES=all`).
 
 Command output is color-coded by default:
 
@@ -23,7 +26,7 @@ Command output is color-coded by default:
 Use `--no-color` before the command name if you want plain text:
 
 ```bash
-python3 -m sfo_kalshi_quant.cli --no-color analyze --target-date both
+python3 -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --cities all
 ```
 
 ## Quick Start
@@ -36,24 +39,21 @@ For the side-aware YES/NO research basis, read
 ```bash
 python3 -m sfo_kalshi_quant.cli backtest-calibration
 python3 -m sfo_kalshi_quant.cli backtest-calibration --source clean-blend
-python3 -m sfo_kalshi_quant.cli analyze --target-date both
-python3 -m sfo_kalshi_quant.cli analyze --target-date both --side both
-python3 -m sfo_kalshi_quant.cli tail-basket --target-date rolling
-python3 -m sfo_kalshi_quant.cli --risk-profile live analyze --target-date both --side both
-python3 -m sfo_kalshi_quant.cli analyze --target-date today --observed-high 67
-python3 -m sfo_kalshi_quant.cli analyze --target-date today
-python3 -m sfo_kalshi_quant.cli analyze --target-date tomorrow
-python3 -m sfo_kalshi_quant.cli analyze --target-date today --paper-stake 10 --place-paper
+python3 -m sfo_kalshi_quant.cli analyze --target-date rolling --side both --cities all
+python3 -m sfo_kalshi_quant.cli --risk-profile live portfolio-scan --target-date rolling --side both --cities all
+PAPER_RISK_PROFILES=live,research PAPER_ENTRY_MODE=limit PAPER_CITIES=all bash deploy/aws/run_paper_scan_profiles.sh
 python3 -m sfo_kalshi_quant.cli paper-report
 python3 -m sfo_kalshi_quant.cli paper-close --order-id 1
-python3 -m sfo_kalshi_quant.cli paper-settle --target-date 2026-06-03 --settlement-high 67
+python3 -m sfo_kalshi_quant.cli paper-auto-settle
 python3 -m sfo_kalshi_quant.cli backtest-market
 python3 -m sfo_kalshi_quant.cli backtest-signals
 ```
 
-If tomorrow's Kalshi event is not listed yet, `analyze --target-date tomorrow`
-still prints probability estimates using the standard SFO ladder, but it will
-not approve trades without an active market.
+The scheduled entry path is `portfolio-scan`, not a legacy single-market
+diagnostic. It evaluates all configured cities through the shared allocator.
+Production paper entry is maker-first: `PAPER_ENTRY_MODE=limit` records a
+resting limit at the reservation price, and the monitor marks a proxy fill only
+when the visible ask crosses. That proxy does not model queue position.
 
 Use `--target-date both` to show today's tradable market and tomorrow's
 probability forecast in one run.
@@ -61,8 +61,8 @@ probability forecast in one run.
 ## What Is Implemented
 
 - Kalshi public event/orderbook client.
-- Adapter for the SFO forecaster's `weather.db`, `google_weather_cache.json`,
-  and `ab_test_results.json`.
+- Per-city adapter for `weather.db`; SFO additionally uses
+  `google_weather_cache.json` and `ab_test_results.json`.
 - Reads extended forecaster metadata: lead hours, source weights, fresh station
   count, Google refresh usage, and observed-high lock details.
 - Conditional residual calibration from historical LSTM forecast errors.
@@ -102,9 +102,8 @@ probability forecast in one run.
   posterior as separate probability streams, and `--sample-mode
   entry-per-market-side` backtests the first approved snapshot per market/side
   — the actual entry decision — instead of the latest scan.
-- All target-date, entry-gate, and auto-settle day math runs on the fixed-PST
-  settlement clock that matches the NWS daily climate report, not the civil
-  calendar day.
+- All target-date, entry-gate, and auto-settle math uses each city's configured
+  fixed-standard settlement clock and NWS CLI product.
 - Paper stake overrides are capped by visible top-of-book ask size.
 - Liquidity and sanity gates: no zero-bid penny tails, no huge model/market
   disagreement, no impossible same-day buckets, and no 1c/2c tail trades unless
@@ -131,20 +130,17 @@ Collect a forecast and market snapshot:
 python3 -m sfo_kalshi_quant.cli collect --target-date both
 ```
 
-Analyze active markets:
+Analyze all active city markets (or narrow with `--cities sfo,lax`):
 
 ```bash
-python3 -m sfo_kalshi_quant.cli analyze --target-date both
-python3 -m sfo_kalshi_quant.cli analyze --target-date today
-python3 -m sfo_kalshi_quant.cli analyze --target-date today --observed-high 67
-python3 -m sfo_kalshi_quant.cli tail-basket --target-date rolling
-python3 -m sfo_kalshi_quant.cli tail-basket --target-date rolling --place-paper
-python3 -m sfo_kalshi_quant.cli --risk-profile research analyze --target-date both
-python3 -m sfo_kalshi_quant.cli --risk-profile research analyze --target-date rolling --side both --place-paper --paper-stake 5
-PAPER_RISK_PROFILES=live,research bash scripts/paper_analyze.sh --target-date rolling --place-paper
+python3 -m sfo_kalshi_quant.cli analyze --target-date rolling --side both --cities all
+python3 -m sfo_kalshi_quant.cli portfolio-scan --target-date rolling --side both --cities all
+python3 -m sfo_kalshi_quant.cli --risk-profile research analyze --target-date rolling --side both --cities all
+PAPER_RISK_PROFILES=live,research PAPER_ENTRY_MODE=limit PAPER_CITIES=all bash deploy/aws/run_paper_scan_profiles.sh
 ```
 
-The `tail-basket` command is the early-market version of the edge idea:
+`tail-basket` and `arbitrage` remain diagnostic research commands. The scheduled
+scanner uses the portfolio allocator, which considers:
 
 ```text
 far edge bucket below forecast band -> BUY_NO if it clears normal gates
@@ -155,18 +151,14 @@ bucket closest to forecast center    -> small BUY_YES if it clears normal gates
 Defaults are intentionally small: `$5` paper stake per approved tail NO and
 `$1` on the center YES. The basket rejects itself if selected tail probability
 is above `0.20`, sized spend exceeds `$12`, or any settlement bucket would lose
-more than `$8`. The scheduled AWS scanner runs this before the broad analyzer
-when `SFO_PAPER_SCAN_TAIL_BASKET_ENABLED=1`.
+more than `$8`. It is not the active scheduled entry path.
 
 Risk profiles:
 
-- `live` (default): the real-money-intent exploiter. It is the stricter,
-  real-trading-candidate book, but stays paper-only until a readiness gate
-  passes. It blocks the warm/hot anti-calibrated cohorts, keeps the proven
-  `edge_lcb >= 0` floor, and runs the comfortable far-tail NO rule: it blocks
-  near-forecast coin-flip NO bets and sizes up genuine far-tail NO bets (bins
-  comfortably far from the point forecast), always keeping the positive
-  after-fee `edge_lcb` floor.
+- `live` (default): the stricter paper book and real-money-intent evidence
+  record. It remains paper-only, requires positive lower-bound edge, applies
+  SFO evidence gates where available, and concentrates entries in the
+  researched favorite-price band.
 - `research`: the single data collector. Loosest gates (so it approves the
   widest opportunity set) at the smallest size (so a bad idea stays tiny). It
   records the full opportunity set including center bins (comfort-edge off) so
@@ -178,10 +170,9 @@ not a selectable CLI/env profile. Legacy names map onto the two profiles as
 aliases on the CLI and in stored data: `balanced`/`conservative` -> `live`;
 `exploratory`/`fast-feedback`/`fast` -> `research`.
 
-When `PAPER_RISK_PROFILES` contains multiple profiles, the scheduled scanner
-runs them back to back in the same SQLite DB. Paper orders are tagged by
-`risk_profile`, so `live` and `research` can both enter the same market
-without blocking each other's journal.
+When `PAPER_RISK_PROFILES=live,research`, the scheduled scanner runs exactly
+those two books across all configured cities. Orders are profile- and
+series-tagged, so books and city exposure remain isolated in one journal.
 
 For today's market, the program automatically reads the forecaster database
 for KSFO's observed high so far. If the Kalshi app, NWS page, or a fresher source

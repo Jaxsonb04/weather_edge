@@ -104,7 +104,7 @@ now automated end to end:
 1. **Forecast source**: Google Weather is the highest-weight live input. The
    API key is kept off the public website; refreshes happen server-side and are
    written to `google_weather_cache.json` plus the SQLite archive.
-2. **Always-on runner**: an AWS Lightsail Ubuntu instance runs the refresh
+2. **Always-on runner**: an AWS EC2 Ubuntu arm64 instance runs the refresh
    workflow even when the laptop is asleep. There is no local launchd job; the
    cloud machine is the single automation source.
 3. **Scheduled jobs**: systemd timers refresh NWS ground truth, fetch Google
@@ -122,7 +122,7 @@ now automated end to end:
    rolling live serve. Lead 3 is retained as a manual/on-demand historical
    backfill capability for research; it is intentionally not fetched by the
    scheduled `nwp_archive.py --daily` job.
-4. **Public website**: after each successful rebuild, the Lightsail server uses
+4. **Public website**: after each successful rebuild, the EC2 server uses
    a GitHub deploy key with write access to publish the prebuilt React SPA and
    the fresh data JSONs to `gh-pages`, which GitHub Pages serves at
    `https://jaxsonb04.github.io/weather_edge/`.
@@ -185,21 +185,37 @@ Other limits:
 ## File Map
 
 ```text
-combine_psv.py        NOAA PSV files -> clean hourly CSV
-load_to_db.py         CSV -> SQLite
-features.py           feature engineering and prediction targets
-eda.py                exploratory plots
-xgboost_model.py      XGBoost training, baselines, diagnostics
-lstm_model.py         PyTorch LSTM training
-compare_models.py     head-to-head metrics and calibration plots
-ab_test.py            paired t-test, Wilcoxon, bootstrap CI, lift
-forecast_tomorrow.py  static month/day forecast lookup for the site
-google_weather_cache.py  cached Google hourly high for the site
-nws_ground_truth.py      NWS KSFO observations and daily-high ground truth
-ab_test_results.json  A/B metrics plus chart data for animated diagnostics
-model_compare_results.json  model metrics and XGBoost feature importance
-weather_story_data.json     temperature distribution data for the dashboard
+ab_test.py                       paired significance tests and bootstrap lift
+cities.py                        canonical fifteen-city market/station registry
+city_truth.py                    live and IEM-backed per-city CLI settlement truth
+clisfo.py                        SFO NWS Daily Climate Report parser
+combine_psv.py                   NOAA PSV files -> clean hourly CSV
+compare_models.py                head-to-head metrics and calibration plots
+eda.py                           exploratory plots
+emos_forecast.py                 rolling multi-city EMOS fit and live serve
+emos_recalibration.py            EMOS recalibration research helpers
+features.py                      feature engineering and prediction targets
+fetch_inland_history.py          inland-station history acquisition helper
+forecast_backtest.py             clean next-day SFO blend backtest
+forecast_postproc_backtest.py    multi-city post-processing comparison
+forecast_scoring.py              forecast scoring and proper-score helpers
+forecast_tomorrow.py             static month/day forecast lookup
+forecast_validation.py           artifact and forecast validation checks
+google_weather_cache.py          SFO live blend, cache, archive, and site JSON
+load_to_db.py                    cleaned station CSV -> SQLite
+lstm_model.py                    PyTorch LSTM training
+nwp_archive.py                   point-in-time multi-model NWP archive
+nws_ground_truth.py              NWS observations and daily-high truth
+postproc_models.py               empirical/EMOS post-processing models
+recalibration_replay.py          point-in-time recalibration replay
+settlement_calendar.py           fixed-standard settlement-day calculations
+xgboost_model.py                 XGBoost training, baselines, and diagnostics
 ```
+
+`model_compare_results.json` and `ab_test_results.json` are retained committed
+research outputs. They are reviewed together and manually used to produce
+`public/diagnostics.json`; no production timer retrains models or regenerates
+that public diagnostic automatically.
 
 ## Data Sources
 
@@ -238,8 +254,10 @@ rerun for every experiment.
 For the Google fetch, put `GOOGLE_WEATHER_API_KEY=...` in `.env` first. The
 `.env` file is ignored by git.
 
-Production refresh automation runs on the Lightsail box (see
-`docs/aws_lightsail.md`); there is no local launchd job.
+Production refresh automation runs on EC2 (see
+[`../docs/aws_deployment.md`](../docs/aws_deployment.md)); there is no local
+launchd job. Scheduled NWP maintenance fetches leads 1 and 2; lead 3 remains a
+manual/on-demand research backfill.
 
 Google Weather usage is tracked in `.google_weather_usage.json` by billable
 Weather events, not just refresh attempts. One enhanced refresh uses about five

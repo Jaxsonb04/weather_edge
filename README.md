@@ -1,10 +1,10 @@
 # WeatherEdge
 
-WeatherEdge is a unified weather forecasting and Kalshi paper-trading research
+WeatherEdge is a unified weather forecasting and prediction-market paper-trading research
 project covering fifteen US city daily-high markets, with SFO as the flagship.
 It combines a station-aligned SFO forecaster with its Google/NWS/Open-Meteo
 blend, a station-agnostic NWP→EMOS pipeline for the other fourteen cities, a
-Kalshi market probability engine, paper-trading journal, AWS deployment
+prediction-market probability engine, paper-trading journal, AWS deployment
 scripts, and a React single-page dashboard published to GitHub Pages.
 
 **Safety rule:** this project is paper trading only. It uses real Kalshi market
@@ -139,8 +139,8 @@ bun install   # HeroUI Pro registry auth required (HEROUI_PERSONAL_TOKEN)
 bun run build # outputs dist/
 ```
 
-Production serves the prebuilt app from `/opt/weatheredge/webdist` on the
-Lightsail box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
+Production serves the prebuilt app from `/opt/weatheredge/webdist` on the EC2
+box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
 the `gh-pages` branch with the freshly generated data JSONs
 (`trading_signal.json`, `forecast_data.json`, `weather_story_data.json`,
 `strategy_research.json`, `cities_data.json`) overlaid on every refresh cycle.
@@ -175,7 +175,7 @@ place paper orders.
 Strategy Lab defaults to the `live` profile view, so the wider-net
 `research` results do not contaminate the `live` headline P&L, hit rate,
 open risk, daily rows, signals, actions, or learnings. The AWS
-`sfo-strategy-lab-refresh.timer` republishes those trading results every five
+`sfo-strategy-lab-refresh.timer` republishes those trading results every fifteen
 minutes without calling the paid Google Weather refresh path.
 
 `backtest-calibration --source clean-blend` validates the archived live blend on
@@ -203,7 +203,7 @@ Optional deployment scripts can sync the app into a server layout such as:
 /opt/weatheredge/trading
 ```
 
-See [docs/aws_lightsail.md](docs/aws_lightsail.md).
+See [docs/aws_deployment.md](docs/aws_deployment.md).
 
 ## Data And Artifacts
 

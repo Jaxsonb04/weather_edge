@@ -1,327 +1,127 @@
-# AWS Lightsail Deployment
+# AWS EC2 Deployment
 
-This deploys the project as an always-on paper-trading research box.
+These scripts operate the always-on WeatherEdge EC2 runtime at
+`/opt/weatheredge`. The current host is Ubuntu arm64 on a `t4g.medium` in
+`us-east-1`. This directory supports deployment and local verification; it does
+not authorize production access or changes.
 
-Deployment flow:
+## Runtime Contract
 
-- Source code is updated locally and published through Git.
-- The configured Git branch provides forecaster source for scheduled refreshes.
-- Lightsail pulls the `forecaster/` subdirectory from `main` before scheduled
-  forecast and publication work.
-- Lightsail publishes the prebuilt SPA and fresh data JSONs to `gh-pages`.
-- GitHub Pages should serve the `gh-pages` branch.
+- `sync_to_box.sh` is the operator-driven full source sync. It defaults to
+  `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, and preserves remote runtime
+  state.
+- `sync_forecaster_source.sh` is the scheduled, source-only Git refresh. It uses
+  `--delete` for tracked forecaster source but shares
+  `forecaster-runtime.rsync-filter` with the full sync.
+- The intentional difference is scope: full sync sends both local source trees
+  without deleting remote-only files; source sync refreshes only the committed
+  `forecaster/` subtree from `main`.
+- Runtime DBs, publication JSONs, `STALE_FORECAST`, and `models/` are never
+  clobbered. The tracked `forecast_data.json` and `weather_story_data.json`
+  fixtures remain explicit exclusions until the committed-input migration.
+- The served committed model-evaluation input is
+  `forecaster/ab_test_results.json`. There are zero committed files under
+  `forecaster/models/`.
 
-It runs:
-
-- Forecaster refresh: every 30 minutes from 05:10 through 18:40 Pacific time,
-  then hourly overnight at minute 40. Each refresh serves live EMOS forecasts
-  for all fifteen registered cities (one batched Open-Meteo call per city),
-  refreshes NWS observations (`--days 2 --cities all`), and stops after
-  refreshing forecast state.
-- Operational publication: every 5 minutes. It builds `trading_signal.json`,
-  `cities_data.json`, and `publication_manifest.json`, validates the coherent
-  snapshot, and publishes the data JSONs with the prebuilt SPA.
-- Strategy Lab publication: every 15 minutes. It rebuilds only the heavier
-  `strategy_research.json`, refreshes the manifest, validates the snapshot,
-  and publishes without calling the paid Google Weather refresh path.
-- Compact dataset backfill: nightly at 02:25 Pacific time. The nightly unit
-  also runs the IEM CLI settlement-truth refresh, the NWP archive update
-  (`--daily --cities all`), and the EMOS rolling-origin rebuild (leads 1 and 2).
-- Decision-snapshot retention: the dedicated
-  `sfo-kalshi-paper-prune.timer` / `sfo-kalshi-paper-prune.service` invokes
-  `run_archive_then_prune.sh`. Its ordering is the safety gate: lossless archive
-  and verification must succeed before pruning. Production uses
-  `SFO_PRUNE_FULL_DAYS=1`, keeps last-per-market-side-day rows to 45 days, and
-  keeps approved rows indefinitely. The wrapper also runs the explicit capped
-  `paper-check-foreign-keys` integrity audit immediately before pruning; routine
-  `PaperStore` initialization intentionally does not scan the full journal.
-  Do not add or invoke a bare scheduled
-  `paper-prune`; the CLI command is low-level/manual recovery tooling.
-- Kalshi paper scan: every 5 minutes, around the clock, looping all cities.
-  Each run live-fetches the current Kalshi order books and makes paper-trade
-  entries on fresh market data (it is not a dashboard rebuild), so a
-  newly-listed bracket is acted on within ~5 minutes.
-- Paper exit monitor: every 2 minutes around the clock. It also fills resting
-  maker limit entries when the visible ask crosses (a proxy fill model, no
-  queue position).
-- Paper settle: per-city; auto-settle uses only durable weather.db CLI rows with
-  `is_final=1`, after 06:00 on the next fixed-standard settlement day. Raw live
-  products are never booked. Use `paper-resettle --verify --days N` for a
-  non-mutating audit of matches, mismatches, and missing final truth.
-
-The services are paper-only. They do not contain a live-order path.
-
-## Recommended AWS Instance
-
-Use Amazon Lightsail, not full EC2, for this stage.
-
-- Platform: Linux/Unix
-- Blueprint: OS Only, Ubuntu 24.04 LTS or latest Ubuntu LTS
-- Region: choose the nearest appropriate AWS region
-- Size: start with the small 1 GB Linux bundle
-- Name: choose a project-specific instance name
-
-Attach a static IP after creation so the SSH address does not change after
-restarts.
-
-## Copy Local Code To The Server
-
-Set these locally after the Lightsail instance exists:
+Configure the ignored local file:
 
 ```bash
-export LIGHTSAIL_IP="replace_with_static_ip"
-export LIGHTSAIL_KEY="/path/to/private/deploy-key.pem"
-chmod 600 "$LIGHTSAIL_KEY"
+EC2_IP=replace_with_public_ip
+EC2_KEY=/absolute/path/to/deploy-key.pem
+REMOTE_USER=ubuntu
 ```
 
-Copy WeatherEdge into the server runtime layout:
+Then sync and connect:
 
 ```bash
-bash trading/deploy/aws/sync_to_lightsail.sh
+bash trading/deploy/aws/sync_to_box.sh
+source .local/ec2.env
+ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
 ```
 
-This sync intentionally excludes local runtime artifacts such as
-`weather.db`, `google_weather_cache.json`, `trading_signal.json`,
-`strategy_research.json`, `cities_data.json`, `publication_manifest.json`,
-SQLite files, and `trading/data/`. Those files are generated and refreshed on
-AWS so stale local MacBook state does not overwrite server state.
+## Install Modes
 
-## Install Services
-
-SSH into the server and run the installer:
-
-```bash
-ssh -i "$LIGHTSAIL_KEY" ubuntu@$LIGHTSAIL_IP
-cd /opt/weatheredge/trading
-bash deploy/aws/install_systemd.sh
-```
-
-Edit the environment file:
-
-```bash
-sudo nano /etc/weatheredge.env
-```
-
-Set at least:
-
-```bash
-GOOGLE_WEATHER_API_KEY=replace_with_google_weather_key
-SFO_PUBLISH_PAGES=1
-SFO_FORECASTER_GIT_REMOTE=git@github.com:Jaxsonb04/weather_edge.git
-SFO_FORECASTER_SOURCE_SUBDIR=forecaster
-SFO_PAGES_DEPLOY_KEY=/home/ubuntu/.ssh/sfo_weather_pages_deploy
-SFO_PAGES_BRANCH=gh-pages
-SFO_PAGES_GIT_AUTHOR_NAME=JaxsonB04
-SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com
-SFO_ARTIFACT_GENERATION_LOCK=/opt/weatheredge/.locks/artifact-generation.lock
-SFO_ARTIFACT_LOCK_WAIT_SECONDS=900
-SFO_PUBLICATION_MANIFEST_PATH=/opt/weatheredge/forecaster/publication_manifest.json
-SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10
-SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20
-SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json
-SFO_DATASET_DB=/opt/weatheredge/trading/data/paper_trading.db
-SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history
-SFO_DATASET_KALSHI_LOOKBACK_DAYS=90
-SFO_DATASET_KALSHI_CANDLES=0
-SFO_DATASET_KALSHI_TRADES=0
-SFO_TRADING_SIGNAL_TARGET_DATE=both
-SFO_TRADING_SIGNAL_SIDE=both
-SFO_TRADING_SIGNAL_CALIBRATION_SOURCE=lstm
-SFO_STRATEGY_RESEARCH_CALIBRATION_MIN_TRAIN=180
-# No PAPER_DAILY_BUDGET: paper exposure is risk-gated, not budget-capped.
-PAPER_BANKROLL=1000
-PAPER_RISK_PROFILE=live
-PAPER_RISK_PROFILES=live,research
-# All fifteen registered city markets; a comma list of slugs also works.
-PAPER_CITIES=all
-# Maker-first: rest limit orders (maker fee is 25% of the quadratic taker
-# rate); the monitor fills them when the visible ask crosses.
-PAPER_ENTRY_MODE=limit
-PAPER_TAKE_PROFIT_PCT=40
-PAPER_STOP_LOSS_PCT=35
-PAPER_YES_TAKE_PROFIT_PCT=50
-PAPER_YES_STOP_LOSS_PCT=25
-PAPER_NO_TAKE_PROFIT_PCT=35
-PAPER_NO_STOP_LOSS_PCT=35
-PAPER_MODEL_VETO_MAX_LOSS_PCT=60
-PAPER_MODEL_VETO_BUFFER=0.08
-SFO_PORTFOLIO_MAX_ARB_SPEND=12
-SFO_PORTFOLIO_MIN_PROFIT=0.01
-```
-
-The forecaster timer only refreshes forecast state. The five-minute
-`sfo-operational-publish.timer` builds the public signal, per-city snapshot,
-and publication manifest before publishing. The fifteen-minute
-`sfo-strategy-lab-refresh.timer` builds only Strategy Lab research, then
-refreshes the manifest before publishing. The publisher validates every
-configured artifact against `publication_manifest.json`; missing, invalid, or
-checksum-mismatched inputs fail the cycle instead of producing a partial site.
-
-Both publication paths hold `SFO_ARTIFACT_GENERATION_LOCK` across build,
-manifest validation, and copying. The publisher's separate `SFO_PAGES_LOCK`
-only serializes Git updates to `gh-pages`. Strategy Lab research is plain
-public JSON by design; it contains only paper-trading research data.
-
-### One-time decision index maintenance
-
-Existing paper journals do not build the large decision-reporting index during
-an ordinary service start. During this upgrade, run the explicit maintenance
-script once with the scan and monitor timers paused:
-
-```bash
-sudo systemctl stop sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer
-sudo systemctl stop sfo-kalshi-paper-scan.service sfo-kalshi-paper-monitor.service
-bash /opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh
-sudo systemctl start sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer
-```
-
-Fresh databases receive `idx_decision_snapshots_created_market` during normal
-initialization; the maintenance path prevents an accidental large index build
-on the live journal.
-
-AWS paper scanning is pinned to LSTM calibration for SFO during this
-deployment stage; non-SFO cities calibrate from their scored out-of-sample
-EMOS archive outcomes.
-If `PAPER_RISK_PROFILES` is a comma-list, the scan service runs each profile
-back to back in the same paper DB. Orders are tagged by `risk_profile`, so the
-`live` paper book and `research` paper book do not block each other.
-Scheduled paper placement runs through `portfolio-scan`: guaranteed arbitrage
-is funded first, then high-confidence NO core, capped YES convex sleeve, and
-research exploration when the profile allows it. The standalone `arbitrage`,
-`tail-basket`, and `analyze` commands remain diagnostics, but the timer no
-longer places from independent paths with separate budgets.
-The public signal builder can be switched later with
-`SFO_TRADING_SIGNAL_CALIBRATION_SOURCE=clean-blend` after the server has enough
-clean next-day blend rows. Keeping this explicit avoids a silent source change
-mid-run.
-
-The compact dataset timer writes point-in-time feature tables into the paper DB
-by default. It intentionally starts with Iowa Mesonet ASOS, Open-Meteo forecast
-archives, NOAA LAMP/GFS MOS/NBM/HRRR guidance, and Kalshi market history.
-Historical Kalshi candles and trades are
-opt-in because a broad 90-day pull can hit API rate limits on the small
-Lightsail box; run those locally or as a narrow one-off backfill when needed.
-NOAA ISD stays out of the default scheduled source list until NCEI access is
-stable from the Lightsail instance; add `noaa-isd` to `SFO_DATASET_SOURCES`
-later after a manual backfill test succeeds.
-
-To publish the refreshed dashboard to GitHub Pages, create a deploy key on the
-server:
-
-```bash
-ssh-keygen -t ed25519 -N "" -C "weatheredge-pages" -f ~/.ssh/sfo_weather_pages_deploy
-cat ~/.ssh/sfo_weather_pages_deploy.pub
-```
-
-Add the public key to the GitHub repository at:
-
-```text
-Settings -> Deploy keys -> Add deploy key
-```
-
-Enable **Allow write access**. The private key stays on the Lightsail instance.
-
-In the GitHub repository Pages settings, set the source branch to:
-
-```text
-gh-pages / root
-```
-
-Then enable the timers:
-
-```bash
-sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-forecast-freshness.timer
-```
-
-## Self-Sufficient Refresh (Mac powered off)
-
-The box can own the entire daily refresh, so the Mac heavy forecaster is no longer
-required. Every refresh-path entrypoint (`nws_ground_truth`, `google_weather_cache`,
-`nwp_archive`, `emos_forecast`) is pure stdlib + numpy/pandas and
-peaks ~250 MB; only offline LSTM/XGBoost **training** is heavy, and that stays off the
-box (run on a dev machine or in CI; the box serves the committed `models/` artifacts).
-
-To run Mac-off:
-
-1. **Keep the box on light deps only.** `install_systemd.sh` installs `certifi numpy
-   pandas` into the forecaster venv. NEVER run `pip install .[forecaster]` is now safe
-   (it is light), but `pip install .[train]` (torch/xgboost/scipy/sklearn) must NEVER run
-   on the 1 GB box — it will OOM.
-2. **Set the env** in `/etc/weatheredge.env`: a real `GOOGLE_WEATHER_API_KEY` (the box
-   now drives the paid refresh; the 260/day + 8000/mo budget and overnight throttle still
-   apply), and `SFO_ENABLE_LIGHTSAIL_FORECASTER_REFRESH=1`.
-3. **Enable the refresh + watchdog timers** (above). `sfo-forecaster-refresh.timer`
-   tolerates transient NWS/Google fetch failures (`-` prefix); the separate
-   publication timers can continue from the last complete forecast state.
-4. **Freshness watchdog.** `sfo-forecast-freshness.timer` runs
-   `check_forecast_db_freshness.sh` every 30 min. It fails if `weather.db` is
-   older than `SFO_FORECAST_MAX_AGE_HOURS`, if the signal or cities generation
-   time is older than 10 minutes, or if Strategy Lab research is missing or
-   older than 20 minutes. Set `SFO_PUBLICATION_MANIFEST_URL` to check the public
-   manifest under the same limits. A failure writes `STALE_FORECAST`, exits
-   non-zero (so `systemctl --failed` flags it), and POSTs to
-   `SFO_FRESHNESS_ALERT_URL` when configured.
-5. **Memory safety.** Every unit carries a `MemoryMax`, and a swapfile is recommended on
-   the no-swap box, so a transient spike self-limits instead of the OOM-killer taking the
-   trading loop. Tune the `MemoryMax` values after observing real peaks
-   (`systemctl status <unit>`).
-
-Retire the Mac only after one on-box refresh succeeds and the freshness watchdog reads OK.
-
-## Check It
-
-Run the services once:
-
-```bash
-sudo systemctl start sfo-forecaster-refresh.service
-sudo systemctl start sfo-operational-publish.service
-sudo systemctl start sfo-strategy-lab-refresh.service
-sudo systemctl start sfo-dataset-backfill.service
-sudo systemctl start sfo-kalshi-paper-scan.service
-sudo systemctl start sfo-kalshi-paper-monitor.service
-sudo systemctl start sfo-kalshi-paper-settle.service
-```
-
-See logs:
-
-```bash
-journalctl -u sfo-forecaster-refresh.service -n 80 --no-pager
-journalctl -u sfo-operational-publish.service -n 80 --no-pager
-journalctl -u sfo-strategy-lab-refresh.service -n 80 --no-pager
-journalctl -u sfo-dataset-backfill.service -n 80 --no-pager
-journalctl -u sfo-kalshi-paper-scan.service -n 80 --no-pager
-journalctl -u sfo-kalshi-paper-monitor.service -n 80 --no-pager
-journalctl -u sfo-kalshi-paper-settle.service -n 80 --no-pager
-```
-
-See upcoming runs:
-
-```bash
-systemctl list-timers 'sfo-*' --all
-```
-
-See paper orders:
+Use the no-timers installer for a new host, migration, or recovery:
 
 ```bash
 cd /opt/weatheredge/trading
-.venv/bin/python -m sfo_kalshi_quant.cli --no-color paper-report
-.venv/bin/python -m sfo_kalshi_quant.cli --no-color --db-path data/paper_trading.db dataset-status
+bash deploy/aws/install_systemd_notimers.sh
 ```
 
-## Update Code Later
+It installs dependencies, both virtual environments, rendered units, and timer
+files, then deliberately leaves all timers disabled. After manual service
+checks, use `install_systemd.sh` for the established full timer set.
 
-After syncing updated code, run on the server:
+The forecaster runtime installs only `certifi numpy pandas`; the correctly
+formed command is `python -m pip install certifi numpy pandas`. Heavy training
+dependencies do not belong on the production box.
+
+## Cadence And Responsibilities
+
+- Forecast refresh: every 30 minutes; all fifteen cities, SFO flagship.
+- Operational publication: every five minutes; builds
+  `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.
+- Strategy Lab publication: every 15 minutes; research-only artifact build.
+- Paper scan: every five minutes, all configured cities, two profiles
+  (`PAPER_RISK_PROFILES=live,research`), maker-first with
+  `PAPER_ENTRY_MODE=limit` and `PAPER_CITIES=all`.
+- Paper monitor: every two minutes.
+- Dataset/backfill: nightly, including NWP leads 1 and 2. Lead 3 is manual.
+
+Publication is finality-aware and race-safe: builders share
+`SFO_ARTIFACT_GENERATION_LOCK`; the publisher validates the manifest before it
+copies exact artifacts, then serializes Git work with `SFO_PAGES_LOCK`. Configure
+the deploy key as `/home/ubuntu/.ssh/sfo_weather_pages_deploy` and the Git source
+as `git@github.com:Jaxsonb04/weather_edge.git`.
+
+## Archive-Gated Retention
+
+`sfo-kalshi-paper-prune.timer` runs `run_archive_then_prune.sh`, which:
+
+1. Exports every complete UTC day into the archive directory.
+2. Builds the derived feature store (non-fatal and rebuildable).
+3. Uploads to S3 only when configured.
+4. Requires the manifest's exact-ID and context-reference coverage gate.
+5. Runs `paper-check-foreign-keys`.
+6. Runs the low-level `paper-prune` command.
+7. Removes old local partitions only after verified upload.
+
+The default archive is `/opt/weatheredge/trading/data/archive`; the manifest is
+`manifest.db`. Configure `SFO_ARCHIVE_DIR`, `SFO_ARCHIVE_KEEP_DAYS`,
+`SFO_ARCHIVE_S3_BUCKET`, `SFO_ARCHIVE_S3_PREFIX`, and `SFO_ARCHIVE_AWS_CLI`.
+Without a bucket, the local ring buffer remains authoritative and cleanup skips
+unuploaded files.
+
+Health and finality checks:
 
 ```bash
 cd /opt/weatheredge/trading
-bash deploy/aws/install_systemd.sh
-sudo systemctl restart sfo-forecaster-refresh.service
-sudo systemctl restart sfo-operational-publish.service
-sudo systemctl restart sfo-strategy-lab-refresh.service
+.venv/bin/python -m sfo_kalshi_quant.cli --no-color --db-path data/paper_trading.db paper-archive --archive-dir data/archive --check-gate
+.venv/bin/python -m sfo_kalshi_quant.cli --no-color --db-path data/paper_trading.db paper-check-foreign-keys --limit 100
+.venv/bin/python -m sfo_kalshi_quant.cli --no-color --db-path data/paper_trading.db paper-resettle --verify --days 14
 ```
 
-## Stop Everything
+For an existing large journal, keep paper scan and monitor services paused and
+run `create_decision_snapshot_index.sh` once before resuming them. It builds the
+covering decision-report index without putting that expensive migration on
+normal service startup.
 
-```bash
-sudo systemctl disable --now sfo-forecaster-refresh.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-forecast-freshness.timer
-```
+Restore only to a new DB while paper services are stopped, using the tested
+`restore_archive_days` API, then run `paper-check-foreign-keys` before any swap.
+
+## Publication Health
+
+Set
+`SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json`.
+The watchdog rejects operational artifacts older than 10 minutes, Strategy Lab
+research older than 20 minutes, missing files, invalid schemas, and checksum
+mismatches. It writes `STALE_FORECAST` for the local alarm path; sync excludes
+preserve that marker.
+
+The canonical environment reference is `sfo-weather.env.example`. It contains
+safe defaults for the five live-execution gates, publication paths and locks,
+dataset paths, rolling targets/cutoff, archive/S3 settings, and the Batch C
+same-day heartbeat.
+
+See [`../../../docs/aws_deployment.md`](../../../docs/aws_deployment.md) for host
+details, security-group policy, and operator recovery.

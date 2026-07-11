@@ -10,7 +10,8 @@ These numbers drive the priorities for Phase 1a / 2a / 2b.
   (+ 1 test). The block's own metric (cohort Brier) is now visible per predictor.
 
 Dev env: `.venv-dev` on the Mac (numpy/pandas/scipy/scikit-learn/pytest). Run trading tests
-with `ulimit -n 4096`. weather.db pulled from Lightsail to `/tmp/weather.db` (177 MB).
+with `ulimit -n 4096`. The historical `weather.db` snapshot was pulled from the
+former Lightsail host to `/tmp/weather.db` (177 MB).
 
 ## Trading finding — the loss is mostly ENTRIES, not just exits
 CLV report over 72 orders (Jun 10–26), `python -m sfo_kalshi_quant.clv`:

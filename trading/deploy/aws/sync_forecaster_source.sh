@@ -8,6 +8,8 @@ DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
 SOURCE_CACHE_DIR="${SFO_FORECASTER_SOURCE_CACHE:-/opt/weatheredge/.cache/main}"
 SOURCE_LOCK="${SFO_FORECASTER_SOURCE_LOCK:-/opt/weatheredge/.locks/source-cache-main.lock}"
 SOURCE_SUBDIR="${SFO_FORECASTER_SOURCE_SUBDIR:-forecaster}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 
 if [[ "$REMOTE_URL" == git@* && ! -f "$DEPLOY_KEY" ]]; then
   echo "missing deploy key for private SSH remote: $DEPLOY_KEY" >&2
@@ -44,27 +46,15 @@ if [[ ! -f "$RSYNC_SOURCE/google_weather_cache.py" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$FORECASTER_EXCLUDES" ]]; then
+  echo "missing rsync exclude manifest: $FORECASTER_EXCLUDES" >&2
+  exit 1
+fi
+
+# These two tracked files are public-site fixtures today. They stay remote-owned
+# until the committed-input migration intentionally removes this pair.
 rsync -a --delete \
-  --exclude ".git/" \
-  --exclude ".venv/" \
-  --exclude "venv/" \
-  --exclude ".env" \
-  --exclude "__pycache__/" \
-  --exclude "*.pyc" \
-  --exclude "logs/" \
-  --exclude "models/" \
-  --exclude "STALE_FORECAST" \
-  --exclude "weather.db" \
-  --exclude "*.db-journal" \
-  --exclude "*.sqlite" \
-  --exclude "*.sqlite3" \
-  --exclude ".google_weather_usage.json" \
-  --exclude "google_weather_cache.json" \
-  --exclude "trading_signal.json" \
-  --exclude "strategy_research.json" \
-  --exclude "cities_data.json" \
-  --exclude "publication_manifest.json" \
-  --exclude "dataset_research.json" \
+  --exclude-from="$FORECASTER_EXCLUDES" \
   --exclude "forecast_data.json" \
   --exclude "weather_story_data.json" \
   "$RSYNC_SOURCE" "$FORECASTER_DIR"/

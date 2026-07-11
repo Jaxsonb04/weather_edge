@@ -10,14 +10,14 @@ dependencies = []
 # Daily forecast-refresh path only. Everything the AWS box runs (nws_ground_truth,
 # google_weather_cache, nwp_archive, emos_forecast) needs nothing
 # heavier than numpy + pandas. Keep this list light so `pip install .[forecaster]`
-# stays safe to run on the 1 GB Lightsail box.
+# stays safe to run on the production EC2 box.
 forecaster = [
   "numpy",
   "pandas",
 ]
 # Offline model TRAINING / analysis only (lstm_model.py, xgboost_model.py, ab_test.py,
 # compare_models.py, eda.py). These are heavy (torch alone is ~300-600 MB RSS) and must
-# NEVER be installed on the 1 GB box -- run them on a dev machine or in GitHub Actions.
+# NEVER be installed on the production box -- run them on a dev machine or in GitHub Actions.
 train = [
   "numpy",
   "pandas",

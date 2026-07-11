@@ -1,5 +1,11 @@
 # Lightsail And Local Dataset Plan
 
+> **Historical plan (2026-06-12).** This document records the former 1 GB
+> Lightsail-era dataset constraints. Production migrated to EC2 on 2026-07-10.
+> See [AWS Deployment](aws_deployment.md) and the
+> [current codebase-audit brief](prompts/codebase-audit-fable5.md) for active
+> operations and audit scope.
+
 This project should collect derived SFO forecast/trading features, not bulk raw
 weather archives. The Lightsail runtime is good for scheduled API pulls,
 SQLite writes, and small point extractions. The local Mac can do heavier

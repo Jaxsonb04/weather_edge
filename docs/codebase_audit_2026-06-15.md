@@ -1,5 +1,10 @@
 # WeatherEdge Codebase Audit — 2026-06-15
 
+> **Historical audit snapshot.** Findings and production metrics below are
+> dated 2026-06-15. For current remediation scope, use the
+> [current codebase-audit brief](prompts/codebase-audit-fable5.md),
+> `docs/MULTICITY-2026-07.md`, and [AWS Deployment](aws_deployment.md).
+
 A full-repository review covering correctness/bugs, trade-engine scoring, and
 dashboard design, with the explicit goal of (a) being safe enough to one day back
 real money and (b) being presentable to a quant employer.

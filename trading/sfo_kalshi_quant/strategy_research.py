@@ -178,7 +178,7 @@ def build_strategy_research(
         "live_orders_enabled": False,
         "default_profile": _default_profile(profiles),
         "generated_at": datetime.now(UTC).isoformat(),
-        "source_of_truth": "AWS Lightsail runtime artifacts after sync and refresh",
+        "source_of_truth": "AWS EC2 runtime artifacts after sync and refresh",
         "status": status,
         "daily_summary": daily_summary,
         "accounting": accounting,

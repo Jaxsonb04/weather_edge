@@ -1,5 +1,8 @@
 # Multi-Bin Arbitrage Implementation Plan
 
+> Historical plan dated 2026-06-12. Deployment steps below refer to the former
+> Lightsail host; current operations use EC2 and `sync_to_box.sh`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a paper-only arbitrage scanner that evaluates all active SFO temperature bins for same-bin and full-ladder guaranteed-payoff portfolios, then deploy it to the Lightsail paper engine.
@@ -54,5 +57,5 @@
 - [ ] Run `python3 trading/tests/run_tests.py`.
 - [ ] Run `bash scripts/verify_project.sh`.
 - [ ] Run a local no-live-market or offline command check for the new arbitrage CLI if available.
-- [ ] Sync to Lightsail with `bash trading/deploy/aws/sync_to_lightsail.sh` when deployment credentials are available.
+- [ ] Historical: sync to the then-current Lightsail host when credentials are available.
 - [ ] Re-run or restart the paper-scan service on Lightsail if SSH credentials are available.

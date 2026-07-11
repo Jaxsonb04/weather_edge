@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 
@@ -226,7 +227,7 @@ def test_paper_monitor_service_uses_side_aware_exit_env():
     assert "PAPER_MODEL_VETO_BUFFER=0.08" in example_env
 
 
-def test_dataset_backfill_timer_is_lightsail_safe_and_installed():
+def test_dataset_backfill_timer_is_production_safe_and_installed():
     installer = _read(AWS_DIR / "install_systemd.sh")
     service = _read(AWS_DIR / "systemd" / "sfo-dataset-backfill.service.in")
     timer = _read(AWS_DIR / "systemd" / "sfo-dataset-backfill.timer")
@@ -300,7 +301,9 @@ def test_source_sync_preserves_stale_forecast_watchdog_marker():
     # which is also where the freshness watchdog writes its STALE_FORECAST
     # marker; without this exclude the 5-minute sync silently erases the alarm.
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
-    assert '--exclude "STALE_FORECAST"' in syncer
+    excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
+    assert '--exclude-from="$FORECASTER_EXCLUDES"' in syncer
+    assert "STALE_FORECAST" in excludes
 
 
 def test_pages_publish_ships_spa_and_fresh_jsons():
@@ -321,12 +324,13 @@ def test_pages_publish_ships_spa_and_fresh_jsons():
     assert "SFO_PAGES_GIT_AUTHOR_EMAIL=JaxsonB04@users.noreply.github.com" in example_env
     assert '${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}' in publisher
     assert '${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}' in publisher
-    assert '--exclude "strategy_research.json"' in syncer
-    assert '--exclude "cities_data.json"' in syncer
-    assert '--exclude "publication_manifest.json"' in syncer
+    excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
+    assert "strategy_research.json" in excludes
+    assert "cities_data.json" in excludes
+    assert "publication_manifest.json" in excludes
 
 
-def test_pages_deploy_key_path_matches_lightsail_setup_docs():
+def test_pages_deploy_key_path_matches_ec2_setup_docs():
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
@@ -415,7 +419,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     watchdog = _read(AWS_DIR / "check_forecast_db_freshness.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
     readme = _read(AWS_DIR / "README.md")
-    lightsail = _read(AWS_DIR.parents[2] / "docs" / "aws_lightsail.md")
+    deployment = _read(AWS_DIR.parents[2] / "docs" / "aws_deployment.md")
 
     assert "sfo_kalshi_quant.publication validate" in watchdog
     assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
@@ -426,7 +430,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     ) in example_env
     assert "plain-text HTTP endpoint" in watchdog
     assert "Slack/Discord" not in watchdog
-    for documentation in (readme, lightsail):
+    for documentation in (readme, deployment):
         assert "10 minutes" in documentation
         assert "20 minutes" in documentation
         assert "SFO_PUBLICATION_MANIFEST_URL" in documentation
@@ -464,7 +468,7 @@ def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():
 
 
 def test_pull_paper_db_script_exists_for_offline_rescore():
-    # The readiness rescore needs the live journal locally; sync_to_lightsail.sh
+    # The readiness rescore needs the live journal locally; sync_to_box.sh
     # only pushes OUT and excludes the DB, so a dedicated inbound pull must exist.
     puller = _read(AWS_DIR / "pull_paper_db.sh")
     assert "paper_trading.db" in puller
@@ -472,20 +476,74 @@ def test_pull_paper_db_script_exists_for_offline_rescore():
     assert "backtest-rescore" in puller  # documents the next step
 
 
-def test_initial_lightsail_sync_does_not_copy_local_runtime_state():
-    syncer = _read(AWS_DIR / "sync_to_lightsail.sh")
+def test_pull_paper_db_prefers_ec2_env_with_legacy_variable_fallback():
+    puller = _read(AWS_DIR / "pull_paper_db.sh")
 
-    assert syncer.count("--exclude '.pytest_cache'") == 2
+    assert ".local/ec2.env" in puller
+    assert 'HOST_IP="${EC2_IP:-${LIGHTSAIL_IP:-}}"' in puller
+    assert 'HOST_KEY="${EC2_KEY:-${LIGHTSAIL_KEY:-}}"' in puller
+
+
+def test_box_sync_prefers_ec2_env_with_legacy_variable_fallback():
+    syncer = _read(AWS_DIR / "sync_to_box.sh")
+
+    assert ".local/ec2.env" in syncer
+    assert 'HOST_IP="${EC2_IP:-${LIGHTSAIL_IP:-}}"' in syncer
+    assert 'HOST_KEY="${EC2_KEY:-${LIGHTSAIL_KEY:-}}"' in syncer
+    retired_name = "sync_to_" + "lightsail.sh"
+    assert not (AWS_DIR / retired_name).exists()
+
+
+def test_forecaster_syncs_share_runtime_exclude_manifest():
+    full_sync = _read(AWS_DIR / "sync_to_box.sh")
+    source_sync = _read(AWS_DIR / "sync_forecaster_source.sh")
+    excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
+
+    assert 'FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"' in full_sync
+    assert 'FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"' in source_sync
+    assert '--exclude-from="$FORECASTER_EXCLUDES"' in full_sync
+    assert '--exclude-from="$FORECASTER_EXCLUDES"' in source_sync
 
     for artifact in (
+        "STALE_FORECAST",
+        "models/",
         "weather.db",
-        "*.db-journal",
-        "*.sqlite",
-        "*.sqlite3",
         "google_weather_cache.json",
         "trading_signal.json",
         "strategy_research.json",
         "cities_data.json",
         "publication_manifest.json",
     ):
-        assert f"--exclude '{artifact}'" in syncer
+        assert artifact in excludes
+
+
+def test_full_box_sync_does_not_copy_local_runtime_state():
+    syncer = _read(AWS_DIR / "sync_to_box.sh")
+
+    assert "--exclude-from=\"$FORECASTER_EXCLUDES\"" in syncer
+    assert "--exclude 'data'" in syncer
+
+
+def test_tracked_forecaster_fixtures_are_explicitly_preserved_on_the_box():
+    full_sync = _read(AWS_DIR / "sync_to_box.sh")
+    source_sync = _read(AWS_DIR / "sync_forecaster_source.sh")
+
+    for artifact in (
+        "forecast_data.json",
+        "weather_story_data.json",
+    ):
+        assert f'--exclude "{artifact}"' in full_sync
+        assert f'--exclude "{artifact}"' in source_sync
+
+
+def test_retired_forecaster_refresh_gate_is_absent():
+    needle = "SFO_ENABLE_" + "LIGHTSAIL_FORECASTER_REFRESH"
+    result = subprocess.run(
+        ["git", "grep", "-n", needle],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stdout

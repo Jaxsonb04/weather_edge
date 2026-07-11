@@ -1,5 +1,8 @@
 # WeatherEdge Trade-Engine Overhaul — Final Implementation Plan
 
+> Historical plan dated 2026-06-17. Its host instructions predate the EC2
+> migration; use `docs/aws_deployment.md` for current operations.
+
 > Produced by a 13-agent research+investigation workflow (subsystem map ×5, cited research ×3, bug hunt ×2, adversarial verification ×2, synthesis). All findings code-verified. Companion to `docs/trading_retune_validation_2026-06-17.md`.
 
 ## 1. Objective and honest framing
@@ -96,4 +99,5 @@ Add a walk-forward, after-fee, per-side, per-cohort, **independent-day** backtes
 - **Dynamic-bankroll clamp band:** 0.5×–2.0× of starting notional for research profiles.
 - **Warm/hot regime gate:** BALANCED hard-blocks/de-sizes 70–79°F entries (safety); FAST-FEEDBACK keeps exploring them at tiny size (so the cohort that most needs recalibration still collects data). This matches the explore→exploit design.
 - **Money mode:** paper-only; real money out of scope for this overhaul, gated on the AWS walk-forward above.
-- **AWS execution:** run the new backtests on AWS via provided `LIGHTSAIL_IP`+key; local stays clean.
+- **AWS execution (historical):** the original run used the former cloud host;
+  current operator access uses `EC2_IP`/`EC2_KEY` from `.local/ec2.env`.

@@ -1,6 +1,6 @@
 # Beginner User Guide
 
-This guide assumes you know nothing about this project, Kalshi weather markets,
+This guide assumes you know nothing about this project, weather prediction markets,
 or quant trading. It also assumes you are running commands from the project
 root:
 
@@ -10,18 +10,22 @@ cd /path/to/WeatherEdge
 
 ## What This Project Does
 
-This project is a paper-trading research tool for Kalshi's San Francisco daily
-high temperature market, `KXHIGHTSFO`.
+This project is a paper-trading research tool for daily-high prediction markets
+across fifteen U.S. cities. SFO is the flagship; all cities share the registry,
+portfolio allocator, settlement/finality rules, and paper journal.
 
 It does four jobs:
 
-1. Reads SFO forecasts and historical forecast accuracy from `forecaster/`.
-2. Converts the forecast into probabilities for each Kalshi temperature bucket.
-3. Compares those probabilities with Kalshi's live bid/ask prices.
+1. Reads per-city forecasts and historical accuracy from `forecaster/`.
+2. Converts each forecast into probabilities for its temperature buckets.
+3. Compares those probabilities with live prediction-market bid/ask prices.
 4. Records paper trades only when the opportunity passes the selected paper
    risk gates.
 
-It does not place real-money Kalshi orders.
+It does not place real-money orders. The scheduled EC2 scanner runs two paper
+profiles (`live` and `research`) over `PAPER_CITIES=all`. It enters maker-first
+with resting paper limits; a visible-ask crossing is only a proxy fill and does
+not model queue position.
 
 ## Data Sources
 
@@ -31,7 +35,7 @@ The main forecast data comes from:
 forecaster/
 ```
 
-This Kalshi repo reads these files/tables from that project:
+The trading package reads these files/tables from the forecaster:
 
 - `weather.db`: latest blended forecast, Google Weather fields, NWS fields,
   Open-Meteo fields, station observations, and Google hourly forecasts.
@@ -71,13 +75,13 @@ ask with no bid depth can be a trap because you may not be able to exit.
 `Liquidity`: A broad word for whether the market has enough bids, asks, and
 size to trade realistically.
 
-`Settlement`: The final official result. For these markets, settlement comes
-from the NWS Daily Climate Report for San Francisco Airport.
+`Settlement`: The final official result. Each city uses its configured NWS Daily
+Climate Report station/product and fixed-standard climate day.
 
-`CLISFO`: The NWS climate report product used by Kalshi settlement rules.
+`CLI`: The NWS climate report product used by the market settlement rules.
 
-`KSFO`: San Francisco Airport weather station. The strategy cares about airport
-station weather, not city-center San Francisco weather.
+`KSFO`: San Francisco Airport weather station, the flagship station. Other city
+markets use their own settlement stations from `cities.py`.
 
 ## Forecast Terms
 
@@ -229,6 +233,19 @@ The strategy rejects trades when:
 A `NO` decision is normal. Most rows should be rejected.
 
 ## First-Time Workflow
+
+Inspect all cities without recording orders:
+
+```bash
+python3 -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --cities all
+```
+
+Run the actual maker-first portfolio path locally in dry paper mode:
+
+```bash
+PAPER_RISK_PROFILES=live,research PAPER_ENTRY_MODE=limit PAPER_CITIES=all \
+  bash trading/deploy/aws/run_paper_scan_profiles.sh
+```
 
 Run the calibration check:
 

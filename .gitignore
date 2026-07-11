@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+.venv-dev/
 .venv-test/
 venv/
 
@@ -51,8 +52,6 @@ forecaster/trading_signal.json
 forecaster/strategy_research.json
 forecaster/cities_data.json
 forecaster/publication_manifest.json
-forecaster/strategy_research.protected.json
-forecaster/index.html
 forecaster/details.html
 forecaster/strategy-lab.html
 forecaster/dataset_research.json
@@ -67,6 +66,13 @@ dist-ssr/
 
 # live paper-trading data (fetched at runtime, published by the box)
 public/strategy_research.json
+
+# These are intentionally tracked public-dashboard fixtures, not live runtime
+# authority. Keep fixture edits explicit and reviewed.
+!forecaster/forecast_data.json
+!forecaster/weather_story_data.json
+!public/forecast_data.json
+!public/weather_story_data.json
 
 # EDA/training plot output (regenerable via eda.py and the trainers)
 forecaster/plots/

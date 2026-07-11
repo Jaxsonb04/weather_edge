@@ -1,5 +1,9 @@
 # WeatherEdge Research Improvement Review
 
+> Research record dated 2026-06-12. This captures the SFO research state at
+> that date; see `MULTICITY-2026-07.md` and the current trading guide for the
+> fifteen-city, two-profile maker-first system.
+
 This note translates a literature pass into project-specific work. WeatherEdge
 is still paper trading only; the goal is better calibration, more useful paper
 trade data, and fewer hidden look-ahead or execution assumptions.

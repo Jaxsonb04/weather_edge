@@ -2,6 +2,10 @@
 
 Date: 2026-06-12
 
+> Historical research record. Values and single-market assumptions below are
+> preserved for provenance; current operations use fifteen city markets, two
+> paper profiles, and maker-first portfolio scanning.
+
 This note inventories the important hard-coded WeatherEdge trade-engine
 numbers and recommends the next parameter set. It is intentionally conservative:
 papers can tell us how to choose parameters, but they cannot make the exact SFO

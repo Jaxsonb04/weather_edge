@@ -51,7 +51,7 @@ def _placeholder(relative: str) -> dict[str, object]:
         "available": False,
         "local_runtime_placeholder": True,
         "source": "AWS runtime only",
-        "source_of_truth": "AWS Lightsail after sync and refresh",
+        "source_of_truth": "AWS EC2 after sync and refresh",
         "generated_at": now,
         "reason": (
             "Live WeatherEdge API/cache data is generated on AWS after sync. "

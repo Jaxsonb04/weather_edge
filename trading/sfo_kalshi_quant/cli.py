@@ -492,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
             "kalshi-history",
         ),
         default="tier1",
-        help="Dataset source to backfill. tier1 runs the deployable Lightsail-safe sources.",
+        help="Dataset source to backfill. tier1 runs the production-safe compact sources.",
     )
     dataset_backfill.add_argument("--start-date", required=True, help="YYYY-MM-DD")
     dataset_backfill.add_argument("--end-date", help="YYYY-MM-DD. Defaults to start date.")

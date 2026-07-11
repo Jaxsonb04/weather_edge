@@ -58,7 +58,7 @@ implemented strategy**. Everything stays paper-only; no real-money order path ex
 
 ### Validation + honest readiness (WS4)
 - New `trading/deploy/aws/pull_paper_db.sh` pulls the live journal down (the only
-  inbound half; `sync_to_lightsail.sh` excludes the DB) so `backtest-rescore` +
+  inbound half; `sync_to_box.sh` excludes the DB) so `backtest-rescore` +
   `compute_real_money_readiness` can run on real settled data.
 - Readiness card text + checks now reflect the skill + per-side/per-cohort-ROI gate.
 

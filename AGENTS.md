@@ -49,7 +49,7 @@ disposable unless you just regenerated them in the current task:
 - `trading/data/`
 
 After sync and refresh, live API/cache/dashboard state is AWS-side, under the
-Lightsail runtime paths documented in `docs/aws_lightsail.md`, and the public
+EC2 runtime paths documented in `docs/aws_deployment.md`, and the public
 dashboard is published from AWS-generated artifacts. Do not diagnose production
 data problems from stale local ignored files.
 
