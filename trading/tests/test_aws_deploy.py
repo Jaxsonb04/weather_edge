@@ -76,6 +76,8 @@ def test_operational_publish_service_runs_fast_builder_then_publisher():
     assert "sync_forecaster_source.sh" in service
     assert "run_publication_cycle.sh operational" in service
     assert "google_weather_cache.py --refresh" not in service
+    assert "OnActiveSec=2min" in timer
+    assert "OnBootSec=" not in timer
     assert "OnUnitActiveSec=5min" in timer
     assert "Unit=sfo-operational-publish.service" in timer
 
