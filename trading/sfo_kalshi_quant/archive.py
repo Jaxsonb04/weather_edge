@@ -1072,6 +1072,68 @@ def _archived_context_link_missing_days(manifest: sqlite3.Connection) -> list[st
     return missing
 
 
+def _restore_record(
+    conn: sqlite3.Connection,
+    table: str,
+    record: dict[str, object],
+    destination_columns: set[str],
+) -> bool:
+    """Insert one archive row, accepting an existing row only when identical."""
+
+    columns = [name for name in record if name in destination_columns]
+    if not columns:
+        raise RuntimeError(f"archive restore found no compatible columns for {table}")
+    marks = ", ".join("?" for _ in columns)
+    values = tuple(record[column] for column in columns)
+    try:
+        conn.execute(
+            f"INSERT INTO {_quote_identifier(table)} "
+            f"({', '.join(_quote_identifier(c) for c in columns)}) "
+            f"VALUES ({marks})",
+            values,
+        )
+        return True
+    except sqlite3.IntegrityError as exc:
+        table_info = conn.execute(
+            f"PRAGMA main.table_info({_quote_identifier(table)})"
+        ).fetchall()
+        primary_key = [
+            str(row[1])
+            for row in sorted(table_info, key=lambda row: int(row[5] or 0))
+            if int(row[5] or 0) > 0
+        ]
+        if not primary_key or any(column not in record for column in primary_key):
+            raise RuntimeError(
+                f"archive restore constraint failure for {table}: {exc}"
+            ) from exc
+        where = " AND ".join(
+            f"{_quote_identifier(column)} IS ?" for column in primary_key
+        )
+        existing = conn.execute(
+            f"SELECT {', '.join(_quote_identifier(c) for c in columns)} "
+            f"FROM {_quote_identifier(table)} WHERE {where}",
+            tuple(record[column] for column in primary_key),
+        ).fetchone()
+        identity = ", ".join(
+            f"{column}={record[column]!r}" for column in primary_key
+        )
+        if existing is None:
+            raise RuntimeError(
+                f"archive restore constraint failure for {table} ({identity}): {exc}"
+            ) from exc
+        differing = [
+            column
+            for column, actual, expected in zip(columns, existing, values)
+            if actual != expected
+        ]
+        if differing:
+            raise RuntimeError(
+                f"archive restore conflict in {table} ({identity}); differing fields: "
+                + ", ".join(differing)
+            ) from exc
+        return False
+
+
 def restore_archive_days(
     archive_dir: Path,
     db_path: Path,
@@ -1133,21 +1195,13 @@ def restore_archive_days(
                                 raise RuntimeError(
                                     f"archive restore found non-object row in {path}"
                                 )
-                            columns = [
-                                name for name in record if name in destination_columns
-                            ]
-                            if not columns:
-                                raise RuntimeError(
-                                    f"archive restore found no compatible columns for {table}"
-                                )
-                            marks = ", ".join("?" for _ in columns)
-                            cursor = conn.execute(
-                                f"INSERT OR IGNORE INTO {_quote_identifier(table)} "
-                                f"({', '.join(_quote_identifier(c) for c in columns)}) "
-                                f"VALUES ({marks})",
-                                tuple(record[column] for column in columns),
+                            inserted = _restore_record(
+                                conn,
+                                table,
+                                record,
+                                destination_columns,
                             )
-                            restored[table] += max(0, cursor.rowcount)
+                            restored[table] += 1 if inserted else 0
                             rows += 1
                     if rows != int(expected_rows) or digest.hexdigest() != str(
                         expected_sha256

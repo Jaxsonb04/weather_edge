@@ -242,6 +242,76 @@ def test_restore_archive_inserts_context_parent_first_and_is_fk_clean(
     assert violations == []
 
 
+def test_restore_rejects_conflicting_context_parent_and_rolls_back_child(
+    tmp_path: Path,
+) -> None:
+    source, conn = _make_store(tmp_path)
+    _record(source, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.commit()
+    context_id = conn.execute("SELECT id FROM scan_context_snapshots").fetchone()[0]
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    restored_db = tmp_path / "restored.db"
+    destination = PaperStore(restored_db)
+    with destination.connect() as restored:
+        restored.execute(
+            """
+            INSERT INTO scan_context_snapshots (
+                id, created_at, target_date, prediction_features_json, schema_version
+            ) VALUES (?, '2026-01-01T00:00:00+00:00', '2099-01-01', '{}', 1)
+            """,
+            (context_id,),
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"restore conflict.*scan_context_snapshots.*id=1",
+    ):
+        archive_module.restore_archive_days(
+            archive_dir, restored_db, days=[day], log=lambda *_: None
+        )
+
+    with destination.connect() as restored:
+        assert restored.execute(
+            "SELECT target_date FROM scan_context_snapshots WHERE id=?",
+            (context_id,),
+        ).fetchone()[0] == "2099-01-01"
+        assert restored.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 0
+        assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_restore_accepts_only_exact_existing_rows_idempotently(tmp_path: Path) -> None:
+    source, conn = _make_store(tmp_path)
+    _record(source, [_decision(1)])
+    day = _utc_day(2)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.commit()
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    restored_db = tmp_path / "restored.db"
+
+    first = archive_module.restore_archive_days(
+        archive_dir, restored_db, days=[day], log=lambda *_: None
+    )
+    second = archive_module.restore_archive_days(
+        archive_dir, restored_db, days=[day], log=lambda *_: None
+    )
+
+    assert first["scan_context_snapshots"] == 1
+    assert first["decision_snapshots"] == 1
+    assert second["scan_context_snapshots"] == 0
+    assert second["decision_snapshots"] == 0
+    with sqlite3.connect(restored_db) as restored:
+        assert restored.execute("SELECT COUNT(*) FROM scan_context_snapshots").fetchone()[0] == 1
+        assert restored.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 1
+        assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_gate_blocks_until_every_day_is_archived(tmp_path: Path) -> None:
     _, conn = _make_store(tmp_path)
     _insert_decision(conn)
