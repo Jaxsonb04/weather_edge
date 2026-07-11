@@ -122,8 +122,8 @@ def test_monitor_holds_guaranteed_group_legs_to_settlement():
         for order_id in (leg_a, leg_b):
             row = store.open_paper_order(order_id)
             assert row is not None, "grouped leg must stay open"
-        assert row["status"] == "PAPER_FILLED"
-        assert _latest_action(store, order_id) == "HOLD_GUARANTEED_LEG"
+            assert row["status"] == "PAPER_FILLED"
+            assert _latest_action(store, order_id) == "HOLD_GUARANTEED_LEG"
 
 
 def test_grouped_only_monitor_book_makes_zero_market_requests():
