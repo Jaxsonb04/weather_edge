@@ -161,3 +161,31 @@ def test_daily_refresh_fetches_only_leads_one_and_two(monkeypatch):
     assert status == 0
     assert calls == [{"city": nwp_archive.DEFAULT_CITY, "leads": (1, 2), "verbose": False}]
     assert 3 in nwp_archive.LEAD_DAYS
+
+
+def test_manual_backfill_default_retains_lead_three(monkeypatch):
+    calls = []
+
+    def fake_archive_range(
+        conn,
+        start,
+        end,
+        *,
+        city=nwp_archive.DEFAULT_CITY,
+        leads=nwp_archive.LEAD_DAYS,
+        **_kwargs,
+    ):
+        calls.append((city.slug, leads))
+        return {f"gfs_seamless@lead{lead}": 1 for lead in leads}
+
+    monkeypatch.setattr(nwp_archive, "archive_range", fake_archive_range)
+
+    status = nwp_archive._cmd_backfill(
+        sqlite3.connect(":memory:"),
+        (nwp_archive.DEFAULT_CITY,),
+        "2026-01-01",
+        "2026-01-02",
+    )
+
+    assert status == 0
+    assert calls == [("sfo", (1, 2, 3))]

@@ -286,17 +286,49 @@ def _write_calibration_cache(path: Path, result: CalibrationBacktestResult) -> N
 
 
 def _prune_calibration_cache(cache_dir: Path) -> None:
+    lock_handle = None
     try:
-        entries = sorted(
-            cache_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True
-        )
-        for stale in entries[_CACHE_MAX_ENTRIES:]:
+        # Every writer prunes after its atomic replace. Serializing pruners
+        # avoids cross-process glob/stat/unlink races; repeated passes also
+        # tolerate cache files disappearing during external cleanup.
+        try:
+            import fcntl
+
+            candidate = (cache_dir / ".prune.lock").open("a+")
             try:
-                stale.unlink()
+                fcntl.flock(candidate.fileno(), fcntl.LOCK_EX)
             except OSError:
-                pass
+                candidate.close()
+            else:
+                lock_handle = candidate
+        except (ImportError, OSError):
+            lock_handle = None
+        for _ in range(3):
+            entries: list[tuple[float, Path]] = []
+            for item in cache_dir.glob("*.json"):
+                try:
+                    entries.append((item.stat().st_mtime, item))
+                except OSError:
+                    continue
+            entries.sort(key=lambda row: row[0], reverse=True)
+            if len(entries) <= _CACHE_MAX_ENTRIES:
+                break
+            for _, stale in entries[_CACHE_MAX_ENTRIES:]:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
     except OSError:
         pass
+    finally:
+        if lock_handle is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                lock_handle.close()
+            except OSError:
+                pass
 
 
 def _climatological_prior(

@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, timedelta
+from concurrent.futures import ProcessPoolExecutor
 import json
+import multiprocessing
 import os
+from pathlib import Path
 import subprocess
 import sys
 
 import pytest
 
-from sfo_kalshi_quant.backtest import run_walk_forward_calibration_backtest
+from sfo_kalshi_quant.backtest import (
+    _prune_calibration_cache,
+    _write_calibration_cache,
+    run_walk_forward_calibration_backtest,
+)
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.models import ForecastOutcome
 from sfo_kalshi_quant.probability import ResidualCalibrator
@@ -29,6 +36,13 @@ def _outcomes() -> list[ForecastOutcome]:
         )
         for index in range(48)
     ]
+
+
+def _write_cache_batch(cache_dir: str, result, start: int, count: int) -> None:
+    from pathlib import Path
+
+    for index in range(start, start + count):
+        _write_calibration_cache(Path(cache_dir) / f"stress-{index:03d}.json", result)
 
 
 def test_persistent_cache_skips_recalibration_and_preserves_numeric_result(
@@ -180,3 +194,44 @@ def test_calibration_diagnostics_exposes_cache_hit_metadata(tmp_path):
     assert json.dumps(first_without_cache, sort_keys=True) == json.dumps(
         second_without_cache, sort_keys=True
     )
+
+
+def test_concurrent_cache_writers_leave_bounded_pruned_directory(tmp_path):
+    result = run_walk_forward_calibration_backtest(
+        _outcomes(), min_train=30, cache_dir=None
+    )
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=8, mp_context=context) as pool:
+        futures = [
+            pool.submit(_write_cache_batch, str(tmp_path), result, start, 40)
+            for start in range(0, 320, 40)
+        ]
+        for future in futures:
+            future.result()
+
+    assert len(list(tmp_path.glob("*.json"))) <= 128
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_prune_retries_when_a_concurrent_writer_removes_a_scanned_file(
+    tmp_path, monkeypatch
+):
+    for index in range(140):
+        (tmp_path / f"entry-{index:03d}.json").write_text("{}", encoding="utf-8")
+    original_stat = Path.stat
+    raced = False
+
+    def racing_stat(path, *args, **kwargs):
+        nonlocal raced
+        if not raced and path.name == "entry-000.json":
+            raced = True
+            path.unlink()
+            raise FileNotFoundError(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+
+    _prune_calibration_cache(tmp_path)
+
+    assert raced is True
+    assert len(list(tmp_path.glob("*.json"))) <= 128

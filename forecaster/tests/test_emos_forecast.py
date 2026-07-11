@@ -243,7 +243,13 @@ def test_serve_rolling_fetches_open_meteo_once_per_city(tmp_path, monkeypatch):
     assert status == 0
     assert len(calls) == len(ef.CITIES) == 15
     assert len(served_models) == 45
-    assert all(models for models in served_models)
+    for city_index in range(len(ef.CITIES)):
+        city_targets = served_models[city_index * 3 : city_index * 3 + 3]
+        assert [set(models.values()) for models in city_targets] == [
+            {70.0},
+            {71.0},
+            {72.0},
+        ]
 
 
 def test_multi_forecast_fetch_missing_target_degrades_to_empty_helper(monkeypatch):
@@ -268,6 +274,36 @@ def test_multi_forecast_fetch_missing_target_degrades_to_empty_helper(monkeypatc
 
     assert multi[target]
     assert fetch_live_model_forecasts(target + timedelta(days=1)) == {}
+
+
+def test_multi_forecast_fetch_skips_malformed_day_and_keeps_partial_target(monkeypatch):
+    import emos_forecast as ef
+
+    target = date(2026, 7, 10)
+    next_target = target + timedelta(days=1)
+    first_model, second_model, *remaining_models = ef.NWP_MODELS
+    monkeypatch.setattr(
+        ef,
+        "_http_get_json",
+        lambda _url: {
+            "daily": {
+                "time": [target.isoformat(), "not-a-date", next_target.isoformat()],
+                f"temperature_2m_max_{first_model}": [70.0, 999.0, 71.0],
+                f"temperature_2m_max_{second_model}": [72.0, 999.0, None],
+                **{
+                    f"temperature_2m_max_{model}": [None, 999.0]
+                    for model in remaining_models
+                },
+            }
+        },
+    )
+
+    multi = ef.fetch_live_model_forecasts_multi()
+
+    assert multi == {
+        target: {first_model: 70.0, second_model: 72.0},
+        next_target: {first_model: 71.0},
+    }
 
 
 def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):

@@ -16,6 +16,8 @@ from .models import EventSnapshot, MarketBin, format_event_date_token, target_da
 
 PROD_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 DEMO_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
+MARKETS_BATCH_MAX_TICKERS = 50
+MARKETS_BATCH_MAX_QUERY_LENGTH = 1800
 
 
 class KalshiUnavailable(OSError):
@@ -108,15 +110,32 @@ class KalshiPublicClient:
     def get_markets(self, market_tickers: list[str]) -> list[MarketBin]:
         """Fetch public market metadata via the documented ``tickers`` filter.
 
-        The endpoint documents a maximum page size of 1,000 but no separate
-        ticker-filter cap, so requests are kept within that published page
-        bound. Callers retain per-ticker fallback for transport/API failures.
+        The endpoint documents no separate ticker-filter cap. Keep both ticker
+        count and encoded query length conservative for proxies/load balancers;
+        callers retain per-ticker fallback for unsupported batch responses.
         """
 
         unique = list(dict.fromkeys(str(ticker) for ticker in market_tickers if ticker))
         markets: list[MarketBin] = []
-        for start in range(0, len(unique), 1000):
-            chunk = unique[start : start + 1000]
+        chunks: list[list[str]] = []
+        chunk: list[str] = []
+        for ticker in unique:
+            candidate = [*chunk, ticker]
+            candidate_params = {
+                "tickers": ",".join(candidate),
+                "limit": len(candidate),
+            }
+            if chunk and (
+                len(candidate) > MARKETS_BATCH_MAX_TICKERS
+                or len(urlencode(candidate_params)) > MARKETS_BATCH_MAX_QUERY_LENGTH
+            ):
+                chunks.append(chunk)
+                chunk = [ticker]
+            else:
+                chunk = candidate
+        if chunk:
+            chunks.append(chunk)
+        for chunk in chunks:
             payload = self.get_json(
                 "markets",
                 {"tickers": ",".join(chunk), "limit": len(chunk)},

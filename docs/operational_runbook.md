@@ -194,8 +194,12 @@ fifteen cities (one batched Open-Meteo call per city) plus NWS observations
 The nightly dataset unit (02:25 Pacific) additionally runs:
 
 - IEM CLI settlement-truth refresh
-- NWP archive update (`--daily --cities all`)
+- NWP archive update (`--daily --cities all`, scheduled leads 1 and 2 only)
 - EMOS rolling-origin rebuild (leads 1 and 2)
+
+Lead 3 is research/on-demand only. Preserve it in explicit historical
+`nwp_archive.py --backfill --start ... --end ...` runs, but do not add it back
+to the nightly `--daily` job.
 
 ## Archive-Gated Paper Retention
 

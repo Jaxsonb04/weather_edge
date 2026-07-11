@@ -2861,16 +2861,13 @@ def _monitor_market_lookup(
     if callable(batch) and unique:
         try:
             resolved.update({market.ticker: market for market in batch(unique)})
-        except (
-            HTTPError,
-            KalshiUnavailable,
-            URLError,
-            OSError,
-            TimeoutError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ):
+        except HTTPError as exc:
+            if exc.code in (401, 403, 429) or exc.code >= 500:
+                return {ticker: exc for ticker in unique}
+            resolved.clear()
+        except (KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+            return {ticker: exc for ticker in unique}
+        except (KeyError, TypeError, ValueError):
             resolved.clear()
     for ticker in unique:
         if ticker in resolved:
@@ -2889,6 +2886,11 @@ def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[f
     if normalized == "NO":
         return float(args.no_take_profit_pct), float(args.no_stop_loss_pct)
     return float(args.take_profit_pct), float(args.stop_loss_pct)
+
+
+def _is_guaranteed_payoff_group_row(row) -> bool:
+    group_id = row["group_id"] if "group_id" in row.keys() else None
+    return bool(group_id and not str(group_id).startswith("DEGRADED-"))
 
 
 def _settlement_first_no_min_cost_for_order(row) -> float | None:
@@ -3073,8 +3075,9 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
         )
+    quote_rows = [row for row in rows if not _is_guaranteed_payoff_group_row(row)]
     market_lookup = _monitor_market_lookup(
-        client, [str(row["market_ticker"]) for row in rows]
+        client, [str(row["market_ticker"]) for row in quote_rows]
     )
     closed = 0
     inspected = 0
@@ -3082,7 +3085,7 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
         inspected += 1
         side = str(row["side"] or ("NO" if "NO" in str(row["action"]).upper() else "YES")).upper()
         group_id = row["group_id"] if "group_id" in row.keys() else None
-        if group_id and not str(group_id).startswith("DEGRADED-"):
+        if _is_guaranteed_payoff_group_row(row):
             # Legs of an arbitrage box/ladder or a tail basket form a single
             # guaranteed/worst-case-bounded payoff. Closing one leg early
             # converts the structure into naked directional risk, so hold every

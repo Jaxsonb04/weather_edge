@@ -25,8 +25,10 @@ Responsibilities:
 - fetch/cache Google Weather within the event budget (SFO only)
 - blend Google, NWS, Open-Meteo, and SFO history (SFO only)
 - run the station-agnostic NWP→EMOS→CLI path for the other fourteen cities:
-  Open-Meteo previous-runs archive (9 models, leads 1-3) and rolling-origin
-  EMOS per city
+  Open-Meteo previous-runs archive (8 models) and rolling-origin EMOS per city.
+  Scheduled daily maintenance archives operational leads 1 and 2; lead 3
+  remains available only to explicit historical backfills and on-demand
+  research, so it is not part of the nightly fetch budget
 - maintain CLI settlement truth in the station-keyed `cli_settlements` table,
   fed by live CLI scans plus the IEM archive backfill; only confirmed products
   without preliminary `AS OF` markers become `is_final=1`, while unconfirmed

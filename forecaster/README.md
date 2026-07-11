@@ -118,6 +118,10 @@ now automated end to end:
    containing only paper-trading research. The same server also runs the
    prediction-market paper scanner and exit monitor from the companion trading
    repo.
+   Nightly NWP maintenance archives leads 1 and 2, the horizons used by the
+   rolling live serve. Lead 3 is retained as a manual/on-demand historical
+   backfill capability for research; it is intentionally not fetched by the
+   scheduled `nwp_archive.py --daily` job.
 4. **Public website**: after each successful rebuild, the Lightsail server uses
    a GitHub deploy key with write access to publish the prebuilt React SPA and
    the fresh data JSONs to `gh-pages`, which GitHub Pages serves at

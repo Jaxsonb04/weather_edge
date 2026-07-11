@@ -122,8 +122,82 @@ def test_monitor_holds_guaranteed_group_legs_to_settlement():
         for order_id in (leg_a, leg_b):
             row = store.open_paper_order(order_id)
             assert row is not None, "grouped leg must stay open"
-            assert row["status"] == "PAPER_FILLED"
-            assert _latest_action(store, order_id) == "HOLD_GUARANTEED_LEG"
+        assert row["status"] == "PAPER_FILLED"
+        assert _latest_action(store, order_id) == "HOLD_GUARANTEED_LEG"
+
+
+def test_grouped_only_monitor_book_makes_zero_market_requests():
+    class NoQuoteClient:
+        batch_calls = 0
+        single_calls = 0
+
+        def get_markets(self, _tickers):
+            self.batch_calls += 1
+            raise AssertionError("guaranteed groups do not need quotes")
+
+        def get_market(self, _ticker):
+            self.single_calls += 1
+            raise AssertionError("guaranteed groups do not need quotes")
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order("2026-06-12", _yes_decision())
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET group_id='ARB-GUARANTEED' WHERE id=?",
+                (order_id,),
+            )
+        client = NoQuoteClient()
+
+        output = _run_monitor(db_path, lambda: client)
+
+        assert "HOLD_GUARANTEED_LEG" not in output  # display text stays user-oriented
+        assert client.batch_calls == 0
+        assert client.single_calls == 0
+        assert _latest_action(store, order_id) == "HOLD_GUARANTEED_LEG"
+
+
+def test_mixed_monitor_fetches_only_ungrouped_and_degraded_tickers():
+    needed = []
+
+    class SelectiveClient:
+        def get_markets(self, tickers):
+            needed.extend(tickers)
+            return [_FakeProfitClient().get_market(ticker) for ticker in tickers]
+
+        def get_market(self, ticker):
+            raise AssertionError(f"unexpected single fallback for {ticker}")
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        guaranteed = store.record_paper_order(
+            "2026-06-12", _yes_decision("KXHIGHTSFO-TEST-GUARANTEED")
+        )
+        degraded = store.record_paper_order(
+            "2026-06-12", _yes_decision("KXHIGHTSFO-TEST-DEGRADED")
+        )
+        ordinary = store.record_paper_order(
+            "2026-06-12", _yes_decision("KXHIGHTSFO-TEST-ORDINARY")
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET group_id='ARB-GUARANTEED' WHERE id=?",
+                (guaranteed,),
+            )
+            conn.execute(
+                "UPDATE paper_orders SET group_id='DEGRADED-INCOMPLETE' WHERE id=?",
+                (degraded,),
+            )
+
+        _run_monitor(db_path, SelectiveClient)
+
+        assert len(needed) == 2
+        assert set(needed) == {
+            "KXHIGHTSFO-TEST-DEGRADED",
+            "KXHIGHTSFO-TEST-ORDINARY",
+        }
 
 
 def test_monitor_does_not_treat_degraded_arbitrage_group_as_guaranteed():
