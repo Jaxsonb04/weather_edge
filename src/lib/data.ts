@@ -17,9 +17,9 @@ export interface ForecastData {
   lstm_bias: number;
   n_years: number;
   years: number[];
-  n_days_observed: number;
+  n_days_observed?: number;
   window_days: number;
-  table: Record<string, ClimatologyDay>;
+  table?: Record<string, ClimatologyDay>;
 }
 
 export interface MonthlyTemp {
@@ -29,7 +29,7 @@ export interface MonthlyTemp {
   max: number;
 }
 export interface WeatherStory {
-  temperature_histogram: { labels: number[]; counts: number[] };
+  temperature_histogram?: { labels: number[]; counts: number[] };
   monthly_temperature?: Record<string, MonthlyTemp>;
 }
 
@@ -116,7 +116,7 @@ export interface TradingSignal {
   live_orders_enabled: boolean;
   summary: { approved_signal_count: number; best_signal?: Decision };
   targets: Target[];
-  calibration: {
+  calibration?: {
     brier_score: number;
     brier_skill: number;
     ranked_probability_score: number;
@@ -375,7 +375,8 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 // Full-year climatology series (one point per day-of-year), evenly sampled for a
 // clean seasonal band chart.
 export function climatologySeries(forecast: ForecastData, step = 3) {
-  const keys = Object.keys(forecast.table).sort();
+  const table = forecast.table ?? {};
+  const keys = Object.keys(table).sort();
   const out: {
     key: string;
     label: string;
@@ -388,7 +389,7 @@ export function climatologySeries(forecast: ForecastData, step = 3) {
   }[] = [];
   keys.forEach((k, i) => {
     if (i % step !== 0) return;
-    const d = forecast.table[k];
+    const d = table[k];
     const [mm] = k.split("-");
     const day = k.split("-")[1];
     out.push({
@@ -406,12 +407,12 @@ export function climatologySeries(forecast: ForecastData, step = 3) {
 }
 
 export function histogramSeries(story: WeatherStory) {
-  const { labels, counts } = story.temperature_histogram;
+  const { labels = [], counts = [] } = story.temperature_histogram ?? {};
   return labels.map((t, i) => ({ temp: Math.round(t), count: counts[i] ?? 0 }));
 }
 
 export function calibrationSeries(signal: TradingSignal) {
-  return signal.calibration.buckets.map((b) => ({
+  return (signal.calibration?.buckets ?? []).map((b) => ({
     p: Math.round(b.avg_probability * 100),
     predicted: Math.round(b.avg_probability * 100),
     observed: Math.round(b.observed_frequency * 100),
@@ -539,7 +540,7 @@ const COHORT_LABELS: Record<string, string> = {
 
 // Per-temperature-regime skill — shows where the model is sharp vs humbled.
 export function cohortSeries(signal: TradingSignal) {
-  const cohorts = signal.calibration.cohorts ?? [];
+  const cohorts = signal.calibration?.cohorts ?? [];
   return cohorts.map((c) => ({
     name: COHORT_LABELS[c.name] ?? c.name,
     skill: Math.round(c.ranked_probability_skill * 100),

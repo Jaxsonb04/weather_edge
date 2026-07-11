@@ -261,6 +261,24 @@ def test_paper_prune_unit_is_installed_and_archive_gated():
     assert "Unit=sfo-kalshi-paper-prune.service" in timer
 
 
+def test_only_dedicated_service_template_runs_paper_prune():
+    service_templates = sorted((AWS_DIR / "systemd").glob("*.service.in"))
+    prune_templates = [
+        path.name
+        for path in service_templates
+        if "paper-prune" in _read(path) or "run_archive_then_prune" in _read(path)
+    ]
+
+    assert prune_templates == ["sfo-kalshi-paper-prune.service.in"]
+    assert not list((AWS_DIR.parents[1] / "sfo_kalshi_quant").glob("*.service.in"))
+
+
+def test_paper_prune_retention_is_explicit_in_canonical_environment():
+    example_env = _read(AWS_DIR / "sfo-weather.env.example")
+
+    assert "SFO_PRUNE_FULL_DAYS=1" in example_env
+
+
 def test_source_sync_preserves_stale_forecast_watchdog_marker():
     # sync_forecaster_source.sh rsyncs with --delete into the forecaster root,
     # which is also where the freshness watchdog writes its STALE_FORECAST

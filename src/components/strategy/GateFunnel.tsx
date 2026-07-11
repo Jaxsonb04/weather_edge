@@ -1,7 +1,7 @@
 import { Card } from "@heroui/react";
 import { Icon } from "@iconify/react";
 import { pct } from "../../lib/data";
-import type { ProfileGateStats, StrategyLab } from "../../lib/strategy";
+import { gateCounts, type ProfileGateStats, type StrategyLab } from "../../lib/strategy";
 
 const CATEGORY_LABELS: Record<string, string> = {
   edge: "Edge & pricing gates",
@@ -15,8 +15,8 @@ const CATEGORY_LABELS: Record<string, string> = {
 export function GateFunnel({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
-  const total = gate.approved + gate.rejected;
-  const approvedPct = total ? gate.approved / total : 0;
+  const { approved, total } = gateCounts(gate);
+  const approvedPct = total ? approved / total : 0;
   const cats = Object.entries(aggregateCategories(gate.by_profile ?? []));
   const rejections = (gate.top_rejections_all?.length ? gate.top_rejections_all : gate.top_rejections ?? []).slice(0, 8);
   const max = rejections[0]?.count ?? 1;
@@ -42,14 +42,14 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
               <span className="text-sm text-muted">gate evaluations this window</span>
             </p>
             <p>
-              <span className="tnum font-display text-2xl font-semibold text-success">{gate.approved.toLocaleString()}</span>{" "}
+              <span className="tnum font-display text-2xl font-semibold text-success">{approved.toLocaleString()}</span>{" "}
               <span className="text-sm text-muted">approved · {pct(approvedPct, 2)}</span>
             </p>
           </div>
           <div
             className="mt-3 flex h-2.5 overflow-hidden rounded-full bg-foreground/8"
             role="img"
-            aria-label={`${gate.approved.toLocaleString()} of ${total.toLocaleString()} gate evaluations approved (${pct(approvedPct, 2)}).`}
+            aria-label={`${approved.toLocaleString()} of ${total.toLocaleString()} gate evaluations approved (${pct(approvedPct, 2)}).`}
           >
             <div className="h-full rounded-full bg-success" style={{ width: `${Math.max(approvedPct * 100, 0.6)}%` }} />
           </div>

@@ -9,8 +9,6 @@ User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_dataset_backfill.sh
-# Retention for the ~60k-rows/day decision journal (see PaperStore.prune_decision_snapshots).
-ExecStart=-__TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color paper-prune
 # Multi-city training-data maintenance (nightly is enough; the newest scored
 # day lands within one day, immaterial against a ~340-day archive):
 # yesterday's CLI settlements from the IEM archive (also picks up corrected

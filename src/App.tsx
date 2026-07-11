@@ -8,6 +8,7 @@ import { PublicationStatusBanner } from "./components/layout/PublicationStatusBa
 import { CommandPalette } from "./components/layout/CommandPalette";
 import { Footer } from "./components/Footer";
 import { LoadingState, ErrorState } from "./components/States";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const OverviewView = lazy(() =>
   import("./components/views/OverviewView").then((module) => ({ default: module.OverviewView })),
@@ -68,21 +69,27 @@ export default function App() {
         className="flex-1 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--focus)]"
       >
         {route === "lab" ? (
-          <Suspense fallback={<ViewLoader />}>
-            <StrategyLabView />
-          </Suspense>
+          <ErrorBoundary key={route}>
+            <Suspense fallback={<ViewLoader />}>
+              <StrategyLabView />
+            </Suspense>
+          </ErrorBoundary>
         ) : error && !data ? (
           <ErrorState message={error} />
         ) : !data ? (
           <LoadingState />
         ) : route === "methodology" ? (
-          <Suspense fallback={<ViewLoader />}>
-            <MethodologyView data={data} />
-          </Suspense>
+          <ErrorBoundary key={route}>
+            <Suspense fallback={<ViewLoader />}>
+              <MethodologyView data={data} />
+            </Suspense>
+          </ErrorBoundary>
         ) : (
-          <Suspense fallback={<ViewLoader />}>
-            <OverviewView data={data} />
-          </Suspense>
+          <ErrorBoundary key={route}>
+            <Suspense fallback={<ViewLoader />}>
+              <OverviewView data={data} />
+            </Suspense>
+          </ErrorBoundary>
         )}
       </div>
 

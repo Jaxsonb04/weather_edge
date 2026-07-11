@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { equitySeries, equitySeriesFromDays, type StrategyLab } from "./strategy";
+import {
+  equitySeries,
+  equitySeriesFromDays,
+  gateCounts,
+  profileGateCounts,
+  type GateBehavior,
+  type ProfileGateStats,
+  type StrategyLab,
+} from "./strategy";
 
 describe("account equity series", () => {
   it("uses backend closing equity so the visible window retains prior realized P&L", () => {
@@ -38,5 +46,15 @@ describe("account equity series", () => {
     expect(series[0].dailyPnl).toBe(4.27);
     expect(series[1].dailyPnl).toBe(-33.35);
     expect(series[1].pnl).toBe(-66.15);
+  });
+});
+
+describe("gate count fallbacks", () => {
+  it("defaults missing global gate counts to zero", () => {
+    expect(gateCounts({} as GateBehavior)).toEqual({ approved: 0, rejected: 0, total: 0 });
+  });
+
+  it("defaults missing profile signal counts to zero", () => {
+    expect(profileGateCounts({} as ProfileGateStats)).toEqual({ approved: 0, signals: 0 });
   });
 });

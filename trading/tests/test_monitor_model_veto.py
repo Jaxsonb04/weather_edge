@@ -9,7 +9,10 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sfo_kalshi_quant.cli import main
+from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.exits import ExitSignal
+from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.kalshi import KalshiUnavailable
 from sfo_kalshi_quant.models import BucketProbability, MarketBin, TradeDecision
 
@@ -178,6 +181,44 @@ class _FakeNoConvergedClient(_FakeKalshiClient):
     no_ask = 0.96
     yes_sub_title = "82° or above"
     strike_type = "above"
+
+
+def test_monitor_decide_exit_uses_series_and_profile_config_fee_semantics():
+    class _BoundaryClient(_FakeKalshiClient):
+        yes_bid = 0.50
+        yes_ask = 0.52
+
+    captured: dict[str, float] = {}
+
+    def capture_decision(**kwargs):
+        captured["net_exit"] = kwargs["net_exit"]
+        return ExitSignal("HOLD", "boundary captured")
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = _cheap_yes_decision()
+        store.record_paper_order("2026-06-12", decision, risk_profile="live")
+        config = StrategyConfig(taker_fee_rate=0.11, fee_multiplier=0.5)
+
+        with (
+            patch("sfo_kalshi_quant.cli.KalshiPublicClient", _BoundaryClient),
+            patch("sfo_kalshi_quant.cli.strategy_config_for_profile", return_value=config),
+            patch("sfo_kalshi_quant.cli.decide_exit", side_effect=capture_decision),
+            redirect_stdout(StringIO()),
+        ):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+
+        expected_fee = quadratic_fee_average_per_contract(
+            _BoundaryClient.yes_bid,
+            decision.recommended_contracts,
+            fee_multiplier=config.fee_multiplier,
+            taker_rate=config.taker_fee_rate,
+            maker_rate=config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
+
+    assert captured["net_exit"] == _BoundaryClient.yes_bid - expected_fee
     floor_strike = 82.0
     cap_strike = None
 

@@ -46,7 +46,14 @@ class PaperTrader:
             contracts = min(contracts, decision.ask_size)
         if not self.config.allow_fractional_contracts:
             contracts = float(int(contracts))
-        fee_per_contract = quadratic_fee_average_per_contract(decision.ask, contracts)
+        fee_per_contract = quadratic_fee_average_per_contract(
+            decision.ask,
+            contracts,
+            fee_multiplier=self.config.fee_multiplier,
+            taker_rate=self.config.taker_fee_rate,
+            maker_rate=self.config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
         cost_per_contract = decision.ask + fee_per_contract
         edge = decision.probability - cost_per_contract
         edge_lcb = decision.probability_lcb - cost_per_contract

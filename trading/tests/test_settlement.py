@@ -19,6 +19,18 @@ def test_parse_maximum_temperature_from_clisfo_like_text():
     assert report.max_temperature_f == 67
 
 
+def test_parse_negative_maximum_temperature():
+    report = parse_clisfo("TEMPERATURE (F)\n MAXIMUM         -4\n MINIMUM         -12\n")
+
+    assert report.max_temperature_f == -4
+
+
+def test_parse_single_digit_maximum_temperature():
+    report = parse_clisfo("TEMPERATURE (F)\n MAXIMUM         7\n MINIMUM         1\n")
+
+    assert report.max_temperature_f == 7
+
+
 def test_parse_report_date_uses_climate_summary_title_not_tomorrow_normals():
     text = """
     CLIMATE REPORT

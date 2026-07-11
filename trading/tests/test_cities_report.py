@@ -200,14 +200,30 @@ def test_decision_aggregation_query_uses_created_market_covering_index():
     assert "SCAN decision_snapshots" not in details
 
 
-def test_existing_database_does_not_build_large_decision_index_on_service_init():
+def test_existing_database_warns_but_does_not_build_large_decision_index_on_service_init(caplog):
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
         with store.connect() as conn:
             conn.execute("DROP INDEX idx_decision_snapshots_created_market")
+            conn.execute(
+                """
+                INSERT INTO decision_snapshots (
+                    created_at, target_date, market_ticker, label, action, side,
+                    approved, probability, probability_lcb, yes_bid, yes_ask,
+                    spread, fee_per_contract, cost_per_contract, edge, edge_lcb,
+                    kelly_fraction, recommended_contracts, recommended_spend,
+                    expected_profit, trade_quality_score, reasons_json
+                ) VALUES (
+                    '2026-07-09T12:00:00+00:00', '2026-07-09', 'TEST', 'test',
+                    'BUY_YES', 'YES', 0, 0.5, 0.4, 0.4, 0.5, 0.1, 0.01,
+                    0.51, -0.01, -0.11, 0, 0, 0, 0, 0, '[]'
+                )
+                """
+            )
 
-        PaperStore(db_path)
+        with caplog.at_level("WARNING", logger="sfo_kalshi_quant.db"):
+            PaperStore(db_path)
 
         with sqlite3.connect(db_path) as conn:
             exists = conn.execute(
@@ -216,6 +232,8 @@ def test_existing_database_does_not_build_large_decision_index_on_service_init()
             ).fetchone()
 
     assert exists is None
+    assert "idx_decision_snapshots_created_market" in caplog.text
+    assert "create_decision_snapshot_index.sh" in caplog.text
 
 
 def test_atomic_cities_write_keeps_previous_artifact_when_replace_fails():
@@ -251,6 +269,8 @@ def test_index_maintenance_script_builds_the_same_named_index():
     assert "created_at, market_ticker, approved" in script
     assert "paper-scan" in script
     assert "paper-monitor" in script
+    assert 'conn.execute("ANALYZE")' in script
+    assert 'ANALYZE decision_snapshots' not in script
     for documentation in (deploy_readme, aws_notes):
         assert "create_decision_snapshot_index.sh" in documentation
         assert "paused" in documentation

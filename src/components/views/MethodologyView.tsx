@@ -36,6 +36,7 @@ function ModelProofFinding({ diag }: { diag: Diagnostics }) {
 function AccuracyFinding({ data }: { data: DashboardData }) {
   const { forecast, signal } = data;
   const cal = signal.calibration;
+  if (!cal) return null;
   const cohorts = cal.cohorts ?? [];
   const best = [...cohorts].sort((a, b) => b.ranked_probability_skill - a.ranked_probability_skill)[0];
   const worst = [...cohorts].sort((a, b) => a.ranked_probability_skill - b.ranked_probability_skill)[0];
@@ -52,7 +53,7 @@ function AccuracyFinding({ data }: { data: DashboardData }) {
           Skill varies by regime — strongest in the <strong>{cohortLabel(best.name)}</strong> cohort (
           {pct(best.ranked_probability_skill, 0)}) and weakest in <strong>{cohortLabel(worst.name)}</strong> (
           {pct(worst.ranked_probability_skill, 0)}), which the risk gates account for when sizing positions. All of it rests
-          on {forecast.n_days_observed.toLocaleString()} observed KSFO days across {forecast.n_years} years — and the other
+          on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years — and the other
           fourteen cities run the same EMOS post-processing against their own settlement stations, just without a decade of
           scored live outcomes behind them yet.
         </>
@@ -136,7 +137,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="03"
             eyebrow="Forecast accuracy"
             title="Ten years of San Francisco accuracy"
-            sub={`${forecast.n_days_observed.toLocaleString()} observed days across ${forecast.n_years} years anchor San Francisco's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station, just without a decade of scored outcomes behind it yet.`}
+            sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor San Francisco's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station, just without a decade of scored outcomes behind it yet.`}
           />
           <Reveal className="mb-5">
             <ClimatologyChart forecast={forecast} />

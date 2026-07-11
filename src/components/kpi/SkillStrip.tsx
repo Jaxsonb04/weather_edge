@@ -8,7 +8,7 @@ import { skillStatus, type ForecastData, type TradingSignal } from "../../lib/da
 interface Metric {
   icon: string;
   title: string;
-  value: number;
+  value: number | null;
   kind: "pct" | "count" | "temp";
   hint?: string;
 }
@@ -16,12 +16,12 @@ interface Metric {
 export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signal: TradingSignal }) {
   const c = signal.calibration;
   const metrics: Metric[] = [
-    { icon: "solar:target-bold", title: "Brier skill", value: c.brier_skill, kind: "pct", hint: "vs climatology" },
-    { icon: "solar:ranking-bold", title: "Rank-prob. skill", value: c.ranked_probability_skill, kind: "pct", hint: "ordered bins" },
-    { icon: "solar:bullseye-bold", title: "Top-bin accuracy", value: c.top_bin_accuracy, kind: "pct", hint: "modal bracket" },
-    { icon: "solar:checklist-minimalistic-bold", title: "Settled bins", value: c.n, kind: "count", hint: "scored out-of-sample" },
-    { icon: "solar:calendar-bold", title: "History", value: forecast.n_years, kind: "count", hint: `${forecast.n_days_observed.toLocaleString()} days` },
-    { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma, kind: "temp", hint: "held-out residual" },
+    { icon: "solar:target-bold", title: "Brier skill", value: c?.brier_skill ?? null, kind: "pct", hint: "vs climatology" },
+    { icon: "solar:ranking-bold", title: "Rank-prob. skill", value: c?.ranked_probability_skill ?? null, kind: "pct", hint: "ordered bins" },
+    { icon: "solar:bullseye-bold", title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct", hint: "modal bracket" },
+    { icon: "solar:checklist-minimalistic-bold", title: "Settled bins", value: c?.n ?? null, kind: "count", hint: "scored out-of-sample" },
+    { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} days` },
+    { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: "held-out residual" },
   ];
 
   return (
@@ -52,19 +52,23 @@ function Metric({ m }: { m: Metric }) {
       </KPI.Header>
       <KPI.Content className="mt-1">
         <div className="flex items-baseline gap-1">
-          <AnimatedNumber
-            className="font-display text-2xl font-semibold"
-            value={m.value}
-            format={
-              isPct
-                ? { style: "percent", maximumFractionDigits: 1 }
-                : { maximumFractionDigits: m.value < 10 ? 2 : 0 }
-            }
-          />
+          {m.value == null ? (
+            <span className="font-display text-2xl font-semibold">—</span>
+          ) : (
+            <AnimatedNumber
+              className="font-display text-2xl font-semibold"
+              value={m.value}
+              format={
+                isPct
+                  ? { style: "percent", maximumFractionDigits: 1 }
+                  : { maximumFractionDigits: m.value < 10 ? 2 : 0 }
+              }
+            />
+          )}
           {m.kind === "temp" && <span className="text-sm text-muted">°F</span>}
           {m.kind === "count" && m.title === "History" && <span className="text-sm text-muted">yrs</span>}
         </div>
-        {isPct && (
+        {isPct && m.value != null && (
           <KPI.Progress
             className="mt-2"
             value={Math.max(0, Math.min(100, m.value * 100))}

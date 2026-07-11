@@ -3,6 +3,7 @@ import { Chip } from "@heroui/react";
 import { pct } from "../../lib/data";
 import {
   findProfile,
+  gateCounts,
   money,
   openForProfile,
   pendingForProfile,
@@ -56,14 +57,14 @@ function TrackRecordFinding({ s }: { s: StrategyLab }) {
 function SelectivityFinding({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
-  const total = gate.approved + gate.rejected;
+  const { approved, total } = gateCounts(gate);
   const live = gate.by_profile?.find((g) => g.risk_profile === "live");
   const liveTop = live?.top_rejections?.[0];
   return (
     <Finding>
       Of <strong>{total.toLocaleString()}</strong> gate evaluations this window only{" "}
-      <strong>{gate.approved.toLocaleString()}</strong> ({pct(total ? gate.approved / total : 0, 2)}) survived. The live book
-      approved {live?.approved ?? 0} of {live?.signals.toLocaleString() ?? "—"}
+      <strong>{approved.toLocaleString()}</strong> ({pct(total ? approved / total : 0, 2)}) survived. The live book
+      approved {live?.approved ?? 0} of {live?.signals?.toLocaleString() ?? "—"}
       {liveTop && (
         <>
           {" "}

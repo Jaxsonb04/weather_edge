@@ -1152,7 +1152,7 @@ def _resolve_analysis_targets(
             limit=20,
             with_nested_markets=True,
         )
-    except URLError as exc:
+    except (URLError, OSError) as exc:
         if args.place_paper:
             print(
                 color.yellow(
@@ -2810,7 +2810,15 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
 
         entry_cost = float(row["cost_per_contract"])
         contracts = float(row["contracts"])
-        exit_fee = quadratic_fee_average_per_contract(live_bid, contracts)
+        fee_config = strategy_config_for_profile(str(row["risk_profile"] or "live"))
+        exit_fee = quadratic_fee_average_per_contract(
+            live_bid,
+            contracts,
+            fee_multiplier=fee_config.fee_multiplier,
+            taker_rate=fee_config.taker_fee_rate,
+            maker_rate=fee_config.maker_fee_rate,
+            series_ticker=str(row["market_ticker"]),
+        )
         net_exit = live_bid - exit_fee
         pnl_pct = (net_exit - entry_cost) / entry_cost if entry_cost > 0 else 0.0
         pnl_dollars = contracts * (net_exit - entry_cost)

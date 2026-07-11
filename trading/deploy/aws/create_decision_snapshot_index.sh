@@ -59,6 +59,6 @@ with sqlite3.connect(db, timeout=60.0) as conn:
           AND created_at < market_close_time
         """
     )
-    conn.execute("ANALYZE decision_snapshots")
+    conn.execute("ANALYZE")
 print(f"decision snapshot reporting index ready: {db}")
 PY

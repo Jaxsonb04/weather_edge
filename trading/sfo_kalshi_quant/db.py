@@ -567,6 +567,21 @@ class PaperStore:
             if not decision_table_existed:
                 conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
                 conn.execute(DECISION_SNAPSHOT_SAMPLE_INDEX)
+            elif (
+                conn.execute(
+                    "SELECT 1 FROM decision_snapshots LIMIT 1"
+                ).fetchone()
+                and conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                    ("idx_decision_snapshots_created_market",),
+                ).fetchone()
+                is None
+            ):
+                logger.warning(
+                    "decision_snapshots is nonempty but "
+                    "idx_decision_snapshots_created_market is missing; pause paper "
+                    "scan/monitor and run deploy/aws/create_decision_snapshot_index.sh"
+                )
             self._ensure_open_position_guard_index(conn)
             self._ensure_shared_paper_account(conn)
 
@@ -2558,6 +2573,8 @@ class PaperStore:
             conn.row_factory = sqlite3.Row
             if sample_mode != "all":
                 pre_filter = (
+                    # Both values are canonical UTC ISO strings, so lexical
+                    # ordering preserves the pre-close instant comparison.
                     "COALESCE(intraday_is_complete, 0) = 0 "
                     "AND market_close_time IS NOT NULL AND created_at < market_close_time"
                     if pre_resolution_only
@@ -2575,7 +2592,10 @@ class PaperStore:
                         SELECT id,
                                ROW_NUMBER() OVER (
                                    PARTITION BY target_date, market_ticker,
-                                   side
+                                   UPPER(COALESCE(side, CASE
+                                       WHEN instr(UPPER(action), 'NO') > 0 THEN 'NO'
+                                       ELSE 'YES'
+                                   END))
                                    ORDER BY {ordering}
                                ) AS sample_rank
                         FROM decision_snapshots

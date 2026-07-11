@@ -8,6 +8,7 @@ import {
   money,
   monitorForProfile,
   profileGate,
+  profileGateCounts,
   type ProfileEntry,
   type StrategyLab,
 } from "../../lib/strategy";
@@ -52,6 +53,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const sum = p.paper_trading?.summary;
   const resolved = s.paper_trading?.diagnostics?.by_profile?.[rp];
   const gate = profileGate(s, rp);
+  const gateCount = profileGateCounts(gate);
   const copy = PROFILE_COPY[rp];
   const primary = p.profile_type === "primary";
   const pnl = sum?.realized_pnl ?? 0;
@@ -117,20 +119,20 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
       )}
 
       {/* this book's gate */}
-      {gate && gate.signals > 0 && (
+      {gate && gateCount.signals > 0 && (
         <Card className="rounded-2xl ring-1 ring-border/70">
           <Card.Content className="grid gap-4 p-4 md:grid-cols-2">
             <div className="rounded-xl bg-surface-secondary p-3 ring-1 ring-border/50">
               <div className="flex items-baseline justify-between gap-2">
                 <p className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</p>
                 <p className="tnum text-sm font-semibold">
-                  {gate.approved.toLocaleString()} <span className="font-normal text-muted">of {gate.signals.toLocaleString()} scans</span>
+                  {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} scans</span>
                 </p>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
-                <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((gate.approved / gate.signals) * 100, 0.75)}%` }} />
+                <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
               </div>
-              <p className="mt-1.5 text-[11px] text-muted">{pct(gate.approved / gate.signals, 2)} approval rate — the gates do the heavy lifting.</p>
+              <p className="mt-1.5 text-[11px] text-muted">{pct(gateCount.approved / gateCount.signals, 2)} approval rate — the gates do the heavy lifting.</p>
             </div>
             <div className="rounded-xl bg-surface-secondary p-3 ring-1 ring-border/50">
               <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Why this book says no</p>

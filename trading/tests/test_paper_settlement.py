@@ -10,6 +10,7 @@ from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBin, TradeDecision
 from sfo_kalshi_quant.paper import PaperTrader
 
@@ -892,6 +893,44 @@ def test_paper_stake_sets_contracts_from_dollars():
         spend = float(row["contracts"]) * float(row["cost_per_contract"])
         assert spend <= 10.0 + 1e-9
         assert spend > 1.0
+
+
+def test_paper_stake_uses_series_and_config_fee_rounding():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        config = StrategyConfig(taker_fee_rate=0.11, fee_multiplier=0.5)
+        trader = PaperTrader(store, config)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-T66",
+            label="65° or below",
+            action="BUY_YES",
+            approved=True,
+            probability=0.25,
+            probability_lcb=0.20,
+            yes_bid=0.01,
+            yes_ask=0.04,
+            spread=0.03,
+            fee_per_contract=0.01,
+            cost_per_contract=0.05,
+            edge=0.20,
+            edge_lcb=0.15,
+            kelly_fraction=0.01,
+            recommended_contracts=3.0,
+            expected_profit=0.6,
+            reasons=[],
+        )
+
+        adjusted = trader.with_paper_stake(decision, 10.0)
+        expected_fee = quadratic_fee_average_per_contract(
+            decision.ask,
+            adjusted.recommended_contracts,
+            fee_multiplier=config.fee_multiplier,
+            taker_rate=config.taker_fee_rate,
+            maker_rate=config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
+
+        assert adjusted.fee_per_contract == expected_fee
 
 
 def test_paper_stake_caps_contracts_at_visible_ask_size():

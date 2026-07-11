@@ -1,7 +1,7 @@
 import { Card, Chip } from "@heroui/react";
 import { Icon } from "@iconify/react";
 import { pct } from "../../lib/data";
-import { money, profileGate, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
+import { money, profileGate, profileGateCounts, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
 import { usePublication } from "../../lib/publication";
 
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
@@ -66,7 +66,8 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
   const meta = PROFILE_META[p.risk_profile];
   const primary = p.profile_type === "primary";
   const gate = profileGate(s, p.risk_profile);
-  const approvalRate = gate && gate.signals > 0 ? gate.approved / gate.signals : null;
+  const gateCount = profileGateCounts(gate);
+  const approvalRate = gateCount.signals > 0 ? gateCount.approved / gateCount.signals : null;
   const alertOk = currentStateAvailable && (p.status?.alert_level ?? "ok") === "ok";
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
 
@@ -114,19 +115,19 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
           })}
         </dl>
 
-        {gate && gate.signals > 0 && (
+        {gate && gateCount.signals > 0 && (
           <div>
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</span>
               <span className="tnum text-xs font-medium text-foreground">
-                {gate.approved.toLocaleString()}
-                <span className="font-normal text-muted"> / {gate.signals.toLocaleString()}</span>
+                {gateCount.approved.toLocaleString()}
+                <span className="font-normal text-muted"> / {gateCount.signals.toLocaleString()}</span>
               </span>
             </div>
             <div
               className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-foreground/10"
               role="img"
-              aria-label={`${p.label} approved ${gate.approved} of ${gate.signals} scans (${pct(approvalRate, 2)}).`}
+              aria-label={`${p.label} approved ${gateCount.approved} of ${gateCount.signals} scans (${pct(approvalRate, 2)}).`}
             >
               <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((approvalRate ?? 0) * 100, 0.6)}%` }} />
             </div>

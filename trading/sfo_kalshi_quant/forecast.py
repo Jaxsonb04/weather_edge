@@ -338,7 +338,8 @@ class SfoForecasterAdapter:
                    fetched_at, method, lead_days
             FROM forecast_emos_daily_high
             WHERE station_id = ? AND target_date = ?
-            ORDER BY fetched_at DESC
+            ORDER BY CASE WHEN source = 'live' THEN 1 ELSE 0 END DESC,
+                     fetched_at DESC
             LIMIT 1
         """
         try:
@@ -567,8 +568,9 @@ class SfoForecasterAdapter:
         ``source`` filters the EMOS source: ``'rolling_origin'`` for leakage-safe
         backtest/rescore reads (every value is strictly out-of-sample),
         ``'live'`` for the served current-run forecast. When None, all sources are
-        returned with a deterministic freshest-wins precedence per target_date
-        (``ORDER BY fetched_at``) so a two-source date never resolves by row order.
+        returned with deterministic source precedence per target_date: rebuild
+        rows are applied first and ``live`` rows overwrite them, regardless of
+        a newer rolling-origin rebuild timestamp.
         """
 
         if not self.weather_db.exists():
@@ -602,7 +604,9 @@ class SfoForecasterAdapter:
             params.append(source)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY fetched_at"  # later (fresher) rows win in the dict below
+        # Apply rebuild rows first; live serving rows must overwrite them even
+        # when a later maintenance rebuild carries a newer fetched_at stamp.
+        query += " ORDER BY CASE WHEN source = 'live' THEN 1 ELSE 0 END, fetched_at"
         try:
             with sqlite3.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_emos_daily_high"):

@@ -3,13 +3,14 @@ import { calibrationSeries, pct, type TradingSignal } from "../../lib/data";
 
 export function CalibrationChart({ signal }: { signal: TradingSignal }) {
   const series = calibrationSeries(signal);
+  const calibration = signal.calibration;
   return (
     <Widget className="h-full w-full">
       <Widget.Header>
         <div>
           <Widget.Title>Probability calibration</Widget.Title>
           <Widget.Description>
-            Reliability over {signal.calibration.n} settled bins · Brier skill {pct(signal.calibration.brier_skill, 1)}
+            Reliability over {calibration?.n ?? 0} settled bins · Brier skill {pct(calibration?.brier_skill, 1)}
           </Widget.Description>
         </div>
         <Widget.Legend>

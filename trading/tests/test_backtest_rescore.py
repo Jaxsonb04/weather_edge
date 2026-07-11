@@ -108,6 +108,31 @@ def test_rescore_roundtrip_reproduces_no_side_decision():
     assert replayed.recommended_contracts == original.recommended_contracts
 
 
+def test_entry_sampling_normalizes_legacy_null_side_from_action():
+    config = StrategyConfig()
+    no_decision = TradeEvaluator(config).evaluate_market(
+        _no_favorite_market(), _no_favorite_probability(), bankroll=1000.0, side="NO"
+    )
+    yes_decision = replace(no_decision, action="BUY_YES", side="YES")
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03",
+            [yes_decision, no_decision],
+            event=pre_resolution_event([yes_decision, no_decision]),
+        )
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE legacy_decisions AS SELECT * FROM decision_snapshots")
+            conn.execute("DROP TABLE decision_snapshots")
+            conn.execute("ALTER TABLE legacy_decisions RENAME TO decision_snapshots")
+            conn.execute("UPDATE decision_snapshots SET side = NULL")
+
+        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+
+    assert {row["action"] for row in rows} == {"BUY_YES", "BUY_NO"}
+
+
 def test_rescore_roundtrip_reproduces_yes_side_decision():
     config = StrategyConfig()
     # A YES favorite: cheap NO, YES ~0.86.

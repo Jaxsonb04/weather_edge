@@ -123,15 +123,15 @@ export interface RejectionReason {
 }
 export interface ProfileGateStats {
   risk_profile: string;
-  approved: number;
-  signals: number;
+  approved?: number;
+  signals?: number;
   rejection_categories?: Record<string, number>;
   top_rejections?: RejectionReason[];
   top_rejections_all?: RejectionReason[];
 }
 export interface GateBehavior {
-  approved: number;
-  rejected: number;
+  approved?: number;
+  rejected?: number;
   by_profile?: ProfileGateStats[];
   top_rejections?: RejectionReason[];
   top_rejections_all?: RejectionReason[];
@@ -460,6 +460,16 @@ export function closedLedger(s: StrategyLab): ClosedPosition[] {
 /** Gate stats for one risk profile (matched from daily_summary.gate_behavior). */
 export function profileGate(s: StrategyLab, riskProfile: string): ProfileGateStats | undefined {
   return s.daily_summary?.gate_behavior?.by_profile?.find((g) => g.risk_profile === riskProfile);
+}
+
+export function gateCounts(gate: GateBehavior | undefined) {
+  const approved = gate?.approved ?? 0;
+  const rejected = gate?.rejected ?? 0;
+  return { approved, rejected, total: approved + rejected };
+}
+
+export function profileGateCounts(gate: ProfileGateStats | undefined) {
+  return { approved: gate?.approved ?? 0, signals: gate?.signals ?? 0 };
 }
 
 /* ---- per-profile slices (all client-side; every ledger row carries risk_profile) ---- */

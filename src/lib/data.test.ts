@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cityNextForecast, selectCurrentTargets, type City, type Target } from "./data";
+import {
+  calibrationSeries,
+  cityNextForecast,
+  climatologySeries,
+  histogramSeries,
+  cohortSeries,
+  selectCurrentTargets,
+  type City,
+  type ForecastData,
+  type Target,
+  type TradingSignal,
+  type WeatherStory,
+} from "./data";
 
 const target = (target_date: string, target_status?: string) =>
   ({ target_date, target_status }) as Target;
@@ -96,5 +108,20 @@ describe("selectCurrentTargets", () => {
     const targets = [target("2026-07-10"), target("2026-07-09", "past")];
 
     expect(selectCurrentTargets(targets)).toEqual([targets[0]]);
+  });
+});
+
+describe("published artifact fallbacks", () => {
+  it("returns an empty climatology series when the forecast table is missing", () => {
+    expect(climatologySeries({} as ForecastData)).toEqual([]);
+  });
+
+  it("returns an empty histogram series when the histogram is missing", () => {
+    expect(histogramSeries({} as WeatherStory)).toEqual([]);
+  });
+
+  it("returns an empty calibration series when calibration buckets are missing", () => {
+    expect(calibrationSeries({} as TradingSignal)).toEqual([]);
+    expect(cohortSeries({} as TradingSignal)).toEqual([]);
   });
 });
