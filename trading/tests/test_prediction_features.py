@@ -123,11 +123,14 @@ def test_decision_snapshots_persist_prediction_feature_context() -> None:
             bankroll=1000.0,
         )
         with store.connect() as conn:
-            raw = conn.execute(
-                "SELECT prediction_features_json FROM decision_snapshots LIMIT 1"
-            ).fetchone()[0]
+            row = conn.execute(
+                "SELECT d.prediction_features_json, c.prediction_features_json "
+                "FROM decision_snapshots d JOIN scan_context_snapshots c "
+                "ON c.id=d.scan_context_id LIMIT 1"
+            ).fetchone()
 
-    payload = json.loads(raw)
+    assert row[0] is None
+    payload = json.loads(row[1])
     assert payload["market_implied_high_delta_f"] == 2.0
     assert payload["source_spread_f"] == 4.0
     assert payload["fresh_station_count"] == 4

@@ -4,8 +4,8 @@ The retention prune (``PaperStore.prune_decision_snapshots``) keeps the 1 GB
 box healthy by deleting redundant rejection ticks, but those ticks are the
 training data this project compounds on: intra-day book/probability
 evolution, per-tick rejection reasons, ladders and config snapshots inside
-``diagnostics_json``, and the never-yet-read ``prediction_features_json``
-audit trail.  This module guarantees the prune can never destroy signal:
+the normalized ``scan_context_snapshots`` rows, and legacy embedded diagnostic
+payloads.  This module guarantees the prune can never destroy signal:
 
 * Every complete UTC day of every snapshot table is exported losslessly to
   ``<archive_dir>/<table>/dt=YYYY-MM-DD.jsonl.gz`` (one JSON object per row,
@@ -57,6 +57,7 @@ from .settlement_truth import (
 # day can never gain rows afterwards).
 STREAM_TABLES: tuple[str, ...] = (
     "decision_snapshots",
+    "scan_context_snapshots",
     "probability_snapshots",
     "paper_monitor_snapshots",
     "market_snapshots",

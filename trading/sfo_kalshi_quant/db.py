@@ -102,6 +102,25 @@ CREATE TABLE IF NOT EXISTS probability_snapshots (
 	    remaining_heat_risk REAL
 	);
 
+CREATE TABLE IF NOT EXISTS scan_context_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    risk_profile TEXT,
+    station_id TEXT,
+    event_ticker TEXT,
+    bankroll REAL,
+    forecast_snapshot_id INTEGER REFERENCES forecast_snapshots(id),
+    market_snapshot_id INTEGER REFERENCES market_snapshots(id),
+    forecast_json TEXT,
+    intraday_json TEXT,
+    market_json TEXT,
+    market_consensus_json TEXT,
+    prediction_features_json TEXT NOT NULL,
+    strategy_config_json TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS decision_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -152,6 +171,7 @@ CREATE TABLE IF NOT EXISTS decision_snapshots (
     intraday_observed_high_source TEXT,
     forecast_snapshot_id INTEGER,
     market_snapshot_id INTEGER,
+    scan_context_id INTEGER REFERENCES scan_context_snapshots(id),
     prediction_features_json TEXT,
     diagnostics_json TEXT,
     reasons_json TEXT NOT NULL
@@ -333,6 +353,8 @@ CREATE INDEX IF NOT EXISTS idx_paper_orders_group
     ON paper_orders (group_id);
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market
     ON decision_snapshots (target_date, market_ticker, created_at);
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_scan_context
+    ON decision_snapshots (scan_context_id);
 CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
     ON probability_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
@@ -482,6 +504,7 @@ DECISION_AUDIT_COLUMNS = {
     "bankroll": "REAL",
     "forecast_snapshot_id": "INTEGER",
     "market_snapshot_id": "INTEGER",
+    "scan_context_id": "INTEGER REFERENCES scan_context_snapshots(id)",
     "prediction_features_json": "TEXT",
     "diagnostics_json": "TEXT",
     "signal_approved": "INTEGER",
@@ -497,6 +520,33 @@ RESEARCH_SHADOW_AUDIT_COLUMNS = {
 MONITOR_AUDIT_COLUMNS = {
     "diagnostics_json": "TEXT",
 }
+
+SCAN_CONTEXT_AUDIT_COLUMNS = {
+    "station_id": "TEXT",
+    "market_json": "TEXT",
+}
+
+
+def _add_missing_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    existing: set[str],
+    columns: dict[str, str],
+) -> None:
+    """Additive migration safe when multiple services initialize together."""
+
+    for column, column_type in columns.items():
+        if column in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+        except sqlite3.OperationalError as exc:
+            current = {
+                str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if column not in current:
+                raise exc
+        existing.add(column)
 
 
 class PaperStore:
@@ -561,46 +611,54 @@ class PaperStore:
                 row[1]
                 for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()
             }
-            for column, column_type in PAPER_ORDER_AUDIT_COLUMNS.items():
-                if column not in existing:
-                    conn.execute(f"ALTER TABLE paper_orders ADD COLUMN {column} {column_type}")
+            _add_missing_columns(conn, "paper_orders", existing, PAPER_ORDER_AUDIT_COLUMNS)
             existing_probability = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(probability_snapshots)").fetchall()
             }
-            for column, column_type in PROBABILITY_AUDIT_COLUMNS.items():
-                if column not in existing_probability:
-                    conn.execute(f"ALTER TABLE probability_snapshots ADD COLUMN {column} {column_type}")
+            _add_missing_columns(
+                conn, "probability_snapshots", existing_probability, PROBABILITY_AUDIT_COLUMNS
+            )
             existing_decision = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(decision_snapshots)").fetchall()
             }
-            for column, column_type in DECISION_AUDIT_COLUMNS.items():
-                if column not in existing_decision:
-                    conn.execute(f"ALTER TABLE decision_snapshots ADD COLUMN {column} {column_type}")
+            _add_missing_columns(
+                conn, "decision_snapshots", existing_decision, DECISION_AUDIT_COLUMNS
+            )
+            existing_context = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(scan_context_snapshots)").fetchall()
+            }
+            _add_missing_columns(
+                conn,
+                "scan_context_snapshots",
+                existing_context,
+                SCAN_CONTEXT_AUDIT_COLUMNS,
+            )
             existing_shadow = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(research_shadow_orders)").fetchall()
             }
-            for column, column_type in RESEARCH_SHADOW_AUDIT_COLUMNS.items():
-                if column not in existing_shadow:
-                    conn.execute(f"ALTER TABLE research_shadow_orders ADD COLUMN {column} {column_type}")
+            _add_missing_columns(
+                conn, "research_shadow_orders", existing_shadow, RESEARCH_SHADOW_AUDIT_COLUMNS
+            )
             for table in ("paper_monitor_snapshots", "research_shadow_monitor_snapshots"):
                 existing_monitor = {
                     row[1]
                     for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
                 }
-                for column, column_type in MONITOR_AUDIT_COLUMNS.items():
-                    if column not in existing_monitor:
-                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                _add_missing_columns(conn, table, existing_monitor, MONITOR_AUDIT_COLUMNS)
             existing_forecast = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(forecast_snapshots)").fetchall()
             }
-            if "station_id" not in existing_forecast:
-                conn.execute(
-                    "ALTER TABLE forecast_snapshots ADD COLUMN station_id TEXT DEFAULT 'KSFO'"
-                )
+            _add_missing_columns(
+                conn,
+                "forecast_snapshots",
+                existing_forecast,
+                {"station_id": "TEXT DEFAULT 'KSFO'"},
+            )
             _migrate_legacy_profile_names(conn)
             conn.executescript(INDEXES)
             if not decision_table_existed:
@@ -1134,6 +1192,10 @@ class PaperStore:
         markets_by_ticker = {}
         if event is not None:
             markets_by_ticker = {market.ticker: market for market in event.markets}
+        market_payloads = {
+            ticker: _market_diagnostics_payload(market, event)
+            for ticker, market in markets_by_ticker.items()
+        }
         observed_high_mode = _forecast_observed_high_mode(forecast)
         prediction_features = build_prediction_feature_snapshot(
             forecast,
@@ -1148,22 +1210,11 @@ class PaperStore:
             spend = decision.recommended_contracts * decision.cost_per_contract
             market = markets_by_ticker.get(decision.ticker)
             diagnostics_json = json.dumps(
-                _decision_diagnostics_payload(
-                    target_date,
-                    decision,
-                    created_at=created_at,
-                    forecast=forecast,
-                    intraday=intraday,
-                    event=event,
-                    market=market,
-                    market_consensus=market_consensus,
-                    prediction_features=prediction_features,
-                    risk_profile=risk_profile,
-                    bankroll=bankroll,
-                    strategy_config=strategy_config,
-                    forecast_snapshot_id=forecast_snapshot_id,
-                    market_snapshot_id=market_snapshot_id,
-                ),
+                {
+                    "schema_version": 2,
+                    "kind": "trade_decision_signal",
+                    "signal": _decision_signal_payload(decision),
+                },
                 sort_keys=True,
             )
             rows.append(
@@ -1227,15 +1278,48 @@ class PaperStore:
                     bankroll,
                     forecast_snapshot_id,
                     market_snapshot_id,
-                    prediction_features_json,
+                    None,
                     diagnostics_json,
                     json.dumps(decision.reasons),
                 )
             )
         with self.connect() as conn:
+            context = conn.execute(
+                """
+                INSERT INTO scan_context_snapshots (
+                    created_at, target_date, risk_profile, station_id, event_ticker, bankroll,
+                    forecast_snapshot_id, market_snapshot_id, forecast_json,
+                    intraday_json, market_json, market_consensus_json,
+                    prediction_features_json,
+                    strategy_config_json, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    created_at,
+                    target_date,
+                    risk_profile,
+                    forecast.station_id if forecast is not None else None,
+                    event.event_ticker if event is not None else None,
+                    bankroll,
+                    forecast_snapshot_id,
+                    market_snapshot_id,
+                    _json_text(_forecast_diagnostics_payload(forecast)),
+                    _json_text(_intraday_diagnostics_payload(intraday)),
+                    (
+                        _json_text(market_payloads)
+                        if market_snapshot_id is None or event is None or not event.raw
+                        else None
+                    ),
+                    _json_text(_market_consensus_diagnostics_payload(market_consensus)),
+                    prediction_features_json,
+                    _json_text(_strategy_config_snapshot(strategy_config)),
+                ),
+            )
+            scan_context_id = int(context.lastrowid)
             conn.executemany(
                 """
                 INSERT INTO decision_snapshots (
+                    scan_context_id,
                     created_at, target_date, market_ticker, label, action, side,
                     approved, signal_approved, entry_block_reason,
                     probability, probability_lcb, model_probability,
@@ -1254,9 +1338,9 @@ class PaperStore:
                     forecast_snapshot_id, market_snapshot_id,
                     prediction_features_json, diagnostics_json, reasons_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                rows,
+                ((scan_context_id, *row) for row in rows),
             )
 
     def record_paper_order(
@@ -2503,7 +2587,9 @@ class PaperStore:
         LAST snapshot per (market, side, target_date) survives -- the
         end-of-day context of why the book said what it said -- plus every
         approved/signal-approved row; beyond ``dedup_days`` only approved
-        rows remain. Approved rows are never deleted.
+        rows remain. Approved rows are never deleted. The scheduled caller
+        runs the archive gate first; after decision pruning, archived context
+        rows are removed only when no retained decision references them.
         """
 
         if full_days < 1 or dedup_days <= full_days:
@@ -2532,9 +2618,21 @@ class PaperStore:
                 """,
                 (f"-{dedup_days} days",),
             )
+            context_cursor = conn.execute(
+                """
+                DELETE FROM scan_context_snapshots
+                WHERE created_at < datetime('now', ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM decision_snapshots
+                      WHERE decision_snapshots.scan_context_id = scan_context_snapshots.id
+                  )
+                """,
+                (f"-{full_days} days",),
+            )
             return {
                 "deduped": dedup_cursor.rowcount,
                 "dropped": drop_cursor.rowcount,
+                "contexts_dropped": context_cursor.rowcount,
             }
 
     def open_paper_target_dates(self, *, series_ticker: str | None = None) -> list[str]:
@@ -3360,6 +3458,21 @@ def _market_diagnostics_payload(market, event: EventSnapshot | None) -> dict[str
     )
 
 
+def _market_diagnostics_from_snapshot_json(
+    raw_json: object,
+    market_ticker: str,
+) -> dict[str, object] | None:
+    raw = _json_object(raw_json)
+    if not raw:
+        return None
+    try:
+        event = EventSnapshot.from_kalshi(raw)
+    except (TypeError, ValueError, KeyError):
+        return None
+    market = next((item for item in event.markets if item.ticker == market_ticker), None)
+    return _market_diagnostics_payload(market, event)
+
+
 def _market_consensus_diagnostics_payload(
     market_consensus: MarketConsensus | None,
 ) -> dict[str, object] | None:
@@ -3402,20 +3515,35 @@ def _latest_entry_decision_snapshot(
 ) -> sqlite3.Row | None:
     conn.row_factory = sqlite3.Row
     filters = [
-        "target_date = ?",
-        "market_ticker = ?",
-        "UPPER(COALESCE(side, 'YES')) = ?",
+        "d.target_date = ?",
+        "d.market_ticker = ?",
+        "UPPER(COALESCE(d.side, 'YES')) = ?",
     ]
     params: list[object] = [target_date, decision.ticker, decision.side.upper()]
     if risk_profile is not None:
-        filters.append("COALESCE(risk_profile, 'live') = ?")
+        filters.append("COALESCE(d.risk_profile, 'live') = ?")
         params.append(risk_profile)
     return conn.execute(
         f"""
-        SELECT *
-        FROM decision_snapshots
+        SELECT d.*,
+               c.created_at AS scan_context_created_at,
+               c.target_date AS scan_context_target_date,
+               c.risk_profile AS scan_context_risk_profile,
+               c.bankroll AS scan_context_bankroll,
+               c.forecast_snapshot_id AS scan_context_forecast_snapshot_id,
+               c.market_snapshot_id AS scan_context_market_snapshot_id,
+               c.forecast_json AS scan_context_forecast_json,
+               c.intraday_json AS scan_context_intraday_json,
+               c.market_json AS scan_context_market_json,
+               c.market_consensus_json AS scan_context_market_consensus_json,
+               c.prediction_features_json AS scan_context_prediction_features_json,
+               c.strategy_config_json AS scan_context_strategy_config_json,
+               ms.raw_json AS scan_context_market_snapshot_json
+        FROM decision_snapshots d
+        LEFT JOIN scan_context_snapshots c ON c.id = d.scan_context_id
+        LEFT JOIN market_snapshots ms ON ms.id = c.market_snapshot_id
         WHERE {' AND '.join(filters)}
-        ORDER BY created_at DESC, id DESC
+        ORDER BY d.created_at DESC, d.id DESC
         LIMIT 1
         """,
         params,
@@ -3426,6 +3554,56 @@ def _entry_decision_ref_payload(row: sqlite3.Row | None) -> dict[str, object] | 
     if row is None:
         return None
     diagnostics = _json_object(_row_value(row, "diagnostics_json"))
+    if (
+        diagnostics.get("kind") == "trade_decision_signal"
+        and _row_value(row, "scan_context_id") is not None
+    ):
+        markets = _json_object(_row_value(row, "scan_context_market_json"))
+        market = markets.get(str(_row_value(row, "market_ticker")))
+        if market is None:
+            market = _market_diagnostics_from_snapshot_json(
+                _row_value(row, "scan_context_market_snapshot_json"),
+                str(_row_value(row, "market_ticker") or ""),
+            )
+        diagnostics = _drop_none(
+            {
+                "schema_version": 1,
+                "kind": "trade_decision",
+                "created_at": _row_value(row, "scan_context_created_at", _row_value(row, "created_at")),
+                "target_date": _row_value(row, "scan_context_target_date", _row_value(row, "target_date")),
+                "risk_profile": _row_value(row, "scan_context_risk_profile", _row_value(row, "risk_profile")),
+                "bankroll": _round_number(_row_value(row, "scan_context_bankroll")),
+                "context_refs": {
+                    "forecast_snapshot_id": _row_value(
+                        row,
+                        "scan_context_forecast_snapshot_id",
+                        _row_value(row, "forecast_snapshot_id"),
+                    ),
+                    "market_snapshot_id": _row_value(
+                        row,
+                        "scan_context_market_snapshot_id",
+                        _row_value(row, "market_snapshot_id"),
+                    ),
+                },
+                "signal": diagnostics.get("signal", {}),
+                "forecast": _json_optional_object(
+                    _row_value(row, "scan_context_forecast_json")
+                ),
+                "intraday": _json_optional_object(
+                    _row_value(row, "scan_context_intraday_json")
+                ),
+                "market": market,
+                "market_consensus": _json_optional_object(
+                    _row_value(row, "scan_context_market_consensus_json")
+                ),
+                "prediction_features": _json_object(
+                    _row_value(row, "scan_context_prediction_features_json")
+                ),
+                "strategy_config": _json_optional_object(
+                    _row_value(row, "scan_context_strategy_config_json")
+                ),
+            }
+        )
     if not diagnostics:
         diagnostics = {
             "schema_version": 1,
@@ -3505,6 +3683,14 @@ def _json_object(value: object) -> dict[str, object]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _json_text(value: object) -> str | None:
+    return json.dumps(value, sort_keys=True) if value is not None else None
+
+
+def _json_optional_object(value: object) -> dict[str, object] | None:
+    return _json_object(value) if value else None
 
 
 def _json_list(value: object) -> list[str]:

@@ -17,6 +17,7 @@ from sfo_kalshi_quant.archive import (
     open_manifest,
 )
 from sfo_kalshi_quant.db import PaperStore
+from test_scan_context_normalization import _decision, _record
 
 
 def _utc_day(days_ago: int) -> str:
@@ -118,6 +119,47 @@ def test_archive_pending_is_idempotent(tmp_path: Path) -> None:
     second = archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
     assert first > 0
     assert second == 0
+
+
+def test_scan_context_is_archived_gated_and_recoverable_with_decisions(tmp_path: Path) -> None:
+    store, conn = _make_store(tmp_path)
+    _record(store, [_decision(1)])
+    day = _utc_day(3)
+    conn.execute("UPDATE decision_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.execute("UPDATE scan_context_snapshots SET created_at=?", (f"{day}T10:00:00+00:00",))
+    conn.commit()
+
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    decisions = _read_archive(
+        archive_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    contexts = _read_archive(
+        archive_dir / "scan_context_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    assert decisions[0]["scan_context_id"] == contexts[0]["id"]
+    assert gate_missing_days(tmp_path / "paper.db", archive_dir) == []
+
+    backup = tmp_path / "backup.db"
+    with sqlite3.connect(tmp_path / "paper.db") as src, sqlite3.connect(backup) as dst:
+        src.backup(dst)
+    pruned = store.prune_decision_snapshots(full_days=1, dedup_days=2)
+    assert pruned["dropped"] == 1
+    assert pruned["contexts_dropped"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM scan_context_snapshots").fetchone()[0] == 0
+    recovery_dir = tmp_path / "recovery"
+    archive_pending(
+        tmp_path / "paper.db", recovery_dir, merge_dbs=[backup], log=lambda *_: None
+    )
+    recovered_decisions = _read_archive(
+        recovery_dir / "decision_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    recovered_contexts = _read_archive(
+        recovery_dir / "scan_context_snapshots" / f"dt={day}.jsonl.gz"
+    )
+    assert recovered_decisions[0]["scan_context_id"] == recovered_contexts[0]["id"]
 
 
 def test_gate_blocks_until_every_day_is_archived(tmp_path: Path) -> None:

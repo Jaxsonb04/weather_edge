@@ -23,6 +23,14 @@ def _insert(conn, created_at, ticker, side, approved, signal_approved=0):
     )
 
 
+def _context(conn, created_at):
+    return conn.execute(
+        "INSERT INTO scan_context_snapshots "
+        "(created_at, target_date, prediction_features_json) VALUES (?, '2026-06-01', '{}')",
+        (created_at,),
+    ).lastrowid
+
+
 def test_prune_keeps_recent_approved_and_last_per_day():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "p.db")
@@ -65,3 +73,37 @@ def test_prune_keeps_recent_approved_and_last_per_day():
                 )
             }
         assert remaining == {"T-A": 1, "T-B": 1, "T-C": 1, "T-E": 1}
+
+
+def test_prune_removes_only_unreferenced_contexts_without_dangling_refs():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "p.db")
+        with store.connect() as conn:
+            dropped_context = _context(conn, "2026-01-01T00:00:00+00:00")
+            kept_context = _context(conn, "2026-01-01T00:05:00+00:00")
+            _insert(conn, "x", "T-DROP", "YES", 0)
+            conn.execute(
+                "UPDATE decision_snapshots SET created_at=datetime('now', '-100 days'), "
+                "scan_context_id=? WHERE market_ticker='T-DROP'",
+                (dropped_context,),
+            )
+            _insert(conn, "x", "T-KEEP", "YES", 1)
+            conn.execute(
+                "UPDATE decision_snapshots SET created_at=datetime('now', '-100 days'), "
+                "scan_context_id=? WHERE market_ticker='T-KEEP'",
+                (kept_context,),
+            )
+
+        result = store.prune_decision_snapshots(full_days=7, dedup_days=45)
+
+        with store.connect() as conn:
+            remaining_contexts = {
+                row[0] for row in conn.execute("SELECT id FROM scan_context_snapshots")
+            }
+            dangling = conn.execute(
+                "SELECT COUNT(*) FROM decision_snapshots d LEFT JOIN scan_context_snapshots c "
+                "ON c.id=d.scan_context_id WHERE d.scan_context_id IS NOT NULL AND c.id IS NULL"
+            ).fetchone()[0]
+        assert result["contexts_dropped"] == 1
+        assert remaining_contexts == {kept_context}
+        assert dangling == 0
