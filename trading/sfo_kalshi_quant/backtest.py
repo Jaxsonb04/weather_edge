@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import hashlib
+import json
+import os
+import tempfile
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 
 from .config import StrategyConfig
 from .models import ForecastOutcome, MarketBin
 from .probability import ResidualCalibrator
 from .standard_bins import standard_sfo_bins
+
+
+DEFAULT_CALIBRATION_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "cache" / "calibration"
+_CACHE_SCHEMA_VERSION = 1
+_CACHE_MAX_ENTRIES = 128
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,8 @@ class CalibrationBacktestResult:
     ranked_probability_skill: float
     calibration_buckets: tuple[CalibrationBucket, ...]
     cohorts: tuple[CalibrationCohort, ...]
+    # Execution diagnostic only; excluded from the cached numeric payload/key.
+    cache_hit: bool = False
 
 
 def run_walk_forward_calibration_backtest(
@@ -63,6 +75,7 @@ def run_walk_forward_calibration_backtest(
     min_train: int = 180,
     markets: list[MarketBin] | None = None,
     emos_lookup: dict | None = None,
+    cache_dir: Path | None = DEFAULT_CALIBRATION_CACHE_DIR,
 ) -> CalibrationBacktestResult:
     """Walk-forward probability backtest using historical forecast outcomes.
 
@@ -79,6 +92,18 @@ def run_walk_forward_calibration_backtest(
 
     cfg = config or StrategyConfig()
     ladder = markets or standard_sfo_bins("KXHIGHTSFO-BACKTEST")
+    cache_path = _calibration_cache_path(
+        outcomes,
+        config=cfg,
+        min_train=min_train,
+        markets=ladder,
+        emos_lookup=emos_lookup,
+        cache_dir=cache_dir,
+    )
+    if cache_path is not None:
+        cached = _read_calibration_cache(cache_path)
+        if cached is not None:
+            return replace(cached, cache_hit=True)
     scored = []
     calibration_samples: list[tuple[float, float]] = []
     for idx in range(min_train, len(outcomes)):
@@ -139,7 +164,7 @@ def run_walk_forward_calibration_backtest(
     clim_brier_overall = sum(row["clim_brier"] for row in scored) / n
     model_rps = sum(row["rps"] for row in scored) / n
     clim_rps = sum(row["clim_rps"] for row in scored) / n
-    return CalibrationBacktestResult(
+    result = CalibrationBacktestResult(
         n=n,
         brier_score=model_brier,
         log_loss=sum(row["log_loss"] for row in scored) / n,
@@ -154,6 +179,129 @@ def run_walk_forward_calibration_backtest(
         calibration_buckets=_calibration_buckets(calibration_samples),
         cohorts=_calibration_cohorts(scored),
     )
+    if cache_path is not None:
+        _write_calibration_cache(cache_path, result)
+    return result
+
+
+def _calibration_cache_path(
+    outcomes: list[ForecastOutcome],
+    *,
+    config: StrategyConfig,
+    min_train: int,
+    markets: list[MarketBin],
+    emos_lookup: dict | None,
+    cache_dir: Path | None,
+) -> Path | None:
+    if cache_dir is None:
+        return None
+    outcome_rows = [
+        {
+            "date": row.local_date.isoformat(),
+            "predicted_high_f": row.predicted_high_f,
+            "actual_high_f": row.actual_high_f,
+            "model_name": row.model_name,
+            "station_id": row.station_id,
+        }
+        for row in outcomes
+    ]
+    market_rows = [
+        {
+            "ticker": row.ticker,
+            "strike_type": row.strike_type,
+            "floor_strike": row.floor_strike,
+            "cap_strike": row.cap_strike,
+        }
+        for row in markets
+    ]
+    emos_rows = sorted(
+        (type(key).__name__, str(key), list(value) if isinstance(value, (list, tuple)) else value)
+        for key, value in (emos_lookup or {}).items()
+    )
+    material = {
+        "schema": _CACHE_SCHEMA_VERSION,
+        "algorithm": "walk-forward-calibration-v1",
+        "stations": sorted({row.station_id for row in outcomes}),
+        "sources": sorted({row.model_name for row in outcomes}),
+        "min_train": min_train,
+        "config": asdict(config),
+        "markets": market_rows,
+        "outcomes": outcome_rows,
+        "emos_lookup": emos_rows,
+    }
+    digest = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return Path(cache_dir) / f"{digest}.json"
+
+
+def _read_calibration_cache(path: Path) -> CalibrationBacktestResult | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != _CACHE_SCHEMA_VERSION:
+            return None
+        result = payload["result"]
+        return CalibrationBacktestResult(
+            n=int(result["n"]),
+            brier_score=float(result["brier_score"]),
+            log_loss=float(result["log_loss"]),
+            top_bin_accuracy=float(result["top_bin_accuracy"]),
+            avg_winning_probability=float(result["avg_winning_probability"]),
+            avg_entropy=float(result["avg_entropy"]),
+            climatology_brier_score=float(result["climatology_brier_score"]),
+            brier_skill=float(result["brier_skill"]),
+            ranked_probability_score=float(result["ranked_probability_score"]),
+            climatology_ranked_probability_score=float(
+                result["climatology_ranked_probability_score"]
+            ),
+            ranked_probability_skill=float(result["ranked_probability_skill"]),
+            calibration_buckets=tuple(
+                CalibrationBucket(**row) for row in result["calibration_buckets"]
+            ),
+            cohorts=tuple(CalibrationCohort(**row) for row in result["cohorts"]),
+        )
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _write_calibration_cache(path: Path, result: CalibrationBacktestResult) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": _CACHE_SCHEMA_VERSION,
+            "result": asdict(replace(result, cache_hit=False)),
+        }
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.stem}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, path)
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+        _prune_calibration_cache(path.parent)
+    except (OSError, TypeError, ValueError):
+        # Regenerable optimization: permissions, disk pressure, or a concurrent
+        # cleanup must never make calibration/reporting unavailable.
+        return
+
+
+def _prune_calibration_cache(cache_dir: Path) -> None:
+    try:
+        entries = sorted(
+            cache_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True
+        )
+        for stale in entries[_CACHE_MAX_ENTRIES:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _climatological_prior(

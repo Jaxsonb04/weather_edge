@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import sqlite3
 import io
+import json
 from contextlib import redirect_stdout
 from datetime import date, timedelta
 
-from emos_forecast import build_emos_archive, load_emos_archive, main, serve_live_emos
+from emos_forecast import (
+    build_emos_archive,
+    fetch_live_model_forecasts,
+    load_emos_archive,
+    main,
+    serve_live_emos,
+)
 from nwp_archive import ensure_schema as ensure_nwp_schema
 from nwp_archive import upsert_forecasts
 
@@ -194,6 +201,73 @@ def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch
         (today + timedelta(days=2), 2, 2),
     ]
     assert "served=3 targets=3 cities=1 leads=0..2" in out.getvalue()
+
+
+def test_serve_rolling_fetches_open_meteo_once_per_city(tmp_path, monkeypatch):
+    import emos_forecast as ef
+    import nwp_archive
+
+    today = date(2026, 7, 10)
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            daily = {"time": [(today + timedelta(days=i)).isoformat() for i in range(3)]}
+            for model in ef.NWP_MODELS:
+                daily[f"temperature_2m_max_{model}"] = [70.0, 71.0, 72.0]
+            return json.dumps({"daily": daily}).encode("utf-8")
+
+    def fake_urlopen(url, **_kwargs):
+        calls.append(url)
+        return Response()
+
+    served_models = []
+
+    def fake_serve(_conn, _target, *, live_models=None, **_kwargs):
+        served_models.append(live_models)
+        return (70.0, 2.5)
+
+    monkeypatch.setattr(nwp_archive, "urlopen", fake_urlopen)
+    monkeypatch.setattr(ef, "serve_live_emos", fake_serve)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: today)
+    db_path = tmp_path / "weather.db"
+
+    status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "all"])
+
+    assert status == 0
+    assert len(calls) == len(ef.CITIES) == 15
+    assert len(served_models) == 45
+    assert all(models for models in served_models)
+
+
+def test_multi_forecast_fetch_missing_target_degrades_to_empty_helper(monkeypatch):
+    import emos_forecast as ef
+
+    target = date(2026, 7, 10)
+    monkeypatch.setattr(
+        ef,
+        "_http_get_json",
+        lambda _url: {
+            "daily": {
+                "time": [target.isoformat()],
+                **{
+                    f"temperature_2m_max_{model}": [70.0]
+                    for model in ef.NWP_MODELS
+                },
+            }
+        },
+    )
+
+    multi = ef.fetch_live_model_forecasts_multi()
+
+    assert multi[target]
+    assert fetch_live_model_forecasts(target + timedelta(days=1)) == {}
 
 
 def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):

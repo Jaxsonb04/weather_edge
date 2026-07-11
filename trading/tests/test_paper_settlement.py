@@ -213,6 +213,54 @@ def test_signal_backtest_dedupes_repeated_scans_by_default():
         assert all_rows["signals"] == 2.0
 
 
+def test_signal_backtest_accepts_precomputed_sample_rows_without_resampling(monkeypatch):
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B66.5",
+            label="66° to 67°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.60,
+            yes_bid=0.20,
+            yes_ask=0.30,
+            spread=0.10,
+            fee_per_contract=0.01,
+            cost_per_contract=0.31,
+            edge=0.39,
+            edge_lcb=0.29,
+            kelly_fraction=0.02,
+            recommended_contracts=10.0,
+            expected_profit=3.9,
+            reasons=[],
+            trade_quality_score=72.0,
+            strike_type="between",
+            floor_strike=66.0,
+            cap_strike=67.0,
+        )
+        store.record_decisions(
+            "2026-06-03", [decision], event=pre_resolution_event([decision])
+        )
+        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        expected = store.signal_backtest_summary(
+            {"2026-06-03": 67.0}, sample_mode="entry-per-market-side"
+        )
+        monkeypatch.setattr(
+            store,
+            "sampled_decision_rows",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("resampled")),
+        )
+
+        actual = store.signal_backtest_summary(
+            {"2026-06-03": 67.0},
+            sample_mode="entry-per-market-side",
+            sampled_rows=rows,
+        )
+
+        assert actual == expected
+
+
 def test_signal_backtest_excludes_post_resolution_rows_by_default():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 
-from .backtest import run_walk_forward_calibration_backtest
+from .backtest import DEFAULT_CALIBRATION_CACHE_DIR, run_walk_forward_calibration_backtest
 from .config import SERIES_TICKER, StrategyConfig, intraday_timezone_for_city
 from .consensus import MarketConsensus, build_market_consensus
 from .ensemble import OpenMeteoEnsembleError, SfoEnsembleClient
@@ -199,9 +199,12 @@ def calibration_diagnostics(
     *,
     config: StrategyConfig,
     min_train: int = 180,
+    cache_dir: Path | None = DEFAULT_CALIBRATION_CACHE_DIR,
 ) -> dict[str, Any]:
     try:
-        result = run_walk_forward_calibration_backtest(outcomes, config=config, min_train=min_train)
+        result = run_walk_forward_calibration_backtest(
+            outcomes, config=config, min_train=min_train, cache_dir=cache_dir
+        )
     except ValueError as exc:
         # Below min_train the walk-forward backtest raises. Emit an empty but
         # well-formed calibration block so the whole daily-report artifact still
@@ -224,6 +227,7 @@ def calibration_diagnostics(
             "buckets": [],
             "cohorts": [],
             "warnings": [],
+            "cache_hit": False,
         }
     buckets = [
         {
@@ -284,6 +288,7 @@ def calibration_diagnostics(
         "buckets": buckets,
         "cohorts": cohorts,
         "warnings": warnings,
+        "cache_hit": result.cache_hit,
     }
 
 

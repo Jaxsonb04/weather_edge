@@ -436,7 +436,9 @@ def _cmd_daily(conn: sqlite3.Connection, cities: tuple[CityConfig, ...], days: i
         today = _settlement_today(city)
         start = (today - timedelta(days=days)).isoformat()
         end = (today + timedelta(days=1)).isoformat()
-        summary = archive_range(conn, start, end, city=city, verbose=False)
+        summary = archive_range(
+            conn, start, end, city=city, leads=(1, 2), verbose=False
+        )
         city_total = sum(summary.values())
         total += city_total
         models_present = {name.split("@")[0] for name, n in summary.items() if n > 0}

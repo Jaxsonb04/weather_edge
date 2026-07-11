@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import sfo_kalshi_quant.cli as cli_module
 
 from sfo_kalshi_quant.cli import (
     _place_portfolio_orders,
@@ -16,6 +17,7 @@ from sfo_kalshi_quant.cli import (
 )
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.cities import get_city
+from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.models import ForecastSnapshot
 from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
 from sfo_kalshi_quant.paper import ArbitrageContainmentError
@@ -207,6 +209,10 @@ def test_portfolio_scan_returns_nonzero_after_fatal_containment_but_continues_ci
         patch("sfo_kalshi_quant.cli.ResidualCalibrator", return_value=object()),
         patch("sfo_kalshi_quant.cli.KalshiPublicClient"),
         patch(
+            "sfo_kalshi_quant.cli._config",
+            return_value=StrategyConfig(emos_distribution_enabled=True),
+        ),
+        patch(
             "sfo_kalshi_quant.cli._portfolio_scan_one_target",
             side_effect=[ArbitrageContainmentError("residual exposure"), None],
         ) as scan_target,
@@ -215,3 +221,70 @@ def test_portfolio_scan_returns_nonzero_after_fatal_containment_but_continues_ci
 
     assert code == 1
     assert scan_target.call_count == 2
+
+
+def test_portfolio_scan_hoists_emos_and_sizing_model_once_per_city():
+    args = build_parser().parse_args(
+        ["--risk-profile", "live", "portfolio-scan", "--cities", "sfo"]
+    )
+    targets = [date(2026, 7, 10), date(2026, 7, 11), date(2026, 7, 12)]
+    adapter = Mock()
+    adapter.load_calibration_outcomes.return_value = [object()] * 30
+    emos = {target: (70.0, 2.5) for target in targets}
+    adapter.load_emos_mu_sigma.return_value = emos
+    sizing_model = object()
+
+    with (
+        patch("sfo_kalshi_quant.cli._cities_for_args", return_value=(get_city("sfo"),)),
+        patch(
+            "sfo_kalshi_quant.cli._resolve_analysis_targets",
+            return_value=(targets, {}),
+        ),
+        patch("sfo_kalshi_quant.cli.SfoForecasterAdapter", return_value=adapter),
+        patch("sfo_kalshi_quant.cli.ResidualCalibrator", return_value=object()),
+        patch("sfo_kalshi_quant.cli.KalshiPublicClient"),
+        patch(
+            "sfo_kalshi_quant.cli._config",
+            return_value=StrategyConfig(emos_distribution_enabled=True),
+        ),
+        patch(
+            "sfo_kalshi_quant.cli._build_sizing_model", return_value=sizing_model
+        ) as build_model,
+        patch("sfo_kalshi_quant.cli._portfolio_scan_one_target") as scan_target,
+    ):
+        code = cmd_portfolio_scan(args)
+
+    assert code == 0
+    adapter.load_emos_mu_sigma.assert_called_once_with(lead_days=None)
+    build_model.assert_called_once()
+    assert scan_target.call_count == len(targets)
+    assert all(call.kwargs["emos_lookup"] is emos for call in scan_target.call_args_list)
+    assert all(
+        call.kwargs["sizing_model"] is sizing_model for call in scan_target.call_args_list
+    )
+    pause_caches = [call.kwargs["pause_reasons"] for call in scan_target.call_args_list]
+    assert pause_caches[0] is pause_caches[1] is pause_caches[2]
+
+
+def test_pause_reason_cache_is_keyed_by_exact_profile_and_target():
+    store = Mock()
+    store.paper_entry_pause_reason.side_effect = [None, "paused", None]
+    cache = {}
+
+    first = cli_module._cached_paper_entry_pause_reason(
+        store, "live", bankroll=1000.0, target_date="2026-07-10", cache=cache
+    )
+    repeated = cli_module._cached_paper_entry_pause_reason(
+        store, "live", bankroll=1000.0, target_date="2026-07-10", cache=cache
+    )
+    next_target = cli_module._cached_paper_entry_pause_reason(
+        store, "live", bankroll=1000.0, target_date="2026-07-11", cache=cache
+    )
+    other_profile = cli_module._cached_paper_entry_pause_reason(
+        store, "research", bankroll=1000.0, target_date="2026-07-10", cache=cache
+    )
+
+    assert first is repeated is None
+    assert next_target == "paused"
+    assert other_profile is None
+    assert store.paper_entry_pause_reason.call_count == 3

@@ -144,3 +144,20 @@ def test_date_chunks_cover_range_without_gaps_or_overlap():
     from datetime import date, timedelta
     for (_, prev_end), (next_start, _) in zip(chunks, chunks[1:]):
         assert date.fromisoformat(next_start) == date.fromisoformat(prev_end) + timedelta(days=1)
+
+
+def test_daily_refresh_fetches_only_leads_one_and_two(monkeypatch):
+    calls = []
+
+    def fake_archive_range(conn, start, end, **kwargs):
+        calls.append(kwargs)
+        return {"gfs_seamless@lead1": 1, "gfs_seamless@lead2": 1}
+
+    monkeypatch.setattr(nwp_archive, "archive_range", fake_archive_range)
+    conn = sqlite3.connect(":memory:")
+
+    status = nwp_archive._cmd_daily(conn, (nwp_archive.DEFAULT_CITY,), 5)
+
+    assert status == 0
+    assert calls == [{"city": nwp_archive.DEFAULT_CITY, "leads": (1, 2), "verbose": False}]
+    assert 3 in nwp_archive.LEAD_DAYS

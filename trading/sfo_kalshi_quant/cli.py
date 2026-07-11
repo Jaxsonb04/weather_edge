@@ -69,6 +69,7 @@ from .models import (
     EnsembleSnapshot,
     EventSnapshot,
     IntradaySnapshot,
+    MarketBin,
     format_event_date_token,
     target_date_from_event_ticker,
 )
@@ -94,6 +95,7 @@ DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
 DEFAULT_MODEL_VETO_MAX_LOSS_PCT = 60.0
 DEFAULT_MODEL_VETO_BUFFER = 0.08
 SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES = 90.0
+_UNSET = object()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1015,6 +1017,14 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             )
             continue
 
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
+        sizing_model = _build_sizing_model(config, store)
+        pause_reasons: dict[tuple[str, str], str | None] = {}
+
         for idx, target in enumerate(targets):
             if idx:
                 print("")
@@ -1033,6 +1043,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                     event_hint=live_events_by_target.get(target),
                     event_lookup_done=target in live_events_by_target,
                     kalshi_client=kalshi_client,
+                    emos_lookup=emos_lookup,
+                    sizing_model=sizing_model,
+                    pause_reasons=pause_reasons,
                 )
                 scanned_any = True
             except ForecastDataError as exc:
@@ -1058,6 +1071,13 @@ def cmd_tail_basket(args: argparse.Namespace) -> int:
     outcomes = adapter.load_calibration_outcomes(args.calibration_source)
     calibrator = ResidualCalibrator(outcomes, config)
     store = PaperStore(args.db_path)
+    emos_lookup = (
+        adapter.load_emos_mu_sigma(lead_days=None)
+        if config.emos_distribution_enabled
+        else {}
+    )
+    sizing_model = _build_sizing_model(config, store)
+    pause_reasons: dict[tuple[str, str], str | None] = {}
 
     for idx, target in enumerate(targets):
         if idx:
@@ -1076,6 +1096,9 @@ def cmd_tail_basket(args: argparse.Namespace) -> int:
             event_hint=live_events_by_target.get(target),
             event_lookup_done=target in live_events_by_target,
             kalshi_client=kalshi_client,
+            emos_lookup=emos_lookup,
+            sizing_model=sizing_model,
+            pause_reasons=pause_reasons,
         )
     return 0
 
@@ -1090,6 +1113,7 @@ def cmd_arbitrage(args: argparse.Namespace) -> int:
         print(color.yellow("no eligible target dates found"))
         return 0
     store = PaperStore(args.db_path)
+    pause_reasons: dict[tuple[str, str], str | None] = {}
 
     for idx, target in enumerate(targets):
         if idx:
@@ -1106,6 +1130,7 @@ def cmd_arbitrage(args: argparse.Namespace) -> int:
             event_hint=live_events_by_target.get(target),
             event_lookup_done=target in live_events_by_target,
             kalshi_client=kalshi_client,
+            pause_reasons=pause_reasons,
         )
     return 0
 
@@ -1140,6 +1165,14 @@ def cmd_portfolio_scan(args: argparse.Namespace) -> int:
             )
             continue
 
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
+        sizing_model = _build_sizing_model(config, store)
+        pause_reasons: dict[tuple[str, str], str | None] = {}
+
         for idx, target in enumerate(targets):
             if idx:
                 print("")
@@ -1158,6 +1191,9 @@ def cmd_portfolio_scan(args: argparse.Namespace) -> int:
                     event_hint=live_events_by_target.get(target),
                     event_lookup_done=target in live_events_by_target,
                     kalshi_client=kalshi_client,
+                    emos_lookup=emos_lookup,
+                    sizing_model=sizing_model,
+                    pause_reasons=pause_reasons,
                 )
                 scanned_any = True
             except ArbitrageContainmentError as exc:
@@ -1270,6 +1306,27 @@ def _build_sizing_model(config: StrategyConfig, store: PaperStore):
         )
 
 
+def _cached_paper_entry_pause_reason(
+    store: PaperStore,
+    risk_profile: str,
+    *,
+    bankroll: float,
+    target_date: str,
+    cache: dict[tuple[str, str], str | None] | None,
+) -> str | None:
+    key = (risk_profile, target_date)
+    if cache is not None and key in cache:
+        return cache[key]
+    reason = store.paper_entry_pause_reason(
+        risk_profile,
+        bankroll=bankroll,
+        target_date=target_date,
+    )
+    if cache is not None:
+        cache[key] = reason
+    return reason
+
+
 def _rolling_targets_count() -> int:
     # Kalshi lists SFO events several days out; scanning more of them grows the
     # distinct-candidate universe (and the paper sample) without touching any
@@ -1321,6 +1378,9 @@ def _analyze_one_target(
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
+    emos_lookup: dict | None = None,
+    sizing_model=_UNSET,
+    pause_reasons: dict[tuple[str, str], str | None] | None = None,
 ) -> None:
     city = city or get_city("sfo")
     series_ticker = city.series_ticker
@@ -1366,9 +1426,12 @@ def _analyze_one_target(
     # lead_days=None: the live serve writes each rolling target at its TRUE lead
     # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
     # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
-    emos_lookup = (
-        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
-    )
+    if emos_lookup is None:
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1385,7 +1448,12 @@ def _analyze_one_target(
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(config, sizing_model=_build_sizing_model(config, store))
+    evaluator = TradeEvaluator(
+        config,
+        sizing_model=(
+            _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
+        ),
+    )
     decisions = evaluator.rank(
         markets,
         probabilities,
@@ -1416,10 +1484,12 @@ def _analyze_one_target(
                 target, forecast, intraday, city=city
             )
     if args.place_paper and entry_allowed:
-        pause_reason = store.paper_entry_pause_reason(
+        pause_reason = _cached_paper_entry_pause_reason(
+            store,
             risk_profile,
             bankroll=paper_bankroll,
             target_date=target.isoformat(),
+            cache=pause_reasons,
         )
         if pause_reason is not None:
             entry_allowed = False
@@ -1505,6 +1575,9 @@ def _portfolio_scan_one_target(
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
+    emos_lookup: dict | None = None,
+    sizing_model=_UNSET,
+    pause_reasons: dict[tuple[str, str], str | None] | None = None,
 ) -> None:
     city = city or get_city("sfo")
     series_ticker = city.series_ticker
@@ -1552,9 +1625,12 @@ def _portfolio_scan_one_target(
     # lead_days=None: the live serve writes each rolling target at its TRUE lead
     # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
     # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
-    emos_lookup = (
-        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
-    )
+    if emos_lookup is None:
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1568,7 +1644,12 @@ def _portfolio_scan_one_target(
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(config, sizing_model=_build_sizing_model(config, store))
+    evaluator = TradeEvaluator(
+        config,
+        sizing_model=(
+            _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
+        ),
+    )
     decisions = evaluator.rank(
         markets,
         probabilities,
@@ -1618,10 +1699,12 @@ def _portfolio_scan_one_target(
         series_ticker=series_ticker,
     )
     if args.place_paper and entry_allowed:
-        pause_reason = store.paper_entry_pause_reason(
+        pause_reason = _cached_paper_entry_pause_reason(
+            store,
             risk_profile,
             bankroll=paper_bankroll,
             target_date=target.isoformat(),
+            cache=pause_reasons,
         )
         if pause_reason is not None:
             entry_allowed = False
@@ -1736,6 +1819,7 @@ def _arbitrage_one_target(
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
+    pause_reasons: dict[tuple[str, str], str | None] | None = None,
 ) -> None:
     city = city or get_city("sfo")
     series_ticker = city.series_ticker
@@ -1794,10 +1878,12 @@ def _arbitrage_one_target(
 
     paper_trader = PaperTrader(store, config, risk_profile=risk_profile)
     if args.place_paper and entry_allowed:
-        pause_reason = store.paper_entry_pause_reason(
+        pause_reason = _cached_paper_entry_pause_reason(
+            store,
             risk_profile,
             bankroll=paper_bankroll,
             target_date=target.isoformat(),
+            cache=pause_reasons,
         )
         if pause_reason is not None:
             entry_allowed = False
@@ -1845,6 +1931,9 @@ def _tail_basket_one_target(
     event_hint: EventSnapshot | None = None,
     event_lookup_done: bool = False,
     kalshi_client: KalshiPublicClient | None = None,
+    emos_lookup: dict | None = None,
+    sizing_model=_UNSET,
+    pause_reasons: dict[tuple[str, str], str | None] | None = None,
 ) -> None:
     city = city or get_city("sfo")
     series_ticker = city.series_ticker
@@ -1890,9 +1979,12 @@ def _tail_basket_one_target(
     # lead_days=None: the live serve writes each rolling target at its TRUE lead
     # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
     # fixed lead 1 would silently drop the 2-day-out market's EMOS distribution.
-    emos_lookup = (
-        adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
-    )
+    if emos_lookup is None:
+        emos_lookup = (
+            adapter.load_emos_mu_sigma(lead_days=None)
+            if config.emos_distribution_enabled
+            else {}
+        )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1905,7 +1997,12 @@ def _tail_basket_one_target(
     )
     risk_profile = _risk_profile_name(args)
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
-    evaluator = TradeEvaluator(config, sizing_model=_build_sizing_model(config, store))
+    evaluator = TradeEvaluator(
+        config,
+        sizing_model=(
+            _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
+        ),
+    )
     basket = build_tail_basket(
         markets,
         probabilities,
@@ -1940,10 +2037,12 @@ def _tail_basket_one_target(
             )
 
     if args.place_paper and entry_allowed:
-        pause_reason = store.paper_entry_pause_reason(
+        pause_reason = _cached_paper_entry_pause_reason(
+            store,
             risk_profile,
             bankroll=paper_bankroll,
             target_date=target.isoformat(),
+            cache=pause_reasons,
         )
         if pause_reason is not None:
             entry_allowed = False
@@ -2468,6 +2567,7 @@ def cmd_backtest_calibration(args: argparse.Namespace) -> int:
     result = run_walk_forward_calibration_backtest(outcomes, config=config, min_train=args.min_train)
     print(color.cyan(color.bold("walk-forward calibration backtest")))
     print(f"source: {args.source}")
+    print(f"cache_hit: {str(result.cache_hit).lower()}")
     print(f"n: {result.n}")
     print(f"brier_score: {result.brier_score:.4f}")
     print(f"log_loss: {result.log_loss:.4f}")
@@ -2750,6 +2850,38 @@ def _validate_monitor_args(args: argparse.Namespace) -> None:
         )
 
 
+def _monitor_market_lookup(
+    client: KalshiPublicClient, tickers: list[str]
+) -> dict[str, MarketBin | Exception]:
+    """Resolve each unique monitor ticker once, with documented batch fallback."""
+
+    unique = list(dict.fromkeys(str(ticker) for ticker in tickers if ticker))
+    resolved: dict[str, MarketBin | Exception] = {}
+    batch = getattr(client, "get_markets", None)
+    if callable(batch) and unique:
+        try:
+            resolved.update({market.ticker: market for market in batch(unique)})
+        except (
+            HTTPError,
+            KalshiUnavailable,
+            URLError,
+            OSError,
+            TimeoutError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            resolved.clear()
+    for ticker in unique:
+        if ticker in resolved:
+            continue
+        try:
+            resolved[ticker] = client.get_market(ticker)
+        except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+            resolved[ticker] = exc
+    return resolved
+
+
 def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[float, float]:
     normalized = side.upper()
     if normalized == "YES":
@@ -2941,6 +3073,9 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
         )
+    market_lookup = _monitor_market_lookup(
+        client, [str(row["market_ticker"]) for row in rows]
+    )
     closed = 0
     inspected = 0
     for row in rows:
@@ -2966,9 +3101,9 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
         take_profit_pct, stop_loss_pct = _monitor_thresholds_for_side(args, side)
         take_profit = take_profit_pct / 100.0
         stop_loss = stop_loss_pct / 100.0
-        try:
-            market = client.get_market(row["market_ticker"])
-        except HTTPError as exc:
+        market_or_error = market_lookup[str(row["market_ticker"])]
+        if isinstance(market_or_error, HTTPError):
+            exc = market_or_error
             # An expired/invalid API key (401/403) must NOT be masked as a benign
             # transient HOLD -- that would silently leave every open position
             # unmanaged. Surface it loudly by re-raising; transient 4xx (e.g. a
@@ -2979,7 +3114,10 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
             continue
-        except (KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+        if isinstance(
+            market_or_error, (KalshiUnavailable, URLError, OSError, TimeoutError)
+        ):
+            exc = market_or_error
             # Genuinely transient network failures: hold this position and move on.
             # Non-network exceptions (e.g. a programming bug) now propagate instead
             # of being swallowed into a phantom HOLD across the whole book.
@@ -2987,6 +3125,7 @@ def cmd_paper_monitor(args: argparse.Namespace) -> int:
             store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
             continue
+        market = market_or_error
 
         if market.status != "active":
             store.record_monitor_snapshot(
@@ -3184,69 +3323,86 @@ def _fill_resting_orders_against_live_book(
     """Conservative maker fill: later public trades must clear queue ahead."""
 
     filled = 0
+    by_ticker: dict[str, list] = {}
     for row in store.resting_paper_orders():
-        limit_price = row["limit_price"] if row["limit_price"] is not None else row["entry_price"]
-        if limit_price is None:
-            continue
-        side = str(row["side"] or "YES").upper()
-        created_at = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=UTC)
+        by_ticker.setdefault(str(row["market_ticker"]), []).append(row)
+    max_ts = int(datetime.now(UTC).timestamp())
+    for ticker, rows in by_ticker.items():
+        created_times = []
+        for row in rows:
+            created_at = datetime.fromisoformat(
+                str(row["created_at"]).replace("Z", "+00:00")
+            )
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            created_times.append(created_at)
         try:
             payload = client.get_trades(
-                ticker=str(row["market_ticker"]),
-                min_ts=int(created_at.timestamp()),
-                max_ts=int(datetime.now(UTC).timestamp()),
+                ticker=ticker,
+                min_ts=int(min(created_times).timestamp()),
+                max_ts=max_ts,
                 limit=1000,
             )
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
             continue
-        qualifying: list[dict[str, object]] = []
-        traded_quantity = 0.0
-        price_field = "yes_price_dollars" if side == "YES" else "no_price_dollars"
-        for trade in payload.get("trades", []):
-            if not isinstance(trade, dict) or trade.get("is_block_trade") is True:
-                continue
-            if str(trade.get("taker_book_side") or "").lower() != "bid":
-                continue
-            try:
-                trade_time = datetime.fromisoformat(str(trade.get("created_time")).replace("Z", "+00:00"))
-                price = float(trade.get(price_field))
-                quantity = float(trade.get("count_fp") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if trade_time <= created_at or price > float(limit_price) + 1e-12:
-                continue
-            traded_quantity += quantity
-            qualifying.append(trade)
-        queue_ahead = float(row["entry_bid_size"] or 0.0)
-        required_quantity = queue_ahead + float(row["contracts"])
-        if traded_quantity + 1e-12 < required_quantity:
-            continue
-        evidence = {
-            "model": "later_trade_at_or_through_with_queue_ahead",
-            "queue_ahead": queue_ahead,
-            "required_quantity": required_quantity,
-            "qualifying_quantity": traded_quantity,
-            "trade_ids": [trade.get("trade_id") for trade in qualifying],
-        }
-        updated = store.fill_resting_limit_order(int(row["id"]), evidence=evidence)
-        if updated is not None and updated["status"] == "PAPER_FILLED":
-            filled += 1
-            store.record_monitor_snapshot(
-                updated,
-                side=side,
-                action="LIMIT_FILLED",
-                reason=(
-                    f"later trades at/through {float(limit_price):.2f} cleared "
-                    f"estimated queue {queue_ahead:.2f}"
-                ),
-                market_status="active",
+        trades = payload.get("trades", [])
+        for row, created_at in zip(rows, created_times):
+            limit_price = (
+                row["limit_price"]
+                if row["limit_price"] is not None
+                else row["entry_price"]
             )
-            print(
-                f"filled resting order {row['id']} {row['market_ticker']} {side}: "
-                f"trade quantity {traded_quantity:.2f} >= queue+order {required_quantity:.2f}"
-            )
+            if limit_price is None:
+                continue
+            side = str(row["side"] or "YES").upper()
+            qualifying: list[dict[str, object]] = []
+            traded_quantity = 0.0
+            price_field = "yes_price_dollars" if side == "YES" else "no_price_dollars"
+            for trade in trades:
+                if not isinstance(trade, dict) or trade.get("is_block_trade") is True:
+                    continue
+                if str(trade.get("taker_book_side") or "").lower() != "bid":
+                    continue
+                try:
+                    trade_time = datetime.fromisoformat(
+                        str(trade.get("created_time")).replace("Z", "+00:00")
+                    )
+                    price = float(trade.get(price_field))
+                    quantity = float(trade.get("count_fp") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if trade_time <= created_at or price > float(limit_price) + 1e-12:
+                    continue
+                traded_quantity += quantity
+                qualifying.append(trade)
+            queue_ahead = float(row["entry_bid_size"] or 0.0)
+            required_quantity = queue_ahead + float(row["contracts"])
+            if traded_quantity + 1e-12 < required_quantity:
+                continue
+            evidence = {
+                "model": "later_trade_at_or_through_with_queue_ahead",
+                "queue_ahead": queue_ahead,
+                "required_quantity": required_quantity,
+                "qualifying_quantity": traded_quantity,
+                "trade_ids": [trade.get("trade_id") for trade in qualifying],
+            }
+            updated = store.fill_resting_limit_order(int(row["id"]), evidence=evidence)
+            if updated is not None and updated["status"] == "PAPER_FILLED":
+                filled += 1
+                store.record_monitor_snapshot(
+                    updated,
+                    side=side,
+                    action="LIMIT_FILLED",
+                    reason=(
+                        f"later trades at/through {float(limit_price):.2f} cleared "
+                        f"estimated queue {queue_ahead:.2f}"
+                    ),
+                    market_status="active",
+                )
+                print(
+                    f"filled resting order {row['id']} {row['market_ticker']} {side}: "
+                    f"trade quantity {traded_quantity:.2f} >= queue+order {required_quantity:.2f}"
+                )
     return filled
 
 

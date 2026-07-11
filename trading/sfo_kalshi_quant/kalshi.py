@@ -105,6 +105,27 @@ class KalshiPublicClient:
         payload = self.get_json(f"markets/{market_ticker}")
         return MarketBin.from_kalshi(payload["market"])
 
+    def get_markets(self, market_tickers: list[str]) -> list[MarketBin]:
+        """Fetch public market metadata via the documented ``tickers`` filter.
+
+        The endpoint documents a maximum page size of 1,000 but no separate
+        ticker-filter cap, so requests are kept within that published page
+        bound. Callers retain per-ticker fallback for transport/API failures.
+        """
+
+        unique = list(dict.fromkeys(str(ticker) for ticker in market_tickers if ticker))
+        markets: list[MarketBin] = []
+        for start in range(0, len(unique), 1000):
+            chunk = unique[start : start + 1000]
+            payload = self.get_json(
+                "markets",
+                {"tickers": ",".join(chunk), "limit": len(chunk)},
+            )
+            markets.extend(
+                MarketBin.from_kalshi(row) for row in payload.get("markets", [])
+            )
+        return markets
+
     def list_events(
         self,
         *,

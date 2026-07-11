@@ -245,6 +245,66 @@ def test_monitor_requires_later_trade_quantity_beyond_queue_ahead() -> None:
         assert "T1" in row["fill_evidence_json"]
 
 
+def test_resting_orders_sharing_market_fetch_trades_once() -> None:
+    class Client:
+        calls = 0
+
+        def get_trades(self, **_kwargs):
+            self.calls += 1
+            return {
+                "trades": [
+                    {
+                        "trade_id": "T-BOTH",
+                        "count_fp": "100.00",
+                        "yes_price_dollars": "0.30",
+                        "no_price_dollars": "0.70",
+                        "taker_book_side": "bid",
+                        "created_time": datetime.now(UTC).isoformat(),
+                    }
+                ]
+            }
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        yes_id = store.record_paper_order(
+            "2026-07-10",
+            _decision(recommended_contracts=10.0),
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        no_id = store.record_paper_order(
+            "2026-07-10",
+            _decision(
+                action="BUY_NO",
+                side="NO",
+                probability=0.75,
+                probability_lcb=0.65,
+                entry_bid=0.69,
+                entry_ask=0.70,
+                cost_per_contract=0.71,
+                recommended_contracts=10.0,
+            ),
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        old = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET created_at=? WHERE id IN (?, ?)",
+                (old, yes_id, no_id),
+            )
+        client = Client()
+
+        filled = _fill_resting_orders_against_live_book(
+            store, client, Color.from_no_color(True)
+        )
+
+        assert filled == 2
+        assert client.calls == 1
+
+
 def test_complete_book_iteration_has_no_50_or_100_order_truncation() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

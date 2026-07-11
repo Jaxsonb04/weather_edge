@@ -21,10 +21,12 @@ from sfo_kalshi_quant.strategy_research import (
     _forecast_health_payload,
     _live_frequency_tuning_payload,
     _market_consensus_payload,
+    _decision_lead_mode_counts,
     _strategy_alerts,
     _status_target_date,
     build_strategy_research,
 )
+from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.paper import PaperTrader
 
 from support import pre_resolution_event
@@ -203,6 +205,79 @@ def test_strategy_research_reads_decisions_and_open_paper_positions():
         assert position["max_loss"] == position["risk"]
         assert position["take_profit_bid"] is not None
         assert position["stop_loss_bid"] is not None
+
+
+def test_strategy_research_loads_truth_and_sampled_decisions_once(tmp_path, monkeypatch):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "trading" / "paper.db"
+    _write_lstm_fixture(root)
+    _write_settlement(root)
+    store = PaperStore(db_path)
+    decision = _approved_decision()
+    store.record_decisions(
+        "2026-06-03", [decision], event=pre_resolution_event([decision])
+    )
+    counts = {"truth": 0, "sample": 0}
+    original_truth = SfoForecasterAdapter.load_cli_settlement_truth
+    original_sample = PaperStore.sampled_decision_rows
+
+    def counted_truth(self):
+        counts["truth"] += 1
+        return original_truth(self)
+
+    def counted_sample(self, **kwargs):
+        counts["sample"] += 1
+        return original_sample(self, **kwargs)
+
+    monkeypatch.setattr(SfoForecasterAdapter, "load_cli_settlement_truth", counted_truth)
+    monkeypatch.setattr(PaperStore, "sampled_decision_rows", counted_sample)
+
+    payload = build_strategy_research(
+        forecaster_root=root, db_path=db_path, calibration_min_train=40
+    )
+
+    assert payload["backtest_summary"]["counts"]["deduped_signals"] == 1
+    assert counts == {"truth": 1, "sample": 1}
+
+
+def test_decision_lead_mode_counts_ignore_rows_older_than_retention(tmp_path):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    decision = _approved_decision()
+    event = pre_resolution_event([decision])
+    store.record_decisions("2026-06-03", [decision], event=event)
+    store.record_decisions("2026-06-04", [decision], event=event)
+    old = (datetime.now(UTC) - timedelta(days=46)).isoformat()
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE decision_snapshots SET created_at=? WHERE target_date='2026-06-03'",
+            (old,),
+        )
+
+    counts = _decision_lead_mode_counts(db_path)
+
+    assert sum(row["total"] for row in counts.values()) == 1
+
+
+def test_market_snapshot_target_lookup_uses_target_created_index(tmp_path):
+    db_path = tmp_path / "paper.db"
+    PaperStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        indexes = {
+            row[1] for row in conn.execute("PRAGMA index_list(market_snapshots)")
+        }
+        plan = " ".join(
+            str(column)
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT raw_json FROM market_snapshots "
+                "WHERE target_date=? ORDER BY created_at DESC LIMIT 1",
+                ("2026-06-03",),
+            )
+            for column in row
+        )
+
+    assert "idx_market_snapshots_target" in indexes
+    assert "idx_market_snapshots_target" in plan
 
 
 def test_strategy_research_exposes_compact_learning_diagnostics():

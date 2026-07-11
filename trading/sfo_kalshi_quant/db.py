@@ -353,6 +353,8 @@ CREATE INDEX IF NOT EXISTS idx_paper_orders_group
     ON paper_orders (group_id);
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market
     ON decision_snapshots (target_date, market_ticker, created_at);
+CREATE INDEX IF NOT EXISTS idx_market_snapshots_target
+    ON market_snapshots (target_date, created_at);
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_scan_context
     ON decision_snapshots (scan_context_id)
     WHERE scan_context_id IS NOT NULL;
@@ -2979,6 +2981,7 @@ class PaperStore:
         min_quality: float | None = None,
         pre_resolution_only: bool = True,
         sample_mode: str = "latest-per-market-side",
+        sampled_rows: list[sqlite3.Row] | None = None,
     ) -> dict[str, object]:
         if sample_mode not in {"latest-per-market-side", "entry-per-market-side", "all"}:
             raise ValueError(
@@ -3030,14 +3033,15 @@ class PaperStore:
                 "pre": int(pre_count_row["pre"] or 0),
                 "pre_approved": int(pre_count_row["pre_approved"] or 0),
             }
-        sampled_rows = self.sampled_decision_rows(
-            since=since,
-            until=until,
-            approved_only=approved_only,
-            min_quality=min_quality,
-            pre_resolution_only=pre_resolution_only,
-            sample_mode=sample_mode,
-        )
+        if sampled_rows is None:
+            sampled_rows = self.sampled_decision_rows(
+                since=since,
+                until=until,
+                approved_only=approved_only,
+                min_quality=min_quality,
+                pre_resolution_only=pre_resolution_only,
+                sample_mode=sample_mode,
+            )
         if not pre_resolution_only:
             counts["pre"] = counts["raw"]
             counts["pre_approved"] = counts["raw_approved"]

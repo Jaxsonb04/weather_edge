@@ -221,13 +221,23 @@ def fetch_live_model_forecasts(
     cover the target is skipped (fail-soft), never silently zero-filled.
     """
 
-    target_iso = target_date.isoformat()
-    out: dict[str, float] = {}
-    # One batched request for all models: the response carries one
-    # ``temperature_2m_max_<model>`` array per model. At 15 cities on a
-    # 30-minute refresh this is the difference between ~720 and ~6500
-    # Open-Meteo calls per day. A model missing from the response (or null at
-    # the target) is simply skipped -- same fail-soft contract as before.
+    return fetch_live_model_forecasts_multi(city=city, models=models).get(target_date, {})
+
+
+def fetch_live_model_forecasts_multi(
+    *,
+    city: CityConfig = DEFAULT_CITY,
+    models: tuple[str, ...] = NWP_MODELS,
+) -> dict[date, dict[str, float]]:
+    """Current-run forecasts for every returned target in one three-day call.
+
+    A model or target missing from the response is omitted. The single-target
+    helper above remains the compatibility API and selects one date from this
+    fail-soft mapping.
+    """
+
+    # One request per city/tick for every model and all three rolling targets:
+    # 15 cities therefore make 15 calls, rather than 45 target-specific calls.
     params = urlencode(
         {
             "latitude": f"{city.latitude:.4f}",
@@ -242,23 +252,27 @@ def fetch_live_model_forecasts(
     try:
         payload = _http_get_json(f"{OPEN_METEO_FORECAST_URL}?{params}")
     except NwpArchiveError:
-        return out
+        return {}
     daily = payload.get("daily") or {}
     times = daily.get("time") or []
-    if target_iso not in times:
-        return out
-    index = times.index(target_iso)
-    for model in models:
-        highs = daily.get(f"temperature_2m_max_{model}")
-        # Single-model responses use the bare key; keep reading it so a
-        # one-model call (tests, ad-hoc) still works.
-        if highs is None and len(models) == 1:
-            highs = daily.get("temperature_2m_max")
-        if not highs or index >= len(highs):
+    out: dict[date, dict[str, float]] = {}
+    for index, target_iso in enumerate(times):
+        try:
+            target = date.fromisoformat(str(target_iso))
+        except ValueError:
             continue
-        value = highs[index]
-        if value is not None:
-            out[model] = float(value)
+        values: dict[str, float] = {}
+        for model in models:
+            highs = daily.get(f"temperature_2m_max_{model}")
+            if highs is None and len(models) == 1:
+                highs = daily.get("temperature_2m_max")
+            if not highs or index >= len(highs):
+                continue
+            value = highs[index]
+            if value is not None:
+                values[model] = float(value)
+        if values:
+            out[target] = values
     return out
 
 
@@ -443,6 +457,11 @@ def main(argv: list[str] | None = None) -> int:
                     for offset in range(ROLLING_SERVE_DAYS)
                 )
             total_targets += len(serve_targets)
+            live_models_by_target = (
+                fetch_live_model_forecasts_multi(city=city)
+                if any(lead >= 0 for _, lead in serve_targets)
+                else {}
+            )
 
             for target, lead in serve_targets:
                 result = (
@@ -454,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
                         # above) and records the row at its true lead 0.
                         lead_days=max(lead, 1),
                         store_lead_days=lead,
+                        live_models=live_models_by_target.get(target, {}),
                     )
                     if lead >= 0
                     else None

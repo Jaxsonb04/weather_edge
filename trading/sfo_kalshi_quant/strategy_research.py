@@ -94,6 +94,19 @@ def build_strategy_research(
         forecaster_root=forecaster_root,
         db_path=db_path,
     )
+    settlements: dict[object, float] = {}
+    sampled_decision_rows: list[sqlite3.Row] = []
+    try:
+        settlements = adapter.load_cli_settlement_truth()
+    except (ForecastDataError, FileNotFoundError, KeyError, ValueError, sqlite3.Error):
+        pass
+    if db_path.exists() and _db_table_exists(db_path, "decision_snapshots"):
+        try:
+            sampled_decision_rows = PaperStore(db_path, init=False).sampled_decision_rows(
+                sample_mode="entry-per-market-side"
+            )
+        except sqlite3.Error:
+            pass
 
     active_calibration = _calibration_payload(
         adapter,
@@ -111,18 +124,28 @@ def build_strategy_research(
     )
     comparison = _comparison_summary(active_calibration, challenger_calibration)
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
-    backtest = _signal_backtest_payload(adapter, db_path)
-    config_rescore = _config_rescore_payload(adapter, db_path)
+    backtest = _signal_backtest_payload(
+        adapter,
+        db_path,
+        settlements=settlements,
+        sampled_rows=sampled_decision_rows,
+    )
+    config_rescore = _config_rescore_payload(
+        adapter,
+        db_path,
+        settlements=settlements,
+        sampled_rows=sampled_decision_rows,
+    )
     chronological_replay = replay_from_database(
         db_path,
-        adapter.load_cli_settlement_truth(),
+        settlements,
         initial_capital=cfg.paper_bankroll,
     )
     real_money_readiness = _real_money_readiness_payload(
         config_rescore, active_calibration, chronological_replay
     )
     live_frequency_tuning = _live_frequency_tuning_payload(config_rescore, strategy_config_for_profile("live"))
-    research_shadow = _research_shadow_payload(adapter, db_path)
+    research_shadow = _research_shadow_payload(adapter, db_path, settlements=settlements)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
     forecast_health = _forecast_health_payload(forecaster_root, config=cfg)
@@ -857,6 +880,7 @@ def _calibration_payload(
         "top_bin_accuracy": _round(result.top_bin_accuracy, 4),
         "avg_winning_probability": _round(result.avg_winning_probability, 4),
         "avg_entropy": _round(result.avg_entropy, 4),
+        "cache_hit": result.cache_hit,
         "buckets": [
             {
                 "range": f"{bucket.lower:.1f}-{bucket.upper:.1f}",
@@ -954,7 +978,13 @@ def _prediction_replay_payload(forecaster_root: Path, config: StrategyConfig) ->
     }
 
 
-def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:
+def _config_rescore_payload(
+    adapter: SfoForecasterAdapter,
+    db_path: Path,
+    *,
+    settlements: dict[object, float] | None = None,
+    sampled_rows: list[sqlite3.Row] | None = None,
+) -> dict[str, Any]:
     """Re-score recorded decision snapshots under each scanning profile's CURRENT
     config and settle vs the official integer KSFO highs.
 
@@ -972,9 +1002,14 @@ def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dic
     if not _db_table_exists(db_path, "decision_snapshots"):
         return {**empty, "reason": "decision_snapshots table is not available yet."}
     try:
-        settlements = adapter.load_cli_settlement_truth()
+        if settlements is None:
+            settlements = adapter.load_cli_settlement_truth()
         store = PaperStore(db_path, init=False)
-        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        rows = (
+            sampled_rows
+            if sampled_rows is not None
+            else store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        )
         by_profile: dict[str, Any] = {}
         for name in ("live", "research"):
             cfg = strategy_config_for_profile(name)
@@ -1000,7 +1035,12 @@ def _config_rescore_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dic
         return {**empty, "reason": f"{type(exc).__name__}: {exc}"}
 
 
-def _research_shadow_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:
+def _research_shadow_payload(
+    adapter: SfoForecasterAdapter,
+    db_path: Path,
+    *,
+    settlements: dict[object, float] | None = None,
+) -> dict[str, Any]:
     empty = {
         "available": False,
         "summary": {},
@@ -1011,7 +1051,8 @@ def _research_shadow_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
     if not db_path.exists():
         return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
     try:
-        settlements = adapter.load_cli_settlement_truth()
+        if settlements is None:
+            settlements = adapter.load_cli_settlement_truth()
         store = PaperStore(db_path, init=False)
         return build_research_shadow_report(store, settlements=settlements)
     except Exception as exc:  # diagnostics artifact must not fail Strategy Lab
@@ -1188,7 +1229,13 @@ def _live_frequency_tuning_payload(
     }
 
 
-def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> dict[str, Any]:
+def _signal_backtest_payload(
+    adapter: SfoForecasterAdapter,
+    db_path: Path,
+    *,
+    settlements: dict[object, float] | None = None,
+    sampled_rows: list[sqlite3.Row] | None = None,
+) -> dict[str, Any]:
     empty = {
         "available": False,
         "sample_mode": "latest-per-market-side",
@@ -1213,7 +1260,8 @@ def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
         return {**empty, "reason": "decision_snapshots table is not available yet."}
 
     store = PaperStore(db_path, init=False)
-    settlements = adapter.load_cli_settlement_truth()
+    if settlements is None:
+        settlements = adapter.load_cli_settlement_truth()
     # Score the FIRST approved snapshot per market-side (the actual entry), not
     # the latest pre-close scan. The latest row has decayed to ~0 edge and is
     # almost never the approved one, so latest-per-market-side discarded 100% of
@@ -1224,6 +1272,7 @@ def _signal_backtest_payload(adapter: SfoForecasterAdapter, db_path: Path) -> di
         settlements,
         pre_resolution_only=True,
         sample_mode="entry-per-market-side",
+        sampled_rows=sampled_rows,
     )
     counts = {
         "raw_signals": int(summary["raw_signals"]),
@@ -2820,36 +2869,52 @@ def _status_payload(
     }
 
 
-def _decision_lead_mode_counts(db_path: Path) -> dict[str, dict[str, Any]]:
+def _decision_lead_mode_counts(
+    db_path: Path, *, retention_days: int = 45
+) -> dict[str, dict[str, Any]]:
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return _empty_lead_mode_counts()
     try:
         with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT created_at, market_close_time, approved, forecast_lead_hours,
-                       forecast_method, forecast_observed_high_mode,
-                       intraday_observed_high_f, intraday_is_complete
+                SELECT
+                    CASE
+                        WHEN COALESCE(intraday_is_complete, 0) != 0
+                             OR (created_at IS NOT NULL AND
+                                 (market_close_time IS NULL OR created_at >= market_close_time))
+                            THEN 'post_resolution_excluded'
+                        WHEN forecast_observed_high_mode IS NOT NULL
+                             AND forecast_observed_high_mode != ''
+                             OR intraday_observed_high_f IS NOT NULL
+                             OR LOWER(COALESCE(forecast_method, '')) LIKE '%observed high%'
+                             OR LOWER(COALESCE(forecast_method, '')) LIKE '%intraday%'
+                             OR LOWER(COALESCE(forecast_method, '')) LIKE '%high-so-far%'
+                            THEN 'intraday_high_so_far'
+                        WHEN forecast_lead_hours IS NULL THEN 'unknown'
+                        WHEN forecast_lead_hours >= 18.0 THEN 'day_ahead'
+                        ELSE 'same_day_prelock'
+                    END AS lead_mode,
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN approved = 1 THEN 1 ELSE 0 END), 0) AS approved
                 FROM decision_snapshots
                 WHERE market_ticker NOT LIKE '%-PAPER%'
-                """
+                  AND created_at >= ?
+                GROUP BY lead_mode
+                """,
+                ((datetime.now(UTC) - timedelta(days=max(1, retention_days))).isoformat(),),
             ).fetchall()
     except sqlite3.Error:
         return _empty_lead_mode_counts()
 
-    decisions = []
-    for row in rows:
-        lead_mode = _forecast_lead_mode(
-            lead_hours=row["forecast_lead_hours"],
-            forecast_method=row["forecast_method"],
-            observed_high_mode=row["forecast_observed_high_mode"],
-            intraday_observed_high_f=row["intraday_observed_high_f"],
-            intraday_is_complete=bool(row["intraday_is_complete"]),
-            pre_resolution=_is_strategy_pre_resolution(row),
-        )
-        decisions.append({"lead_mode": lead_mode, "approved": bool(row["approved"])})
-    return _lead_mode_counts(decisions)
+    counts = _empty_lead_mode_counts()
+    for lead_mode, total, approved in rows:
+        mode = str(lead_mode or "unknown")
+        if mode not in counts:
+            mode = "unknown"
+        counts[mode]["total"] += int(total or 0)
+        counts[mode]["approved"] += int(approved or 0)
+    return counts
 
 
 def _lead_mode_counts(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
