@@ -51,7 +51,7 @@ from ..portfolio import PortfolioPlan, allocate_portfolio
 from ..posterior_kelly import load_posterior_kelly_model
 from ..probability import ResidualCalibrator
 from ..risk import TradeEvaluator
-from ..settlement_day import settlement_clock
+from ..settlement_day import settlement_clock, settlement_today
 from ..standard_bins import fallback_bins
 from ..tail_basket import build_tail_basket
 from .format import (

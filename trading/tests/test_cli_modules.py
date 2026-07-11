@@ -48,6 +48,27 @@ def test_scan_command_defaults_honor_cli_city_and_bankroll_arguments() -> None:
     assert dependencies.config_for_args(args).paper_bankroll == 123.0
 
 
+def test_scan_intraday_helper_uses_the_city_settlement_day() -> None:
+    from sfo_kalshi_quant._cli.scan import _intraday_for_target
+    from sfo_kalshi_quant.cities import get_city
+    from sfo_kalshi_quant.settlement_day import settlement_today
+
+    city = get_city("sfo")
+    args = SimpleNamespace(observed_high=None)
+
+    class Adapter:
+        @staticmethod
+        def intraday_snapshot(_target):
+            return None
+
+    assert _intraday_for_target(
+        args,
+        settlement_today(city=city),
+        Adapter(),
+        city,
+    ) is None
+
+
 def test_scan_command_dependencies_have_parameterized_callable_types() -> None:
     from sfo_kalshi_quant._cli.scan import ScanCommandDependencies
 
