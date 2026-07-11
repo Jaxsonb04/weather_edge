@@ -415,9 +415,47 @@ def test_gate_rejects_legacy_manifest_without_row_counts_with_reexport_guidance(
             "table_name TEXT, day TEXT, kind TEXT, path TEXT, "
             "PRIMARY KEY (table_name, day, kind))"
         )
+        manifest.execute(
+            "INSERT INTO archive_files VALUES "
+            "('decision_snapshots', ?, 'day', 'legacy.jsonl.gz')",
+            (_utc_day(2),),
+        )
 
     with pytest.raises(RuntimeError, match="re-export"):
         gate_missing_days(tmp_path / "paper.db", archive_dir)
+
+
+def test_scheduled_archive_rejects_unverifiable_legacy_manifest_with_reexport_guidance(
+    tmp_path: Path,
+) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    _insert_decision(conn, created_at=f"{day}T08:00:00+00:00", target_date=day)
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        manifest.execute(
+            "CREATE TABLE archive_files ("
+            "table_name TEXT, day TEXT, kind TEXT, path TEXT, "
+            "PRIMARY KEY (table_name, day, kind))"
+        )
+        manifest.execute(
+            "INSERT INTO archive_files VALUES (?, ?, 'day', ?)",
+            (
+                "decision_snapshots",
+                day,
+                f"decision_snapshots/dt={day}.jsonl.gz",
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="re-export|restore"):
+        archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+
+    with sqlite3.connect(archive_dir / "manifest.db") as manifest:
+        columns = {
+            str(row[1]) for row in manifest.execute("PRAGMA table_info(archive_files)")
+        }
+    assert {"rows", "sha256", "min_id", "max_id", "id_coverage_json"} <= columns
 
 
 def test_merge_sources_recover_pruned_rows_by_id(tmp_path: Path) -> None:

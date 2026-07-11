@@ -152,6 +152,23 @@ CREATE TABLE IF NOT EXISTS archive_files (
 );
 """
 
+MANIFEST_COLUMN_TYPES = {
+    "table_name": "TEXT",
+    "day": "TEXT",
+    "kind": "TEXT",
+    "path": "TEXT",
+    "rows": "INTEGER",
+    "bytes": "INTEGER",
+    "sha256": "TEXT",
+    "min_id": "INTEGER",
+    "max_id": "INTEGER",
+    "id_coverage_json": "TEXT",
+    "created_at": "TEXT",
+    "uploaded_at": "TEXT",
+    "upload_target": "TEXT",
+    "local_deleted_at": "TEXT",
+}
+
 
 def open_manifest(archive_dir: Path) -> sqlite3.Connection:
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -160,8 +177,14 @@ def open_manifest(archive_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(MANIFEST_DDL)
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(archive_files)")}
-    if "id_coverage_json" not in columns:
-        conn.execute("ALTER TABLE archive_files ADD COLUMN id_coverage_json TEXT")
+    migrated = False
+    for name, column_type in MANIFEST_COLUMN_TYPES.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE archive_files ADD COLUMN {name} {column_type}"
+            )
+            migrated = True
+    if migrated:
         conn.commit()
     return conn
 
@@ -517,6 +540,12 @@ def backfill_manifest_id_coverage(
     ).fetchall()
     updated = 0
     for table, day, rel_path, rows, sha256, upload_target, min_id, max_id in pending:
+        if rel_path is None or rows is None or not sha256:
+            raise RuntimeError(
+                f"legacy archive manifest for {table} {day} lacks the verified path, "
+                "row count, or SHA-256 required to recover ID coverage; restore the "
+                "original partition metadata or re-export that UTC-day partition"
+            )
         local = archive_dir / str(rel_path)
         temporary: Path | None = None
         source = local
@@ -726,6 +755,18 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
             first = _first_day(conn, table, [])
             if first is None:
                 continue
+            legacy_day = manifest.execute(
+                "SELECT day FROM archive_files WHERE table_name=? AND kind='day' "
+                "AND (path IS NULL OR rows IS NULL OR sha256 IS NULL OR sha256='') "
+                "LIMIT 1",
+                (table,),
+            ).fetchone()
+            if legacy_day is not None:
+                raise RuntimeError(
+                    f"legacy archive manifest for {table} {legacy_day[0]} lacks the "
+                    "verified path, row count, or SHA-256; restore its original "
+                    "metadata or re-export that UTC-day partition before --check-gate"
+                )
             coverage = {
                 str(day): (int(rows), id_coverage_json, min_id, max_id)
                 for day, rows, id_coverage_json, min_id, max_id in manifest.execute(
