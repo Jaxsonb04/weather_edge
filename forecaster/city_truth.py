@@ -60,10 +60,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
     migrated_finality = "is_final" not in columns
     if migrated_finality:
-        conn.execute(
-            "ALTER TABLE cli_settlements "
-            "ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1"
-        )
+        try:
+            conn.execute(
+                "ALTER TABLE cli_settlements "
+                "ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError as exc:
+            # Separate refresh/scoring processes can inspect the legacy schema
+            # simultaneously. One wins ALTER; waiters then see duplicate-column.
+            # Accept only that exact race and re-read the schema before any
+            # demotion/read continues; every other migration error remains loud.
+            if "duplicate column name" not in str(exc).lower():
+                raise
+            refreshed = {
+                row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")
+            }
+            if "is_final" not in refreshed:
+                raise
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cli_settlements_date ON cli_settlements(local_date)"
     )

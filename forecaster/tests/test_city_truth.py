@@ -1,7 +1,10 @@
 """cli_settlements: schema migration, upserts, IEM backfill parsing."""
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+from pathlib import Path
+from threading import Barrier
 from unittest.mock import patch
 
 import city_truth
@@ -62,6 +65,39 @@ def test_migration_demotes_current_day_legacy_row(monkeypatch):
     city_truth.ensure_schema(conn)
 
     assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
+
+
+def test_concurrent_legacy_migration_is_idempotent_and_demotes_recent_row(
+    tmp_path: Path, monkeypatch
+):
+    db_path = tmp_path / "weather.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE cli_settlements (station_id TEXT, local_date TEXT, "
+            "max_temperature_f INTEGER, fetched_at TEXT, source TEXT, "
+            "PRIMARY KEY (station_id, local_date))"
+        )
+        conn.execute(
+            "INSERT INTO cli_settlements VALUES "
+            "('KSFO', '2026-07-10', 68, 't', 'legacy')"
+        )
+    monkeypatch.setattr(
+        city_truth, "_utcnow", lambda: datetime(2026, 7, 10, 20, tzinfo=timezone.utc)
+    )
+    barrier = Barrier(8)
+
+    def migrate(_index: int) -> None:
+        with sqlite3.connect(db_path, timeout=30) as conn:
+            barrier.wait()
+            city_truth.ensure_schema(conn)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(migrate, range(8)))
+
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")]
+        assert columns.count("is_final") == 1
+        assert conn.execute("SELECT is_final FROM cli_settlements").fetchone()[0] == 0
 
 
 def test_upsert_is_keyed_by_station_and_date():
