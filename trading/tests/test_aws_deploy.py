@@ -339,6 +339,16 @@ def test_pages_publish_ships_spa_and_fresh_jsons():
     assert "publication_manifest.json" in excludes
 
 
+def test_forecaster_filter_preserves_build_provenance():
+    """build_info.json (audit PR-01) is stamped once by sync_to_box.sh but must
+    survive the 5-minute sync_forecaster_source.sh git-tree refresh every
+    publish cycle runs, or the provenance-stamped manifest silently reverts to
+    unprovenanced on the very next cycle."""
+
+    excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
+    assert "build_info.json" in excludes
+
+
 def test_pages_deploy_key_path_matches_ec2_setup_docs():
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
