@@ -24,13 +24,19 @@ From the repository root:
 bash trading/deploy/aws/sync_to_box.sh
 source .local/ec2.env
 ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
-cd /opt/weatheredge/trading
-bash deploy/aws/install_systemd_notimers.sh
 ```
+
+On an established host, `sync_to_box.sh` is transactional around scheduled
+work: it captures the enabled WeatherEdge timers, quiesces the services, syncs
+the tree, runs `install_systemd_notimers.sh` as the install gate, and restores
+exactly the captured timer set. If transfer or installation fails, it exits
+nonzero and leaves the host quiesced for a clean retry. A new or intentionally
+quiesced host has an empty captured set and remains timerless for manual checks.
 
 Both installers first read the host timezone without mutating it. The regular
 installer proceeds only when it is already `America/Los_Angeles`; otherwise it
 refuses and directs the operator to the cutover-safe timerless installer.
+When invoked directly for provisioning or recovery,
 `install_systemd_notimers.sh` quiesces every existing WeatherEdge timer and
 paired service before changing a mismatched timezone, then renders every unit
 while enabling none. A preflight failure changes nothing; a timezone-set
@@ -38,12 +44,12 @@ failure propagates only after services are safely quiesced. Inspect
 `/etc/weatheredge.env`, start each service manually, and only then enable the
 approved timers.
 
-The full sync first streams the canonical quiescence helper to the host and
-stops/disables every WeatherEdge timer plus its paired service before any
-remote tree mutation or source transfer. It does not assume the helper already
-exists in the old remote source tree. A failed transfer remains safely
-quiesced; rerun the sync, install, and verify before enabling timers. The full
-sync does not use `--delete`. The scheduled
+The full sync first streams the canonical timer-state helper to the host and
+captures the enabled set before it stops/disables every WeatherEdge timer plus
+its paired service ahead of any remote tree mutation or source transfer. It does
+not assume the helper already exists in the old remote source tree. A failed
+transfer or install remains safely quiesced; a successful deploy restores only
+the captured timers. The full sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
 `forecaster-runtime.rsync-filter`, which preserves runtime databases, caches,
 their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
@@ -67,7 +73,10 @@ distribution is absent and the `sfo-kalshi` console entry belongs to
 uninstall leaves behind and the transient `trading/weatheredge.egg-info`
 created during the replacement build. Verification requires exactly one
 WeatherEdge distribution metadata record and one correctly owned console
-entry. A surviving nested trading manifest is a hard preflight failure.
+entry. Both installers normalize the trading virtualenv to the configured app
+user before pip runs, and the project installer removes pip's exact interrupted
+`~eatheredge-*.dist-info` temporary metadata only inside that verified
+virtualenv. A surviving nested trading manifest is a hard preflight failure.
 
 `sync_to_box.sh` rejects noncanonical `REMOTE_BASE` spellings before any remote
 action, including root, repeated/trailing slashes, and `.` or `..` components.

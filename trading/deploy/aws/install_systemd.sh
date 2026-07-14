@@ -56,6 +56,8 @@ mkdir -p "$TRADING_DIR/data" "$TRADING_DIR/logs" "$FORECASTER_DIR/logs"
 if [[ ! -d "$TRADING_DIR/.venv" ]]; then
   python3 -m venv "$TRADING_DIR/.venv"
 fi
+APP_GROUP="${APP_GROUP:-$(id -gn "$APP_USER" 2>/dev/null || printf '%s' "$APP_USER")}"
+sudo chown -R "$APP_USER:$APP_GROUP" "$TRADING_DIR/.venv"
 "$TRADING_DIR/.venv/bin/python" -m pip install --upgrade pip
 bash "$SCRIPT_DIR/install_trading_project.sh" "$BASE_DIR" "$TRADING_DIR/.venv/bin/python"
 

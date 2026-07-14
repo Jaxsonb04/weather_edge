@@ -74,12 +74,19 @@ fi
 
 chmod 600 "$HOST_KEY"
 
-# The remote may still contain an older source tree, so stream the current
-# canonical helper over SSH instead of invoking a path that this sync has not
-# transferred yet. A failed transfer deliberately leaves timers disabled and
-# paired services inactive; the operator reinstalls/enables only after the
-# complete tree is present and verified.
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" "bash -s" < "$QUIESCE_HELPER"
+# Capture the established host's timer policy before quiescing it. Stream the
+# current helper because the remote source tree may be older than this deploy.
+# A failed transfer or install deliberately leaves the box quiesced; only a
+# completely successful deploy restores the exact set that was enabled before.
+enabled_timer_output="$(
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s capture < "$QUIESCE_HELPER"
+)"
+ENABLED_TIMERS=()
+while IFS= read -r timer; do
+  [[ -n "$timer" ]] && ENABLED_TIMERS+=("$timer")
+done <<<"$enabled_timer_output"
+
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s quiesce < "$QUIESCE_HELPER"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo mkdir -p '$REMOTE_BASE' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE'"
@@ -163,11 +170,24 @@ rsync -av \
   "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/forecaster/build_info.json"
 rm -f "$BUILD_INFO_TMP"
 
+# Render the transferred units and refresh the editable Python installation
+# while every timer remains stopped. The timer-less installer is the deployment
+# gate: any dependency, package, or unit failure exits here and leaves the host
+# safely quiesced instead of restarting a partial tree.
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && bash deploy/aws/install_systemd_notimers.sh"
+
+# Restore only the pre-deploy policy. This prevents a normal successful source
+# deployment from silently freezing publication while preserving intentional
+# operator pauses for individual timers.
+if (( ${#ENABLED_TIMERS[@]} > 0 )); then
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    bash -s restore "${ENABLED_TIMERS[@]}" < "$QUIESCE_HELPER"
+else
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    bash -s restore < "$QUIESCE_HELPER"
+fi
+
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"
-echo "Next:"
-echo "  ssh -i \"$HOST_KEY\" $REMOTE_USER@$HOST_IP"
-echo "  cd $REMOTE_BASE/trading"
-echo "  bash deploy/aws/install_systemd_notimers.sh"
-echo "  Inspect /etc/weatheredge.env and run manual service checks against the synced tree."
-echo "  After verification only: bash deploy/aws/install_systemd.sh"
+echo "Restored ${#ENABLED_TIMERS[@]} previously enabled WeatherEdge timer(s)."

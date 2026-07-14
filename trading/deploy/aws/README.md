@@ -13,11 +13,15 @@ changes.
   `pyproject.toml`/`README.md` install inputs plus both source trees, and
   preserves remote runtime state. Before the first remote tree mutation or
   source transfer, it streams the canonical timer/service helper to the host
-  and quiesces every WeatherEdge timer and paired service. A transfer failure
-  intentionally leaves them quiesced for a clean retry. After all transfers
-  succeed, it removes only the retired nested manifest, two stale service
-  templates, and eleven audited pre-`research/` script paths; it never broadly
-  deletes either runtime tree.
+  and captures the enabled timer set before quiescing every WeatherEdge timer
+  and paired service. A transfer or install failure intentionally leaves them
+  quiesced for a clean retry. After all transfers succeed, it removes only the
+  retired nested manifest, two stale service templates, and eleven audited
+  pre-`research/` script paths; it never broadly deletes either runtime tree.
+  It then runs the timerless installer and restores exactly the timers that were
+  enabled before the deploy. A successful sync can no longer exit with an
+  established host silently disabled, while intentional per-timer pauses remain
+  intact.
 - `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
   for the EC2 migration window. New commands must use `sync_to_box.sh`.
 - `pull_paper_db.sh` allocates a private mode-700 directory on the remote host,
@@ -55,12 +59,13 @@ source .local/ec2.env
 ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
 ```
 
-The full sync does not re-enable scheduled work. Complete the installer and
-verification steps below against the coherent synced tree before timers start.
+On an established host, the full sync reinstalls units and restores the exact
+pre-deploy timer policy automatically. On a new or intentionally quiesced host,
+the captured set is empty and every timer remains disabled for manual checks.
 
 ## Install Modes
 
-Use the no-timers installer for a new host, migration, or recovery:
+Use the no-timers installer directly for a new host, migration, or recovery:
 
 ```bash
 cd /opt/weatheredge/trading
@@ -73,7 +78,9 @@ timerless installer first quiesces the complete timer/service set, then changes
 a mismatched timezone before installing dependencies and units. Preflight,
 inspection, stop, disable, timezone-set, or quiescence failures propagate. After
 manual service checks, use `install_systemd.sh` for the established full timer
-set.
+set. Normal established-host source deployments use `sync_to_box.sh`, which
+invokes the timerless installer as its deployment gate and restores the captured
+timer set only after that gate succeeds.
 
 Both modes keep the trading virtual environment at
 `/opt/weatheredge/trading/.venv`, but install the sole editable Python project
@@ -86,6 +93,11 @@ The migration also removes the exact generated
 leave in the source tree, plus the transient `trading/weatheredge.egg-info`
 created while building the replacement editable wheel. Verification requires
 exactly one matching distribution metadata object and exactly one console entry.
+Before pip runs, both installers normalize the trading virtualenv back to the
+configured app user. The project installer also removes only pip's exact
+interrupted `~eatheredge-*.dist-info` temporary metadata inside that verified
+virtualenv, preventing an older privileged install from appearing as a second
+WeatherEdge distribution.
 Installers refuse to proceed if the obsolete `trading/pyproject.toml` survives,
 so a partial or manual sync cannot recreate split ownership.
 The full sync accepts only canonical conservative absolute `REMOTE_BASE` paths:

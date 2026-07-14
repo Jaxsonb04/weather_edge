@@ -31,6 +31,14 @@ def test_installer_forecaster_venv_installs_runtime_dependencies():
     assert "curl" in apt_install.split()
 
 
+def test_installers_repair_trading_venv_ownership_before_project_install():
+    for name in ("install_systemd.sh", "install_systemd_notimers.sh"):
+        installer = _read(AWS_DIR / name)
+        ownership_idx = installer.index('chown -R "$APP_USER:$APP_GROUP" "$TRADING_DIR/.venv"')
+        project_install_idx = installer.index('bash "$SCRIPT_DIR/install_trading_project.sh"')
+        assert ownership_idx < project_install_idx
+
+
 def test_github_verify_workflow_installs_test_import_dependencies():
     workflow = _read(ROOT / ".github" / "workflows" / "verify.yml")
 

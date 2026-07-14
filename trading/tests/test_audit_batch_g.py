@@ -430,8 +430,12 @@ def test_installer_editable_install_uses_synced_root_project(
         (venv / "bin").mkdir(parents=True)
         _write_executable(
             venv / "bin/python",
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\n",
+            "#!/bin/sh\n"
+            "if [ \"$1\" = -c ]; then printf '%s\\n' \"$PURELIB\"; exit 0; fi\n"
+            "printf '%s\\n' \"$*\" >> \"$PIP_LOG\"\n",
         )
+    purelib = trading / ".venv" / "site-packages"
+    purelib.mkdir()
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -462,6 +466,7 @@ exit 0
             "BASE_DIR": str(base),
             "ENV_FILE": str(env_file),
             "PIP_LOG": str(pip_log),
+            "PURELIB": str(purelib),
             "SYSTEMCTL_BIN": str(fake_bin / "systemctl"),
         },
         capture_output=True,
