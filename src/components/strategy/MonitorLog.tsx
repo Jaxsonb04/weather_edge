@@ -10,6 +10,10 @@ const STATUS_META: Record<string, { label: string; color: "success" | "danger" |
   CLOSE_STOP_LOSS: { label: "Stop-loss", color: "danger" },
   CLOSE_MODEL_VETO: { label: "Model veto", color: "warning" },
   PAPER_CLOSED: { label: "Closed", color: "default" },
+  PAPER_SETTLED: { label: "Settled", color: "default" },
+  HOLD: { label: "Hold · unrealized", color: "default" },
+  OPEN: { label: "Open", color: "default" },
+  LIMIT_RESTING: { label: "Limit resting", color: "default" },
 };
 
 function statusMeta(status?: string) {
@@ -29,7 +33,7 @@ function collapseActions(raw: MonitorAction[]): MonitorAction[] {
   return [...byId.values()].sort((a, b) => (b.time ?? "").localeCompare(a.time ?? ""));
 }
 
-/** The monitor's most recent closes — the audit trail of rule-based exits. */
+/** Monitor decisions and executed closes, with unrealized marks labeled. */
 export function MonitorLog({
   s,
   rows: rowsProp,
@@ -86,28 +90,28 @@ export function MonitorLog({
             ),
           },
         ] as DataGridColumn<MonitorAction>[])),
-    { id: "qty", header: "Qty", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum">{d.contracts}</span> },
+    { id: "qty", header: "Qty", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum">{d.contracts ?? "—"}</span> },
     {
       id: "fill",
-      header: "Entry → Exit",
+      header: "Entry → Exit / mark",
       align: "end",
       headerClassName: HEAD,
       cell: (d) => (
         <span className="tnum text-muted">
-          {cents(d.entry_price)} → {cents(d.exit_price)}
+          {cents(d.entry_price)} → {cents(d.exit_price)}{d.unrealized ? " mark" : ""}
         </span>
       ),
     },
     {
       id: "pnl",
-      header: "P&L",
+      header: "P&L / mark",
       align: "end",
       headerClassName: HEAD,
       accessorKey: "realized_pnl",
       allowsSorting: true,
       cell: (d) => (
-        <span className={`tnum font-medium ${d.realized_pnl > 0 ? "text-success" : d.realized_pnl < 0 ? "text-danger" : "text-muted"}`}>
-          {money(d.realized_pnl)}
+        <span className={`tnum font-medium ${(d.realized_pnl ?? 0) > 0 ? "text-success" : (d.realized_pnl ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+          {d.unrealized ? "Unrealized " : ""}{d.realized_pnl == null ? "—" : money(d.realized_pnl)}
         </span>
       ),
     },
@@ -120,7 +124,7 @@ export function MonitorLog({
     },
     {
       id: "rule",
-      header: "Exit rule",
+      header: "Decision",
       headerClassName: HEAD,
       cell: (d) => {
         const meta = statusMeta(d.status);
@@ -141,13 +145,15 @@ export function MonitorLog({
   ];
 
   return (
+    <div className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-2xl" role="region" aria-label="Scrollable monitor decisions" tabIndex={0}>
     <DataGrid
-      aria-label="Recent monitor exits"
+      aria-label="Recent monitor decisions and executed closes"
       columns={columns}
       data={rows}
       getRowId={(d) => d.id}
       variant="secondary"
-      className="rounded-2xl"
+      className="min-w-[48rem] rounded-2xl"
     />
+    </div>
   );
 }

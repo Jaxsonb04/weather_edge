@@ -11,6 +11,10 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
   const account = s.accounting;
   const allTimePnl = account?.all_time_realized_pnl ?? sum.realized_pnl;
   const windowPnl = account?.window_realized_pnl ?? s.daily_summary.totals?.realized_pnl ?? 0;
+  const weekly = account?.goal;
+  const weeklyHint = weekly
+    ? `5% research objective · ${money(weekly.remaining_pnl)} remaining · ${weekly.current_week_evidence_qualified ? `${weekly.completed_week_success_streak} verified-week streak` : "full exec-v3 week pending"}`
+    : "5% research objective";
   const pnlTone = allTimePnl >= 0 ? "text-success" : "text-danger";
 
   return (
@@ -26,10 +30,10 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               />
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:calendar-bold" title="Window P&L" hint={`${s.daily_summary.window_days ?? 7}-day view`}>
+            <Kpi icon="solar:calendar-bold" title="Weekly realized P&L" hint="paper-shared · Mon 00:00 PT">
               <AnimatedNumber
-                className={`font-display text-2xl font-semibold ${windowPnl >= 0 ? "text-success" : "text-danger"}`}
-                value={windowPnl}
+                className={`font-display text-2xl font-semibold ${(weekly?.weekly_realized_pnl ?? windowPnl) >= 0 ? "text-success" : "text-danger"}`}
+                value={weekly?.weekly_realized_pnl ?? windowPnl}
                 format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
               />
             </Kpi>
@@ -42,11 +46,11 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               />
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:chart-2-bold" title="Return" hint="on initial capital">
-              {account?.return_on_initial_capital == null ? <span className="font-display text-2xl font-semibold">—</span> : (
+            <Kpi icon="solar:chart-2-bold" title="Weekly return" hint={weeklyHint}>
+              {weekly?.weekly_realized_return == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
-                  className={`font-display text-2xl font-semibold ${account.return_on_initial_capital >= 0 ? "text-success" : "text-danger"}`}
-                  value={account.return_on_initial_capital}
+                  className={`font-display text-2xl font-semibold ${weekly.weekly_realized_return >= weekly.target_return ? "text-success" : weekly.weekly_realized_return < 0 ? "text-danger" : "text-foreground"}`}
+                  value={weekly.weekly_realized_return}
                   format={{ style: "percent", maximumFractionDigits: 2 }}
                 />
               )}

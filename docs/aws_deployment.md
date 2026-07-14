@@ -16,6 +16,15 @@ REMOTE_USER=ubuntu
 
 Keep the key mode at `0600`. Never commit the env file or key.
 
+The S3/IAM operator checkpoint is automated by
+`trading/deploy/aws/provision_backup_bucket.sh BUCKET REGION INSTANCE_ID`. It
+requires an AWS infrastructure identity, creates or configures the backup
+bucket, and limits the instance role to the journal and full-database prefixes.
+The host also needs AWS CLI v2. Ubuntu 24.04 ARM does not provide an `awscli`
+apt candidate, so install the official AWS Linux ARM package and verify that
+`aws sts get-caller-identity` resolves to the instance role. Copy the script's
+printed `SFO_...` values into `/etc/weatheredge.env` before the first deploy.
+
 ## Deploy And Install
 
 From the repository root:
@@ -24,13 +33,22 @@ From the repository root:
 bash trading/deploy/aws/sync_to_box.sh
 source .local/ec2.env
 ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
-cd /opt/weatheredge/trading
-bash deploy/aws/install_systemd_notimers.sh
 ```
+
+On an established host, `sync_to_box.sh` first proves that the authoritative
+database can be uploaded to and restored from the configured S3 backup target.
+It is then transactional around scheduled work: it captures the enabled
+WeatherEdge timers, quiesces the services, creates and independently restores a
+checksummed SQLite backup, syncs the tree, runs `install_systemd_notimers.sh`
+as the install gate, and restores
+exactly the captured timer set. If transfer or installation fails, it exits
+nonzero and leaves the host quiesced for a clean retry. A new or intentionally
+quiesced host has an empty captured set and remains timerless for manual checks.
 
 Both installers first read the host timezone without mutating it. The regular
 installer proceeds only when it is already `America/Los_Angeles`; otherwise it
 refuses and directs the operator to the cutover-safe timerless installer.
+When invoked directly for provisioning or recovery,
 `install_systemd_notimers.sh` quiesces every existing WeatherEdge timer and
 paired service before changing a mismatched timezone, then renders every unit
 while enabling none. A preflight failure changes nothing; a timezone-set
@@ -38,12 +56,12 @@ failure propagates only after services are safely quiesced. Inspect
 `/etc/weatheredge.env`, start each service manually, and only then enable the
 approved timers.
 
-The full sync first streams the canonical quiescence helper to the host and
-stops/disables every WeatherEdge timer plus its paired service before any
-remote tree mutation or source transfer. It does not assume the helper already
-exists in the old remote source tree. A failed transfer remains safely
-quiesced; rerun the sync, install, and verify before enabling timers. The full
-sync does not use `--delete`. The scheduled
+The full sync first streams the canonical timer-state helper to the host and
+captures the enabled set before it stops/disables every WeatherEdge timer plus
+its paired service ahead of any remote tree mutation or source transfer. It does
+not assume the helper already exists in the old remote source tree. A failed
+transfer or install remains safely quiesced; a successful deploy restores only
+the captured timers. The full sync does not use `--delete`. The scheduled
 `sync_forecaster_source.sh` does, but both use
 `forecaster-runtime.rsync-filter`, which preserves runtime databases, caches,
 their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
@@ -67,7 +85,10 @@ distribution is absent and the `sfo-kalshi` console entry belongs to
 uninstall leaves behind and the transient `trading/weatheredge.egg-info`
 created during the replacement build. Verification requires exactly one
 WeatherEdge distribution metadata record and one correctly owned console
-entry. A surviving nested trading manifest is a hard preflight failure.
+entry. Both installers normalize the trading virtualenv to the configured app
+user before pip runs, and the project installer removes pip's exact interrupted
+`~eatheredge-*.dist-info` temporary metadata only inside that verified
+virtualenv. A surviving nested trading manifest is a hard preflight failure.
 
 `sync_to_box.sh` rejects noncanonical `REMOTE_BASE` spellings before any remote
 action, including root, repeated/trailing slashes, and `.` or `..` components.
@@ -147,6 +168,16 @@ S3 is safe-off until `SFO_ARCHIVE_S3_BUCKET` is configured; the related
 variables are `SFO_ARCHIVE_S3_PREFIX`, `SFO_ARCHIVE_AWS_CLI`, and
 `SFO_ARCHIVE_KEEP_DAYS`.
 
+Deployment is stricter than scheduled archive/prune: `sync_to_box.sh` fails its
+read-only preflight before stopping services unless the bucket and instance
+role are available. The bucket must have public access blocked, versioning and
+default encryption enabled, and a lifecycle rule for both `paper_trading/` and
+`database-snapshots/`. The instance role needs bucket listing plus object
+put/get access limited to those two prefixes. After preflight, the deploy gate
+uploads a full SQLite snapshot and checksum, downloads the snapshot to a
+temporary path, and passes `integrity_check` and `foreign_key_check` again
+before any source transfer.
+
 Useful checks:
 
 ```bash
@@ -163,8 +194,8 @@ For an existing large journal, keep paper scan and monitor services paused and r
 `/opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh` once;
 resume the services only after the index build succeeds.
 
-The freshness watchdog requires operational artifacts no older than 10 minutes
-and Strategy Lab research no older than 20 minutes. Set
+The freshness watchdog requires local operational artifacts no older than 15 minutes
+and public operational artifacts or Strategy Lab research no older than 20 minutes. Set
 `SFO_PUBLICATION_MANIFEST_URL` to the public manifest URL to validate the exact
 snapshot visitors receive.
 

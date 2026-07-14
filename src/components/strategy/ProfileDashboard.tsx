@@ -256,10 +256,10 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         />
       </div>
 
-      {/* this book's monitor exits */}
+      {/* this book's monitor decisions and executed exits */}
       {monitorRows.length > 0 && (
         <div>
-          <SubHead icon="solar:history-bold" title="Monitor exits" note="rule-based closes for this book" />
+          <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
           <MonitorLog s={s} rows={monitorRows} hideProfile />
         </div>
       )}

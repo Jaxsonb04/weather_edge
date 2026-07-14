@@ -47,6 +47,10 @@ if [[ "$CURRENT_TIMEZONE" != "$TARGET_TIMEZONE" ]]; then
   echo "host timezone is $CURRENT_TIMEZONE, expected $TARGET_TIMEZONE; use install_systemd_notimers.sh for a safe timezone cutover" >&2
   exit 1
 fi
+if [[ ! -f "$BASE_DIR/requirements/production.lock" ]]; then
+  echo "missing hashed production lock at $BASE_DIR/requirements/production.lock" >&2
+  exit 1
+fi
 
 sudo apt-get update
 sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
@@ -56,14 +60,17 @@ mkdir -p "$TRADING_DIR/data" "$TRADING_DIR/logs" "$FORECASTER_DIR/logs"
 if [[ ! -d "$TRADING_DIR/.venv" ]]; then
   python3 -m venv "$TRADING_DIR/.venv"
 fi
-"$TRADING_DIR/.venv/bin/python" -m pip install --upgrade pip
+APP_GROUP="${APP_GROUP:-$(id -gn "$APP_USER" 2>/dev/null || printf '%s' "$APP_USER")}"
+sudo chown -R "$APP_USER:$APP_GROUP" "$TRADING_DIR/.venv"
+"$TRADING_DIR/.venv/bin/python" -m pip install \
+  --require-hashes -r "$BASE_DIR/requirements/production.lock"
 bash "$SCRIPT_DIR/install_trading_project.sh" "$BASE_DIR" "$TRADING_DIR/.venv/bin/python"
 
 if [[ ! -d "$FORECASTER_DIR/.venv" ]]; then
   python3 -m venv "$FORECASTER_DIR/.venv"
 fi
-"$FORECASTER_DIR/.venv/bin/python" -m pip install --upgrade pip
-"$FORECASTER_DIR/.venv/bin/python" -m pip install certifi numpy pandas
+"$FORECASTER_DIR/.venv/bin/python" -m pip install \
+  --require-hashes -r "$BASE_DIR/requirements/production.lock"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   sudo install -m 600 "$SCRIPT_DIR/sfo-weather.env.example" "$ENV_FILE"

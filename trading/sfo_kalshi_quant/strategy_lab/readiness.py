@@ -59,9 +59,11 @@ def _real_money_readiness_payload(
     max_gap = max(gaps) if gaps else None
 
     replay = chronological_replay or {}
-    live_rescore["evidence_kind"] = replay.get(
-        "evidence_kind", live_rescore.get("evidence_kind")
-    )
+    # Every economic and breadth input comes from the chronological, live-only,
+    # post-boundary cohort. The historical snapshot rescore remains a research
+    # comparison but cannot leak ROI, side, cohort, or day counts into readiness.
+    live_rescore = dict(replay.get("readiness_metrics") or {})
+    live_rescore["evidence_kind"] = replay.get("evidence_kind")
     live_rescore["promotion_eligible"] = bool(replay.get("promotion_eligible"))
     live_rescore["promotion_block_reason"] = "; ".join(
         str(reason) for reason in replay.get("promotion_block_reasons") or []
@@ -72,6 +74,9 @@ def _real_money_readiness_payload(
         calibration_cohort_brier_skill=cohort_brier_skill or None,
         max_abs_calibration_gap=max_gap,
     )
+    for check in readiness.get("checks", []):
+        check["evidence_boundary"] = replay.get("semantics_boundary")
+        check["source_cohort"] = live_rescore.get("source_cohort")
     policy = LiveExecutionPolicy.from_env()
     pilot_pnl_value = _env_float("SFO_LIVE_REALIZED_PILOT_PNL")
     pilot_pnl = pilot_pnl_value if pilot_pnl_value is not None else 0.0
@@ -90,6 +95,10 @@ def _real_money_readiness_payload(
     return {
         "available": True,
         "profile": "live",
+        "evidence_boundary": replay.get("semantics_boundary"),
+        "post_boundary_settlement_days": replay.get("post_boundary_days", 0),
+        "evidence_scope": replay.get("evidence_scope"),
+        "source_cohort": live_rescore.get("source_cohort"),
         **readiness,
         "status": (
             "REPLAY_REQUIRED"

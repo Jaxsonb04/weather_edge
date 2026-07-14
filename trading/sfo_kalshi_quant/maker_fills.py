@@ -29,10 +29,34 @@ MakerSide = Literal["YES", "NO"]
 # v1: per-order full-history sums, taker_book_side=="bid" for both sides.
 # v2: normalized single-aggressor trades, pooled price-time allocation,
 #     depth-aware partial exits.
-EXECUTION_MODEL_VERSION = "exec-v2-2026-07-13"
+# v3: persist queue depletion as consumed public volume and retain partial
+#     maker fills across monitor passes and restarts.
+EXECUTION_MODEL_VERSION = "exec-v3-2026-07-14"
+EXIT_DEPTH_MAX_AGE_SECONDS = 120.0
 
 _MAKER_SIDE_BY_TAKER_BOOK_SIDE: dict[str, MakerSide] = {"bid": "NO", "ask": "YES"}
 _MAKER_SIDE_BY_TAKER_OUTCOME: dict[str, MakerSide] = {"yes": "NO", "no": "YES"}
+
+
+def depth_observation_is_contemporaneous(
+    observed_at: object,
+    executed_at: object,
+    *,
+    max_age_seconds: float = EXIT_DEPTH_MAX_AGE_SECONDS,
+) -> bool:
+    """True when displayed depth is fresh enough to support an execution."""
+
+    try:
+        observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        executed = datetime.fromisoformat(str(executed_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    if executed.tzinfo is None:
+        executed = executed.replace(tzinfo=UTC)
+    age_seconds = (executed.astimezone(UTC) - observed.astimezone(UTC)).total_seconds()
+    return -5.0 <= age_seconds <= max_age_seconds
 
 _QUANT = Decimal("0.000001")
 
@@ -116,6 +140,29 @@ class OrderAllocation:
                     allocations.get(fill.trade_id, 0.0) + float(fill.quantity)
                 )
         return allocations
+
+    def consumption_by_trade(self) -> dict[str, dict[str, float]]:
+        """Return every finite unit consumed from each public trade.
+
+        Queue-ahead depletion and contracts filled both spend the same public
+        tape. Persisting only the filled contracts lets a later monitor pass
+        reuse the queue volume after this order leaves the resting set.
+        """
+
+        consumption: dict[str, dict[str, float]] = {}
+        for fill in self.fills:
+            item = consumption.setdefault(
+                fill.trade_id,
+                {
+                    "queue_quantity": 0.0,
+                    "fill_quantity": 0.0,
+                    "total_quantity": 0.0,
+                },
+            )
+            item["queue_quantity"] += float(fill.queue_consumed)
+            item["fill_quantity"] += float(fill.quantity)
+            item["total_quantity"] += float(fill.queue_consumed + fill.quantity)
+        return consumption
 
 
 def normalize_public_trade(payload: dict[str, object]) -> PublicAggressorTrade | None:

@@ -29,13 +29,6 @@ from .exits import (
     research_no_basket_hold_reason,
 )
 from .fees import quadratic_fee_average_per_contract
-from .maker_fills import (
-    EXECUTION_MODEL_VERSION,
-    RestingMakerOrder,
-    allocate_maker_fills,
-    apply_volume_claims,
-    normalize_public_trade,
-)
 from .forecast import (
     ForecastDataError,
     SfoForecasterAdapter,
@@ -726,87 +719,46 @@ def _fill_resting_orders_against_live_book(
             )
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
             continue
-        all_trades = [
-            trade
-            for trade in (normalize_public_trade(payload) for payload in trade_payloads)
-            if trade is not None
-        ]
-        # Capital-consuming orders see only the volume no earlier fill has
-        # claimed; counterfactual research shadows see the full public tape.
-        trades = apply_volume_claims(
-            all_trades, store.maker_volume_claims_for_ticker(ticker)
-        )
-        resting: list[RestingMakerOrder] = []
-        shadow: list[RestingMakerOrder] = []
-        row_by_id: dict[int, tuple] = {}
-        for row, created_at in zip(rows, created_times):
-            limit_price = (
-                row["limit_price"]
-                if row["limit_price"] is not None
-                else row["entry_price"]
-            )
-            if limit_price is None:
+        updates = store.apply_maker_trade_batch(ticker, trade_payloads)
+        for update in updates:
+            updated = store.paper_order(int(update["order_id"]))
+            if updated is None:
                 continue
-            side = str(row["side"] or "YES").upper()
-            order = RestingMakerOrder(
-                order_id=int(row["id"]),
-                side=side,
-                limit_price=Decimal(str(round(float(limit_price), 6))),
-                quantity=Decimal(str(float(row["contracts"]))),
-                queue_ahead=Decimal(str(float(row["entry_bid_size"] or 0.0))),
-                placed_at=created_at,
+            status = str(update["status"])
+            became_filled = (
+                status == "PAPER_FILLED"
+                and str(update["previous_status"]) != "PAPER_FILLED"
             )
-            # Research shadows observe the market without consuming the
-            # public volume that fills capital-consuming orders (audit AC-01):
-            # each shadow is allocated counterfactually, alone against the
-            # full trade history, and its evidence says so.
-            if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID:
-                shadow.append(order)
-            else:
-                resting.append(order)
-            row_by_id[order.order_id] = (row, side)
-        if not resting and not shadow:
-            continue
-        allocations = allocate_maker_fills(trades, resting)
-        for shadow_order in shadow:
-            allocations[shadow_order.order_id] = allocate_maker_fills(
-                all_trades, [shadow_order]
-            )[shadow_order.order_id]
-        for order in resting + shadow:
-            allocation = allocations[order.order_id]
-            if not allocation.complete:
-                continue
-            row, side = row_by_id[order.order_id]
-            evidence = {
-                "model": "maker_allocator_price_time_v2",
-                "execution_model_version": EXECUTION_MODEL_VERSION,
-                "queue_ahead": float(order.queue_ahead),
-                "queue_consumed": float(allocation.queue_consumed),
-                "required_quantity": float(order.queue_ahead + order.quantity),
-                "allocated_quantity": float(allocation.filled_quantity),
-                "allocations": allocation.allocations_by_trade(),
-                "trade_ids": sorted(allocation.allocations_by_trade()),
-            }
-            if order.order_id in {item.order_id for item in shadow}:
-                evidence["research_shadow"] = True
-                evidence["counterfactual"] = True
-            updated = store.fill_resting_limit_order(int(row["id"]), evidence=evidence)
-            if updated is not None and updated["status"] == "PAPER_FILLED":
-                filled += 1
-                store.record_monitor_snapshot(
-                    updated,
-                    side=side,
-                    action="LIMIT_FILLED",
-                    reason=(
-                        f"allocated later single-aggressor trades at/through "
-                        f"{float(order.limit_price):.2f} after estimated queue "
-                        f"{float(order.queue_ahead):.2f}"
-                    ),
-                    market_status="active",
+            filled += int(became_filled)
+            action = (
+                "LIMIT_FILLED"
+                if became_filled
+                else (
+                    "LIMIT_PARTIALLY_FILLED"
+                    if float(update["filled_quantity"]) > 0
+                    else "LIMIT_QUEUE_ADVANCED"
                 )
-                print(
-                    f"filled resting order {row['id']} {row['market_ticker']} {side}: "
-                    f"allocated {float(allocation.filled_quantity):.2f} contracts "
-                    f"after queue {float(allocation.queue_consumed):.2f}"
-                )
+            )
+            store.record_monitor_snapshot(
+                updated,
+                side=str(updated["side"] or "YES").upper(),
+                action=action,
+                reason=(
+                    f"exec-v3 consumed {float(update['queue_consumed']):.2f} "
+                    f"queue and filled {float(update['filled_quantity']):.2f}; "
+                    f"{float(update['remaining_quantity']):.2f} remains"
+                ),
+                market_status="active",
+            )
+            action = (
+                "filled resting order"
+                if updated["status"] == "PAPER_FILLED"
+                else "advanced resting order"
+            )
+            print(
+                f"{action} {updated['id']} {ticker} "
+                f"{updated['side']}: {float(update['filled_quantity']):.2f} filled, "
+                f"{float(update['queue_consumed']):.2f} queue consumed, "
+                f"{float(update['remaining_quantity']):.2f} remaining"
+            )
     return filled

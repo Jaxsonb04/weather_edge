@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "bundle:report": "node scripts/report_spa_bundle.mjs",
     "bundle:check:observed": "node scripts/report_spa_bundle.mjs --observed",
+    "bundle:capture": "node scripts/capture_initial_resources.mjs",
     "icons:generate": "node scripts/generate_icon_collection.mjs",
     "icons:check": "node scripts/generate_icon_collection.mjs --check",
     "lint": "oxlint",
@@ -17,7 +18,7 @@
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
-    "@heroui-pro/react": "1.0.0-beta.6",
+    "@heroui-pro/react": "1.0.0-beta.7",
     "@heroui/react": "^3.2.1",
     "@heroui/styles": "^3.2.1",
     "@iconify/react": "^6.0.2",
@@ -32,6 +33,7 @@
     "@tiptap/suggestion": "^3.27.1",
     "embla-carousel": "^8.6.0",
     "embla-carousel-react": "^8.6.0",
+    "maplibre-gl": "5.24.0",
     "marked": "^18.0.5",
     "motion": "^12.42.0",
     "react": "^19.2.7",
@@ -59,11 +61,16 @@
     "@vitejs/plugin-react": "^6.0.2",
     "jsdom": "26.1.0",
     "oxlint": "^1.69.0",
+    "playwright-core": "^1.55.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.0",
     "vitest": "^4.1.10"
   },
+  "overrides": {
+    "tar": "7.5.20"
+  },
   "trustedDependencies": [
-    "@heroui-pro/react"
+    "@heroui-pro/react",
+    "@zowe/secrets-for-zowe-sdk"
   ]
 }

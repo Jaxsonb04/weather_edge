@@ -40,7 +40,7 @@ function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const yes = side?.YES;
   return (
     <Finding>
-      Over the {s.daily_summary.window_days ?? "recent"}-day window the combined book realized{" "}
+      Across all published profile attribution in the {s.daily_summary.window_days ?? "recent"}-day window, the journal recorded{" "}
       <strong>{money(t.cumulative_realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital) at a{" "}
       <strong>{pct(t.hit_rate, 0)} hit rate</strong> — many small wins and a few larger losses.
       {no && yes && (
@@ -251,7 +251,7 @@ export default function StrategyLabView() {
         icon="solar:test-tube-bold"
         eyebrow="Strategy Lab"
         title="Paper-trading results"
-        sub="Two risk profiles run in parallel on the same signals: a strict real-money candidate and a looser experimental book. Below is each book's performance, the filters that reject most signals, per-book signal quality and exits, and the checklist the system must pass before any real capital is allowed. Generated directly by the AWS runtime."
+        sub="Two paper-only profiles run in parallel: a strict live candidate and an isolated research shadow. Below, their accounts and evidence remain separate, the live goal uses realized results only, and legacy or unverified executions never count toward readiness. Generated directly by the AWS runtime."
       />
       <div className="mx-auto w-full max-w-6xl px-5 pb-28 pt-10 sm:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
@@ -274,7 +274,7 @@ export default function StrategyLabView() {
                 index="01"
                 eyebrow="Book overview"
                 title="Live candidate performance"
-                sub="The real-money candidate is shown first, on its own equity curve. The experimental book follows on a separate curve — the two books' P&L are never combined. The shared-account totals appear below for reference."
+                sub="The live paper-shared account is shown first and is the only account measured against the 5% weekly realized-return objective. Research follows separately and never contributes to the goal or readiness."
               />
               <Reveal>
                 <OverviewEquity s={s} />
@@ -282,7 +282,7 @@ export default function StrategyLabView() {
               <div className="mt-7">
                 <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
                   <Icon icon="solar:wallet-money-bold" className="size-3.5 text-accent" aria-hidden="true" />
-                  Shared paper account · both books combined
+                  Live paper-shared account · research excluded
                 </p>
                 <PnlHeader s={s} />
               </div>

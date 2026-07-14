@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 from dataclasses import replace
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from ..cities import CITIES, CityConfig, get_city, parse_city_slugs
 from ..colors import Color
@@ -241,12 +241,34 @@ def cmd_paper_close(args: argparse.Namespace) -> int:
         if live_bid <= 0:
             raise ValueError(f"market {market.ticker} has no live {side} bid to sell into")
         exit_price = live_bid
+        displayed_depth = market.side_bid_size(side)
+        if displayed_depth <= 0:
+            raise ValueError(
+                f"market {market.ticker} has no displayed {side} bid depth to close"
+            )
         price_note = f"live Kalshi {side} bid for {market.ticker}"
+        max_quantity = displayed_depth
+        liquidity_evidence = {
+            "displayed_bid_size": displayed_depth,
+            "source": "paper_close_live_market_lookup",
+            "observed_at": datetime.now(UTC).isoformat(),
+            "market_status": market.status,
+        }
     else:
         exit_price = args.exit_price
         price_note = "manual offline override"
+        max_quantity = None
+        liquidity_evidence = {
+            "source": "manual_offline_override",
+            "observed_at": datetime.now(UTC).isoformat(),
+        }
 
-    row = store.close_paper_order(args.order_id, exit_price)
+    row = store.close_paper_order(
+        args.order_id,
+        exit_price,
+        max_quantity=max_quantity,
+        liquidity_evidence=liquidity_evidence,
+    )
     pnl = f"${row['realized_pnl']:.2f}"
     pnl = color.green(pnl) if row["realized_pnl"] >= 0 else color.red(pnl)
     print(

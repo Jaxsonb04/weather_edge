@@ -227,6 +227,40 @@ CREATE TABLE IF NOT EXISTS maker_volume_claims (
     UNIQUE (trade_id, order_id)
 );
 
+CREATE TABLE IF NOT EXISTS dataset_kalshi_trades (
+    trade_id TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    created_time TEXT NOT NULL,
+    count REAL,
+    yes_price REAL,
+    no_price REAL,
+    is_block_trade INTEGER NOT NULL DEFAULT 0,
+    taker_book_side TEXT,
+    maker_side TEXT,
+    raw_json TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    last_seen_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS paper_maker_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    execution_model_version TEXT NOT NULL,
+    market_ticker TEXT NOT NULL,
+    trade_id TEXT NOT NULL,
+    order_id INTEGER NOT NULL REFERENCES paper_orders(id),
+    trade_created_at TEXT NOT NULL,
+    maker_side TEXT NOT NULL,
+    side_price REAL NOT NULL,
+    queue_quantity REAL NOT NULL DEFAULT 0,
+    fill_quantity REAL NOT NULL DEFAULT 0,
+    counterfactual INTEGER NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL,
+    UNIQUE (execution_model_version, order_id, trade_id)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_maker_allocations_ticker_trade
+ON paper_maker_allocations (market_ticker, trade_id, counterfactual);
+
 CREATE TABLE IF NOT EXISTS paper_settlement_verifications (
     order_id INTEGER PRIMARY KEY,
     checked_at TEXT NOT NULL,
@@ -412,7 +446,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_orders_open_market_side_profile
         UPPER(COALESCE(side, 'YES')),
         COALESCE(risk_profile, 'live')
     )
-    WHERE status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+    WHERE status IN (
+        'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+        'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+    )
       AND settled_at IS NULL
       AND closed_at IS NULL
 """
@@ -455,6 +492,11 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     "quote_snapshot_json": "TEXT",
     "fill_model": "TEXT",
     "fill_evidence_json": "TEXT",
+    "requested_contracts": "REAL",
+    "filled_contracts": "REAL",
+    "remaining_contracts": "REAL",
+    "queue_remaining": "REAL",
+    "execution_model_version": "TEXT",
     # Depth-aware partial closes (audit EX-02): the executed slice of a partial
     # close becomes its own PAPER_CLOSED row linked back to the original order.
     "parent_order_id": "INTEGER",
@@ -598,6 +640,57 @@ def _init_store_locked(self) -> None:
             for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()
         }
         _add_missing_columns(conn, "paper_orders", existing, PAPER_ORDER_AUDIT_COLUMNS)
+        # Legacy rows have no trustworthy partial queue state. Preserve their
+        # booked quantity and mark the evidence generation explicitly; new v3
+        # orders write all progress fields at insertion time.
+        conn.execute(
+            """
+            UPDATE paper_orders
+            SET requested_contracts = COALESCE(requested_contracts, contracts),
+                filled_contracts = COALESCE(
+                    filled_contracts,
+                    CASE
+                        WHEN status IN ('PAPER_FILLED', 'PAPER_CLOSED', 'PAPER_SETTLED')
+                        THEN contracts
+                        ELSE 0
+                    END
+                ),
+                remaining_contracts = COALESCE(
+                    remaining_contracts,
+                    CASE WHEN status = 'PAPER_LIMIT_RESTING' THEN contracts ELSE 0 END
+                ),
+                queue_remaining = COALESCE(
+                    queue_remaining,
+                    CASE
+                        WHEN status = 'PAPER_LIMIT_RESTING'
+                        THEN MAX(0, COALESCE(entry_bid_size, 0))
+                        ELSE 0
+                    END
+                ),
+                execution_model_version = COALESCE(
+                    execution_model_version, 'legacy-pre-exec-v3'
+                )
+            WHERE requested_contracts IS NULL
+               OR filled_contracts IS NULL
+               OR remaining_contracts IS NULL
+               OR queue_remaining IS NULL
+               OR execution_model_version IS NULL
+            """
+        )
+        existing_trade = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(dataset_kalshi_trades)").fetchall()
+        }
+        _add_missing_columns(
+            conn,
+            "dataset_kalshi_trades",
+            existing_trade,
+            {
+                "taker_book_side": "TEXT",
+                "maker_side": "TEXT",
+                "last_seen_at": "TEXT",
+            },
+        )
         existing_probability = {
             row[1]
             for row in conn.execute("PRAGMA table_info(probability_snapshots)").fetchall()
@@ -675,8 +768,9 @@ def _init_store_locked(self) -> None:
                 "idx_decision_snapshots_created_market is missing; pause paper "
                 "scan/monitor and run deploy/aws/create_decision_snapshot_index.sh"
             )
-        self._ensure_open_position_guard_index(conn)
+        self._expire_pre_v3_resting_orders(conn)
         self._ensure_shared_paper_account(conn)
+        self._ensure_open_position_guard_index(conn)
 
 def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
     """Build the unique open-position backstop index, tolerating a dirty book.
@@ -687,6 +781,12 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
     it so an operator can close the surplus with `paper-close`; the index then
     builds automatically on the next run.
     """
+    existing = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='ux_paper_orders_open_market_side_profile'"
+    ).fetchone()
+    if existing and "PAPER_PARTIALLY_FILLED" not in str(existing[0] or ""):
+        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
     try:
         conn.execute(OPEN_POSITION_GUARD_INDEX)
     except sqlite3.IntegrityError:
@@ -697,7 +797,10 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
                    COALESCE(risk_profile, 'live') AS risk_profile,
                    COUNT(*) AS open_orders
             FROM paper_orders
-            WHERE status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+            WHERE status IN (
+                'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+                'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+            )
               AND settled_at IS NULL
               AND closed_at IS NULL
             GROUP BY 1, 2, 3

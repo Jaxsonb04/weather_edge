@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections import defaultdict
+from datetime import UTC, date, datetime
 from pathlib import Path
 from statistics import fmean
 from typing import Any
@@ -12,6 +13,12 @@ from typing import Any
 from ._util import _table_exists
 from .cities import CITIES, CITY_BY_STATION
 from .emos_sources import ROLLING_ORIGIN_V1_SOURCE, ROLLING_ORIGIN_V2_SOURCE
+from .forecast_challengers import (
+    ForecastCase,
+    IntradayCase,
+    evaluate_matched_lead_emos,
+    evaluate_partial_pooled_intraday,
+)
 
 
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
@@ -113,6 +120,23 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
         groups[(str(row[0]), int(row[2]), str(row[5]), str(row[6]))].append(row)
 
     scorecards = [_score_group(key, cases) for key, cases in sorted(groups.items())]
+    forecast_cases = [
+        ForecastCase(
+            station_id=str(row[0]),
+            target_date=date.fromisoformat(str(row[1])),
+            lead_days=int(row[2]),
+            mu=float(row[3]),
+            sigma=float(row[4]),
+            actual=float(row[7]),
+        )
+        for row in rows
+    ]
+    shadow_challengers = {
+        "matched_lead_emos": evaluate_matched_lead_emos(forecast_cases),
+        "partial_pooled_intraday": evaluate_partial_pooled_intraday(
+            _load_intraday_cases(path, rows)
+        ),
+    }
     return {
         "available": True,
         "truth_source": "cli_settlements joined by (station_id, target_date)",
@@ -120,6 +144,7 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
         "cities_scored": len({row["station_id"] for row in scorecards}),
         "scorecards": scorecards,
         "challenger_gates": _challenger_gates(scorecards),
+        "shadow_challengers": shadow_challengers,
         "promotion_policy": {
             "crps": "paired improvement confidence interval must be entirely below zero",
             "city_regression_limit": 0.02,
@@ -256,8 +281,80 @@ def _unavailable(reason: str) -> dict[str, Any]:
         "cities_scored": 0,
         "scorecards": [],
         "challenger_gates": _challenger_gates([]),
+        "shadow_challengers": {
+            "matched_lead_emos": evaluate_matched_lead_emos([]),
+            "partial_pooled_intraday": evaluate_partial_pooled_intraday([]),
+        },
     }
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _load_intraday_cases(
+    path: Path,
+    forecast_rows: list[tuple[Any, ...]],
+) -> list[IntradayCase]:
+    """One leakage-safe running-high case per station/day/two-hour bucket."""
+
+    baseline = {
+        (str(row[0]), str(row[1])): (float(row[3]), float(row[4]))
+        for row in forecast_rows
+        if int(row[2]) == 0
+    }
+    if not baseline:
+        return []
+    try:
+        with sqlite3.connect(path) as conn:
+            if not _table_exists(conn, "nws_station_observations"):
+                return []
+            truth_columns = _columns(conn, "cli_settlements")
+            final_filter = "AND s.is_final = 1" if "is_final" in truth_columns else ""
+            observations = conn.execute(
+                f"""
+                SELECT o.station_id, o.local_date, o.observed_at, o.temp_f,
+                       s.max_temperature_f
+                FROM nws_station_observations AS o
+                JOIN cli_settlements AS s
+                  ON s.station_id=o.station_id AND s.local_date=o.local_date
+                WHERE o.temp_f IS NOT NULL AND s.max_temperature_f IS NOT NULL
+                  {final_filter}
+                ORDER BY o.station_id, o.local_date, o.observed_at
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    running_high: dict[tuple[str, str], float] = {}
+    latest: dict[tuple[str, str, int], IntradayCase] = {}
+    for station, target, observed_at, temp_f, actual in observations:
+        station_key = str(station)
+        target_key = str(target)
+        base = baseline.get((station_key, target_key))
+        city = CITY_BY_STATION.get(station_key)
+        if base is None or city is None:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            local_hour = stamp.astimezone(city.fixed_standard_timezone()).hour
+            target_date = date.fromisoformat(target_key)
+        except ValueError:
+            continue
+        day_key = (station_key, target_key)
+        observed_high = max(running_high.get(day_key, float("-inf")), float(temp_f))
+        running_high[day_key] = observed_high
+        bucket = local_hour // 2
+        latest[(station_key, target_key, bucket)] = IntradayCase(
+            station_id=station_key,
+            target_date=target_date,
+            season=(target_date.month - 1) // 3,
+            hour_bucket=bucket,
+            observed_high_f=observed_high,
+            baseline_mu=max(observed_high, base[0]),
+            baseline_sigma=max(0.1, base[1]),
+            actual=float(actual),
+        )
+    return list(latest.values())

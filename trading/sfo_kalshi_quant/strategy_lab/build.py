@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +19,17 @@ from ..config import (
     StrategyConfig,
     strategy_config_for_profile,
 )
+from ..account import (
+    RESEARCH_ACCOUNT_ID,
+    SHARED_ACCOUNT_ID,
+    WEEKLY_GOAL_TZ,
+    WEEKLY_RETURN_TARGET,
+)
 from ..db import PaperStore
 from ..dataset_research import build_dataset_research as build_dataset_research_payload
 from ..forecast import ForecastDataError, SfoForecasterAdapter
 from ..forecast_scorecards import build_forecast_scorecards
+from ..maker_fills import EXECUTION_MODEL_VERSION
 from ..replay import replay_from_database
 from ..summary import build_paper_summary
 from . import CHALLENGER_CALIBRATION_SOURCE
@@ -108,11 +115,12 @@ def build_strategy_research(
         settlements=settlements,
         sampled_rows=sampled_decision_rows,
     )
-    chronological_replay = replay_from_database(
+    chronological_replay_full = replay_from_database(
         db_path,
         settlements,
         initial_capital=cfg.paper_bankroll,
     )
+    chronological_replay = _bounded_replay(chronological_replay_full)
     real_money_readiness = _real_money_readiness_payload(
         config_rescore, active_calibration, chronological_replay
     )
@@ -144,7 +152,7 @@ def build_strategy_research(
     accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "available": True,
         "mode": "paper_research_only",
         "live_orders_enabled": False,
@@ -166,6 +174,10 @@ def build_strategy_research(
         "backtest_summary": backtest,
         "config_rescore": config_rescore,
         "chronological_replay": chronological_replay,
+        "_private_evidence": {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "chronological_replay": chronological_replay_full,
+        },
         "real_money_readiness": real_money_readiness,
         "live_frequency_tuning": live_frequency_tuning,
         "research_shadow": research_shadow,
@@ -206,10 +218,30 @@ def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
     # this file, so a plain truncate-write could be read half-written.
     import os
 
-    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    public_payload = {key: value for key, value in payload.items() if not key.startswith("_private_")}
+    text = json.dumps(public_payload, indent=2, sort_keys=True) + "\n"
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+    private = payload.get("_private_evidence")
+    if isinstance(private, dict):
+        private_path = path.with_name("strategy_research_evidence.private.json")
+        private_tmp = private_path.with_name(f".{private_path.name}.tmp")
+        private_tmp.write_text(
+            json.dumps(private, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(private_tmp, private_path)
+
+
+def _bounded_replay(replay: dict[str, Any], *, event_limit: int = 200) -> dict[str, Any]:
+    events = list(replay.get("events") or [])
+    return {
+        **replay,
+        "events": events[-event_limit:],
+        "events_total": len(events),
+        "events_truncated": max(0, len(events) - event_limit),
+        "private_evidence_artifact": "strategy_research_evidence.private.json",
+    }
 
 
 def _accounting_payload(
@@ -218,99 +250,298 @@ def _accounting_payload(
     *,
     db_path: Path,
 ) -> dict[str, Any]:
-    """One account-level reconciliation; profiles are attribution only."""
+    """Publish account-scoped balances; never mix live cash with research P&L."""
 
-    daily_totals = daily_summary.get("totals") or {}
-    paper_summary = paper.get("summary") or {}
-    initial_capital = _to_float(
-        daily_summary.get("starting_bankroll", daily_summary.get("bankroll")),
-        default=1000.0,
+    if not db_path.exists():
+        return {
+            "schema_version": 2,
+            "available": False,
+            "reason": "paper account database unavailable",
+            "accounts": {},
+        }
+
+    store = PaperStore(db_path, init=False)
+    live = _account_snapshot(store, SHARED_ACCOUNT_ID, role="live")
+    research = _account_snapshot(store, RESEARCH_ACCOUNT_ID, role="research")
+    if live is None:
+        return {
+            "schema_version": 2,
+            "available": False,
+            "reason": "live paper account unavailable",
+            "accounts": {},
+        }
+    accounts: dict[str, Any] = {"live": live}
+    if research is not None:
+        accounts["research"] = research
+    combined = _combined_account(live, research) if research is not None else None
+    goal = _weekly_goal_payload(store, live)
+
+    # Keep the v1 headline keys for one release. They are aliases of the LIVE
+    # account only; callers can no longer accidentally combine research P&L
+    # with live cash.
+    return {
+        "schema_version": 2,
+        "available": True,
+        "accounts": accounts,
+        "combined": combined,
+        "goal": goal,
+        "account_id": live["account_id"],
+        "accounting_cohort": "account_scoped_v4",
+        "initial_capital": live["initial_equity"],
+        "all_time_realized_pnl": live["realized_pnl"],
+        "window_realized_pnl": goal["weekly_realized_pnl"],
+        "realized_equity": live["realized_equity"],
+        "cash_balance": live["cash_balance"],
+        "reservations": live["reservations"],
+        "available_cash": live["available_cash"],
+        "open_cost_basis": live["open_cost_basis"],
+        "unrealized_pnl": live["unrealized_pnl"],
+        "marked_equity": live["marked_equity"],
+        "mark_coverage": live["mark_coverage"],
+        "resolved_capital": live["resolved_capital"],
+        "return_on_initial_capital": live["return_on_initial_capital"],
+        "roi_on_resolved_capital": live["roi_on_resolved_capital"],
+        "profile_attributed_pnl": live["realized_pnl"],
+        "reconciliation_status": live["reconciliation_status"],
+        "reconciliation_difference": live["reconciliation_difference"],
+    }
+
+
+def _account_snapshot(
+    store: PaperStore,
+    account_id: str,
+    *,
+    role: str,
+) -> dict[str, Any] | None:
+    state = store._account_state(account_id)
+    if state is None:
+        return None
+    open_statuses = (
+        "PAPER_FILLED",
+        "PAPER_PARTIALLY_FILLED",
+        "PAPER_PARTIAL_EXPIRED",
     )
-    all_time_realized = _to_float(
-        daily_totals.get("cumulative_realized_pnl", paper_summary.get("realized_pnl"))
+    placeholders = ",".join("?" for _ in open_statuses)
+    with store.connect() as conn:
+        conn.row_factory = sqlite3.Row
+        resolved = conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl),0), "
+            "COALESCE(SUM(contracts * cost_per_contract),0) FROM paper_orders "
+            "WHERE account_id=? AND status IN ('PAPER_SETTLED','PAPER_CLOSED')",
+            (account_id,),
+        ).fetchone()
+        open_rows = conn.execute(
+            f"SELECT id FROM paper_orders WHERE account_id=? "
+            f"AND status IN ({placeholders}) AND settled_at IS NULL AND closed_at IS NULL",
+            (account_id, *open_statuses),
+        ).fetchall()
+        unrealized_rows: list[sqlite3.Row] = []
+        if open_rows and _db_table_exists(store.db_path, "paper_monitor_snapshots"):
+            unrealized_rows = conn.execute(
+                f"""
+                SELECT p.id, m.unrealized_pnl
+                FROM paper_orders p
+                LEFT JOIN paper_monitor_snapshots m ON m.id = (
+                    SELECT m2.id FROM paper_monitor_snapshots m2
+                    WHERE m2.order_id=p.id ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1
+                )
+                WHERE p.account_id=? AND p.status IN ({placeholders})
+                  AND p.settled_at IS NULL AND p.closed_at IS NULL
+                """,
+                (account_id, *open_statuses),
+            ).fetchall()
+    open_count = len(open_rows)
+    marked_count = sum(row["unrealized_pnl"] is not None for row in unrealized_rows)
+    marks_complete = open_count == 0 or marked_count == open_count
+    unrealized = (
+        sum(float(row["unrealized_pnl"] or 0.0) for row in unrealized_rows)
+        if marks_complete and open_count > 0
+        else (0.0 if open_count == 0 else None)
     )
-    window_realized = _to_float(daily_totals.get("realized_pnl"))
-    realized_equity = initial_capital + all_time_realized
-    open_cost_basis = _to_float(paper_summary.get("open_risk"))
-    reservations = _to_float(paper_summary.get("pending_limit_risk"))
-    shared_state = PaperStore(db_path, init=False).shared_account_state() if db_path.exists() else None
-    cash_balance = (
-        _to_float(shared_state.get("cash_balance"))
-        if shared_state is not None
-        else realized_equity - open_cost_basis
-    )
-    reservations = (
-        _to_float(shared_state.get("reservations"))
-        if shared_state is not None
-        else reservations
-    )
-    available_cash = (
-        _to_float(shared_state.get("available_cash"))
-        if shared_state is not None
-        else cash_balance - reservations
-    )
-    open_positions = int(_to_float(paper_summary.get("open_positions")))
-    marked_open = int(_to_float(paper_summary.get("marked_open_positions")))
-    open_value_raw = paper_summary.get("open_value")
-    unrealized_raw = paper_summary.get("unrealized_pnl")
-    marks_complete = open_positions == 0 or marked_open == open_positions
-    if open_positions == 0:
-        mark_coverage = "complete_no_open_positions"
-    elif marks_complete:
-        mark_coverage = "complete"
-    elif marked_open:
-        mark_coverage = "partial"
-    else:
-        mark_coverage = "unavailable"
-    unrealized_pnl = _round(unrealized_raw, 2) if marks_complete and unrealized_raw is not None else None
-    marked_equity = (
-        _round(cash_balance + _to_float(open_value_raw), 2)
-        if marks_complete and open_value_raw is not None
-        else (_round(realized_equity, 2) if open_positions == 0 else None)
-    )
-    resolved_capital = _to_float(paper_summary.get("capital_at_risk"))
-    profile_attribution = sum(
-        _to_float(row.get("realized_pnl")) for row in paper.get("profiles") or []
-    )
-    final_curve_pnl = (
-        _to_float((daily_summary.get("days") or [])[-1].get("cumulative_realized"))
-        if daily_summary.get("days")
-        else all_time_realized
-    )
-    reconciled = (
-        abs(profile_attribution - all_time_realized) < 0.005
-        and abs(final_curve_pnl - all_time_realized) < 0.005
-        and available_cash >= -0.005
+    realized_equity = _to_float(state["realized_equity"])
+    initial = _to_float(state["initial_capital"])
+    realized_pnl = realized_equity - initial
+    resolved_pnl = float(resolved[0] or 0.0)
+    resolved_capital = float(resolved[1] or 0.0)
+    identity_difference = (
+        _to_float(state["available_cash"])
+        + _to_float(state["reservations"])
+        + _to_float(state["open_cost_basis"])
+        - realized_equity
     )
     return {
-        "schema_version": 1,
-        "account_id": (
-            str(shared_state.get("account_id")) if shared_state is not None else "legacy-paper-account"
-        ),
-        "accounting_cohort": (
-            "shared_account_v2" if shared_state is not None else "legacy_independent_sizing"
-        ),
-        "initial_capital": _round(initial_capital, 2),
-        "all_time_realized_pnl": _round(all_time_realized, 2),
-        "window_realized_pnl": _round(window_realized, 2),
+        "account_id": account_id,
+        "role": role,
+        "verification_scope": "exec-v3 fills only; legacy outcomes retained as unverified",
+        "initial_equity": _round(initial, 2),
+        "cash_balance": _round(state["cash_balance"], 2),
+        "available_cash": _round(state["available_cash"], 2),
+        "reservations": _round(state["reservations"], 2),
+        "open_cost_basis": _round(state["open_cost_basis"], 2),
+        "open_positions": open_count,
         "realized_equity": _round(realized_equity, 2),
-        "cash_balance": _round(cash_balance, 2),
-        "reservations": _round(reservations, 2),
-        "available_cash": _round(available_cash, 2),
-        "open_cost_basis": _round(open_cost_basis, 2),
-        "unrealized_pnl": unrealized_pnl,
-        "marked_equity": marked_equity,
-        "mark_coverage": mark_coverage,
+        "realized_pnl": _round(realized_pnl, 2),
+        "booked_resolved_pnl": _round(resolved_pnl, 2),
+        "unrealized_pnl": _round(unrealized, 2) if unrealized is not None else None,
+        "marked_equity": (
+            _round(realized_equity + unrealized, 2) if unrealized is not None else None
+        ),
+        "mark_coverage": (
+            "complete_no_open_positions" if open_count == 0
+            else ("complete" if marks_complete else ("partial" if marked_count else "unavailable"))
+        ),
         "resolved_capital": _round(resolved_capital, 2),
         "return_on_initial_capital": (
-            _round(all_time_realized / initial_capital, 6) if initial_capital > 0 else None
+            _round(realized_pnl / initial, 6) if initial > 0 else None
         ),
         "roi_on_resolved_capital": (
-            _round(all_time_realized / resolved_capital, 6) if resolved_capital > 0 else None
+            _round(resolved_pnl / resolved_capital, 6) if resolved_capital > 0 else None
         ),
-        "profile_attributed_pnl": _round(profile_attribution, 2),
-        "reconciliation_status": "reconciled" if reconciled else "mismatch",
-        "reconciliation_difference": _round(profile_attribution - all_time_realized, 2),
+        "reconciliation_status": (
+            "reconciled" if abs(identity_difference) < 0.005 else "mismatch"
+        ),
+        "reconciliation_difference": _round(identity_difference, 2),
+    }
+
+
+def _combined_account(live: dict[str, Any], research: dict[str, Any]) -> dict[str, Any]:
+    marked = (
+        _to_float(live["marked_equity"]) + _to_float(research["marked_equity"])
+        if live["marked_equity"] is not None and research["marked_equity"] is not None
+        else None
+    )
+    return {
+        "account_id": "paper-combined",
+        "role": "combined_diagnostic_only",
+        "initial_equity": _round(_to_float(live["initial_equity"]) + _to_float(research["initial_equity"]), 2),
+        "cash_balance": _round(_to_float(live["cash_balance"]) + _to_float(research["cash_balance"]), 2),
+        "available_cash": _round(_to_float(live["available_cash"]) + _to_float(research["available_cash"]), 2),
+        "reservations": _round(_to_float(live["reservations"]) + _to_float(research["reservations"]), 2),
+        "open_cost_basis": _round(_to_float(live["open_cost_basis"]) + _to_float(research["open_cost_basis"]), 2),
+        "realized_equity": _round(_to_float(live["realized_equity"]) + _to_float(research["realized_equity"]), 2),
+        "realized_pnl": _round(_to_float(live["realized_pnl"]) + _to_float(research["realized_pnl"]), 2),
+        "unrealized_pnl": (
+            _round(_to_float(live["unrealized_pnl"]) + _to_float(research["unrealized_pnl"]), 2)
+            if live["unrealized_pnl"] is not None and research["unrealized_pnl"] is not None
+            else None
+        ),
+        "marked_equity": _round(marked, 2) if marked is not None else None,
+        "label": "Live plus research; never used for the weekly goal or readiness",
+    }
+
+
+def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, Any]:
+    now_local = datetime.now(WEEKLY_GOAL_TZ)
+    start_local = (now_local - timedelta(days=now_local.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    end_local = start_local + timedelta(days=7)
+    with store.connect() as conn:
+        resolved_rows = conn.execute(
+            "SELECT COALESCE(closed_at,settled_at), COALESCE(realized_pnl,0) "
+            "FROM paper_orders WHERE account_id=? "
+            "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
+            "AND COALESCE(closed_at,settled_at) IS NOT NULL "
+            "ORDER BY COALESCE(closed_at,settled_at), id",
+            (SHARED_ACCOUNT_ID,),
+        ).fetchall()
+        boundary_row = conn.execute(
+            "SELECT MIN(created_at) FROM paper_account_ledger "
+            "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION' "
+            "AND idempotency_key=?",
+            (f"execution:{EXECUTION_MODEL_VERSION}",),
+        ).fetchone()
+
+    evidence_boundary = boundary_row[0] if boundary_row else None
+    first_full_evidence_week: datetime | None = None
+    if evidence_boundary:
+        try:
+            boundary_at = datetime.fromisoformat(
+                str(evidence_boundary).replace("Z", "+00:00")
+            )
+            if boundary_at.tzinfo is None:
+                boundary_at = boundary_at.replace(tzinfo=UTC)
+            boundary_local = boundary_at.astimezone(WEEKLY_GOAL_TZ)
+            boundary_week = (
+                boundary_local - timedelta(days=boundary_local.weekday())
+            ).replace(hour=0, minute=0, second=0, microsecond=0)
+            first_full_evidence_week = (
+                boundary_week
+                if boundary_local == boundary_week
+                else boundary_week + timedelta(days=7)
+            )
+        except ValueError:
+            pass
+
+    pnl_by_week: dict[datetime, float] = {}
+    for resolved_at, realized_pnl in resolved_rows:
+        try:
+            resolved = datetime.fromisoformat(str(resolved_at).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if resolved.tzinfo is None:
+            resolved = resolved.replace(tzinfo=UTC)
+        resolved_local = resolved.astimezone(WEEKLY_GOAL_TZ)
+        week_start = (resolved_local - timedelta(days=resolved_local.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        pnl_by_week[week_start] = pnl_by_week.get(week_start, 0.0) + float(
+            realized_pnl or 0.0
+        )
+
+    weekly_pnl = pnl_by_week.get(start_local, 0.0)
+    starting_equity = _to_float(live["realized_equity"]) - weekly_pnl
+    target_pnl = starting_equity * WEEKLY_RETURN_TARGET
+    weekly_return = weekly_pnl / starting_equity if starting_equity > 0 else None
+
+    # The active week never counts toward the stability streak. Walk backward
+    # from its opening realized equity and stop at the first missing or
+    # sub-target completed week.
+    completed_week_success_streak = 0
+    ending_equity = starting_equity
+    cursor = start_local - timedelta(days=7)
+    while (
+        first_full_evidence_week is not None
+        and cursor >= first_full_evidence_week
+        and cursor in pnl_by_week
+    ):
+        completed_pnl = pnl_by_week[cursor]
+        opening_equity = ending_equity - completed_pnl
+        completed_return = (
+            completed_pnl / opening_equity if opening_equity > 0 else None
+        )
+        if completed_return is None or completed_return + 1e-12 < WEEKLY_RETURN_TARGET:
+            break
+        completed_week_success_streak += 1
+        ending_equity = opening_equity
+        cursor -= timedelta(days=7)
+
+    return {
+        "metric": "weekly_realized_return",
+        "account_id": SHARED_ACCOUNT_ID,
+        "timezone": str(WEEKLY_GOAL_TZ),
+        "week_starts": "Monday 00:00",
+        "period_start": start_local.isoformat(),
+        "period_end": end_local.isoformat(),
+        "target_return": WEEKLY_RETURN_TARGET,
+        "starting_realized_equity": _round(starting_equity, 2),
+        "current_realized_equity": live["realized_equity"],
+        "weekly_realized_pnl": _round(weekly_pnl, 2),
+        "weekly_realized_return": _round(weekly_return, 6) if weekly_return is not None else None,
+        "target_realized_pnl": _round(target_pnl, 2),
+        "remaining_pnl": _round(max(0.0, target_pnl - weekly_pnl), 2),
+        "achieved": bool(weekly_return is not None and weekly_return >= WEEKLY_RETURN_TARGET),
+        "completed_week_success_streak": completed_week_success_streak,
+        "evidence_boundary": evidence_boundary,
+        "first_full_evidence_week": (
+            first_full_evidence_week.isoformat() if first_full_evidence_week else None
+        ),
+        "current_week_evidence_qualified": bool(
+            first_full_evidence_week is not None and start_local >= first_full_evidence_week
+        ),
+        "execution_model_version": EXECUTION_MODEL_VERSION,
+        "excludes": ["research-shadow", "unrealized-marks"],
+        "disclaimer": "Research objective, not a guaranteed return; risk gates remain binding.",
     }
 
 

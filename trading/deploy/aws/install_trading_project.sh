@@ -23,6 +23,23 @@ if [[ ! -f "$SCRIPT_DIR/verify_trading_install.py" ]]; then
   exit 1
 fi
 
+VENV_DIR="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd -P)"
+PURELIB="$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+case "$PURELIB/" in
+  "$VENV_DIR/"*) ;;
+  *)
+    echo "trading Python site-packages escaped its virtualenv: $PURELIB" >&2
+    exit 1
+    ;;
+esac
+
+# Interrupted or formerly root-run pip upgrades can leave pip's temporary
+# renamed metadata behind. importlib.metadata still counts that directory as a
+# second WeatherEdge owner even though pip warns that it is invalid. Remove only
+# pip's exact temporary name inside this verified virtualenv before upgrading.
+find "$PURELIB" -maxdepth 1 -type d -name '~eatheredge-*.dist-info' \
+  -exec rm -rf -- {} +
+
 # TP-12 replaced the old sfo-kalshi-quant distribution with the root
 # weatheredge project. Explicitly uninstall the old owner before installing so
 # an upgraded venv cannot retain duplicate metadata or a stale console script.
@@ -32,7 +49,8 @@ env -u PYTHONPATH "$PYTHON_BIN" -m pip uninstall -y sfo-kalshi-quant
 # to sys.path, so that one exact stale directory would otherwise resurrect the
 # retired distribution in importlib.metadata.
 rm -rf -- "$TRADING_DIR/sfo_kalshi_quant.egg-info"
-env -u PYTHONPATH "$PYTHON_BIN" -m pip install -e "$BASE_DIR"
+env -u PYTHONPATH "$PYTHON_BIN" -m pip install \
+  --no-build-isolation --no-deps -e "$BASE_DIR"
 # Setuptools creates source-tree egg metadata while building an editable wheel.
 # The installed dist-info is authoritative; remove the exact transient source
 # copy so importlib.metadata observes one owner object, not two identical ones.

@@ -154,12 +154,18 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
             SELECT market_ticker,
                    COALESCE(risk_profile, 'live') AS risk_profile,
                    SUM(CASE
-                         WHEN status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+                         WHEN status IN (
+                              'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+                              'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+                         )
                           AND settled_at IS NULL AND closed_at IS NULL
                          THEN 1 ELSE 0
                        END) AS open_positions,
                    COALESCE(SUM(CASE
-                         WHEN status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+                         WHEN status IN (
+                              'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+                              'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+                         )
                           AND settled_at IS NULL AND closed_at IS NULL
                          THEN contracts * cost_per_contract ELSE 0
                        END), 0) AS open_exposure,

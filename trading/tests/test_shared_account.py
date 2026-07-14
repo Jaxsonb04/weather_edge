@@ -120,7 +120,9 @@ def test_legacy_flattening_is_folded_into_opening_cash_once() -> None:
             ledger = conn.execute(
                 "SELECT event_type, amount FROM paper_account_ledger "
                 "WHERE account_id = 'paper-shared' "
-                "AND event_type != 'ACCOUNTING_POLICY_TRANSITION' ORDER BY id"
+                "AND event_type NOT IN "
+                "('ACCOUNTING_POLICY_TRANSITION', 'EXECUTION_SEMANTICS_TRANSITION') "
+                "ORDER BY id"
             ).fetchall()
 
         assert round(state["cash_balance"], 6) == round(expected_equity, 6)

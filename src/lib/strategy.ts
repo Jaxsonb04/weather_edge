@@ -71,14 +71,15 @@ export interface MonitorAction {
   label: string;
   side: string;
   risk_profile: string;
-  contracts: number;
+  contracts: number | null;
   entry_price: number | null;
   exit_price: number | null;
-  realized_pnl: number;
+  realized_pnl: number | null;
   realized_roi: number | null;
   note?: string | null;
   status?: string;
   target_date?: string;
+  unrealized?: boolean;
 }
 
 export interface DayRow {
@@ -206,6 +207,8 @@ export interface ReadinessCheck {
   detail: string;
   passed: boolean;
   progress: number; // 0..1
+  evidence_boundary?: string | null;
+  source_cohort?: string | null;
 }
 export interface RealMoneyReadiness {
   available: boolean;
@@ -217,6 +220,9 @@ export interface RealMoneyReadiness {
   checks_passed?: number;
   checks_total?: number;
   checks?: ReadinessCheck[];
+  evidence_boundary?: string | null;
+  post_boundary_settlement_days?: number;
+  source_cohort?: string | null;
   pilot_loss_remaining?: number;
   live_policy?: {
     enabled?: boolean;
@@ -328,6 +334,7 @@ export interface ProfileResolvedStats {
 }
 
 export interface StrategyLab {
+  schema_version?: number;
   available: boolean;
   mode: string;
   disclaimer?: string;
@@ -335,6 +342,8 @@ export interface StrategyLab {
   default_profile?: string;
   source_of_truth?: string;
   accounting?: {
+    schema_version?: number;
+    available?: boolean;
     initial_capital: number;
     all_time_realized_pnl: number;
     window_realized_pnl: number;
@@ -351,6 +360,45 @@ export interface StrategyLab {
     roi_on_resolved_capital: number | null;
     reconciliation_status: string;
     accounting_cohort?: string;
+    accounts?: Record<string, {
+      account_id: string;
+      role: string;
+      initial_equity: number;
+      cash_balance: number;
+      available_cash: number;
+      reservations: number;
+      open_cost_basis: number;
+      realized_equity: number;
+      realized_pnl: number;
+      unrealized_pnl: number | null;
+      marked_equity: number | null;
+      mark_coverage: string;
+      reconciliation_status: string;
+      verification_scope?: string;
+    }>;
+    combined?: Record<string, unknown> | null;
+    goal?: {
+      metric: string;
+      account_id: string;
+      timezone: string;
+      period_start: string;
+      period_end: string;
+      target_return: number;
+      starting_realized_equity: number;
+      current_realized_equity: number;
+      weekly_realized_pnl: number;
+      weekly_realized_return: number | null;
+      target_realized_pnl: number;
+      remaining_pnl: number;
+      achieved: boolean;
+      completed_week_success_streak: number;
+      evidence_boundary: string | null;
+      first_full_evidence_week: string | null;
+      current_week_evidence_qualified: boolean;
+      execution_model_version: string;
+      excludes: string[];
+      disclaimer: string;
+    };
   };
   paper_trading: {
     available: boolean;

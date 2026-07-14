@@ -17,7 +17,8 @@ DB="${SFO_FORECAST_DB:-$FORECASTER_DIR/weather.db}"
 MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
 MARKER="${SFO_FORECAST_STALE_MARKER:-$FORECASTER_DIR/STALE_FORECAST}"
 MANIFEST="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
-OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
+OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-15}"
+PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-20}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
@@ -85,7 +86,7 @@ if [[ -n "$PUBLIC_MANIFEST_URL" ]]; then
       && "$PYTHON_BIN" -m sfo_kalshi_quant.publication validate-metadata \
         --manifest "$public_tmp" \
         --require-strategy \
-        --max-operational-age-minutes "$OPERATIONAL_MAX_MINUTES" \
+        --max-operational-age-minutes "$PUBLIC_OPERATIONAL_MAX_MINUTES" \
         --max-strategy-age-minutes "$STRATEGY_MAX_MINUTES" 2>&1
   )"; then
     failures+=("public publication manifest invalid: $public_manifest_result")

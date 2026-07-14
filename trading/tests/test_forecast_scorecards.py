@@ -78,6 +78,49 @@ def test_scorecards_publish_probabilistic_metrics_and_fail_closed_gates() -> Non
     assert gates["time_series_emos"]["required_cases_per_city"] == 180
     assert gates["analog_ensemble"]["required_cases_per_city"] == 365
     assert gates["pooled_distributional"]["required_pooled_station_days"] == 5000
+    assert set(payload["shadow_challengers"]) == {
+        "matched_lead_emos",
+        "partial_pooled_intraday",
+    }
+    assert all(
+        challenger["active"] is False
+        for challenger in payload["shadow_challengers"].values()
+    )
+
+
+def test_scorecards_build_partial_pooled_intraday_shadow_cases() -> None:
+    with TemporaryDirectory() as tmp:
+        db = Path(tmp) / "weather.db"
+        with sqlite3.connect(db) as conn:
+            _schema(conn)
+            conn.execute(
+                "CREATE TABLE nws_station_observations ("
+                "station_id TEXT, local_date TEXT, observed_at TEXT, temp_f REAL)"
+            )
+            for day in range(1, 4):
+                target = f"2026-07-{day:02d}"
+                conn.execute(
+                    "INSERT INTO cli_settlements VALUES ('KSFO', ?, 70, 't', 'cli')",
+                    (target,),
+                )
+                conn.execute(
+                    "INSERT INTO forecast_emos_daily_high VALUES "
+                    "('KSFO', ?, 0, 68, 1.5, 8, 4, 't', 'emos_ngr', "
+                    "'rolling_origin_v2', NULL)",
+                    (target,),
+                )
+                conn.execute(
+                    "INSERT INTO nws_station_observations VALUES "
+                    "('KSFO', ?, ?, 65)",
+                    (target, f"{target}T20:00:00+00:00"),
+                )
+
+        payload = build_forecast_scorecards(db)
+
+    challenger = payload["shadow_challengers"]["partial_pooled_intraday"]
+    assert challenger["available"] is True
+    assert challenger["cases"] == 3
+    assert challenger["active"] is False
 
 
 def test_scorecards_do_not_use_embedded_non_authoritative_actuals() -> None:

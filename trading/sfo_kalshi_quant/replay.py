@@ -20,8 +20,10 @@ from pathlib import Path
 from typing import Literal
 
 from ._util import _json_object, _row_value, _table_exists
-from .account import ACCOUNTING_POLICY_VERSION
+from .account import ACCOUNTING_POLICY_VERSION, SHARED_ACCOUNT_ID
+from .backtest_rescore import _day_clustered_roi_ci
 from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
+from .restatement import VERIFIED, restate
 from .settlement_truth import (
     normalize_settlement_truth,
     row_resolves_yes as _resolves_yes,
@@ -316,7 +318,7 @@ def replay_from_database(
             conn.row_factory = sqlite3.Row
             if not _table_exists(conn, "paper_orders"):
                 return {"available": False, "reason": "paper_orders table missing"}
-            orders = conn.execute(
+            all_orders = conn.execute(
                 "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
             ).fetchall()
             trades = (
@@ -326,17 +328,28 @@ def replay_from_database(
                 if _table_exists(conn, "dataset_kalshi_trades")
                 else []
             )
-            # The accounting-policy transition ledger event marks when this
-            # database first ran the corrected execution/accounting semantics;
+            # The explicit execution transition marks when this database first
+            # ran exec-v3/account-v4. Only live rows written after it can count;
             # only trading days entirely after it count toward the promotion
             # clock (audit Batch D: reset at the version boundary).
             semantics_boundary = None
             if _table_exists(conn, "paper_account_ledger"):
                 boundary_row = conn.execute(
                     "SELECT MIN(created_at) FROM paper_account_ledger "
-                    "WHERE event_type = 'ACCOUNTING_POLICY_TRANSITION'"
+                    "WHERE event_type = 'EXECUTION_SEMANTICS_TRANSITION' "
+                    "AND idempotency_key = ?",
+                    (f"execution:{EXECUTION_MODEL_VERSION}",),
                 ).fetchone()
                 semantics_boundary = boundary_row[0] if boundary_row else None
+            orders = [
+                row
+                for row in all_orders
+                if semantics_boundary
+                and str(_row_value(row, "account_id") or "") == SHARED_ACCOUNT_ID
+                and str(_row_value(row, "execution_model_version") or "")
+                == EXECUTION_MODEL_VERSION
+                and str(row["created_at"] or "") >= str(semantics_boundary)
+            ]
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -465,6 +478,14 @@ def replay_from_database(
         )
 
     result = asdict(run_replay(events, initial_capital=initial_capital))
+    try:
+        verified_order_ids = {
+            int(row["order_id"])
+            for row in restate(Path(db_path)).get("orders", [])
+            if row.get("verification") == VERIFIED
+        }
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        verified_order_ids = set()
     reasons = set(result["promotion_block_reasons"])
     if legacy_orders:
         reasons.add(f"{legacy_orders} legacy orders lack a current strategy fingerprint")
@@ -498,7 +519,149 @@ def replay_from_database(
     result["accounting_policy_version"] = ACCOUNTING_POLICY_VERSION
     result["semantics_boundary"] = semantics_boundary
     result["post_boundary_days"] = post_boundary_days
+    result["verified_decisions"] = len(
+        _verified_resolved_decision_groups(orders, verified_order_ids)
+    )
+    result["evidence_scope"] = {
+        "account_id": SHARED_ACCOUNT_ID,
+        "execution_model_version": EXECUTION_MODEL_VERSION,
+        "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
+        "pre_boundary_excluded": True,
+        "research_excluded": True,
+    }
+    result["readiness_metrics"] = _post_boundary_readiness_metrics(
+        orders,
+        promotion_eligible=bool(result["promotion_eligible"]),
+        semantics_boundary=semantics_boundary,
+        initial_capital=initial_capital,
+        verified_order_ids=verified_order_ids,
+    )
     return result
+
+
+def _post_boundary_readiness_metrics(
+    orders: list[sqlite3.Row],
+    *,
+    promotion_eligible: bool,
+    semantics_boundary: str | None,
+    initial_capital: float,
+    verified_order_ids: set[int],
+) -> dict[str, object]:
+    """Economic readiness inputs from chronological post-boundary live rows."""
+
+    groups = _verified_resolved_decision_groups(orders, verified_order_ids)
+    resolved: list[dict[str, object]] = []
+    for root_id, lots in groups.items():
+        root = next(row for row in lots if int(row["id"]) == root_id)
+        resolved.append(
+            {
+                "root_order_id": root_id,
+                "target_date": str(root["target_date"]),
+                "side": str(root["side"] or "YES").upper(),
+                "realized_pnl": sum(float(row["realized_pnl"] or 0.0) for row in lots),
+                "capital_at_risk": sum(
+                    float(row["contracts"] or 0.0)
+                    * float(row["cost_per_contract"] or 0.0)
+                    for row in lots
+                ),
+                "lots": len(lots),
+            }
+        )
+    per_day: dict[str, dict[str, float]] = {}
+    by_side_rows: dict[str, list[dict[str, object]]] = {}
+    for decision in resolved:
+        day = str(decision["target_date"])
+        bucket = per_day.setdefault(day, {"pnl": 0.0, "capital": 0.0})
+        bucket["pnl"] += float(decision["realized_pnl"])
+        bucket["capital"] += float(decision["capital_at_risk"])
+        by_side_rows.setdefault(str(decision["side"]), []).append(decision)
+    total_pnl = sum(day["pnl"] for day in per_day.values())
+    total_capital = sum(day["capital"] for day in per_day.values())
+    equity = peak = initial_capital
+    max_drawdown = 0.0
+    for day in sorted(per_day):
+        equity += per_day[day]["pnl"]
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, (peak - equity) / peak if peak > 0 else 0.0)
+    growth = _daily_log_growth(
+        initial_capital, {day: values["pnl"] for day, values in per_day.items()}
+    )
+    ci = _day_clustered_roi_ci(per_day, samples=2000, seed=0)
+
+    def side_bucket(rows: list[dict[str, object]]) -> dict[str, object]:
+        capital = sum(float(row["capital_at_risk"]) for row in rows)
+        pnl = sum(float(row["realized_pnl"]) for row in rows)
+        return {
+            "trades": len(rows),
+            "independent_days": len({str(row["target_date"]) for row in rows}),
+            "realized_pnl": round(pnl, 4),
+            "capital_at_risk": round(capital, 4),
+            "roi": round(pnl / capital, 6) if capital > 0 else None,
+        }
+
+    cohort = side_bucket(resolved)
+    cohort["source"] = "post-boundary exec-v3 paper-shared chronological outcomes"
+    return {
+        "evidence_kind": "chronological_account_replay",
+        "promotion_eligible": promotion_eligible,
+        "config_basis": "post-boundary exec-v3 live evidence only",
+        "semantics_boundary": semantics_boundary,
+        "source_cohort": "post_exec_v3_live",
+        "counts": {
+            "settled_decisions": len(resolved),
+            "independent_days": len(per_day),
+        },
+        "candidate": {
+            "realized_pnl": round(total_pnl, 4),
+            "capital_at_risk": round(total_capital, 4),
+            "roi": round(total_pnl / total_capital, 6) if total_capital > 0 else None,
+            "roi_ci95_day_clustered": (
+                [round(ci[0], 6), round(ci[1], 6)] if ci is not None else None
+            ),
+            "log_growth_per_independent_day": (
+                round(growth, 8) if growth is not None else None
+            ),
+            "max_drawdown_pct": round(max_drawdown, 6),
+        },
+        "by_forecast_cohort": {"post_exec_v3_live": cohort} if resolved else {},
+        "by_cohort": {"post_exec_v3_live": cohort} if resolved else {},
+        "by_side": {
+            side: side_bucket(rows) for side, rows in sorted(by_side_rows.items())
+        },
+    }
+
+
+def _verified_resolved_decision_groups(
+    orders: list[sqlite3.Row],
+    verified_order_ids: set[int],
+) -> dict[int, list[sqlite3.Row]]:
+    """Group immutable partial-close lots into their originating decision."""
+
+    resolved_statuses = {"PAPER_SETTLED", "PAPER_CLOSED"}
+    roots = {
+        int(row["id"]): row
+        for row in orders
+        if not _row_value(row, "parent_order_id")
+    }
+    groups: dict[int, list[sqlite3.Row]] = {}
+    for row in orders:
+        if (
+            str(row["status"]) not in resolved_statuses
+            or row["realized_pnl"] is None
+        ):
+            continue
+        parent_id = _row_value(row, "parent_order_id")
+        root_id = int(parent_id) if parent_id else int(row["id"])
+        groups.setdefault(root_id, []).append(row)
+
+    verified: dict[int, list[sqlite3.Row]] = {}
+    for root_id, lots in groups.items():
+        root = roots.get(root_id)
+        if root is None or str(root["status"]) not in resolved_statuses:
+            continue
+        if all(int(row["id"]) in verified_order_ids for row in lots):
+            verified[root_id] = lots
+    return verified
 
 
 def _expire_orders(state: ReplayAccountState, now: datetime, audit: list[dict[str, object]]) -> None:

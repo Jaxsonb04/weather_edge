@@ -26,16 +26,44 @@ def test_systemd_units_use_rendered_weatheredge_env_file():
 def test_installer_forecaster_venv_installs_runtime_dependencies():
     installer = _read(AWS_DIR / "install_systemd.sh")
 
-    assert '"$FORECASTER_DIR/.venv/bin/python" -m pip install certifi numpy pandas' in installer
+    assert '--require-hashes -r "$BASE_DIR/requirements/production.lock"' in installer
+    assert "pip install --upgrade" not in installer
     apt_install = next(line for line in installer.splitlines() if "apt-get install" in line)
     assert "curl" in apt_install.split()
+    assert "awscli" not in apt_install.split()
+
+
+def test_installers_repair_trading_venv_ownership_before_project_install():
+    for name in ("install_systemd.sh", "install_systemd_notimers.sh"):
+        installer = _read(AWS_DIR / name)
+        ownership_idx = installer.index('chown -R "$APP_USER:$APP_GROUP" "$TRADING_DIR/.venv"')
+        project_install_idx = installer.index('bash "$SCRIPT_DIR/install_trading_project.sh"')
+        assert ownership_idx < project_install_idx
+
+
+def test_backup_provisioner_enforces_bucket_controls_and_least_privilege_prefixes():
+    provisioner = _read(AWS_DIR / "provision_backup_bucket.sh")
+
+    assert "put-public-access-block" in provisioner
+    assert "put-bucket-versioning" in provisioner
+    assert "put-bucket-encryption" in provisioner
+    assert "put-bucket-lifecycle-configuration" in provisioner
+    assert "paper_trading/*" in provisioner
+    assert "database-snapshots/*" in provisioner
+    assert "iam put-role-policy" in provisioner
+    assert "s3:*" not in provisioner
 
 
 def test_github_verify_workflow_installs_test_import_dependencies():
     workflow = _read(ROOT / ".github" / "workflows" / "verify.yml")
 
-    assert "python -m pip install -e '.[dev]'" in workflow
-    assert "semgrep" in workflow
+    assert "python -m pip install --require-hashes -r requirements/production.lock" in workflow
+    assert "python -m pip install --no-build-isolation --no-deps -e ." in workflow
+    assert "semgrep==" in workflow
+    assert 'HEROUI_KEY: ${{ secrets.HEROUI_KEY }}' in workflow
+    assert 'if [[ -z "$HEROUI_KEY" ]]' in workflow
+    assert "missing from the GitHub Actions secret store" in workflow
+    assert "env -u CI npx -y hpsetup@4.7.0 --auto" in workflow
 
 
 def test_forecaster_refresh_only_refreshes_forecast_state():
@@ -441,7 +469,8 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     deployment = _read(AWS_DIR.parents[2] / "docs" / "aws_deployment.md")
 
     assert "sfo_kalshi_quant.publication validate" in watchdog
-    assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
+    assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15" in example_env
+    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20" in example_env
     assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
     assert (
         "SFO_PUBLICATION_MANIFEST_URL="
@@ -450,7 +479,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     assert "shared sfo-alert@.service JSON" in watchdog
     assert "Slack/Discord" not in watchdog
     for documentation in (readme, deployment):
-        assert "10 minutes" in documentation
+        assert "15 minutes" in documentation
         assert "20 minutes" in documentation
         assert "SFO_PUBLICATION_MANIFEST_URL" in documentation
 
