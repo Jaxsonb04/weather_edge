@@ -20,8 +20,10 @@ The S3/IAM operator checkpoint is automated by
 `trading/deploy/aws/provision_backup_bucket.sh BUCKET REGION INSTANCE_ID`. It
 requires an AWS infrastructure identity, creates or configures the backup
 bucket, and limits the instance role to the journal and full-database prefixes.
-The host also needs the AWS CLI. Copy the script's printed `SFO_...` values into
-`/etc/weatheredge.env` before running the first deployment.
+The host also needs AWS CLI v2. Ubuntu 24.04 ARM does not provide an `awscli`
+apt candidate, so install the official AWS Linux ARM package and verify that
+`aws sts get-caller-identity` resolves to the instance role. Copy the script's
+printed `SFO_...` values into `/etc/weatheredge.env` before the first deploy.
 
 ## Deploy And Install
 

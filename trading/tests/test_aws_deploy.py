@@ -30,6 +30,7 @@ def test_installer_forecaster_venv_installs_runtime_dependencies():
     assert "pip install --upgrade" not in installer
     apt_install = next(line for line in installer.splitlines() if "apt-get install" in line)
     assert "curl" in apt_install.split()
+    assert "awscli" not in apt_install.split()
 
 
 def test_installers_repair_trading_venv_ownership_before_project_install():

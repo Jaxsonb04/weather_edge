@@ -70,8 +70,9 @@ bash trading/deploy/aws/provision_backup_bucket.sh \
 ```
 
 Copy the three printed `SFO_...` values into `/etc/weatheredge.env` and install
-the AWS CLI on the host (`sudo apt-get update && sudo apt-get install -y awscli`).
-The deployment script does not provision IAM or S3.
+AWS CLI v2 with Amazon's official Linux ARM installer. Ubuntu 24.04 ARM has no
+`awscli` apt candidate. Verify `aws sts get-caller-identity` resolves to the
+instance role. The deployment script does not provision IAM or S3.
 
 On an established host, the full sync refuses to stop services until
 `backup_paper_db.sh preflight` proves the configured AWS identity and bucket
