@@ -59,6 +59,8 @@ def test_github_verify_workflow_installs_test_import_dependencies():
     assert "python -m pip install --require-hashes -r requirements/production.lock" in workflow
     assert "python -m pip install --no-build-isolation --no-deps -e ." in workflow
     assert "semgrep==" in workflow
+    assert 'if [[ -z "$HEROUI_AUTH_TOKEN" ]]' in workflow
+    assert "missing from the GitHub Actions secret store" in workflow
 
 
 def test_forecaster_refresh_only_refreshes_forecast_state():
