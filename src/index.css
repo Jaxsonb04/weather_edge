@@ -104,6 +104,13 @@
   body,
   #root {
     min-height: 100%;
+    max-width: 100%;
+  }
+  html,
+  body {
+    /* Wide operational grids own their horizontal scroll regions; the page
+       itself must never become a second horizontal scroller. */
+    overflow-x: clip;
   }
   body {
     @apply bg-background text-foreground antialiased;

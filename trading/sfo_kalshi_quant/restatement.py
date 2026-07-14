@@ -49,7 +49,7 @@ from typing import Any
 
 from ._util import _json_object
 from .account import ACCOUNTING_POLICY_VERSION
-from .maker_fills import EXECUTION_MODEL_VERSION
+from .maker_fills import EXECUTION_MODEL_VERSION, depth_observation_is_contemporaneous
 
 # The taker-entry displayed-ask sizing cap landed 2026-07-10; taker entries
 # before it could exceed displayed liquidity.
@@ -69,6 +69,7 @@ def _entry_findings(
     row: sqlite3.Row,
     evidence: dict[str, Any],
     duplicate_trade_ids: set[str],
+    v3_findings: list[str] | None = None,
 ) -> list[str]:
     status = str(row["status"])
     entry_mode = str(row["entry_mode"] or "market")
@@ -80,8 +81,10 @@ def _entry_findings(
             return ["TAKER_PRE_SIZING_FIX"]
         return []
     model = str(evidence.get("model") or "")
+    if model == "maker_allocator_price_time_v3":
+        return list(v3_findings or [])
     if model == "maker_allocator_price_time_v2":
-        return []
+        return ["EXEC_V2_QUEUE_STATE_UNREPLAYABLE"]
     findings: list[str] = []
     side = str(row["side"] or "YES").upper()
     if side == "YES":
@@ -100,9 +103,36 @@ def _exit_findings(row: sqlite3.Row, outcome: dict[str, Any]) -> list[str]:
     if status != "PAPER_CLOSED":
         return []
     execution = outcome.get("exit_execution") or {}
-    if execution.get("executed_quantity") is not None:
-        return []
-    return ["EXIT_DEPTH_UNVERIFIED"]
+    try:
+        executed = float(execution.get("executed_quantity"))
+    except (TypeError, ValueError):
+        return ["EXIT_DEPTH_UNVERIFIED"]
+    depth_value = execution.get(
+        "displayed_depth", execution.get("displayed_bid_size")
+    )
+    try:
+        displayed_depth = float(depth_value)
+    except (TypeError, ValueError):
+        return ["EXIT_DEPTH_UNVERIFIED"]
+    if displayed_depth + 1e-9 < executed:
+        return ["EXIT_DEPTH_INSUFFICIENT"]
+    try:
+        closed_at = row["closed_at"]
+    except (IndexError, KeyError, TypeError):
+        closed_at = None
+    if not depth_observation_is_contemporaneous(
+        execution.get("observed_at"), closed_at
+    ):
+        return ["EXIT_DEPTH_STALE"]
+    if (
+        executed <= 0
+        or displayed_depth <= 0
+        or not execution.get("source")
+        or not execution.get("observed_at")
+        or execution.get("verification_status") != VERIFIED
+    ):
+        return ["EXIT_DEPTH_UNVERIFIED"]
+    return []
 
 
 def restate(db_path: Path) -> dict[str, Any]:
@@ -118,6 +148,83 @@ def restate(db_path: Path) -> dict[str, Any]:
                 "SELECT order_id, verification_status FROM paper_settlement_verifications"
             ).fetchall()
         }
+        has_v3_allocations = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='paper_maker_allocations'"
+        ).fetchone() is not None
+        allocation_rows = (
+            conn.execute("SELECT * FROM paper_maker_allocations").fetchall()
+            if has_v3_allocations
+            else []
+        )
+        has_tape = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='dataset_kalshi_trades'"
+        ).fetchone() is not None
+        tape_rows = (
+            conn.execute("SELECT * FROM dataset_kalshi_trades").fetchall()
+            if has_tape
+            else []
+        )
+
+    allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    capital_consumption: dict[str, float] = defaultdict(float)
+    for allocation_row in allocation_rows:
+        allocations_by_order[int(allocation_row["order_id"])].append(allocation_row)
+        if not int(allocation_row["counterfactual"] or 0):
+            capital_consumption[str(allocation_row["trade_id"])] += float(
+                allocation_row["queue_quantity"] or 0.0
+            ) + float(allocation_row["fill_quantity"] or 0.0)
+    tape_by_id = {str(tape_row["trade_id"]): tape_row for tape_row in tape_rows}
+    overclaimed_trade_ids = {
+        trade_id
+        for trade_id, consumed in capital_consumption.items()
+        if trade_id not in tape_by_id
+        or consumed > float(tape_by_id[trade_id]["count"] or 0.0) + 1e-9
+    }
+
+    v3_findings_by_order: dict[int, list[str]] = {}
+    for row in orders:
+        order_id = int(row["id"])
+        evidence = _json_object(row["fill_evidence_json"])
+        if evidence.get("model") != "maker_allocator_price_time_v3":
+            continue
+        findings: list[str] = []
+        order_allocations = allocations_by_order.get(order_id, [])
+        if not order_allocations:
+            findings.append("EXEC_V3_ALLOCATION_MISSING")
+        expected_fill = float(
+            row["filled_contracts"]
+            if "filled_contracts" in row.keys() and row["filled_contracts"] is not None
+            else row["contracts"]
+        )
+        recorded_fill = sum(
+            float(item["fill_quantity"] or 0.0) for item in order_allocations
+        )
+        if abs(recorded_fill - expected_fill) > 1e-9:
+            findings.append("EXEC_V3_FILL_QUANTITY_MISMATCH")
+        side = str(row["side"] or "YES").upper()
+        limit_price = float(
+            row["limit_price"]
+            if row["limit_price"] is not None
+            else row["entry_price"]
+        )
+        created_at = str(row["created_at"] or "")
+        for allocation_row in order_allocations:
+            trade_id = str(allocation_row["trade_id"])
+            tape = tape_by_id.get(trade_id)
+            if tape is None:
+                findings.append("EXEC_V3_TAPE_MISSING")
+                continue
+            if str(allocation_row["maker_side"]).upper() != side:
+                findings.append("EXEC_V3_DIRECTION_INVALID")
+            if str(allocation_row["trade_created_at"]) <= created_at:
+                findings.append("EXEC_V3_TRADE_NOT_LATER")
+            if float(allocation_row["side_price"]) > limit_price + 1e-9:
+                findings.append("EXEC_V3_PRICE_INVALID")
+            if trade_id in overclaimed_trade_ids:
+                findings.append("EXEC_V3_VOLUME_OVERCLAIMED")
+        v3_findings_by_order[order_id] = list(dict.fromkeys(findings))
 
     # A public trade id credited by more than one capital-consuming order's
     # evidence is the double-credit signature (production 226/227, 261/262).
@@ -150,8 +257,14 @@ def restate(db_path: Path) -> dict[str, Any]:
         parent_id = row["parent_order_id"] if "parent_order_id" in row.keys() else None
         if parent_id:
             evidence = evidences.get(int(parent_id), {})
+        entry_evidence_order_id = int(parent_id) if parent_id else order_id
         outcome = _json_object(row["outcome_diagnostics_json"])
-        findings = _entry_findings(row, evidence, duplicate_trade_ids)
+        findings = _entry_findings(
+            row,
+            evidence,
+            duplicate_trade_ids,
+            v3_findings_by_order.get(entry_evidence_order_id),
+        )
         findings += _exit_findings(row, outcome)
         settlement_check = settlement_checks.get(order_id)
         if settlement_check == "MISMATCH":

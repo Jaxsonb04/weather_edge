@@ -422,6 +422,8 @@ def test_installer_editable_install_uses_synced_root_project(
     (forecaster / "google_weather_cache.py").touch()
     (base / "pyproject.toml").write_text("[project]\nname='weatheredge'\nversion='0'\n")
     (base / "README.md").write_text("# WeatherEdge\n")
+    (base / "requirements").mkdir()
+    (base / "requirements" / "production.lock").write_text("# test lock\n")
     env_file = tmp_path / "weatheredge.env"
     env_file.write_text("GOOGLE_WEATHER_API_KEY=test\n")
 
@@ -477,9 +479,12 @@ exit 0
     calls = pip_log.read_text().splitlines()
     uninstall = "-m pip uninstall -y sfo-kalshi-quant"
     assert uninstall in calls
-    assert f"-m pip install -e {base}" in calls
-    assert f"-m pip install -e {trading}" not in calls
-    assert calls.index(uninstall) < calls.index(f"-m pip install -e {base}")
+    locked_install = f"-m pip install --require-hashes -r {base / 'requirements' / 'production.lock'}"
+    project_install = f"-m pip install --no-build-isolation --no-deps -e {base}"
+    assert calls.count(locked_install) == 2
+    assert project_install in calls
+    assert f"-m pip install --no-build-isolation --no-deps -e {trading}" not in calls
+    assert calls.index(uninstall) < calls.index(project_install)
 
 
 @pytest.mark.parametrize("installer", ["install_systemd.sh", "install_systemd_notimers.sh"])
@@ -633,6 +638,8 @@ def test_timerless_timezone_mismatch_quiesces_before_set(tmp_path: Path) -> None
     (base / "trading" / "sfo_kalshi_quant").mkdir(parents=True)
     (base / "forecaster").mkdir()
     (base / "forecaster" / "google_weather_cache.py").touch()
+    (base / "requirements").mkdir()
+    (base / "requirements" / "production.lock").write_text("# test lock\n")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     order_log = tmp_path / "order.log"

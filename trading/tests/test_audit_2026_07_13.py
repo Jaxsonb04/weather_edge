@@ -114,10 +114,13 @@ def _resting_order(
     assert order_id is not None
     with store.connect() as conn:
         conn.execute(
-            "UPDATE paper_orders SET created_at=?, limit_price=?, entry_bid_size=? WHERE id=?",
+            "UPDATE paper_orders SET created_at=?, expires_at=?, limit_price=?, "
+            "entry_bid_size=?, queue_remaining=? WHERE id=?",
             (
                 created_at.isoformat(),
+                (created_at + timedelta(minutes=15)).isoformat(),
                 decision.limit_price,
+                queue_ahead,
                 queue_ahead,
                 order_id,
             ),

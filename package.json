@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "bundle:report": "node scripts/report_spa_bundle.mjs",
     "bundle:check:observed": "node scripts/report_spa_bundle.mjs --observed",
+    "bundle:capture": "node scripts/capture_initial_resources.mjs",
     "icons:generate": "node scripts/generate_icon_collection.mjs",
     "icons:check": "node scripts/generate_icon_collection.mjs --check",
     "lint": "oxlint",
@@ -59,9 +60,13 @@
     "@vitejs/plugin-react": "^6.0.2",
     "jsdom": "26.1.0",
     "oxlint": "^1.69.0",
+    "playwright-core": "^1.55.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.0",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "tar": "7.5.20"
   },
   "trustedDependencies": [
     "@heroui-pro/react"

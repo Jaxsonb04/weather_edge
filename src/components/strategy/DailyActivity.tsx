@@ -103,13 +103,15 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
   ];
 
   return (
+    <div className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-2xl" role="region" aria-label="Scrollable daily activity table" tabIndex={0}>
     <DataGrid
       aria-label="Daily trading and forecast activity"
       columns={columns}
       data={rows}
       getRowId={(d) => d.date}
       variant="secondary"
-      className="rounded-2xl"
+      className="min-w-[48rem] rounded-2xl"
     />
+    </div>
   );
 }

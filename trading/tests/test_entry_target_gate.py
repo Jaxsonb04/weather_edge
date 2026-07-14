@@ -29,7 +29,9 @@ def test_single_source_forecast_blocks_paper_entry():
 
 def test_same_day_entry_gate_blocks_after_peak_window():
     now = datetime(2026, 6, 8, 15, 1, tzinfo=SFO_TZ)
-    allowed, reason = _paper_entry_gate_for_target(now.date(), _forecast(now.date()), None, now=now)
+    allowed, reason = _paper_entry_gate_for_target(
+        now.date(), _forecast(now.date()), None, now=now, risk_profile="research"
+    )
 
     assert allowed is False
     assert reason is not None
@@ -47,6 +49,7 @@ def test_nyc_same_day_entry_gate_uses_fixed_est_cutoff_at_20z():
         None,
         city=city,
         now=now,
+        risk_profile="research",
     )
 
     assert allowed is False
@@ -63,14 +66,26 @@ def test_same_day_entry_gate_allows_later_targets_after_cutoff():
     assert reason is None
 
 
-def test_same_day_entry_gate_allows_observed_high_lock_before_peak_window():
+def test_research_same_day_entry_gate_allows_observed_high_lock_before_peak_window():
     target = date(2026, 6, 8)
     now = datetime(2026, 6, 8, 2, 39, tzinfo=SFO_TZ)
     forecast = _forecast(target, {"observed_high_decision": {"mode": "lock"}})
-    allowed, reason = _paper_entry_gate_for_target(target, forecast, None, now=now)
+    allowed, reason = _paper_entry_gate_for_target(
+        target, forecast, None, now=now, risk_profile="research"
+    )
 
     assert allowed is True
     assert reason is None
+
+
+def test_live_profile_requires_at_least_next_day_target():
+    target = date(2026, 6, 8)
+    now = datetime(2026, 6, 8, 2, 39, tzinfo=SFO_TZ)
+    allowed, reason = _paper_entry_gate_for_target(
+        target, _forecast(target), None, now=now, risk_profile="live"
+    )
+    assert allowed is False
+    assert reason == "live paper entry requires min_lead_days=1; same-day signals are research-only"
 
 
 def test_same_day_entry_gate_blocks_complete_intraday_high():
@@ -85,7 +100,9 @@ def test_same_day_entry_gate_blocks_complete_intraday_high():
         forecast_fetched_at="2026-06-08T19:00:00+00:00",
         is_complete=True,
     )
-    allowed, reason = _paper_entry_gate_for_target(target, _forecast(target), intraday, now=now)
+    allowed, reason = _paper_entry_gate_for_target(
+        target, _forecast(target), intraday, now=now, risk_profile="research"
+    )
 
     assert allowed is False
     assert reason is not None

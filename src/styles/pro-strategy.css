@@ -7,6 +7,18 @@
 @import "@heroui-pro/react/css/components/data-grid.css";
 @import "@heroui-pro/react/css/components/item-card.css";
 @import "@heroui-pro/react/css/components/item-card-group.css";
+
+@media (max-width: 639px) {
+  .item-card-group--grid {
+    --item-card-group-columns: 1;
+    min-width: 0;
+  }
+
+  .item-card-group--grid > [data-slot="item-card"],
+  .item-card-group--grid [data-slot="item-card-content"] {
+    min-width: 0;
+  }
+}
 @import "@heroui-pro/react/css/components/kpi.css";
 @import "@heroui-pro/react/css/components/kpi-group.css";
 @import "@heroui-pro/react/css/components/line-chart.css";

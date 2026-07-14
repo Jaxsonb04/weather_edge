@@ -86,7 +86,9 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             """
             SELECT *
             FROM paper_orders
-            WHERE status = 'PAPER_FILLED'
+            WHERE status IN (
+                'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+            )
               AND settled_at IS NULL
               AND closed_at IS NULL
             ORDER BY created_at DESC
@@ -97,7 +99,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             """
             SELECT *
             FROM paper_orders
-            WHERE status = 'PAPER_LIMIT_RESTING'
+            WHERE status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
               AND settled_at IS NULL
               AND closed_at IS NULL
             ORDER BY created_at DESC
@@ -107,9 +109,9 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         pending_limit_summary = conn.execute(
             """
             SELECT COUNT(*) AS pending_orders,
-                   COALESCE(SUM(contracts * cost_per_contract), 0.0) AS pending_risk
+                   COALESCE(SUM(reserved_cost), 0.0) AS pending_risk
             FROM paper_orders
-            WHERE status = 'PAPER_LIMIT_RESTING'
+            WHERE status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
               AND settled_at IS NULL
               AND closed_at IS NULL
             """
@@ -166,7 +168,9 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                    UPPER(COALESCE(side, 'YES')) AS side,
                    COUNT(*) AS open_orders
             FROM paper_orders
-            WHERE status = 'PAPER_FILLED'
+            WHERE status IN (
+                'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+            )
               AND settled_at IS NULL
               AND closed_at IS NULL
             GROUP BY target_date,
@@ -182,7 +186,9 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             """
             SELECT target_date, COUNT(*) AS open_orders
             FROM paper_orders
-            WHERE status = 'PAPER_FILLED'
+            WHERE status IN (
+                'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+            )
               AND settled_at IS NULL
               AND closed_at IS NULL
             GROUP BY target_date
@@ -215,22 +221,28 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                             AND realized_pnl < 0 THEN 1 ELSE 0 END) AS losses,
                    SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
                             THEN COALESCE(realized_pnl, 0.0) ELSE 0.0 END) AS realized_pnl,
-                   SUM(CASE WHEN status = 'PAPER_FILLED'
+                   SUM(CASE WHEN status IN (
+                                  'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED',
+                                  'PAPER_PARTIAL_EXPIRED'
+                            )
                              AND settled_at IS NULL
                              AND closed_at IS NULL
                             THEN 1 ELSE 0 END) AS open_positions,
-                   SUM(CASE WHEN status = 'PAPER_FILLED'
+                   SUM(CASE WHEN status IN (
+                                  'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED',
+                                  'PAPER_PARTIAL_EXPIRED'
+                            )
                              AND settled_at IS NULL
                              AND closed_at IS NULL
                             THEN contracts * cost_per_contract ELSE 0.0 END) AS open_risk,
-                   SUM(CASE WHEN status = 'PAPER_LIMIT_RESTING'
+                   SUM(CASE WHEN status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
                              AND settled_at IS NULL
                              AND closed_at IS NULL
                             THEN 1 ELSE 0 END) AS pending_limit_orders,
-                   SUM(CASE WHEN status = 'PAPER_LIMIT_RESTING'
+                   SUM(CASE WHEN status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
                              AND settled_at IS NULL
                              AND closed_at IS NULL
-                            THEN contracts * cost_per_contract ELSE 0.0 END) AS pending_limit_risk,
+                            THEN reserved_cost ELSE 0.0 END) AS pending_limit_risk,
                    SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
                              AND realized_pnl IS NOT NULL
                             THEN contracts * cost_per_contract ELSE 0.0 END) AS capital_resolved

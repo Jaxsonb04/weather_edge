@@ -135,7 +135,7 @@ The public site is a React + Vite + HeroUI Pro single-page app at the repo root
 (`src/`, `index.html`, `vite.config.ts`), built with bun:
 
 ```bash
-bun install --frozen-lockfile # HeroUI Pro registry auth required (HEROUI_PERSONAL_TOKEN)
+bun install --frozen-lockfile # HeroUI Pro registry auth required (HEROUI_AUTH_TOKEN)
 bun run build # outputs dist/
 ```
 

@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import Iterable
@@ -29,7 +30,15 @@ from .fees import (
     quadratic_fee_average_per_contract,
     quadratic_fee_per_contract,
 )
-from .maker_fills import EXECUTION_MODEL_VERSION
+from .maker_fills import (
+    EXECUTION_MODEL_VERSION,
+    PublicAggressorTrade,
+    RestingMakerOrder,
+    allocate_maker_fills,
+    apply_volume_claims,
+    depth_observation_is_contemporaneous,
+    normalize_public_trade,
+)
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
@@ -184,33 +193,33 @@ class PaperStore:
         immutable ledger event on the shared account.
         """
 
-        if conn.execute(
+        research_exists = conn.execute(
             "SELECT 1 FROM paper_accounts WHERE account_id = ?", (RESEARCH_ACCOUNT_ID,)
-        ).fetchone():
-            return
-        created_at = _now()
-        conn.execute(
-            "INSERT OR IGNORE INTO paper_accounts "
-            "(account_id, created_at, initial_capital, opening_cash, high_water_equity, cutover_note) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                RESEARCH_ACCOUNT_ID,
-                created_at,
-                RESEARCH_VIRTUAL_CAPITAL,
-                RESEARCH_VIRTUAL_CAPITAL,
-                RESEARCH_VIRTUAL_CAPITAL,
-                f"research shadow ledger cutover ({ACCOUNTING_POLICY_VERSION})",
-            ),
-        )
-        self._record_ledger_event(
-            conn,
-            account_id=RESEARCH_ACCOUNT_ID,
-            order_id=None,
-            event_type="OPENING_CASH",
-            amount=RESEARCH_VIRTUAL_CAPITAL,
-            idempotency_key=f"{RESEARCH_ACCOUNT_ID}:opening",
-            details={"accounting_policy_version": ACCOUNTING_POLICY_VERSION},
-        )
+        ).fetchone()
+        if not research_exists:
+            created_at = _now()
+            conn.execute(
+                "INSERT OR IGNORE INTO paper_accounts "
+                "(account_id, created_at, initial_capital, opening_cash, high_water_equity, cutover_note) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    RESEARCH_ACCOUNT_ID,
+                    created_at,
+                    RESEARCH_VIRTUAL_CAPITAL,
+                    RESEARCH_VIRTUAL_CAPITAL,
+                    RESEARCH_VIRTUAL_CAPITAL,
+                    f"research shadow ledger cutover ({ACCOUNTING_POLICY_VERSION})",
+                ),
+            )
+            self._record_ledger_event(
+                conn,
+                account_id=RESEARCH_ACCOUNT_ID,
+                order_id=None,
+                event_type="OPENING_CASH",
+                amount=RESEARCH_VIRTUAL_CAPITAL,
+                idempotency_key=f"{RESEARCH_ACCOUNT_ID}:opening",
+                details={"accounting_policy_version": ACCOUNTING_POLICY_VERSION},
+            )
         self._record_ledger_event(
             conn,
             account_id=SHARED_ACCOUNT_ID,
@@ -227,6 +236,19 @@ class PaperStore:
                 ),
             },
         )
+        self._record_ledger_event(
+            conn,
+            account_id=SHARED_ACCOUNT_ID,
+            order_id=None,
+            event_type="EXECUTION_SEMANTICS_TRANSITION",
+            amount=0.0,
+            idempotency_key=f"execution:{EXECUTION_MODEL_VERSION}",
+            details={
+                "execution_model_version": EXECUTION_MODEL_VERSION,
+                "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
+                "note": "exec-v3 replayable tape, conserved queue volume, and partial fills",
+            },
+        )
 
     def _ensure_shared_paper_account(self, conn: sqlite3.Connection) -> None:
         self._ensure_research_paper_account(conn)
@@ -236,7 +258,8 @@ class PaperStore:
             return
         active = conn.execute(
             "SELECT COUNT(*) FROM paper_orders WHERE status IN "
-            "('PAPER_FILLED', 'PAPER_LIMIT_RESTING') AND settled_at IS NULL AND closed_at IS NULL"
+            "('PAPER_FILLED', 'PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED', "
+            "'PAPER_PARTIAL_EXPIRED') AND settled_at IS NULL AND closed_at IS NULL"
         ).fetchone()
         if active and int(active[0] or 0) > 0:
             # Cutover must happen flat.  Existing monitoring/settlement remains
@@ -272,6 +295,48 @@ class PaperStore:
             idempotency_key=f"{SHARED_ACCOUNT_ID}:opening",
             details={"initial_capital": INITIAL_CAPITAL, "legacy_realized_pnl": opening_cash - INITIAL_CAPITAL},
         )
+
+    def _expire_pre_v3_resting_orders(self, conn: sqlite3.Connection) -> None:
+        """Cancel pre-v3 quotes whose historical queue cannot be reconstructed."""
+
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM paper_orders WHERE status='PAPER_LIMIT_RESTING' "
+            "AND COALESCE(execution_model_version,'legacy-pre-exec-v3') != ?",
+            (EXECUTION_MODEL_VERSION,),
+        ).fetchall()
+        cancelled_at = _now()
+        for row in rows:
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_EXPIRED', cancelled_at=?, "
+                "remaining_contracts=0, queue_remaining=0, reserved_cost=0, "
+                "outcome_diagnostics_json=? WHERE id=? AND status='PAPER_LIMIT_RESTING'",
+                (
+                    cancelled_at,
+                    json.dumps(
+                        {
+                            "event": "execution_model_cutover",
+                            "reason": "pre-v3 maker queue state is not safely replayable",
+                            "previous_execution_model_version": row[
+                                "execution_model_version"
+                            ],
+                            "execution_model_version": EXECUTION_MODEL_VERSION,
+                        },
+                        sort_keys=True,
+                    ),
+                    int(row["id"]),
+                ),
+            )
+            if row["account_id"]:
+                self._record_ledger_event(
+                    conn,
+                    account_id=str(row["account_id"]),
+                    order_id=int(row["id"]),
+                    event_type="RESERVATION_RELEASE",
+                    amount=float(row["reserved_cost"] or 0.0),
+                    idempotency_key=f"order:{row['id']}:exec-v3-cutover-release",
+                    details={"execution_model_version": EXECUTION_MODEL_VERSION},
+                )
 
     @staticmethod
     def _record_ledger_event(
@@ -320,9 +385,13 @@ class PaperStore:
             ).fetchone()[0] or 0.0)
             risk = conn.execute(
                 "SELECT "
-                "COALESCE(SUM(CASE WHEN status='PAPER_FILLED' AND settled_at IS NULL AND closed_at IS NULL "
+                "COALESCE(SUM(CASE WHEN status IN "
+                "('PAPER_FILLED','PAPER_PARTIALLY_FILLED','PAPER_PARTIAL_EXPIRED') "
+                "AND settled_at IS NULL AND closed_at IS NULL "
                 "THEN contracts * cost_per_contract ELSE 0 END), 0), "
-                "COALESCE(SUM(CASE WHEN status='PAPER_LIMIT_RESTING' AND settled_at IS NULL AND closed_at IS NULL "
+                "COALESCE(SUM(CASE WHEN status IN "
+                "('PAPER_LIMIT_RESTING','PAPER_PARTIALLY_FILLED') "
+                "AND settled_at IS NULL AND closed_at IS NULL "
                 "THEN reserved_cost ELSE 0 END), 0) FROM paper_orders WHERE account_id = ?",
                 (account_id,),
             ).fetchone()
@@ -397,9 +466,12 @@ class PaperStore:
             active = conn.execute(
                 "SELECT market_ticker, target_date, COALESCE(risk_profile, 'live'), "
                 "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
+                "WHEN status='PAPER_PARTIALLY_FILLED' THEN "
+                "contracts * cost_per_contract + reserved_cost "
                 "ELSE contracts * cost_per_contract END AS risk "
                 "FROM paper_orders WHERE account_id IN (?, ?) AND status IN "
-                "('PAPER_FILLED','PAPER_LIMIT_RESTING') AND settled_at IS NULL AND closed_at IS NULL",
+                "('PAPER_FILLED','PAPER_LIMIT_RESTING','PAPER_PARTIALLY_FILLED',"
+                "'PAPER_PARTIAL_EXPIRED') AND settled_at IS NULL AND closed_at IS NULL",
                 (
                     SHARED_ACCOUNT_ID,
                     entry_account if entry_account != SHARED_ACCOUNT_ID else SHARED_ACCOUNT_ID,
@@ -971,9 +1043,11 @@ class PaperStore:
                         expected_profit, status, entry_decision_snapshot_id,
                         diagnostics_json, reasons_json, account_id,
                         strategy_fingerprint, sleeve, filled_at, expires_at,
-                        reserved_cost, quote_snapshot_json, fill_model
+                        reserved_cost, quote_snapshot_json, fill_model,
+                        requested_contracts, filled_contracts, remaining_contracts,
+                        queue_remaining, execution_model_version
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         created_at,
@@ -1019,6 +1093,13 @@ class PaperStore:
                         reserved_cost,
                         quote_snapshot_json,
                         fill_model,
+                        contracts,
+                        contracts if normalized_status == "PAPER_FILLED" else 0.0,
+                        contracts if normalized_status == "PAPER_LIMIT_RESTING" else 0.0,
+                        float(decision.bid_size or 0.0)
+                        if normalized_status == "PAPER_LIMIT_RESTING"
+                        else 0.0,
+                        EXECUTION_MODEL_VERSION,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -1424,7 +1505,7 @@ class PaperStore:
         filters = [
             "target_date = ?",
             "market_ticker = ?",
-            "status = 'PAPER_FILLED'",
+            "status IN ('PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED')",
             "settled_at IS NULL",
             "closed_at IS NULL",
         ]
@@ -1457,7 +1538,8 @@ class PaperStore:
         filters = [
             "target_date = ?",
             "market_ticker = ?",
-            "status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')",
+            "status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING', "
+            "'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED')",
             "settled_at IS NULL",
             "closed_at IS NULL",
         ]
@@ -1489,7 +1571,7 @@ class PaperStore:
             "target_date = ?",
             "market_ticker = ?",
             "UPPER(COALESCE(side, 'YES')) = ?",
-            "status = 'PAPER_LIMIT_RESTING'",
+            "status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')",
             "settled_at IS NULL",
             "closed_at IS NULL",
         ]
@@ -1549,6 +1631,335 @@ class PaperStore:
                 self._record_maker_volume_claims(conn, row, evidence or {})
         return self._order(order_id)
 
+    def apply_maker_trade_batch(
+        self,
+        market_ticker: str,
+        trade_payloads: Iterable[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """Atomically journal tape and advance every resting order on a ticker.
+
+        Network pagination finishes before this method is called. The writer
+        lock then makes tape archival, finite-volume allocation, queue progress,
+        partial fills, reservations, and ledger charges one indivisible state
+        transition.
+        """
+
+        payloads = list(trade_payloads)
+        # Public APIs can repeat the boundary trade across pages. A trade id is
+        # one finite event, so collapse duplicates before the allocator sees
+        # them; the allocation table's uniqueness constraint is too late once
+        # duplicate quantities have already been summed in memory.
+        normalized_by_id: dict[
+            str, tuple[dict[str, object], PublicAggressorTrade]
+        ] = {}
+        for payload in payloads:
+            trade = normalize_public_trade(payload)
+            if trade is not None:
+                normalized_by_id.setdefault(trade.trade_id, (payload, trade))
+        normalized_pairs = list(normalized_by_id.values())
+        if not normalized_pairs:
+            return []
+        all_trades = [trade for _, trade in normalized_pairs]
+        trade_by_id = {trade.trade_id: trade for trade in all_trades}
+        applied_at = _now()
+        updates: list[dict[str, object]] = []
+
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            for payload, trade in normalized_pairs:
+                conn.execute(
+                    """
+                    INSERT INTO dataset_kalshi_trades (
+                        trade_id, ticker, created_time, count, yes_price,
+                        no_price, is_block_trade, taker_book_side, maker_side,
+                        raw_json, fetched_at, last_seen_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(trade_id) DO UPDATE SET
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (
+                        trade.trade_id,
+                        market_ticker,
+                        trade.created_at.isoformat(),
+                        float(trade.quantity),
+                        float(trade.yes_price),
+                        float(Decimal(1) - trade.yes_price),
+                        1 if payload.get("is_block_trade") else 0,
+                        str(payload.get("taker_book_side") or ""),
+                        trade.maker_side,
+                        json.dumps(payload, sort_keys=True),
+                        applied_at,
+                        applied_at,
+                    ),
+                )
+
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM paper_orders
+                WHERE market_ticker = ?
+                  AND status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
+                  AND settled_at IS NULL
+                  AND closed_at IS NULL
+                ORDER BY created_at, id
+                """,
+                (market_ticker,),
+            ).fetchall()
+            if not rows:
+                return []
+
+            claims: dict[str, float] = {}
+            for trade_id, quantity in conn.execute(
+                "SELECT trade_id, COALESCE(SUM(quantity), 0) "
+                "FROM maker_volume_claims WHERE market_ticker=? GROUP BY trade_id",
+                (market_ticker,),
+            ).fetchall():
+                claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
+                    quantity or 0.0
+                )
+            for trade_id, quantity in conn.execute(
+                """
+                SELECT trade_id,
+                       COALESCE(SUM(queue_quantity + fill_quantity), 0)
+                FROM paper_maker_allocations
+                WHERE market_ticker=? AND counterfactual=0
+                GROUP BY trade_id
+                """,
+                (market_ticker,),
+            ).fetchall():
+                claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
+                    quantity or 0.0
+                )
+
+            capital_orders: list[RestingMakerOrder] = []
+            shadow_orders: list[RestingMakerOrder] = []
+            rows_by_id: dict[int, sqlite3.Row] = {}
+            for row in rows:
+                created_at = datetime.fromisoformat(
+                    str(row["created_at"]).replace("Z", "+00:00")
+                )
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                limit_price = (
+                    row["limit_price"]
+                    if row["limit_price"] is not None
+                    else row["entry_price"]
+                )
+                remaining = float(
+                    row["remaining_contracts"]
+                    if row["remaining_contracts"] is not None
+                    else row["contracts"]
+                )
+                if limit_price is None or remaining <= 0:
+                    continue
+                order = RestingMakerOrder(
+                    order_id=int(row["id"]),
+                    side=str(row["side"] or "YES").upper(),  # type: ignore[arg-type]
+                    limit_price=Decimal(str(round(float(limit_price), 6))),
+                    quantity=Decimal(str(remaining)),
+                    queue_ahead=Decimal(
+                        str(max(0.0, float(row["queue_remaining"] or 0.0)))
+                    ),
+                    placed_at=created_at,
+                )
+                if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID:
+                    shadow_orders.append(order)
+                else:
+                    capital_orders.append(order)
+                rows_by_id[order.order_id] = row
+
+            allocations = allocate_maker_fills(
+                apply_volume_claims(all_trades, claims), capital_orders
+            )
+            for order in shadow_orders:
+                shadow_claims = {
+                    str(trade_id): float(quantity or 0.0)
+                    for trade_id, quantity in conn.execute(
+                        """
+                        SELECT trade_id,
+                               COALESCE(SUM(queue_quantity + fill_quantity), 0)
+                        FROM paper_maker_allocations
+                        WHERE order_id=? AND counterfactual=1
+                        GROUP BY trade_id
+                        """,
+                        (order.order_id,),
+                    ).fetchall()
+                }
+                allocations[order.order_id] = allocate_maker_fills(
+                    apply_volume_claims(all_trades, shadow_claims), [order]
+                )[order.order_id]
+
+            shadow_ids = {order.order_id for order in shadow_orders}
+            for order_id, allocation in allocations.items():
+                consumption = allocation.consumption_by_trade()
+                if not consumption:
+                    continue
+                row = rows_by_id[order_id]
+                counterfactual = order_id in shadow_ids
+                queue_delta = 0.0
+                fill_delta = 0.0
+                novel: dict[str, dict[str, float]] = {}
+                for trade_id, amounts in consumption.items():
+                    trade = trade_by_id[trade_id]
+                    cursor = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO paper_maker_allocations (
+                            created_at, execution_model_version, market_ticker,
+                            trade_id, order_id, trade_created_at, maker_side,
+                            side_price, queue_quantity, fill_quantity,
+                            counterfactual, evidence_json
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            applied_at,
+                            EXECUTION_MODEL_VERSION,
+                            market_ticker,
+                            trade_id,
+                            order_id,
+                            trade.created_at.isoformat(),
+                            trade.maker_side,
+                            float(trade.side_price(str(row["side"] or "YES"))),
+                            amounts["queue_quantity"],
+                            amounts["fill_quantity"],
+                            1 if counterfactual else 0,
+                            json.dumps(amounts, sort_keys=True),
+                        ),
+                    )
+                    if cursor.rowcount == 0:
+                        continue
+                    novel[trade_id] = amounts
+                    queue_delta += amounts["queue_quantity"]
+                    fill_delta += amounts["fill_quantity"]
+                if not novel:
+                    continue
+
+                requested = float(row["requested_contracts"] or row["contracts"])
+                previous_filled = float(row["filled_contracts"] or 0.0)
+                previous_remaining = float(
+                    row["remaining_contracts"]
+                    if row["remaining_contracts"] is not None
+                    else requested
+                )
+                new_filled = min(requested, previous_filled + fill_delta)
+                new_remaining = max(0.0, previous_remaining - fill_delta)
+                new_queue = max(0.0, float(row["queue_remaining"] or 0.0) - queue_delta)
+                if new_remaining <= 1e-9:
+                    new_status = "PAPER_FILLED"
+                elif new_filled > 1e-9:
+                    new_status = "PAPER_PARTIALLY_FILLED"
+                else:
+                    new_status = "PAPER_LIMIT_RESTING"
+                new_reserved = new_remaining * float(row["cost_per_contract"])
+
+                try:
+                    evidence = json.loads(row["fill_evidence_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    evidence = {}
+                if not isinstance(evidence, dict):
+                    evidence = {}
+                evidence.update(
+                    {
+                        "model": "maker_allocator_price_time_v3",
+                        "execution_model_version": EXECUTION_MODEL_VERSION,
+                        "requested_quantity": requested,
+                        "filled_quantity": new_filled,
+                        "remaining_quantity": new_remaining,
+                        "queue_remaining": new_queue,
+                        "research_shadow": counterfactual,
+                        "counterfactual": counterfactual,
+                    }
+                )
+                cumulative = evidence.get("consumptions")
+                if not isinstance(cumulative, dict):
+                    cumulative = {}
+                for trade_id, amounts in novel.items():
+                    cumulative[trade_id] = amounts
+                evidence["consumptions"] = cumulative
+                evidence["allocations"] = {
+                    trade_id: float(amounts.get("fill_quantity", 0.0))
+                    for trade_id, amounts in cumulative.items()
+                    if float(amounts.get("fill_quantity", 0.0)) > 0
+                }
+                evidence["trade_ids"] = sorted(cumulative)
+
+                conn.execute(
+                    """
+                    UPDATE paper_orders
+                    SET status=?,
+                        contracts=?,
+                        filled_contracts=?,
+                        remaining_contracts=?,
+                        queue_remaining=?,
+                        reserved_cost=?,
+                        filled_at=CASE
+                            WHEN ? > 0 THEN COALESCE(filled_at, ?)
+                            ELSE filled_at
+                        END,
+                        execution_model_version=?,
+                        fill_evidence_json=?
+                    WHERE id=?
+                    """,
+                    (
+                        new_status,
+                        new_filled if new_filled > 0 else requested,
+                        new_filled,
+                        new_remaining,
+                        new_queue,
+                        new_reserved,
+                        fill_delta,
+                        applied_at,
+                        EXECUTION_MODEL_VERSION,
+                        json.dumps(evidence, sort_keys=True),
+                        order_id,
+                    ),
+                )
+
+                if fill_delta > 0 and row["account_id"]:
+                    for trade_id, amounts in novel.items():
+                        trade_fill = float(amounts["fill_quantity"])
+                        if trade_fill <= 0:
+                            continue
+                        cost = trade_fill * float(row["cost_per_contract"])
+                        suffix = f"{EXECUTION_MODEL_VERSION}:{trade_id}"
+                        self._record_ledger_event(
+                            conn,
+                            account_id=str(row["account_id"]),
+                            order_id=order_id,
+                            event_type="RESERVATION_RELEASE",
+                            amount=cost,
+                            idempotency_key=f"order:{order_id}:maker-release:{suffix}",
+                            details={"filled_quantity": trade_fill},
+                        )
+                        self._record_ledger_event(
+                            conn,
+                            account_id=str(row["account_id"]),
+                            order_id=order_id,
+                            event_type="ENTRY_FILL",
+                            amount=-cost,
+                            idempotency_key=f"order:{order_id}:maker-fill:{suffix}",
+                            details={
+                                "filled_quantity": trade_fill,
+                                "execution_model_version": EXECUTION_MODEL_VERSION,
+                                "trade_id": trade_id,
+                            },
+                        )
+                updates.append(
+                    {
+                        "order_id": order_id,
+                        "previous_status": str(row["status"]),
+                        "status": new_status,
+                        "queue_consumed": queue_delta,
+                        "filled_quantity": fill_delta,
+                        "total_filled_quantity": new_filled,
+                        "remaining_quantity": new_remaining,
+                        "counterfactual": counterfactual,
+                    }
+                )
+        return updates
+
     @staticmethod
     def _record_maker_volume_claims(
         conn: sqlite3.Connection,
@@ -1588,32 +1999,71 @@ class PaperStore:
         """Total public volume already claimed per trade id on this market."""
 
         with self.connect() as conn:
+            claims: dict[str, float] = {}
             if conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='maker_volume_claims'"
-            ).fetchone() is None:
-                return {}
-            rows = conn.execute(
-                "SELECT trade_id, COALESCE(SUM(quantity), 0) FROM maker_volume_claims "
-                "WHERE market_ticker = ? GROUP BY trade_id",
-                (market_ticker,),
-            ).fetchall()
-        return {str(trade_id): float(total or 0.0) for trade_id, total in rows}
+            ).fetchone() is not None:
+                for trade_id, total in conn.execute(
+                    "SELECT trade_id, COALESCE(SUM(quantity), 0) "
+                    "FROM maker_volume_claims WHERE market_ticker = ? GROUP BY trade_id",
+                    (market_ticker,),
+                ).fetchall():
+                    claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
+                        total or 0.0
+                    )
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='paper_maker_allocations'"
+            ).fetchone() is not None:
+                for trade_id, total in conn.execute(
+                    """
+                    SELECT trade_id,
+                           COALESCE(SUM(queue_quantity + fill_quantity), 0)
+                    FROM paper_maker_allocations
+                    WHERE market_ticker = ? AND counterfactual = 0
+                    GROUP BY trade_id
+                    """,
+                    (market_ticker,),
+                ).fetchall():
+                    claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
+                        total or 0.0
+                    )
+        return claims
 
     def cancel_resting_limit_order(self, order_id: int, *, reason: str) -> sqlite3.Row | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT * FROM paper_orders WHERE id=? AND status='PAPER_LIMIT_RESTING'",
+                "SELECT * FROM paper_orders WHERE id=? "
+                "AND status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')",
                 (order_id,),
             ).fetchone()
             if row is None:
                 return self._order(order_id)
             cancelled_at = _now()
+            filled = float(row["filled_contracts"] or 0.0)
+            next_status = "PAPER_PARTIAL_EXPIRED" if filled > 0 else "PAPER_EXPIRED"
             conn.execute(
-                "UPDATE paper_orders SET status='PAPER_EXPIRED', cancelled_at=?, "
-                "reserved_cost=0, outcome_diagnostics_json=? WHERE id=?",
-                (cancelled_at, json.dumps({"event": "cancellation", "reason": reason}, sort_keys=True), order_id),
+                "UPDATE paper_orders SET status=?, cancelled_at=?, "
+                "remaining_contracts=0, queue_remaining=0, reserved_cost=0, "
+                "outcome_diagnostics_json=? WHERE id=?",
+                (
+                    next_status,
+                    cancelled_at,
+                    json.dumps(
+                        {
+                            "event": "cancellation",
+                            "reason": reason,
+                            "unfilled_quantity_cancelled": float(
+                                row["remaining_contracts"] or 0.0
+                            ),
+                            "filled_quantity_retained": filled,
+                        },
+                        sort_keys=True,
+                    ),
+                    order_id,
+                ),
             )
             if row["account_id"]:
                 self._record_ledger_event(
@@ -1671,14 +2121,18 @@ class PaperStore:
         cutoff = now or _now()
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT id FROM paper_orders WHERE status='PAPER_LIMIT_RESTING' "
+                "SELECT id FROM paper_orders WHERE status IN "
+                "('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
                 "AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at, id",
                 (cutoff,),
             ).fetchall()
         expired = 0
         for (order_id,) in rows:
             row = self.cancel_resting_limit_order(int(order_id), reason="15-minute maker TTL expired")
-            expired += int(row is not None and row["status"] == "PAPER_EXPIRED")
+            expired += int(
+                row is not None
+                and row["status"] in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}
+            )
         return expired
 
     def record_monitor_snapshot(
@@ -1799,7 +2253,13 @@ class PaperStore:
                 """
                 SELECT *
                 FROM paper_orders
-                WHERE target_date = ? AND status = 'PAPER_FILLED' AND settled_at IS NULL
+                WHERE target_date = ?
+                  AND status IN (
+                      'PAPER_FILLED',
+                      'PAPER_PARTIALLY_FILLED',
+                      'PAPER_PARTIAL_EXPIRED'
+                  )
+                  AND settled_at IS NULL
                 """ + series_filter,
                 (target_date, *series_params),
             ).fetchall()
@@ -1856,6 +2316,31 @@ class PaperStore:
                         idempotency_key=f"order:{row['id']}:settlement-expire-release",
                     )
             for row in rows:
+                if str(row["status"]) == "PAPER_PARTIALLY_FILLED":
+                    # Resolution ends the unfilled quote, but the already
+                    # executed position still settles at its actual quantity.
+                    if row["account_id"]:
+                        self._record_ledger_event(
+                            conn,
+                            account_id=row["account_id"],
+                            order_id=int(row["id"]),
+                            event_type="RESERVATION_RELEASE",
+                            amount=float(row["reserved_cost"] or 0.0),
+                            idempotency_key=(
+                                f"order:{row['id']}:settlement-partial-release"
+                            ),
+                            details={
+                                "unfilled_quantity_cancelled": float(
+                                    row["remaining_contracts"] or 0.0
+                                )
+                            },
+                        )
+                    conn.execute(
+                        "UPDATE paper_orders SET remaining_contracts=0, "
+                        "queue_remaining=0, reserved_cost=0, cancelled_at=? "
+                        "WHERE id=?",
+                        (settled_at, row["id"]),
+                    )
                 resolved_yes = _row_resolves_yes(row, settlement_high_f)
                 side = _row_side(row)
                 position_wins = resolved_yes if side == "YES" else not resolved_yes
@@ -1889,7 +2374,11 @@ class PaperStore:
                         status = 'PAPER_SETTLED',
                         outcome_diagnostics_json = ?
                     WHERE id = ?
-                      AND status = 'PAPER_FILLED'
+                      AND status IN (
+                          'PAPER_FILLED',
+                          'PAPER_PARTIALLY_FILLED',
+                          'PAPER_PARTIAL_EXPIRED'
+                      )
                       AND settled_at IS NULL
                       AND closed_at IS NULL
                     """,
@@ -2055,19 +2544,51 @@ class PaperStore:
             exit_price=exit_price,
             exit_fee_per_contract=exit_fee,
         )
+        evidence = dict(liquidity_evidence or {})
+        depth_value = evidence.get(
+            "displayed_depth", evidence.get("displayed_bid_size")
+        )
+        try:
+            displayed_depth = float(depth_value)
+        except (TypeError, ValueError):
+            displayed_depth = 0.0
+        depth_is_fresh = depth_observation_is_contemporaneous(
+            evidence.get("observed_at"), closed_at
+        )
+        if displayed_depth + 1e-9 < executed and displayed_depth > 0:
+            verification_status = "INSUFFICIENT"
+        elif displayed_depth >= executed > 0 and not depth_is_fresh:
+            verification_status = "STALE"
+        elif (
+            max_quantity is not None
+            and displayed_depth >= executed > 0
+            and bool(evidence.get("source"))
+            and depth_is_fresh
+        ):
+            verification_status = "VERIFIED"
+        else:
+            verification_status = "UNVERIFIED"
         payload["exit_execution"] = {
+            **evidence,
             "requested_quantity": contracts,
             "executed_quantity": executed,
             "vwap": exit_price,
             "fee_per_contract": exit_fee,
             "execution_model_version": EXECUTION_MODEL_VERSION,
-            **(liquidity_evidence or {}),
+            "displayed_depth": displayed_depth if displayed_depth > 0 else None,
+            "verification_status": verification_status,
         }
         outcome_json = json.dumps(payload, sort_keys=True)
         partial = executed < contracts - 1e-9
         result_id = order_id
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            open_statuses = (
+                "PAPER_FILLED",
+                "PAPER_PARTIALLY_FILLED",
+                "PAPER_PARTIAL_EXPIRED",
+            )
             # Guard the close on the same open-state predicate settle uses, plus
             # an unchanged-contracts check, then require it to have actually
             # changed a row. Between _open_order() above and this UPDATE, a
@@ -2080,14 +2601,41 @@ class PaperStore:
                 cursor = conn.execute(
                     """
                     UPDATE paper_orders
-                    SET contracts = ?
+                    SET contracts = ?,
+                        status = CASE
+                            WHEN status = 'PAPER_PARTIALLY_FILLED'
+                            THEN 'PAPER_PARTIAL_EXPIRED'
+                            ELSE status
+                        END,
+                        remaining_contracts = CASE
+                            WHEN status = 'PAPER_PARTIALLY_FILLED' THEN 0
+                            ELSE remaining_contracts
+                        END,
+                        queue_remaining = CASE
+                            WHEN status = 'PAPER_PARTIALLY_FILLED' THEN 0
+                            ELSE queue_remaining
+                        END,
+                        reserved_cost = CASE
+                            WHEN status = 'PAPER_PARTIALLY_FILLED' THEN 0
+                            ELSE reserved_cost
+                        END,
+                        cancelled_at = CASE
+                            WHEN status = 'PAPER_PARTIALLY_FILLED' THEN ?
+                            ELSE cancelled_at
+                        END
                     WHERE id = ?
-                      AND status = 'PAPER_FILLED'
+                      AND status IN (?, ?, ?)
                       AND settled_at IS NULL
                       AND closed_at IS NULL
                       AND contracts = ?
                     """,
-                    (contracts - executed, order_id, contracts),
+                    (
+                        contracts - executed,
+                        closed_at,
+                        order_id,
+                        *open_statuses,
+                        contracts,
+                    ),
                 )
             else:
                 cursor = conn.execute(
@@ -2100,9 +2648,16 @@ class PaperStore:
                         exit_fee_per_contract = ?,
                         resolved_yes = ?,
                         realized_pnl = ?,
-                        outcome_diagnostics_json = ?
+                        outcome_diagnostics_json = ?,
+                        remaining_contracts = 0,
+                        queue_remaining = 0,
+                        reserved_cost = 0,
+                        cancelled_at = CASE
+                            WHEN status = 'PAPER_PARTIALLY_FILLED' THEN ?
+                            ELSE cancelled_at
+                        END
                     WHERE id = ?
-                      AND status = 'PAPER_FILLED'
+                      AND status IN (?, ?, ?)
                       AND settled_at IS NULL
                       AND closed_at IS NULL
                       AND contracts = ?
@@ -2114,7 +2669,9 @@ class PaperStore:
                         resolved_yes,
                         realized_pnl,
                         outcome_json,
+                        closed_at,
                         order_id,
+                        *open_statuses,
                         contracts,
                     ),
                 )
@@ -2137,6 +2694,21 @@ class PaperStore:
                     realized_pnl=realized_pnl,
                     resolved_yes=resolved_yes,
                     outcome_json=outcome_json,
+                )
+            if row["status"] == "PAPER_PARTIALLY_FILLED" and row["account_id"]:
+                self._record_ledger_event(
+                    conn,
+                    account_id=row["account_id"],
+                    order_id=order_id,
+                    event_type="RESERVATION_RELEASE",
+                    amount=float(row["reserved_cost"] or 0.0),
+                    idempotency_key=f"order:{order_id}:close-partial-release",
+                    details={
+                        "reason": "position close cancelled unfilled maker quantity",
+                        "unfilled_quantity_cancelled": float(
+                            row["remaining_contracts"] or 0.0
+                        ),
+                    },
                 )
             net_proceeds = executed * (exit_price - exit_fee)
             if row["account_id"]:
@@ -2189,6 +2761,10 @@ class PaperStore:
                 "realized_pnl": realized_pnl,
                 "outcome_diagnostics_json": outcome_json,
                 "reserved_cost": 0,
+                "requested_contracts": executed,
+                "filled_contracts": executed,
+                "remaining_contracts": 0,
+                "queue_remaining": 0,
                 "fill_evidence_json": None,
                 "parent_order_id": int(row["id"]),
             }
@@ -2212,7 +2788,7 @@ class PaperStore:
             query = """
                 SELECT *
                 FROM paper_orders
-                WHERE status = 'PAPER_LIMIT_RESTING'
+                WHERE status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
                   AND settled_at IS NULL
                   AND closed_at IS NULL
                 ORDER BY created_at, id
@@ -2229,7 +2805,9 @@ class PaperStore:
             query = """
                 SELECT *
                 FROM paper_orders
-                WHERE status = 'PAPER_FILLED'
+                WHERE status IN (
+                    'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+                )
                   AND settled_at IS NULL
                   AND closed_at IS NULL
                 ORDER BY created_at DESC
@@ -2248,7 +2826,7 @@ class PaperStore:
     ) -> list[sqlite3.Row]:
         filters = [
             "target_date = ?",
-            "status = 'PAPER_FILLED'",
+            "status IN ('PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED')",
             "settled_at IS NULL",
             "closed_at IS NULL",
             "UPPER(COALESCE(side, 'YES')) = 'NO'",
@@ -2336,7 +2914,10 @@ class PaperStore:
         query = """
             SELECT DISTINCT target_date
             FROM paper_orders
-            WHERE status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+            WHERE status IN (
+                'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+                'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+            )
               AND settled_at IS NULL
               AND closed_at IS NULL
         """
@@ -2523,7 +3104,9 @@ class PaperStore:
                 SELECT *
                 FROM paper_orders
                 WHERE id = ?
-                    AND status = 'PAPER_FILLED'
+                    AND status IN (
+                        'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+                    )
                     AND settled_at IS NULL
                     AND closed_at IS NULL
                 """,

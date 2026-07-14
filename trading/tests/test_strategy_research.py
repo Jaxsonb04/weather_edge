@@ -1435,8 +1435,8 @@ def test_strategy_research_builds_isolated_profile_views():
         } == {"research"}
         assert any("research" in note for note in fast["learnings"])
 
-        # Profiles are P&L attribution slices of one account, never independent
-        # $1,000 equity accounts.
+        # Profiles remain attribution views, while account schema v2 keeps the
+        # live and research ledgers economically separate.
         b_summary = balanced["daily_summary"]
         f_summary = fast["daily_summary"]
         assert "current_equity" not in b_summary
@@ -1444,7 +1444,10 @@ def test_strategy_research_builds_isolated_profile_views():
         assert b_summary["current_attributed_pnl"] > 0
         assert f_summary["current_attributed_pnl"] < 0
         assert payload["accounting"]["profile_attributed_pnl"] == round(
-            b_summary["current_attributed_pnl"] + f_summary["current_attributed_pnl"], 2
+            b_summary["current_attributed_pnl"], 2
+        )
+        assert payload["accounting"]["accounts"]["research"]["realized_pnl"] == round(
+            f_summary["current_attributed_pnl"], 2
         )
         # Profile-scoped side split + exit reasons render on the profile tab.
         assert b_summary["side_performance"]["YES"]["wins"] == 1
@@ -1482,9 +1485,18 @@ def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
         )
 
         accounting = payload["accounting"]
-        assert accounting["all_time_realized_pnl"] == -39.46
-        assert accounting["window_realized_pnl"] == -1.34
-        assert accounting["realized_equity"] == 960.54
+        # Account schema v2 never mixes research outcomes into the live
+        # paper-shared headline. The direct fixture mutations intentionally do
+        # not fabricate ledger cash movements, but the booked research result
+        # remains visible in its own account scope.
+        assert accounting["schema_version"] == 2
+        assert accounting["all_time_realized_pnl"] == 0.0
+        assert accounting["realized_equity"] == 1000.0
+        assert accounting["accounts"]["live"]["account_id"] == "paper-shared"
+        assert accounting["accounts"]["research"]["booked_resolved_pnl"] == -39.46
+        assert accounting["goal"]["target_return"] == 0.05
+        assert accounting["goal"]["account_id"] == "paper-shared"
+        assert accounting["goal"]["excludes"] == ["research-shadow", "unrealized-marks"]
         assert accounting["reconciliation_status"] == "reconciled"
         curve = payload["daily_summary"]["days"]
         assert curve[0]["opening_equity"] == 961.88
@@ -1610,9 +1622,12 @@ def test_strategy_research_cli_writes_public_artifact():
 
         assert code == 0
         payload = json.loads(output.read_text(encoding="utf-8"))
+        private_output = output.with_name("strategy_research_evidence.private.json")
         assert payload["disclaimer"].startswith("Paper-trading research only")
+        assert "_private_evidence" not in payload
+        assert private_output.exists()
         assert payload["status"]["challenger_calibration_source"] == "clean-blend/combined"
-        assert json.loads(out.getvalue())["schema_version"] == 1
+        assert json.loads(out.getvalue())["schema_version"] == 2
 
 
 def test_dataset_research_summary_reads_accuracy_gate_candidates():

@@ -44,7 +44,10 @@ def market_backtest_summary(
     open_rows = [
         row
         for row in rows
-        if row["status"] == "PAPER_FILLED" and row["realized_pnl"] is None
+        if row["status"] in {
+            "PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"
+        }
+        and row["realized_pnl"] is None
     ]
     open_capital = sum(float(row["contracts"]) * float(row["cost_per_contract"]) for row in open_rows)
     if not realized_rows:

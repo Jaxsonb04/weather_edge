@@ -36,9 +36,103 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
+def _stub_clean_main_git(fake_bin: Path) -> None:
+    _write_executable(
+        fake_bin / "git",
+        """#!/bin/sh
+case "$*" in
+  *"rev-parse HEAD") printf '0123456789abcdef0123456789abcdef01234567\n' ;;
+  *"branch --show-current") printf 'main\n' ;;
+  *"diff --quiet"*|*"diff --cached --quiet"*|*"ls-files --others --exclude-standard"*) ;;
+  *) exit 1 ;;
+esac
+""",
+    )
+
+
+def test_database_backup_preflight_requires_off_host_target(tmp_path: Path) -> None:
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "SFO_ARCHIVE_S3_BUCKET is required" in result.stderr
+    assert not (tmp_path / "backups").exists()
+
+
+def test_database_backup_round_trips_and_rechecks_sqlite(tmp_path: Path) -> None:
+    db_path = tmp_path / "paper.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))"
+        )
+        conn.execute("INSERT INTO parent VALUES (1)")
+        conn.execute("INSERT INTO child VALUES (1, 1)")
+
+    fake_aws = tmp_path / "aws"
+    _write_executable(
+        fake_aws,
+        f"""#!{sys.executable}
+import os, shutil, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args[:2] in (['sts', 'get-caller-identity'], ['s3api', 'get-bucket-location']):
+    raise SystemExit(0)
+if args[:2] != ['s3', 'cp']:
+    raise SystemExit(2)
+source, destination = args[2:4]
+store = Path(os.environ['FAKE_S3'])
+store.mkdir(parents=True, exist_ok=True)
+if source.startswith('s3://'):
+    shutil.copy2(store / source.rsplit('/', 1)[-1], destination)
+else:
+    shutil.copy2(source, store / destination.rsplit('/', 1)[-1])
+""",
+    )
+    backup_dir = tmp_path / "backups"
+    fake_s3 = tmp_path / "s3"
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "backup", str(db_path)],
+        env={
+            **os.environ,
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_S3_PREFIX": "database-snapshots",
+            "SFO_DATABASE_BACKUP_DIR": str(backup_dir),
+            "SFO_DATABASE_BACKUP_KEEP_DAYS": "7",
+            "SFO_ALLOW_EMPTY_DATABASE_DEPLOY": "0",
+            "FAKE_S3": str(fake_s3),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "verified off-host database backup" in result.stdout
+    assert len(list(backup_dir.glob("paper_trading-*.sqlite3"))) == 1
+    assert len(list(backup_dir.glob("paper_trading-*.sqlite3.sha256"))) == 1
+    assert len(list(fake_s3.glob("paper_trading-*.sqlite3"))) == 1
+    assert len(list(fake_s3.glob("paper_trading-*.sqlite3.sha256"))) == 1
+    assert not list(backup_dir.glob(".restore-check.*"))
+
+
 def test_full_sync_transfers_root_install_inputs_from_arbitrary_cwd(tmp_path: Path) -> None:
     fake_bin = tmp_path / "fake bin"
     fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
     calls = tmp_path / "rsync-calls.jsonl"
     ssh_calls = tmp_path / "ssh-calls.jsonl"
     _write_executable(
@@ -90,15 +184,17 @@ for token in sys.argv[1:-1]:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Restored 0 previously enabled WeatherEdge timer(s)." in result.stdout
+    assert "Restored 0 producer timer(s); watchdog restored last=0." in result.stdout
     invocations = [json.loads(line) for line in calls.read_text().splitlines()]
-    # Three source syncs plus the PR-01 build_info.json provenance stamp.
-    assert len(invocations) == 4
+    # Root packaging, the hashed lock, two source trees, and build provenance.
+    assert len(invocations) == 5
     assert invocations[-1][-1].endswith("/forecaster/build_info.json")
     packaging = next(call for call in invocations if str(ROOT / "pyproject.toml") in call)
     assert str(ROOT / "README.md") in packaging
     assert packaging[-1] == "ubuntu@ec2.example:/opt/weatheredge/"
     assert str(key) in " ".join(packaging)
+    locked = next(call for call in invocations if str(ROOT / "requirements/production.lock") in call)
+    assert locked[-1] == "ubuntu@ec2.example:/opt/weatheredge/requirements/production.lock"
     remote = tmp_path / "remote base"
     assert (remote / "pyproject.toml").read_text() == (ROOT / "pyproject.toml").read_text()
     assert (remote / "README.md").read_text() == (ROOT / "README.md").read_text()
@@ -132,6 +228,7 @@ for token in sys.argv[1:-1]:
 def test_full_sync_transfer_failure_never_runs_remote_cleanup(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
     transfer_count = tmp_path / "transfer-count"
     ssh_log = tmp_path / "ssh.log"
     _write_executable(
@@ -180,6 +277,7 @@ def test_full_sync_quiesces_before_remote_mutation_and_stays_quiesced_on_transfe
 ) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
     action_log = tmp_path / "actions.log"
     transfer_count = tmp_path / "transfer-count"
     _write_executable(
@@ -221,10 +319,12 @@ exit 0
 
     assert result.returncode == 23
     actions = action_log.read_text().splitlines()
-    assert actions[0].endswith("bash -s capture")
-    assert actions[1].endswith("bash -s quiesce")
-    assert "mkdir -p" in actions[2] and "chown" in actions[2]
-    assert actions[3].startswith("rsync|")
+    assert actions[0].endswith("bash -s preflight /opt/weatheredge/trading/data/paper_trading.db")
+    assert actions[1].endswith("bash -s capture")
+    assert actions[2].endswith("bash -s quiesce")
+    assert actions[3].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
+    assert "mkdir -p" in actions[4] and "chown" in actions[4]
+    assert actions[5].startswith("rsync|")
     assert not any("enable" in action or "start" in action for action in actions)
 
 
@@ -233,6 +333,7 @@ def test_full_sync_reinstalls_units_and_restores_exact_enabled_timers_after_succ
 ) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
     action_log = tmp_path / "actions.log"
     _write_executable(
         fake_bin / "ssh",
@@ -281,19 +382,29 @@ elif 'restore' in args:
 
     assert result.returncode == 0, result.stderr
     actions = action_log.read_text().splitlines()
+    preflight_idx = next(i for i, line in enumerate(actions) if "bash -s preflight" in line)
     capture_idx = next(i for i, line in enumerate(actions) if line.endswith("bash -s capture"))
     quiesce_idx = next(i for i, line in enumerate(actions) if line.endswith("bash -s quiesce"))
+    backup_idx = next(i for i, line in enumerate(actions) if "bash -s backup" in line)
     first_rsync_idx = next(i for i, line in enumerate(actions) if line.startswith("rsync|"))
     install_idx = next(
         i for i, line in enumerate(actions) if "install_systemd_notimers.sh" in line
     )
-    restore_idx = next(i for i, line in enumerate(actions) if line.startswith("restore|"))
-    assert capture_idx < quiesce_idx < first_rsync_idx < install_idx < restore_idx
-    assert actions[restore_idx] == (
-        "restore|sfo-operational-publish.timer "
-        "sfo-strategy-lab-refresh.timer sfo-forecast-freshness.timer"
+    restore_indexes = [i for i, line in enumerate(actions) if line.startswith("restore|")]
+    assert len(restore_indexes) == 2
+    producer_restore_idx, watchdog_restore_idx = restore_indexes
+    seed_idx = next(
+        i for i, line in enumerate(actions) if "sfo-strategy-lab-refresh.service" in line
     )
-    assert "restored 3 previously enabled weatheredge timer(s)" in result.stdout.lower()
+    assert preflight_idx < capture_idx < quiesce_idx < backup_idx < first_rsync_idx
+    assert first_rsync_idx < install_idx < producer_restore_idx
+    assert producer_restore_idx < seed_idx < watchdog_restore_idx
+    assert actions[producer_restore_idx] == (
+        "restore|sfo-operational-publish.timer "
+        "sfo-strategy-lab-refresh.timer"
+    )
+    assert actions[watchdog_restore_idx] == "restore|sfo-forecast-freshness.timer"
+    assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
 
 
 @pytest.mark.parametrize(
@@ -456,6 +567,19 @@ def test_real_legacy_editable_upgrade_leaves_one_owner_and_console_script(
     (interrupted_metadata / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: weatheredge\nVersion: 0.1.0\n",
         encoding="utf-8",
+    )
+
+    # The production installer always applies the hashed runtime lock before
+    # building the root editable project. Mirror that sequence so the test
+    # also proves the pinned no-isolation build backend is sufficient.
+    requirements = base / "requirements"
+    requirements.mkdir()
+    lock = requirements / "production.lock"
+    shutil.copy2(ROOT / "requirements/production.lock", lock)
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "--quiet", "--require-hashes", "-r", str(lock)],
+        check=True,
+        env=clean_python_env,
     )
 
     result = subprocess.run(

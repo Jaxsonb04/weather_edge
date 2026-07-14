@@ -81,6 +81,7 @@ class ReadinessThresholds:
     min_cohort_brier_skill: float = 0.0
     max_cohort_brier: float = 0.25  # retained for display/detail only
     max_calibration_gap: float = 0.10
+    max_drawdown_pct: float = 0.10
 
 
 def _opt_float(row: sqlite3.Row, key: str) -> float | None:
@@ -832,6 +833,18 @@ def compute_real_money_readiness(
         )
     )
 
+    max_drawdown = candidate.get("max_drawdown_pct")
+    checks.append(
+        _readiness_check(
+            "max_drawdown",
+            f"Maximum drawdown <= {thresholds.max_drawdown_pct:.0%}",
+            max_drawdown is not None and max_drawdown <= thresholds.max_drawdown_pct,
+            f"maximum drawdown {max_drawdown:.2%}"
+            if max_drawdown is not None
+            else "post-boundary drawdown unavailable",
+        )
+    )
+
     # Per-traded-cohort calibration: the forecaster must show SKILL (beat the
     # climatological prior, Brier Skill Score > 0) on every regime the live book
     # actually trades. Skill -- not absolute Brier -- is the honest bar: a flat
@@ -952,6 +965,7 @@ def compute_real_money_readiness(
             "min_cohort_brier_skill": thresholds.min_cohort_brier_skill,
             "max_cohort_brier": thresholds.max_cohort_brier,
             "max_calibration_gap": thresholds.max_calibration_gap,
+            "max_drawdown_pct": thresholds.max_drawdown_pct,
         },
         "config_basis": rescore.get("config_basis"),
     }

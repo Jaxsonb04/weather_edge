@@ -176,13 +176,15 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
   ];
 
   return (
+    <div className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-2xl" role="region" aria-label="Scrollable closed-position ledger" tabIndex={0}>
     <DataGrid
       aria-label={detailed ? "Full closed paper-trade ledger" : "Recent closed paper trades"}
       columns={columns}
       data={rows}
       getRowId={(d) => d.id}
       variant="secondary"
-      className="rounded-2xl"
+      className="min-w-[54rem] rounded-2xl"
     />
+    </div>
   );
 }

@@ -16,6 +16,13 @@ REMOTE_USER=ubuntu
 
 Keep the key mode at `0600`. Never commit the env file or key.
 
+The S3/IAM operator checkpoint is automated by
+`trading/deploy/aws/provision_backup_bucket.sh BUCKET REGION INSTANCE_ID`. It
+requires an AWS infrastructure identity, creates or configures the backup
+bucket, and limits the instance role to the journal and full-database prefixes.
+The host also needs the AWS CLI. Copy the script's printed `SFO_...` values into
+`/etc/weatheredge.env` before running the first deployment.
+
 ## Deploy And Install
 
 From the repository root:
@@ -26,9 +33,12 @@ source .local/ec2.env
 ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
 ```
 
-On an established host, `sync_to_box.sh` is transactional around scheduled
-work: it captures the enabled WeatherEdge timers, quiesces the services, syncs
-the tree, runs `install_systemd_notimers.sh` as the install gate, and restores
+On an established host, `sync_to_box.sh` first proves that the authoritative
+database can be uploaded to and restored from the configured S3 backup target.
+It is then transactional around scheduled work: it captures the enabled
+WeatherEdge timers, quiesces the services, creates and independently restores a
+checksummed SQLite backup, syncs the tree, runs `install_systemd_notimers.sh`
+as the install gate, and restores
 exactly the captured timer set. If transfer or installation fails, it exits
 nonzero and leaves the host quiesced for a clean retry. A new or intentionally
 quiesced host has an empty captured set and remains timerless for manual checks.
@@ -156,6 +166,16 @@ S3 is safe-off until `SFO_ARCHIVE_S3_BUCKET` is configured; the related
 variables are `SFO_ARCHIVE_S3_PREFIX`, `SFO_ARCHIVE_AWS_CLI`, and
 `SFO_ARCHIVE_KEEP_DAYS`.
 
+Deployment is stricter than scheduled archive/prune: `sync_to_box.sh` fails its
+read-only preflight before stopping services unless the bucket and instance
+role are available. The bucket must have public access blocked, versioning and
+default encryption enabled, and a lifecycle rule for both `paper_trading/` and
+`database-snapshots/`. The instance role needs bucket listing plus object
+put/get access limited to those two prefixes. After preflight, the deploy gate
+uploads a full SQLite snapshot and checksum, downloads the snapshot to a
+temporary path, and passes `integrity_check` and `foreign_key_check` again
+before any source transfer.
+
 Useful checks:
 
 ```bash
@@ -172,8 +192,8 @@ For an existing large journal, keep paper scan and monitor services paused and r
 `/opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh` once;
 resume the services only after the index build succeeds.
 
-The freshness watchdog requires operational artifacts no older than 10 minutes
-and Strategy Lab research no older than 20 minutes. Set
+The freshness watchdog requires local operational artifacts no older than 15 minutes
+and public operational artifacts or Strategy Lab research no older than 20 minutes. Set
 `SFO_PUBLICATION_MANIFEST_URL` to the public manifest URL to validate the exact
 snapshot visitors receive.
 

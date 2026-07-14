@@ -24,6 +24,7 @@ def _passing_rescore():
         "candidate": {
             "roi_ci95_day_clustered": [0.02, 0.15],
             "log_growth_per_independent_day": 0.012,
+            "max_drawdown_pct": 0.08,
         },
         # Keyed by the forecast-time regime the live block gated on.
         "by_forecast_cohort": {
@@ -94,6 +95,20 @@ def test_not_ready_and_percentage_reflects_partial_progress():
     days_check = next(c for c in result["checks"] if c["name"] == "independent_days")
     assert days_check["passed"] is False
     assert abs(days_check["progress"] - 0.5) < 1e-9
+
+
+def test_drawdown_above_ten_percent_blocks_readiness():
+    rescore = _passing_rescore()
+    rescore["candidate"]["max_drawdown_pct"] = 0.1001
+    result = compute_real_money_readiness(
+        rescore,
+        calibration_cohort_brier=_good_calibration(),
+        calibration_cohort_brier_skill=_good_skill(),
+        max_abs_calibration_gap=0.04,
+    )
+    assert result["ready"] is False
+    check = next(c for c in result["checks"] if c["name"] == "max_drawdown")
+    assert check["passed"] is False
 
 
 def test_readiness_percentage_climbs_with_more_days():

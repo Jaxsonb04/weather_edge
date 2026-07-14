@@ -49,7 +49,8 @@ env -u PYTHONPATH "$PYTHON_BIN" -m pip uninstall -y sfo-kalshi-quant
 # to sys.path, so that one exact stale directory would otherwise resurrect the
 # retired distribution in importlib.metadata.
 rm -rf -- "$TRADING_DIR/sfo_kalshi_quant.egg-info"
-env -u PYTHONPATH "$PYTHON_BIN" -m pip install -e "$BASE_DIR"
+env -u PYTHONPATH "$PYTHON_BIN" -m pip install \
+  --no-build-isolation --no-deps -e "$BASE_DIR"
 # Setuptools creates source-tree egg metadata while building an editable wheel.
 # The installed dist-info is authoritative; remove the exact transient source
 # copy so importlib.metadata observes one owner object, not two identical ones.

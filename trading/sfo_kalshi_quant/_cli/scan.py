@@ -441,7 +441,7 @@ def _analyze_one_target(
             entry_block_reason = "paper entry disabled: Kalshi event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
-                target, forecast, intraday, city=city
+                target, forecast, intraday, city=city, risk_profile=risk_profile
             )
     if args.place_paper and entry_allowed:
         pause_reason = _cached_paper_entry_pause_reason(
@@ -598,7 +598,7 @@ def _portfolio_scan_one_target(
             entry_block_reason = "paper portfolio disabled: Kalshi event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
-                target, forecast, intraday, city=city
+                target, forecast, intraday, city=city, risk_profile=risk_profile
             )
     paper_trader = PaperTrader(
         store,
@@ -782,7 +782,7 @@ def _arbitrage_one_target(
             entry_block_reason = "paper arbitrage disabled: Kalshi event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
-                target, None, None, city=city
+                target, None, None, city=city, risk_profile=risk_profile
             )
 
     paper_trader = PaperTrader(store, config, risk_profile=risk_profile)
@@ -942,7 +942,7 @@ def _tail_basket_one_target(
             entry_block_reason = "paper entry disabled: Kalshi event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
-                target, forecast, intraday, city=city
+                target, forecast, intraday, city=city, risk_profile=risk_profile
             )
 
     if args.place_paper and entry_allowed:
@@ -1063,6 +1063,7 @@ def _paper_entry_gate_for_target(
     *,
     city: CityConfig | None = None,
     now: datetime | None = None,
+    risk_profile: str | None = "live",
 ) -> tuple[bool, str | None]:
     # A single-source forecast (Google-cache fallback when the multi-source
     # blend is unavailable) reports a 0.0 source spread, which silently passes
@@ -1076,6 +1077,11 @@ def _paper_entry_gate_for_target(
     local_now = settlement_clock(now, city)
     if target != local_now.date():
         return True, None
+    if normalize_risk_profile_name(risk_profile) == "live":
+        return (
+            False,
+            "live paper entry requires min_lead_days=1; same-day signals are research-only",
+        )
     if intraday is not None and intraday.is_complete:
         return False, "same-day entry disabled: official daily high is complete; monitor/settle only"
 

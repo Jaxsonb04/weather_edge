@@ -37,6 +37,7 @@ LOCAL_TRADING_DIR="${LOCAL_TRADING_DIR:-$WEATHEREDGE_ROOT/trading}"
 LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
+BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
 
 if [[ ! "$REMOTE_BASE" =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
@@ -63,6 +64,10 @@ if [[ ! -f "$WEATHEREDGE_ROOT/pyproject.toml" || ! -f "$WEATHEREDGE_ROOT/README.
   echo "Root Python project not found: $WEATHEREDGE_ROOT" >&2
   exit 1
 fi
+if [[ ! -f "$WEATHEREDGE_ROOT/requirements/production.lock" ]]; then
+  echo "Hashed production dependency lock is missing." >&2
+  exit 1
+fi
 if [[ ! -f "$FORECASTER_EXCLUDES" ]]; then
   echo "Rsync exclude manifest not found: $FORECASTER_EXCLUDES" >&2
   exit 1
@@ -71,8 +76,33 @@ if [[ ! -f "$QUIESCE_HELPER" ]]; then
   echo "Systemd quiescence helper not found: $QUIESCE_HELPER" >&2
   exit 1
 fi
+if [[ ! -f "$BACKUP_HELPER" ]]; then
+  echo "Database backup helper not found: $BACKUP_HELPER" >&2
+  exit 1
+fi
 
 chmod 600 "$HOST_KEY"
+
+SOURCE_SHA="$(git -C "$WEATHEREDGE_ROOT" rev-parse HEAD)"
+SOURCE_BRANCH="$(git -C "$WEATHEREDGE_ROOT" branch --show-current)"
+if [[ "$SOURCE_BRANCH" != "main" ]]; then
+  echo "Deploy requires clean main; current branch is $SOURCE_BRANCH." >&2
+  exit 1
+fi
+if ! git -C "$WEATHEREDGE_ROOT" diff --quiet \
+  || ! git -C "$WEATHEREDGE_ROOT" diff --cached --quiet \
+  || [[ -n "$(git -C "$WEATHEREDGE_ROOT" ls-files --others --exclude-standard)" ]]; then
+  echo "Deploy requires an exact clean commit; source_dirty would be true." >&2
+  exit 1
+fi
+
+# Prove the database, AWS identity, and encrypted/versioned backup target are
+# usable before stopping a single service. The same audited local helper is
+# streamed for preflight and backup so an old remote source tree cannot weaken
+# the deployment gate.
+REMOTE_DB="$REMOTE_BASE/trading/data/paper_trading.db"
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  bash -s preflight "$REMOTE_DB" < "$BACKUP_HELPER"
 
 # Capture the established host's timer policy before quiescing it. Stream the
 # current helper because the remote source tree may be older than this deploy.
@@ -89,7 +119,10 @@ done <<<"$enabled_timer_output"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s quiesce < "$QUIESCE_HELPER"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  "sudo mkdir -p '$REMOTE_BASE' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE'"
+  bash -s backup "$REMOTE_DB" < "$BACKUP_HELPER"
+
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "sudo mkdir -p '$REMOTE_BASE/requirements' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE' '$REMOTE_BASE/requirements'"
 
 # The sole Python manifest lives at the repository root and reads README.md
 # while discovering the package below trading/. Send those build inputs before
@@ -100,6 +133,12 @@ rsync -av \
   "$WEATHEREDGE_ROOT/pyproject.toml" \
   "$WEATHEREDGE_ROOT/README.md" \
   "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/"
+
+rsync -av \
+  -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
+  -- \
+  "$WEATHEREDGE_ROOT/requirements/production.lock" \
+  "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/requirements/production.lock"
 
 rsync -av \
   -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
@@ -148,19 +187,16 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" rm -f -- "${REMOTE_RETIRED_PATHS[@]
 # publication manifest and the Pages commit message carry it onward so the
 # public site can identify the exact source that generated its artifacts.
 BUILD_INFO_TMP="$(mktemp)"
-SOURCE_SHA="$(git -C "$WEATHEREDGE_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-if git -C "$WEATHEREDGE_ROOT" diff --quiet 2>/dev/null && git -C "$WEATHEREDGE_ROOT" diff --cached --quiet 2>/dev/null; then
-  SOURCE_DIRTY=false
-else
-  SOURCE_DIRTY=true
-fi
+SOURCE_DIRTY=false
+EXECUTION_MODEL_VERSION="$(PYTHONPATH="$WEATHEREDGE_ROOT/trading" python3 -c 'from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION; print(EXECUTION_MODEL_VERSION)')"
+ACCOUNTING_POLICY_VERSION="$(PYTHONPATH="$WEATHEREDGE_ROOT/trading" python3 -c 'from sfo_kalshi_quant.account import ACCOUNTING_POLICY_VERSION; print(ACCOUNTING_POLICY_VERSION)')"
 cat > "$BUILD_INFO_TMP" <<JSON
 {
   "source_sha": "$SOURCE_SHA",
   "source_dirty": $SOURCE_DIRTY,
   "synced_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "execution_model_version": "exec-v2-2026-07-13",
-  "accounting_policy_version": "acct-v3-research-shadow-2026-07-13"
+  "execution_model_version": "$EXECUTION_MODEL_VERSION",
+  "accounting_policy_version": "$ACCOUNTING_POLICY_VERSION"
 }
 JSON
 rsync -av \
@@ -177,17 +213,28 @@ rm -f "$BUILD_INFO_TMP"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/install_systemd_notimers.sh"
 
-# Restore only the pre-deploy policy. This prevents a normal successful source
-# deployment from silently freezing publication while preserving intentional
-# operator pauses for individual timers.
-if (( ${#ENABLED_TIMERS[@]} > 0 )); then
+# Restore producers first, seed and validate one complete publication, then
+# restore the persistent watchdog last so it cannot race the first fresh build.
+PRODUCER_TIMERS=()
+WATCHDOG_ENABLED=0
+for timer in ${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"}; do
+  if [[ "$timer" == "sfo-forecast-freshness.timer" ]]; then
+    WATCHDOG_ENABLED=1
+  else
+    PRODUCER_TIMERS+=("$timer")
+  fi
+done
+if (( ${#PRODUCER_TIMERS[@]} > 0 )); then
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-    bash -s restore "${ENABLED_TIMERS[@]}" < "$QUIESCE_HELPER"
-else
+    bash -s restore "${PRODUCER_TIMERS[@]}" < "$QUIESCE_HELPER"
+fi
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service && sudo systemctl start sfo-forecast-freshness.service"
+if (( WATCHDOG_ENABLED == 1 )); then
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-    bash -s restore < "$QUIESCE_HELPER"
+    bash -s restore sfo-forecast-freshness.timer < "$QUIESCE_HELPER"
 fi
 
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"
-echo "Restored ${#ENABLED_TIMERS[@]} previously enabled WeatherEdge timer(s)."
+echo "Restored ${#PRODUCER_TIMERS[@]} producer timer(s); watchdog restored last=$WATCHDOG_ENABLED."

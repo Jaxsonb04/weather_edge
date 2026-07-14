@@ -11,8 +11,9 @@ changes.
 - `sync_to_box.sh` is the operator-driven full source sync. It defaults to
   `.local/ec2.env`, prefers `EC2_IP`/`EC2_KEY`, sends the root
   `pyproject.toml`/`README.md` install inputs plus both source trees, and
-  preserves remote runtime state. Before the first remote tree mutation or
-  source transfer, it streams the canonical timer/service helper to the host
+  preserves remote runtime state. It first proves that the live database can
+  be backed up to and restored from S3. Before the first remote tree mutation
+  or source transfer, it streams the canonical timer/service helper to the host
   and captures the enabled timer set before quiescing every WeatherEdge timer
   and paired service. A transfer or install failure intentionally leaves them
   quiesced for a clean retry. After all transfers succeed, it removes only the
@@ -59,7 +60,25 @@ source .local/ec2.env
 ssh -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP"
 ```
 
-On an established host, the full sync reinstalls units and restores the exact
+Provision the encrypted, versioned backup target from an operator shell with
+AWS infrastructure credentials before the first deploy:
+
+```bash
+bash trading/deploy/aws/provision_backup_bucket.sh \
+  "weatheredge-paper-backups-$(aws sts get-caller-identity --query Account --output text)-$EC2_REGION" \
+  "$EC2_REGION" "$EC2_INSTANCE_ID"
+```
+
+Copy the three printed `SFO_...` values into `/etc/weatheredge.env` and install
+the AWS CLI on the host (`sudo apt-get update && sudo apt-get install -y awscli`).
+The deployment script does not provision IAM or S3.
+
+On an established host, the full sync refuses to stop services until
+`backup_paper_db.sh preflight` proves the configured AWS identity and bucket
+are available. After quiescing, it creates a consistent SQLite backup, checks
+integrity and foreign keys, uploads it with server-side encryption, downloads
+it to a temporary restore path, and repeats those checks. Only then does the
+source transfer begin. The full sync reinstalls units and restores the exact
 pre-deploy timer policy automatically. On a new or intentionally quiesced host,
 the captured set is empty and every timer remains disabled for manual checks.
 
@@ -105,7 +124,7 @@ no root path, repeated or trailing slash, or `.`/`..` component reaches SSH or
 rsync.
 
 The forecaster runtime installs only `certifi numpy pandas`; the correctly
-formed command is `python -m pip install certifi numpy pandas`. Heavy training
+formed command is a hash-verified install from `requirements/production.lock`. Heavy training
 dependencies do not belong on the production box.
 
 ## Cadence And Responsibilities
@@ -144,6 +163,9 @@ as `git@github.com:Jaxsonb04/weather_edge.git`.
 The default archive is `/opt/weatheredge/trading/data/archive`; the manifest is
 `manifest.db`. Configure `SFO_ARCHIVE_DIR`, `SFO_ARCHIVE_KEEP_DAYS`,
 `SFO_ARCHIVE_S3_BUCKET`, `SFO_ARCHIVE_S3_PREFIX`, and `SFO_ARCHIVE_AWS_CLI`.
+Full-database deployment backups use the same bucket with
+`SFO_DATABASE_BACKUP_S3_PREFIX`; local verified copies are retained according
+to `SFO_DATABASE_BACKUP_KEEP_DAYS`.
 Without a bucket, the local ring buffer remains authoritative and cleanup skips
 unuploaded files.
 
@@ -168,8 +190,9 @@ Restore only to a new DB while paper services are stopped, using the tested
 
 Set
 `SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json`.
-The watchdog rejects operational artifacts older than 10 minutes, Strategy Lab
-research older than 20 minutes, disk usage at or above 85%, missing files,
+The watchdog rejects local operational artifacts older than 15 minutes,
+public operational artifacts or Strategy Lab research older than 20 minutes, disk
+usage at or above 85%, missing files,
 invalid schemas, and checksum mismatches. It writes `STALE_FORECAST` for the
 local alarm path; sync excludes preserve that marker. Every operational service
 also routes failures through `sfo-alert@.service`, which posts JSON to
