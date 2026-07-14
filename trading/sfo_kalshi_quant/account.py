@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict
 from typing import Iterable, Sequence
 
@@ -11,6 +12,38 @@ from .config import StrategyConfig, normalize_risk_profile_name
 
 SHARED_ACCOUNT_ID = "paper-shared"
 INITIAL_CAPITAL = 1000.0
+
+# Audit AC-01: research experiments are paper-only forever and must not be
+# able to erase live gains or trigger live risk pauses. New research orders
+# book against this separate VIRTUAL account (its own ledger, cash, pauses,
+# and drawdown) so the production-intent live equity and the $1,050 target
+# are measured on the live book alone. Historical research rows that already
+# consumed shared capital keep their original account: the shared history
+# (including the legacy -$87.30) is never rewritten.
+RESEARCH_ACCOUNT_ID = "paper-research-shadow"
+RESEARCH_VIRTUAL_CAPITAL = INITIAL_CAPITAL
+ACCOUNTING_POLICY_VERSION = "acct-v3-research-shadow-2026-07-13"
+
+
+def research_shared_capital_enabled() -> bool:
+    """Explicit opt-in for a shared-capital research experiment (off by default).
+
+    Some research questions genuinely need queue/capital competition with the
+    live book; enabling this env flag restores the old co-mingled behavior for
+    NEW research orders. It must be a deliberate, visually distinct choice.
+    """
+
+    raw = os.getenv("PAPER_RESEARCH_SHARED_CAPITAL_ENABLED")
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def account_for_profile(risk_profile: str | None) -> str:
+    profile = normalize_risk_profile_name(risk_profile) if risk_profile else "live"
+    if profile == "research" and not research_shared_capital_enabled():
+        return RESEARCH_ACCOUNT_ID
+    return SHARED_ACCOUNT_ID
 MIN_EXECUTABLE_NOTIONAL = 5.0
 # Per-position ceiling: min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * equity).
 # Raised 2026-07-10 from $20/2% to $30/3%: with maker-first sizing no longer

@@ -95,7 +95,9 @@ for token in sys.argv[1:-1]:
     assert "bash deploy/aws/install_systemd.sh" in result.stdout
     assert result.stdout.index("install_systemd_notimers.sh") < result.stdout.index("install_systemd.sh")
     invocations = [json.loads(line) for line in calls.read_text().splitlines()]
-    assert len(invocations) == 3
+    # Three source syncs plus the PR-01 build_info.json provenance stamp.
+    assert len(invocations) == 4
+    assert invocations[-1][-1].endswith("/forecaster/build_info.json")
     packaging = next(call for call in invocations if str(ROOT / "pyproject.toml") in call)
     assert str(ROOT / "README.md") in packaging
     assert packaging[-1] == "ubuntu@ec2.example:/opt/weatheredge/"

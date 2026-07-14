@@ -1,0 +1,22 @@
+# Weekly dependency update PRs (audit SEC-01). Security alerts and
+# Dependabot security updates are repository settings the owner enables in
+# GitHub (Settings -> Code security); this file drives the version updates.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

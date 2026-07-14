@@ -71,6 +71,19 @@ class TradeEvaluator:
         if market.status != "active":
             reasons.append(f"market status is {market.status}, not active")
         if (
+            self.config.nonfinal_certainty_gate_enabled
+            and probability.observed_high_f is not None
+            and probability.observed_high_is_final is not True
+            and side_probability >= self.config.nonfinal_certainty_gate_probability
+        ):
+            reasons.append(
+                f"nonfinal-certainty gate: {side} probability "
+                f"{side_probability:.3f} >= "
+                f"{self.config.nonfinal_certainty_gate_probability:.2f} rests on a "
+                "raw nonfinal station observation; the official integer report "
+                "can settle a degree away (audit MD-01)"
+            )
+        if (
             forecast_high_f is not None
             and self.config.blocked_forecast_cohorts
             and temperature_cohort(forecast_high_f) in self.config.blocked_forecast_cohorts

@@ -222,6 +222,20 @@ def build_manifest(
         "published_at": _format_timestamp(published),
         "artifacts": artifacts,
     }
+    # Audit PR-01: carry the deployed source provenance (stamped by
+    # sync_to_box.sh) into the public manifest so freshness can prove WHICH
+    # source revision generated these artifacts. Tolerant of absence: hosts
+    # synced before the provenance stamp simply omit the block.
+    build_info_path = root / "build_info.json"
+    if build_info_path.is_file():
+        try:
+            build_info = _load_json_object(
+                build_info_path, display_name="build_info.json"
+            )
+        except PublicationError:
+            build_info = None
+        if isinstance(build_info, dict) and build_info:
+            manifest["provenance"] = build_info
     _atomic_write_json(manifest_path, manifest)
     return manifest
 

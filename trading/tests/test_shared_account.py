@@ -118,7 +118,9 @@ def test_legacy_flattening_is_folded_into_opening_cash_once() -> None:
         state = cutover.shared_account_state()
         with cutover.connect() as conn:
             ledger = conn.execute(
-                "SELECT event_type, amount FROM paper_account_ledger ORDER BY id"
+                "SELECT event_type, amount FROM paper_account_ledger "
+                "WHERE account_id = 'paper-shared' "
+                "AND event_type != 'ACCOUNTING_POLICY_TRANSITION' ORDER BY id"
             ).fetchall()
 
         assert round(state["cash_balance"], 6) == round(expected_equity, 6)
@@ -215,7 +217,8 @@ def test_monitor_requires_later_trade_quantity_beyond_queue_ahead() -> None:
                         "trade_id": "T1",
                         "count_fp": "25.00",
                         "yes_price_dollars": "0.30",
-                        "taker_book_side": "bid",
+                        # Ask-side (NO) takers fill resting YES bids.
+                        "taker_book_side": "ask",
                         "created_time": datetime.now(UTC).isoformat(),
                     }
                 ]
@@ -246,6 +249,13 @@ def test_monitor_requires_later_trade_quantity_beyond_queue_ahead() -> None:
 
 
 def test_resting_orders_sharing_market_fetch_trades_once() -> None:
+    """One trade-history fetch serves every resting order on the market.
+
+    A single public trade has exactly one aggressor direction, so filling the
+    YES and the NO order takes one complementary trade each -- but still only
+    one get_trades call for the shared market.
+    """
+
     class Client:
         calls = 0
 
@@ -254,13 +264,21 @@ def test_resting_orders_sharing_market_fetch_trades_once() -> None:
             return {
                 "trades": [
                     {
-                        "trade_id": "T-BOTH",
+                        "trade_id": "T-FILLS-YES",
+                        "count_fp": "100.00",
+                        "yes_price_dollars": "0.30",
+                        "no_price_dollars": "0.70",
+                        "taker_book_side": "ask",
+                        "created_time": datetime.now(UTC).isoformat(),
+                    },
+                    {
+                        "trade_id": "T-FILLS-NO",
                         "count_fp": "100.00",
                         "yes_price_dollars": "0.30",
                         "no_price_dollars": "0.70",
                         "taker_book_side": "bid",
                         "created_time": datetime.now(UTC).isoformat(),
-                    }
+                    },
                 ]
             }
 
@@ -315,9 +333,9 @@ def test_resting_fill_uses_relevant_trade_from_second_page() -> None:
             "count_fp": quantity,
             "yes_price_dollars": price,
             "no_price_dollars": str(1.0 - float(price)),
-            "taker_side": "yes",
-            "taker_outcome_side": "yes",
-            "taker_book_side": "bid",
+            "taker_side": "no",
+            "taker_outcome_side": "no",
+            "taker_book_side": "ask",
             "created_time": now,
         }
 
@@ -377,9 +395,9 @@ def test_cursor_failure_discards_partial_ticker_but_continues_other_tickers() ->
             "count_fp": "100.00",
             "yes_price_dollars": "0.29",
             "no_price_dollars": "0.71",
-            "taker_side": "yes",
-            "taker_outcome_side": "yes",
-            "taker_book_side": "bid",
+            "taker_side": "no",
+            "taker_outcome_side": "no",
+            "taker_book_side": "ask",
             "created_time": now,
         }
 

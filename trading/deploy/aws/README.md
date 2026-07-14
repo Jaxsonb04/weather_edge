@@ -2,8 +2,9 @@
 
 These scripts operate the always-on WeatherEdge EC2 runtime at
 `/opt/weatheredge`. The current host is Ubuntu arm64 on a `t4g.medium` in
-`us-east-1`. This directory supports deployment and local verification; it does
-not authorize production access or changes.
+`us-west-1` (migrated from `us-east-1` on 2026-07-11). This directory supports
+deployment and local verification; it does not authorize production access or
+changes.
 
 ## Runtime Contract
 

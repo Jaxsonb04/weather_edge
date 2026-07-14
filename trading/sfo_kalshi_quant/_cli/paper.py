@@ -361,6 +361,8 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     cities = _cities_for_args(args)
     any_open = False
     db_settled = 0
+    verification_truth: dict[tuple[str, str], float] = {}
+    settled_intervals: dict[str, tuple[str, str]] = {}
     for city in cities:
         open_targets = _completed_open_target_dates(
             store.open_paper_target_dates(series_ticker=city.series_ticker),
@@ -393,6 +395,16 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
                         "from archived CLI truth (final)"
                     )
                 )
+                verification_truth[(city.series_ticker, target_date)] = settlements[
+                    target_date
+                ]
+                lower, upper = settled_intervals.get(
+                    city.series_ticker, (target_date, target_date)
+                )
+                settled_intervals[city.series_ticker] = (
+                    min(lower, target_date),
+                    max(upper, target_date),
+                )
 
     if not any_open:
         print(color.yellow("auto-settle skipped: no completed open paper target dates"))
@@ -400,6 +412,34 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     total = db_settled
     if total:
         print(color.cyan(f"auto-settled {total} paper orders across cities"))
+        # Audit ST-01: every settlement is immediately re-verified read-only
+        # against the same final truth and persisted idempotently (one row per
+        # settled order). Verification never edits P&L; a mismatch is an
+        # incident signal, so it goes loudly to stderr.
+        verification = store.verify_paper_settlements(
+            verification_truth, intervals=settled_intervals
+        )
+        for row in verification["checked"]:
+            if row["verification_status"] == "MATCH":
+                continue
+            print(
+                color.red(
+                    f"SETTLEMENT VERIFICATION {row['verification_status']}: "
+                    f"order={row['order_id']} market={row['market_ticker']} "
+                    f"target={row['target_date']} booked={row['booked_high_f']} "
+                    f"final={row['final_high_f']} (booked P&L unchanged; open an "
+                    "incident/restatement instead of editing the journal)"
+                ),
+                file=sys.stderr,
+            )
+        print(
+            color.cyan(
+                "settlement verification: "
+                f"checked={len(verification['checked'])} "
+                f"mismatches={verification['mismatches']} "
+                f"missing_final_truth={verification['missing_truth']}"
+            )
+        )
     else:
         print(color.yellow("auto-settle: completed open targets remain but no CLI truth is available yet"))
     return 0

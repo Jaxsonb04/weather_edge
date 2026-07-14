@@ -143,11 +143,13 @@ def _monitor_diagnostics_payload(
     net_exit_per_contract: float | None,
     unrealized_pnl: float | None,
     unrealized_roi: float | None,
+    model_read: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return _drop_none(
         {
             "schema_version": 1,
             "kind": "paper_monitor_snapshot",
+            "model_read": model_read,
             "created_at": created_at,
             "order_id": _row_value(order, "id"),
             "target_date": _row_value(order, "target_date"),

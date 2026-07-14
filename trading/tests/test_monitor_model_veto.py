@@ -237,10 +237,17 @@ def test_monitor_decide_exit_uses_series_and_profile_config_fee_semantics():
 
 
 class _FakeNoBasketClient:
+    # A losing-but-not-catastrophic mark on the stopped leg: at entry cost 0.62
+    # the net exit (~0.29) is roughly -53% ROI, inside the 60% catastrophic
+    # floor, so the basket veto is allowed to hold it. Catastrophic marks must
+    # close regardless of the basket (see test_audit_2026_07_13 / RK-01).
+    stopped_leg_no_bid = 0.30
+    stopped_leg_no_ask = 0.32
+
     def get_market(self, ticker: str) -> MarketBin:
         if ticker.endswith("B68.5"):
-            no_bid = 0.16
-            no_ask = 0.18
+            no_bid = self.stopped_leg_no_bid
+            no_ask = self.stopped_leg_no_ask
             floor = 68.0
             cap = 69.0
             label = "68° to 69°"
@@ -1046,7 +1053,13 @@ def test_paper_monitor_no_stop_loss_can_model_veto_before_hard_floor():
         assert "HOLD order" in out.getvalue()
 
 
-def test_same_day_no_basket_holds_catastrophic_stop_when_model_still_supports_leg():
+def test_same_day_no_basket_noncatastrophic_stop_is_held_without_crystallizing():
+    """A losing-but-not-catastrophic research NO leg the model still supports is
+    HELD, not crystallized. With catastrophic priority enforced (audit RK-01)
+    the model veto in decide_exit covers this case before the basket rule is
+    consulted -- the basket veto shares the same hold floor, so it can no
+    longer be the mechanism that overrides a catastrophic stop."""
+
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
@@ -1091,11 +1104,11 @@ def test_same_day_no_basket_holds_catastrophic_stop_when_model_still_supports_le
                 """,
                 (stopped_id,),
             ).fetchone()[0]
-        assert action == "HOLD_NO_BASKET_VETO"
-        assert "same-day NO basket" in out.getvalue()
+        assert action == "HOLD_MODEL_VETO"
+        assert "stop-loss vetoed" in out.getvalue()
 
 
-def test_same_day_no_basket_closes_catastrophic_stop_when_model_thesis_dies():
+def test_same_day_no_basket_closes_stop_when_model_thesis_dies():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)

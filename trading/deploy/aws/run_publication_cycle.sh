@@ -40,6 +40,16 @@ if [[ "$MODE" == "strategy" ]]; then
   "$PYTHON_BIN" -m sfo_kalshi_quant.publication build \
     --artifact-root "$FORECASTER_DIR" \
     --output "$MANIFEST_OUTPUT_PATH" >/dev/null
+  # Audit OP-02: the strategy cycle BUILDS its artifact but leaves publishing
+  # to the next operational cycle (at most five minutes away). Two competing
+  # publishers produced ~15 gh-pages commits/hour with routine cancellations;
+  # one Git pusher on the operational cadence preserves the 5-minute SLA at
+  # ~12 deployments/hour. Set SFO_STRATEGY_PUBLISH=1 to restore the legacy
+  # publish-from-strategy behavior explicitly.
+  if [[ "${SFO_STRATEGY_PUBLISH:-0}" != "1" ]]; then
+    echo "strategy artifact built; publication deferred to the operational cycle"
+    exit 0
+  fi
   export SFO_REQUIRE_STRATEGY_ARTIFACT=1
 fi
 /bin/bash "$SCRIPT_DIR/publish_forecaster_pages.sh"

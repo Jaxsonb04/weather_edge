@@ -291,6 +291,11 @@ class BucketProbability:
     observed_high_f: float | None = None
     intraday_probability: float | None = None
     remaining_heat_risk: float | None = None
+    # Whether observed_high_f is the complete official daily value (True) or a
+    # raw nonfinal station maximum (False). None when no observation was used.
+    # Nonfinal observations must never justify exact settlement certainty
+    # (audit MD-01), and near-certain candidates built on them are gated.
+    observed_high_is_final: bool | None = None
 
 
 @dataclass(frozen=True)

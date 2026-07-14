@@ -1,9 +1,10 @@
 # AWS Deployment (EC2)
 
-WeatherEdge production runs on an AWS EC2 `t4g.medium` in `us-east-1`. The host
-is Ubuntu 24.04 arm64 (`ubuntu`), and the application root is
-`/opt/weatheredge`. Live databases, caches, and dashboard artifacts on that host
-are authoritative after sync and refresh.
+WeatherEdge production runs on an AWS EC2 `t4g.medium` in `us-west-1`
+(migrated from `us-east-1` on 2026-07-11; the quiesced east instance awaits
+owner decommission). The host is Ubuntu 24.04 arm64 (`ubuntu`), and the
+application root is `/opt/weatheredge`. Live databases, caches, and dashboard
+artifacts on that host are authoritative after sync and refresh.
 
 The operator connection settings belong in the ignored `.local/ec2.env`:
 

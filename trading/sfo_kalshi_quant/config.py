@@ -93,6 +93,14 @@ class StrategyConfig:
     # favorites (p ~0.85-0.93) untouched while capping degenerate certainty.
     # 0.0 on the frozen baseline for reproducible tests; enabled per profile.
     min_probability_uncertainty: float = 0.0
+    # Safety gate (audit MD-01): block entries whose side probability is >=
+    # 0.99 when that certainty rests on a raw NONFINAL station observation.
+    # The official integer daily report can land a degree away from the raw
+    # station maximum (order 188: raw 87.8F settled 87F) and the resolved
+    # p>=0.99 cohorts are net losers (live 0-2, research 3-6). Stays on until
+    # a calibrated raw-to-official mapping passes walk-forward verification.
+    nonfinal_certainty_gate_enabled: bool = True
+    nonfinal_certainty_gate_probability: float = 0.99
     max_position_risk_pct: float = 0.01
     max_event_risk_pct: float = 0.03
     # When True, Kelly and the percentage risk caps size against live paper

@@ -14,10 +14,10 @@ def test_replay_requires_later_trade_and_clears_queue_before_fill() -> None:
         contracts=5, fee_per_contract=0, queue_ahead=10,
     )
     result = run_replay([
-        ReplayEvent(_at(0), "trade", order.ticker, side="YES", price=0.29, quantity=100, taker_book_side="bid"),
+        ReplayEvent(_at(0), "trade", order.ticker, side="YES", price=0.29, quantity=100, taker_book_side="ask"),
         ReplayEvent(_at(0), "order", order.ticker, order=order),
-        ReplayEvent(_at(1), "trade", order.ticker, side="YES", price=0.30, quantity=9, taker_book_side="bid"),
-        ReplayEvent(_at(2), "trade", order.ticker, side="YES", price=0.30, quantity=6, taker_book_side="bid"),
+        ReplayEvent(_at(1), "trade", order.ticker, side="YES", price=0.30, quantity=9, taker_book_side="ask"),
+        ReplayEvent(_at(2), "trade", order.ticker, side="YES", price=0.30, quantity=6, taker_book_side="ask"),
         ReplayEvent(_at(10), "settlement", order.ticker, target_date="2026-07-02", resolved_yes=True),
     ])
 
@@ -35,7 +35,7 @@ def test_replay_cancels_ttl_and_never_uses_future_settlement_as_fill_evidence() 
     )
     result = run_replay([
         ReplayEvent(_at(0), "order", order.ticker, order=order),
-        ReplayEvent(_at(16), "trade", order.ticker, side="YES", price=0.20, quantity=100, taker_book_side="bid"),
+        ReplayEvent(_at(16), "trade", order.ticker, side="YES", price=0.20, quantity=100, taker_book_side="ask"),
         ReplayEvent(_at(20), "settlement", order.ticker, target_date="2026-07-02", resolved_yes=True),
     ])
 

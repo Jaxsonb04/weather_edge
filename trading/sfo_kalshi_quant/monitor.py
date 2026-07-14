@@ -8,9 +8,11 @@ import os
 import sys
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
+from .account import RESEARCH_ACCOUNT_ID
 from .cities import CityConfig, city_for_market_ticker
 from .colors import Color
 from .config import (
@@ -20,8 +22,20 @@ from .config import (
     strategy_config_for_profile,
 )
 from .db import PaperStore
-from .exits import DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST, decide_exit
+from .exits import (
+    DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
+    ExitSignal,
+    decide_exit,
+    research_no_basket_hold_reason,
+)
 from .fees import quadratic_fee_average_per_contract
+from .maker_fills import (
+    EXECUTION_MODEL_VERSION,
+    RestingMakerOrder,
+    allocate_maker_fills,
+    apply_volume_claims,
+    normalize_public_trade,
+)
 from .forecast import (
     ForecastDataError,
     SfoForecasterAdapter,
@@ -132,30 +146,36 @@ def _same_day_no_basket_veto_reason(
     row,
     *,
     side: str,
-    signal_action: str,
+    signal: ExitSignal,
     entry_cost: float,
     net_exit: float,
     model_side_probability: float | None,
     model_veto_buffer: float,
 ) -> str | None:
-    if signal_action != "STOP_LOSS" or side.upper() != "NO":
+    """Store-aware wrapper for the engine's basket rule (audit RK-01).
+
+    The priority ordering lives in ``exits.research_no_basket_hold_reason``: a
+    catastrophic stop can never be held. This wrapper only resolves the basket
+    size from the store, and skips that query entirely when the engine could
+    never hold the signal.
+    """
+
+    if signal.action != "STOP_LOSS" or signal.catastrophic or side.upper() != "NO":
         return None
     risk_profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
-    if risk_profile != "research":
-        return None
-    if model_side_probability is None:
+    if risk_profile != "research" or model_side_probability is None:
         return None
     basket_rows = store.open_no_basket_orders(str(row["target_date"]), risk_profile="research")
     distinct_markets = {str(basket_row["market_ticker"]) for basket_row in basket_rows}
-    if len(distinct_markets) < 2:
-        return None
-    veto_floor = max(entry_cost, net_exit + model_veto_buffer)
-    if model_side_probability < veto_floor:
-        return None
-    return (
-        f"same-day NO basket veto: model p={model_side_probability:.2f} still clears "
-        f"hold floor {veto_floor:.2f} across {len(distinct_markets)} open NO legs; "
-        "holding basket instead of crystallizing one leg"
+    return research_no_basket_hold_reason(
+        signal,
+        side=side,
+        risk_profile=risk_profile,
+        distinct_open_no_markets=len(distinct_markets),
+        entry_cost=entry_cost,
+        net_exit=net_exit,
+        model_side_probability=model_side_probability,
+        model_veto_buffer=model_veto_buffer,
     )
 
 
@@ -413,14 +433,26 @@ def run_paper_monitor(
         # %-of-cost target is the reachable-for-cheap-positions fallback. The
         # stop-loss is the reachable downside price floor with the NO-side model
         # veto preserved (do not sell intraday noise the model still expects to win).
-        model_yes_p = store.latest_model_probability(
+        model_read = store.latest_model_probability_read(
             str(row["target_date"]), str(row["market_ticker"])
         )
+        model_yes_p = None if model_read is None else model_read[1]
         model_side_p = (
             (model_yes_p if side == "YES" else 1.0 - model_yes_p)
             if model_yes_p is not None
             else None
         )
+        # Persist which model snapshot backed this decision (and how old it
+        # was) so stale-read incidents are auditable after the fact (RK-01).
+        model_read_info = None
+        if model_read is not None:
+            model_read_info = {
+                "model_yes_probability": model_yes_p,
+                "created_at": model_read[0].isoformat(),
+                "age_minutes": round(
+                    (datetime.now(UTC) - model_read[0]).total_seconds() / 60.0, 3
+                ),
+            }
         signal = decide_exit_fn(
             side=side,
             entry_cost=entry_cost,
@@ -451,6 +483,7 @@ def run_paper_monitor(
                 net_exit_per_contract=net_exit,
                 unrealized_pnl=pnl_dollars,
                 unrealized_roi=pnl_pct,
+                model_read=model_read_info,
             )
             print(
                 f"HOLD order {row['id']} {row['market_ticker']} {side}: "
@@ -463,7 +496,7 @@ def run_paper_monitor(
             store,
             row,
             side=side,
-            signal_action=signal.action,
+            signal=signal,
             entry_cost=entry_cost,
             net_exit=net_exit,
             model_side_probability=model_side_p,
@@ -481,6 +514,7 @@ def run_paper_monitor(
                 net_exit_per_contract=net_exit,
                 unrealized_pnl=pnl_dollars,
                 unrealized_roi=pnl_pct,
+                model_read=model_read_info,
             )
             print(
                 f"HOLD order {row['id']} {row['market_ticker']} {side}: "
@@ -504,11 +538,37 @@ def run_paper_monitor(
                 net_exit_per_contract=net_exit,
                 unrealized_pnl=pnl_dollars,
                 unrealized_roi=pnl_pct,
+                model_read=model_read_info,
             )
             print(
                 f"WOULD_CLOSE order {row['id']} {row['market_ticker']} {side}: "
                 f"bid={live_bid:.2f} net={net_exit:.2f} unrealized={pnl_pct * 100:.1f}% "
                 f"(${pnl_dollars:.2f}); {reason}"
+            )
+            continue
+
+        # An exit may only book the quantity the displayed top-bid liquidity
+        # supports (audit EX-02). With no displayed size the close waits.
+        bid_size = market.side_bid_size(side)
+        if bid_size <= 0:
+            no_depth_reason = (
+                f"{reason}; close deferred: displayed {side} bid size is zero"
+            )
+            store.record_monitor_snapshot(
+                row,
+                side=side,
+                action="HOLD_NO_DISPLAYED_DEPTH",
+                reason=no_depth_reason,
+                market_status=market.status,
+                live_bid=live_bid,
+                exit_fee_per_contract=exit_fee,
+                net_exit_per_contract=net_exit,
+                unrealized_pnl=pnl_dollars,
+                unrealized_roi=pnl_pct,
+                model_read=model_read_info,
+            )
+            print(
+                f"HOLD order {row['id']} {row['market_ticker']} {side}: {no_depth_reason}"
             )
             continue
 
@@ -524,9 +584,21 @@ def run_paper_monitor(
             net_exit_per_contract=net_exit,
             unrealized_pnl=pnl_dollars,
             unrealized_roi=pnl_pct,
+            model_read=model_read_info,
         )
         try:
-            closed_row = store.close_paper_order(int(row["id"]), live_bid)
+            closed_row = store.close_paper_order(
+                int(row["id"]),
+                live_bid,
+                max_quantity=bid_size,
+                liquidity_evidence={
+                    "bid": live_bid,
+                    "displayed_bid_size": bid_size,
+                    "market_status": market.status,
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "source": "monitor_market_lookup",
+                },
+            )
         except (ValueError, RuntimeError) as exc:
             # A concurrent settle/close can win the race for this row. Log and
             # keep inspecting the rest of the book instead of aborting the run.
@@ -539,12 +611,20 @@ def run_paper_monitor(
             )
             continue
         closed += 1
+        executed = float(closed_row["contracts"])
+        remaining = max(0.0, contracts - executed)
         pnl = f"${closed_row['realized_pnl']:.2f}"
         pnl = color.green(pnl) if closed_row["realized_pnl"] >= 0 else color.red(pnl)
+        partial_note = (
+            f" (partial: {executed:g} of {contracts:g} at displayed size "
+            f"{bid_size:g}, {remaining:g} remain open)"
+            if remaining > 1e-9
+            else ""
+        )
         print(
             f"{color.green('closed')} order {closed_row['id']} {row['market_ticker']} {side}: "
             f"bid={live_bid:.2f}; exit_fee={closed_row['exit_fee_per_contract']:.2f}; "
-            f"realized_pnl={pnl}; {reason}"
+            f"realized_pnl={pnl}{partial_note}; {reason}"
         )
 
     print(
@@ -611,7 +691,17 @@ def _all_public_trades_for_ticker(
 def _fill_resting_orders_against_live_book(
     store: PaperStore, client: KalshiPublicClient, color: Color
 ) -> int:
-    """Conservative maker fill: later public trades must clear queue ahead."""
+    """Conservative maker fill via the shared single-aggressor allocator.
+
+    Each public trade is normalized to exactly one maker side (a bid-side
+    taker fills resting NO bids, an ask-side taker fills resting YES bids) and
+    its volume is allocated once across compatible resting orders in
+    price-time priority, after each order's estimated queue ahead (EX-01).
+    Conservation holds ACROSS passes, not just within one: every capital
+    fill persists per-trade volume claims, and later passes subtract those
+    claims from the available volume before allocating to still-resting
+    orders, so a restart or a later pass can never re-credit consumed volume.
+    """
 
     filled = 0
     by_ticker: dict[str, list] = {}
@@ -628,7 +718,7 @@ def _fill_resting_orders_against_live_book(
                 created_at = created_at.replace(tzinfo=UTC)
             created_times.append(created_at)
         try:
-            trades = _all_public_trades_for_ticker(
+            trade_payloads = _all_public_trades_for_ticker(
                 client,
                 ticker=ticker,
                 min_ts=int(min(created_times).timestamp()),
@@ -636,6 +726,19 @@ def _fill_resting_orders_against_live_book(
             )
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
             continue
+        all_trades = [
+            trade
+            for trade in (normalize_public_trade(payload) for payload in trade_payloads)
+            if trade is not None
+        ]
+        # Capital-consuming orders see only the volume no earlier fill has
+        # claimed; counterfactual research shadows see the full public tape.
+        trades = apply_volume_claims(
+            all_trades, store.maker_volume_claims_for_ticker(ticker)
+        )
+        resting: list[RestingMakerOrder] = []
+        shadow: list[RestingMakerOrder] = []
+        row_by_id: dict[int, tuple] = {}
         for row, created_at in zip(rows, created_times):
             limit_price = (
                 row["limit_price"]
@@ -645,37 +748,48 @@ def _fill_resting_orders_against_live_book(
             if limit_price is None:
                 continue
             side = str(row["side"] or "YES").upper()
-            qualifying: list[dict[str, object]] = []
-            traded_quantity = 0.0
-            price_field = "yes_price_dollars" if side == "YES" else "no_price_dollars"
-            for trade in trades:
-                if not isinstance(trade, dict) or trade.get("is_block_trade") is True:
-                    continue
-                if str(trade.get("taker_book_side") or "").lower() != "bid":
-                    continue
-                try:
-                    trade_time = datetime.fromisoformat(
-                        str(trade.get("created_time")).replace("Z", "+00:00")
-                    )
-                    price = float(trade.get(price_field))
-                    quantity = float(trade.get("count_fp") or 0.0)
-                except (TypeError, ValueError):
-                    continue
-                if trade_time <= created_at or price > float(limit_price) + 1e-12:
-                    continue
-                traded_quantity += quantity
-                qualifying.append(trade)
-            queue_ahead = float(row["entry_bid_size"] or 0.0)
-            required_quantity = queue_ahead + float(row["contracts"])
-            if traded_quantity + 1e-12 < required_quantity:
+            order = RestingMakerOrder(
+                order_id=int(row["id"]),
+                side=side,
+                limit_price=Decimal(str(round(float(limit_price), 6))),
+                quantity=Decimal(str(float(row["contracts"]))),
+                queue_ahead=Decimal(str(float(row["entry_bid_size"] or 0.0))),
+                placed_at=created_at,
+            )
+            # Research shadows observe the market without consuming the
+            # public volume that fills capital-consuming orders (audit AC-01):
+            # each shadow is allocated counterfactually, alone against the
+            # full trade history, and its evidence says so.
+            if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID:
+                shadow.append(order)
+            else:
+                resting.append(order)
+            row_by_id[order.order_id] = (row, side)
+        if not resting and not shadow:
+            continue
+        allocations = allocate_maker_fills(trades, resting)
+        for shadow_order in shadow:
+            allocations[shadow_order.order_id] = allocate_maker_fills(
+                all_trades, [shadow_order]
+            )[shadow_order.order_id]
+        for order in resting + shadow:
+            allocation = allocations[order.order_id]
+            if not allocation.complete:
                 continue
+            row, side = row_by_id[order.order_id]
             evidence = {
-                "model": "later_trade_at_or_through_with_queue_ahead",
-                "queue_ahead": queue_ahead,
-                "required_quantity": required_quantity,
-                "qualifying_quantity": traded_quantity,
-                "trade_ids": [trade.get("trade_id") for trade in qualifying],
+                "model": "maker_allocator_price_time_v2",
+                "execution_model_version": EXECUTION_MODEL_VERSION,
+                "queue_ahead": float(order.queue_ahead),
+                "queue_consumed": float(allocation.queue_consumed),
+                "required_quantity": float(order.queue_ahead + order.quantity),
+                "allocated_quantity": float(allocation.filled_quantity),
+                "allocations": allocation.allocations_by_trade(),
+                "trade_ids": sorted(allocation.allocations_by_trade()),
             }
+            if order.order_id in {item.order_id for item in shadow}:
+                evidence["research_shadow"] = True
+                evidence["counterfactual"] = True
             updated = store.fill_resting_limit_order(int(row["id"]), evidence=evidence)
             if updated is not None and updated["status"] == "PAPER_FILLED":
                 filled += 1
@@ -684,13 +798,15 @@ def _fill_resting_orders_against_live_book(
                     side=side,
                     action="LIMIT_FILLED",
                     reason=(
-                        f"later trades at/through {float(limit_price):.2f} cleared "
-                        f"estimated queue {queue_ahead:.2f}"
+                        f"allocated later single-aggressor trades at/through "
+                        f"{float(order.limit_price):.2f} after estimated queue "
+                        f"{float(order.queue_ahead):.2f}"
                     ),
                     market_status="active",
                 )
                 print(
                     f"filled resting order {row['id']} {row['market_ticker']} {side}: "
-                    f"trade quantity {traded_quantity:.2f} >= queue+order {required_quantity:.2f}"
+                    f"allocated {float(allocation.filled_quantity):.2f} contracts "
+                    f"after queue {float(allocation.queue_consumed):.2f}"
                 )
     return filled

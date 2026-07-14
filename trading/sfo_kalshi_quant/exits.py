@@ -69,15 +69,44 @@ def thresholds_for_side(
     return SideThresholds(float(take_profit_pct), float(stop_loss_pct))
 
 
-def net_exit_per_contract(bid: float, contracts: float) -> float:
-    """Net proceeds per contract after the quadratic exit (taker) fee."""
+def net_exit_per_contract(
+    bid: float,
+    contracts: float,
+    *,
+    series_ticker: str | None = None,
+    fee_multiplier: float = 1.0,
+    taker_rate: float = 0.07,
+    maker_rate: float = 0.0175,
+) -> float:
+    """Net proceeds per contract after the quadratic exit (taker) fee.
+
+    The fee configuration and series ticker must match what the monitor uses
+    (series-specific fee rounding included), or the dashboard displays exit
+    thresholds the monitor will never act on (audit UI-01).
+    """
 
     if bid <= 0 or bid >= 1 or contracts <= 0:
         return 0.0
-    return bid - quadratic_fee_average_per_contract(bid, contracts)
+    return bid - quadratic_fee_average_per_contract(
+        bid,
+        contracts,
+        fee_multiplier=fee_multiplier,
+        taker_rate=taker_rate,
+        maker_rate=maker_rate,
+        series_ticker=series_ticker,
+    )
 
 
-def exit_bid_for_net(target_net: float, contracts: float, *, round_to: int = 4) -> float | None:
+def exit_bid_for_net(
+    target_net: float,
+    contracts: float,
+    *,
+    round_to: int = 4,
+    series_ticker: str | None = None,
+    fee_multiplier: float = 1.0,
+    taker_rate: float = 0.07,
+    maker_rate: float = 0.0175,
+) -> float | None:
     """Smallest sellable bid whose net proceeds reach ``target_net``.
 
     Returns ``None`` when the target is unreachable inside the [0.01, 0.99]
@@ -87,15 +116,21 @@ def exit_bid_for_net(target_net: float, contracts: float, *, round_to: int = 4) 
 
     if contracts <= 0:
         return None
-    if target_net <= net_exit_per_contract(0.01, contracts):
+    fee_kwargs = {
+        "series_ticker": series_ticker,
+        "fee_multiplier": fee_multiplier,
+        "taker_rate": taker_rate,
+        "maker_rate": maker_rate,
+    }
+    if target_net <= net_exit_per_contract(0.01, contracts, **fee_kwargs):
         return round(0.01, round_to)
-    if target_net > net_exit_per_contract(0.99, contracts):
+    if target_net > net_exit_per_contract(0.99, contracts, **fee_kwargs):
         return None
     lo = 0.01
     hi = 0.99
     for _ in range(48):
         mid = (lo + hi) / 2.0
-        if net_exit_per_contract(mid, contracts) >= target_net:
+        if net_exit_per_contract(mid, contracts, **fee_kwargs) >= target_net:
             hi = mid
         else:
             lo = mid
@@ -128,6 +163,9 @@ def convergence_take_profit_net(
 class ExitSignal:
     action: str  # "HOLD" | "HOLD_SETTLEMENT_FIRST" | "TAKE_PROFIT" | "STOP_LOSS"
     reason: str
+    # A stop past the catastrophic loss floor is unconditional: no model,
+    # basket, or research veto downstream may hold the position (audit RK-01).
+    catastrophic: bool = False
 
 
 def decide_exit(
@@ -200,10 +238,15 @@ def decide_exit(
                 "TAKE_PROFIT",
                 f"edge captured: net exit {net_exit:.3f} >= fair value {tp_net:.3f}",
             )
+        reversal_roi = (net_exit - entry_cost) / entry_cost if entry_cost > 0 else 0.0
         return ExitSignal(
             "STOP_LOSS",
             f"edge reversed: fair value {tp_net:.3f} fell to/below net exit "
             f"{net_exit:.3f}, under entry {entry_cost:.3f}",
+            catastrophic=(
+                model_veto_max_loss_roi is not None
+                and reversal_roi <= -model_veto_max_loss_roi
+            ),
         )
 
     if net_exit <= stop_loss_net:
@@ -240,9 +283,49 @@ def decide_exit(
                     f"+ {model_veto_buffer:.2f} buffer",
                 )
         pct_suffix = f" ({stop_loss_pct:.1f}%)" if stop_loss_pct is not None else ""
+        prefix = "catastrophic " if catastrophic else ""
         return ExitSignal(
             "STOP_LOSS",
-            f"{side} stop-loss: net exit {net_exit:.3f} <= floor {stop_loss_net:.3f}{pct_suffix}",
+            f"{prefix}{side} stop-loss: net exit {net_exit:.3f} <= floor {stop_loss_net:.3f}{pct_suffix}",
+            catastrophic=catastrophic,
         )
 
     return ExitSignal("HOLD", "inside exit bands")
+
+
+def research_no_basket_hold_reason(
+    signal: ExitSignal,
+    *,
+    side: str,
+    risk_profile: str,
+    distinct_open_no_markets: int,
+    entry_cost: float,
+    net_exit: float,
+    model_side_probability: float | None,
+    model_veto_buffer: float,
+) -> str | None:
+    """Research same-day NO basket hold, strictly below catastrophic priority.
+
+    The basket rule lives in the decision engine so every caller inherits the
+    same ordering: a catastrophic stop can never be vetoed (audit RK-01 --
+    production order 311 was held by this veto through a -96% collapse). A
+    non-catastrophic stop on one research NO leg may be held when a fresh model
+    read still clears the hold floor and at least two distinct NO legs form the
+    basket, because crystallizing one leg converts a bounded basket into a
+    realized loss on intraday noise.
+    """
+
+    if signal.action != "STOP_LOSS" or signal.catastrophic:
+        return None
+    if side.upper() != "NO" or risk_profile != "research":
+        return None
+    if model_side_probability is None or distinct_open_no_markets < 2:
+        return None
+    veto_floor = max(entry_cost, net_exit + model_veto_buffer)
+    if model_side_probability < veto_floor:
+        return None
+    return (
+        f"same-day NO basket veto: model p={model_side_probability:.2f} still clears "
+        f"hold floor {veto_floor:.2f} across {distinct_open_no_markets} open NO legs; "
+        "holding basket instead of crystallizing one leg"
+    )

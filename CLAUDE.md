@@ -39,7 +39,8 @@ publishing breaks silently while data looks fresh.
 - EC2 t4g.medium **us-west-1** (`i-06b30e0c893b2597a`, `13.52.240.76`) since
   2026-07-11 — the current and only production target. Faithful lift-and-shift
   from us-east-1 with byte-identical DBs verified at cutover. The us-east-1 box
-  (`i-0539d834272e33991`) was terminated 2026-07-11 after parity was confirmed.
+  was quiesced (timers disabled, data intact) as a rollback and is being
+  decommissioned.
 
 ## Archive layer (2026-07-10)
 

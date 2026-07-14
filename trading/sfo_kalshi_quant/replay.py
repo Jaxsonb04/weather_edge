@@ -2,8 +2,11 @@
 
 The engine is intentionally small and deterministic.  Resting maker orders fill
 only from a later public trade at/through the limit after estimated queue ahead
-has traded.  Expiry, reservations, cash, fees, and settlement are replayed in
-timestamp order; missing evidence leaves the order unfilled.
+has traded.  Every public trade carries exactly one aggressor direction and its
+volume is allocated once across compatible resting orders in price-time
+priority (audit EX-01), sharing the semantics of the live monitor's allocator.
+Expiry, reservations, cash, fees, and settlement are replayed in timestamp
+order; missing evidence leaves the order unfilled.
 """
 
 from __future__ import annotations
@@ -17,11 +20,18 @@ from pathlib import Path
 from typing import Literal
 
 from ._util import _json_object, _row_value, _table_exists
+from .account import ACCOUNTING_POLICY_VERSION
+from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
 from .settlement_truth import (
     normalize_settlement_truth,
     row_resolves_yes as _resolves_yes,
     settlement_for_market,
 )
+
+# The maker side a public trade fills, keyed by the taker's book side
+# (docs.kalshi.com/getting_started/order_direction): a bid-side taker bought
+# YES and fills resting NO bids; an ask-side taker fills resting YES bids.
+_MAKER_SIDE_BY_TAKER_BOOK_SIDE = {"bid": "NO", "ask": "YES"}
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,10 @@ class ReplayEvent:
     taker_book_side: str | None = None
     target_date: str | None = None
     resolved_yes: bool | None = None
+    # Targeted exits (partial closes) name the position they reduce; an exit
+    # without exit_order_id keeps the legacy close-every-ticker-position
+    # behavior for hand-built event streams.
+    exit_order_id: str | None = None
 
 
 @dataclass
@@ -82,6 +96,8 @@ class ReplayAccountState:
 @dataclass(frozen=True)
 class ExecutionModel:
     require_later_trade: bool = True
+    # Require a provable complementary aggressor: the trade's taker book side
+    # must imply the order's maker side. (Field name kept for compatibility.)
     require_bid_taker: bool = True
     queue_fraction: float = 1.0
 
@@ -111,7 +127,9 @@ def run_replay(
     model = execution_model or ExecutionModel()
     state = ReplayAccountState(initial_capital=initial_capital, cash=initial_capital)
     audit: list[dict[str, object]] = []
-    queue_traded: dict[str, float] = {}
+    queue_remaining: dict[str, float] = {}
+    allocated: dict[str, float] = {}
+    position_remaining: dict[str, float] = {}
     placed = filled = cancelled = settled = 0
     block_reasons: set[str] = set()
     daily_pnl: dict[str, float] = {}
@@ -141,20 +159,44 @@ def run_replay(
             else:
                 state.reservations[order.order_id] = order.cost
                 state.open_orders[order.order_id] = order
+                queue_remaining[order.order_id] = max(
+                    0.0, model.queue_fraction * order.queue_ahead
+                )
+                allocated[order.order_id] = 0.0
                 audit.append(_audit(now, "RESERVE", order.order_id, order.cost))
             continue
 
         if event.kind == "trade":
-            for order_id, order in list(state.open_orders.items()):
-                if order.ticker != event.ticker or now <= as_utc(order.placed_at):
-                    continue
-                if model.require_bid_taker and (event.taker_book_side or "").lower() != "bid":
+            maker_side = _MAKER_SIDE_BY_TAKER_BOOK_SIDE.get(
+                (event.taker_book_side or "").lower()
+            )
+            # One trade, one aggressor, finite volume: consume it once across
+            # compatible orders in price-time priority, queue ahead first.
+            residual = max(0.0, event.quantity)
+            eligible = sorted(
+                (
+                    (order_id, order)
+                    for order_id, order in state.open_orders.items()
+                    if order.ticker == event.ticker and now > as_utc(order.placed_at)
+                ),
+                key=lambda pair: (-pair[1].limit_price, as_utc(pair[1].placed_at), pair[0]),
+            )
+            for order_id, order in eligible:
+                if residual <= 0:
+                    break
+                if model.require_bid_taker and maker_side != order.side:
                     continue
                 if event.side != order.side or event.price is None or event.price > order.limit_price + 1e-12:
                     continue
-                queue_traded[order_id] = queue_traded.get(order_id, 0.0) + max(0.0, event.quantity)
-                required = model.queue_fraction * order.queue_ahead + order.contracts
-                if queue_traded[order_id] + 1e-12 < required:
+                queue_take = min(queue_remaining.get(order_id, 0.0), residual)
+                queue_remaining[order_id] = queue_remaining.get(order_id, 0.0) - queue_take
+                residual -= queue_take
+                if residual <= 0 or queue_remaining[order_id] > 0:
+                    continue
+                fill_take = min(order.contracts - allocated.get(order_id, 0.0), residual)
+                allocated[order_id] = allocated.get(order_id, 0.0) + fill_take
+                residual -= fill_take
+                if allocated[order_id] + 1e-12 < order.contracts:
                     continue
                 state.reservations.pop(order_id, None)
                 state.open_orders.pop(order_id, None)
@@ -165,16 +207,45 @@ def run_replay(
             continue
 
         if event.kind == "exit":
-            for order_id, order in list(state.positions.items()):
-                if order.ticker != event.ticker or event.price is None:
+            if event.price is None:
+                continue
+            if event.exit_order_id is not None:
+                # Targeted, quantity-aware exit: a partial close reduces only
+                # its own position by the executed lot; the remainder stays
+                # open for later exits or settlement.
+                order = state.positions.get(event.exit_order_id)
+                if order is None or order.ticker != event.ticker:
                     continue
-                proceeds = order.contracts * event.price
-                pnl = proceeds - order.cost
+                held = position_remaining.get(event.exit_order_id, order.contracts)
+                quantity = held if event.quantity <= 0 else min(event.quantity, held)
+                if quantity <= 0:
+                    continue
+                cost_per_contract = order.cost / order.contracts if order.contracts else 0.0
+                proceeds = quantity * event.price
+                pnl = proceeds - quantity * cost_per_contract
+                state.cash += proceeds
+                state.realized_pnl += pnl
+                day = now.date().isoformat()
+                daily_pnl[day] = daily_pnl.get(day, 0.0) + pnl
+                position_remaining[event.exit_order_id] = held - quantity
+                if position_remaining[event.exit_order_id] <= 1e-9:
+                    state.positions.pop(event.exit_order_id, None)
+                settled += 1
+                audit.append(_audit(now, "EXIT", event.exit_order_id, pnl))
+                continue
+            for order_id, order in list(state.positions.items()):
+                if order.ticker != event.ticker:
+                    continue
+                held = position_remaining.get(order_id, order.contracts)
+                cost_per_contract = order.cost / order.contracts if order.contracts else 0.0
+                proceeds = held * event.price
+                pnl = proceeds - held * cost_per_contract
                 state.cash += proceeds
                 state.realized_pnl += pnl
                 day = now.date().isoformat()
                 daily_pnl[day] = daily_pnl.get(day, 0.0) + pnl
                 state.positions.pop(order_id, None)
+                position_remaining.pop(order_id, None)
                 settled += 1
                 audit.append(_audit(now, "EXIT", order_id, pnl))
             continue
@@ -189,13 +260,16 @@ def run_replay(
             if not matching:
                 block_reasons.add("settlement without a filled replay position")
             for order_id, order in matching:
+                held = position_remaining.get(order_id, order.contracts)
                 won = event.resolved_yes if order.side == "YES" else not event.resolved_yes
-                proceeds = order.contracts if won else 0.0
-                pnl = proceeds - order.cost
+                proceeds = held if won else 0.0
+                cost_per_contract = order.cost / order.contracts if order.contracts else 0.0
+                pnl = proceeds - held * cost_per_contract
                 state.cash += proceeds
                 state.realized_pnl += pnl
                 daily_pnl[event.target_date] = daily_pnl.get(event.target_date, 0.0) + pnl
                 state.positions.pop(order_id, None)
+                position_remaining.pop(order_id, None)
                 settled += 1
                 audit.append(_audit(now, "SETTLE", order_id, pnl))
 
@@ -252,6 +326,17 @@ def replay_from_database(
                 if _table_exists(conn, "dataset_kalshi_trades")
                 else []
             )
+            # The accounting-policy transition ledger event marks when this
+            # database first ran the corrected execution/accounting semantics;
+            # only trading days entirely after it count toward the promotion
+            # clock (audit Batch D: reset at the version boundary).
+            semantics_boundary = None
+            if _table_exists(conn, "paper_account_ledger"):
+                boundary_row = conn.execute(
+                    "SELECT MIN(created_at) FROM paper_account_ledger "
+                    "WHERE event_type = 'ACCOUNTING_POLICY_TRANSITION'"
+                ).fetchone()
+                semantics_boundary = boundary_row[0] if boundary_row else None
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -259,7 +344,34 @@ def replay_from_database(
     events: list[ReplayEvent] = []
     legacy_orders = 0
     settlement_rows: dict[tuple[str, str], sqlite3.Row] = {}
+    # Partial-close lots (audit EX-02) are exits of their parent position, not
+    # independent orders: replay the parent at its ORIGINAL size and reduce it
+    # with a targeted exit event per executed lot.
+    child_quantity_by_parent: dict[str, float] = {}
     for row in orders:
+        parent_id = _row_value(row, "parent_order_id")
+        if parent_id:
+            key = str(int(parent_id))
+            child_quantity_by_parent[key] = (
+                child_quantity_by_parent.get(key, 0.0) + float(row["contracts"] or 0.0)
+            )
+    for row in orders:
+        parent_id = _row_value(row, "parent_order_id")
+        if parent_id:
+            closed_at = _parse_time(row["closed_at"])
+            if closed_at is not None and row["exit_price"] is not None:
+                net_exit = float(row["exit_price"]) - float(row["exit_fee_per_contract"] or 0.0)
+                events.append(
+                    ReplayEvent(
+                        closed_at,
+                        "exit",
+                        str(row["market_ticker"]),
+                        price=net_exit,
+                        quantity=float(row["contracts"] or 0.0),
+                        exit_order_id=str(int(parent_id)),
+                    )
+                )
+            continue
         placed = _parse_time(row["created_at"])
         if placed is None:
             continue
@@ -269,6 +381,10 @@ def replay_from_database(
         fingerprint = _row_value(row, "strategy_fingerprint")
         if not fingerprint or fingerprint == "legacy_independent_sizing":
             legacy_orders += 1
+        remaining_contracts = float(row["contracts"] or 0.0)
+        original_contracts = remaining_contracts + child_quantity_by_parent.get(
+            str(row["id"]), 0.0
+        )
         order = ReplayOrder(
             order_id=str(row["id"]),
             placed_at=placed,
@@ -276,7 +392,7 @@ def replay_from_database(
             ticker=str(row["market_ticker"]),
             side=str(row["side"] or "YES").upper(),
             limit_price=float(_row_value(row, "limit_price") or row["entry_price"] or row["yes_ask"]),
-            contracts=float(row["contracts"] or 0.0),
+            contracts=original_contracts,
             fee_per_contract=float(row["fee_per_contract"] or 0.0),
             queue_ahead=float(row["entry_bid_size"] or 0.0),
             ttl_minutes=15,
@@ -286,31 +402,50 @@ def replay_from_database(
         closed_at = _parse_time(row["closed_at"])
         if closed_at is not None and row["exit_price"] is not None:
             net_exit = float(row["exit_price"]) - float(row["exit_fee_per_contract"] or 0.0)
-            events.append(ReplayEvent(closed_at, "exit", order.ticker, price=net_exit))
+            events.append(
+                ReplayEvent(
+                    closed_at,
+                    "exit",
+                    order.ticker,
+                    price=net_exit,
+                    quantity=remaining_contracts,
+                    exit_order_id=order.order_id,
+                )
+            )
         if str(row["status"]) == "PAPER_SETTLED" and row["settled_at"]:
             settlement_rows[(order.ticker, order.target_date)] = row
 
-    for row in trades:
+    for index, row in enumerate(trades):
         occurred = _parse_time(row["created_time"])
         if occurred is None or int(row["is_block_trade"] or 0):
             continue
         raw = _json_object(row["raw_json"])
-        taker_book_side = raw.get("taker_book_side")
-        for side, column in (("YES", "yes_price"), ("NO", "no_price")):
-            price = row[column]
-            if price is None:
-                continue
-            events.append(
-                ReplayEvent(
-                    occurred,
-                    "trade",
-                    str(row["ticker"]),
-                    side=side,
-                    price=float(price),
-                    quantity=float(row["count"] or 0.0),
-                    taker_book_side=str(taker_book_side or ""),
-                )
+        normalized = normalize_public_trade(
+            {
+                "trade_id": raw.get("trade_id")
+                or f"dataset-{row['ticker']}-{row['created_time']}-{index}",
+                "created_time": row["created_time"],
+                "taker_book_side": raw.get("taker_book_side"),
+                "taker_outcome_side": raw.get("taker_outcome_side") or raw.get("taker_side"),
+                "yes_price": row["yes_price"],
+                "count": row["count"],
+            }
+        )
+        if normalized is None:
+            # A trade that cannot prove its aggressor direction, price, or
+            # quantity must not create replay fills (do not invent fills).
+            continue
+        events.append(
+            ReplayEvent(
+                occurred,
+                "trade",
+                str(row["ticker"]),
+                side=normalized.maker_side,
+                price=float(normalized.side_price(normalized.maker_side)),
+                quantity=float(normalized.quantity),
+                taker_book_side="bid" if normalized.maker_side == "NO" else "ask",
             )
+        )
 
     for (ticker, target_date), row in settlement_rows.items():
         high = settlement_for_market(truth, ticker, target_date)
@@ -335,11 +470,34 @@ def replay_from_database(
         reasons.add(f"{legacy_orders} legacy orders lack a current strategy fingerprint")
     if not trades:
         reasons.add("no persisted public trade events for maker fill validation")
+    # Promotion-clock reset at the semantics boundary: resolved trading days
+    # count only when every order of that day was placed under the corrected
+    # execution/accounting semantics.
+    resolved_days: dict[str, bool] = {}
+    for row in orders:
+        if str(row["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
+            continue
+        day = str(row["target_date"])
+        post_boundary = bool(
+            semantics_boundary and str(row["created_at"] or "") >= str(semantics_boundary)
+        )
+        resolved_days[day] = resolved_days.get(day, True) and post_boundary
+    post_boundary_days = sum(1 for qualified in resolved_days.values() if qualified)
+    if post_boundary_days < 30:
+        reasons.add(
+            f"only {post_boundary_days} independent trading days under "
+            f"{EXECUTION_MODEL_VERSION}/{ACCOUNTING_POLICY_VERSION} (need 30); "
+            "promotion clock restarted at the corrected-semantics boundary"
+        )
     result["promotion_block_reasons"] = sorted(reasons)
     result["promotion_eligible"] = not reasons
     result["available"] = True
     result["source_orders"] = len(orders)
     result["source_trades"] = len(trades)
+    result["execution_model_version"] = EXECUTION_MODEL_VERSION
+    result["accounting_policy_version"] = ACCOUNTING_POLICY_VERSION
+    result["semantics_boundary"] = semantics_boundary
+    result["post_boundary_days"] = post_boundary_days
     return result
 
 

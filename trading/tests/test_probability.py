@@ -61,12 +61,20 @@ def test_observed_high_so_far_rules_out_lower_today_bins():
         observed_high_f=67.0,
     )
     low = next(row for row in probabilities.values() if row.label == "65° or below")
-    assert low.probability == 0.0
-    assert low.model_probability == 0.0
+    # A NONFINAL raw observation is not exact settlement truth (audit MD-01):
+    # a bin 1.5F below the running maximum is effectively excluded but keeps
+    # dust mass for the raw-to-official reporting error.
+    assert low.probability < 0.005
+    assert low.model_probability < 0.005
+    assert low.observed_high_is_final is False
     assert abs(sum(row.probability for row in probabilities.values()) - 1.0) < 1e-9
 
 
-def test_observed_high_above_half_degree_boundary_rules_out_current_integer_bin():
+def test_observed_high_above_half_degree_boundary_damps_current_bin_without_certainty():
+    """Raw 69.9F sits above the 68-69 bin's 69.5 boundary, but the official
+    integer report can still land at 69 (audit MD-01, order 188: raw 87.8F
+    settled 87F). The current bin must be strongly damped, never zeroed."""
+
     config = StrategyConfig(min_conditional_samples=20)
     calibrator = ResidualCalibrator(_outcomes(), config)
     probabilities = calibrator.bucket_probabilities(
@@ -76,8 +84,8 @@ def test_observed_high_above_half_degree_boundary_rules_out_current_integer_bin(
     )
     current = next(row for row in probabilities.values() if row.label == "68° to 69°")
     next_bin = next(row for row in probabilities.values() if row.label == "70° to 71°")
-    assert current.probability == 0.0
-    assert current.model_probability == 0.0
+    assert 0.0 < current.probability < next_bin.probability
+    assert current.model_probability is not None and current.model_probability > 0.0
     assert next_bin.probability > 0.0
 
 

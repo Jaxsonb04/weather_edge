@@ -184,7 +184,9 @@ while true; do
     exit 0
   fi
 
-  git commit -m "Update SFO weather dashboard" >/dev/null
+  # Audit PR-01: the Pages commit names the deployed source revision.
+  SOURCE_SHA="$(grep -o '"source_sha": *"[0-9a-f]\{7,40\}"' "$FORECASTER_DIR/build_info.json" 2>/dev/null | sed 's/.*"\([0-9a-f]*\)"/\1/' | head -1 || true)"
+  git commit -m "Update SFO weather dashboard${SOURCE_SHA:+ (source $SOURCE_SHA)}" >/dev/null
 
   if git push origin "HEAD:$PAGES_BRANCH"; then
     echo "Published SFO weather dashboard to $PAGES_BRANCH"

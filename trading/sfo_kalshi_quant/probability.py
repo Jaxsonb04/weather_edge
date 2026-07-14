@@ -174,14 +174,18 @@ class ResidualCalibrator:
             (market, max(0.0, min(1.0, p_raw / total)), p_emp, p_norm)
             for market, p_raw, p_emp, p_norm in raw_probs
         ]
+        observed_high_is_final = bool(intraday.is_complete) if intraday is not None else False
         if observed_high_f is not None:
-            residual_probs = _condition_on_observed_high(residual_probs, observed_high_f)
+            residual_probs = _condition_on_observed_high(
+                residual_probs, observed_high_f, is_final=observed_high_is_final
+            )
 
         ensemble_probs = _ensemble_bucket_probabilities(
             markets,
             ensemble,
             observed_high_f=observed_high_f,
             min_members=self.config.ensemble_min_members,
+            observed_high_is_final=observed_high_is_final,
         )
         weather_probs: list[tuple[MarketBin, float, float, float, float | None]] = []
         for market, residual_p, p_emp, p_norm in residual_probs:
@@ -228,6 +232,7 @@ class ResidualCalibrator:
                     for market in markets
                 ],
                 observed_high_f,
+                is_final=observed_high_is_final,
             )
             market_probs = {market.ticker: p for market, p, _, _ in conditioned_market}
         effective_n = (cond_weight * cond.n) + ((1.0 - cond_weight) * glob.n)
@@ -290,6 +295,9 @@ class ResidualCalibrator:
                 observed_high_f=observed_high_f,
                 intraday_probability=intraday_p,
                 remaining_heat_risk=remaining_heat_risk,
+                observed_high_is_final=(
+                    observed_high_is_final if observed_high_f is not None else None
+                ),
             )
         return results
 
@@ -306,14 +314,59 @@ class ResidualCalibrator:
         )
 
 
+# A raw nonfinal station maximum is NOT the official integer daily-climate
+# value the market settles on: METAR temperatures are rounded conversions,
+# the official report aggregates different sensors/windows, and revisions
+# happen. Production evidence (audit MD-01, order 188): Philadelphia's raw
+# station max read 87.8°F while the final official integer high was 87°F, so
+# hard-zeroing the 86-87°F bin created false settlement certainty and lost
+# $11.63. Model the raw-to-official mapping error as a Gaussian with this
+# sigma until the MD-02 challenger calibrates a per-station replacement.
+NONFINAL_OBSERVED_HIGH_SIGMA_F = 0.6
+# Bins this unlikely to remain reachable are treated as exactly excluded, so
+# far-below bins still price to zero instead of accumulating dust mass.
+_NONFINAL_FEASIBILITY_CUTOFF = 1e-3
+
+
+def _nonfinal_bin_feasibility(observed_high_f: float, hi: float) -> float:
+    """P(the official integer high can still land at/below ``hi``).
+
+    Applies only while the observation is nonfinal: the raw running maximum
+    ``observed_high_f`` maps to the official settlement value with error
+    ~N(0, NONFINAL_OBSERVED_HIGH_SIGMA_F). Bins whose upper edge sits above
+    the raw maximum are always feasible (feasibility 1.0).
+    """
+
+    if hi > observed_high_f:
+        return 1.0
+    feasibility = normal_cdf(hi, observed_high_f, NONFINAL_OBSERVED_HIGH_SIGMA_F)
+    return 0.0 if feasibility < _NONFINAL_FEASIBILITY_CUTOFF else feasibility
+
+
 def _condition_on_observed_high(
     probabilities: list[tuple[MarketBin, float, float, float]],
     observed_high_f: float,
+    *,
+    is_final: bool = False,
 ) -> list[tuple[MarketBin, float, float, float]]:
+    """Condition bin probabilities on the observed high so far.
+
+    With ``is_final`` truth (a complete official daily report) the exclusion
+    is exact, including the point-mass shortcut for an unbounded top bin.
+    With a nonfinal raw observation, exact 0/1 posteriors are forbidden
+    (audit MD-01): bins at/below the raw maximum are damped by the
+    observation-to-official feasibility instead of hard-zeroed, and no point
+    mass is created.
+    """
+
     certain_ticker = None
     filtered: list[tuple[MarketBin, float, float, float]] = []
     for market, p, p_emp, p_norm in probabilities:
         lo, hi = market.continuous_interval()
+        if not is_final:
+            feasibility = _nonfinal_bin_feasibility(observed_high_f, hi)
+            filtered.append((market, p * feasibility, p_emp, p_norm))
+            continue
         if observed_high_f >= hi:
             filtered.append((market, 0.0, p_emp, p_norm))
         elif observed_high_f >= lo and math.isinf(hi) and hi > 0:
@@ -450,17 +503,23 @@ def _conditioned_normal_final_high_probabilities(
     mean_final_high_f: float,
     sigma_f: float,
 ) -> dict[str, float]:
-    denominator = max(1e-9, 1.0 - normal_cdf(observed_high_f, mean_final_high_f, sigma_f))
+    # This path only runs on NONFINAL observations (final truth short-circuits
+    # to the point mass), so the raw running maximum is not an exact floor for
+    # the official integer settlement value (audit MD-01). Relax the
+    # truncation floor by two observation-error sigmas so integer-report
+    # boundary bins just below the raw maximum keep reachable mass.
+    floor_f = observed_high_f - 2.0 * NONFINAL_OBSERVED_HIGH_SIGMA_F
+    denominator = max(1e-9, 1.0 - normal_cdf(floor_f, mean_final_high_f, sigma_f))
     rows: list[tuple[MarketBin, float]] = []
     for market in markets:
         lo, hi = market.continuous_interval()
-        if hi <= observed_high_f:
+        if hi <= floor_f:
             probability = 0.0
         else:
             probability = interval_probability_normal(
                 mean_final_high_f,
                 sigma_f,
-                max(lo, observed_high_f),
+                max(lo, floor_f),
                 hi,
             ) / denominator
         rows.append((market, probability))
@@ -656,6 +715,7 @@ def _ensemble_bucket_probabilities(
     *,
     observed_high_f: float | None,
     min_members: int,
+    observed_high_is_final: bool = False,
 ) -> dict[str, float]:
     if ensemble is None or ensemble.member_count < min_members:
         return {}
@@ -671,7 +731,9 @@ def _ensemble_bucket_probabilities(
         return {}
     rows = [(market, p / total, 0.0, 0.0) for market, p, _, _ in rows]
     if observed_high_f is not None:
-        rows = _condition_on_observed_high(rows, observed_high_f)
+        rows = _condition_on_observed_high(
+            rows, observed_high_f, is_final=observed_high_is_final
+        )
     return {market.ticker: p for market, p, _, _ in rows}
 
 

@@ -13,8 +13,12 @@ from ._util import (
 )
 from .config import StrategyConfig, normalize_risk_profile_name
 from .account import (
+    ACCOUNTING_POLICY_VERSION,
     INITIAL_CAPITAL,
+    RESEARCH_ACCOUNT_ID,
+    RESEARCH_VIRTUAL_CAPITAL,
     SHARED_ACCOUNT_ID,
+    account_for_profile,
     policy_capacity,
     sleeve_for,
     strategy_fingerprint,
@@ -25,6 +29,7 @@ from .fees import (
     quadratic_fee_average_per_contract,
     quadratic_fee_per_contract,
 )
+from .maker_fills import EXECUTION_MODEL_VERSION
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
@@ -168,7 +173,63 @@ class PaperStore:
                     break
             return violations
 
+    def _ensure_research_paper_account(self, conn: sqlite3.Connection) -> None:
+        """Bootstrap the research shadow account (audit AC-01).
+
+        Research experiments book against their own VIRTUAL ledger so their
+        losses can never reduce live available cash, trip the live daily-loss
+        pause, or deepen live drawdown. The virtual bankroll mirrors the live
+        initial capital so research percentage caps keep their historical
+        meaning; the accounting-policy transition is recorded once as an
+        immutable ledger event on the shared account.
+        """
+
+        if conn.execute(
+            "SELECT 1 FROM paper_accounts WHERE account_id = ?", (RESEARCH_ACCOUNT_ID,)
+        ).fetchone():
+            return
+        created_at = _now()
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_accounts "
+            "(account_id, created_at, initial_capital, opening_cash, high_water_equity, cutover_note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                RESEARCH_ACCOUNT_ID,
+                created_at,
+                RESEARCH_VIRTUAL_CAPITAL,
+                RESEARCH_VIRTUAL_CAPITAL,
+                RESEARCH_VIRTUAL_CAPITAL,
+                f"research shadow ledger cutover ({ACCOUNTING_POLICY_VERSION})",
+            ),
+        )
+        self._record_ledger_event(
+            conn,
+            account_id=RESEARCH_ACCOUNT_ID,
+            order_id=None,
+            event_type="OPENING_CASH",
+            amount=RESEARCH_VIRTUAL_CAPITAL,
+            idempotency_key=f"{RESEARCH_ACCOUNT_ID}:opening",
+            details={"accounting_policy_version": ACCOUNTING_POLICY_VERSION},
+        )
+        self._record_ledger_event(
+            conn,
+            account_id=SHARED_ACCOUNT_ID,
+            order_id=None,
+            event_type="ACCOUNTING_POLICY_TRANSITION",
+            amount=0.0,
+            idempotency_key=f"policy:{ACCOUNTING_POLICY_VERSION}",
+            details={
+                "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
+                "research_account_id": RESEARCH_ACCOUNT_ID,
+                "note": (
+                    "new research orders are shadow-only; historical shared "
+                    "rows are preserved unmodified"
+                ),
+            },
+        )
+
     def _ensure_shared_paper_account(self, conn: sqlite3.Connection) -> None:
+        self._ensure_research_paper_account(conn)
         if conn.execute(
             "SELECT 1 FROM paper_accounts WHERE account_id = ?", (SHARED_ACCOUNT_ID,)
         ).fetchone():
@@ -187,8 +248,10 @@ class PaperStore:
         ).fetchone()
         opening_cash = INITIAL_CAPITAL + float(realized[0] or 0.0)
         created_at = _now()
+        # INSERT OR IGNORE + the idempotent ledger key make the bootstrap safe
+        # even if two initializers slip past the init lock (audit DB-01).
         conn.execute(
-            "INSERT INTO paper_accounts "
+            "INSERT OR IGNORE INTO paper_accounts "
             "(account_id, created_at, initial_capital, opening_cash, high_water_equity, cutover_note) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
@@ -232,6 +295,14 @@ class PaperStore:
         )
 
     def shared_account_state(self) -> dict[str, object] | None:
+        return self._account_state(SHARED_ACCOUNT_ID)
+
+    def research_account_state(self) -> dict[str, object] | None:
+        """The research shadow account's own virtual ledger state (AC-01)."""
+
+        return self._account_state(RESEARCH_ACCOUNT_ID)
+
+    def _account_state(self, account_id: str) -> dict[str, object] | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             if conn.execute(
@@ -239,13 +310,13 @@ class PaperStore:
             ).fetchone() is None:
                 return None
             account = conn.execute(
-                "SELECT * FROM paper_accounts WHERE account_id = ?", (SHARED_ACCOUNT_ID,)
+                "SELECT * FROM paper_accounts WHERE account_id = ?", (account_id,)
             ).fetchone()
             if account is None:
                 return None
             cash = float(conn.execute(
                 "SELECT COALESCE(SUM(amount), 0) FROM paper_account_ledger WHERE account_id = ?",
-                (SHARED_ACCOUNT_ID,),
+                (account_id,),
             ).fetchone()[0] or 0.0)
             risk = conn.execute(
                 "SELECT "
@@ -253,7 +324,7 @@ class PaperStore:
                 "THEN contracts * cost_per_contract ELSE 0 END), 0), "
                 "COALESCE(SUM(CASE WHEN status='PAPER_LIMIT_RESTING' AND settled_at IS NULL AND closed_at IS NULL "
                 "THEN reserved_cost ELSE 0 END), 0) FROM paper_orders WHERE account_id = ?",
-                (SHARED_ACCOUNT_ID,),
+                (account_id,),
             ).fetchone()
             open_cost = float(risk[0] or 0.0)
             reservations = float(risk[1] or 0.0)
@@ -263,10 +334,10 @@ class PaperStore:
             if high_water > float(account["high_water_equity"]):
                 conn.execute(
                     "UPDATE paper_accounts SET high_water_equity=? WHERE account_id=?",
-                    (high_water, SHARED_ACCOUNT_ID),
+                    (high_water, account_id),
                 )
             return {
-                "account_id": SHARED_ACCOUNT_ID,
+                "account_id": account_id,
                 "initial_capital": float(account["initial_capital"]),
                 "opening_cash": float(account["opening_cash"]),
                 "cash_balance": cash_balance,
@@ -287,26 +358,52 @@ class PaperStore:
         risk_profile: str | None,
         requested_spend: float,
     ) -> dict[str, object]:
-        """Maximum safe new notional under the one-account paper policy."""
+        """Maximum safe new notional under the paper account policy.
+
+        Live entries are governed entirely by the shared production-intent
+        account. Research entries (audit AC-01) keep their historical
+        percentage caps against live equity, but their cash constraint,
+        drawdown pause, and daily-loss pause come from the research shadow
+        account's own virtual ledger, so research losses can never pause or
+        shrink live entries and vice-versa research keeps its own discipline.
+        """
 
         state = self.shared_account_state()
         if state is None:
             return {"allowed_spend": 0.0, "reason": "shared account cutover requires a flat book"}
+        entry_account = account_for_profile(risk_profile)
+        if entry_account != SHARED_ACCOUNT_ID:
+            research_state = self.research_account_state()
+            if research_state is None:
+                return {"allowed_spend": 0.0, "reason": "research shadow account is not initialized"}
+            state = {
+                **state,
+                "available_cash": research_state["available_cash"],
+                "drawdown": research_state["drawdown"],
+            }
         today_start = datetime.now(SETTLEMENT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.connect() as conn:
             daily_pnl = float(conn.execute(
                 "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
                 "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED') "
-                "AND COALESCE(closed_at, settled_at) >= ?",
-                (today_start.astimezone(UTC).isoformat(),),
+                "AND COALESCE(closed_at, settled_at) >= ? "
+                "AND COALESCE(account_id, ?) = ?",
+                (
+                    today_start.astimezone(UTC).isoformat(),
+                    SHARED_ACCOUNT_ID,
+                    entry_account,
+                ),
             ).fetchone()[0] or 0.0)
             active = conn.execute(
                 "SELECT market_ticker, target_date, COALESCE(risk_profile, 'live'), "
                 "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
                 "ELSE contracts * cost_per_contract END AS risk "
-                "FROM paper_orders WHERE account_id=? AND status IN "
+                "FROM paper_orders WHERE account_id IN (?, ?) AND status IN "
                 "('PAPER_FILLED','PAPER_LIMIT_RESTING') AND settled_at IS NULL AND closed_at IS NULL",
-                (SHARED_ACCOUNT_ID,),
+                (
+                    SHARED_ACCOUNT_ID,
+                    entry_account if entry_account != SHARED_ACCOUNT_ID else SHARED_ACCOUNT_ID,
+                ),
             ).fetchall()
         return policy_capacity(
             state=state,
@@ -479,6 +576,24 @@ class PaperStore:
         timestamps prevents either journal from shadowing fresher model state.
         """
 
+        read = self.latest_model_probability_read(
+            target_date, market_ticker, max_age_minutes=max_age_minutes
+        )
+        return None if read is None else read[1]
+
+    def latest_model_probability_read(
+        self,
+        target_date: str,
+        market_ticker: str,
+        *,
+        max_age_minutes: float = 90.0,
+    ) -> tuple[datetime, float] | None:
+        """Like ``latest_model_probability`` but keeps the snapshot timestamp.
+
+        The monitor persists the timestamp and age of the model read behind
+        every exit decision so stale-read incidents are auditable (RK-01).
+        """
+
         candidates = [
             self._latest_model_probability_from_decisions(
                 target_date, market_ticker, max_age_minutes=max_age_minutes
@@ -490,7 +605,7 @@ class PaperStore:
         valid = [candidate for candidate in candidates if candidate is not None]
         if not valid:
             return None
-        return max(valid, key=lambda candidate: candidate[0])[1]
+        return max(valid, key=lambda candidate: candidate[0])
 
     def _latest_model_probability_from_decisions(
         self,
@@ -788,6 +903,9 @@ class PaperStore:
         )
         expected_profit = edge * contracts
         profile = normalize_risk_profile_name(risk_profile) if risk_profile else None
+        # Research orders book against the shadow ledger (audit AC-01) unless
+        # the shared-capital experiment mode is explicitly enabled.
+        entry_account = account_for_profile(profile)
         created_at = _now()
         filled_at = created_at if normalized_status == "PAPER_FILLED" else None
         expires_at = (
@@ -893,7 +1011,7 @@ class PaperStore:
                         _row_value(entry_decision, "id") if entry_decision is not None else None,
                         diagnostics_json,
                         json.dumps(decision.reasons),
-                        SHARED_ACCOUNT_ID,
+                        entry_account,
                         fingerprint,
                         sleeve,
                         filled_at,
@@ -922,7 +1040,7 @@ class PaperStore:
             if normalized_status == "PAPER_LIMIT_RESTING":
                 self._record_ledger_event(
                     conn,
-                    account_id=SHARED_ACCOUNT_ID,
+                    account_id=entry_account,
                     order_id=order_id,
                     event_type="RESERVE",
                     amount=-reserved_cost,
@@ -932,7 +1050,7 @@ class PaperStore:
             elif normalized_status == "PAPER_FILLED":
                 self._record_ledger_event(
                     conn,
-                    account_id=SHARED_ACCOUNT_ID,
+                    account_id=entry_account,
                     order_id=order_id,
                     event_type="ENTRY_FILL",
                     amount=-(contracts * cost_per_contract),
@@ -1288,6 +1406,7 @@ class PaperStore:
                   AND market_ticker = ?
                   AND UPPER(COALESCE(side, 'YES')) = ?
                   AND status NOT IN ('REJECTED', 'PAPER_EXPIRED')
+                  AND parent_order_id IS NULL
                   {profile_filter}
                 """,
                 (target_date, market_ticker, side.upper(), *profile_params),
@@ -1427,7 +1546,58 @@ class PaperStore:
                         idempotency_key=f"order:{order_id}:entry-fill",
                         details=evidence,
                     )
+                self._record_maker_volume_claims(conn, row, evidence or {})
         return self._order(order_id)
+
+    @staticmethod
+    def _record_maker_volume_claims(
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        evidence: dict[str, object],
+    ) -> None:
+        """Persist how much of each public trade this fill consumed.
+
+        Later monitor passes subtract these claims from the available trade
+        volume before allocating to still-resting orders, so a trade's finite
+        volume can never be credited again once an order filled from it
+        (audit EX-01 cross-pass conservation). Research shadow fills are
+        counterfactual and never claim public volume.
+        """
+
+        if evidence.get("research_shadow") or evidence.get("counterfactual"):
+            return
+        allocations = evidence.get("allocations")
+        if not isinstance(allocations, dict):
+            return
+        created_at = _now()
+        for trade_id, quantity in allocations.items():
+            try:
+                amount = float(quantity)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO maker_volume_claims "
+                "(created_at, market_ticker, trade_id, order_id, quantity) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (created_at, str(row["market_ticker"]), str(trade_id), int(row["id"]), amount),
+            )
+
+    def maker_volume_claims_for_ticker(self, market_ticker: str) -> dict[str, float]:
+        """Total public volume already claimed per trade id on this market."""
+
+        with self.connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='maker_volume_claims'"
+            ).fetchone() is None:
+                return {}
+            rows = conn.execute(
+                "SELECT trade_id, COALESCE(SUM(quantity), 0) FROM maker_volume_claims "
+                "WHERE market_ticker = ? GROUP BY trade_id",
+                (market_ticker,),
+            ).fetchall()
+        return {str(trade_id): float(total or 0.0) for trade_id, total in rows}
 
     def cancel_resting_limit_order(self, order_id: int, *, reason: str) -> sqlite3.Row | None:
         with self.connect() as conn:
@@ -1524,6 +1694,7 @@ class PaperStore:
         net_exit_per_contract: float | None = None,
         unrealized_pnl: float | None = None,
         unrealized_roi: float | None = None,
+        model_read: dict[str, object] | None = None,
     ) -> int:
         created_at = _now()
         diagnostics_json = json.dumps(
@@ -1539,6 +1710,7 @@ class PaperStore:
                 net_exit_per_contract=net_exit_per_contract,
                 unrealized_pnl=unrealized_pnl,
                 unrealized_roi=unrealized_roi,
+                model_read=model_read,
             ),
             sort_keys=True,
         )
@@ -1823,18 +1995,43 @@ class PaperStore:
             "missing_truth": missing_truth,
         }
 
-    def close_paper_order(self, order_id: int, exit_price: float) -> sqlite3.Row:
+    def close_paper_order(
+        self,
+        order_id: int,
+        exit_price: float,
+        *,
+        max_quantity: float | None = None,
+        liquidity_evidence: dict[str, object] | None = None,
+    ) -> sqlite3.Row:
+        """Close an open paper position at ``exit_price``, depth-aware.
+
+        ``max_quantity`` is the quantity the recorded liquidity supports (the
+        displayed top-bid size at decision time). When it covers the whole
+        position the order closes fully, as before. When it is smaller, only
+        the supported quantity is realized as its own immutable PAPER_CLOSED
+        lot row (``parent_order_id`` links it back) and the remainder stays
+        open on the original order -- an exit can never book more quantity at
+        a quote than the recorded liquidity supports (audit EX-02). The
+        executed quantity, requested quantity, and liquidity evidence are
+        persisted in ``outcome_diagnostics_json["exit_execution"]``.
+        """
+
         if exit_price <= 0 or exit_price >= 1:
             raise ValueError("exit price must be between 0.01 and 0.99")
         row = self._open_order(order_id)
         if row is None:
             raise ValueError(f"no open paper order found with id {order_id}")
         contracts = float(row["contracts"])
+        executed = contracts if max_quantity is None else min(contracts, float(max_quantity))
+        if executed <= 0:
+            raise ValueError(
+                f"paper order {order_id} has no executable quantity at the recorded liquidity"
+            )
         entry_cost = float(row["cost_per_contract"])
         exit_fee = quadratic_fee_average_per_contract(
-            exit_price, contracts, series_ticker=str(row["market_ticker"])
+            exit_price, executed, series_ticker=str(row["market_ticker"])
         )
-        realized_pnl = contracts * (exit_price - exit_fee - entry_cost)
+        realized_pnl = executed * (exit_price - exit_fee - entry_cost)
         # Persist resolved_yes on close so a closed order is classified by the
         # same resolved_yes-driven path as a settled order (db.py settle path),
         # not the realized_pnl > 0 fallback in _row_position_won. A break-even
@@ -1847,74 +2044,162 @@ class PaperStore:
             position_won = realized_pnl > 0.0
             resolved_yes = 1 if (position_won if side == "YES" else not position_won) else 0
         closed_at = _now()
-        outcome_json = json.dumps(
-            _outcome_diagnostics_payload(
-                row,
-                event="close",
-                resolved_at=closed_at,
-                settlement_high_f=None,
-                resolved_yes=bool(resolved_yes) if resolved_yes is not None else None,
-                position_won=None if abs(realized_pnl) < 1e-9 else realized_pnl > 0.0,
-                realized_pnl=realized_pnl,
-                exit_price=exit_price,
-                exit_fee_per_contract=exit_fee,
-            ),
-            sort_keys=True,
+        payload = _outcome_diagnostics_payload(
+            row,
+            event="close",
+            resolved_at=closed_at,
+            settlement_high_f=None,
+            resolved_yes=bool(resolved_yes) if resolved_yes is not None else None,
+            position_won=None if abs(realized_pnl) < 1e-9 else realized_pnl > 0.0,
+            realized_pnl=realized_pnl,
+            exit_price=exit_price,
+            exit_fee_per_contract=exit_fee,
         )
+        payload["exit_execution"] = {
+            "requested_quantity": contracts,
+            "executed_quantity": executed,
+            "vwap": exit_price,
+            "fee_per_contract": exit_fee,
+            "execution_model_version": EXECUTION_MODEL_VERSION,
+            **(liquidity_evidence or {}),
+        }
+        outcome_json = json.dumps(payload, sort_keys=True)
+        partial = executed < contracts - 1e-9
+        result_id = order_id
         with self.connect() as conn:
-            # Guard the close on the same open-state predicate settle uses, then
-            # require it to have actually changed a row. Between _open_order()
-            # above and this UPDATE, a concurrent settle (the q2min monitor and
-            # the settle path race on one DB) can flip this order to
-            # PAPER_SETTLED. A bare WHERE id = ? would then overwrite the true
-            # settlement outcome with an intraday exit price, permanently
-            # corrupting the paper PnL ledger, equity curve, and circuit breaker.
-            cursor = conn.execute(
-                """
-                UPDATE paper_orders
-                SET
-                    status = 'PAPER_CLOSED',
-                    closed_at = ?,
-                    exit_price = ?,
-                    exit_fee_per_contract = ?,
-                    resolved_yes = ?,
-                    realized_pnl = ?,
-                    outcome_diagnostics_json = ?
-                WHERE id = ?
-                  AND status = 'PAPER_FILLED'
-                  AND settled_at IS NULL
-                  AND closed_at IS NULL
-                """,
-                (
-                    closed_at,
-                    exit_price,
-                    exit_fee,
-                    resolved_yes,
-                    realized_pnl,
-                    outcome_json,
-                    order_id,
-                ),
-            )
+            conn.row_factory = sqlite3.Row
+            # Guard the close on the same open-state predicate settle uses, plus
+            # an unchanged-contracts check, then require it to have actually
+            # changed a row. Between _open_order() above and this UPDATE, a
+            # concurrent settle or close (the q2min monitor and the settle path
+            # race on one DB) can flip this order to PAPER_SETTLED or shrink it.
+            # A bare WHERE id = ? would then overwrite the true settlement
+            # outcome with an intraday exit price, permanently corrupting the
+            # paper PnL ledger, equity curve, and circuit breaker.
+            if partial:
+                cursor = conn.execute(
+                    """
+                    UPDATE paper_orders
+                    SET contracts = ?
+                    WHERE id = ?
+                      AND status = 'PAPER_FILLED'
+                      AND settled_at IS NULL
+                      AND closed_at IS NULL
+                      AND contracts = ?
+                    """,
+                    (contracts - executed, order_id, contracts),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE paper_orders
+                    SET
+                        status = 'PAPER_CLOSED',
+                        closed_at = ?,
+                        exit_price = ?,
+                        exit_fee_per_contract = ?,
+                        resolved_yes = ?,
+                        realized_pnl = ?,
+                        outcome_diagnostics_json = ?
+                    WHERE id = ?
+                      AND status = 'PAPER_FILLED'
+                      AND settled_at IS NULL
+                      AND closed_at IS NULL
+                      AND contracts = ?
+                    """,
+                    (
+                        closed_at,
+                        exit_price,
+                        exit_fee,
+                        resolved_yes,
+                        realized_pnl,
+                        outcome_json,
+                        order_id,
+                        contracts,
+                    ),
+                )
             if cursor.rowcount == 0:
-                # Already settled/closed concurrently. Raise instead of returning
-                # the resolved row so the caller does not double-book it; the
-                # paper-monitor loop catches ValueError/RuntimeError per order and
-                # keeps inspecting the rest of the book.
+                # Already settled/closed/resized concurrently. Raise instead of
+                # returning the resolved row so the caller does not double-book
+                # it; the paper-monitor loop catches ValueError/RuntimeError per
+                # order and keeps inspecting the rest of the book.
                 raise ValueError(
                     f"paper order {order_id} was resolved concurrently before close"
                 )
-            net_proceeds = contracts * (exit_price - exit_fee)
+            if partial:
+                result_id = self._insert_partial_close_lot(
+                    conn,
+                    row,
+                    executed=executed,
+                    closed_at=closed_at,
+                    exit_price=exit_price,
+                    exit_fee=exit_fee,
+                    realized_pnl=realized_pnl,
+                    resolved_yes=resolved_yes,
+                    outcome_json=outcome_json,
+                )
+            net_proceeds = executed * (exit_price - exit_fee)
             if row["account_id"]:
                 self._record_ledger_event(
-                    conn, account_id=row["account_id"], order_id=order_id,
+                    conn, account_id=row["account_id"], order_id=result_id,
                     event_type="EXIT_PROCEEDS", amount=net_proceeds,
-                    idempotency_key=f"order:{order_id}:exit-proceeds",
-                    details={"exit_price": exit_price, "exit_fee_per_contract": exit_fee},
+                    idempotency_key=f"order:{result_id}:exit-proceeds",
+                    details={
+                        "exit_price": exit_price,
+                        "exit_fee_per_contract": exit_fee,
+                        "executed_quantity": executed,
+                        **({"partial_close_of": order_id} if partial else {}),
+                    },
                 )
-        closed = self._order(order_id)
+        closed = self._order(result_id)
         if closed is None:
-            raise RuntimeError(f"paper order {order_id} disappeared after close")
+            raise RuntimeError(f"paper order {result_id} disappeared after close")
         return closed
+
+    @staticmethod
+    def _insert_partial_close_lot(
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        executed: float,
+        closed_at: str,
+        exit_price: float,
+        exit_fee: float,
+        realized_pnl: float,
+        resolved_yes: int | None,
+        outcome_json: str,
+    ) -> int:
+        """Materialize the executed slice of a partial close as its own row.
+
+        The original journal row stays immutable apart from its remaining
+        quantity; the executed lot becomes a PAPER_CLOSED child row that keeps
+        entry attribution (``parent_order_id``) without duplicating the maker
+        fill evidence, so per-trade volume accounting stays single-counted.
+        """
+
+        values = {key: row[key] for key in row.keys() if key != "id"}
+        values.update(
+            {
+                "contracts": executed,
+                "status": "PAPER_CLOSED",
+                "closed_at": closed_at,
+                "exit_price": exit_price,
+                "exit_fee_per_contract": exit_fee,
+                "resolved_yes": resolved_yes,
+                "realized_pnl": realized_pnl,
+                "outcome_diagnostics_json": outcome_json,
+                "reserved_cost": 0,
+                "fill_evidence_json": None,
+                "parent_order_id": int(row["id"]),
+            }
+        )
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        cursor = conn.execute(
+            f"INSERT INTO paper_orders ({columns}) VALUES ({placeholders})",
+            tuple(values.values()),
+        )
+        return int(cursor.lastrowid)
 
     def open_paper_order(self, order_id: int) -> sqlite3.Row | None:
         return self._open_order(order_id)

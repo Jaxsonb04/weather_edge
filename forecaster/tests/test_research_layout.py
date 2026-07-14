@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import subprocess
 from pathlib import Path
 
 
@@ -46,11 +47,31 @@ def test_production_source_sync_keeps_research_tree():
 
 
 def test_root_manifest_is_the_only_install_manifest():
-    manifests = sorted(
-        path.relative_to(ROOT)
-        for path in ROOT.rglob("pyproject.toml")
-        if not any(part.startswith(".venv") for part in path.relative_to(ROOT).parts)
+    """Only TRACKED source may carry an install manifest.
+
+    The assertion is about the repository's layout, so it must inspect what
+    git tracks -- not whatever ignored local state (.local migration staging,
+    virtualenvs, caches) happens to sit inside the working tree (audit
+    TEST-01). Falls back to a hidden-directory-excluded walk outside a git
+    checkout.
+    """
+
+    listing = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "--", "pyproject.toml", "*/pyproject.toml"],
+        capture_output=True,
+        text=True,
     )
+    if listing.returncode == 0:
+        manifests = sorted(Path(line) for line in listing.stdout.splitlines() if line)
+    else:
+        manifests = sorted(
+            path.relative_to(ROOT)
+            for path in ROOT.rglob("pyproject.toml")
+            if not any(
+                part.startswith(".") or part == "node_modules"
+                for part in path.relative_to(ROOT).parts
+            )
+        )
     assert manifests == [Path("pyproject.toml")]
 
 

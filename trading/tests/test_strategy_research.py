@@ -854,7 +854,11 @@ def test_strategy_research_exit_targets_match_edge_based_monitor_logic():
         expected_net = convergence_take_profit_net(decision.model_probability)
         assert position["take_profit_basis"] == "model_fair_value"
         assert position["take_profit_net_exit"] == expected_net
-        assert position["take_profit_bid"] == exit_bid_for_net(expected_net, contracts)
+        # Monitor parity (audit UI-01): the displayed bid reflects the same
+        # series-specific fee schedule the monitor executes with.
+        assert position["take_profit_bid"] == exit_bid_for_net(
+            expected_net, contracts, series_ticker=decision.ticker
+        )
         assert position["monitor_action"] == "HOLD"
 
 

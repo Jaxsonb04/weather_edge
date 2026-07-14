@@ -136,6 +136,33 @@ REMOTE_RETIRED_PATHS=(
 )
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" rm -f -- "${REMOTE_RETIRED_PATHS[@]}"
 
+# Audit PR-01: immutable build provenance. The host tree is an rsync copy with
+# no .git, so the deployed source revision must be stamped at sync time; the
+# publication manifest and the Pages commit message carry it onward so the
+# public site can identify the exact source that generated its artifacts.
+BUILD_INFO_TMP="$(mktemp)"
+SOURCE_SHA="$(git -C "$WEATHEREDGE_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+if git -C "$WEATHEREDGE_ROOT" diff --quiet 2>/dev/null && git -C "$WEATHEREDGE_ROOT" diff --cached --quiet 2>/dev/null; then
+  SOURCE_DIRTY=false
+else
+  SOURCE_DIRTY=true
+fi
+cat > "$BUILD_INFO_TMP" <<JSON
+{
+  "source_sha": "$SOURCE_SHA",
+  "source_dirty": $SOURCE_DIRTY,
+  "synced_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "execution_model_version": "exec-v2-2026-07-13",
+  "accounting_policy_version": "acct-v3-research-shadow-2026-07-13"
+}
+JSON
+rsync -av \
+  -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
+  -- \
+  "$BUILD_INFO_TMP" \
+  "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/forecaster/build_info.json"
+rm -f "$BUILD_INFO_TMP"
+
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"
 echo "Next:"

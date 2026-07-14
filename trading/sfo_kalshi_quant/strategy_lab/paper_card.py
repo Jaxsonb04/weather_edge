@@ -17,7 +17,7 @@ from .._util import (
     _row_value as _sqlite_row_value,
     _to_float,
 )
-from ..config import normalize_risk_profile_name
+from ..config import strategy_config_for_profile, normalize_risk_profile_name
 from ..db import PaperStore
 from ..exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
@@ -764,10 +764,19 @@ def _paper_row(
     risk = contracts * cost_per_contract
     current_bid = _to_float(mark.get("bid"), None) if mark else None
     current_ask = _to_float(mark.get("ask"), None) if mark else None
+    # Same fee schedule the monitor applies (profile rates + series-specific
+    # rounding), so displayed thresholds match executable ones (audit UI-01).
+    fee_config = strategy_config_for_profile(
+        str(_sqlite_row_value(row, "risk_profile") or "live")
+    )
+    exit_fee_kwargs = {
+        "series_ticker": str(row["market_ticker"]),
+        "fee_multiplier": fee_config.fee_multiplier,
+        "taker_rate": fee_config.taker_fee_rate,
+        "maker_rate": fee_config.maker_fee_rate,
+    }
     current_exit_fee = (
-        quadratic_fee_average_per_contract(
-            current_bid, contracts, series_ticker=str(row["market_ticker"])
-        )
+        quadratic_fee_average_per_contract(current_bid, contracts, **exit_fee_kwargs)
         if current_bid is not None and current_bid > 0
         else None
     )
@@ -922,8 +931,10 @@ def _paper_row(
         "stop_loss_pnl": _round(-(risk * stop_loss), 2),
         "take_profit_net_exit": _round(take_profit_net, 4),
         "stop_loss_net_exit": _round(stop_loss_net, 4),
-        "take_profit_bid": exit_bid_for_net(take_profit_net, contracts),
-        "stop_loss_bid": exit_bid_for_net(stop_loss_net, contracts),
+        "take_profit_bid": exit_bid_for_net(
+            take_profit_net, contracts, **exit_fee_kwargs
+        ),
+        "stop_loss_bid": exit_bid_for_net(stop_loss_net, contracts, **exit_fee_kwargs),
         "settlement_high_f": _round(row["settlement_high_f"], 1),
         "resolved_yes": row["resolved_yes"],
         "exit_price": _round(row["exit_price"], 4),

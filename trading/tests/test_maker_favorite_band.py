@@ -152,7 +152,8 @@ def test_monitor_fills_resting_limit_when_later_trade_clears_queue():
                     "trade_id": "trade-1",
                     "count_fp": "10.00",
                     "yes_price_dollars": "0.72",
-                    "taker_book_side": "bid",
+                    # Ask-side (NO) takers fill resting YES bids.
+                    "taker_book_side": "ask",
                     "created_time": "2099-07-08T12:00:00Z",
                 }]
             }

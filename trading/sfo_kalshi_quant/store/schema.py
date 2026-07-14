@@ -2,13 +2,52 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover -- POSIX-only production/dev hosts
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+@contextmanager
+def _exclusive_init_lock(db_path: object):
+    """Serialize the whole init/migration/bootstrap path (audit DB-01).
+
+    Five+ systemd units initialize the same store concurrently. SQLite's
+    busy handler does not protect the multi-statement init sequence: two
+    initializers racing between ``ALTER TABLE``/``PRAGMA table_info`` raise
+    "database schema has changed", and the SELECT-then-INSERT account
+    bootstrap raced to a UNIQUE violation. An exclusive advisory file lock
+    beside the database serializes initializers across processes AND threads
+    (each holder opens its own file descriptor) without changing SQLite
+    transaction semantics for non-init writers.
+    """
+
+    path = str(db_path or "")
+    if fcntl is None or not path or path == ":memory:":
+        yield
+        return
+    try:
+        handle = open(path + ".init.lock", "a+")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 SCHEMA = """
@@ -176,6 +215,16 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     entry_decision_snapshot_id INTEGER,
     diagnostics_json TEXT,
     outcome_diagnostics_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS maker_volume_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    market_ticker TEXT NOT NULL,
+    trade_id TEXT NOT NULL,
+    order_id INTEGER NOT NULL,
+    quantity REAL NOT NULL,
+    UNIQUE (trade_id, order_id)
 );
 
 CREATE TABLE IF NOT EXISTS paper_settlement_verifications (
@@ -406,6 +455,9 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     "quote_snapshot_json": "TEXT",
     "fill_model": "TEXT",
     "fill_evidence_json": "TEXT",
+    # Depth-aware partial closes (audit EX-02): the executed slice of a partial
+    # close becomes its own PAPER_CLOSED row linked back to the original order.
+    "parent_order_id": "INTEGER",
 }
 
 PROBABILITY_AUDIT_COLUMNS = {
@@ -501,6 +553,11 @@ def _add_missing_columns(
 
 
 def init_store(self) -> None:
+    with _exclusive_init_lock(getattr(self, "db_path", None)):
+        _init_store_locked(self)
+
+
+def _init_store_locked(self) -> None:
     with self.connect() as conn:
         decision_table_existed = conn.execute(
             "SELECT 1 FROM sqlite_master "

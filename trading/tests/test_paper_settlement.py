@@ -1272,8 +1272,12 @@ def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
         assert row["exit_price"] == row["entry_bid"] == 0.40
         assert row["realized_pnl"] < 0
         assert str(row["group_id"]).startswith("DEGRADED-ARB-")
-        state = store.shared_account_state()
+        # Research-profile orders book against the research shadow ledger
+        # (audit AC-01); the compensation close must reconcile there while the
+        # live shared account stays untouched.
+        state = store.research_account_state()
         assert abs(state["realized_equity"] - (1000.0 + row["realized_pnl"])) < 1e-9
+        assert store.shared_account_state()["realized_equity"] == 1000.0
         with store.connect() as conn:
             ledger = conn.execute(
                 "SELECT event_type, amount FROM paper_account_ledger "
