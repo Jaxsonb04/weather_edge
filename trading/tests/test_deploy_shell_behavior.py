@@ -396,15 +396,74 @@ elif 'restore' in args:
     seed_idx = next(
         i for i, line in enumerate(actions) if "sfo-strategy-lab-refresh.service" in line
     )
+    public_wait_idx = next(
+        i for i, line in enumerate(actions) if "wait_for_publication_manifest.sh" in line
+    )
+    freshness_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "systemctl start sfo-forecast-freshness.service" in line
+    )
     assert preflight_idx < capture_idx < quiesce_idx < backup_idx < first_rsync_idx
     assert first_rsync_idx < install_idx < producer_restore_idx
-    assert producer_restore_idx < seed_idx < watchdog_restore_idx
+    assert producer_restore_idx < seed_idx < public_wait_idx < freshness_idx < watchdog_restore_idx
     assert actions[producer_restore_idx] == (
         "restore|sfo-operational-publish.timer "
         "sfo-strategy-lab-refresh.timer"
     )
     assert actions[watchdog_restore_idx] == "restore|sfo-forecast-freshness.timer"
     assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+
+
+def test_publication_wait_retries_until_exact_snapshot_is_public(tmp_path: Path) -> None:
+    base = tmp_path / "weatheredge"
+    forecaster = base / "forecaster"
+    forecaster.mkdir(parents=True)
+    local_manifest = {
+        "snapshot_id": "fresh-snapshot",
+        "provenance": {"source_sha": "abc123"},
+    }
+    (forecaster / "publication_manifest.json").write_text(
+        json.dumps(local_manifest), encoding="utf-8"
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "curl-calls"
+    _write_executable(
+        fake_bin / "curl",
+        f"""#!{sys.executable}
+import json, os
+from pathlib import Path
+
+calls = Path(os.environ['CURL_CALLS'])
+count = int(calls.read_text() or '0') if calls.exists() else 0
+calls.write_text(str(count + 1))
+snapshot = 'stale-snapshot' if count == 0 else 'fresh-snapshot'
+print(json.dumps({{'snapshot_id': snapshot, 'provenance': {{'source_sha': 'abc123'}}}}))
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "wait_for_publication_manifest.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_BASE_DIR": str(base),
+            "SFO_TRADING_PYTHON": sys.executable,
+            "SFO_PUBLISH_PAGES": "1",
+            "SFO_PUBLICATION_MANIFEST_URL": "https://pages.example/manifest.json",
+            "SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS": "4",
+            "SFO_PUBLICATION_PROPAGATION_POLL_SECONDS": "1",
+            "CURL_CALLS": str(calls),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text() == "2"
+    assert "public publication snapshot matches local manifest" in result.stdout
 
 
 @pytest.mark.parametrize(
