@@ -112,13 +112,13 @@
   "backtest_summary": {
     "available": true,
     "counts": {
-      "approved_pre_resolution_signals": 6413,
-      "approved_raw_signals": 6413,
+      "approved_pre_resolution_signals": 6416,
+      "approved_raw_signals": 6416,
       "approved_signals": 377,
       "deduped_signals": 2112,
       "excluded_post_resolution_signals": 24,
-      "pre_resolution_signals": 232473,
-      "raw_signals": 232497,
+      "pre_resolution_signals": 233553,
+      "raw_signals": 233577,
       "settled_signals": 1836
     },
     "dedupe_explanation": "Repeated 15-minute AWS scans are counted once per target, market, and side, using the first approved (entry) snapshot so approved metrics reflect trades actually taken, not the decayed last scan.",
@@ -127,13 +127,13 @@
         "approved": 3336,
         "label": "Day-ahead forecast",
         "lead_mode": "day_ahead",
-        "total": 151707
+        "total": 151851
       },
       "intraday_high_so_far": {
-        "approved": 2856,
+        "approved": 2859,
         "label": "Intraday observed-high edge",
         "lead_mode": "intraday_high_so_far",
-        "total": 76693
+        "total": 77413
       },
       "post_resolution_excluded": {
         "approved": 0,
@@ -145,7 +145,7 @@
         "approved": 221,
         "label": "Same-day pre-lock forecast",
         "lead_mode": "same_day_prelock",
-        "total": 4073
+        "total": 4289
       },
       "unknown": {
         "approved": 0,
@@ -1693,12 +1693,12 @@
     ],
     "current_equity": 895.56,
     "data_collected": {
-      "decision_snapshots": 228605,
-      "forecast_snapshots": 29535,
-      "market_snapshots": 29535,
-      "paper_monitor_snapshots": 15324,
+      "decision_snapshots": 229685,
+      "forecast_snapshots": 29580,
+      "market_snapshots": 29580,
+      "paper_monitor_snapshots": 15364,
       "paper_orders": 244,
-      "probability_snapshots": 177210
+      "probability_snapshots": 177480
     },
     "days": [
       {
@@ -2038,7 +2038,7 @@
         "wins": 3
       },
       {
-        "approved_signals": 13,
+        "approved_signals": 16,
         "avg_market_probability": 0.5,
         "avg_model_probability": 0.5,
         "closed": 0,
@@ -2067,11 +2067,11 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 2340,
+            "signals": 2880,
             "wins": 0
           },
           "research": {
-            "approved_signals": 13,
+            "approved_signals": 16,
             "closed": 0,
             "hit_rate": null,
             "losses": 0,
@@ -2082,7 +2082,7 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 2340,
+            "signals": 2880,
             "wins": 0
           }
         },
@@ -2090,7 +2090,7 @@
         "resolved_spend": 0.0,
         "roi": null,
         "settled": 0,
-        "signals": 4680,
+        "signals": 5760,
         "wins": 0
       }
     ],
@@ -2118,7 +2118,7 @@
       }
     },
     "gate_behavior": {
-      "approved": 5346,
+      "approved": 5349,
       "by_profile": [
         {
           "approved": 1449,
@@ -2133,19 +2133,19 @@
             }
           ],
           "rejection_categories": {
-            "edge": 95870,
-            "no_data": 15636,
+            "edge": 96302,
+            "no_data": 15744,
             "other": 0
           },
           "risk_profile": "live",
-          "signals": 112955,
+          "signals": 113495,
           "top_rejections": [
             {
               "count": 51783,
               "reason": "edge"
             },
             {
-              "count": 34298,
+              "count": 34838,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
@@ -2167,41 +2167,41 @@
           ],
           "top_rejections_all": [
             {
-              "count": 110935,
+              "count": 111472,
               "reason": "lower-bound edge"
             },
             {
-              "count": 108849,
+              "count": 109380,
               "reason": "edge"
             },
             {
-              "count": 34298,
+              "count": 34838,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
-              "count": 31372,
+              "count": 31525,
               "reason": "edge_lcb"
             },
             {
-              "count": 18689,
+              "count": 18845,
               "reason": "spread"
             },
             {
-              "count": 17073,
+              "count": 17148,
               "reason": "posterior probability"
             },
             {
-              "count": 15636,
+              "count": 15744,
               "reason": "source spread"
             },
             {
-              "count": 8716,
+              "count": 8758,
               "reason": "model/market gap"
             }
           ]
         },
         {
-          "approved": 3897,
+          "approved": 3900,
           "entry_block_reasons": [
             {
               "count": 367,
@@ -2229,12 +2229,12 @@
             }
           ],
           "rejection_categories": {
-            "edge": 95959,
-            "no_data": 15792,
+            "edge": 96388,
+            "no_data": 15900,
             "other": 2
           },
           "risk_profile": "research",
-          "signals": 115650,
+          "signals": 116190,
           "top_rejections": [
             {
               "count": 25930,
@@ -2245,7 +2245,7 @@
               "reason": "research paused: daily loss $-13.98 reached $-4."
             },
             {
-              "count": 14527,
+              "count": 14746,
               "reason": "edge"
             },
             {
@@ -2253,25 +2253,25 @@
               "reason": "research paused: daily loss $-4.60 reached $-4.5"
             },
             {
-              "count": 8112,
+              "count": 8190,
               "reason": "lower-bound edge"
             },
             {
-              "count": 5926,
+              "count": 6034,
               "reason": "source spread"
             }
           ],
           "top_rejections_all": [
             {
-              "count": 77807,
+              "count": 78191,
               "reason": "lower-bound edge"
             },
             {
-              "count": 74403,
+              "count": 74787,
               "reason": "edge"
             },
             {
-              "count": 31765,
+              "count": 31918,
               "reason": "edge_lcb"
             },
             {
@@ -2283,11 +2283,11 @@
               "reason": "research paused: daily loss $-13.98 reached $-4."
             },
             {
-              "count": 17822,
+              "count": 17897,
               "reason": "posterior probability"
             },
             {
-              "count": 15780,
+              "count": 15888,
               "reason": "source spread"
             },
             {
@@ -2297,19 +2297,19 @@
           ]
         }
       ],
-      "rejected": 223259,
+      "rejected": 224336,
       "rejection_categories": {
-        "edge": 191829,
-        "no_data": 31428,
+        "edge": 192690,
+        "no_data": 31644,
         "other": 2
       },
       "top_rejections": [
         {
-          "count": 66310,
+          "count": 66529,
           "reason": "edge"
         },
         {
-          "count": 34298,
+          "count": 34838,
           "reason": "live paper entry requires min_lead_days=1; same-"
         },
         {
@@ -2321,41 +2321,41 @@
           "reason": "research paused: daily loss $-13.98 reached $-4."
         },
         {
-          "count": 18238,
+          "count": 18346,
           "reason": "source spread"
         },
         {
-          "count": 11261,
-          "reason": "research paused: daily loss $-4.60 reached $-4.5"
+          "count": 11277,
+          "reason": "lower-bound edge"
         }
       ],
       "top_rejections_all": [
         {
-          "count": 188742,
+          "count": 189663,
           "reason": "lower-bound edge"
         },
         {
-          "count": 183252,
+          "count": 184167,
           "reason": "edge"
         },
         {
-          "count": 63137,
+          "count": 63443,
           "reason": "edge_lcb"
         },
         {
-          "count": 34895,
+          "count": 35045,
           "reason": "posterior probability"
         },
         {
-          "count": 34298,
+          "count": 34838,
           "reason": "live paper entry requires min_lead_days=1; same-"
         },
         {
-          "count": 31416,
+          "count": 31632,
           "reason": "source spread"
         },
         {
-          "count": 29712,
+          "count": 29928,
           "reason": "spread"
         },
         {
@@ -2364,18 +2364,18 @@
         }
       ]
     },
-    "generated_at": "2026-07-16T08:02:02.000325+00:00",
+    "generated_at": "2026-07-16T08:17:37.720553+00:00",
     "learnings": [
       "NO side: 19/34 won, net $-36.29 this window.",
       "YES side: 0/1 won, net $-2.00 this window.",
       "Profile split: live 9/10 won ($+8.78); research 10/25 won ($-47.07). Judge each gate set on its own book; research-profile losses are expected data-collection cost.",
-      "Most frequent gate rejections: edge (66310x); live paper entry requires min_lead_days=1; same- (34298x).",
+      "Most frequent gate rejections: edge (66529x); live paper entry requires min_lead_days=1; same- (34838x).",
       "Clean next-day forecast error averaged 2.86F across 5 settled day(s) in this window."
     ],
     "model_vs_market": {
       "max_abs_gap": 0.8806,
       "mean_abs_gap": 0.0723,
-      "samples": 228605
+      "samples": 229685
     },
     "profiles": [
       {
@@ -2826,7 +2826,7 @@
       "live_targets": [
         {
           "fetched_at": "2026-07-16T07:41:03+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 96.35,
@@ -2838,7 +2838,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:04+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 82.7,
@@ -2850,7 +2850,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.05,
@@ -2862,7 +2862,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 90.04,
@@ -2874,7 +2874,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:06+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 90.35,
@@ -2886,7 +2886,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:07+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 87.26,
@@ -2898,7 +2898,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 71.5,
@@ -2910,7 +2910,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 96.51,
@@ -2922,7 +2922,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 99.9,
@@ -2934,7 +2934,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 87.38,
@@ -2946,7 +2946,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 70.51,
@@ -2958,7 +2958,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.22,
@@ -2970,7 +2970,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:13+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 86.71,
@@ -2982,7 +2982,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:14+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 88.53,
@@ -2994,7 +2994,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:15+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.53,
@@ -3006,7 +3006,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:03+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 96.29,
@@ -3018,7 +3018,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:04+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 78.59,
@@ -3030,7 +3030,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 92.44,
@@ -3042,7 +3042,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 90.53,
@@ -3054,7 +3054,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:06+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 86.25,
@@ -3066,7 +3066,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:07+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 92.48,
@@ -3078,7 +3078,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 76.33,
@@ -3090,7 +3090,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 92.07,
@@ -3102,7 +3102,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 91.1,
@@ -3114,7 +3114,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 91.1,
@@ -3126,7 +3126,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 66.19,
@@ -3138,7 +3138,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 93.12,
@@ -3150,7 +3150,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:13+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 88.59,
@@ -3162,7 +3162,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:14+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 83.63,
@@ -3174,7 +3174,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:15+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 93.49,
@@ -3186,7 +3186,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:03+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 92.22,
@@ -3198,7 +3198,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 91.61,
@@ -3210,7 +3210,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 90.95,
@@ -3222,7 +3222,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:06+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 81.47,
@@ -3234,7 +3234,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:07+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.91,
@@ -3246,7 +3246,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 84.45,
@@ -3258,7 +3258,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 95.52,
@@ -3270,7 +3270,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 92.74,
@@ -3282,7 +3282,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.55,
@@ -3294,7 +3294,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:13+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 92.67,
@@ -3306,7 +3306,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:14+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 85.04,
@@ -3318,7 +3318,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:15+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.93,
@@ -3336,7 +3336,7 @@
       "recent_live_targets": [
         {
           "fetched_at": "2026-07-16T07:41:03+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 96.35,
@@ -3348,7 +3348,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:04+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 82.7,
@@ -3360,7 +3360,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.05,
@@ -3372,7 +3372,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 90.04,
@@ -3384,7 +3384,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:06+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 90.35,
@@ -3396,7 +3396,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:07+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 87.26,
@@ -3408,7 +3408,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 71.5,
@@ -3420,7 +3420,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 96.51,
@@ -3432,7 +3432,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 99.9,
@@ -3444,7 +3444,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 87.38,
@@ -3456,7 +3456,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 70.51,
@@ -3468,7 +3468,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.22,
@@ -3480,7 +3480,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:13+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 86.71,
@@ -3492,7 +3492,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:14+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 88.53,
@@ -3504,7 +3504,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:15+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.53,
@@ -3516,7 +3516,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:03+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 96.29,
@@ -3528,7 +3528,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:04+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 78.59,
@@ -3540,7 +3540,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 92.44,
@@ -3552,7 +3552,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 90.53,
@@ -3564,7 +3564,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:06+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 86.25,
@@ -3576,7 +3576,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:07+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 92.48,
@@ -3588,7 +3588,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 76.33,
@@ -3600,7 +3600,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:08+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 92.07,
@@ -3612,7 +3612,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 91.1,
@@ -3624,7 +3624,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 91.1,
@@ -3636,7 +3636,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 66.19,
@@ -3648,7 +3648,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 93.12,
@@ -3660,7 +3660,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:13+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 88.59,
@@ -3672,7 +3672,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:14+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 83.63,
@@ -3684,7 +3684,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:15+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 93.49,
@@ -3696,7 +3696,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:03+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 92.22,
@@ -3708,7 +3708,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 91.61,
@@ -3720,7 +3720,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:05+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 90.95,
@@ -3732,7 +3732,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:06+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 81.47,
@@ -3744,7 +3744,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:07+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.91,
@@ -3756,7 +3756,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 84.45,
@@ -3768,7 +3768,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:09+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.61,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 95.52,
@@ -3780,7 +3780,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:11+00:00",
-          "latest_age_hours": 0.35,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 92.74,
@@ -3792,7 +3792,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:12+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.55,
@@ -3804,7 +3804,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:13+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 92.67,
@@ -3816,7 +3816,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:14+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 85.04,
@@ -3828,7 +3828,7 @@
         },
         {
           "fetched_at": "2026-07-16T07:41:15+00:00",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.93,
@@ -3862,7 +3862,7 @@
         "KDEN"
       ]
     },
-    "generated_at": "2026-07-16T08:01:53.390677+00:00",
+    "generated_at": "2026-07-16T08:17:28.557562+00:00",
     "nwp": {
       "available": true,
       "max_stale_hours": 36.0,
@@ -4019,7 +4019,7 @@
       "targets": [
         {
           "check": "archive_lead1",
-          "latest_age_hours": 22.46,
+          "latest_age_hours": 22.72,
           "latest_fetched_at": "2026-07-15T09:34:15+00:00",
           "lead_days": 1,
           "model_count": 8,
@@ -4030,7 +4030,7 @@
         },
         {
           "check": "live_serve_models",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "latest_fetched_at": "2026-07-16T07:41:15+00:00",
           "lead_days": null,
           "model_count": 8,
@@ -4041,7 +4041,7 @@
         },
         {
           "check": "live_serve_models",
-          "latest_age_hours": 0.34,
+          "latest_age_hours": 0.6,
           "latest_fetched_at": "2026-07-16T07:41:15+00:00",
           "lead_days": null,
           "model_count": 8,
@@ -4987,7 +4987,7 @@
     },
     "truth_source": "cli_settlements joined by (station_id, target_date)"
   },
-  "generated_at": "2026-07-16T08:02:02.084220+00:00",
+  "generated_at": "2026-07-16T08:17:37.805548+00:00",
   "live_frequency_tuning": {
     "approved_per_independent_day": 5.1333,
     "approved_under_current_live_config": 77,
@@ -7565,7 +7565,7 @@
         "current_exit_fee_per_contract": 0.0116,
         "current_market_probability": null,
         "current_net_exit": 0.7784,
-        "current_snapshot_at": "2026-07-16T08:01:11.702420+00:00",
+        "current_snapshot_at": "2026-07-16T08:17:11.724400+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 13.23,
@@ -7645,7 +7645,7 @@
         "current_exit_fee_per_contract": 0.0069,
         "current_market_probability": null,
         "current_net_exit": 0.8831,
-        "current_snapshot_at": "2026-07-16T08:01:11.706150+00:00",
+        "current_snapshot_at": "2026-07-16T08:17:11.728211+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 33.56,
@@ -7725,7 +7725,7 @@
         "current_exit_fee_per_contract": 0.0057,
         "current_market_probability": null,
         "current_net_exit": 0.9043,
-        "current_snapshot_at": "2026-07-16T08:01:11.709704+00:00",
+        "current_snapshot_at": "2026-07-16T08:17:11.731834+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 28.94,
@@ -7805,7 +7805,7 @@
         "current_exit_fee_per_contract": 0.0116,
         "current_market_probability": null,
         "current_net_exit": 0.7784,
-        "current_snapshot_at": "2026-07-16T08:01:11.713436+00:00",
+        "current_snapshot_at": "2026-07-16T08:17:11.735741+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 9.04,
@@ -7885,7 +7885,7 @@
         "current_exit_fee_per_contract": 0.0155,
         "current_market_probability": null,
         "current_net_exit": 0.6545,
-        "current_snapshot_at": "2026-07-16T08:01:11.717348+00:00",
+        "current_snapshot_at": "2026-07-16T08:17:11.739704+00:00",
         "current_source": "paper_monitor_snapshot",
         "current_spread": null,
         "current_value": 22.91,
@@ -8004,7 +8004,7 @@
         "status": "HOLD",
         "target_date": "2026-07-16",
         "ticker": "KXHIGHPHIL-26JUL16-B94.5",
-        "time": "2026-07-16T08:01:11.717348+00:00",
+        "time": "2026-07-16T08:17:11.739704+00:00",
         "unrealized": true
       },
       {
@@ -8025,7 +8025,7 @@
         "status": "HOLD",
         "target_date": "2026-07-16",
         "ticker": "KXHIGHPHIL-26JUL16-T94",
-        "time": "2026-07-16T08:01:11.713436+00:00",
+        "time": "2026-07-16T08:17:11.735741+00:00",
         "unrealized": true
       },
       {
@@ -8046,7 +8046,7 @@
         "status": "HOLD",
         "target_date": "2026-07-16",
         "ticker": "KXHIGHTBOS-26JUL16-T85",
-        "time": "2026-07-16T08:01:11.709704+00:00",
+        "time": "2026-07-16T08:17:11.731834+00:00",
         "unrealized": true
       },
       {
@@ -8067,7 +8067,7 @@
         "status": "HOLD",
         "target_date": "2026-07-16",
         "ticker": "KXHIGHMIA-26JUL16-B92.5",
-        "time": "2026-07-16T08:01:11.706150+00:00",
+        "time": "2026-07-16T08:17:11.728211+00:00",
         "unrealized": true
       },
       {
@@ -8088,7 +8088,7 @@
         "status": "HOLD",
         "target_date": "2026-07-16",
         "ticker": "KXHIGHPHIL-26JUL16-T94",
-        "time": "2026-07-16T08:01:11.702420+00:00",
+        "time": "2026-07-16T08:17:11.724400+00:00",
         "unrealized": true
       },
       {
@@ -8241,7 +8241,7 @@
       "hidden_pending_limit_orders": 0,
       "hit_rate": 0.5337,
       "largest_duplicate_open_group": 0,
-      "latest_monitor_action_at": "2026-07-16T08:01:11.717348+00:00",
+      "latest_monitor_action_at": "2026-07-16T08:17:11.739704+00:00",
       "latest_opened_at": "2026-07-15T22:10:15.181227+00:00",
       "loss_count": 90,
       "marked_open_positions": 5,
@@ -9694,12 +9694,12 @@
         ],
         "current_attributed_pnl": 11.39,
         "data_collected": {
-          "decision_snapshots": 228605,
-          "forecast_snapshots": 29535,
-          "market_snapshots": 29535,
-          "paper_monitor_snapshots": 15324,
+          "decision_snapshots": 229685,
+          "forecast_snapshots": 29580,
+          "market_snapshots": 29580,
+          "paper_monitor_snapshots": 15364,
           "paper_orders": 244,
-          "probability_snapshots": 177210
+          "probability_snapshots": 177480
         },
         "days": [
           {
@@ -9853,7 +9853,7 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 2340,
+            "signals": 2880,
             "wins": 0
           }
         ],
@@ -9880,19 +9880,19 @@
                 }
               ],
               "rejection_categories": {
-                "edge": 95870,
-                "no_data": 15636,
+                "edge": 96302,
+                "no_data": 15744,
                 "other": 0
               },
               "risk_profile": "live",
-              "signals": 112955,
+              "signals": 113495,
               "top_rejections": [
                 {
                   "count": 51783,
                   "reason": "edge"
                 },
                 {
-                  "count": 34298,
+                  "count": 34838,
                   "reason": "live paper entry requires min_lead_days=1; same-"
                 },
                 {
@@ -9914,35 +9914,35 @@
               ],
               "top_rejections_all": [
                 {
-                  "count": 110935,
+                  "count": 111472,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 108849,
+                  "count": 109380,
                   "reason": "edge"
                 },
                 {
-                  "count": 34298,
+                  "count": 34838,
                   "reason": "live paper entry requires min_lead_days=1; same-"
                 },
                 {
-                  "count": 31372,
+                  "count": 31525,
                   "reason": "edge_lcb"
                 },
                 {
-                  "count": 18689,
+                  "count": 18845,
                   "reason": "spread"
                 },
                 {
-                  "count": 17073,
+                  "count": 17148,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 15636,
+                  "count": 15744,
                   "reason": "source spread"
                 },
                 {
-                  "count": 8716,
+                  "count": 8758,
                   "reason": "model/market gap"
                 }
               ]
@@ -9958,10 +9958,10 @@
               "reason": "live paper entry requires min_lead_days=1; same-day signals are research-only"
             }
           ],
-          "rejected": 111506,
+          "rejected": 112046,
           "rejection_categories": {
-            "edge": 95870,
-            "no_data": 15636,
+            "edge": 96302,
+            "no_data": 15744,
             "other": 0
           },
           "top_rejections": [
@@ -9970,7 +9970,7 @@
               "reason": "edge"
             },
             {
-              "count": 34298,
+              "count": 34838,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
@@ -9992,40 +9992,40 @@
           ],
           "top_rejections_all": [
             {
-              "count": 110935,
+              "count": 111472,
               "reason": "lower-bound edge"
             },
             {
-              "count": 108849,
+              "count": 109380,
               "reason": "edge"
             },
             {
-              "count": 34298,
+              "count": 34838,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
-              "count": 31372,
+              "count": 31525,
               "reason": "edge_lcb"
             },
             {
-              "count": 18689,
+              "count": 18845,
               "reason": "spread"
             },
             {
-              "count": 17073,
+              "count": 17148,
               "reason": "posterior probability"
             },
             {
-              "count": 15636,
+              "count": 15744,
               "reason": "source spread"
             },
             {
-              "count": 8716,
+              "count": 8758,
               "reason": "model/market gap"
             }
           ]
         },
-        "generated_at": "2026-07-16T08:02:02.000325+00:00",
+        "generated_at": "2026-07-16T08:17:37.720553+00:00",
         "learnings": [
           "live resolved 10 trade(s): 9W / 1L, net $+8.78.",
           "live currently has $94.75 of paper open risk.",
@@ -10034,7 +10034,7 @@
         "model_vs_market": {
           "max_abs_gap": 0.8806,
           "mean_abs_gap": 0.0723,
-          "samples": 228605
+          "samples": 229685
         },
         "opening_attributed_pnl": 2.61,
         "profiles": [
@@ -10851,7 +10851,7 @@
             "current_exit_fee_per_contract": 0.0116,
             "current_market_probability": null,
             "current_net_exit": 0.7784,
-            "current_snapshot_at": "2026-07-16T08:01:11.702420+00:00",
+            "current_snapshot_at": "2026-07-16T08:17:11.724400+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 13.23,
@@ -10931,7 +10931,7 @@
             "current_exit_fee_per_contract": 0.0069,
             "current_market_probability": null,
             "current_net_exit": 0.8831,
-            "current_snapshot_at": "2026-07-16T08:01:11.706150+00:00",
+            "current_snapshot_at": "2026-07-16T08:17:11.728211+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 33.56,
@@ -11011,7 +11011,7 @@
             "current_exit_fee_per_contract": 0.0057,
             "current_market_probability": null,
             "current_net_exit": 0.9043,
-            "current_snapshot_at": "2026-07-16T08:01:11.709704+00:00",
+            "current_snapshot_at": "2026-07-16T08:17:11.731834+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 28.94,
@@ -11091,7 +11091,7 @@
             "current_exit_fee_per_contract": 0.0155,
             "current_market_probability": null,
             "current_net_exit": 0.6545,
-            "current_snapshot_at": "2026-07-16T08:01:11.717348+00:00",
+            "current_snapshot_at": "2026-07-16T08:17:11.739704+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 22.91,
@@ -11196,7 +11196,7 @@
             "status": "HOLD",
             "target_date": "2026-07-16",
             "ticker": "KXHIGHPHIL-26JUL16-B94.5",
-            "time": "2026-07-16T08:01:11.717348+00:00",
+            "time": "2026-07-16T08:17:11.739704+00:00",
             "unrealized": true
           },
           {
@@ -11217,7 +11217,7 @@
             "status": "HOLD",
             "target_date": "2026-07-16",
             "ticker": "KXHIGHTBOS-26JUL16-T85",
-            "time": "2026-07-16T08:01:11.709704+00:00",
+            "time": "2026-07-16T08:17:11.731834+00:00",
             "unrealized": true
           },
           {
@@ -11238,7 +11238,7 @@
             "status": "HOLD",
             "target_date": "2026-07-16",
             "ticker": "KXHIGHMIA-26JUL16-B92.5",
-            "time": "2026-07-16T08:01:11.706150+00:00",
+            "time": "2026-07-16T08:17:11.728211+00:00",
             "unrealized": true
           },
           {
@@ -11259,7 +11259,7 @@
             "status": "HOLD",
             "target_date": "2026-07-16",
             "ticker": "KXHIGHPHIL-26JUL16-T94",
-            "time": "2026-07-16T08:01:11.702420+00:00",
+            "time": "2026-07-16T08:17:11.724400+00:00",
             "unrealized": true
           },
           {
@@ -11331,7 +11331,7 @@
           "hidden_pending_limit_orders": 0,
           "hit_rate": 0.7059,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-07-16T08:01:11.717348+00:00",
+          "latest_monitor_action_at": "2026-07-16T08:17:11.739704+00:00",
           "latest_opened_at": "2026-07-15T22:10:15.181227+00:00",
           "loss_count": 15,
           "marked_open_positions": 4,
@@ -11606,7 +11606,7 @@
             "approved": false,
             "ask": 0.03,
             "bid": 0.01,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11618,14 +11618,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "88\u00b0 or below",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.0198,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.0077,
             "probability": 0.0139,
             "probability_lcb": 0.0,
@@ -11656,7 +11656,7 @@
             "approved": false,
             "ask": 0.48,
             "bid": 0.45,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11668,14 +11668,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "93\u00b0 to 94\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.4604,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.389,
             "probability": 0.4218,
             "probability_lcb": 0.2428,
@@ -11703,7 +11703,7 @@
             "approved": false,
             "ask": 0.09,
             "bid": 0.08,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11715,14 +11715,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "89\u00b0 to 90\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.0842,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.1035,
             "probability": 0.1015,
             "probability_lcb": 0.0,
@@ -11751,7 +11751,7 @@
             "approved": false,
             "ask": 0.92,
             "bid": 0.91,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11763,14 +11763,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "89\u00b0 to 90\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.9158,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.8965,
             "probability": 0.8985,
             "probability_lcb": 0.7969,
@@ -11795,7 +11795,7 @@
             "approved": false,
             "ask": 0.99,
             "bid": 0.97,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11807,14 +11807,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "88\u00b0 or below",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.9802,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.9923,
             "probability": 0.9861,
             "probability_lcb": 0.96,
@@ -11840,7 +11840,7 @@
             "approved": false,
             "ask": 0.1,
             "bid": 0.07,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11852,14 +11852,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "95\u00b0 to 96\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.0842,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.1092,
             "probability": 0.1066,
             "probability_lcb": 0.0,
@@ -11888,7 +11888,7 @@
             "approved": false,
             "ask": 0.93,
             "bid": 0.9,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11900,14 +11900,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "95\u00b0 to 96\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.9158,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.8908,
             "probability": 0.8934,
             "probability_lcb": 0.7867,
@@ -11932,7 +11932,7 @@
             "approved": false,
             "ask": 0.55,
             "bid": 0.52,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11944,14 +11944,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "93\u00b0 to 94\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.5396,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.611,
             "probability": 0.5782,
             "probability_lcb": 0.3993,
@@ -11978,7 +11978,7 @@
             "approved": false,
             "ask": 0.4,
             "bid": 0.3,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -11990,14 +11990,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "91\u00b0 to 92\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.3465,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.3822,
             "probability": 0.3786,
             "probability_lcb": 0.2147,
@@ -12026,7 +12026,7 @@
             "approved": false,
             "ask": 0.7,
             "bid": 0.6,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -12038,14 +12038,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "91\u00b0 to 92\u00b0",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.6535,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.6178,
             "probability": 0.6214,
             "probability_lcb": 0.4575,
@@ -12072,7 +12072,7 @@
             "approved": false,
             "ask": 0.01,
             "bid": 0.0,
-            "created_at": "2026-07-16T08:00:50.925257+00:00",
+            "created_at": "2026-07-16T08:15:10.001636+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
             "diagnostics_available": true,
@@ -12084,14 +12084,14 @@
             "forecast_lead_hours": 0.0,
             "forecast_method": "emos_wmean (live NWP ensemble)",
             "forecast_observed_high_mode": null,
-            "forecast_snapshot_id": 45666,
+            "forecast_snapshot_id": 45711,
             "intraday_probability": null,
             "label": "97\u00b0 or above",
             "lead_mode": "same_day_prelock",
             "lead_mode_label": "Same-day pre-lock forecast",
             "market_available": true,
             "market_probability": 0.005,
-            "market_snapshot_id": 46158,
+            "market_snapshot_id": 46203,
             "model_probability": 0.0084,
             "probability": 0.0066,
             "probability_lcb": 0.0,
@@ -12878,12 +12878,12 @@
         "biggest_winners": [],
         "current_attributed_pnl": -115.83,
         "data_collected": {
-          "decision_snapshots": 228605,
-          "forecast_snapshots": 29535,
-          "market_snapshots": 29535,
-          "paper_monitor_snapshots": 15324,
+          "decision_snapshots": 229685,
+          "forecast_snapshots": 29580,
+          "market_snapshots": 29580,
+          "paper_monitor_snapshots": 15364,
           "paper_orders": 244,
-          "probability_snapshots": 177210
+          "probability_snapshots": 177480
         },
         "days": [
           {
@@ -13019,7 +13019,7 @@
             "wins": 1
           },
           {
-            "approved_signals": 13,
+            "approved_signals": 16,
             "closed": 0,
             "closing_attributed_pnl": -115.83,
             "cumulative_realized": -115.83,
@@ -13037,7 +13037,7 @@
             "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 2340,
+            "signals": 2880,
             "wins": 0
           }
         ],
@@ -13049,10 +13049,10 @@
           "held_to_settlement": 9
         },
         "gate_behavior": {
-          "approved": 3897,
+          "approved": 3900,
           "by_profile": [
             {
-              "approved": 3897,
+              "approved": 3900,
               "entry_block_reasons": [
                 {
                   "count": 367,
@@ -13080,12 +13080,12 @@
                 }
               ],
               "rejection_categories": {
-                "edge": 95959,
-                "no_data": 15792,
+                "edge": 96388,
+                "no_data": 15900,
                 "other": 2
               },
               "risk_profile": "research",
-              "signals": 115650,
+              "signals": 116190,
               "top_rejections": [
                 {
                   "count": 25930,
@@ -13096,7 +13096,7 @@
                   "reason": "research paused: daily loss $-13.98 reached $-4."
                 },
                 {
-                  "count": 14527,
+                  "count": 14746,
                   "reason": "edge"
                 },
                 {
@@ -13104,25 +13104,25 @@
                   "reason": "research paused: daily loss $-4.60 reached $-4.5"
                 },
                 {
-                  "count": 8112,
+                  "count": 8190,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 5926,
+                  "count": 6034,
                   "reason": "source spread"
                 }
               ],
               "top_rejections_all": [
                 {
-                  "count": 77807,
+                  "count": 78191,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 74403,
+                  "count": 74787,
                   "reason": "edge"
                 },
                 {
-                  "count": 31765,
+                  "count": 31918,
                   "reason": "edge_lcb"
                 },
                 {
@@ -13134,11 +13134,11 @@
                   "reason": "research paused: daily loss $-13.98 reached $-4."
                 },
                 {
-                  "count": 17822,
+                  "count": 17897,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 15780,
+                  "count": 15888,
                   "reason": "source spread"
                 },
                 {
@@ -13174,10 +13174,10 @@
               "reason": "research paused: daily loss $-9.99 reached $-4.44; recording near-misses only"
             }
           ],
-          "rejected": 111753,
+          "rejected": 112290,
           "rejection_categories": {
-            "edge": 95959,
-            "no_data": 15792,
+            "edge": 96388,
+            "no_data": 15900,
             "other": 2
           },
           "top_rejections": [
@@ -13190,7 +13190,7 @@
               "reason": "research paused: daily loss $-13.98 reached $-4."
             },
             {
-              "count": 14527,
+              "count": 14746,
               "reason": "edge"
             },
             {
@@ -13198,25 +13198,25 @@
               "reason": "research paused: daily loss $-4.60 reached $-4.5"
             },
             {
-              "count": 8112,
+              "count": 8190,
               "reason": "lower-bound edge"
             },
             {
-              "count": 5926,
+              "count": 6034,
               "reason": "source spread"
             }
           ],
           "top_rejections_all": [
             {
-              "count": 77807,
+              "count": 78191,
               "reason": "lower-bound edge"
             },
             {
-              "count": 74403,
+              "count": 74787,
               "reason": "edge"
             },
             {
-              "count": 31765,
+              "count": 31918,
               "reason": "edge_lcb"
             },
             {
@@ -13228,11 +13228,11 @@
               "reason": "research paused: daily loss $-13.98 reached $-4."
             },
             {
-              "count": 17822,
+              "count": 17897,
               "reason": "posterior probability"
             },
             {
-              "count": 15780,
+              "count": 15888,
               "reason": "source spread"
             },
             {
@@ -13241,7 +13241,7 @@
             }
           ]
         },
-        "generated_at": "2026-07-16T08:02:02.000325+00:00",
+        "generated_at": "2026-07-16T08:17:37.720553+00:00",
         "learnings": [
           "research resolved 25 trade(s): 10W / 15L, net $-47.07.",
           "research currently has $8.71 of paper open risk.",
@@ -13251,7 +13251,7 @@
         "model_vs_market": {
           "max_abs_gap": 0.8806,
           "mean_abs_gap": 0.0723,
-          "samples": 228605
+          "samples": 229685
         },
         "opening_attributed_pnl": -68.76,
         "profiles": [
@@ -15029,7 +15029,7 @@
             "current_exit_fee_per_contract": 0.0116,
             "current_market_probability": null,
             "current_net_exit": 0.7784,
-            "current_snapshot_at": "2026-07-16T08:01:11.713436+00:00",
+            "current_snapshot_at": "2026-07-16T08:17:11.735741+00:00",
             "current_source": "paper_monitor_snapshot",
             "current_spread": null,
             "current_value": 9.04,
@@ -15134,7 +15134,7 @@
             "status": "HOLD",
             "target_date": "2026-07-16",
             "ticker": "KXHIGHPHIL-26JUL16-T94",
-            "time": "2026-07-16T08:01:11.713436+00:00",
+            "time": "2026-07-16T08:17:11.735741+00:00",
             "unrealized": true
           },
           {
@@ -15227,7 +15227,7 @@
           "hidden_pending_limit_orders": 0,
           "hit_rate": 0.4718,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-07-16T08:01:11.713436+00:00",
+          "latest_monitor_action_at": "2026-07-16T08:17:11.735741+00:00",
           "latest_opened_at": "2026-07-15T16:15:56.149669+00:00",
           "loss_count": 75,
           "marked_open_positions": 1,
@@ -15502,7 +15502,7 @@
             "approved": false,
             "ask": 0.03,
             "bid": 0.01,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "spread 0.02 is 67% of YES ask 0.03; exit would start beyond the 50% stop band",
             "diagnostics_available": true,
@@ -15547,7 +15547,7 @@
             "approved": false,
             "ask": 0.99,
             "bid": 0.97,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge 0.002 below min 0.005",
             "diagnostics_available": true,
@@ -15589,7 +15589,7 @@
             "approved": false,
             "ask": 0.48,
             "bid": 0.45,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.108 below min 0.005",
             "diagnostics_available": true,
@@ -15632,7 +15632,7 @@
             "approved": false,
             "ask": 0.55,
             "bid": 0.52,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "lower-bound edge -0.178 below min -0.070",
             "diagnostics_available": true,
@@ -15674,7 +15674,7 @@
             "approved": false,
             "ask": 0.09,
             "bid": 0.08,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "lower-bound edge -0.096 below min -0.070",
             "diagnostics_available": true,
@@ -15717,7 +15717,7 @@
             "approved": false,
             "ask": 0.92,
             "bid": 0.91,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.029 below min 0.005",
             "diagnostics_available": true,
@@ -15760,7 +15760,7 @@
             "approved": false,
             "ask": 0.01,
             "bid": 0.0,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "YES bid 0.00 below min 0.01; no exit support",
             "diagnostics_available": true,
@@ -15807,7 +15807,7 @@
             "approved": false,
             "ask": 0.1,
             "bid": 0.07,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge 0.003 below min 0.005",
             "diagnostics_available": true,
@@ -15851,7 +15851,7 @@
             "approved": false,
             "ask": 0.93,
             "bid": 0.9,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.044 below min 0.005",
             "diagnostics_available": true,
@@ -15894,7 +15894,7 @@
             "approved": false,
             "ask": 0.4,
             "bid": 0.3,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.035 below min 0.005",
             "diagnostics_available": true,
@@ -15937,7 +15937,7 @@
             "approved": false,
             "ask": 0.7,
             "bid": 0.6,
-            "created_at": "2026-07-16T08:00:59.677489+00:00",
+            "created_at": "2026-07-16T08:15:18.989465+00:00",
             "decision": "NO_TRADE",
             "decision_reason": "edge -0.097 below min 0.005",
             "diagnostics_available": true,
@@ -16857,7 +16857,7 @@
       "linked_paper_orders": 7,
       "sampled_orders": 471,
       "settlement_days": 17132,
-      "shadow_orders": 3282
+      "shadow_orders": 3285
     }
   },
   "schema_version": 2,
@@ -17113,7 +17113,7 @@
         "approved": false,
         "ask": 0.03,
         "bid": 0.01,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "spread 0.02 is 67% of YES ask 0.03; exit would start beyond the 50% stop band",
         "diagnostics_available": true,
@@ -17158,7 +17158,7 @@
         "approved": false,
         "ask": 0.99,
         "bid": 0.97,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge 0.002 below min 0.005",
         "diagnostics_available": true,
@@ -17200,7 +17200,7 @@
         "approved": false,
         "ask": 0.48,
         "bid": 0.45,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.108 below min 0.005",
         "diagnostics_available": true,
@@ -17243,7 +17243,7 @@
         "approved": false,
         "ask": 0.55,
         "bid": 0.52,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "lower-bound edge -0.178 below min -0.070",
         "diagnostics_available": true,
@@ -17285,7 +17285,7 @@
         "approved": false,
         "ask": 0.09,
         "bid": 0.08,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "lower-bound edge -0.096 below min -0.070",
         "diagnostics_available": true,
@@ -17328,7 +17328,7 @@
         "approved": false,
         "ask": 0.92,
         "bid": 0.91,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.029 below min 0.005",
         "diagnostics_available": true,
@@ -17371,7 +17371,7 @@
         "approved": false,
         "ask": 0.01,
         "bid": 0.0,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "YES bid 0.00 below min 0.01; no exit support",
         "diagnostics_available": true,
@@ -17418,7 +17418,7 @@
         "approved": false,
         "ask": 0.1,
         "bid": 0.07,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge 0.003 below min 0.005",
         "diagnostics_available": true,
@@ -17462,7 +17462,7 @@
         "approved": false,
         "ask": 0.93,
         "bid": 0.9,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.044 below min 0.005",
         "diagnostics_available": true,
@@ -17505,7 +17505,7 @@
         "approved": false,
         "ask": 0.4,
         "bid": 0.3,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.035 below min 0.005",
         "diagnostics_available": true,
@@ -17548,7 +17548,7 @@
         "approved": false,
         "ask": 0.7,
         "bid": 0.6,
-        "created_at": "2026-07-16T08:00:59.677489+00:00",
+        "created_at": "2026-07-16T08:15:18.989465+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "edge -0.097 below min 0.005",
         "diagnostics_available": true,
@@ -17591,7 +17591,7 @@
         "approved": false,
         "ask": 0.03,
         "bid": 0.01,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17603,14 +17603,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "88\u00b0 or below",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.0198,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.0077,
         "probability": 0.0139,
         "probability_lcb": 0.0,
@@ -17641,7 +17641,7 @@
         "approved": false,
         "ask": 0.48,
         "bid": 0.45,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17653,14 +17653,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "93\u00b0 to 94\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.4604,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.389,
         "probability": 0.4218,
         "probability_lcb": 0.2428,
@@ -17688,7 +17688,7 @@
         "approved": false,
         "ask": 0.09,
         "bid": 0.08,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17700,14 +17700,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "89\u00b0 to 90\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.0842,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.1035,
         "probability": 0.1015,
         "probability_lcb": 0.0,
@@ -17736,7 +17736,7 @@
         "approved": false,
         "ask": 0.92,
         "bid": 0.91,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17748,14 +17748,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "89\u00b0 to 90\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.9158,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.8965,
         "probability": 0.8985,
         "probability_lcb": 0.7969,
@@ -17780,7 +17780,7 @@
         "approved": false,
         "ask": 0.99,
         "bid": 0.97,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17792,14 +17792,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "88\u00b0 or below",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.9802,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.9923,
         "probability": 0.9861,
         "probability_lcb": 0.96,
@@ -17825,7 +17825,7 @@
         "approved": false,
         "ask": 0.1,
         "bid": 0.07,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17837,14 +17837,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "95\u00b0 to 96\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.0842,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.1092,
         "probability": 0.1066,
         "probability_lcb": 0.0,
@@ -17873,7 +17873,7 @@
         "approved": false,
         "ask": 0.93,
         "bid": 0.9,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17885,14 +17885,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "95\u00b0 to 96\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.9158,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.8908,
         "probability": 0.8934,
         "probability_lcb": 0.7867,
@@ -17917,7 +17917,7 @@
         "approved": false,
         "ask": 0.55,
         "bid": 0.52,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17929,14 +17929,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "93\u00b0 to 94\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.5396,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.611,
         "probability": 0.5782,
         "probability_lcb": 0.3993,
@@ -17963,7 +17963,7 @@
         "approved": false,
         "ask": 0.4,
         "bid": 0.3,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -17975,14 +17975,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "91\u00b0 to 92\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.3465,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.3822,
         "probability": 0.3786,
         "probability_lcb": 0.2147,
@@ -18011,7 +18011,7 @@
         "approved": false,
         "ask": 0.7,
         "bid": 0.6,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -18023,14 +18023,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "91\u00b0 to 92\u00b0",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.6535,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.6178,
         "probability": 0.6214,
         "probability_lcb": 0.4575,
@@ -18057,7 +18057,7 @@
         "approved": false,
         "ask": 0.01,
         "bid": 0.0,
-        "created_at": "2026-07-16T08:00:50.925257+00:00",
+        "created_at": "2026-07-16T08:15:10.001636+00:00",
         "decision": "NO_TRADE",
         "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
         "diagnostics_available": true,
@@ -18069,14 +18069,14 @@
         "forecast_lead_hours": 0.0,
         "forecast_method": "emos_wmean (live NWP ensemble)",
         "forecast_observed_high_mode": null,
-        "forecast_snapshot_id": 45666,
+        "forecast_snapshot_id": 45711,
         "intraday_probability": null,
         "label": "97\u00b0 or above",
         "lead_mode": "same_day_prelock",
         "lead_mode_label": "Same-day pre-lock forecast",
         "market_available": true,
         "market_probability": 0.005,
-        "market_snapshot_id": 46158,
+        "market_snapshot_id": 46203,
         "model_probability": 0.0084,
         "probability": 0.0066,
         "probability_lcb": 0.0,
@@ -18201,7 +18201,7 @@
           "approved": false,
           "ask": 0.03,
           "bid": 0.01,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18213,14 +18213,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "88\u00b0 or below",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.0198,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.0077,
           "probability": 0.0139,
           "probability_lcb": 0.0,
@@ -18251,7 +18251,7 @@
           "approved": false,
           "ask": 0.48,
           "bid": 0.45,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18263,14 +18263,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "93\u00b0 to 94\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.4604,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.389,
           "probability": 0.4218,
           "probability_lcb": 0.2428,
@@ -18298,7 +18298,7 @@
           "approved": false,
           "ask": 0.09,
           "bid": 0.08,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18310,14 +18310,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "89\u00b0 to 90\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.0842,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.1035,
           "probability": 0.1015,
           "probability_lcb": 0.0,
@@ -18346,7 +18346,7 @@
           "approved": false,
           "ask": 0.92,
           "bid": 0.91,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18358,14 +18358,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "89\u00b0 to 90\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.9158,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.8965,
           "probability": 0.8985,
           "probability_lcb": 0.7969,
@@ -18390,7 +18390,7 @@
           "approved": false,
           "ask": 0.99,
           "bid": 0.97,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18402,14 +18402,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "88\u00b0 or below",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.9802,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.9923,
           "probability": 0.9861,
           "probability_lcb": 0.96,
@@ -18435,7 +18435,7 @@
           "approved": false,
           "ask": 0.1,
           "bid": 0.07,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18447,14 +18447,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "95\u00b0 to 96\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.0842,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.1092,
           "probability": 0.1066,
           "probability_lcb": 0.0,
@@ -18483,7 +18483,7 @@
           "approved": false,
           "ask": 0.93,
           "bid": 0.9,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18495,14 +18495,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "95\u00b0 to 96\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.9158,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.8908,
           "probability": 0.8934,
           "probability_lcb": 0.7867,
@@ -18527,7 +18527,7 @@
           "approved": false,
           "ask": 0.55,
           "bid": 0.52,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18539,14 +18539,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "93\u00b0 to 94\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.5396,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.611,
           "probability": 0.5782,
           "probability_lcb": 0.3993,
@@ -18573,7 +18573,7 @@
           "approved": false,
           "ask": 0.4,
           "bid": 0.3,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18585,14 +18585,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "91\u00b0 to 92\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.3465,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.3822,
           "probability": 0.3786,
           "probability_lcb": 0.2147,
@@ -18621,7 +18621,7 @@
           "approved": false,
           "ask": 0.7,
           "bid": 0.6,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18633,14 +18633,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "91\u00b0 to 92\u00b0",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.6535,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.6178,
           "probability": 0.6214,
           "probability_lcb": 0.4575,
@@ -18667,7 +18667,7 @@
           "approved": false,
           "ask": 0.01,
           "bid": 0.0,
-          "created_at": "2026-07-16T08:00:50.925257+00:00",
+          "created_at": "2026-07-16T08:15:10.001636+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
           "diagnostics_available": true,
@@ -18679,14 +18679,14 @@
           "forecast_lead_hours": 0.0,
           "forecast_method": "emos_wmean (live NWP ensemble)",
           "forecast_observed_high_mode": null,
-          "forecast_snapshot_id": 45666,
+          "forecast_snapshot_id": 45711,
           "intraday_probability": null,
           "label": "97\u00b0 or above",
           "lead_mode": "same_day_prelock",
           "lead_mode_label": "Same-day pre-lock forecast",
           "market_available": true,
           "market_probability": 0.005,
-          "market_snapshot_id": 46158,
+          "market_snapshot_id": 46203,
           "model_probability": 0.0084,
           "probability": 0.0066,
           "probability_lcb": 0.0,
@@ -19356,7 +19356,7 @@
           "approved": false,
           "ask": 0.03,
           "bid": 0.01,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "spread 0.02 is 67% of YES ask 0.03; exit would start beyond the 50% stop band",
           "diagnostics_available": true,
@@ -19401,7 +19401,7 @@
           "approved": false,
           "ask": 0.99,
           "bid": 0.97,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge 0.002 below min 0.005",
           "diagnostics_available": true,
@@ -19443,7 +19443,7 @@
           "approved": false,
           "ask": 0.48,
           "bid": 0.45,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge -0.108 below min 0.005",
           "diagnostics_available": true,
@@ -19486,7 +19486,7 @@
           "approved": false,
           "ask": 0.55,
           "bid": 0.52,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "lower-bound edge -0.178 below min -0.070",
           "diagnostics_available": true,
@@ -19528,7 +19528,7 @@
           "approved": false,
           "ask": 0.09,
           "bid": 0.08,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "lower-bound edge -0.096 below min -0.070",
           "diagnostics_available": true,
@@ -19571,7 +19571,7 @@
           "approved": false,
           "ask": 0.92,
           "bid": 0.91,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge -0.029 below min 0.005",
           "diagnostics_available": true,
@@ -19614,7 +19614,7 @@
           "approved": false,
           "ask": 0.01,
           "bid": 0.0,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "YES bid 0.00 below min 0.01; no exit support",
           "diagnostics_available": true,
@@ -19661,7 +19661,7 @@
           "approved": false,
           "ask": 0.1,
           "bid": 0.07,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge 0.003 below min 0.005",
           "diagnostics_available": true,
@@ -19705,7 +19705,7 @@
           "approved": false,
           "ask": 0.93,
           "bid": 0.9,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge -0.044 below min 0.005",
           "diagnostics_available": true,
@@ -19748,7 +19748,7 @@
           "approved": false,
           "ask": 0.4,
           "bid": 0.3,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge -0.035 below min 0.005",
           "diagnostics_available": true,
@@ -19791,7 +19791,7 @@
           "approved": false,
           "ask": 0.7,
           "bid": 0.6,
-          "created_at": "2026-07-16T08:00:59.677489+00:00",
+          "created_at": "2026-07-16T08:15:18.989465+00:00",
           "decision": "NO_TRADE",
           "decision_reason": "edge -0.097 below min 0.005",
           "diagnostics_available": true,
@@ -20567,7 +20567,7 @@
     "deduped_signal_count": 2112,
     "entry_scanner_reason": "live paper entry requires min_lead_days=1; same-day signals are research-only",
     "entry_scanner_status": "Same-day entries blocked; rolling scanner is evaluating later target dates.",
-    "last_updated": "2026-07-16T08:02:02.072149+00:00",
+    "last_updated": "2026-07-16T08:17:37.792983+00:00",
     "latest_signal_targets": [
       "2026-07-15",
       "2026-07-16"
@@ -20578,8 +20578,8 @@
     "paper_only": true,
     "paper_trading_status": "5 open paper position(s)",
     "post_resolution_excluded_count": 24,
-    "pre_resolution_signal_count": 232473,
-    "raw_signal_count": 232497,
+    "pre_resolution_signal_count": 233553,
+    "raw_signal_count": 233577,
     "sample_warning": "",
     "target_exposure_cap": 180.0
   }
