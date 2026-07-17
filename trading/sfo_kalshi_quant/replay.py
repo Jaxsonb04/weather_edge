@@ -22,6 +22,8 @@ from typing import Literal
 from ._util import _json_object, _row_value, _table_exists
 from .account import ACCOUNTING_POLICY_VERSION, SHARED_ACCOUNT_ID
 from .backtest_rescore import _day_clustered_roi_ci
+from .config import normalize_risk_profile_name
+from .logical_positions import LogicalPaperPosition, group_logical_positions
 from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
 from .restatement import VERIFIED, restate
 from .settlement_truth import (
@@ -319,7 +321,7 @@ def replay_from_database(
             if not _table_exists(conn, "paper_orders"):
                 return {"available": False, "reason": "paper_orders table missing"}
             all_orders = conn.execute(
-                "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
+                "SELECT * FROM paper_orders ORDER BY created_at, id"
             ).fetchall()
             trades = (
                 conn.execute(
@@ -341,10 +343,11 @@ def replay_from_database(
                     (f"execution:{EXECUTION_MODEL_VERSION}",),
                 ).fetchone()
                 semantics_boundary = boundary_row[0] if boundary_row else None
-            orders = [
+            event_orders = [
                 row
                 for row in all_orders
-                if semantics_boundary
+                if str(row["status"]) != "REJECTED"
+                and semantics_boundary
                 and str(_row_value(row, "account_id") or "") == SHARED_ACCOUNT_ID
                 and str(_row_value(row, "execution_model_version") or "")
                 == EXECUTION_MODEL_VERSION
@@ -361,14 +364,14 @@ def replay_from_database(
     # independent orders: replay the parent at its ORIGINAL size and reduce it
     # with a targeted exit event per executed lot.
     child_quantity_by_parent: dict[str, float] = {}
-    for row in orders:
+    for row in event_orders:
         parent_id = _row_value(row, "parent_order_id")
         if parent_id:
             key = str(int(parent_id))
             child_quantity_by_parent[key] = (
                 child_quantity_by_parent.get(key, 0.0) + float(row["contracts"] or 0.0)
             )
-    for row in orders:
+    for row in event_orders:
         parent_id = _row_value(row, "parent_order_id")
         if parent_id:
             closed_at = _parse_time(row["closed_at"])
@@ -486,6 +489,9 @@ def replay_from_database(
         }
     except (OSError, sqlite3.Error, TypeError, ValueError):
         verified_order_ids = set()
+    eligible_root_ids = _eligible_readiness_root_ids(
+        all_orders, semantics_boundary
+    )
     reasons = set(result["promotion_block_reasons"])
     if legacy_orders:
         reasons.add(f"{legacy_orders} legacy orders lack a current strategy fingerprint")
@@ -495,14 +501,32 @@ def replay_from_database(
     # count only when every order of that day was placed under the corrected
     # execution/accounting semantics.
     resolved_days: dict[str, bool] = {}
-    for row in orders:
-        if str(row["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
+    for group in group_logical_positions(all_orders):
+        root = group.root
+        profile_class = _readiness_root_profile_class(root)
+        if (
+            profile_class == "research"
+            and group.valid
+            and _readiness_group_has_consistent_scope(
+                group, semantics_boundary
+            )
+        ):
             continue
-        day = str(row["target_date"])
-        post_boundary = bool(
-            semantics_boundary and str(row["created_at"] or "") >= str(semantics_boundary)
+        if (
+            str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED")
+            or root["realized_pnl"] is None
+        ):
+            continue
+        day = str(root["target_date"])
+        qualified = (
+            profile_class == "live"
+            and group.logical_order_id in eligible_root_ids
+            and group.terminal
+            and _readiness_group_has_consistent_scope(
+                group, semantics_boundary
+            )
         )
-        resolved_days[day] = resolved_days.get(day, True) and post_boundary
+        resolved_days[day] = resolved_days.get(day, True) and qualified
     post_boundary_days = sum(1 for qualified in resolved_days.values() if qualified)
     if post_boundary_days < 30:
         reasons.add(
@@ -513,14 +537,19 @@ def replay_from_database(
     result["promotion_block_reasons"] = sorted(reasons)
     result["promotion_eligible"] = not reasons
     result["available"] = True
-    result["source_orders"] = len(orders)
+    result["source_orders"] = len(event_orders)
     result["source_trades"] = len(trades)
     result["execution_model_version"] = EXECUTION_MODEL_VERSION
     result["accounting_policy_version"] = ACCOUNTING_POLICY_VERSION
     result["semantics_boundary"] = semantics_boundary
     result["post_boundary_days"] = post_boundary_days
     result["verified_decisions"] = len(
-        _verified_resolved_decision_groups(orders, verified_order_ids)
+        _verified_resolved_decision_groups(
+            all_orders,
+            verified_order_ids,
+            eligible_root_ids=eligible_root_ids,
+            semantics_boundary=semantics_boundary,
+        )
     )
     result["evidence_scope"] = {
         "account_id": SHARED_ACCOUNT_ID,
@@ -530,11 +559,12 @@ def replay_from_database(
         "research_excluded": True,
     }
     result["readiness_metrics"] = _post_boundary_readiness_metrics(
-        orders,
+        all_orders,
         promotion_eligible=bool(result["promotion_eligible"]),
         semantics_boundary=semantics_boundary,
         initial_capital=initial_capital,
         verified_order_ids=verified_order_ids,
+        eligible_root_ids=eligible_root_ids,
     )
     return result
 
@@ -546,10 +576,16 @@ def _post_boundary_readiness_metrics(
     semantics_boundary: str | None,
     initial_capital: float,
     verified_order_ids: set[int],
+    eligible_root_ids: set[int],
 ) -> dict[str, object]:
     """Economic readiness inputs from chronological post-boundary live rows."""
 
-    groups = _verified_resolved_decision_groups(orders, verified_order_ids)
+    groups = _verified_resolved_decision_groups(
+        orders,
+        verified_order_ids,
+        eligible_root_ids=eligible_root_ids,
+        semantics_boundary=semantics_boundary,
+    )
     resolved: list[dict[str, object]] = []
     for root_id, lots in groups.items():
         root = next(row for row in lots if int(row["id"]) == root_id)
@@ -631,36 +667,97 @@ def _post_boundary_readiness_metrics(
     }
 
 
+def _eligible_readiness_root_ids(
+    orders: list[sqlite3.Row],
+    semantics_boundary: str | None,
+) -> set[int]:
+    """Select the logical roots eligible for post-boundary live evidence."""
+
+    if not semantics_boundary:
+        return set()
+    eligible: set[int] = set()
+    for group in group_logical_positions(orders):
+        root = group.root
+        if (
+            str(_row_value(root, "account_id") or "") == SHARED_ACCOUNT_ID
+            and str(_row_value(root, "execution_model_version") or "")
+            == EXECUTION_MODEL_VERSION
+            and str(root["created_at"] or "") >= semantics_boundary
+            and _readiness_root_profile_class(root) == "live"
+        ):
+            eligible.add(group.logical_order_id)
+    return eligible
+
+
+def _readiness_root_profile_class(
+    root: dict[str, object],
+) -> Literal["live", "research", "invalid"]:
+    """Classify root policy identity without consulting ambient defaults."""
+
+    raw_profile = _row_value(root, "risk_profile")
+    profile = (
+        "live"
+        if raw_profile is None or not str(raw_profile).strip()
+        else str(raw_profile)
+    )
+    try:
+        normalized = normalize_risk_profile_name(profile)
+    except (AttributeError, TypeError, ValueError):
+        return "invalid"
+    return "research" if normalized == "research" else "live"
+
+
+def _readiness_group_has_consistent_scope(
+    group: LogicalPaperPosition,
+    semantics_boundary: str | None,
+) -> bool:
+    """Require every lot to preserve its eligible root's evidence scope."""
+
+    if not semantics_boundary:
+        return False
+    root_account = str(_row_value(group.root, "account_id") or "")
+    root_version = str(
+        _row_value(group.root, "execution_model_version") or ""
+    )
+    return all(
+        str(_row_value(lot, "account_id") or "") == root_account
+        and str(_row_value(lot, "execution_model_version") or "")
+        == root_version
+        and str(lot["created_at"] or "") >= semantics_boundary
+        for lot in group.lots
+    )
+
+
 def _verified_resolved_decision_groups(
     orders: list[sqlite3.Row],
     verified_order_ids: set[int],
-) -> dict[int, list[sqlite3.Row]]:
+    *,
+    eligible_root_ids: set[int] | None = None,
+    semantics_boundary: str | None = None,
+) -> dict[int, list[dict[str, object]]]:
     """Group immutable partial-close lots into their originating decision."""
 
-    resolved_statuses = {"PAPER_SETTLED", "PAPER_CLOSED"}
-    roots = {
-        int(row["id"]): row
-        for row in orders
-        if not _row_value(row, "parent_order_id")
-    }
-    groups: dict[int, list[sqlite3.Row]] = {}
-    for row in orders:
+    verified: dict[int, list[dict[str, object]]] = {}
+    for group in group_logical_positions(orders):
         if (
-            str(row["status"]) not in resolved_statuses
-            or row["realized_pnl"] is None
+            eligible_root_ids is not None
+            and group.logical_order_id not in eligible_root_ids
         ):
             continue
-        parent_id = _row_value(row, "parent_order_id")
-        root_id = int(parent_id) if parent_id else int(row["id"])
-        groups.setdefault(root_id, []).append(row)
-
-    verified: dict[int, list[sqlite3.Row]] = {}
-    for root_id, lots in groups.items():
-        root = roots.get(root_id)
-        if root is None or str(root["status"]) not in resolved_statuses:
+        if (
+            eligible_root_ids is not None
+            and not _readiness_group_has_consistent_scope(
+                group, semantics_boundary
+            )
+        ):
+            continue
+        if not group.terminal:
+            continue
+        lots = list(group.resolved_lots)
+        if not lots:
             continue
         if all(int(row["id"]) in verified_order_ids for row in lots):
-            verified[root_id] = lots
+            verified[group.logical_order_id] = lots
     return verified
 
 

@@ -63,6 +63,29 @@ def test_research_pauses_after_five_bad_resolved_trades():
         assert trader.place_approved("2026-06-13", [_decision()], bankroll=1000.0) == []
 
 
+def test_partial_exit_lots_do_not_count_as_resolved_trades():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        order_id = store.record_paper_order(
+            "2026-06-12",
+            _decision(),
+            risk_profile="research",
+        )
+        for _ in range(5):
+            store.close_paper_order(order_id, 0.01, max_quantity=1.0)
+
+        reason = store.paper_entry_pause_reason(
+            "research",
+            bankroll=1000.0,
+            target_date="2026-06-13",
+            min_resolved_trades=5,
+            max_resolved_roi=0.0,
+            daily_loss_pct=1.0,
+        )
+
+        assert reason is None
+
+
 def test_live_does_not_pause_from_research_losses():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"

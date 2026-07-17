@@ -3007,15 +3007,19 @@ class PaperStore:
             resolved = conn.execute(
                 """
                 SELECT
-                    COUNT(*) AS trades,
-                    COALESCE(SUM(realized_pnl), 0) AS pnl,
-                    COALESCE(SUM(contracts * cost_per_contract), 0) AS capital
-                FROM paper_orders
-                WHERE realized_pnl IS NOT NULL
-                  AND status != 'REJECTED'
-                  AND status != 'PAPER_EXPIRED'
-                  AND COALESCE(risk_profile, 'live') = ?
-                  AND COALESCE(closed_at, settled_at) >= ?
+                    COUNT(DISTINCT root.id) AS trades,
+                    COALESCE(SUM(lot.realized_pnl), 0) AS pnl,
+                    COALESCE(SUM(lot.contracts * lot.cost_per_contract), 0) AS capital
+                FROM paper_orders lot
+                JOIN paper_orders root
+                  ON root.id = COALESCE(lot.parent_order_id, lot.id)
+                WHERE root.status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
+                  AND root.realized_pnl IS NOT NULL
+                  AND lot.realized_pnl IS NOT NULL
+                  AND lot.status != 'REJECTED'
+                  AND lot.status != 'PAPER_EXPIRED'
+                  AND COALESCE(root.risk_profile, 'live') = ?
+                  AND COALESCE(root.closed_at, root.settled_at) >= ?
                 """,
                 (profile, window_start),
             ).fetchone()

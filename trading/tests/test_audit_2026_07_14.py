@@ -9,10 +9,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.maker_fills import (
+    EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
     RestingMakerOrder,
     allocate_maker_fills,
@@ -574,6 +577,47 @@ def test_exec_v3_partial_close_inherits_parent_entry_findings() -> None:
         assert "EXEC_V3_TAPE_MISSING" in child_result["findings"]
 
 
+def _verified_terminal_readiness_root(
+    store: PaperStore,
+    *,
+    trade_id: str,
+    ticker: str = "KXHIGHTSEA-26JUL13-B82.5",
+    floor: float = 82.0,
+    cap: float = 83.0,
+) -> int:
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_account_ledger SET created_at=? "
+            "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION'",
+            ((T0 - timedelta(minutes=1)).isoformat(),),
+        )
+    order_id = _resting_order(
+        store,
+        "2026-07-14",
+        _decision(
+            ticker,
+            side="NO",
+            limit_price=0.72,
+            contracts=4.0,
+            floor=floor,
+            cap=cap,
+        ),
+        created_at=T0,
+    )
+    payload = _trade(
+        trade_id,
+        yes_price=0.28,
+        quantity=4.0,
+        taker_book_side="bid",
+        created_time=T0 + timedelta(minutes=1),
+    )
+    _fill_resting_orders_against_live_book(
+        store, _TradesClient([payload]), Color.from_no_color(True)
+    )
+    assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+    return order_id
+
+
 def test_readiness_aggregates_verified_partial_close_lots_into_one_decision() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
@@ -635,6 +679,262 @@ def test_readiness_aggregates_verified_partial_close_lots_into_one_decision() ->
         assert metrics["counts"]["settled_decisions"] == 1
         assert metrics["candidate"]["realized_pnl"] == round(expected_pnl, 4)
         assert metrics["candidate"]["capital_at_risk"] == round(expected_capital, 4)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("account_id", "paper-research-shadow"),
+        ("execution_model_version", "exec-v2-2026-07-13"),
+        ("created_at", (T0 - timedelta(minutes=2)).isoformat()),
+    ],
+)
+def test_readiness_rejects_group_with_scope_mismatched_child(
+    field: str,
+    value: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_account_ledger SET created_at=? "
+                "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION'",
+                ((T0 - timedelta(minutes=1)).isoformat(),),
+            )
+        order_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(side="NO", limit_price=0.72, contracts=4.0),
+            created_at=T0,
+        )
+        payload = _trade(
+            "T-INVALID-READINESS",
+            yes_price=0.28,
+            quantity=4.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=1),
+        )
+        _fill_resting_orders_against_live_book(
+            store, _TradesClient([payload]), Color.from_no_color(True)
+        )
+        child = store.close_paper_order(
+            order_id,
+            0.80,
+            max_quantity=2.0,
+            liquidity_evidence={
+                "displayed_depth": 2.0,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        with store.connect() as conn:
+            conn.execute(
+                f"UPDATE paper_orders SET {field}=? WHERE id=?",
+                (value, child["id"]),
+            )
+        verified = {
+            row["order_id"]
+            for row in restate(db_path)["orders"]
+            if row["verification"] == "VERIFIED"
+        }
+        assert {order_id, child["id"]} <= verified
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["verified_decisions"] == 0
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 0
+        assert metrics["by_cohort"] == {}
+        assert result["post_boundary_days"] == 0
+        assert result["promotion_eligible"] is False
+
+
+@pytest.mark.parametrize("risk_profile", ["research", "not-a-profile"])
+def test_readiness_excludes_non_live_shared_account_roots(
+    risk_profile: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = _verified_terminal_readiness_root(
+            store, trade_id=f"T-{risk_profile.upper()}-READINESS"
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET risk_profile=?, account_id='paper-shared' WHERE id=?",
+                (risk_profile, order_id),
+            )
+        verified = next(
+            row for row in restate(db_path)["orders"] if row["order_id"] == order_id
+        )
+        assert verified["verification"] == "VERIFIED"
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 1
+        assert result["verified_decisions"] == 0
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 0
+        assert metrics["by_cohort"] == {}
+        assert result["post_boundary_days"] == 0
+
+
+def test_readiness_treats_legacy_null_root_profile_as_live() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = _verified_terminal_readiness_root(
+            store, trade_id="T-NULL-PROFILE-READINESS"
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET risk_profile=NULL WHERE id=?",
+                (order_id,),
+            )
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 1
+        assert result["verified_decisions"] == 1
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 1
+        assert result["post_boundary_days"] == 1
+
+
+@pytest.mark.parametrize(
+    ("risk_profile", "expected_post_boundary_days"),
+    [("research", 1), ("not-a-profile", 0)],
+)
+def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
+    risk_profile: str,
+    expected_post_boundary_days: int,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        live_id = _verified_terminal_readiness_root(
+            store, trade_id="T-MIXED-LIVE-READINESS"
+        )
+        other_id = _verified_terminal_readiness_root(
+            store,
+            trade_id="T-MIXED-OTHER-READINESS",
+            ticker="KXHIGHTSEA-26JUL14-B84.5",
+            floor=84.0,
+            cap=85.0,
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET risk_profile=?, account_id='paper-shared' WHERE id=?",
+                (risk_profile, other_id),
+            )
+        verified = {
+            row["order_id"]
+            for row in restate(db_path)["orders"]
+            if row["verification"] == "VERIFIED"
+        }
+        assert {live_id, other_id} <= verified
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 2
+        assert result["verified_decisions"] == 1
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 1
+        assert metrics["by_cohort"]["post_exec_v3_live"]["trades"] == 1
+        assert result["post_boundary_days"] == expected_post_boundary_days
+
+
+@pytest.mark.parametrize(
+    ("child_version", "expected_source_orders", "expected_post_boundary_days"),
+    [
+        (EXECUTION_MODEL_VERSION, 3, 1),
+        ("exec-v2-2026-07-13", 2, 0),
+    ],
+)
+def test_readiness_research_group_is_neutral_only_with_consistent_scope(
+    child_version: str,
+    expected_source_orders: int,
+    expected_post_boundary_days: int,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        live_id = _verified_terminal_readiness_root(
+            store, trade_id="T-RESEARCH-SCOPE-LIVE"
+        )
+        research_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(
+                "KXHIGHTSEA-26JUL14-B84.5",
+                side="NO",
+                limit_price=0.72,
+                contracts=4.0,
+                floor=84.0,
+                cap=85.0,
+            ),
+            created_at=T0,
+        )
+        payload = _trade(
+            "T-RESEARCH-SCOPE-PARTIAL",
+            yes_price=0.28,
+            quantity=4.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=1),
+        )
+        _fill_resting_orders_against_live_book(
+            store, _TradesClient([payload]), Color.from_no_color(True)
+        )
+        child = store.close_paper_order(
+            research_id,
+            0.80,
+            max_quantity=2.0,
+            liquidity_evidence={
+                "displayed_depth": 2.0,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET risk_profile='research', account_id='paper-shared' "
+                "WHERE id=? OR parent_order_id=?",
+                (research_id, research_id),
+            )
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=? WHERE id=?",
+                (child_version, child["id"]),
+            )
+        verified = {
+            row["order_id"]
+            for row in restate(db_path)["orders"]
+            if row["verification"] == "VERIFIED"
+        }
+        assert {live_id, research_id, child["id"]} <= verified
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == expected_source_orders
+        assert result["verified_decisions"] == 1
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 1
+        assert result["post_boundary_days"] == expected_post_boundary_days
 
 
 def test_weekly_goal_counts_only_consecutive_completed_five_percent_weeks() -> None:

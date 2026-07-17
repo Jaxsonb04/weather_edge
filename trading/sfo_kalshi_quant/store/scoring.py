@@ -6,6 +6,7 @@ from functools import partial
 from typing import Iterable
 
 from .._util import _row_value as _shared_row_value
+from ..logical_positions import group_logical_positions
 from ..settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
     is_pre_resolution_decision as _is_pre_resolution_decision,
@@ -29,64 +30,63 @@ def market_backtest_summary(
     with self.connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            f"SELECT * FROM paper_orders {where}",
+            f"SELECT * FROM paper_orders {where} ORDER BY id",
             params,
         ).fetchall()
     # PAPER_EXPIRED rows are resting limits that never filled; they carry
     # realized_pnl=0.0 but deployed no capital and resolved no position, so
     # they must not count as orders, dilute the capital/ROI denominator, or
     # drag the hit-rate denominator as phantom losses.
-    realized_rows = [
+    realized_lots = [
         row
         for row in rows
         if row["realized_pnl"] is not None and row["status"] != "PAPER_EXPIRED"
     ]
-    open_rows = [
-        row
-        for row in rows
-        if row["status"] in {
-            "PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"
-        }
-        and row["realized_pnl"] is None
+    groups = group_logical_positions(rows)
+    terminal = [group for group in groups if group.terminal]
+    open_roots = [
+        group.root
+        for group in groups
+        if group.valid
+        and not group.terminal
+        and group.root["status"]
+        in {"PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"}
+        and group.root["realized_pnl"] is None
     ]
-    open_capital = sum(float(row["contracts"]) * float(row["cost_per_contract"]) for row in open_rows)
-    if not realized_rows:
-        return {
-            "orders": 0,
-            "contracts": 0.0,
-            "capital_at_risk": 0.0,
-            "realized_pnl": 0.0,
-            "roi": 0.0,
-            "hit_rate": 0.0,
-            "wins": 0.0,
-            "losses": 0.0,
-            "avg_edge": 0.0,
-            "open_orders": float(len(open_rows)),
-            "open_capital_at_risk": open_capital,
-        }
-    contracts = sum(float(row["contracts"]) for row in realized_rows)
-    capital = sum(float(row["contracts"]) * float(row["cost_per_contract"]) for row in realized_rows)
-    pnl = sum(float(row["realized_pnl"]) for row in realized_rows)
+    open_capital = sum(
+        float(row["contracts"]) * float(row["cost_per_contract"])
+        for row in open_roots
+    )
+    contracts = sum(float(row["contracts"]) for row in realized_lots)
+    capital = sum(
+        float(row["contracts"]) * float(row["cost_per_contract"])
+        for row in realized_lots
+    )
+    pnl = sum(float(row["realized_pnl"]) for row in realized_lots)
     # A break-even close (resolved_yes NULL, realized_pnl 0) is undecided: it
     # deployed capital (so it stays in orders/contracts/capital/pnl) but is
     # neither a win nor a loss, so it must not drag the hit-rate denominator
     # the way the old realized_pnl > 0 fallback did.
-    decided_rows = [row for row in realized_rows if _row_position_decided(row)]
-    hits = sum(1 for row in decided_rows if _row_position_won(row))
-    losses = len(decided_rows) - hits
+    decided = [group for group in terminal if group.won is not None]
+    hits = sum(group.won is True for group in decided)
+    losses = sum(group.won is False for group in decided)
     return {
-        "orders": float(len(realized_rows)),
+        "orders": float(len(terminal)),
         "contracts": contracts,
         "capital_at_risk": capital,
         "realized_pnl": pnl,
         "roi": pnl / capital if capital else 0.0,
-        # decided_rows excludes undecided break-evens; a 0-for-N losing
+        # decided excludes undecided break-evens; a 0-for-N losing
         # streak still reports 0.0 (hits=0 over a non-empty denominator).
-        "hit_rate": hits / len(decided_rows) if decided_rows else 0.0,
+        "hit_rate": hits / len(decided) if decided else 0.0,
         "wins": float(hits),
         "losses": float(losses),
-        "avg_edge": sum(float(row["edge"]) for row in realized_rows) / len(realized_rows),
-        "open_orders": float(len(open_rows)),
+        "avg_edge": (
+            sum(float(group.root["edge"]) for group in terminal) / len(terminal)
+            if terminal
+            else 0.0
+        ),
+        "open_orders": float(len(open_roots)),
         "open_capital_at_risk": open_capital,
     }
 

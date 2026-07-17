@@ -961,6 +961,106 @@ def test_close_paper_order_computes_exit_pnl():
         assert row["realized_pnl"] > 0
 
 
+def test_market_summary_counts_partial_exits_as_one_terminal_decision():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.62,
+            yes_bid=0.48,
+            yes_ask=0.50,
+            spread=0.02,
+            fee_per_contract=0.02,
+            cost_per_contract=0.52,
+            edge=0.18,
+            edge_lcb=0.10,
+            kelly_fraction=0.01,
+            recommended_contracts=4.0,
+            expected_profit=0.72,
+            reasons=[],
+        )
+        order_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        store.close_paper_order(order_id, 0.20, max_quantity=1.0)
+        store.close_paper_order(order_id, 0.20, max_quantity=1.0)
+        store.close_paper_order(order_id, 0.20)
+
+        with store.connect() as conn:
+            raw_pnl, raw_capital = conn.execute(
+                "SELECT SUM(realized_pnl), "
+                "SUM(contracts * cost_per_contract) "
+                "FROM paper_orders WHERE id=? OR parent_order_id=?",
+                (order_id, order_id),
+            ).fetchone()
+
+        summary = store.market_backtest_summary()
+
+        assert summary["orders"] == 1
+        assert summary["losses"] == 1
+        assert summary["wins"] == 0
+        assert summary["contracts"] == 4
+        assert summary["realized_pnl"] == raw_pnl
+        assert summary["capital_at_risk"] == raw_capital
+
+
+def test_market_summary_keeps_rejected_children_visible_to_group_validation():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.62,
+            yes_bid=0.48,
+            yes_ask=0.50,
+            spread=0.02,
+            fee_per_contract=0.02,
+            cost_per_contract=0.52,
+            edge=0.18,
+            edge_lcb=0.10,
+            kelly_fraction=0.01,
+            recommended_contracts=2.0,
+            expected_profit=0.36,
+            reasons=[],
+        )
+        root_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        store.close_paper_order(root_id, 0.20)
+        child_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        store.close_paper_order(child_id, 0.20)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET parent_order_id=?, status='REJECTED' "
+                "WHERE id=?",
+                (root_id, child_id),
+            )
+            raw_contracts, raw_capital, raw_pnl = conn.execute(
+                "SELECT SUM(contracts), "
+                "SUM(contracts * cost_per_contract), SUM(realized_pnl) "
+                "FROM paper_orders WHERE id=? OR parent_order_id=?",
+                (root_id, root_id),
+            ).fetchone()
+
+        summary = store.market_backtest_summary()
+
+        assert summary["orders"] == 0
+        assert summary["wins"] == 0
+        assert summary["losses"] == 0
+        assert summary["contracts"] == raw_contracts
+        assert summary["capital_at_risk"] == raw_capital
+        assert summary["realized_pnl"] == raw_pnl
+
+
 def test_open_paper_orders_returns_named_rows_for_monitor():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
