@@ -589,6 +589,8 @@ def run_paper_monitor(
                     "bid": live_bid,
                     "displayed_bid_size": bid_size,
                     "market_status": market.status,
+                    "monitor_action": action,
+                    "exit_reason": exit_kind,
                     "observed_at": datetime.now(UTC).isoformat(),
                     "source": "monitor_market_lookup",
                 },

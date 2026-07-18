@@ -9,8 +9,10 @@ from typing import Any
 
 from ._util import _parse_timestamp, _row_value, _table_exists
 from .config import SFO_TZ, StrategyConfig
+from .exit_audit import audited_exit_reason
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .logical_positions import group_logical_positions
+from .profile_identity import row_published_profile_key
 
 
 def build_paper_summary(
@@ -387,17 +389,7 @@ def _profile_keys(window_orders: list) -> set[str]:
 
 
 def _exit_reason_breakdown(window_orders: list) -> dict[str, int]:
-    """How positions left the book: held to settlement vs early take-profit vs
-    early stop-loss vs never-filled expiration.
-
-    The headline diagnostic for the exit fix -- before it, the unreachable
-    %-of-cost take-profit meant favorites only ever 'held_to_settlement'.
-    PAPER_CLOSED is split by realized PnL sign as a proxy for take-profit vs
-    stop-loss without joining the monitor snapshots. A break-even close
-    (realized_pnl == 0) is its own bucket rather than silently counted as a
-    take-profit, so this view agrees with the resolved_yes-based win/loss
-    classification in db.py (a break-even close is undecided, not a profit).
-    """
+    """How positions left the book using the shared audited classifier."""
 
     counts = {
         "held_to_settlement": 0,
@@ -406,20 +398,17 @@ def _exit_reason_breakdown(window_orders: list) -> dict[str, int]:
         "closed_break_even": 0,
         "expired_unfilled": 0,
     }
+    published_key = {
+        "held_to_settlement": "held_to_settlement",
+        "take_profit": "closed_take_profit",
+        "stop_loss": "closed_stop_loss",
+        "break_even": "closed_break_even",
+        "expired_unfilled": "expired_unfilled",
+    }
     for order in window_orders:
-        status = order["status"]
-        if status == "PAPER_EXPIRED":
-            counts["expired_unfilled"] += 1
-        elif status == "PAPER_CLOSED":
-            pnl = float(order["realized_pnl"])
-            if pnl > 0:
-                counts["closed_take_profit"] += 1
-            elif pnl < 0:
-                counts["closed_stop_loss"] += 1
-            else:
-                counts["closed_break_even"] += 1
-        elif status == "PAPER_SETTLED":
-            counts["held_to_settlement"] += 1
+        key = published_key.get(audited_exit_reason(order))
+        if key is not None:
+            counts[key] += 1
     return counts
 
 
@@ -555,7 +544,8 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
             "market_ticker": row["market_ticker"],
             "label": row["label"],
             "side": str(row["side"] or "YES").upper(),
-            "risk_profile": _row_value(row, "risk_profile") or "unknown",
+            "risk_profile": row_published_profile_key(row),
+            "research_sleeve": _row_value(row, "research_sleeve"),
             "account_id": _row_value(row, "account_id"),
             "contracts": float(row["contracts"] or 0.0),
             "entry_price": float(row["entry_price"] if row["entry_price"] is not None else row["yes_ask"]),
@@ -568,6 +558,9 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
             "settled_at": row["settled_at"],
             "exit_price": _row_value(row, "exit_price"),
             "exit_fee_per_contract": _row_value(row, "exit_fee_per_contract"),
+            "outcome_diagnostics_json": _row_value(
+                row, "outcome_diagnostics_json"
+            ),
             "realized_pnl": float(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
         }
         for row in rows
@@ -602,11 +595,17 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
             if "entry_block_reason" in columns
             else "NULL AS entry_block_reason"
         )
+        research_sleeve_expr = (
+            "research_sleeve"
+            if "research_sleeve" in columns
+            else "NULL AS research_sleeve"
+        )
         rows = conn.execute(
             f"""
             SELECT created_at, approved, {signal_approved_expr},
                    {entry_block_expr}, model_probability, market_probability,
-                   reasons_json, COALESCE(risk_profile, 'unknown') AS risk_profile
+                   reasons_json, COALESCE(risk_profile, 'unknown') AS risk_profile,
+                   {research_sleeve_expr}
             FROM decision_snapshots
             WHERE created_at >= ?
             """,
@@ -621,7 +620,7 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
     gaps: list[float] = []
     by_profile: dict[str, dict[str, Any]] = {}
     for row in rows:
-        profile = str(row["risk_profile"])
+        profile = row_published_profile_key(row)
         profile_stats = by_profile.setdefault(
             profile,
             {

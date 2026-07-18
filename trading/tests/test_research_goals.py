@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -102,17 +103,41 @@ def test_malformed_persisted_goal_fails_closed(tmp_path) -> None:
     with store.connect() as conn:
         conn.execute(
             "INSERT INTO research_daily_goals "
-            "(objective_day, account_id, policy_version, created_at, "
+            "(objective_day, account_id, policy_version, policy_fingerprint, created_at, "
             "reference_equity, target_return, target_pnl) "
-            "VALUES ('2026-07-18', ?, ?, ?, 1000, 0.05, 60)",
+            "VALUES ('2026-07-18', ?, ?, ?, ?, 1000, 0.05, 60)",
             (
                 TARGET_POLICY.account_id,
                 TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
                 datetime.now(UTC).isoformat(),
             ),
         )
 
     with pytest.raises(ValueError, match="daily goal is malformed"):
+        store.research_daily_goal_state(objective_day=date(2026, 7, 18))
+
+
+def test_self_consistent_non_policy_goal_fails_closed(tmp_path) -> None:
+    store = PaperStore(
+        tmp_path / "paper.db",
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO research_daily_goals "
+            "(objective_day, account_id, policy_version, policy_fingerprint, created_at, "
+            "reference_equity, target_return, target_pnl) "
+            "VALUES ('2026-07-18', ?, ?, ?, ?, 2000, 0.05, 100)",
+            (
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+
+    with pytest.raises(ValueError, match="active immutable policy"):
         store.research_daily_goal_state(objective_day=date(2026, 7, 18))
 
 
@@ -231,13 +256,13 @@ def test_partial_lot_money_uses_actual_pacific_day_and_counts_one_logical_decisi
     assert pnl_by_day["2026-07-19"] == 0.0
     assert report["logical_decisions"] == 1
     assert report["resolved_lots"] == 2
-    assert report["resolution_days"] == 1
+    assert report["resolution_days"] == 2
     assert report["independent_city_target_days"] == 1
     assert report["lead_split"]["day-ahead"]["logical_decisions"] == 1
     assert report["lead_split"]["day-ahead"]["resolved_lots"] == 2
     assert report["execution"]["partial_exit_positions"] == 1
     assert report["execution"]["total_fees"] > 0
-    assert report["exit_breakdown"]["monitor_exit"]["logical_decisions"] == 1
+    assert report["exit_breakdown"]["take_profit"]["logical_decisions"] == 1
 
 
 def test_daily_goal_summary_reports_day_clustered_statistics_without_a_guarantee() -> None:
@@ -321,7 +346,7 @@ def test_target_only_new_risk_locks_after_50_while_motion_continues(tmp_path) ->
     assert motion_capacity["allowed_spend"] == pytest.approx(0.50)
 
 
-def test_report_marks_current_target_opportunity_set_infeasible(tmp_path) -> None:
+def test_report_does_not_infer_feasibility_from_decision_rows(tmp_path) -> None:
     objective_day = date(2026, 7, 18)
     store = PaperStore(
         tmp_path / "paper.db",
@@ -349,6 +374,143 @@ def test_report_marks_current_target_opportunity_set_infeasible(tmp_path) -> Non
 
     report = store.research_daily_goal_report(through_day=objective_day)
 
-    assert report["available_conservative_expected_profit"] == pytest.approx(2.9)
+    assert report["available_conservative_expected_profit"] is None
     assert report["remaining_pnl"] == 50.0
+    assert report["target_feasible"] is None
+    assert report["feasibility_evidence"] == "unavailable"
+
+
+def test_report_uses_persisted_allocator_feasibility_including_empty_scan(
+    tmp_path,
+) -> None:
+    from sfo_kalshi_quant.config import strategy_config_for_profile
+    from sfo_kalshi_quant.paper import PaperTrader
+    from sfo_kalshi_quant.research_portfolio import allocate_research_plans
+
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        tmp_path / "paper.db",
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    plans = allocate_research_plans([], run_id="empty-opportunity-scan")
+    assert plans.available_conservative_expected_profit == 0.0
+    assert plans.target_feasible_from_current_opportunity_set is False
+
+    trader = PaperTrader(
+        store,
+        strategy_config_for_profile("research"),
+        risk_profile="research",
+        entry_mode="limit",
+    )
+    for _ in range(2):
+        result = trader.execute_research_plans(
+            "2026-07-19",
+            plans,
+            source_decisions=[],
+            objective_day=objective_day.isoformat(),
+            lead_bucket="day-ahead",
+            scan_run_id="empty-opportunity-scan",
+            observed_high_state="complete=0;high=unavailable",
+        )
+        assert result.target_decision_ids == ()
+        assert result.motion_decision_ids == ()
+    report = store.research_daily_goal_report(through_day=objective_day)
+
+    assert report["feasibility_evidence"] == "current_scan"
+    assert report["available_conservative_expected_profit"] == 0.0
     assert report["target_feasible"] is False
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM research_plan_snapshots "
+            "WHERE scan_run_id='empty-opportunity-scan'"
+        ).fetchone()[0] == 1
+
+
+def test_report_exit_breakdown_uses_exact_audited_terminal_categories(tmp_path) -> None:
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        tmp_path / "paper.db",
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    created: list[tuple[int, str, float, str | None, str | None]] = []
+    for index, (status, pnl, closed_at, settled_at) in enumerate(
+        [
+            ("PAPER_CLOSED", 2.0, _pacific_noon(objective_day), None),
+            ("PAPER_CLOSED", -2.0, _pacific_noon(objective_day), None),
+            ("PAPER_CLOSED", 0.0, _pacific_noon(objective_day), None),
+            ("PAPER_SETTLED", 2.0, None, _pacific_noon(objective_day)),
+            ("PAPER_EXPIRED", 0.0, None, None),
+        ]
+    ):
+        decision = replace(
+            _approved_decision(),
+            ticker=f"KXHIGHTPHX-EXIT-{index}-B110.5",
+        )
+        order_id = store.record_paper_order(
+            f"2026-07-{19 + index:02d}",
+            decision,
+            risk_profile="research",
+        )
+        assert order_id is not None
+        created.append((order_id, status, pnl, closed_at, settled_at))
+
+    with store.connect() as conn:
+        for order_id, status, pnl, closed_at, settled_at in created:
+            conn.execute(
+                "UPDATE paper_orders SET account_id=?, research_sleeve='target', "
+                "research_policy_version=?, policy_fingerprint=?, "
+                "objective_day=?, lead_bucket='day-ahead', "
+                "scan_run_id=?, reentry_fingerprint=?, status=?, "
+                "realized_pnl=?, closed_at=?, settled_at=? WHERE id=?",
+                (
+                    TARGET_POLICY.account_id,
+                    TARGET_POLICY.policy_version,
+                    TARGET_POLICY.policy_fingerprint,
+                    objective_day.isoformat(),
+                    f"exit-scan-{order_id}",
+                    f"exit-entry-{order_id}",
+                    status,
+                    pnl,
+                    closed_at,
+                    settled_at,
+                    order_id,
+                ),
+            )
+
+    report = store.research_daily_goal_report(through_day=objective_day)
+
+    assert {
+        reason: bucket["logical_decisions"]
+        for reason, bucket in report["exit_breakdown"].items()
+    } == {
+        "take_profit": 1,
+        "stop_loss": 1,
+        "break_even": 1,
+        "held_to_settlement": 1,
+        "expired_unfilled": 1,
+    }
+
+
+def test_goal_report_bounds_ancient_activation_without_write_amplification(
+    tmp_path,
+) -> None:
+    store = PaperStore(
+        tmp_path / "paper.db",
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    ancient_day = date(2025, 1, 1)
+    through_day = date(2026, 7, 18)
+    store.research_daily_goal_state(objective_day=ancient_day)
+
+    report = store.research_daily_goal_report(through_day=through_day)
+
+    assert report["activation_day"] == ancient_day.isoformat()
+    assert report["window_days"] == 30
+    assert report["window_start"] == "2026-06-19"
+    assert len(report["days"]) == 30
+    with store.connect() as conn:
+        persisted = conn.execute(
+            "SELECT COUNT(*) FROM research_daily_goals WHERE account_id=?",
+            (TARGET_POLICY.account_id,),
+        ).fetchone()[0]
+    assert persisted == 31

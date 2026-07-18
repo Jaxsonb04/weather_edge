@@ -58,6 +58,7 @@ from .research_policy import (
     canonical_research_lead_bucket,
 )
 from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
+from .research_portfolio import ResearchPlans
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
@@ -583,13 +584,14 @@ class PaperStore:
     ) -> float:
         conn.execute(
             "INSERT OR IGNORE INTO research_daily_goals "
-            "(objective_day, account_id, policy_version, created_at, "
+            "(objective_day, account_id, policy_version, policy_fingerprint, created_at, "
             "reference_equity, target_return, target_pnl) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 civil_day.isoformat(),
                 TARGET_POLICY.account_id,
                 TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
                 _now(),
                 TARGET_POLICY.reference_equity,
                 TARGET_POLICY.target_return,
@@ -597,7 +599,7 @@ class PaperStore:
             ),
         )
         row = conn.execute(
-            "SELECT reference_equity, target_return, target_pnl "
+            "SELECT policy_fingerprint, reference_equity, target_return, target_pnl "
             "FROM research_daily_goals WHERE objective_day=? "
             "AND account_id=? AND policy_version=?",
             (
@@ -609,9 +611,10 @@ class PaperStore:
         if row is None:
             raise RuntimeError("research daily goal disappeared after insert")
         try:
-            reference_equity = float(row[0])
-            target_return = float(row[1])
-            target_pnl = float(row[2])
+            policy_fingerprint = str(row[0] or "")
+            reference_equity = float(row[1])
+            target_return = float(row[2])
+            target_pnl = float(row[3])
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("research daily goal is malformed") from exc
         if (
@@ -630,19 +633,47 @@ class PaperStore:
             )
         ):
             raise ValueError("research daily goal is malformed")
+        if (
+            policy_fingerprint != TARGET_POLICY.policy_fingerprint
+            or not math.isclose(
+                reference_equity,
+                TARGET_POLICY.reference_equity,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isclose(
+                target_return,
+                TARGET_POLICY.target_return,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or not math.isclose(
+                target_pnl,
+                TARGET_POLICY.target_pnl,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            raise ValueError(
+                "research daily goal does not match the active immutable policy"
+            )
         return target_pnl
 
     def research_daily_goal_report(
         self,
         *,
         through_day: date | None = None,
-        target_feasible: bool | None = None,
+        window_days: int = 30,
     ) -> dict[str, object]:
-        """Return target-only daily history, backfilling every civil day."""
+        """Return a bounded target-only history plus scalar activation facts."""
 
         last_day = through_day or self._research_objective_day()
         if not isinstance(last_day, date):
             raise ValueError("research report through day must be a date")
+        if isinstance(window_days, bool) or not isinstance(window_days, int):
+            raise ValueError("research report window must be an integer day count")
+        if not 1 <= window_days <= 365:
+            raise ValueError("research report window must be between 1 and 365 days")
         if last_day > self._research_objective_day():
             raise ValueError("research report cannot include future objective days")
         with self.connect() as conn:
@@ -661,8 +692,12 @@ class PaperStore:
             if first_day > last_day:
                 conn.rollback()
                 raise ValueError("research report ends before target activation")
+            window_first_day = max(
+                first_day,
+                last_day - timedelta(days=window_days - 1),
+            )
             frozen_targets: list[tuple[date, float]] = []
-            cursor = first_day
+            cursor = window_first_day
             while cursor <= last_day:
                 frozen_targets.append(
                     (
@@ -689,78 +724,181 @@ class PaperStore:
                 )
                 for objective_day, frozen_target in frozen_targets
             ]
-            available_profit: float | None = None
-            if target_feasible is None and states:
-                target_feasible, available_profit = (
-                    self._research_target_feasibility_on_connection(
-                        conn,
-                        objective_day=states[-1].objective_day,
-                        remaining_pnl=states[-1].remaining_pnl,
-                    )
+            target_feasible, available_profit, feasibility_evidence = (
+                self._research_plan_feasibility_on_connection(
+                    conn,
+                    objective_day=states[-1].objective_day,
                 )
+                if states
+                else (None, None, "unavailable")
+            )
             conn.commit()
-        return summarize_daily_goals(
+        report = summarize_daily_goals(
             states,
             positions=positions,
             target_feasible=target_feasible,
             available_conservative_expected_profit=available_profit,
+            feasibility_evidence=feasibility_evidence,
             policy_version=TARGET_POLICY.policy_version,
         )
+        report.update(
+            {
+                "activation_day": first_day.isoformat(),
+                "total_observed_days_since_activation": (
+                    last_day - first_day
+                ).days
+                + 1,
+                "window_days": window_days,
+                "window_start": window_first_day.isoformat(),
+                "window_end": last_day.isoformat(),
+            }
+        )
+        return report
 
     @staticmethod
-    def _research_target_feasibility_on_connection(
+    def _research_plan_feasibility_on_connection(
         conn: sqlite3.Connection,
         *,
         objective_day: date,
-        remaining_pnl: float,
-    ) -> tuple[bool | None, float | None]:
-        latest = conn.execute(
-            "SELECT scan_run_id FROM decision_snapshots "
-            "WHERE research_sleeve='target' AND objective_day=? "
-            "AND research_policy_version=? AND scan_run_id IS NOT NULL "
+    ) -> tuple[bool | None, float | None, str]:
+        row = conn.execute(
+            "SELECT policy_fingerprint, typeof(target_pnl), target_pnl, "
+            "typeof(realized_today), realized_today, "
+            "typeof(remaining_target), remaining_target, "
+            "typeof(available_conservative_expected_profit), "
+            "available_conservative_expected_profit, target_feasible "
+            "FROM research_plan_snapshots WHERE objective_day=? "
+            "AND account_id=? AND policy_version=? "
             "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (objective_day.isoformat(), TARGET_POLICY.policy_version),
-        ).fetchone()
-        if latest is None:
-            return (True, 0.0) if remaining_pnl <= 1e-9 else (None, None)
-        decision_rows = conn.execute(
-            "SELECT typeof(edge_lcb), edge_lcb, "
-            "typeof(recommended_contracts), recommended_contracts "
-            "FROM decision_snapshots WHERE research_sleeve='target' "
-            "AND objective_day=? AND research_policy_version=? "
-            "AND scan_run_id=?",
             (
                 objective_day.isoformat(),
+                TARGET_POLICY.account_id,
                 TARGET_POLICY.policy_version,
-                str(latest[0]),
             ),
-        ).fetchall()
-        contributions: list[float] = []
-        for edge_type, raw_edge, contracts_type, raw_contracts in decision_rows:
-            if edge_type not in {"integer", "real"} or contracts_type not in {
-                "integer",
-                "real",
-            }:
-                return None, None
-            try:
-                edge_lcb = float(raw_edge)
-                contracts = float(raw_contracts)
-            except (TypeError, ValueError, OverflowError):
-                return None, None
-            if (
-                not math.isfinite(edge_lcb)
-                or not math.isfinite(contracts)
-                or contracts < 0
-            ):
-                return None, None
-            contributions.append(max(0.0, edge_lcb) * contracts)
-        try:
-            available = math.fsum(contributions)
-        except (OverflowError, ValueError):
-            return None, None
-        if not math.isfinite(available):
-            return None, None
-        return available + 1e-9 >= remaining_pnl, available
+        ).fetchone()
+        if row is None:
+            return None, None, "unavailable"
+        numeric_types = {"integer", "real"}
+        if (
+            str(row[0] or "") != TARGET_POLICY.policy_fingerprint
+            or row[1] not in numeric_types
+            or row[3] not in numeric_types
+            or row[5] not in numeric_types
+            or row[7] not in numeric_types
+            or row[9] not in (0, 1)
+        ):
+            return None, None, "unavailable"
+        values = [float(row[index]) for index in (2, 4, 6, 8)]
+        target_pnl, realized_today, remaining_target, available = values
+        if (
+            not all(math.isfinite(value) for value in values)
+            or available < 0
+            or remaining_target < 0
+            or not math.isclose(
+                target_pnl,
+                TARGET_POLICY.target_pnl,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isclose(
+                remaining_target,
+                max(0.0, target_pnl - realized_today),
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or bool(row[9]) != (available + 1e-9 >= remaining_target)
+        ):
+            return None, None, "unavailable"
+        return bool(row[9]), available, "current_scan"
+
+    def record_research_plan_snapshot(
+        self,
+        plans: ResearchPlans,
+        *,
+        objective_day: date | str,
+        scan_run_id: str,
+    ) -> int:
+        """Persist the allocator's canonical feasibility once per scan."""
+
+        if not isinstance(plans, ResearchPlans):
+            raise ValueError("research plan snapshot requires ResearchPlans")
+        civil_day = (
+            objective_day
+            if isinstance(objective_day, date)
+            else date.fromisoformat(str(objective_day))
+        )
+        run_id = str(scan_run_id or "").strip()
+        if not run_id:
+            raise ValueError("research plan snapshot requires a scan run id")
+        if (
+            plans.target.run_id != f"{run_id}-target"
+            or plans.motion.run_id != f"{run_id}-motion"
+        ):
+            raise ValueError("research plan snapshot scan identity mismatch")
+        values = (
+            float(plans.target_pnl),
+            float(plans.realized_today),
+            float(plans.remaining_target),
+            float(plans.available_conservative_expected_profit),
+        )
+        target_pnl, realized_today, remaining_target, available = values
+        feasible = plans.target_feasible_from_current_opportunity_set
+        if (
+            not all(math.isfinite(value) for value in values)
+            or not isinstance(feasible, bool)
+            or available < 0
+            or remaining_target < 0
+            or not math.isclose(
+                target_pnl,
+                TARGET_POLICY.target_pnl,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isclose(
+                remaining_target,
+                max(0.0, target_pnl - realized_today),
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or feasible != (available + 1e-9 >= remaining_target)
+        ):
+            raise ValueError("research plan snapshot is malformed")
+        created_at = _now()
+        expected = (
+            civil_day.isoformat(),
+            run_id,
+            TARGET_POLICY.account_id,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.policy_fingerprint,
+            target_pnl,
+            realized_today,
+            remaining_target,
+            available,
+            int(feasible),
+        )
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._ensure_research_daily_goal_on_connection(conn, civil_day)
+            conn.execute(
+                "INSERT OR IGNORE INTO research_plan_snapshots "
+                "(created_at, objective_day, scan_run_id, account_id, "
+                "policy_version, policy_fingerprint, target_pnl, realized_today, "
+                "remaining_target, available_conservative_expected_profit, "
+                "target_feasible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (created_at, *expected),
+            )
+            row = conn.execute(
+                "SELECT id, objective_day, scan_run_id, account_id, policy_version, "
+                "policy_fingerprint, target_pnl, realized_today, remaining_target, "
+                "available_conservative_expected_profit, target_feasible "
+                "FROM research_plan_snapshots WHERE scan_run_id=?",
+                (run_id,),
+            ).fetchone()
+            if row is None or tuple(row[1:]) != expected:
+                conn.rollback()
+                raise ValueError("research plan snapshot conflicts with persisted scan")
+            conn.commit()
+        return int(row[0])
 
     def research_realized_pnl_for_day(
         self,

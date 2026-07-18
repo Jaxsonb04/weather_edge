@@ -25,12 +25,12 @@ from ..config import (
 )
 from ..db import PaperStore
 from ..forecast import ForecastDataError, SfoForecasterAdapter
+from ..profile_identity import execution_profile_key, row_published_profile_key
 from ..research_shadow import build_research_shadow_report
 from ..settlement_truth import is_pre_resolution_decision as _is_strategy_pre_resolution
 from ..synthetic_blend import build_synthetic_blend_calibration
 from . import FORECAST_LEAD_MODE_LABELS, MIN_CLEAN_WINNER_SAMPLE, PRIMARY_PROFILE
 from .consensus_offline import _market_consensus_payload
-from .paper_card import _row_risk_profile
 from .profiles import (
     _edge_by_market_bucket,
     _probability_market_points,
@@ -254,7 +254,12 @@ def _config_rescore_payload(
         )
         rows_by_profile: dict[str, list[sqlite3.Row]] = {"live": [], "research": []}
         for row in rows:
-            profile = normalize_risk_profile_name(_row_risk_profile(row) or "live")
+            published = row_published_profile_key(row)
+            profile = normalize_risk_profile_name(
+                execution_profile_key(
+                    "live" if published == "unknown" else published
+                )
+            )
             rows_by_profile[profile].append(row)
         by_profile: dict[str, Any] = {}
         for name in ("live", "research"):
@@ -584,8 +589,19 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
         return []
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {
+            str(row[1])
+            for row in conn.execute(
+                "PRAGMA table_info(decision_snapshots)"
+            ).fetchall()
+        }
+        sleeve_expr = (
+            "COALESCE(d.research_sleeve, '')"
+            if "research_sleeve" in columns
+            else "''"
+        )
         rows = conn.execute(
-            """
+            f"""
             WITH recent_targets AS (
                 SELECT target_date
                 FROM decision_snapshots
@@ -597,17 +613,20 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
             latest_by_target AS (
                 SELECT d.target_date,
                        COALESCE(d.risk_profile, 'unknown') AS risk_profile,
+                       {sleeve_expr} AS research_sleeve,
                        MAX(d.created_at) AS created_at
                 FROM decision_snapshots d
                 JOIN recent_targets rt ON rt.target_date = d.target_date
                 WHERE d.market_ticker NOT LIKE '%-PAPER%'
-                GROUP BY d.target_date, COALESCE(d.risk_profile, 'unknown')
+                GROUP BY d.target_date, COALESCE(d.risk_profile, 'unknown'),
+                         {sleeve_expr}
             )
             SELECT d.*
             FROM decision_snapshots d
             JOIN latest_by_target latest
-              ON latest.target_date = d.target_date
+             ON latest.target_date = d.target_date
              AND latest.risk_profile = COALESCE(d.risk_profile, 'unknown')
+             AND latest.research_sleeve = {sleeve_expr}
              AND latest.created_at = d.created_at
             WHERE d.market_ticker NOT LIKE '%-PAPER%'
             ORDER BY d.target_date DESC, d.approved DESC,
@@ -638,7 +657,7 @@ def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
         "market_available": not _is_probability_only_ticker(row["market_ticker"]),
         "label": row["label"],
         "side": row["side"],
-        "risk_profile": _row_risk_profile(row) or "unknown",
+        "risk_profile": row_published_profile_key(row),
         "approved": approved,
         "signal_approved": signal_approved,
         "entry_block_reason": _sqlite_row_value(row, "entry_block_reason"),

@@ -10,6 +10,7 @@ from datetime import date, datetime
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
+from .exit_audit import audited_exit_reason
 from .logical_positions import LogicalPaperPosition
 
 
@@ -59,6 +60,7 @@ def summarize_daily_goals(
     positions: Iterable[LogicalPaperPosition] = (),
     target_feasible: bool | None = None,
     available_conservative_expected_profit: float | None = None,
+    feasibility_evidence: str = "unavailable",
     reference_equity: float = 1000.0,
     policy_version: str = "research-target-v1",
 ) -> dict[str, object]:
@@ -105,10 +107,10 @@ def summarize_daily_goals(
     )
     resolution_days = {
         resolved_day
-        for position in terminal_positions
+        for lot in resolved_lots
         if (
             resolved_day := _pacific_day(
-                position.as_row().get("latest_resolved_at")
+                lot.get("closed_at") or lot.get("settled_at")
             )
         )
         is not None
@@ -123,7 +125,7 @@ def summarize_daily_goals(
     }
     lead_split = _lead_split(terminal_positions)
     execution = _execution_metrics(valid_positions)
-    exit_breakdown = _exit_breakdown(terminal_positions)
+    exit_breakdown = _exit_breakdown(valid_positions)
     current = ordered[-1] if ordered else None
     return {
         "account_id": "paper-research-target-v1",
@@ -165,6 +167,7 @@ def summarize_daily_goals(
         "execution": execution,
         "exit_breakdown": exit_breakdown,
         "target_feasible": target_feasible,
+        "feasibility_evidence": feasibility_evidence,
         "available_conservative_expected_profit": (
             available_conservative_expected_profit
         ),
@@ -385,18 +388,32 @@ def _exit_breakdown(
 ) -> dict[str, dict[str, float | int]]:
     breakdown: dict[str, dict[str, float | int]] = {}
     for position in positions:
-        row = position.as_row()
-        reason = (
-            "held_to_settlement"
-            if row.get("status") == "PAPER_SETTLED"
-            else "monitor_exit"
-        )
-        bucket = breakdown.setdefault(
-            reason,
-            {"logical_decisions": 0, "realized_pnl": 0.0},
-        )
-        bucket["logical_decisions"] = int(bucket["logical_decisions"]) + 1
-        bucket["realized_pnl"] = float(bucket["realized_pnl"]) + float(
-            row.get("realized_pnl") or 0.0
-        )
+        lots = list(position.resolved_lots)
+        root = position.root
+        if not lots and audited_exit_reason(root) == "expired_unfilled":
+            lots = [root]
+        reasons_for_position: set[str] = set()
+        for lot in lots:
+            reason = audited_exit_reason(lot)
+            if reason == "unclassified":
+                continue
+            bucket = breakdown.setdefault(
+                reason,
+                {
+                    "logical_decisions": 0,
+                    "resolved_lots": 0,
+                    "realized_pnl": 0.0,
+                },
+            )
+            bucket["resolved_lots"] = int(bucket["resolved_lots"]) + int(
+                reason != "expired_unfilled"
+            )
+            bucket["realized_pnl"] = float(bucket["realized_pnl"]) + float(
+                lot.get("realized_pnl") or 0.0
+            )
+            reasons_for_position.add(reason)
+        for reason in reasons_for_position:
+            breakdown[reason]["logical_decisions"] = (
+                int(breakdown[reason]["logical_decisions"]) + 1
+            )
     return breakdown

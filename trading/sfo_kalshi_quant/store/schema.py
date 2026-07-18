@@ -385,11 +385,28 @@ CREATE TABLE IF NOT EXISTS research_daily_goals (
     objective_day TEXT NOT NULL,
     account_id TEXT NOT NULL,
     policy_version TEXT NOT NULL,
+    policy_fingerprint TEXT NOT NULL,
     created_at TEXT NOT NULL,
     reference_equity REAL NOT NULL CHECK(reference_equity > 0),
     target_return REAL NOT NULL CHECK(target_return > 0),
     target_pnl REAL NOT NULL CHECK(target_pnl > 0),
     PRIMARY KEY(objective_day, account_id, policy_version)
+);
+
+CREATE TABLE IF NOT EXISTS research_plan_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    objective_day TEXT NOT NULL,
+    scan_run_id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    policy_fingerprint TEXT NOT NULL,
+    target_pnl REAL NOT NULL,
+    realized_today REAL NOT NULL,
+    remaining_target REAL NOT NULL CHECK(remaining_target >= 0),
+    available_conservative_expected_profit REAL NOT NULL
+        CHECK(available_conservative_expected_profit >= 0),
+    target_feasible INTEGER NOT NULL CHECK(target_feasible IN (0, 1))
 );
 """
 
@@ -413,6 +430,10 @@ CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
     ON probability_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
     ON paper_monitor_snapshots (order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_research_plan_snapshots_current
+    ON research_plan_snapshots (
+        objective_day, account_id, policy_version, created_at, id
+    );
 CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_target
     ON research_shadow_orders (target_date, market_ticker, side, created_at);
 CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_link
@@ -528,6 +549,10 @@ RESEARCH_IDENTITY_COLUMNS = {
     "lead_bucket": "TEXT",
     "scan_run_id": "TEXT",
     "reentry_fingerprint": "TEXT",
+}
+
+RESEARCH_DAILY_GOAL_AUDIT_COLUMNS = {
+    "policy_fingerprint": "TEXT",
 }
 
 PAPER_ORDER_AUDIT_COLUMNS = {
@@ -938,6 +963,16 @@ def _init_store_locked(self) -> None:
         }
         _add_missing_columns(
             conn, "decision_snapshots", existing_decision, DECISION_AUDIT_COLUMNS
+        )
+        existing_daily_goals = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(research_daily_goals)").fetchall()
+        }
+        _add_missing_columns(
+            conn,
+            "research_daily_goals",
+            existing_daily_goals,
+            RESEARCH_DAILY_GOAL_AUDIT_COLUMNS,
         )
         existing_context = {
             row[1]

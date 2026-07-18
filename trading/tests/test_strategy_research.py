@@ -37,6 +37,7 @@ from sfo_kalshi_quant.strategy_lab import (
 )
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.paper import PaperTrader
+from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
 
 from support import pre_resolution_event
 
@@ -705,6 +706,131 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         "research_target",
         "research_motion",
     }
+
+
+def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_path):
+    db_path = tmp_path / "paper.db"
+    forecaster_root = tmp_path / "forecaster"
+    _write_lstm_fixture(forecaster_root)
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        db_path,
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    target_decision = replace(
+        _approved_decision(), ticker="KXHIGHTSFO-TARGET-B66.5"
+    )
+    motion_decision = replace(
+        _no_favorite_decision(), ticker="KXHIGHTSFO-MOTION-B71.5"
+    )
+    target_order = store.record_paper_order(
+        "2026-07-19", target_decision, risk_profile="research"
+    )
+    motion_order = store.record_paper_order(
+        "2026-07-20", motion_decision, risk_profile="research"
+    )
+    assert target_order is not None and motion_order is not None
+    target_snapshot, motion_snapshot = store.record_decisions(
+        "2026-07-19",
+        [
+            target_decision,
+            replace(
+                motion_decision,
+                approved=False,
+                signal_approved=True,
+                entry_block_reason="motion audit block",
+                recommended_contracts=0.0,
+                expected_profit=0.0,
+                reasons=["motion audit block"],
+            ),
+        ],
+        risk_profile="research",
+    )
+    with store.connect() as conn:
+        for order_id, account_id, sleeve, policy, fingerprint, pnl in (
+            (
+                target_order,
+                TARGET_POLICY.account_id,
+                "target",
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                2.0,
+            ),
+            (
+                motion_order,
+                MOTION_POLICY.account_id,
+                "motion",
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                -2.0,
+            ),
+        ):
+            conn.execute(
+                "UPDATE paper_orders SET account_id=?, research_sleeve=?, "
+                "research_policy_version=?, policy_fingerprint=?, objective_day=?, "
+                "status='PAPER_CLOSED', "
+                "realized_pnl=?, closed_at=? WHERE id=?",
+                (
+                    account_id,
+                    sleeve,
+                    policy,
+                    fingerprint,
+                    objective_day.isoformat(),
+                    pnl,
+                    datetime(2026, 7, 18, 20, 0, tzinfo=UTC).isoformat(),
+                    order_id,
+                ),
+            )
+        conn.execute(
+            "UPDATE decision_snapshots SET research_sleeve='target', "
+            "research_policy_version=?, policy_fingerprint=?, objective_day=? "
+            "WHERE id=?",
+            (
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                objective_day.isoformat(),
+                target_snapshot,
+            ),
+        )
+        conn.execute(
+            "UPDATE decision_snapshots SET research_sleeve='motion', "
+            "research_policy_version=?, policy_fingerprint=?, objective_day=? "
+            "WHERE id=?",
+            (
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                objective_day.isoformat(),
+                motion_snapshot,
+            ),
+        )
+    store.research_daily_goal_state(objective_day=objective_day)
+
+    payload = build_strategy_research(
+        forecaster_root=forecaster_root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    profiles = {row["risk_profile"]: row for row in payload["profiles"]}
+    assert set(profiles) == {"live", "research-target", "research-motion"}
+    target = profiles["research-target"]
+    motion = profiles["research-motion"]
+    assert target["daily_summary"]["side_performance"]["YES"]["trades"] == 1
+    assert target["daily_summary"]["side_performance"]["NO"]["trades"] == 0
+    assert motion["daily_summary"]["side_performance"]["NO"]["trades"] == 1
+    assert motion["daily_summary"]["side_performance"]["YES"]["trades"] == 0
+    assert target["daily_summary"]["exit_reasons"]["closed_take_profit"] == 1
+    assert motion["daily_summary"]["exit_reasons"]["closed_stop_loss"] == 1
+    assert [
+        row["ticker"] for row in target["signal_quality"]["latest_candidates"]
+    ] == [target_decision.ticker]
+    assert [
+        row["ticker"] for row in motion["signal_quality"]["latest_candidates"]
+    ] == [motion_decision.ticker]
+    assert motion["daily_summary"]["gate_behavior"]["entry_block_reasons"] == [
+        {"reason": "motion audit block", "count": 1}
+    ]
+    assert payload["paper_trading"]["legacy_research"]["available"] is False
 
 
 def test_strategy_research_card_keeps_partially_realized_root_open_and_undecided():

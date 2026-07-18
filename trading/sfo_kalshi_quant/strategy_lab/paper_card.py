@@ -38,6 +38,7 @@ from ..logical_positions import (
     OPEN_STATUSES,
     group_logical_positions,
 )
+from ..profile_identity import row_published_profile_key
 from ..research_policy import TARGET_POLICY
 from ..settlement_day import settlement_today
 from . import DEFAULT_MODEL_VETO_BUFFER, DEFAULT_MODEL_VETO_MAX_LOSS_PCT
@@ -768,19 +769,8 @@ def _profile_summary_row(row: Any) -> dict[str, Any]:
 
 
 def _row_risk_profile(row: sqlite3.Row) -> str | None:
-    try:
-        value = row["risk_profile"]
-    except (IndexError, KeyError):
-        return None
-    profile = str(value) if value else None
-    if profile == "research":
-        try:
-            sleeve = row["research_sleeve"]
-        except (IndexError, KeyError):
-            sleeve = None
-        if sleeve in {"target", "motion"}:
-            return f"research-{sleeve}"
-    return profile
+    profile = row_published_profile_key(row)
+    return None if profile == "unknown" else profile
 
 
 def _latest_monitor_marks(db_path: Path) -> dict[int, dict[str, Any]]:

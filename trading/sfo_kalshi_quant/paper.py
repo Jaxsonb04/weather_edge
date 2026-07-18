@@ -359,6 +359,11 @@ class PaperTrader:
         # reaching either journal path.
         if not isinstance(self.config, type(canonical)):
             raise ValueError("research plans require a strategy configuration")
+        self.store.record_research_plan_snapshot(
+            plans,
+            objective_day=objective_day,
+            scan_run_id=scan_run_id,
+        )
         source_by_key = {
             _decision_key(decision): decision for decision in source_decisions
         }
