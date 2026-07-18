@@ -47,12 +47,23 @@ import argparse
 import json
 import sqlite3
 from collections import defaultdict
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from ._util import _json_object
-from .account import ACCOUNTING_POLICY_VERSION
-from .maker_fills import EXECUTION_MODEL_VERSION, depth_observation_is_contemporaneous
+from .account import ACCOUNTING_POLICY_VERSION, RESEARCH_ACCOUNT_ID
+from .execution import initial_queue_ahead
+from .maker_fills import (
+    EXECUTION_MODEL_VERSION,
+    PublicAggressorTrade,
+    RestingMakerOrder,
+    allocate_maker_fills,
+    apply_volume_claims,
+    depth_observation_is_contemporaneous,
+    normalize_public_trade,
+)
 
 # The taker-entry displayed-ask sizing cap landed 2026-07-10; taker entries
 # before it could exceed displayed liquidity.
@@ -60,6 +71,355 @@ TAKER_SIZING_FIX_DATE = "2026-07-10"
 
 VERIFIED = "VERIFIED"
 UNVERIFIABLE = "UNVERIFIABLE"
+_REPLAY_TOLERANCE = 1e-9
+
+
+def _append_finding(findings: list[str], finding: str) -> None:
+    if finding not in findings:
+        findings.append(finding)
+
+
+def _parse_replay_time(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _close_number(left: object, right: object) -> bool:
+    try:
+        return abs(float(left) - float(right)) <= _REPLAY_TOLERANCE
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalized_tape_trade(row: sqlite3.Row) -> PublicAggressorTrade | None:
+    raw = _json_object(row["raw_json"])
+    payload: dict[str, object] = {
+        "trade_id": str(row["trade_id"] or ""),
+        "created_time": row["created_time"],
+        "count": row["count"],
+        "yes_price": row["yes_price"],
+        "is_block_trade": bool(row["is_block_trade"] or 0),
+        "taker_book_side": raw.get("taker_book_side")
+        or row["taker_book_side"],
+        "taker_outcome_side": raw.get("taker_outcome_side")
+        or raw.get("taker_side"),
+    }
+    trade = normalize_public_trade(payload)
+    if trade is None:
+        return None
+    persisted_maker_side = str(row["maker_side"] or "").upper()
+    if persisted_maker_side and persisted_maker_side != trade.maker_side:
+        return None
+    return trade
+
+
+def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
+    placed_at = _parse_replay_time(row["created_at"])
+    side = str(row["side"] or "").upper()
+    limit_value = row["limit_price"]
+    if limit_value is None:
+        limit_value = row["entry_price"]
+    requested = row["requested_contracts"]
+    entry_bid = row["entry_bid"]
+    entry_bid_size = row["entry_bid_size"]
+    try:
+        limit_price = float(limit_value)
+        quantity = float(requested)
+        visible_bid = float(entry_bid) if entry_bid is not None else None
+    except (TypeError, ValueError):
+        return None
+    if (
+        placed_at is None
+        or side not in {"YES", "NO"}
+        or quantity <= 0
+        or not 0 <= limit_price <= 1
+    ):
+        return None
+    # At or below the observed bid, displayed size is the immutable initial
+    # queue. An improving bid has provable zero queue even if depth is absent.
+    if entry_bid_size is None and (
+        visible_bid is None or round(limit_price, 6) <= round(visible_bid, 6)
+    ):
+        return None
+    try:
+        queue_ahead = initial_queue_ahead(
+            limit_price,
+            visible_bid,
+            float(entry_bid_size) if entry_bid_size is not None else None,
+        )
+    except (TypeError, ValueError):
+        return None
+    queue_price = visible_bid if visible_bid is not None else limit_price
+    return RestingMakerOrder(
+        order_id=int(row["id"]),
+        side=side,  # type: ignore[arg-type]
+        limit_price=Decimal(str(round(limit_price, 6))),
+        quantity=Decimal(str(quantity)),
+        queue_ahead=Decimal(str(queue_ahead)),
+        placed_at=placed_at,
+        queue_price=Decimal(str(round(queue_price, 6))),
+    )
+
+
+def _maker_replay_scope(row: sqlite3.Row, evidence: dict[str, Any]) -> bool:
+    if row["parent_order_id"]:
+        return False
+    if str(row["entry_mode"] or "market") != "limit":
+        return False
+    if str(row["fill_model"] or "") == "immediate_visible_quote":
+        return False
+    return (
+        str(row["execution_model_version"] or "") == EXECUTION_MODEL_VERSION
+        or evidence.get("model") == "maker_allocator_price_time_v4"
+    )
+
+
+def _expected_consumptions(
+    trades: list[PublicAggressorTrade],
+    orders: list[RestingMakerOrder],
+) -> dict[int, dict[str, dict[str, float]]]:
+    return {
+        order_id: allocation.consumption_by_trade()
+        for order_id, allocation in allocate_maker_fills(trades, orders).items()
+    }
+
+
+def _consumption_mapping_matches(
+    actual: object,
+    expected: dict[str, dict[str, float]],
+) -> bool:
+    if not isinstance(actual, dict) or set(map(str, actual)) != set(expected):
+        return False
+    for trade_id, amounts in expected.items():
+        item = actual.get(trade_id)
+        if not isinstance(item, dict) or set(item) != {
+            "queue_quantity",
+            "fill_quantity",
+            "total_quantity",
+        }:
+            return False
+        if any(
+            not _close_number(item.get(key), amounts[key])
+            for key in ("queue_quantity", "fill_quantity", "total_quantity")
+        ):
+            return False
+    return True
+
+
+def _exec_v4_replay_findings(
+    orders: list[sqlite3.Row],
+    allocation_rows: list[sqlite3.Row],
+    tape_rows: list[sqlite3.Row],
+    maker_claim_rows: list[sqlite3.Row],
+) -> dict[int, list[str]]:
+    """Reproduce v4 allocation evidence through the production allocator."""
+
+    evidences = {
+        int(row["id"]): _json_object(row["fill_evidence_json"]) for row in orders
+    }
+    candidates = {
+        int(row["id"]): row
+        for row in orders
+        if evidences[int(row["id"])].get("model")
+        == "maker_allocator_price_time_v4"
+    }
+    findings: dict[int, list[str]] = {order_id: [] for order_id in candidates}
+    allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    for allocation in allocation_rows:
+        allocations_by_order[int(allocation["order_id"])].append(allocation)
+
+    for order_id, row in candidates.items():
+        evidence = evidences[order_id]
+        if str(row["execution_model_version"] or "") != EXECUTION_MODEL_VERSION:
+            _append_finding(findings[order_id], "EXEC_V4_ORDER_VERSION_MISMATCH")
+        if str(evidence.get("execution_model_version") or "") != EXECUTION_MODEL_VERSION:
+            _append_finding(findings[order_id], "EXEC_V4_EVIDENCE_VERSION_MISMATCH")
+        seen_trade_ids: set[str] = set()
+        for allocation in allocations_by_order.get(order_id, []):
+            trade_id = str(allocation["trade_id"])
+            if trade_id in seen_trade_ids:
+                _append_finding(findings[order_id], "EXEC_V4_ALLOCATION_DUPLICATE")
+            seen_trade_ids.add(trade_id)
+            if str(allocation["execution_model_version"] or "") != EXECUTION_MODEL_VERSION:
+                _append_finding(
+                    findings[order_id], "EXEC_V4_ALLOCATION_VERSION_MISMATCH"
+                )
+
+    scope_rows = [
+        row
+        for row in orders
+        if _maker_replay_scope(row, evidences[int(row["id"])])
+    ]
+    scope_by_key: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
+    for row in scope_rows:
+        isolation = (
+            f"research:{int(row['id'])}"
+            if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID
+            else "capital"
+        )
+        scope_by_key[(str(row["market_ticker"]), isolation)].append(row)
+
+    tape_by_ticker: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for tape_row in tape_rows:
+        tape_by_ticker[str(tape_row["ticker"])].append(tape_row)
+
+    all_scope_ids = {int(row["id"]) for row in scope_rows}
+    for (ticker, isolation), rows in scope_by_key.items():
+        candidate_ids = {int(row["id"]) for row in rows} & set(candidates)
+        replay_orders_by_id = {
+            int(row["id"]): _replay_order(row) for row in rows
+        }
+        if any(order is None for order in replay_orders_by_id.values()):
+            for order_id in candidate_ids:
+                _append_finding(findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE")
+            continue
+
+        normalized_trades: list[PublicAggressorTrade] = []
+        tape_invalid = False
+        for tape_row in tape_by_ticker.get(ticker, []):
+            if int(tape_row["is_block_trade"] or 0):
+                continue
+            trade = _normalized_tape_trade(tape_row)
+            if trade is None:
+                tape_invalid = True
+                continue
+            normalized_trades.append(trade)
+        if tape_invalid or not normalized_trades:
+            for order_id in candidate_ids:
+                _append_finding(findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE")
+            if tape_invalid:
+                continue
+
+        if isolation == "capital":
+            external_claims: dict[str, float] = defaultdict(float)
+            for claim in maker_claim_rows:
+                if (
+                    str(claim["market_ticker"]) == ticker
+                    and int(claim["order_id"]) not in all_scope_ids
+                ):
+                    external_claims[str(claim["trade_id"])] += float(
+                        claim["quantity"] or 0.0
+                    )
+            for allocation in allocation_rows:
+                if (
+                    str(allocation["market_ticker"]) == ticker
+                    and not int(allocation["counterfactual"] or 0)
+                    and int(allocation["order_id"]) not in all_scope_ids
+                ):
+                    external_claims[str(allocation["trade_id"])] += float(
+                        allocation["queue_quantity"] or 0.0
+                    ) + float(allocation["fill_quantity"] or 0.0)
+            normalized_trades = apply_volume_claims(
+                normalized_trades, dict(external_claims)
+            )
+
+        expected_by_order = _expected_consumptions(
+            normalized_trades,
+            [
+                order
+                for order in replay_orders_by_id.values()
+                if order is not None
+            ],
+        )
+        trade_by_id = {trade.trade_id: trade for trade in normalized_trades}
+        for order_id in candidate_ids:
+            row = candidates[order_id]
+            evidence = evidences[order_id]
+            expected = expected_by_order.get(order_id, {})
+            actual_rows = allocations_by_order.get(order_id, [])
+            actual_by_trade: dict[str, sqlite3.Row] = {}
+            for allocation in actual_rows:
+                actual_by_trade.setdefault(str(allocation["trade_id"]), allocation)
+            missing = set(expected) - set(actual_by_trade)
+            if missing or (not actual_rows and float(row["filled_contracts"] or 0) > 0):
+                _append_finding(findings[order_id], "EXEC_V4_ALLOCATION_MISSING")
+            if set(actual_by_trade) - set(expected):
+                _append_finding(
+                    findings[order_id], "EXEC_V4_ALLOCATION_REPLAY_MISMATCH"
+                )
+            expected_counterfactual = isolation != "capital"
+            for trade_id in set(expected) & set(actual_by_trade):
+                allocation = actual_by_trade[trade_id]
+                trade = trade_by_id.get(trade_id)
+                amounts = expected[trade_id]
+                allocation_evidence = _json_object(allocation["evidence_json"])
+                if (
+                    trade is None
+                    or str(allocation["market_ticker"]) != ticker
+                    or _parse_replay_time(allocation["trade_created_at"])
+                    != trade.created_at
+                    or str(allocation["maker_side"] or "").upper()
+                    != trade.maker_side
+                    or not _close_number(
+                        allocation["side_price"],
+                        trade.side_price(str(row["side"] or "YES")),
+                    )
+                    or not _close_number(
+                        allocation["queue_quantity"], amounts["queue_quantity"]
+                    )
+                    or not _close_number(
+                        allocation["fill_quantity"], amounts["fill_quantity"]
+                    )
+                    or bool(allocation["counterfactual"])
+                    != expected_counterfactual
+                    or not _consumption_mapping_matches(
+                        {trade_id: allocation_evidence}, {trade_id: amounts}
+                    )
+                ):
+                    _append_finding(
+                        findings[order_id], "EXEC_V4_ALLOCATION_REPLAY_MISMATCH"
+                    )
+
+            expected_fills = {
+                trade_id: amounts["fill_quantity"]
+                for trade_id, amounts in expected.items()
+                if amounts["fill_quantity"] > _REPLAY_TOLERANCE
+            }
+            actual_fills = evidence.get("allocations")
+            fills_match = isinstance(actual_fills, dict) and set(
+                map(str, actual_fills)
+            ) == set(expected_fills) and all(
+                _close_number(actual_fills.get(trade_id), quantity)
+                for trade_id, quantity in expected_fills.items()
+            )
+            expected_fill_total = sum(expected_fills.values())
+            expected_queue_total = sum(
+                amounts["queue_quantity"] for amounts in expected.values()
+            )
+            expected_trade_ids = sorted(expected)
+            replay_order = replay_orders_by_id[order_id]
+            assert replay_order is not None
+            if (
+                not _consumption_mapping_matches(evidence.get("consumptions"), expected)
+                or not fills_match
+                or evidence.get("trade_ids") != expected_trade_ids
+                or not _close_number(
+                    evidence.get("requested_quantity"), row["requested_contracts"]
+                )
+                or not _close_number(
+                    evidence.get("filled_quantity"), expected_fill_total
+                )
+                or not _close_number(
+                    evidence.get("remaining_quantity"),
+                    float(row["requested_contracts"] or 0) - expected_fill_total,
+                )
+                or not _close_number(
+                    evidence.get("queue_remaining"),
+                    float(replay_order.queue_ahead) - expected_queue_total,
+                )
+                or bool(evidence.get("counterfactual")) != expected_counterfactual
+                or bool(evidence.get("research_shadow")) != expected_counterfactual
+            ):
+                _append_finding(
+                    findings[order_id], "EXEC_V4_EVIDENCE_REPLAY_MISMATCH"
+                )
+
+    return findings
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
@@ -162,6 +522,15 @@ def restate(db_path: Path) -> dict[str, Any]:
             if has_allocator_evidence
             else []
         )
+        has_maker_claims = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='maker_volume_claims'"
+        ).fetchone() is not None
+        maker_claim_rows = (
+            conn.execute("SELECT * FROM maker_volume_claims").fetchall()
+            if has_maker_claims
+            else []
+        )
         has_tape = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='dataset_kalshi_trades'"
@@ -245,6 +614,14 @@ def restate(db_path: Path) -> dict[str, Any]:
                 findings.append("EXEC_V4_VOLUME_OVERCLAIMED")
         current_findings_by_order[order_id] = list(dict.fromkeys(findings))
 
+    replay_findings = _exec_v4_replay_findings(
+        orders, allocation_rows, tape_rows, maker_claim_rows
+    )
+    for order_id, findings in replay_findings.items():
+        combined = current_findings_by_order.setdefault(order_id, [])
+        for finding in findings:
+            _append_finding(combined, finding)
+
     # A public trade id credited by more than one capital-consuming order's
     # evidence is the double-credit signature (production 226/227, 261/262).
     trade_id_owners: dict[str, set[int]] = defaultdict(set)
@@ -284,10 +661,17 @@ def restate(db_path: Path) -> dict[str, Any]:
             duplicate_trade_ids,
             current_findings_by_order.get(entry_evidence_order_id),
         )
+        if (
+            evidence.get("model") == "maker_allocator_price_time_v4"
+            and str(row["execution_model_version"] or "")
+            != EXECUTION_MODEL_VERSION
+        ):
+            _append_finding(findings, "EXEC_V4_ORDER_VERSION_MISMATCH")
         findings += _exit_findings(row, outcome)
         settlement_check = settlement_checks.get(order_id)
         if settlement_check == "MISMATCH":
             findings.append("SETTLEMENT_MISMATCH")
+        findings = list(dict.fromkeys(findings))
         verification = UNVERIFIABLE if findings else VERIFIED
         realized = float(row["realized_pnl"] or 0.0)
         profile = str(row["risk_profile"] or "live")

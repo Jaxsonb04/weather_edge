@@ -519,9 +519,10 @@ def replay_from_database(
 
     result = asdict(run_replay(events, initial_capital=initial_capital))
     try:
+        restated_orders = restate(Path(db_path)).get("orders", [])
         verified_order_ids = {
             int(row["order_id"])
-            for row in restate(Path(db_path)).get("orders", [])
+            for row in restated_orders
             if row.get("verification") == VERIFIED
         }
     except (OSError, sqlite3.Error, TypeError, ValueError):
@@ -536,8 +537,10 @@ def replay_from_database(
         reasons.add("no persisted public trade events for maker fill validation")
     # Promotion-clock reset at the semantics boundary: resolved trading days
     # count only when every order of that day was placed under the corrected
-    # execution/accounting semantics.
+    # execution/accounting semantics and its execution evidence restates as
+    # verified under those semantics.
     resolved_days: dict[str, bool] = {}
+    unverified_live_decisions: set[int] = set()
     for group in group_logical_positions(all_orders):
         root = group.root
         profile_class = _readiness_root_profile_class(root)
@@ -554,6 +557,16 @@ def replay_from_database(
             or root["realized_pnl"] is None
         ):
             continue
+        execution_verified = bool(group.resolved_lots) and all(
+            int(row["id"]) in verified_order_ids for row in group.resolved_lots
+        )
+        if (
+            profile_class == "live"
+            and semantics_boundary
+            and str(root["created_at"] or "") >= semantics_boundary
+            and not execution_verified
+        ):
+            unverified_live_decisions.add(group.logical_order_id)
         day = str(root["target_date"])
         qualified = (
             profile_class == "live"
@@ -562,9 +575,15 @@ def replay_from_database(
             and _readiness_group_has_consistent_scope(
                 group, semantics_boundary
             )
+            and execution_verified
         )
         resolved_days[day] = resolved_days.get(day, True) and qualified
     post_boundary_days = sum(1 for qualified in resolved_days.values() if qualified)
+    if unverified_live_decisions:
+        reasons.add(
+            f"{len(unverified_live_decisions)} resolved live decision(s) have "
+            "unverified execution evidence"
+        )
     if post_boundary_days < 30:
         reasons.add(
             f"only {post_boundary_days} independent trading days under "

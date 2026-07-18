@@ -957,7 +957,17 @@ def test_readiness_rejects_group_with_scope_mismatched_child(
             for row in restate(db_path)["orders"]
             if row["verification"] == "VERIFIED"
         }
-        assert {order_id, child["id"]} <= verified
+        assert order_id in verified
+        if field == "execution_model_version":
+            assert child["id"] not in verified
+            child_result = next(
+                row
+                for row in restate(db_path)["orders"]
+                if row["order_id"] == child["id"]
+            )
+            assert "EXEC_V4_ORDER_VERSION_MISMATCH" in child_result["findings"]
+        else:
+            assert child["id"] in verified
 
         result = replay_from_database(
             db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
@@ -1075,16 +1085,22 @@ def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
 
 
 @pytest.mark.parametrize(
-    ("child_version", "expected_source_orders", "expected_post_boundary_days"),
+    (
+        "child_version",
+        "expected_source_orders",
+        "expected_post_boundary_days",
+        "child_verified",
+    ),
     [
-        (EXECUTION_MODEL_VERSION, 3, 1),
-        ("exec-v2-2026-07-13", 2, 0),
+        (EXECUTION_MODEL_VERSION, 3, 1, True),
+        ("exec-v2-2026-07-13", 2, 0, False),
     ],
 )
 def test_readiness_research_group_is_neutral_only_with_consistent_scope(
     child_version: str,
     expected_source_orders: int,
     expected_post_boundary_days: int,
+    child_verified: bool,
 ) -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
@@ -1137,12 +1153,21 @@ def test_readiness_research_group_is_neutral_only_with_consistent_scope(
                 "UPDATE paper_orders SET execution_model_version=? WHERE id=?",
                 (child_version, child["id"]),
             )
-        verified = {
-            row["order_id"]
-            for row in restate(db_path)["orders"]
+        restated = {
+            row["order_id"]: row for row in restate(db_path)["orders"]
+        }
+        assert {live_id, research_id} <= {
+            order_id
+            for order_id, row in restated.items()
             if row["verification"] == "VERIFIED"
         }
-        assert {live_id, research_id, child["id"]} <= verified
+        assert (restated[child["id"]]["verification"] == "VERIFIED") is (
+            child_verified
+        )
+        if not child_verified:
+            assert "EXEC_V4_ORDER_VERSION_MISMATCH" in restated[child["id"]][
+                "findings"
+            ]
 
         result = replay_from_database(
             db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
