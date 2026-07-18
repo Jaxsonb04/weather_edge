@@ -303,21 +303,29 @@ class PaperStore:
     def _expire_pre_current_execution_orders(
         self, conn: sqlite3.Connection
     ) -> None:
-        """Cancel resting quotes from older execution semantics."""
+        """Freeze unfilled remainders from older execution semantics."""
 
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM paper_orders WHERE status='PAPER_LIMIT_RESTING' "
+            "SELECT * FROM paper_orders WHERE status IN "
+            "('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
             "AND COALESCE(execution_model_version,'legacy-pre-exec-v3') != ?",
             (EXECUTION_MODEL_VERSION,),
         ).fetchall()
         cancelled_at = _now()
         for row in rows:
+            previous_status = str(row["status"])
+            next_status = (
+                "PAPER_PARTIAL_EXPIRED"
+                if previous_status == "PAPER_PARTIALLY_FILLED"
+                else "PAPER_EXPIRED"
+            )
             conn.execute(
-                "UPDATE paper_orders SET status='PAPER_EXPIRED', cancelled_at=?, "
+                "UPDATE paper_orders SET status=?, cancelled_at=?, "
                 "remaining_contracts=0, queue_remaining=0, reserved_cost=0, "
-                "outcome_diagnostics_json=? WHERE id=? AND status='PAPER_LIMIT_RESTING'",
+                "outcome_diagnostics_json=? WHERE id=? AND status=?",
                 (
+                    next_status,
                     cancelled_at,
                     json.dumps(
                         {
@@ -328,11 +336,14 @@ class PaperStore:
                             "previous_execution_model_version": row[
                                 "execution_model_version"
                             ],
-                            "execution_model_version": EXECUTION_MODEL_VERSION,
+                            "cutover_execution_model_version": (
+                                EXECUTION_MODEL_VERSION
+                            ),
                         },
                         sort_keys=True,
                     ),
                     int(row["id"]),
+                    previous_status,
                 ),
             )
             if row["account_id"]:
@@ -345,7 +356,15 @@ class PaperStore:
                     idempotency_key=(
                         f"order:{row['id']}:{EXECUTION_MODEL_VERSION}:cutover-release"
                     ),
-                    details={"execution_model_version": EXECUTION_MODEL_VERSION},
+                    details={
+                        "cutover_execution_model_version": EXECUTION_MODEL_VERSION,
+                        "previous_execution_model_version": row[
+                            "execution_model_version"
+                        ],
+                        "unfilled_quantity_cancelled": float(
+                            row["remaining_contracts"] or 0.0
+                        ),
+                    },
                 )
 
     @staticmethod

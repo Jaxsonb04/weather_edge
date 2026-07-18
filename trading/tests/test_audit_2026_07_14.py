@@ -390,6 +390,115 @@ def test_exec_v4_cutover_expires_exec_v3_resting_orders_without_rewriting() -> N
         assert store.shared_account_state()["reservations"] == 0.0
 
 
+def test_exec_v4_cutover_freezes_exec_v3_partial_remainder_once() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(side="NO", limit_price=0.72, contracts=10.0),
+            created_at=T0,
+        )
+        first_trade = _trade(
+            "T-V3-PARTIAL",
+            yes_price=0.28,
+            quantity=4.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=1),
+        )
+        store.apply_maker_trade_batch(
+            "KXHIGHTSEA-26JUL13-B82.5", [first_trade]
+        )
+        partial = store.paper_order(order_id)
+        assert partial["status"] == "PAPER_PARTIALLY_FILLED"
+        assert partial["filled_contracts"] == 4.0
+        assert partial["remaining_contracts"] == 6.0
+        reserved_remainder = float(partial["reserved_cost"])
+        historical_evidence = json.loads(partial["fill_evidence_json"])
+        historical_evidence["model"] = "maker_allocator_price_time_v3"
+        historical_evidence["execution_model_version"] = "exec-v3-2026-07-14"
+        historical_evidence_json = json.dumps(historical_evidence, sort_keys=True)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=?, "
+                "fill_evidence_json=? WHERE id=?",
+                (
+                    "exec-v3-2026-07-14",
+                    historical_evidence_json,
+                    order_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_maker_allocations SET execution_model_version=? "
+                "WHERE order_id=?",
+                ("exec-v3-2026-07-14", order_id),
+            )
+
+        PaperStore(db_path)
+
+        frozen = store.paper_order(order_id)
+        assert frozen["status"] == "PAPER_PARTIAL_EXPIRED"
+        assert frozen["contracts"] == 4.0
+        assert frozen["filled_contracts"] == 4.0
+        assert frozen["remaining_contracts"] == 0.0
+        assert frozen["queue_remaining"] == 0.0
+        assert frozen["reserved_cost"] == 0.0
+        assert frozen["execution_model_version"] == "exec-v3-2026-07-14"
+        assert frozen["fill_evidence_json"] == historical_evidence_json
+        cutover = json.loads(frozen["outcome_diagnostics_json"])
+        assert cutover["previous_execution_model_version"] == "exec-v3-2026-07-14"
+        assert cutover["cutover_execution_model_version"] == EXECUTION_MODEL_VERSION
+        assert "execution_model_version" not in cutover
+        release_key = (
+            f"order:{order_id}:{EXECUTION_MODEL_VERSION}:cutover-release"
+        )
+        with store.connect() as conn:
+            releases = conn.execute(
+                "SELECT amount FROM paper_account_ledger "
+                "WHERE order_id=? AND event_type='RESERVATION_RELEASE' "
+                "AND idempotency_key=?",
+                (order_id, release_key),
+            ).fetchall()
+        assert [amount for (amount,) in releases] == [reserved_remainder]
+        assert store.shared_account_state()["reservations"] == 0.0
+
+        PaperStore(db_path)
+        with store.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM paper_account_ledger "
+                "WHERE idempotency_key=?",
+                (release_key,),
+            ).fetchone()[0] == 1
+
+        later_trade = _trade(
+            "T-V4-MUST-NOT-FILL-V3",
+            yes_price=0.28,
+            quantity=6.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=2),
+        )
+        assert _fill_resting_orders_against_live_book(
+            store,
+            _TradesClient([later_trade]),
+            Color.from_no_color(True),
+        ) == 0
+        unchanged = store.paper_order(order_id)
+        assert unchanged["status"] == "PAPER_PARTIAL_EXPIRED"
+        assert unchanged["contracts"] == 4.0
+        assert unchanged["filled_contracts"] == 4.0
+        assert unchanged["execution_model_version"] == "exec-v3-2026-07-14"
+        assert unchanged["fill_evidence_json"] == historical_evidence_json
+        assert {row["id"] for row in store.open_paper_orders()} == {order_id}
+
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        settled = store.paper_order(order_id)
+        assert settled["status"] == "PAPER_SETTLED"
+        assert settled["contracts"] == 4.0
+        assert settled["execution_model_version"] == "exec-v3-2026-07-14"
+        assert settled["fill_evidence_json"] == historical_evidence_json
+
+
 def test_exec_v3_journals_raw_trade_before_using_it_as_fill_evidence() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
