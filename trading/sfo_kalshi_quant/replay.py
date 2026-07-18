@@ -377,6 +377,26 @@ def replay_from_database(
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+    try:
+        restated_orders = restate(Path(db_path)).get("orders", [])
+        verified_order_ids = {
+            int(row["order_id"])
+            for row in restated_orders
+            if row.get("verification") == VERIFIED
+        }
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        verified_order_ids = set()
+    # Maker-v4 events consume only evidence that survived immutable
+    # restatement. Legacy/taker rows retain their historical replay behavior;
+    # their independent verification gates are applied to readiness below.
+    event_orders = [
+        row
+        for row in event_orders
+        if _json_object(_row_value(row, "fill_evidence_json")).get("model")
+        != "maker_allocator_price_time_v4"
+        or int(row["id"]) in verified_order_ids
+    ]
+
     truth = normalize_settlement_truth(settlements)
     events: list[ReplayEvent] = []
     legacy_orders = 0
@@ -470,7 +490,11 @@ def replay_from_database(
 
     for index, row in enumerate(trades):
         occurred = _parse_time(row["created_time"])
-        if occurred is None or int(row["is_block_trade"] or 0):
+        try:
+            is_block_trade = int(row["is_block_trade"] or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if occurred is None or is_block_trade not in {0, 1} or is_block_trade:
             continue
         raw = _json_object(row["raw_json"])
         normalized = normalize_public_trade(
@@ -518,15 +542,6 @@ def replay_from_database(
         )
 
     result = asdict(run_replay(events, initial_capital=initial_capital))
-    try:
-        restated_orders = restate(Path(db_path)).get("orders", [])
-        verified_order_ids = {
-            int(row["order_id"])
-            for row in restated_orders
-            if row.get("verification") == VERIFIED
-        }
-    except (OSError, sqlite3.Error, TypeError, ValueError):
-        verified_order_ids = set()
     eligible_root_ids = _eligible_readiness_root_ids(
         all_orders, semantics_boundary
     )
@@ -563,7 +578,10 @@ def replay_from_database(
         if (
             profile_class == "live"
             and semantics_boundary
-            and str(root["created_at"] or "") >= semantics_boundary
+            and (
+                _parse_time(root["created_at"]) is None
+                or str(root["created_at"] or "") >= semantics_boundary
+            )
             and not execution_verified
         ):
             unverified_live_decisions.add(group.logical_order_id)

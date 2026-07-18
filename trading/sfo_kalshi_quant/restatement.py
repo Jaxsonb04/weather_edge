@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -90,26 +91,125 @@ def _parse_replay_time(value: object) -> datetime | None:
 
 
 def _close_number(left: object, right: object) -> bool:
-    try:
-        return abs(float(left) - float(right)) <= _REPLAY_TOLERANCE
-    except (TypeError, ValueError):
+    parsed_left = _finite_number(left)
+    parsed_right = _finite_number(right)
+    if parsed_left is None or parsed_right is None:
         return False
+    return abs(parsed_left - parsed_right) <= _REPLAY_TOLERANCE
+
+
+def _finite_number(
+    value: object,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    if minimum is not None and parsed < minimum:
+        return None
+    if maximum is not None and parsed > maximum:
+        return None
+    return parsed
+
+
+def _positive_row_id(value: object) -> int | None:
+    parsed = _finite_number(value, minimum=1)
+    if parsed is None or not parsed.is_integer():
+        return None
+    return int(parsed)
+
+
+def _binary_flag(value: object) -> bool | None:
+    parsed = _finite_number(value, minimum=0, maximum=1)
+    if parsed is None or not parsed.is_integer():
+        return None
+    return bool(int(parsed))
+
+
+def _order_replay_input_findings(row: sqlite3.Row) -> list[str]:
+    findings: list[str] = []
+    limit_value = row["limit_price"]
+    if limit_value is None:
+        limit_value = row["entry_price"]
+    if _finite_number(limit_value, minimum=0, maximum=1) is None:
+        findings.append("EXEC_V4_ORDER_LIMIT_PRICE_INVALID")
+    if row["entry_bid"] is not None and _finite_number(
+        row["entry_bid"], minimum=0, maximum=1
+    ) is None:
+        findings.append("EXEC_V4_ORDER_ENTRY_BID_INVALID")
+    if row["entry_bid_size"] is not None and _finite_number(
+        row["entry_bid_size"], minimum=0
+    ) is None:
+        findings.append("EXEC_V4_ORDER_ENTRY_BID_SIZE_INVALID")
+    if _finite_number(row["requested_contracts"], minimum=0) in {None, 0.0}:
+        findings.append("EXEC_V4_ORDER_REQUESTED_QUANTITY_INVALID")
+    if _finite_number(row["filled_contracts"], minimum=0) is None:
+        findings.append("EXEC_V4_ORDER_FILLED_QUANTITY_INVALID")
+    if _parse_replay_time(row["created_at"]) is None:
+        findings.append("EXEC_V4_ORDER_PLACED_AT_INVALID")
+    return findings
+
+
+def _allocation_replay_input_findings(row: sqlite3.Row) -> list[str]:
+    findings: list[str] = []
+    if _positive_row_id(row["order_id"]) is None:
+        findings.append("EXEC_V4_ALLOCATION_ORDER_ID_INVALID")
+    if not str(row["trade_id"] or "").strip():
+        findings.append("EXEC_V4_ALLOCATION_TRADE_ID_INVALID")
+    if _parse_replay_time(row["trade_created_at"]) is None:
+        findings.append("EXEC_V4_ALLOCATION_TRADE_TIME_INVALID")
+    if _finite_number(row["side_price"], minimum=0, maximum=1) is None:
+        findings.append("EXEC_V4_ALLOCATION_SIDE_PRICE_INVALID")
+    if _finite_number(row["queue_quantity"], minimum=0) is None:
+        findings.append("EXEC_V4_ALLOCATION_QUEUE_QUANTITY_INVALID")
+    if _finite_number(row["fill_quantity"], minimum=0) is None:
+        findings.append("EXEC_V4_ALLOCATION_FILL_QUANTITY_INVALID")
+    if _binary_flag(row["counterfactual"]) is None:
+        findings.append("EXEC_V4_ALLOCATION_COUNTERFACTUAL_INVALID")
+    return findings
+
+
+def _tape_replay_input_findings(row: sqlite3.Row) -> list[str]:
+    findings: list[str] = []
+    if not str(row["trade_id"] or "").strip():
+        findings.append("EXEC_V4_TAPE_TRADE_ID_INVALID")
+    if _parse_replay_time(row["created_time"]) is None:
+        findings.append("EXEC_V4_TAPE_TIME_INVALID")
+    if _finite_number(row["count"], minimum=0) in {None, 0.0}:
+        findings.append("EXEC_V4_TAPE_QUANTITY_INVALID")
+    if _finite_number(row["yes_price"], minimum=0, maximum=1) is None:
+        findings.append("EXEC_V4_TAPE_YES_PRICE_INVALID")
+    if _binary_flag(row["is_block_trade"]) is None:
+        findings.append("EXEC_V4_TAPE_BLOCK_FLAG_INVALID")
+    return findings
 
 
 def _normalized_tape_trade(row: sqlite3.Row) -> PublicAggressorTrade | None:
+    if _tape_replay_input_findings(row):
+        return None
     raw = _json_object(row["raw_json"])
     payload: dict[str, object] = {
         "trade_id": str(row["trade_id"] or ""),
         "created_time": row["created_time"],
         "count": row["count"],
         "yes_price": row["yes_price"],
-        "is_block_trade": bool(row["is_block_trade"] or 0),
+        "is_block_trade": _binary_flag(row["is_block_trade"]),
         "taker_book_side": raw.get("taker_book_side")
         or row["taker_book_side"],
         "taker_outcome_side": raw.get("taker_outcome_side")
         or raw.get("taker_side"),
     }
-    trade = normalize_public_trade(payload)
+    try:
+        trade = normalize_public_trade(payload)
+    except (ArithmeticError, TypeError, ValueError):
+        return None
     if trade is None:
         return None
     persisted_maker_side = str(row["maker_side"] or "").upper()
@@ -119,6 +219,8 @@ def _normalized_tape_trade(row: sqlite3.Row) -> PublicAggressorTrade | None:
 
 
 def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
+    if _order_replay_input_findings(row):
+        return None
     placed_at = _parse_replay_time(row["created_at"])
     side = str(row["side"] or "").upper()
     limit_value = row["limit_price"]
@@ -127,17 +229,18 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
     requested = row["requested_contracts"]
     entry_bid = row["entry_bid"]
     entry_bid_size = row["entry_bid_size"]
-    try:
-        limit_price = float(limit_value)
-        quantity = float(requested)
-        visible_bid = float(entry_bid) if entry_bid is not None else None
-    except (TypeError, ValueError):
-        return None
+    limit_price = _finite_number(limit_value, minimum=0, maximum=1)
+    quantity = _finite_number(requested, minimum=0)
+    visible_bid = (
+        _finite_number(entry_bid, minimum=0, maximum=1)
+        if entry_bid is not None
+        else None
+    )
     if (
         placed_at is None
         or side not in {"YES", "NO"}
-        or quantity <= 0
-        or not 0 <= limit_price <= 1
+        or quantity in {None, 0.0}
+        or limit_price is None
     ):
         return None
     # At or below the observed bid, displayed size is the immutable initial
@@ -150,7 +253,7 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
         queue_ahead = initial_queue_ahead(
             limit_price,
             visible_bid,
-            float(entry_bid_size) if entry_bid_size is not None else None,
+            _finite_number(entry_bid_size, minimum=0),
         )
     except (TypeError, ValueError):
         return None
@@ -229,9 +332,42 @@ def _exec_v4_replay_findings(
         == "maker_allocator_price_time_v4"
     }
     findings: dict[int, list[str]] = {order_id: [] for order_id in candidates}
+    candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
+    for order_id, row in candidates.items():
+        candidate_ids_by_ticker[str(row["market_ticker"])].add(order_id)
+
+    def attach_to_ticker(ticker: object, reasons: list[str]) -> None:
+        for candidate_id in candidate_ids_by_ticker.get(str(ticker), set()):
+            for reason in reasons:
+                _append_finding(findings[candidate_id], reason)
+
     allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
     for allocation in allocation_rows:
-        allocations_by_order[int(allocation["order_id"])].append(allocation)
+        allocation_findings = _allocation_replay_input_findings(allocation)
+        allocation_order_id = _positive_row_id(allocation["order_id"])
+        if allocation_findings:
+            if allocation_order_id in candidates:
+                for reason in allocation_findings:
+                    _append_finding(findings[allocation_order_id], reason)
+            else:
+                attach_to_ticker(allocation["market_ticker"], allocation_findings)
+        if allocation_order_id is not None:
+            allocations_by_order[allocation_order_id].append(allocation)
+
+    for tape_row in tape_rows:
+        attach_to_ticker(
+            tape_row["ticker"], _tape_replay_input_findings(tape_row)
+        )
+
+    for claim in maker_claim_rows:
+        claim_findings: list[str] = []
+        if _positive_row_id(claim["order_id"]) is None:
+            claim_findings.append("EXEC_V4_PRIOR_CLAIM_ORDER_ID_INVALID")
+        if not str(claim["trade_id"] or "").strip():
+            claim_findings.append("EXEC_V4_PRIOR_CLAIM_TRADE_ID_INVALID")
+        if _finite_number(claim["quantity"], minimum=0) is None:
+            claim_findings.append("EXEC_V4_PRIOR_CLAIM_QUANTITY_INVALID")
+        attach_to_ticker(claim["market_ticker"], claim_findings)
 
     for order_id, row in candidates.items():
         evidence = evidences[order_id]
@@ -255,6 +391,8 @@ def _exec_v4_replay_findings(
         for row in orders
         if _maker_replay_scope(row, evidences[int(row["id"])])
     ]
+    for row in scope_rows:
+        attach_to_ticker(row["market_ticker"], _order_replay_input_findings(row))
     scope_by_key: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
     for row in scope_rows:
         isolation = (
@@ -271,6 +409,14 @@ def _exec_v4_replay_findings(
     all_scope_ids = {int(row["id"]) for row in scope_rows}
     for (ticker, isolation), rows in scope_by_key.items():
         candidate_ids = {int(row["id"]) for row in rows} & set(candidates)
+        if any(
+            reason.endswith("_INVALID")
+            for order_id in candidate_ids
+            for reason in findings[order_id]
+        ):
+            for order_id in candidate_ids:
+                _append_finding(findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE")
+            continue
         replay_orders_by_id = {
             int(row["id"]): _replay_order(row) for row in rows
         }
@@ -282,7 +428,11 @@ def _exec_v4_replay_findings(
         normalized_trades: list[PublicAggressorTrade] = []
         tape_invalid = False
         for tape_row in tape_by_ticker.get(ticker, []):
-            if int(tape_row["is_block_trade"] or 0):
+            block_flag = _binary_flag(tape_row["is_block_trade"])
+            if block_flag is None:
+                tape_invalid = True
+                continue
+            if block_flag:
                 continue
             trade = _normalized_tape_trade(tape_row)
             if trade is None:
@@ -298,22 +448,35 @@ def _exec_v4_replay_findings(
         if isolation == "capital":
             external_claims: dict[str, float] = defaultdict(float)
             for claim in maker_claim_rows:
+                claim_order_id = _positive_row_id(claim["order_id"])
+                claim_quantity = _finite_number(claim["quantity"], minimum=0)
                 if (
                     str(claim["market_ticker"]) == ticker
-                    and int(claim["order_id"]) not in all_scope_ids
+                    and claim_order_id is not None
+                    and claim_order_id not in all_scope_ids
+                    and claim_quantity is not None
                 ):
-                    external_claims[str(claim["trade_id"])] += float(
-                        claim["quantity"] or 0.0
-                    )
+                    external_claims[str(claim["trade_id"])] += claim_quantity
             for allocation in allocation_rows:
+                allocation_order_id = _positive_row_id(allocation["order_id"])
+                counterfactual = _binary_flag(allocation["counterfactual"])
+                queue_quantity = _finite_number(
+                    allocation["queue_quantity"], minimum=0
+                )
+                fill_quantity = _finite_number(
+                    allocation["fill_quantity"], minimum=0
+                )
                 if (
                     str(allocation["market_ticker"]) == ticker
-                    and not int(allocation["counterfactual"] or 0)
-                    and int(allocation["order_id"]) not in all_scope_ids
+                    and counterfactual is False
+                    and allocation_order_id is not None
+                    and allocation_order_id not in all_scope_ids
+                    and queue_quantity is not None
+                    and fill_quantity is not None
                 ):
-                    external_claims[str(allocation["trade_id"])] += float(
-                        allocation["queue_quantity"] or 0.0
-                    ) + float(allocation["fill_quantity"] or 0.0)
+                    external_claims[str(allocation["trade_id"])] += (
+                        queue_quantity + fill_quantity
+                    )
             normalized_trades = apply_volume_claims(
                 normalized_trades, dict(external_claims)
             )
@@ -336,7 +499,12 @@ def _exec_v4_replay_findings(
             for allocation in actual_rows:
                 actual_by_trade.setdefault(str(allocation["trade_id"]), allocation)
             missing = set(expected) - set(actual_by_trade)
-            if missing or (not actual_rows and float(row["filled_contracts"] or 0) > 0):
+            filled_contracts = _finite_number(row["filled_contracts"], minimum=0)
+            if missing or (
+                not actual_rows
+                and filled_contracts is not None
+                and filled_contracts > 0
+            ):
                 _append_finding(findings[order_id], "EXEC_V4_ALLOCATION_MISSING")
             if set(actual_by_trade) - set(expected):
                 _append_finding(
@@ -365,7 +533,7 @@ def _exec_v4_replay_findings(
                     or not _close_number(
                         allocation["fill_quantity"], amounts["fill_quantity"]
                     )
-                    or bool(allocation["counterfactual"])
+                    or _binary_flag(allocation["counterfactual"])
                     != expected_counterfactual
                     or not _consumption_mapping_matches(
                         {trade_id: allocation_evidence}, {trade_id: amounts}
@@ -544,18 +712,33 @@ def restate(db_path: Path) -> dict[str, Any]:
     allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
     capital_consumption: dict[str, float] = defaultdict(float)
     for allocation_row in allocation_rows:
-        allocations_by_order[int(allocation_row["order_id"])].append(allocation_row)
-        if not int(allocation_row["counterfactual"] or 0):
-            capital_consumption[str(allocation_row["trade_id"])] += float(
-                allocation_row["queue_quantity"] or 0.0
-            ) + float(allocation_row["fill_quantity"] or 0.0)
+        allocation_order_id = _positive_row_id(allocation_row["order_id"])
+        if allocation_order_id is not None:
+            allocations_by_order[allocation_order_id].append(allocation_row)
+        counterfactual = _binary_flag(allocation_row["counterfactual"])
+        queue_quantity = _finite_number(
+            allocation_row["queue_quantity"], minimum=0
+        )
+        fill_quantity = _finite_number(allocation_row["fill_quantity"], minimum=0)
+        if (
+            counterfactual is False
+            and queue_quantity is not None
+            and fill_quantity is not None
+        ):
+            capital_consumption[str(allocation_row["trade_id"])] += (
+                queue_quantity + fill_quantity
+            )
     tape_by_id = {str(tape_row["trade_id"]): tape_row for tape_row in tape_rows}
-    overclaimed_trade_ids = {
-        trade_id
-        for trade_id, consumed in capital_consumption.items()
-        if trade_id not in tape_by_id
-        or consumed > float(tape_by_id[trade_id]["count"] or 0.0) + 1e-9
-    }
+    overclaimed_trade_ids: set[str] = set()
+    for trade_id, consumed in capital_consumption.items():
+        tape = tape_by_id.get(trade_id)
+        tape_quantity = (
+            _finite_number(tape["count"], minimum=0) if tape is not None else None
+        )
+        if tape is None or (
+            tape_quantity is not None and consumed > tape_quantity + 1e-9
+        ):
+            overclaimed_trade_ids.add(trade_id)
 
     current_findings_by_order: dict[int, list[str]] = {}
     for row in orders:
@@ -567,28 +750,40 @@ def restate(db_path: Path) -> dict[str, Any]:
         order_allocations = allocations_by_order.get(order_id, [])
         if not order_allocations:
             findings.append("EXEC_V4_ALLOCATION_MISSING")
-        expected_fill = float(
+        expected_fill = _finite_number(
             row["filled_contracts"]
             if "filled_contracts" in row.keys() and row["filled_contracts"] is not None
-            else row["contracts"]
+            else row["contracts"],
+            minimum=0,
         )
-        recorded_fill = sum(
-            float(item["fill_quantity"] or 0.0) for item in order_allocations
-        )
-        if abs(recorded_fill - expected_fill) > 1e-9:
+        recorded_fills = [
+            _finite_number(item["fill_quantity"], minimum=0)
+            for item in order_allocations
+        ]
+        if (
+            expected_fill is not None
+            and all(item is not None for item in recorded_fills)
+            and abs(
+                sum(item for item in recorded_fills if item is not None)
+                - expected_fill
+            )
+            > 1e-9
+        ):
             findings.append("EXEC_V4_FILL_QUANTITY_MISMATCH")
         side = str(row["side"] or "YES").upper()
-        limit_price = float(
+        limit_price = _finite_number(
             row["limit_price"]
             if row["limit_price"] is not None
-            else row["entry_price"]
+            else row["entry_price"],
+            minimum=0,
+            maximum=1,
         )
-        queue_price = float(
-            row["entry_bid"]
-            if row["entry_bid"] is not None
-            else limit_price
+        queue_price = _finite_number(
+            row["entry_bid"] if row["entry_bid"] is not None else limit_price,
+            minimum=0,
+            maximum=1,
         )
-        created_at = str(row["created_at"] or "")
+        created_at = _parse_replay_time(row["created_at"])
         for allocation_row in order_allocations:
             trade_id = str(allocation_row["trade_id"])
             tape = tape_by_id.get(trade_id)
@@ -597,17 +792,35 @@ def restate(db_path: Path) -> dict[str, Any]:
                 continue
             if str(allocation_row["maker_side"]).upper() != side:
                 findings.append("EXEC_V4_DIRECTION_INVALID")
-            if str(allocation_row["trade_created_at"]) <= created_at:
-                findings.append("EXEC_V4_TRADE_NOT_LATER")
-            side_price = float(allocation_row["side_price"])
-            queue_quantity = float(allocation_row["queue_quantity"] or 0.0)
-            fill_quantity = float(allocation_row["fill_quantity"] or 0.0)
+            trade_created_at = _parse_replay_time(allocation_row["trade_created_at"])
             if (
-                fill_quantity > 0
-                and side_price > limit_price + 1e-9
-            ) or (
-                queue_quantity > 0
-                and side_price > queue_price + 1e-9
+                created_at is not None
+                and trade_created_at is not None
+                and trade_created_at <= created_at
+            ):
+                findings.append("EXEC_V4_TRADE_NOT_LATER")
+            side_price = _finite_number(
+                allocation_row["side_price"], minimum=0, maximum=1
+            )
+            queue_quantity = _finite_number(
+                allocation_row["queue_quantity"], minimum=0
+            )
+            fill_quantity = _finite_number(
+                allocation_row["fill_quantity"], minimum=0
+            )
+            if (
+                limit_price is not None
+                and queue_price is not None
+                and side_price is not None
+                and queue_quantity is not None
+                and fill_quantity is not None
+                and (
+                    (fill_quantity > 0 and side_price > limit_price + 1e-9)
+                    or (
+                        queue_quantity > 0
+                        and side_price > queue_price + 1e-9
+                    )
+                )
             ):
                 findings.append("EXEC_V4_PRICE_INVALID")
             if trade_id in overclaimed_trade_ids:

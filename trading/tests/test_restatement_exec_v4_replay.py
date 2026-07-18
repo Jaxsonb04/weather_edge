@@ -401,3 +401,181 @@ def test_restatement_fails_closed_without_initial_queue_evidence() -> None:
         _assert_unverified_and_readiness_ineligible(
             db_path, order_id, "INSUFFICIENT_REPLAY_EVIDENCE"
         )
+
+
+@pytest.mark.parametrize(
+    ("target", "column", "value", "reason"),
+    [
+        (
+            "order",
+            "limit_price",
+            "bad",
+            "EXEC_V4_ORDER_LIMIT_PRICE_INVALID",
+        ),
+        (
+            "order",
+            "entry_bid",
+            "NaN",
+            "EXEC_V4_ORDER_ENTRY_BID_INVALID",
+        ),
+        (
+            "order",
+            "entry_bid_size",
+            float("inf"),
+            "EXEC_V4_ORDER_ENTRY_BID_SIZE_INVALID",
+        ),
+        (
+            "order",
+            "requested_contracts",
+            None,
+            "EXEC_V4_ORDER_REQUESTED_QUANTITY_INVALID",
+        ),
+        (
+            "order",
+            "filled_contracts",
+            "bad",
+            "EXEC_V4_ORDER_FILLED_QUANTITY_INVALID",
+        ),
+        (
+            "order",
+            "created_at",
+            "",
+            "EXEC_V4_ORDER_PLACED_AT_INVALID",
+        ),
+        (
+            "allocation",
+            "side_price",
+            "bad",
+            "EXEC_V4_ALLOCATION_SIDE_PRICE_INVALID",
+        ),
+        (
+            "allocation",
+            "queue_quantity",
+            -1.0,
+            "EXEC_V4_ALLOCATION_QUEUE_QUANTITY_INVALID",
+        ),
+        (
+            "allocation",
+            "fill_quantity",
+            float("inf"),
+            "EXEC_V4_ALLOCATION_FILL_QUANTITY_INVALID",
+        ),
+        (
+            "allocation",
+            "counterfactual",
+            "bad",
+            "EXEC_V4_ALLOCATION_COUNTERFACTUAL_INVALID",
+        ),
+        (
+            "allocation",
+            "trade_created_at",
+            "",
+            "EXEC_V4_ALLOCATION_TRADE_TIME_INVALID",
+        ),
+        (
+            "allocation",
+            "trade_id",
+            "",
+            "EXEC_V4_ALLOCATION_TRADE_ID_INVALID",
+        ),
+        (
+            "allocation",
+            "order_id",
+            "bad",
+            "EXEC_V4_ALLOCATION_ORDER_ID_INVALID",
+        ),
+        (
+            "tape",
+            "count",
+            "bad",
+            "EXEC_V4_TAPE_QUANTITY_INVALID",
+        ),
+        (
+            "tape",
+            "yes_price",
+            float("inf"),
+            "EXEC_V4_TAPE_YES_PRICE_INVALID",
+        ),
+        (
+            "tape",
+            "created_time",
+            "",
+            "EXEC_V4_TAPE_TIME_INVALID",
+        ),
+        (
+            "tape",
+            "trade_id",
+            "",
+            "EXEC_V4_TAPE_TRADE_ID_INVALID",
+        ),
+        (
+            "tape",
+            "is_block_trade",
+            "bad",
+            "EXEC_V4_TAPE_BLOCK_FLAG_INVALID",
+        ),
+    ],
+)
+def test_restatement_fails_closed_on_malformed_replay_fields(
+    target: str,
+    column: str,
+    value: object,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        trade_id = f"malformed-{target}-{column}"
+        _apply(store, trade_id, no_price=0.72, quantity=5.0)
+        _settle(store)
+        table = {
+            "order": "paper_orders",
+            "allocation": "paper_maker_allocations",
+            "tape": "dataset_kalshi_trades",
+        }[target]
+        predicate = {
+            "order": "id=?",
+            "allocation": "order_id=?",
+            "tape": "trade_id=?",
+        }[target]
+        identity: object = trade_id if target == "tape" else order_id
+        connection = (
+            sqlite3.connect(db_path)
+            if target == "allocation" and column == "order_id"
+            else store.connect()
+        )
+        with connection as conn:
+            conn.execute(
+                f"UPDATE {table} SET {column}=? WHERE {predicate}",
+                (value, identity),
+            )
+
+        _assert_unverified_and_readiness_ineligible(db_path, order_id, reason)
+
+
+def test_restatement_fails_closed_on_malformed_prior_claim_quantity() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        trade_id = "malformed-prior-claim"
+        _apply(store, trade_id, no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            conn.execute(
+                "INSERT INTO maker_volume_claims ("
+                "created_at, market_ticker, trade_id, order_id, quantity"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (
+                    T0.isoformat(),
+                    TICKER,
+                    trade_id,
+                    order_id + 1000,
+                    "bad",
+                ),
+            )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, order_id, "EXEC_V4_PRIOR_CLAIM_QUANTITY_INVALID"
+        )
