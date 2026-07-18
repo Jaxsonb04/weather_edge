@@ -6,6 +6,7 @@ import importlib
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,10 +30,34 @@ def _runtime_store(tmp_path):
     return GoogleRuntimeStore(tmp_path / "google_runtime.db", production=False)
 
 
+def _runtime_hourly_constituents(
+    *,
+    city_slug: str,
+    station_id: str,
+    issued_at: datetime,
+    start_at: datetime,
+    count: int,
+    expires_at: datetime,
+):
+    from google_weather_store import GoogleHourlyRuntime
+
+    return tuple(
+        GoogleHourlyRuntime(
+            city_slug=city_slug,
+            station_id=station_id,
+            issued_at=issued_at,
+            valid_at=start_at + timedelta(hours=offset),
+            temperature_f=70.0 + offset,
+            expires_at=expires_at,
+        )
+        for offset in range(count)
+    )
+
+
 def test_hourly_runtime_expiry_boundary_is_exact_to_the_microsecond(tmp_path):
     store = _runtime_store(tmp_path)
     valid_at = TEST_NOW + timedelta(hours=1)
-    store.write_hourly(
+    assert store.write_hourly(
         city_slug="sfo",
         station_id="KSFO",
         issued_at=TEST_NOW,
@@ -52,6 +77,103 @@ def test_hourly_runtime_expiry_boundary_is_exact_to_the_microsecond(tmp_path):
     assert store.active_hourly(
         city_slug="sfo", station_id="KSFO", now=expiry
     ) == ()
+
+
+def test_hourly_runtime_never_falls_back_to_delayed_older_generation(tmp_path):
+    store = _runtime_store(tmp_path)
+    valid_at = TEST_NOW + timedelta(hours=2)
+    newer_issue = TEST_NOW
+    older_issue = TEST_NOW - timedelta(hours=1)
+    assert store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=newer_issue,
+        valid_at=valid_at,
+        temperature_f=73.0,
+        stored_at=TEST_NOW,
+    ) is True
+    assert store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=older_issue,
+        valid_at=valid_at,
+        temperature_f=69.0,
+        stored_at=TEST_NOW + timedelta(minutes=30),
+    ) is False
+
+    before_newest_expiry = store.active_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        now=TEST_NOW + timedelta(minutes=59),
+    )
+    assert tuple(row.issued_at for row in before_newest_expiry) == (newer_issue,)
+    assert store.active_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        now=TEST_NOW + timedelta(hours=1),
+    ) == ()
+    store.purge_expired(now=TEST_NOW + timedelta(hours=1))
+    assert store.active_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        now=TEST_NOW + timedelta(hours=1),
+    ) == ()
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM google_hourly_runtime"
+        ).fetchone()[0] == 0
+
+
+def test_hourly_runtime_returns_only_one_coherent_latest_generation(tmp_path):
+    store = _runtime_store(tmp_path)
+    older_issue = TEST_NOW - timedelta(hours=1)
+    for offset in (1, 2):
+        store.write_hourly(
+            city_slug="sea",
+            station_id="KSEA",
+            issued_at=older_issue,
+            valid_at=TEST_NOW + timedelta(hours=offset),
+            temperature_f=60.0 + offset,
+            stored_at=TEST_NOW,
+        )
+    store.write_hourly(
+        city_slug="sea",
+        station_id="KSEA",
+        issued_at=TEST_NOW,
+        valid_at=TEST_NOW + timedelta(hours=1),
+        temperature_f=65.0,
+        stored_at=TEST_NOW,
+    )
+
+    active = store.active_hourly(
+        city_slug="sea", station_id="KSEA", now=TEST_NOW
+    )
+    assert tuple((row.issued_at, row.valid_at) for row in active) == (
+        (TEST_NOW, TEST_NOW + timedelta(hours=1)),
+    )
+
+
+def test_repeated_hourly_refresh_upserts_without_duplicate_valid_times(tmp_path):
+    store = _runtime_store(tmp_path)
+    values = {
+        "city_slug": "bos",
+        "station_id": "KBOS",
+        "issued_at": TEST_NOW,
+        "valid_at": TEST_NOW + timedelta(hours=1),
+    }
+    store.write_hourly(**values, temperature_f=80.0, stored_at=TEST_NOW)
+    store.write_hourly(
+        **values,
+        temperature_f=81.0,
+        stored_at=TEST_NOW + timedelta(minutes=5),
+    )
+
+    active = store.active_hourly(
+        city_slug="bos", station_id="KBOS", now=TEST_NOW
+    )
+    assert len(active) == 1
+    assert active[0].temperature_f == 81.0
+    assert active[0].expires_at == TEST_NOW + timedelta(hours=1, minutes=5)
 
 
 def test_daily_runtime_expiry_uses_distinct_today_and_future_ttls(tmp_path):
@@ -88,6 +210,35 @@ def test_daily_runtime_expiry_uses_distinct_today_and_future_ttls(tmp_path):
     assert tuple(row.target_date for row in at_future_expiry) == ("2026-07-18",)
 
 
+def test_daily_runtime_uses_only_the_latest_complete_issue_generation(tmp_path):
+    store = _runtime_store(tmp_path)
+    older_issue = TEST_NOW - timedelta(hours=1)
+    for target in ("2026-07-18", "2026-07-19"):
+        store.write_daily(
+            city_slug="sfo",
+            station_id="KSFO",
+            issued_at=older_issue,
+            target_date=target,
+            high_f=70.0,
+            stored_at=TEST_NOW + timedelta(minutes=10),
+        )
+    store.write_daily(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        target_date="2026-07-19",
+        high_f=75.0,
+        stored_at=TEST_NOW,
+    )
+
+    active = store.active_daily(
+        city_slug="sfo", station_id="KSFO", now=TEST_NOW
+    )
+    assert tuple((row.issued_at, row.target_date) for row in active) == (
+        (TEST_NOW, "2026-07-19"),
+    )
+
+
 def test_current_runtime_expiry_is_exactly_one_hour(tmp_path):
     store = _runtime_store(tmp_path)
     store.write_current(
@@ -116,18 +267,57 @@ def test_current_runtime_expiry_is_exactly_one_hour(tmp_path):
     )
 
 
-def test_runtime_high_and_next_expiry_use_minimum_constituent_expiry(tmp_path):
+def test_current_runtime_never_falls_back_after_newest_issue_expires(tmp_path):
+    store = _runtime_store(tmp_path)
+    common = {
+        "city_slug": "mia",
+        "station_id": "KMIA",
+        "observed_at": TEST_NOW - timedelta(minutes=5),
+    }
+    store.write_current(
+        **common,
+        issued_at=TEST_NOW,
+        temperature_f=88.0,
+        stored_at=TEST_NOW,
+    )
+    store.write_current(
+        **common,
+        issued_at=TEST_NOW - timedelta(hours=1),
+        temperature_f=87.0,
+        stored_at=TEST_NOW + timedelta(minutes=30),
+    )
+
+    assert (
+        store.active_current(
+            city_slug="mia",
+            station_id="KMIA",
+            now=TEST_NOW + timedelta(hours=1),
+        )
+        is None
+    )
+
+
+def test_runtime_high_derives_coverage_high_and_minimum_expiry_from_24_hours(
+    tmp_path,
+):
     store = _runtime_store(tmp_path)
     earliest = TEST_NOW + timedelta(minutes=45)
+    # Denver's fixed-standard 2026-07-18 day begins at 07:00 UTC.
+    initial = _runtime_hourly_constituents(
+        city_slug="den",
+        station_id="KDEN",
+        issued_at=TEST_NOW,
+        start_at=datetime(2026, 7, 18, 7, tzinfo=timezone.utc),
+        count=24,
+        expires_at=TEST_NOW + timedelta(hours=24),
+    )
+    constituents = (replace(initial[0], expires_at=earliest), *initial[1:])
     store.write_runtime_high(
         city_slug="den",
         station_id="KDEN",
         issued_at=TEST_NOW,
         target_date="2026-07-18",
-        high_f=91.0,
-        covered_hours=24,
-        complete=True,
-        constituent_expiries=(TEST_NOW + timedelta(hours=24), earliest),
+        constituents=constituents,
     )
 
     active = store.active_runtime_high(
@@ -137,6 +327,9 @@ def test_runtime_high_and_next_expiry_use_minimum_constituent_expiry(tmp_path):
         now=TEST_NOW,
     )
     assert active is not None
+    assert active.covered_hours == 24
+    assert active.complete is True
+    assert active.high_f == 93.0
     assert active.expires_at == earliest
     assert store.next_expiry(now=TEST_NOW) == earliest
     assert store.next_expiry(now=earliest) is None
@@ -149,6 +342,149 @@ def test_runtime_high_and_next_expiry_use_minimum_constituent_expiry(tmp_path):
         )
         is None
     )
+
+
+def test_runtime_high_never_falls_back_after_newest_issue_expires(tmp_path):
+    store = _runtime_store(tmp_path)
+    station_day_start = datetime(2026, 7, 18, 8, tzinfo=timezone.utc)
+    for issued_at, expires_at in (
+        (TEST_NOW, TEST_NOW + timedelta(hours=1)),
+        (
+            TEST_NOW - timedelta(hours=1),
+            TEST_NOW + timedelta(hours=1, minutes=30),
+        ),
+    ):
+        store.write_runtime_high(
+            city_slug="sfo",
+            station_id="KSFO",
+            issued_at=issued_at,
+            target_date="2026-07-18",
+            constituents=_runtime_hourly_constituents(
+                city_slug="sfo",
+                station_id="KSFO",
+                issued_at=issued_at,
+                start_at=station_day_start,
+                count=1,
+                expires_at=expires_at,
+            ),
+        )
+
+    assert (
+        store.active_runtime_high(
+            city_slug="sfo",
+            station_id="KSFO",
+            target_date="2026-07-18",
+            now=TEST_NOW + timedelta(hours=1),
+        )
+        is None
+    )
+
+
+def test_runtime_high_partial_coverage_is_derived_as_incomplete(tmp_path):
+    store = _runtime_store(tmp_path)
+    store.write_runtime_high(
+        city_slug="den",
+        station_id="KDEN",
+        issued_at=TEST_NOW,
+        target_date="2026-07-18",
+        constituents=_runtime_hourly_constituents(
+            city_slug="den",
+            station_id="KDEN",
+            issued_at=TEST_NOW,
+            start_at=datetime(2026, 7, 18, 7, tzinfo=timezone.utc),
+            count=23,
+            expires_at=TEST_NOW + timedelta(hours=1),
+        ),
+    )
+
+    active = store.active_runtime_high(
+        city_slug="den",
+        station_id="KDEN",
+        target_date="2026-07-18",
+        now=TEST_NOW,
+    )
+    assert active is not None
+    assert active.covered_hours == 23
+    assert active.complete is False
+
+
+def test_runtime_high_rejects_zero_or_duplicate_constituent_evidence(tmp_path):
+    store = _runtime_store(tmp_path)
+    values = {
+        "city_slug": "den",
+        "station_id": "KDEN",
+        "issued_at": TEST_NOW,
+        "target_date": "2026-07-18",
+    }
+    with pytest.raises(ValueError, match="non-empty"):
+        store.write_runtime_high(**values, constituents=())
+
+    one = _runtime_hourly_constituents(
+        city_slug="den",
+        station_id="KDEN",
+        issued_at=TEST_NOW,
+        start_at=datetime(2026, 7, 18, 7, tzinfo=timezone.utc),
+        count=1,
+        expires_at=TEST_NOW + timedelta(hours=1),
+    )[0]
+    with pytest.raises(ValueError, match="valid times must be unique"):
+        store.write_runtime_high(**values, constituents=(one, one))
+
+
+def test_runtime_high_rejects_mismatched_constituent_identity(tmp_path):
+    store = _runtime_store(tmp_path)
+    constituent = _runtime_hourly_constituents(
+        city_slug="den",
+        station_id="KDEN",
+        issued_at=TEST_NOW - timedelta(hours=1),
+        start_at=datetime(2026, 7, 18, 7, tzinfo=timezone.utc),
+        count=1,
+        expires_at=TEST_NOW + timedelta(hours=1),
+    )
+
+    with pytest.raises(ValueError, match="identity must match"):
+        store.write_runtime_high(
+            city_slug="den",
+            station_id="KDEN",
+            issued_at=TEST_NOW,
+            target_date="2026-07-18",
+            constituents=constituent,
+        )
+
+
+def test_runtime_high_schema_rejects_contradictory_completeness(tmp_path):
+    store = _runtime_store(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO google_runtime_high (
+                    city_slug, station_id, issued_at, target_date, high_f,
+                    covered_hours, complete, expires_at
+                ) VALUES ('den', 'KDEN', ?, '2026-07-18', 91.0, 23, 1, ?)
+                """,
+                (
+                    TEST_NOW.isoformat(timespec="microseconds"),
+                    (TEST_NOW + timedelta(hours=1)).isoformat(
+                        timespec="microseconds"
+                    ),
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO google_runtime_high (
+                    city_slug, station_id, issued_at, target_date, high_f,
+                    covered_hours, complete, expires_at
+                ) VALUES ('den', 'KDEN', ?, '2026-07-18', 91.0, 0, 0, ?)
+                """,
+                (
+                    TEST_NOW.isoformat(timespec="microseconds"),
+                    (TEST_NOW + timedelta(hours=1)).isoformat(
+                        timespec="microseconds"
+                    ),
+                ),
+            )
 
 
 def test_purge_expired_is_a_transactional_physical_delete(tmp_path):
@@ -266,9 +602,10 @@ def test_runtime_schema_allowlist_has_no_raw_secret_or_google_gap_columns(tmp_pa
             )
 
 
-def test_runtime_store_rejects_non_tmpfs_production_path_but_allows_test_injection(
-    tmp_path,
+def test_runtime_store_requires_owned_nonsymlink_production_root_but_allows_injection(
+    tmp_path, monkeypatch
 ):
+    import google_weather_store as store_module
     from google_weather_store import GoogleRuntimeStore, assert_runtime_path
 
     injected = tmp_path / "google_runtime.db"
@@ -278,9 +615,70 @@ def test_runtime_store_rejects_non_tmpfs_production_path_but_allows_test_injecti
     ):
         assert_runtime_path(injected, production=True)
 
-    assert_runtime_path(Path("/run/weatheredge/google_runtime.db"), production=True)
+    runtime_root = tmp_path / "run" / "weatheredge"
+    runtime_root.mkdir(parents=True)
+    monkeypatch.setattr(store_module, "GOOGLE_RUNTIME_ROOT", runtime_root)
+    protected = runtime_root / "google_runtime.db"
+    assert_runtime_path(protected, production=True)
+    production_store = GoogleRuntimeStore(protected, production=True)
+    assert production_store.db_path == protected
+
     store = GoogleRuntimeStore(injected, production=False)
     assert store.db_path == injected
+
+
+def test_production_runtime_store_rejects_file_symlink_substitution(
+    tmp_path, monkeypatch
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleRuntimeStore
+
+    runtime_root = tmp_path / "run" / "weatheredge"
+    runtime_root.mkdir(parents=True)
+    monkeypatch.setattr(store_module, "GOOGLE_RUNTIME_ROOT", runtime_root)
+    db_path = runtime_root / "google_runtime.db"
+    store = GoogleRuntimeStore(db_path, production=True)
+    original = tmp_path / "original.db"
+    db_path.rename(original)
+    replacement = tmp_path / "replacement.db"
+    sqlite3.connect(replacement).close()
+    db_path.symlink_to(replacement)
+
+    with pytest.raises(RuntimeError, match="symlink|changed identity"):
+        store.next_expiry(now=TEST_NOW)
+
+
+def test_production_runtime_store_rejects_parent_symlink(tmp_path, monkeypatch):
+    import google_weather_store as store_module
+    from google_weather_store import assert_runtime_path
+
+    real_root = tmp_path / "real-weatheredge"
+    real_root.mkdir()
+    linked_root = tmp_path / "run" / "weatheredge"
+    linked_root.parent.mkdir()
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setattr(store_module, "GOOGLE_RUNTIME_ROOT", linked_root)
+
+    with pytest.raises(RuntimeError, match="must not be a symlink"):
+        assert_runtime_path(linked_root / "google_runtime.db", production=True)
+
+
+def test_production_runtime_store_detects_regular_file_inode_replacement(
+    tmp_path, monkeypatch
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleRuntimeStore
+
+    runtime_root = tmp_path / "run" / "weatheredge"
+    runtime_root.mkdir(parents=True)
+    monkeypatch.setattr(store_module, "GOOGLE_RUNTIME_ROOT", runtime_root)
+    db_path = runtime_root / "google_runtime.db"
+    store = GoogleRuntimeStore(db_path, production=True)
+    db_path.rename(tmp_path / "original.db")
+    sqlite3.connect(db_path).close()
+
+    with pytest.raises(RuntimeError, match="changed identity"):
+        store.next_expiry(now=TEST_NOW)
 
 
 def _seed_billable_events(ledger, count: int, *, billing_date: str) -> None:

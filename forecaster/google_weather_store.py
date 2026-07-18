@@ -9,7 +9,9 @@ neither schema.
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -29,6 +31,7 @@ from weather_cache_config import (
 
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
+GOOGLE_RUNTIME_ROOT = Path("/run/weatheredge")
 GOOGLE_USAGE_ENDPOINTS = frozenset({"hourly", "daily", "current"})
 GOOGLE_USAGE_ERROR_KINDS = frozenset(
     {"timeout", "transport", "http", "parse", "unknown"}
@@ -116,12 +119,54 @@ class GoogleRuntimeHigh:
 
 
 def assert_runtime_path(path: Path, *, production: bool) -> None:
-    """Keep TTL-bound Google content on the production tmpfs."""
+    """Keep TTL-bound content in an app-owned, non-symlinked tmpfs tree."""
 
-    if production and not path.resolve().is_relative_to(
-        Path("/run/weatheredge").resolve()
-    ):
+    if not production:
+        return
+    root = Path(os.path.abspath(GOOGLE_RUNTIME_ROOT))
+    candidate = Path(os.path.abspath(path))
+    if candidate == root or not candidate.is_relative_to(root):
         raise RuntimeError("Google runtime content must live under /run/weatheredge")
+    directories = [root]
+    relative_parent = candidate.parent.relative_to(root)
+    current = root
+    for part in relative_parent.parts:
+        current /= part
+        directories.append(current)
+    for directory in directories:
+        try:
+            metadata = os.lstat(directory)
+        except FileNotFoundError:
+            raise RuntimeError(
+                "Google runtime production directory must already exist"
+            ) from None
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(
+                "Google runtime production directory must not be a symlink"
+            )
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & (
+            stat.S_IWGRP | stat.S_IWOTH
+        ):
+            raise RuntimeError(
+                "Google runtime production directory must be app-owned and protected"
+            )
+    try:
+        metadata = os.lstat(candidate)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError("Google runtime database must not be a symlink")
+    if metadata.st_uid != os.geteuid() or metadata.st_mode & (
+        stat.S_IWGRP | stat.S_IWOTH
+    ):
+        raise RuntimeError(
+            "Google runtime database must be app-owned and protected"
+        )
+
+
+def _runtime_file_identity(path: Path) -> tuple[int, int]:
+    metadata = os.lstat(path)
+    return metadata.st_dev, metadata.st_ino
 
 
 _RUNTIME_SCHEMA = """
@@ -164,14 +209,22 @@ CREATE TABLE IF NOT EXISTS google_runtime_high (
     issued_at TEXT NOT NULL,
     target_date TEXT NOT NULL,
     high_f REAL NOT NULL,
-    covered_hours INTEGER NOT NULL CHECK(covered_hours BETWEEN 0 AND 24),
+    covered_hours INTEGER NOT NULL CHECK(covered_hours BETWEEN 1 AND 24),
     complete INTEGER NOT NULL CHECK(complete IN (0, 1)),
     expires_at TEXT NOT NULL,
+    CHECK(complete = CASE WHEN covered_hours = 24 THEN 1 ELSE 0 END),
     PRIMARY KEY(city_slug, station_id, issued_at, target_date)
 );
 CREATE INDEX IF NOT EXISTS idx_google_runtime_high_expiry
     ON google_runtime_high(expires_at);
 """
+
+_RUNTIME_GENERATION_SCOPES = {
+    "google_hourly_runtime": ("city_slug", "station_id"),
+    "google_daily_runtime": ("city_slug", "station_id"),
+    "google_current_runtime": ("city_slug", "station_id"),
+    "google_runtime_high": ("city_slug", "station_id", "target_date"),
+}
 
 
 _USAGE_SCHEMA = """
@@ -285,15 +338,31 @@ class GoogleRuntimeStore:
         timeout_seconds: float = 30.0,
     ) -> None:
         self.db_path = Path(db_path)
+        self.production = production
+        self._runtime_identity: tuple[int, int] | None = None
         assert_runtime_path(self.db_path, production=production)
         self.timeout_seconds = float(timeout_seconds)
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not production:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_RUNTIME_SCHEMA)
+        if production:
+            os.chmod(self.db_path, 0o600, follow_symlinks=False)
+            assert_runtime_path(self.db_path, production=True)
+            self._runtime_identity = _runtime_file_identity(self.db_path)
 
     def _connect(self) -> sqlite3.Connection:
+        before: tuple[int, int] | None = None
+        if self.production:
+            assert_runtime_path(self.db_path, production=True)
+            if self._runtime_identity is not None and not os.path.lexists(
+                self.db_path
+            ):
+                raise RuntimeError("Google runtime database changed identity")
+            if os.path.lexists(self.db_path):
+                before = _runtime_file_identity(self.db_path)
         connection = sqlite3.connect(
             self.db_path,
             timeout=self.timeout_seconds,
@@ -303,7 +372,61 @@ class GoogleRuntimeStore:
         connection.execute(
             f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
         )
+        if self.production:
+            try:
+                assert_runtime_path(self.db_path, production=True)
+                after = _runtime_file_identity(self.db_path)
+                if before is not None and before != after:
+                    raise RuntimeError("Google runtime database changed identity")
+                if (
+                    self._runtime_identity is not None
+                    and self._runtime_identity != after
+                ):
+                    raise RuntimeError("Google runtime database changed identity")
+            except Exception:
+                connection.close()
+                raise
         return connection
+
+    def _write_latest_generation(
+        self,
+        *,
+        table: str,
+        scope_values: tuple[str, ...],
+        issued_at: str,
+        insert_sql: str,
+        insert_values: tuple[object, ...],
+    ) -> bool:
+        """Atomically retain only the newest issue generation for a scope."""
+
+        scope_columns = _RUNTIME_GENERATION_SCOPES.get(table)
+        if scope_columns is None or len(scope_columns) != len(scope_values):
+            raise ValueError("unsupported Google runtime generation scope")
+        where = " AND ".join(f"{column} = ?" for column in scope_columns)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                f"SELECT MAX(issued_at) AS issued_at FROM {table} WHERE {where}",
+                scope_values,
+            ).fetchone()
+            latest = row["issued_at"] if row is not None else None
+            if latest is not None and issued_at < latest:
+                connection.commit()
+                return False
+            if latest is not None and issued_at > latest:
+                connection.execute(
+                    f"DELETE FROM {table} WHERE {where} AND issued_at < ?",
+                    (*scope_values, issued_at),
+                )
+            connection.execute(insert_sql, insert_values)
+            connection.commit()
+            return True
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def write_hourly(
         self,
@@ -314,16 +437,18 @@ class GoogleRuntimeStore:
         valid_at: datetime,
         temperature_f: float,
         stored_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
         issued = _aware_utc(issued_at)
         valid = _aware_utc(valid_at)
         stored = _aware_utc(stored_at)
         temperature = _finite_float("temperature_f", temperature_f)
         expires = stored + GOOGLE_HOURLY_TTL
-        with self._connect() as connection:
-            connection.execute(
-                """
+        return self._write_latest_generation(
+            table="google_hourly_runtime",
+            scope_values=(city_slug, station_id),
+            issued_at=_utc_text(issued),
+            insert_sql="""
                 INSERT INTO google_hourly_runtime (
                     city_slug, station_id, issued_at, valid_at,
                     temperature_f, expires_at
@@ -333,15 +458,15 @@ class GoogleRuntimeStore:
                     temperature_f = excluded.temperature_f,
                     expires_at = excluded.expires_at
                 """,
-                (
-                    city_slug,
-                    station_id,
-                    _utc_text(issued),
-                    _utc_text(valid),
-                    temperature,
-                    _utc_text(expires),
-                ),
-            )
+            insert_values=(
+                city_slug,
+                station_id,
+                _utc_text(issued),
+                _utc_text(valid),
+                temperature,
+                _utc_text(expires),
+            ),
+        )
 
     def active_hourly(
         self,
@@ -357,10 +482,22 @@ class GoogleRuntimeStore:
                 SELECT city_slug, station_id, issued_at, valid_at,
                        temperature_f, expires_at
                 FROM google_hourly_runtime
-                WHERE city_slug = ? AND station_id = ? AND expires_at > ?
-                ORDER BY issued_at DESC, valid_at
+                WHERE city_slug = ? AND station_id = ?
+                  AND issued_at = (
+                      SELECT MAX(issued_at)
+                      FROM google_hourly_runtime
+                      WHERE city_slug = ? AND station_id = ?
+                  )
+                  AND expires_at > ?
+                ORDER BY valid_at
                 """,
-                (city_slug, station_id, _utc_text(now)),
+                (
+                    city_slug,
+                    station_id,
+                    city_slug,
+                    station_id,
+                    _utc_text(now),
+                ),
             ).fetchall()
         return tuple(
             GoogleHourlyRuntime(
@@ -383,7 +520,7 @@ class GoogleRuntimeStore:
         target_date: str,
         high_f: float,
         stored_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
         city = CITY_BY_SLUG[city_slug]
         issued = _aware_utc(issued_at)
@@ -396,9 +533,11 @@ class GoogleRuntimeStore:
             if date.fromisoformat(target) <= local_today
             else GOOGLE_FUTURE_DAILY_TTL
         )
-        with self._connect() as connection:
-            connection.execute(
-                """
+        return self._write_latest_generation(
+            table="google_daily_runtime",
+            scope_values=(city_slug, station_id),
+            issued_at=_utc_text(issued),
+            insert_sql="""
                 INSERT INTO google_daily_runtime (
                     city_slug, station_id, issued_at, target_date,
                     high_f, expires_at
@@ -408,15 +547,15 @@ class GoogleRuntimeStore:
                     high_f = excluded.high_f,
                     expires_at = excluded.expires_at
                 """,
-                (
-                    city_slug,
-                    station_id,
-                    _utc_text(issued),
-                    target,
-                    high,
-                    _utc_text(stored + ttl),
-                ),
-            )
+            insert_values=(
+                city_slug,
+                station_id,
+                _utc_text(issued),
+                target,
+                high,
+                _utc_text(stored + ttl),
+            ),
+        )
 
     def active_daily(
         self,
@@ -432,10 +571,22 @@ class GoogleRuntimeStore:
                 SELECT city_slug, station_id, issued_at, target_date,
                        high_f, expires_at
                 FROM google_daily_runtime
-                WHERE city_slug = ? AND station_id = ? AND expires_at > ?
-                ORDER BY target_date, issued_at DESC
+                WHERE city_slug = ? AND station_id = ?
+                  AND issued_at = (
+                      SELECT MAX(issued_at)
+                      FROM google_daily_runtime
+                      WHERE city_slug = ? AND station_id = ?
+                  )
+                  AND expires_at > ?
+                ORDER BY target_date
                 """,
-                (city_slug, station_id, _utc_text(now)),
+                (
+                    city_slug,
+                    station_id,
+                    city_slug,
+                    station_id,
+                    _utc_text(now),
+                ),
             ).fetchall()
         return tuple(
             GoogleDailyRuntime(
@@ -458,15 +609,17 @@ class GoogleRuntimeStore:
         observed_at: datetime,
         temperature_f: float,
         stored_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
         issued = _aware_utc(issued_at)
         observed = _aware_utc(observed_at)
         stored = _aware_utc(stored_at)
         temperature = _finite_float("temperature_f", temperature_f)
-        with self._connect() as connection:
-            connection.execute(
-                """
+        return self._write_latest_generation(
+            table="google_current_runtime",
+            scope_values=(city_slug, station_id),
+            issued_at=_utc_text(issued),
+            insert_sql="""
                 INSERT INTO google_current_runtime (
                     city_slug, station_id, issued_at, observed_at,
                     temperature_f, expires_at
@@ -476,15 +629,15 @@ class GoogleRuntimeStore:
                     temperature_f = excluded.temperature_f,
                     expires_at = excluded.expires_at
                 """,
-                (
-                    city_slug,
-                    station_id,
-                    _utc_text(issued),
-                    _utc_text(observed),
-                    temperature,
-                    _utc_text(stored + GOOGLE_CURRENT_TTL),
-                ),
-            )
+            insert_values=(
+                city_slug,
+                station_id,
+                _utc_text(issued),
+                _utc_text(observed),
+                temperature,
+                _utc_text(stored + GOOGLE_CURRENT_TTL),
+            ),
+        )
 
     def active_current(
         self,
@@ -500,11 +653,23 @@ class GoogleRuntimeStore:
                 SELECT city_slug, station_id, issued_at, observed_at,
                        temperature_f, expires_at
                 FROM google_current_runtime
-                WHERE city_slug = ? AND station_id = ? AND expires_at > ?
-                ORDER BY issued_at DESC, observed_at DESC
+                WHERE city_slug = ? AND station_id = ?
+                  AND issued_at = (
+                      SELECT MAX(issued_at)
+                      FROM google_current_runtime
+                      WHERE city_slug = ? AND station_id = ?
+                  )
+                  AND expires_at > ?
+                ORDER BY observed_at DESC
                 LIMIT 1
                 """,
-                (city_slug, station_id, _utc_text(now)),
+                (
+                    city_slug,
+                    station_id,
+                    city_slug,
+                    station_id,
+                    _utc_text(now),
+                ),
             ).fetchone()
         if row is None:
             return None
@@ -524,26 +689,56 @@ class GoogleRuntimeStore:
         station_id: str,
         issued_at: datetime,
         target_date: str,
-        high_f: float,
-        covered_hours: int,
-        complete: bool,
-        constituent_expiries: tuple[datetime, ...],
-    ) -> None:
+        constituents: tuple[GoogleHourlyRuntime, ...],
+    ) -> bool:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
+        city = CITY_BY_SLUG[city_slug]
         issued = _aware_utc(issued_at)
         target = _date_text("target_date", target_date)
-        high = _finite_float("high_f", high_f)
-        if type(covered_hours) is not int or not 0 <= covered_hours <= 24:
-            raise ValueError("covered_hours must be an integer from 0 to 24")
-        if type(complete) is not bool:
-            raise ValueError("complete must be a boolean")
-        if not constituent_expiries:
-            raise ValueError("constituent_expiries must not be empty")
-        expiries = tuple(_aware_utc(value) for value in constituent_expiries)
+        if type(constituents) is not tuple or not constituents:
+            raise ValueError("constituents must be a non-empty tuple")
+        valid_times: set[datetime] = set()
+        temperatures: list[float] = []
+        expiries: list[datetime] = []
+        standard_tz = city.fixed_standard_timezone()
+        for row in constituents:
+            if type(row) is not GoogleHourlyRuntime:
+                raise ValueError("constituents must be Google hourly runtime rows")
+            if (
+                row.city_slug != city_slug
+                or row.station_id != station_id
+                or _aware_utc(row.issued_at) != issued
+            ):
+                raise ValueError("constituent identity must match the runtime high")
+            valid = _aware_utc(row.valid_at)
+            local_valid = valid.astimezone(standard_tz)
+            if (
+                local_valid.date().isoformat() != target
+                or local_valid.minute != 0
+                or local_valid.second != 0
+                or local_valid.microsecond != 0
+            ):
+                raise ValueError(
+                    "constituents must be exact hours in the target station day"
+                )
+            if valid in valid_times:
+                raise ValueError("constituent valid times must be unique")
+            valid_times.add(valid)
+            temperatures.append(_finite_float("temperature_f", row.temperature_f))
+            # A page of distinct forecast hours normally shares one expiry.
+            # The valid timestamp is the constituent identity; expiry is TTL.
+            expiries.append(_aware_utc(row.expires_at))
+        covered_hours = len(valid_times)
+        if covered_hours > 24:
+            raise ValueError("constituents cannot exceed a 24-hour station day")
+        complete = covered_hours == 24
+        high = max(temperatures)
         expires = min(expiries)
-        with self._connect() as connection:
-            connection.execute(
-                """
+        return self._write_latest_generation(
+            table="google_runtime_high",
+            scope_values=(city_slug, station_id, target),
+            issued_at=_utc_text(issued),
+            insert_sql="""
                 INSERT INTO google_runtime_high (
                     city_slug, station_id, issued_at, target_date, high_f,
                     covered_hours, complete, expires_at
@@ -555,17 +750,17 @@ class GoogleRuntimeStore:
                     complete = excluded.complete,
                     expires_at = excluded.expires_at
                 """,
-                (
-                    city_slug,
-                    station_id,
-                    _utc_text(issued),
-                    target,
-                    high,
-                    covered_hours,
-                    int(complete),
-                    _utc_text(expires),
-                ),
-            )
+            insert_values=(
+                city_slug,
+                station_id,
+                _utc_text(issued),
+                target,
+                high,
+                covered_hours,
+                int(complete),
+                _utc_text(expires),
+            ),
+        )
 
     def active_runtime_high(
         self,
@@ -584,11 +779,23 @@ class GoogleRuntimeStore:
                        covered_hours, complete, expires_at
                 FROM google_runtime_high
                 WHERE city_slug = ? AND station_id = ? AND target_date = ?
+                  AND issued_at = (
+                      SELECT MAX(issued_at)
+                      FROM google_runtime_high
+                      WHERE city_slug = ? AND station_id = ? AND target_date = ?
+                  )
                   AND expires_at > ?
-                ORDER BY issued_at DESC
                 LIMIT 1
                 """,
-                (city_slug, station_id, target, _utc_text(now)),
+                (
+                    city_slug,
+                    station_id,
+                    target,
+                    city_slug,
+                    station_id,
+                    target,
+                    _utc_text(now),
+                ),
             ).fetchone()
         if row is None:
             return None
