@@ -30,6 +30,8 @@ _IMPLEMENTATION_MODULES = (
 )
 _EXPORT_OWNERS: dict[str, tuple[_ModuleType, ...]] = {}
 _IMPLEMENTATION_ONLY_NAMES = {
+    "GoogleFetchError",
+    "_fetch_google_json",
     "compute_adaptive_blend_weights",
     "compute_rolling_blend_residual_bias",
     "compute_source_mos_corrections",
@@ -117,20 +119,37 @@ def main():
 
     usage = reserve_google_weather_events(usage, estimated_events)
     write_json(USAGE_PATH, usage)
+    actual_events = 0
+    failure = None
     try:
         raw = fetch_google_forecast(key)
+        actual_events = int(
+            raw.get("google_weather_events_used") or estimated_events
+        )
+        reconciled_usage = adjust_reserved_google_weather_events(
+            usage,
+            estimated_events,
+            actual_events,
+        )
+        summary = summarize_forecast(raw, target_iso, reconciled_usage)
+    except Exception as exc:
+        dispatched_events = getattr(exc, "dispatched_events", None)
+        if isinstance(dispatched_events, int):
+            actual_events = max(0, dispatched_events)
+        failure = exc
+    finally:
         usage = adjust_reserved_google_weather_events(
             usage,
             estimated_events,
-            int(raw.get("google_weather_events_used") or estimated_events),
+            actual_events,
         )
         write_json(USAGE_PATH, usage)
-        summary = summarize_forecast(raw, target_iso, usage)
-    except Exception as exc:
+
+    if failure is not None:
         if not cache_matches(cache, target_iso):
             write_json(CACHE_PATH, unavailable("Google Weather request failed."))
         print(
-            f"Google Weather request failed without saving a URL: {type(exc).__name__}; "
+            f"Google Weather request failed without saving a URL: {type(failure).__name__}; "
             f"scored {archive_stats['scored']}"
         )
         return

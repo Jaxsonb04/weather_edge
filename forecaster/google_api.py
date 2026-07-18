@@ -37,6 +37,15 @@ from weather_cache_config import (
 )
 
 
+class GoogleFetchError(RuntimeError):
+    """A safe Google fetch failure with conservative dispatch accounting."""
+
+    def __init__(self, endpoint, dispatched_events):
+        self.endpoint = endpoint
+        self.dispatched_events = max(0, int(dispatched_events))
+        super().__init__(f"Google Weather {endpoint} request failed")
+
+
 def finite(value):
     return isinstance(value, (int, float)) and math.isfinite(value)
 
@@ -407,8 +416,28 @@ def summarize_forecast(payload, target_iso, usage):
     return summary
 
 
+def _fetch_google_json(endpoint, base_url, params):
+    dispatched_events = 0
+    try:
+        query = urlencode(params)
+        request_url = f"{base_url}?{query}"
+        dispatched_events += 1
+        with urlopen(request_url, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Google Weather response was not a JSON object")
+        return payload
+    except Exception:
+        # Transport errors may embed the API key and full request URL. Keep the
+        # public exception entirely detached from that unsafe exception chain.
+        failure = GoogleFetchError(endpoint, dispatched_events)
+    raise failure
+
+
 def fetch_hourly_page(key, page_token=None):
-    params = urlencode(
+    return _fetch_google_json(
+        "hourly forecast",
+        HOURLY_API_URL,
         {
             "key": key,
             "location.latitude": f"{SFO_POINT['lat']:.4f}",
@@ -417,37 +446,35 @@ def fetch_hourly_page(key, page_token=None):
             "pageSize": str(HOURLY_PAGE_SIZE),
             "unitsSystem": "IMPERIAL",
             **({"pageToken": page_token} if page_token else {}),
-        }
+        },
     )
-    with urlopen(f"{HOURLY_API_URL}?{params}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_daily_forecast(key):
-    params = urlencode(
+    return _fetch_google_json(
+        "daily forecast",
+        DAILY_API_URL,
         {
             "key": key,
             "location.latitude": f"{SFO_POINT['lat']:.4f}",
             "location.longitude": f"{SFO_POINT['lon']:.4f}",
             "days": "3",
             "unitsSystem": "IMPERIAL",
-        }
+        },
     )
-    with urlopen(f"{DAILY_API_URL}?{params}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_current_conditions(key):
-    params = urlencode(
+    return _fetch_google_json(
+        "current conditions",
+        CURRENT_API_URL,
         {
             "key": key,
             "location.latitude": f"{SFO_POINT['lat']:.4f}",
             "location.longitude": f"{SFO_POINT['lon']:.4f}",
             "unitsSystem": "IMPERIAL",
-        }
+        },
     )
-    with urlopen(f"{CURRENT_API_URL}?{params}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_google_forecast(key):
@@ -464,7 +491,11 @@ def fetch_google_forecast(key):
     # break on no forward progress.
     max_hourly_pages = max(4, HOURLY_LOOKAHEAD_HOURS // 24 + 2)
     while True:
-        payload = fetch_hourly_page(key, page_token)
+        try:
+            payload = fetch_hourly_page(key, page_token)
+        except GoogleFetchError as exc:
+            exc.dispatched_events += events_used
+            raise
         events_used += 1
         new_hours = payload.get("forecastHours") or []
         hours.extend(new_hours)
@@ -484,12 +515,20 @@ def fetch_google_forecast(key):
 
     daily_forecast = None
     if ENABLE_GOOGLE_DAILY_FORECAST:
-        daily_forecast = fetch_daily_forecast(key)
+        try:
+            daily_forecast = fetch_daily_forecast(key)
+        except GoogleFetchError as exc:
+            exc.dispatched_events += events_used
+            raise
         events_used += 1
 
     current_conditions = None
     if ENABLE_GOOGLE_CURRENT_CONDITIONS:
-        current_conditions = fetch_current_conditions(key)
+        try:
+            current_conditions = fetch_current_conditions(key)
+        except GoogleFetchError as exc:
+            exc.dispatched_events += events_used
+            raise
         events_used += 1
 
     return {

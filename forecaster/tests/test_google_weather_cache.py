@@ -294,6 +294,120 @@ def test_google_event_reservation_adjustment_is_exact(tmp_path, monkeypatch):
     assert adjusted["limit"] == 260
 
 
+class _DispatchedFetchFailure(RuntimeError):
+    def __init__(self, dispatched_events):
+        super().__init__("safe synthetic Google fetch failure")
+        self.dispatched_events = dispatched_events
+
+
+def _run_failed_refresh(tmp_path, monkeypatch, dispatched_events):
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage_path = tmp_path / "usage.json"
+    starting_usage = {
+        "date": "2026-07-11",
+        "month": "2026-07",
+        "daily_events": 17,
+        "monthly_events": 611,
+        "daily_event_budget": 260,
+        "monthly_event_budget": 8000,
+        "refreshes": 4,
+        "calls": 17,
+    }
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-12")
+    monkeypatch.setattr(gwc, "api_key", lambda: "test-secret-key")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(starting_usage))
+    monkeypatch.setattr(gwc, "estimated_google_weather_events_per_refresh", lambda: 5)
+    monkeypatch.setattr(gwc, "usage_has_budget", lambda _usage, _events: True)
+    monkeypatch.setattr(
+        gwc,
+        "fetch_google_forecast",
+        lambda _key: (_ for _ in ()).throw(
+            _DispatchedFetchFailure(dispatched_events)
+        ),
+    )
+    monkeypatch.setattr(
+        gwc,
+        "score_archive",
+        lambda: {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0},
+    )
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--refresh"])
+
+    gwc.main()
+
+    return json.loads(usage_path.read_text(encoding="utf-8"))
+
+
+def test_predispatch_failure_releases_estimated_event_reservation(
+    tmp_path, monkeypatch
+):
+    usage = _run_failed_refresh(tmp_path, monkeypatch, dispatched_events=0)
+
+    assert usage["daily_events"] == 17
+    assert usage["monthly_events"] == 611
+    assert usage["last_refresh_events"] == 0
+
+
+def test_postdispatch_failure_keeps_ambiguous_events_consumed(tmp_path, monkeypatch):
+    usage = _run_failed_refresh(tmp_path, monkeypatch, dispatched_events=2)
+
+    assert usage["daily_events"] == 19
+    assert usage["monthly_events"] == 613
+    assert usage["last_refresh_events"] == 2
+
+
+def test_success_reconciles_actual_events_before_summarizing(tmp_path, monkeypatch):
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage_path = tmp_path / "usage.json"
+    starting_usage = {
+        "date": "2026-07-11",
+        "month": "2026-07",
+        "daily_events": 17,
+        "monthly_events": 611,
+        "daily_event_budget": 260,
+        "monthly_event_budget": 8000,
+        "refreshes": 4,
+        "calls": 17,
+    }
+    summarized_usage = {}
+    stats = {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0}
+
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-12")
+    monkeypatch.setattr(gwc, "api_key", lambda: "test-key")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(starting_usage))
+    monkeypatch.setattr(gwc, "estimated_google_weather_events_per_refresh", lambda: 5)
+    monkeypatch.setattr(gwc, "usage_has_budget", lambda _usage, _events: True)
+    monkeypatch.setattr(
+        gwc,
+        "fetch_google_forecast",
+        lambda _key: {"google_weather_events_used": 3},
+    )
+
+    def summarize(_raw, target_iso, usage):
+        summarized_usage.update(usage)
+        return {"available": True, "target_date": target_iso}
+
+    monkeypatch.setattr(gwc, "summarize_forecast", summarize)
+    monkeypatch.setattr(gwc, "score_archive", lambda: dict(stats))
+    monkeypatch.setattr(gwc, "archive_forecast", lambda *_args: dict(stats))
+    monkeypatch.setattr(gwc, "blend_targets", lambda *_args: [])
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--refresh"])
+
+    gwc.main()
+
+    usage = json.loads(usage_path.read_text(encoding="utf-8"))
+    assert usage["daily_events"] == 20
+    assert usage["monthly_events"] == 614
+    assert usage["last_refresh_events"] == 3
+    assert summarized_usage["daily_events"] == 20
+    assert summarized_usage["monthly_events"] == 614
+
+
 def _learner_row(target_date, actual, google, nws, open_meteo=80.0, history=80.0):
     return {
         "target_date": target_date,
