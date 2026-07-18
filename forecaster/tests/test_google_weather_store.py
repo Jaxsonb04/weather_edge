@@ -55,14 +55,11 @@ def test_google_runtime_ttls_may_be_shortened(monkeypatch):
     importlib.reload(weather_cache_config)
 
 
-def test_requesting_a_fourth_hourly_page_stops_at_three(monkeypatch):
+def test_hourly_page_limit_cannot_be_configured_above_three(monkeypatch):
     with monkeypatch.context() as environment:
         config = _reload_config_with(environment, GOOGLE_HOURLY_MAX_PAGES=4)
-        requested_pages = range(1, 5)
 
-        dispatched_pages = list(requested_pages)[: config.GOOGLE_HOURLY_MAX_PAGES]
-
-        assert dispatched_pages == [1, 2, 3]
+        assert config.GOOGLE_HOURLY_MAX_PAGES == 3
 
     importlib.reload(weather_cache_config)
 

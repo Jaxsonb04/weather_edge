@@ -24,6 +24,7 @@ from weather_cache_config import (
     ENABLE_GOOGLE_DAILY_FORECAST,
     GOOGLE_DAILY_DISAGREEMENT_WARN_F,
     GOOGLE_DAILY_INTERNAL_WEIGHT,
+    GOOGLE_HOURLY_MAX_PAGES,
     GOOGLE_WEATHER_DAILY_EVENT_BUDGET,
     GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
     GOOGLE_WEATHER_MONTHLY_FREE_CAP,
@@ -494,13 +495,13 @@ def fetch_google_forecast(key):
     page_token = None
     events_used = 0
 
-    # Hard cap on paid hourly pages. The budget reserves ~3 events per refresh; a
+    # Hard cap on paid hourly pages. The budget reserves 3 events per refresh; a
     # misbehaving API that keeps returning a nextPageToken with few/no new hours
     # could otherwise spend dozens of paid events in one refresh (and the budget
-    # reconciliation only runs AFTER, so it can't stop the current run). At ~24
-    # hours/page, the 72h lookahead needs ~3-4 pages; cap well above that and
-    # break on no forward progress.
-    max_hourly_pages = max(4, HOURLY_LOOKAHEAD_HOURS // 24 + 2)
+    # reconciliation only runs AFTER, so it can't stop the current run). Three
+    # full 24-hour pages cover the 72-hour lookahead; underfilled responses stop
+    # at the same official ceiling and are marked incomplete by their row count.
+    max_hourly_pages = GOOGLE_HOURLY_MAX_PAGES
     while True:
         failure = None
         try:

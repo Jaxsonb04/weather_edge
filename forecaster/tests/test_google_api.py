@@ -143,6 +143,34 @@ def test_successful_forecast_event_count_is_unchanged(monkeypatch):
     assert result["google_weather_events_used"] == 5
 
 
+def test_hourly_transport_stops_after_three_underfilled_pages(monkeypatch):
+    calls = []
+
+    def fake_urlopen(url, **_kwargs):
+        calls.append(url)
+        page_number = len(calls)
+        return _Response(
+            {
+                "forecastHours": [{"id": f"page-{page_number}"}],
+                "nextPageToken": f"page-{page_number + 1}",
+            }
+        )
+
+    monkeypatch.setattr(google_api, "urlopen", fake_urlopen)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_DAILY_FORECAST", False)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_CURRENT_CONDITIONS", False)
+
+    result = google_api.fetch_google_forecast("test-key")
+
+    assert len(calls) == 3
+    assert result["google_weather_events_used"] == 3
+    assert [row["id"] for row in result["forecastHours"]] == [
+        "page-1",
+        "page-2",
+        "page-3",
+    ]
+
+
 @pytest.mark.parametrize(
     "forecast_hours",
     [1, {"unexpected": "mapping"}, "unexpected string", [1]],
