@@ -2534,3 +2534,290 @@ def test_terminal_motion_reentry_requires_new_scan_and_exact_change_threshold(
         assert attempts[0][2] != attempts[1][2]  # price changed, but scan id did not
     if second_scan == "reentry-1" and price_delta == probability_delta == 0.0:
         assert attempts[0][2] == attempts[1][2]
+
+
+def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() -> None:
+    from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
+    from sfo_kalshi_quant.paper import prepare_research_sleeve_decisions
+
+    config = strategy_config_for_profile("research")
+    raw = replace(
+        _atomic_decision("KXHIGHTSFO-EDGE-003", resting=False),
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+        model_probability=None,
+    )
+    fee = quadratic_fee_average_per_contract(
+        raw.ask,
+        1.0,
+        maker=False,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=raw.ticker,
+    )
+    point_probability = raw.ask + fee + 0.003
+    structural = replace(
+        raw,
+        probability=point_probability,
+        probability_lcb=point_probability,
+        model_probability=point_probability,
+        edge=0.003,
+        edge_lcb=0.003,
+        recommended_contracts=1.0,
+        expected_profit=0.003,
+        reasons=[],
+        approved=True,
+    )
+
+    target, motion = prepare_research_sleeve_decisions([structural], config)
+
+    assert target[0].approved is True
+    assert target[0].edge == pytest.approx(0.003)
+    assert motion[0].approved is True
+    assert motion[0].edge == pytest.approx(0.003)
+
+
+def test_target_uses_maker_when_taker_lcb_is_negative_but_maker_lcb_is_nonnegative() -> None:
+    from sfo_kalshi_quant.paper import prepare_research_sleeve_decisions
+
+    config = strategy_config_for_profile("research")
+    structural = replace(
+        _atomic_decision("KXHIGHTSFO-TARGET-MAKER"),
+        approved=True,
+        probability=0.92,
+        probability_lcb=0.815,
+        model_probability=0.92,
+        entry_bid=0.80,
+        entry_ask=0.90,
+        spread=0.10,
+        recommended_contracts=1.0,
+        reasons=[],
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+
+    target, _motion = prepare_research_sleeve_decisions([structural], config)
+
+    assert target[0].approved is True
+    assert target[0].limit_price == pytest.approx(0.81)
+    assert target[0].limit_price < target[0].ask
+    assert target[0].limit_edge_lcb is not None
+    assert target[0].limit_edge_lcb >= 0.0
+
+
+def test_policy_candidate_preparation_does_not_revive_structural_rejection() -> None:
+    from sfo_kalshi_quant.paper import prepare_research_sleeve_decisions
+
+    invalid = replace(
+        _atomic_decision("KXHIGHTSFO-STRUCTURAL-INVALID"),
+        approved=False,
+        recommended_contracts=0.0,
+        expected_profit=0.0,
+        reasons=["market status is closed, not active"],
+    )
+
+    target, motion = prepare_research_sleeve_decisions(
+        [invalid], strategy_config_for_profile("research")
+    )
+
+    assert target[0].approved is False
+    assert motion[0].approved is False
+    assert "market status is closed" in target[0].entry_block_reason
+    assert "market status is closed" in motion[0].entry_block_reason
+
+
+def test_allocator_accepts_independent_target_and_motion_opportunity_views() -> None:
+    target_decision = _atomic_decision("KXHIGHTSFO-TARGET-ONLY")
+    motion_decision = _motion_atomic_decision("KXHIGHTSFO-MOTION-ONLY")
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(target_decision, "2026-07-19", 1)],
+        motion_opportunities=[
+            ResearchOpportunity(motion_decision, "2026-07-19", 1)
+        ],
+        run_id="independent-sleeve-views",
+    )
+
+    assert [leg.decision.ticker for leg in plans.target.legs] == [
+        target_decision.ticker
+    ]
+    assert [leg.decision.ticker for leg in plans.motion.legs] == [
+        motion_decision.ticker
+    ]
+    assert {row.ticker for row in plans.target.dispositions} == {
+        target_decision.ticker
+    }
+    assert {row.ticker for row in plans.motion.dispositions} == {
+        motion_decision.ticker
+    }
+
+
+def test_target_atomic_admission_uses_zero_lcb_floor_quote(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import (
+        PaperTrader,
+        prepare_research_sleeve_decisions,
+    )
+
+    config = strategy_config_for_profile("research")
+    structural = replace(
+        _atomic_decision("KXHIGHTSFO-TARGET-ZERO-LCB"),
+        approved=True,
+        probability=0.92,
+        probability_lcb=0.815,
+        model_probability=0.92,
+        entry_bid=0.80,
+        entry_ask=0.90,
+        spread=0.10,
+        recommended_contracts=1.0,
+        reasons=[],
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+    target_decisions, _motion_decisions = prepare_research_sleeve_decisions(
+        [structural],
+        config,
+    )
+    plans = allocate_research_plans(
+        [ResearchOpportunity(target_decisions[0], "2026-07-19", 1)],
+        motion_opportunities=[],
+        run_id="target-zero-lcb",
+    )
+
+    result = PaperTrader(
+        PaperStore(tmp_path / "target-zero-lcb.db", research_clock=_fixed_research_clock),
+        config,
+        risk_profile="research",
+        entry_mode="limit",
+    ).execute_research_plans(
+        "2026-07-19",
+        plans,
+        source_decisions=target_decisions,
+        motion_source_decisions=[],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="target-zero-lcb",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert len(result.target_order_ids) == 1
+    assert result.motion_order_ids == ()
+
+
+def test_motion_reentry_projects_root_when_newest_partial_child_is_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "motion-root-reentry.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    trader = PaperTrader(store, config, risk_profile="research", entry_mode="limit")
+    initial = replace(
+        _motion_atomic_decision("KXHIGHTSFO-MOTION-ROOT"),
+        probability_lcb=0.80,
+        edge_lcb=-0.02,
+    )
+    first_plans = allocate_research_plans(
+        [ResearchOpportunity(initial, "2026-07-19", 1)], run_id="root-first"
+    )
+    first = trader.execute_research_plans(
+        "2026-07-19",
+        first_plans,
+        source_decisions=[initial],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="root-first",
+        observed_high_state="complete=0;high=unavailable",
+    )
+    root_id = first.motion_order_ids[0]
+    store.close_paper_order(root_id, 0.80, max_quantity=0.5)
+    assert store.paper_order(root_id)["status"] == "PAPER_FILLED"
+
+    changed = replace(
+        initial,
+        entry_ask=initial.ask + 0.01,
+        probability=initial.probability + 0.02,
+        probability_lcb=initial.probability_lcb + 0.02,
+        edge=initial.edge + 0.01,
+        edge_lcb=initial.edge_lcb + 0.01,
+        expected_profit=initial.expected_profit + 0.01,
+    )
+    second_plans = allocate_research_plans(
+        [ResearchOpportunity(changed, "2026-07-19", 1)], run_id="root-second"
+    )
+    monkeypatch.setattr(
+        store,
+        "record_research_order_atomic",
+        lambda *args, **kwargs: pytest.fail("active logical root must block admission"),
+    )
+    second = trader.execute_research_plans(
+        "2026-07-19",
+        second_plans,
+        source_decisions=[changed],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="root-second",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert second.motion_order_ids == ()
+    with store.connect() as conn:
+        latest = conn.execute(
+            "SELECT approved, entry_block_reason FROM decision_snapshots "
+            "WHERE research_sleeve='motion' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert latest == (0, "duplicate active motion research entry")
+
+
+def test_atomic_none_downgrades_persisted_research_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "atomic-none.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decision = replace(
+        _motion_atomic_decision("KXHIGHTSFO-ATOMIC-NONE"),
+        probability_lcb=0.80,
+        edge_lcb=-0.02,
+    )
+    plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-19", 1)], run_id="atomic-none"
+    )
+    monkeypatch.setattr(store, "record_research_order_atomic", lambda *a, **k: None)
+
+    result = PaperTrader(
+        store, config, risk_profile="research", entry_mode="limit"
+    ).execute_research_plans(
+        "2026-07-19",
+        plans,
+        source_decisions=[decision],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="atomic-none",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert result.motion_order_ids == ()
+    with store.connect() as conn:
+        latest = conn.execute(
+            "SELECT approved, entry_block_reason FROM decision_snapshots "
+            "WHERE research_sleeve='motion' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert latest == (0, "atomic research admission rejected")

@@ -46,7 +46,11 @@ from ..models import (
     TradeDecision,
     format_event_date_token,
 )
-from ..paper import ArbitrageContainmentError, PaperTrader
+from ..paper import (
+    ArbitrageContainmentError,
+    PaperTrader,
+    prepare_research_sleeve_decisions,
+)
 from ..portfolio import PortfolioPlan, allocate_portfolio
 from ..posterior_kelly import load_posterior_kelly_model
 from ..probability import ResidualCalibrator
@@ -361,16 +365,23 @@ def build_scan_context(
             _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
         ),
     )
-    decisions = evaluator.rank(
-        markets,
-        probabilities,
-        bankroll=paper_bankroll,
-        sides=_analysis_sides(args.side),
-        source_spread_f=forecast.source_spread_f,
-        forecast_high_f=forecast.predicted_high_f,
-        forecast_sigma_f=forecast.source_spread_f,
-        market_consensus=consensus,
-    )
+    rank_kwargs = {
+        "bankroll": paper_bankroll,
+        "sides": _analysis_sides(args.side),
+        "source_spread_f": forecast.source_spread_f,
+        "forecast_high_f": forecast.predicted_high_f,
+        "forecast_sigma_f": forecast.source_spread_f,
+        "market_consensus": consensus,
+    }
+    if risk_profile == "research":
+        decisions = evaluator.rank(
+            markets,
+            probabilities,
+            **rank_kwargs,
+            candidate_only=True,
+        )
+    else:
+        decisions = evaluator.rank(markets, probabilities, **rank_kwargs)
     return ScanContext(
         city=city,
         series_ticker=series_ticker,
@@ -570,19 +581,28 @@ def _execute_research_scan_context(
         account_id=MOTION_POLICY.account_id,
         objective_day=objective_day,
     )
-    opportunities = [
+    execution_config = strategy_config_for_profile("research")
+    target_decisions, motion_decisions = prepare_research_sleeve_decisions(
+        decisions,
+        execution_config,
+    )
+    target_opportunities = [
         ResearchOpportunity(decision, target.isoformat(), lead_days)
-        for decision in decisions
+        for decision in target_decisions
+    ]
+    motion_opportunities = [
+        ResearchOpportunity(decision, target.isoformat(), lead_days)
+        for decision in motion_decisions
     ]
     plans = allocate_research_plans(
-        opportunities,
+        target_opportunities,
+        motion_opportunities=motion_opportunities,
         target_available_cash=target_cash,
         motion_available_cash=motion_cash,
         realized_today=target_realized,
         motion_realized_today=motion_realized,
         run_id=run_id,
     )
-    execution_config = strategy_config_for_profile("research")
     execution = PaperTrader(
         store,
         execution_config,
@@ -592,7 +612,8 @@ def _execute_research_scan_context(
     ).execute_research_plans(
         target.isoformat(),
         plans,
-        source_decisions=decisions,
+        source_decisions=target_decisions,
+        motion_source_decisions=motion_decisions,
         objective_day=objective_day.isoformat(),
         lead_bucket=lead_bucket,
         scan_run_id=run_id,

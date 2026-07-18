@@ -37,7 +37,7 @@ from .fees import (
     quadratic_fee_average_per_contract,
     quadratic_fee_per_contract,
 )
-from .execution import BuyLimitQuote, buy_limit_for_decision, initial_queue_ahead
+from .execution import BuyLimitQuote, initial_queue_ahead, target_research_quote
 from .logical_positions import LOGICAL_IDENTITY_FIELDS
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
@@ -1440,6 +1440,57 @@ class PaperStore:
             raise RuntimeError("research decision evidence was not persisted exactly once")
         return decision_ids[0]
 
+    def mark_research_decision_admission_blocked(
+        self,
+        decision_id: int,
+        reason: str,
+    ) -> None:
+        """Fail closed an approved research row after atomic admission declines it."""
+
+        block_reason = str(reason).strip()
+        if not block_reason:
+            raise ValueError("research admission block reason is required")
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT approved, signal_approved, reasons_json, research_sleeve "
+                "FROM decision_snapshots WHERE id=?",
+                (int(decision_id),),
+            ).fetchone()
+            if row is None or not row[3]:
+                conn.rollback()
+                raise ValueError("research decision evidence is missing")
+            try:
+                reasons = json.loads(row[2] or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                reasons = []
+            if not isinstance(reasons, list):
+                reasons = []
+            if block_reason not in reasons:
+                reasons.append(block_reason)
+            signal_approved = row[1]
+            if signal_approved is None:
+                signal_approved = row[0]
+            cursor = conn.execute(
+                """
+                UPDATE decision_snapshots
+                SET approved=0, signal_approved=?, entry_block_reason=?,
+                    recommended_contracts=0, recommended_spend=0,
+                    expected_profit=0, reasons_json=?
+                WHERE id=? AND research_sleeve IS NOT NULL
+                """,
+                (
+                    int(bool(signal_approved)),
+                    block_reason,
+                    json.dumps(reasons, sort_keys=True),
+                    int(decision_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise ValueError("research decision evidence is missing")
+            conn.commit()
+
     def motion_reentry_block_reason(
         self,
         *,
@@ -1466,6 +1517,7 @@ class PaperStore:
                   ON d.id = p.entry_decision_snapshot_id
                 WHERE p.account_id=? AND p.target_date=?
                   AND p.market_ticker=? AND UPPER(COALESCE(p.side,'YES'))=?
+                  AND COALESCE(p.parent_order_id, 0)=0
                 ORDER BY p.id DESC
                 LIMIT 1
                 """,
@@ -1634,7 +1686,7 @@ class PaperStore:
     ) -> BuyLimitQuote:
         """Rebuild and bind the executable quote from journaled market inputs."""
 
-        quote = buy_limit_for_decision(decision, strategy_config)
+        quote = target_research_quote(decision, strategy_config)
         if quote is None:
             raise ValueError("canonical research limit quote is unavailable")
         try:
@@ -1902,7 +1954,13 @@ class PaperStore:
                 series_ticker=decision.ticker,
             )
             cost_per_contract = ask + fee_per_contract
-            edge = decision.probability - cost_per_contract
+            point_probability = (
+                float(decision.model_probability)
+                if strategy_config.edge_gate_uses_model_probability
+                and decision.model_probability is not None
+                else float(decision.probability)
+            )
+            edge = point_probability - cost_per_contract
             edge_lcb = decision.probability_lcb - cost_per_contract
             represented = (
                 decision.fee_per_contract,

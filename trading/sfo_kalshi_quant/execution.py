@@ -89,6 +89,68 @@ def buy_limit_for_decision(
     )
 
 
+def target_research_quote(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> BuyLimitQuote | None:
+    """Canonical target-sleeve quote with a zero LCB-edge floor.
+
+    Prefer a one-tick improving maker quote when the spread permits it.  When
+    that price would cross, take only at the visible ask and only to displayed
+    depth.  Unlike the legacy generic limit policy, the target research floor
+    is exactly non-negative after-fee LCB edge, not the 2-point buffer.
+    """
+
+    if not decision.approved or decision.recommended_contracts <= 0:
+        return None
+    try:
+        contracts = float(decision.recommended_contracts)
+        visible_ask = float(decision.ask)
+        visible_bid = max(0.0, float(decision.bid))
+        ask_size = float(decision.ask_size)
+        tick = float(config.limit_price_tick)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 0.0 < visible_ask < 1.0 or contracts <= 0 or tick <= 0:
+        return None
+    point_probability = (
+        float(decision.model_probability)
+        if config.edge_gate_uses_model_probability
+        and decision.model_probability is not None
+        else float(decision.probability)
+    )
+    inside_price = _floor_to_tick(visible_bid + tick, tick)
+    crosses = inside_price >= visible_ask - 1e-12
+    if crosses:
+        if ask_size + 1e-9 < contracts:
+            return None
+        price = _floor_to_tick(visible_ask, tick)
+    else:
+        price = inside_price
+    fee = quadratic_fee_average_per_contract(
+        price,
+        contracts,
+        maker=not crosses,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=decision.ticker,
+    )
+    cost = price + fee
+    edge = point_probability - cost
+    edge_lcb = float(decision.probability_lcb) - cost
+    if edge < -1e-12 or edge_lcb < -1e-12:
+        return None
+    return BuyLimitQuote(
+        price=_round_price(price),
+        fee_per_contract=fee,
+        cost_per_contract=cost,
+        edge=edge,
+        edge_lcb=edge_lcb,
+        would_cross=crosses,
+    )
+
+
 def with_buy_limit(
     decision: TradeDecision,
     config: StrategyConfig,

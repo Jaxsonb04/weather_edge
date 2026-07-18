@@ -14,7 +14,7 @@ from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
 )
-from .execution import buy_limit_for_decision, with_buy_limit
+from .execution import buy_limit_for_decision, target_research_quote, with_buy_limit
 from .models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
 from .research_portfolio import ResearchPlans
@@ -54,7 +54,13 @@ def with_motion_taker_execution(
         series_ticker=decision.ticker,
     )
     cost = ask + fee
-    edge = float(decision.probability) - cost
+    point_probability = (
+        float(decision.model_probability)
+        if config.edge_gate_uses_model_probability
+        and decision.model_probability is not None
+        else float(decision.probability)
+    )
+    edge = point_probability - cost
     edge_lcb = float(decision.probability_lcb) - cost
     if edge <= 0.0 or edge_lcb + 1e-12 < config.min_edge_lcb:
         return None
@@ -72,6 +78,90 @@ def with_motion_taker_execution(
         limit_edge=None,
         limit_edge_lcb=None,
     )
+
+
+def with_target_research_execution(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> TradeDecision | None:
+    quote = target_research_quote(decision, config)
+    if quote is None:
+        return None
+    return replace(
+        decision,
+        fee_per_contract=quote.fee_per_contract,
+        cost_per_contract=quote.cost_per_contract,
+        edge=quote.edge,
+        edge_lcb=quote.edge_lcb,
+        expected_profit=quote.edge * decision.recommended_contracts,
+        limit_price=quote.price,
+        limit_fee_per_contract=quote.fee_per_contract,
+        limit_cost_per_contract=quote.cost_per_contract,
+        limit_edge=quote.edge,
+        limit_edge_lcb=quote.edge_lcb,
+    )
+
+
+def prepare_research_sleeve_decisions(
+    structural_decisions: list[TradeDecision],
+    config: StrategyConfig,
+) -> tuple[list[TradeDecision], list[TradeDecision]]:
+    """Apply exact target/motion edge and quote policy to structural signals."""
+
+    target: list[TradeDecision] = []
+    motion: list[TradeDecision] = []
+    for decision in structural_decisions:
+        if not decision.approved:
+            structural_reason = (
+                decision.entry_block_reason
+                or (decision.reasons[0] if decision.reasons else None)
+                or "research structural gate rejected candidate"
+            )
+            blocked = replace(
+                decision,
+                approved=False,
+                signal_approved=False,
+                entry_block_reason=structural_reason,
+                recommended_contracts=0.0,
+                expected_profit=0.0,
+            )
+            target.append(blocked)
+            motion.append(blocked)
+            continue
+        target_quote = with_target_research_execution(decision, config)
+        if target_quote is None:
+            target.append(
+                replace(
+                    decision,
+                    approved=False,
+                    signal_approved=True,
+                    entry_block_reason=(
+                        "target requires non-negative point and after-fee LCB edge"
+                    ),
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                )
+            )
+        else:
+            target.append(target_quote)
+        motion_quote = with_motion_taker_execution(decision, config)
+        if motion_quote is None:
+            motion.append(
+                replace(
+                    decision,
+                    approved=False,
+                    signal_approved=True,
+                    entry_block_reason=(
+                        "motion requires point-positive visible-ask taker edge "
+                        "and lower-bound edge >= -0.07"
+                    ),
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                )
+            )
+        else:
+            motion.append(motion_quote)
+    return target, motion
 
 
 @dataclass(frozen=True)
@@ -225,6 +315,7 @@ class PaperTrader:
         plans: ResearchPlans,
         *,
         source_decisions: list[TradeDecision],
+        motion_source_decisions: list[TradeDecision] | None = None,
         objective_day: str,
         lead_bucket: str,
         scan_run_id: str,
@@ -256,6 +347,14 @@ class PaperTrader:
         source_by_key = {
             _decision_key(decision): decision for decision in source_decisions
         }
+        motion_source_by_key = {
+            _decision_key(decision): decision
+            for decision in (
+                source_decisions
+                if motion_source_decisions is None
+                else motion_source_decisions
+            )
+        }
         target_decision_ids, target_order_ids = self._execute_research_plan(
             target_date,
             plans.target,
@@ -277,7 +376,7 @@ class PaperTrader:
             target_date,
             plans.motion,
             policy=MOTION_POLICY,
-            source_by_key=source_by_key,
+            source_by_key=motion_source_by_key,
             objective_day=objective_day,
             lead_bucket=lead_bucket,
             scan_run_id=scan_run_id,
@@ -405,6 +504,11 @@ class PaperTrader:
             )
             if order_id is not None:
                 order_ids.append(order_id)
+            else:
+                self.store.mark_research_decision_admission_blocked(
+                    decision_id,
+                    "atomic research admission rejected",
+                )
         return decision_ids, order_ids
 
     def place_approved(
@@ -985,19 +1089,9 @@ def _prepare_research_disposition(
             return prepared
         block_reason = "motion visible-ask taker quote is not executable"
     else:
-        prepared = with_buy_limit(decision, config)
-        if prepared.approved and prepared.limit_price is not None:
-            quote_crosses = prepared.limit_price >= prepared.ask - 1e-12
-            if quote_crosses and prepared.recommended_contracts > prepared.ask_size:
-                contracts = float(int(prepared.ask_size))
-                prepared = replace(
-                    prepared,
-                    recommended_contracts=contracts,
-                    expected_profit=prepared.edge * contracts,
-                )
-                prepared = with_buy_limit(prepared, config)
-            if prepared.approved and prepared.recommended_contracts > 0:
-                return prepared
+        prepared = with_target_research_execution(decision, config)
+        if prepared is not None and prepared.recommended_contracts > 0:
+            return prepared
         block_reason = "target canonical maker-or-taker quote is not executable"
     return replace(
         decision,

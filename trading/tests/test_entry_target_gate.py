@@ -116,6 +116,8 @@ def test_same_day_entry_gate_blocks_complete_intraday_high():
 def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None:
     target = date(2026, 7, 19)
     decisions = [object(), object(), object()]
+    target_decisions = [object(), object(), object()]
+    motion_decisions = [object(), object(), object()]
     context = SimpleNamespace(
         decisions=decisions,
         series_ticker="KXHIGHTSFO",
@@ -137,6 +139,11 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     trader.execute_research_plans.return_value = execution
 
     with (
+        patch.object(
+            scan_module,
+            "prepare_research_sleeve_decisions",
+            return_value=(target_decisions, motion_decisions),
+        ) as prepare,
         patch.object(scan_module, "ResearchOpportunity", side_effect=lambda d, t, l: (d, t, l)),
         patch.object(scan_module, "allocate_research_plans", return_value=plans) as allocate,
         patch.object(scan_module, "PaperTrader", return_value=trader) as trader_type,
@@ -157,8 +164,13 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     assert actual_plans is plans
     assert actual_execution is execution
     assert recorded == decisions
+    prepare.assert_called_once()
+    assert prepare.call_args.args[0] == decisions
     allocate.assert_called_once_with(
-        [(decision, "2026-07-19", 1) for decision in decisions],
+        [(decision, "2026-07-19", 1) for decision in target_decisions],
+        motion_opportunities=[
+            (decision, "2026-07-19", 1) for decision in motion_decisions
+        ],
         target_available_cash=900.0,
         motion_available_cash=800.0,
         realized_today=12.0,
@@ -169,7 +181,8 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     call = trader.execute_research_plans.call_args
     assert call.args[0] == "2026-07-19"
     assert call.args[1] is plans
-    assert call.kwargs["source_decisions"] == decisions
+    assert call.kwargs["source_decisions"] == target_decisions
+    assert call.kwargs["motion_source_decisions"] == motion_decisions
     assert call.kwargs["scan_run_id"] == "one-shared-scan"
     assert call.kwargs["admit_orders"] is True
     assert store.research_account_state.call_args_list[0].kwargs == {

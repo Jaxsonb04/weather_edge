@@ -120,6 +120,7 @@ def city_target_worst_case_loss(
 def allocate_research_plans(
     opportunities: Sequence[ResearchOpportunity],
     *,
+    motion_opportunities: Sequence[ResearchOpportunity] | None = None,
     target_available_cash: float = TARGET_POLICY.reference_equity,
     motion_available_cash: float = MOTION_POLICY.reference_equity,
     target_active_legs: Sequence[PortfolioLeg] = (),
@@ -128,7 +129,12 @@ def allocate_research_plans(
     motion_realized_today: float = 0.0,
     run_id: str | None = None,
 ) -> ResearchPlans:
-    """Build independent target and motion plans from one opportunity set."""
+    """Build independent target and motion plans from one scan's policy views.
+
+    ``motion_opportunities`` lets the two sleeves consume independently quoted
+    decisions derived from the same immutable scan.  Omitting it preserves the
+    original one-view API for callers and historical tests.
+    """
 
     (
         target_available_cash,
@@ -145,6 +151,14 @@ def allocate_research_plans(
     prepared_opportunities = [
         _normalize_opportunity(opportunity) for opportunity in opportunities
     ]
+    prepared_motion_opportunities = (
+        prepared_opportunities
+        if motion_opportunities is None
+        else [
+            _normalize_opportunity(opportunity)
+            for opportunity in motion_opportunities
+        ]
+    )
     normalized_target_active, target_active_reason = _normalize_active_legs(
         target_active_legs,
         policy=TARGET_POLICY,
@@ -254,7 +268,7 @@ def allocate_research_plans(
     motion_dispositions: list[PortfolioDisposition] = []
     motion_cash_used = 0.0
     motion_paused_reason = _pause_reason(MOTION_POLICY, motion_realized_today)
-    for source in sorted(prepared_opportunities, key=_motion_priority):
+    for source in sorted(prepared_motion_opportunities, key=_motion_priority):
         audit_opportunity = source.original
         opportunity = source.normalized
         rejection = source.rejection
