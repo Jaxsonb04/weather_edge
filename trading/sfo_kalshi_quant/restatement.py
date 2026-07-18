@@ -145,6 +145,14 @@ def _optional_parent_id(value: object) -> tuple[int | None, bool]:
     return parent_id, parent_id is None
 
 
+def _strict_text_identity(value: object) -> str | None:
+    """Accept only non-empty strings with no hidden surrounding whitespace."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    return value
+
+
 def _order_replay_input_findings(row: sqlite3.Row) -> list[str]:
     findings: list[str] = []
     limit_value = row["limit_price"]
@@ -173,7 +181,7 @@ def _allocation_replay_input_findings(row: sqlite3.Row) -> list[str]:
     findings: list[str] = []
     if _positive_row_id(row["order_id"]) is None:
         findings.append("EXEC_V4_ALLOCATION_ORDER_ID_INVALID")
-    if not str(row["trade_id"] or "").strip():
+    if _strict_text_identity(row["trade_id"]) is None:
         findings.append("EXEC_V4_ALLOCATION_TRADE_ID_INVALID")
     if _parse_replay_time(row["trade_created_at"]) is None:
         findings.append("EXEC_V4_ALLOCATION_TRADE_TIME_INVALID")
@@ -190,7 +198,7 @@ def _allocation_replay_input_findings(row: sqlite3.Row) -> list[str]:
 
 def _tape_replay_input_findings(row: sqlite3.Row) -> list[str]:
     findings: list[str] = []
-    if not str(row["trade_id"] or "").strip():
+    if _strict_text_identity(row["trade_id"]) is None:
         findings.append("EXEC_V4_TAPE_TRADE_ID_INVALID")
     if _parse_replay_time(row["created_time"]) is None:
         findings.append("EXEC_V4_TAPE_TIME_INVALID")
@@ -333,6 +341,9 @@ def _exec_v4_replay_findings(
     allocation_rows: list[sqlite3.Row],
     tape_rows: list[sqlite3.Row],
     maker_claim_rows: list[sqlite3.Row],
+    *,
+    known_order_ids: set[int] | None = None,
+    known_order_tickers: dict[int, str] | None = None,
 ) -> dict[int, list[str]]:
     """Reproduce v4 allocation evidence through the production allocator."""
 
@@ -352,39 +363,137 @@ def _exec_v4_replay_findings(
     candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
     for order_id, row in candidates.items():
         candidate_ids_by_ticker[str(row["market_ticker"])].add(order_id)
+    persisted_order_ids = known_order_ids or set(evidences)
+    persisted_order_tickers = known_order_tickers or {
+        order_id: str(row["market_ticker"])
+        for row in orders
+        if (order_id := _positive_row_id(row["id"])) is not None
+    }
+    known_tape_ids = {
+        trade_id
+        for tape_row in tape_rows
+        if (trade_id := _strict_text_identity(tape_row["trade_id"])) is not None
+    }
+    trade_owner_ids: dict[str, set[int]] = defaultdict(set)
+    ambiguous_trade_ownership: set[str] = set()
+    for shared_row in [*allocation_rows, *maker_claim_rows]:
+        shared_trade_id = _strict_text_identity(shared_row["trade_id"])
+        if shared_trade_id is None:
+            continue
+        shared_order_id = _positive_row_id(shared_row["order_id"])
+        if shared_order_id is None or shared_order_id not in persisted_order_ids:
+            ambiguous_trade_ownership.add(shared_trade_id)
+        else:
+            trade_owner_ids[shared_trade_id].add(shared_order_id)
 
-    def attach_to_ticker(ticker: object, reasons: list[str]) -> None:
-        for candidate_id in candidate_ids_by_ticker.get(str(ticker), set()):
-            for reason in reasons:
+    def attach_to_ticker(
+        ticker: object,
+        reasons: list[str],
+        *,
+        identity_prefix: str | None = None,
+        provably_unrelated: bool = False,
+    ) -> None:
+        attached_reasons = list(reasons)
+        normalized_ticker = _strict_text_identity(ticker)
+        if identity_prefix is None:
+            target_ids = candidate_ids_by_ticker.get(str(ticker), set())
+        elif normalized_ticker is None:
+            target_ids = set(candidates)
+            attached_reasons.append(f"{identity_prefix}_INVALID")
+        elif normalized_ticker not in candidate_ids_by_ticker:
+            if provably_unrelated:
+                return
+            target_ids = set(candidates)
+            attached_reasons.append(f"{identity_prefix}_UNRESOLVABLE")
+        else:
+            target_ids = candidate_ids_by_ticker[normalized_ticker]
+        for candidate_id in target_ids:
+            for reason in attached_reasons:
                 _append_finding(findings[candidate_id], reason)
 
     allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
     for allocation in allocation_rows:
         allocation_findings = _allocation_replay_input_findings(allocation)
         allocation_order_id = _positive_row_id(allocation["order_id"])
-        if allocation_findings:
-            if allocation_order_id in candidates:
-                for reason in allocation_findings:
-                    _append_finding(findings[allocation_order_id], reason)
-            else:
-                attach_to_ticker(allocation["market_ticker"], allocation_findings)
+        allocation_trade_id = _strict_text_identity(allocation["trade_id"])
+        if (
+            allocation_order_id is not None
+            and allocation_order_id not in persisted_order_ids
+        ):
+            allocation_findings.append(
+                "EXEC_V4_ALLOCATION_ORDER_ID_UNRESOLVABLE"
+            )
+        if (
+            allocation_trade_id is not None
+            and allocation_trade_id not in known_tape_ids
+        ):
+            allocation_findings.append(
+                "EXEC_V4_ALLOCATION_TRADE_ID_UNRESOLVABLE"
+            )
+        attach_to_ticker(
+            allocation["market_ticker"],
+            allocation_findings,
+            identity_prefix="EXEC_V4_ALLOCATION_TICKER",
+            provably_unrelated=(
+                allocation_order_id is not None
+                and allocation_order_id in persisted_order_ids
+                and allocation_order_id not in candidates
+                and _strict_text_identity(allocation["market_ticker"])
+                == persisted_order_tickers.get(allocation_order_id)
+            ),
+        )
         if allocation_order_id is not None:
             allocations_by_order[allocation_order_id].append(allocation)
 
     for tape_row in tape_rows:
+        tape_trade_id = _strict_text_identity(tape_row["trade_id"])
+        tape_owners = trade_owner_ids.get(tape_trade_id or "", set())
         attach_to_ticker(
-            tape_row["ticker"], _tape_replay_input_findings(tape_row)
+            tape_row["ticker"],
+            _tape_replay_input_findings(tape_row),
+            identity_prefix="EXEC_V4_TAPE_TICKER",
+            provably_unrelated=(
+                bool(tape_owners)
+                and tape_trade_id not in ambiguous_trade_ownership
+                and all(owner_id not in candidates for owner_id in tape_owners)
+                and all(
+                    _strict_text_identity(tape_row["ticker"])
+                    == persisted_order_tickers.get(owner_id)
+                    for owner_id in tape_owners
+                )
+            ),
         )
 
     for claim in maker_claim_rows:
         claim_findings: list[str] = []
-        if _positive_row_id(claim["order_id"]) is None:
+        claim_order_id = _positive_row_id(claim["order_id"])
+        claim_trade_id = _strict_text_identity(claim["trade_id"])
+        if claim_order_id is None:
             claim_findings.append("EXEC_V4_PRIOR_CLAIM_ORDER_ID_INVALID")
-        if not str(claim["trade_id"] or "").strip():
+        elif claim_order_id not in persisted_order_ids:
+            claim_findings.append(
+                "EXEC_V4_PRIOR_CLAIM_ORDER_ID_UNRESOLVABLE"
+            )
+        if claim_trade_id is None:
             claim_findings.append("EXEC_V4_PRIOR_CLAIM_TRADE_ID_INVALID")
+        elif claim_trade_id not in known_tape_ids:
+            claim_findings.append(
+                "EXEC_V4_PRIOR_CLAIM_TRADE_ID_UNRESOLVABLE"
+            )
         if _finite_number(claim["quantity"], minimum=0) is None:
             claim_findings.append("EXEC_V4_PRIOR_CLAIM_QUANTITY_INVALID")
-        attach_to_ticker(claim["market_ticker"], claim_findings)
+        attach_to_ticker(
+            claim["market_ticker"],
+            claim_findings,
+            identity_prefix="EXEC_V4_PRIOR_CLAIM_TICKER",
+            provably_unrelated=(
+                claim_order_id is not None
+                and claim_order_id in persisted_order_ids
+                and claim_order_id not in candidates
+                and _strict_text_identity(claim["market_ticker"])
+                == persisted_order_tickers.get(claim_order_id)
+            ),
+        )
 
     for order_id, row in candidates.items():
         evidence = evidences[order_id]
@@ -439,7 +548,7 @@ def _exec_v4_replay_findings(
             if (order_id := _positive_row_id(row["id"])) is not None
         } & set(candidates)
         if any(
-            reason.endswith("_INVALID")
+            reason.endswith(("_INVALID", "_UNRESOLVABLE"))
             for order_id in candidate_ids
             for reason in findings[order_id]
         ):
@@ -773,6 +882,9 @@ def restate(db_path: Path) -> dict[str, Any]:
         orders = conn.execute(
             "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
         ).fetchall()
+        all_order_identity_rows = conn.execute(
+            "SELECT id, market_ticker, target_date FROM paper_orders"
+        ).fetchall()
         settlement_rows = conn.execute(
             "SELECT * FROM paper_settlement_verifications"
         ).fetchall()
@@ -804,17 +916,89 @@ def restate(db_path: Path) -> dict[str, Any]:
             else []
         )
 
+    all_orders_by_id = {
+        order_id: row
+        for row in all_order_identity_rows
+        if (order_id := _positive_row_id(row["id"])) is not None
+    }
+    orders_by_id = {
+        order_id: row
+        for row in orders
+        if (order_id := _positive_row_id(row["id"])) is not None
+    }
+    maker_candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
+    for order_id, row in orders_by_id.items():
+        if (
+            _json_object(row["fill_evidence_json"]).get("model")
+            == "maker_allocator_price_time_v4"
+        ):
+            maker_candidate_ids_by_ticker[str(row["market_ticker"])].add(order_id)
+
     settlement_checks: dict[int, str] = {}
-    invalid_settlement_tickers: set[str | None] = set()
+    settlement_findings_by_order: dict[int, list[str]] = defaultdict(list)
+    global_settlement_findings: list[str] = []
+
+    def attach_unowned_settlement_finding(
+        check_row: sqlite3.Row,
+        finding: str,
+    ) -> None:
+        ticker_value = _row_value(check_row, "market_ticker")
+        ticker = _strict_text_identity(ticker_value)
+        findings = [finding]
+        if ticker is None:
+            findings.append("SETTLEMENT_VERIFICATION_TICKER_INVALID")
+            target_ids: set[int] = set()
+        elif ticker not in maker_candidate_ids_by_ticker:
+            findings.append("SETTLEMENT_VERIFICATION_TICKER_UNRESOLVABLE")
+            target_ids = set()
+        else:
+            target_ids = maker_candidate_ids_by_ticker[ticker]
+        if target_ids:
+            for target_id in target_ids:
+                for reason in findings:
+                    _append_finding(settlement_findings_by_order[target_id], reason)
+        else:
+            for reason in findings:
+                _append_finding(global_settlement_findings, reason)
+
     for check_row in settlement_rows:
         check_order_id = _positive_row_id(_row_value(check_row, "order_id"))
         if check_order_id is None:
-            check_ticker = str(_row_value(check_row, "market_ticker") or "").strip()
-            invalid_settlement_tickers.add(check_ticker or None)
+            attach_unowned_settlement_finding(
+                check_row, "SETTLEMENT_VERIFICATION_ORDER_ID_INVALID"
+            )
             continue
         settlement_checks[check_order_id] = str(
             _row_value(check_row, "verification_status") or ""
         )
+        order = all_orders_by_id.get(check_order_id)
+        if order is None:
+            attach_unowned_settlement_finding(
+                check_row, "SETTLEMENT_VERIFICATION_ORDER_ID_UNRESOLVABLE"
+            )
+            continue
+        check_ticker = _strict_text_identity(
+            _row_value(check_row, "market_ticker")
+        )
+        if check_ticker is None:
+            settlement_findings_by_order[check_order_id].append(
+                "SETTLEMENT_VERIFICATION_TICKER_INVALID"
+            )
+        elif check_ticker != str(order["market_ticker"]):
+            settlement_findings_by_order[check_order_id].append(
+                "SETTLEMENT_VERIFICATION_TICKER_MISMATCH"
+            )
+        check_target_date = _strict_text_identity(
+            _row_value(check_row, "target_date")
+        )
+        if check_target_date is None:
+            settlement_findings_by_order[check_order_id].append(
+                "SETTLEMENT_VERIFICATION_TARGET_DATE_INVALID"
+            )
+        elif check_target_date != str(order["target_date"]):
+            settlement_findings_by_order[check_order_id].append(
+                "SETTLEMENT_VERIFICATION_TARGET_DATE_MISMATCH"
+            )
 
     allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
     capital_consumption: dict[str, float] = defaultdict(float)
@@ -937,7 +1121,15 @@ def restate(db_path: Path) -> dict[str, Any]:
         current_findings_by_order[order_id] = list(dict.fromkeys(findings))
 
     replay_findings = _exec_v4_replay_findings(
-        orders, allocation_rows, tape_rows, maker_claim_rows
+        orders,
+        allocation_rows,
+        tape_rows,
+        maker_claim_rows,
+        known_order_ids=set(all_orders_by_id),
+        known_order_tickers={
+            order_id: str(row["market_ticker"])
+            for order_id, row in all_orders_by_id.items()
+        },
     )
     for order_id, findings in replay_findings.items():
         combined = current_findings_by_order.setdefault(order_id, [])
@@ -1008,11 +1200,10 @@ def restate(db_path: Path) -> dict[str, Any]:
         if settlement_check == "MISMATCH":
             findings.append("SETTLEMENT_MISMATCH")
         ticker = str(row["market_ticker"])
-        if evidence.get("model") == "maker_allocator_price_time_v4" and (
-            None in invalid_settlement_tickers
-            or ticker in invalid_settlement_tickers
-        ):
-            findings.append("SETTLEMENT_VERIFICATION_ORDER_ID_INVALID")
+        if order_id is not None:
+            findings += settlement_findings_by_order.get(order_id, [])
+        if evidence.get("model") == "maker_allocator_price_time_v4":
+            findings += global_settlement_findings
         findings = list(dict.fromkeys(findings))
         verification = UNVERIFIABLE if findings else VERIFIED
         realized = _finite_number(row["realized_pnl"])

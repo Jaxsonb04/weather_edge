@@ -20,6 +20,7 @@ from test_audit_2026_07_13 import _decision, _resting_order, _trade
 
 T0 = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
 TICKER = "KXHIGHTSEA-26JUL17-B82.5"
+TICKER_2 = "KXHIGHTSEA-26JUL17-B84.5"
 TARGET_DATE = "2026-07-17"
 TRUTH = {("KXHIGHTSEA", TARGET_DATE): 85.0}
 
@@ -74,9 +75,10 @@ def _apply(
     no_price: float,
     quantity: float,
     at: datetime | None = None,
+    ticker: str = TICKER,
 ) -> None:
     store.apply_maker_trade_batch(
-        TICKER,
+        ticker,
         [
             _trade(
                 trade_id,
@@ -899,3 +901,272 @@ def test_restatement_rejects_malformed_exit_execution_container() -> None:
         _assert_unverified_and_readiness_ineligible(
             db_path, order_id, "EXIT_EXECUTION_INVALID"
         )
+
+
+def _two_ticker_candidates(store: PaperStore) -> tuple[int, int]:
+    first_id = _order(store, ticker=TICKER, queue_ahead=0.0)
+    second_id = _order(
+        store,
+        ticker=TICKER_2,
+        queue_ahead=0.0,
+        placed_at=T0 + timedelta(seconds=1),
+    )
+    _apply(store, "identity-first", no_price=0.72, quantity=5.0)
+    _apply(
+        store,
+        "identity-second",
+        no_price=0.72,
+        quantity=5.0,
+        ticker=TICKER_2,
+    )
+    _settle(store)
+    return first_id, second_id
+
+
+def _relax_table_affinity(conn: sqlite3.Connection, table: str) -> None:
+    columns = [
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    ]
+    source = f"{table}_identity_source"
+    column_sql = ", ".join(f'"{column}"' for column in columns)
+    conn.execute(f"ALTER TABLE {table} RENAME TO {source}")
+    conn.execute(f"CREATE TABLE {table} ({column_sql})")
+    conn.execute(
+        f"INSERT INTO {table} ({column_sql}) "
+        f"SELECT {column_sql} FROM {source}"
+    )
+    conn.execute(f"DROP TABLE {source}")
+
+
+def _corrupt_shared_evidence_ticker(
+    store: PaperStore,
+    source: str,
+    value: object,
+    order_id: int,
+) -> None:
+    table, column = {
+        "allocation": ("paper_maker_allocations", "market_ticker"),
+        "claim": ("maker_volume_claims", "market_ticker"),
+        "tape": ("dataset_kalshi_trades", "ticker"),
+    }[source]
+    with store.connect() as conn:
+        _relax_table_affinity(conn, table)
+        if source == "claim":
+            conn.execute(
+                "INSERT INTO maker_volume_claims "
+                "(created_at, market_ticker, trade_id, order_id, quantity) "
+                "VALUES (?, ?, 'identity-claim', ?, 1)",
+                (T0.isoformat(), value, order_id),
+            )
+        else:
+            trade_id = "identity-first"
+            conn.execute(
+                f"UPDATE {table} SET {column}=? WHERE trade_id=?",
+                (value, trade_id),
+            )
+
+
+@pytest.mark.parametrize(
+    ("ticker_value", "reason_suffix"),
+    [
+        pytest.param("", "INVALID", id="empty"),
+        pytest.param("   ", "INVALID", id="whitespace"),
+        pytest.param(None, "INVALID", id="null"),
+        pytest.param(17, "INVALID", id="numeric"),
+        pytest.param(sqlite3.Binary(b"bad"), "INVALID", id="blob"),
+        pytest.param(
+            "KXUNKNOWN-26JUL17-B82.5",
+            "UNRESOLVABLE",
+            id="unknown",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("source", "reason_prefix"),
+    [
+        ("claim", "EXEC_V4_PRIOR_CLAIM_TICKER"),
+        ("allocation", "EXEC_V4_ALLOCATION_TICKER"),
+        ("tape", "EXEC_V4_TAPE_TICKER"),
+    ],
+)
+def test_restatement_propagates_invalid_shared_evidence_ticker_globally(
+    source: str,
+    reason_prefix: str,
+    ticker_value: object,
+    reason_suffix: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        first_id, second_id = _two_ticker_candidates(store)
+        _corrupt_shared_evidence_ticker(store, source, ticker_value, first_id)
+        expected = f"{reason_prefix}_{reason_suffix}"
+
+        for order_id in (first_id, second_id):
+            result = _result(db_path, order_id)
+            assert result["verification"] == "UNVERIFIABLE"
+            assert expected in result["findings"]
+
+        readiness = replay_from_database(db_path, TRUTH)
+        assert readiness["verified_decisions"] == 0
+        assert any(
+            "unverified execution evidence" in reason
+            for reason in readiness["promotion_block_reasons"]
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "field", "value", "reason"),
+    [
+        (
+            "allocation",
+            "order_id",
+            999_999,
+            "EXEC_V4_ALLOCATION_ORDER_ID_UNRESOLVABLE",
+        ),
+        (
+            "allocation",
+            "trade_id",
+            "missing-allocation-trade",
+            "EXEC_V4_ALLOCATION_TRADE_ID_UNRESOLVABLE",
+        ),
+        (
+            "claim",
+            "order_id",
+            999_999,
+            "EXEC_V4_PRIOR_CLAIM_ORDER_ID_UNRESOLVABLE",
+        ),
+        (
+            "claim",
+            "trade_id",
+            "missing-claim-trade",
+            "EXEC_V4_PRIOR_CLAIM_TRADE_ID_UNRESOLVABLE",
+        ),
+    ],
+)
+def test_restatement_keeps_unresolvable_shared_references_ticker_scoped(
+    source: str,
+    field: str,
+    value: object,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        first_id, second_id = _two_ticker_candidates(store)
+        connection = (
+            sqlite3.connect(db_path)
+            if source == "allocation" and field == "order_id"
+            else store.connect()
+        )
+        with connection as conn:
+            if source == "allocation":
+                conn.execute(
+                    f"UPDATE paper_maker_allocations SET {field}=? "
+                    "WHERE trade_id='identity-first'",
+                    (value,),
+                )
+            else:
+                order_id = value if field == "order_id" else first_id
+                trade_id = value if field == "trade_id" else "identity-first"
+                conn.execute(
+                    "INSERT INTO maker_volume_claims "
+                    "(created_at, market_ticker, trade_id, order_id, quantity) "
+                    "VALUES (?, ?, ?, ?, 1)",
+                    (T0.isoformat(), TICKER, trade_id, order_id),
+                )
+
+        first = _result(db_path, first_id)
+        assert first["verification"] == "UNVERIFIABLE"
+        assert reason in first["findings"]
+        assert _result(db_path, second_id)["verification"] == "VERIFIED"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        (
+            "market_ticker",
+            TICKER_2,
+            "SETTLEMENT_VERIFICATION_TICKER_MISMATCH",
+        ),
+        (
+            "target_date",
+            "2026-07-18",
+            "SETTLEMENT_VERIFICATION_TARGET_DATE_MISMATCH",
+        ),
+    ],
+)
+def test_restatement_rejects_inconsistent_settlement_attribution(
+    field: str,
+    value: object,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        first_id, second_id = _two_ticker_candidates(store)
+        verification = {
+            "market_ticker": TICKER,
+            "target_date": TARGET_DATE,
+        }
+        verification[field] = value
+        with store.connect() as conn:
+            conn.execute(
+                "INSERT INTO paper_settlement_verifications "
+                "(order_id, checked_at, market_ticker, target_date, "
+                "booked_high_f, final_high_f, verification_status) "
+                "VALUES (?, ?, ?, ?, 85, 85, 'MATCH')",
+                (
+                    first_id,
+                    T0.isoformat(),
+                    verification["market_ticker"],
+                    verification["target_date"],
+                ),
+            )
+
+        first = _result(db_path, first_id)
+        assert first["verification"] == "UNVERIFIABLE"
+        assert reason in first["findings"]
+        assert _result(db_path, second_id)["verification"] == "VERIFIED"
+
+
+@pytest.mark.parametrize("source", ["claim", "settlement"])
+def test_restatement_does_not_poison_candidates_for_resolvable_rejected_order(
+    source: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        candidate_id = _order(store, queue_ahead=0.0)
+        _apply(store, "identity-rejected-owner", no_price=0.72, quantity=5.0)
+        _settle(store)
+        rejected_id = _order(
+            store,
+            queue_ahead=0.0,
+            placed_at=T0 + timedelta(seconds=1),
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET status='REJECTED' WHERE id=?",
+                (rejected_id,),
+            )
+            if source == "claim":
+                conn.execute(
+                    "INSERT INTO maker_volume_claims "
+                    "(created_at, market_ticker, trade_id, order_id, quantity) "
+                    "VALUES (?, ?, 'identity-rejected-owner', ?, 0)",
+                    (T0.isoformat(), TICKER, rejected_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO paper_settlement_verifications "
+                    "(order_id, checked_at, market_ticker, target_date, "
+                    "booked_high_f, final_high_f, verification_status) "
+                    "VALUES (?, ?, ?, ?, 85, 85, 'MATCH')",
+                    (rejected_id, T0.isoformat(), TICKER, TARGET_DATE),
+                )
+
+        result = _result(db_path, candidate_id)
+        assert result["verification"] == "VERIFIED"
