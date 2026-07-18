@@ -470,7 +470,8 @@ def _normalized_sql_tokens(sql: str) -> tuple[str, ...]:
     """Return a whitespace-insensitive, literal-preserving SQL token stream."""
 
     tokens = re.findall(
-        r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[(),]",
+        r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|"
+        r"<>|!=|<=|>=|==|[(),.;=<>+*/%.-]",
         sql,
     )
     normalized = [token if token.startswith("'") else token.upper() for token in tokens]
@@ -660,9 +661,13 @@ _RESEARCH_IDENTITY_TABLES = (
 )
 
 
-def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
-    """Require complete identity on new sleeve evidence, never legacy rows."""
+def _research_identity_trigger_sql(table: str, operation: str) -> tuple[str, str]:
+    """Generate one canonical research-identity trigger definition."""
 
+    if table not in _RESEARCH_IDENTITY_TABLES:
+        raise ValueError(f"unsupported research identity table: {table}")
+    if operation not in {"INSERT", "UPDATE"}:
+        raise ValueError(f"unsupported research identity operation: {operation}")
     new_identity = " OR ".join(
         f"NEW.{column} IS NOT NULL" for column in RESEARCH_IDENTITY_COLUMNS
     )
@@ -685,40 +690,54 @@ def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
         f"OLD.account_id IN ('{TARGET_POLICY.account_id}', "
         f"'{MOTION_POLICY.account_id}')"
     )
+    trigger = f"trg_{table}_research_identity_{operation.lower()}"
+    if operation == "INSERT":
+        account_condition = (
+            f"{new_research_account} OR " if table == "paper_orders" else ""
+        )
+        established_identity = f"{account_condition}{new_identity}"
+    else:
+        account_condition = (
+            f"{old_research_account} OR {new_research_account} OR "
+            if table == "paper_orders"
+            else ""
+        )
+        established_identity = f"{account_condition}{old_identity} OR {new_identity}"
+    condition = f"({established_identity}) AND ({missing_core})"
+    sql = f"""
+        CREATE TRIGGER {trigger}
+        BEFORE {operation} ON {table}
+        WHEN {condition}
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'research identity requires sleeve, policy version, and fingerprint'
+            );
+        END
+    """
+    return trigger, sql
+
+
+def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
+    """Require complete identity on new sleeve evidence, never legacy rows."""
+
     for table in _RESEARCH_IDENTITY_TABLES:
         for operation in ("INSERT", "UPDATE"):
-            trigger = f"trg_{table}_research_identity_{operation.lower()}"
-            if operation == "INSERT":
-                account_condition = (
-                    f"{new_research_account} OR "
-                    if table == "paper_orders"
-                    else ""
-                )
-                established_identity = f"{account_condition}{new_identity}"
-            else:
-                account_condition = (
-                    f"{old_research_account} OR {new_research_account} OR "
-                    if table == "paper_orders"
-                    else ""
-                )
-                established_identity = (
-                    f"{account_condition}{old_identity} OR {new_identity}"
-                )
-            condition = f"({established_identity}) AND ({missing_core})"
-            # Trigger names are schema API. Recreate them transactionally on
-            # every init so a stale/permissive same-name definition can never
-            # bypass current identity invariants.
+            trigger, expected_sql = _research_identity_trigger_sql(table, operation)
+            stored = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                (trigger,),
+            ).fetchone()
+            if (
+                stored is not None
+                and _normalized_sql_tokens(str(stored[0] or ""))
+                == _normalized_sql_tokens(expected_sql)
+            ):
+                continue
+            # Trigger names are schema API. Replace only stale definitions;
+            # clean init stays read-only while mismatches rebuild transactionally.
             conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-            conn.execute(
-                f"""
-                CREATE TRIGGER {trigger}
-                BEFORE {operation} ON {table}
-                WHEN {condition}
-                BEGIN
-                    SELECT RAISE(ABORT, 'research identity requires sleeve, policy version, and fingerprint');
-                END
-                """
-            )
+            conn.execute(expected_sql)
 
 
 def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:

@@ -530,3 +530,32 @@ def test_identity_trigger_recreate_failure_rolls_back_old_definition(
         ).fetchone()[0]
     assert "SELECT 1" in stored_sql
     assert "research identity requires" not in stored_sql
+
+
+def test_clean_reinit_leaves_identity_trigger_schema_unchanged(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    db_path = tmp_path / "clean-trigger-reinit.db"
+    store = PaperStore(db_path)
+
+    def trigger_state() -> tuple[int, list[tuple[str, str, int]]]:
+        with sqlite3.connect(db_path) as conn:
+            schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+            triggers = conn.execute(
+                """
+                SELECT name, sql, rootpage
+                FROM sqlite_master
+                WHERE type='trigger' AND name LIKE 'trg_%_research_identity_%'
+                ORDER BY name
+                """
+            ).fetchall()
+        return schema_version, triggers
+
+    before = trigger_state()
+    PaperStore(db_path)
+    after = trigger_state()
+
+    assert len(before[1]) == 10
+    assert after == before
