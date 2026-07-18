@@ -1052,6 +1052,20 @@ def _current_immediate_entry_findings(
         and "filled_quantity" in ledger_details
         else filled
     )
+    ledger_amount = _finite_number(_row_value(ledger, "amount"))
+    ledger_implied_quantity = (
+        abs(ledger_amount) / canonical_cost
+        if ledger_amount is not None
+        and canonical_cost is not None
+        and canonical_cost > 0
+        else None
+    )
+    if (
+        ledger_implied_quantity is None
+        or filled is None
+        or not _close_number(ledger_implied_quantity, filled)
+    ):
+        findings.append("CURRENT_ENTRY_QUANTITY_MISMATCH")
     if (
         order_id is None
         or _positive_row_id(_row_value(ledger, "order_id")) != order_id
@@ -1073,6 +1087,45 @@ def _current_immediate_entry_findings(
     ):
         findings.append("CURRENT_ENTRY_LEDGER_MISMATCH")
     return findings
+
+
+def _logical_current_immediate_quantity_findings(
+    group: LogicalPaperPosition,
+) -> list[str]:
+    """Require immediate replay lots to conserve the immutable entry fill."""
+
+    root = group.root
+    if (
+        str(root.get("execution_model_version") or "")
+        != EXECUTION_MODEL_VERSION
+        or (
+            str(root.get("entry_mode") or "market") == "limit"
+            and str(root.get("fill_model") or "")
+            != "immediate_visible_quote"
+        )
+    ):
+        return []
+    filled = _finite_number(root.get("filled_contracts"), minimum=0)
+    lot_quantities = [
+        _finite_number(lot.get("contracts"), minimum=0) for lot in group.lots
+    ]
+    if (
+        filled in {None, 0.0}
+        or any(quantity in {None, 0.0} for quantity in lot_quantities)
+        or not _close_number(
+            sum(
+                quantity
+                for quantity in lot_quantities
+                if quantity is not None
+            ),
+            filled,
+        )
+    ):
+        return [
+            "CURRENT_ENTRY_QUANTITY_MISMATCH",
+            "CURRENT_LOGICAL_QUANTITY_MISMATCH",
+        ]
+    return []
 
 
 def _exit_findings(row: sqlite3.Row, outcome: dict[str, Any]) -> list[str]:
@@ -1933,7 +1986,7 @@ def restate(db_path: Path) -> dict[str, Any]:
         group_findings = (
             _logical_maker_authority_findings(group, allocations_by_order)
             if has_current_maker_authority
-            else []
+            else _logical_current_immediate_quantity_findings(group)
         )
         if not group.valid:
             _append_finding(

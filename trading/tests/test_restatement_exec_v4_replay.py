@@ -2134,3 +2134,78 @@ def test_current_immediate_rejects_entry_fill_ledger_tamper(
                 )
 
         _assert_current_execution_excluded(db_path, order_id, reason)
+
+
+def test_current_immediate_rejects_coordinated_contracts_and_pnl_tamper() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="market")
+        _coordinate_settled_accounting(store, order_id, contracts=500.0)
+
+        _assert_current_execution_excluded(
+            db_path,
+            order_id,
+            "CURRENT_ENTRY_QUANTITY_MISMATCH",
+        )
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "contracts",
+        "filled_contracts",
+        "requested_contracts",
+        "quote_contracts",
+        "ledger_implied_quantity",
+        "remaining_contracts",
+    ],
+)
+def test_current_immediate_rejects_isolated_quantity_alias_mismatch(
+    alias: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="limit")
+        with store.connect() as conn:
+            if alias in {
+                "contracts",
+                "filled_contracts",
+                "requested_contracts",
+                "remaining_contracts",
+            }:
+                conn.execute(
+                    f"UPDATE paper_orders SET {alias}=? WHERE id=?",
+                    (1.0 if alias == "remaining_contracts" else 6.0, order_id),
+                )
+            elif alias == "quote_contracts":
+                quote = json.loads(
+                    conn.execute(
+                        "SELECT quote_snapshot_json FROM paper_orders WHERE id=?",
+                        (order_id,),
+                    ).fetchone()[0]
+                )
+                quote["contracts"] = 6.0
+                conn.execute(
+                    "UPDATE paper_orders SET quote_snapshot_json=? WHERE id=?",
+                    (json.dumps(quote, sort_keys=True), order_id),
+                )
+            else:
+                cost = float(
+                    conn.execute(
+                        "SELECT cost_per_contract FROM paper_orders WHERE id=?",
+                        (order_id,),
+                    ).fetchone()[0]
+                )
+                conn.execute(
+                    "UPDATE paper_account_ledger SET amount=? "
+                    "WHERE order_id=? AND event_type='ENTRY_FILL'",
+                    (-6.0 * cost, order_id),
+                )
+
+        _assert_current_execution_excluded(
+            db_path,
+            order_id,
+            "CURRENT_ENTRY_QUANTITY_MISMATCH",
+        )
