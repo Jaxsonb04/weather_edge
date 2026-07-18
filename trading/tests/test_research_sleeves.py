@@ -21,6 +21,10 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY,
     ResearchSleeve,
 )
+from sfo_kalshi_quant.research_portfolio import (
+    ResearchOpportunity,
+    allocate_research_plans,
+)
 from sfo_kalshi_quant.store.diagnostics import _strategy_config_snapshot
 
 
@@ -228,6 +232,22 @@ def test_live_account_and_fingerprint_are_unchanged() -> None:
     config = strategy_config_for_profile("live")
     assert strategy_fingerprint(config, entry_mode="limit") == "a965c8280aca2b3621f0c312"
     assert strategy_fingerprint(config, entry_mode="market") == "73b10240c1c00a8937b5314f"
+
+
+def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
+    opportunity = ResearchOpportunity(
+        _atomic_decision("KXHIGHTSFO-26JUL20-B80.5", contracts=2.0),
+        target_date="2026-07-20",
+        lead_days=2,
+    )
+
+    plans = allocate_research_plans([opportunity], realized_today=50.0)
+
+    assert plans.target.legs == []
+    assert plans.target.dispositions[0].status == "capacity_blocked"
+    assert "target attained" in (plans.target.dispositions[0].reason or "")
+    assert len(plans.motion.legs) == 1
+    assert plans.motion.legs[0].decision.recommended_contracts == 1
 
 
 def test_init_bootstraps_both_research_accounts_without_rewriting_legacy(
