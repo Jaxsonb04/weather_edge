@@ -34,22 +34,18 @@ def market_backtest_summary(
             f"SELECT * FROM paper_orders {where} ORDER BY id",
             params,
         ).fetchall()
-    # PAPER_EXPIRED rows are resting limits that never filled; they carry
-    # realized_pnl=0.0 but deployed no capital and resolved no position, so
-    # they must not count as orders, dilute the capital/ROI denominator, or
-    # drag the hit-rate denominator as phantom losses.
-    realized_lots = [
-        row
-        for row in rows
-        if row["realized_pnl"] is not None and row["status"] != "PAPER_EXPIRED"
-    ]
     groups = group_logical_positions(rows)
-    terminal = [group for group in groups if group.terminal]
+    valid_groups = [group for group in groups if group.valid]
+    realized_lots = [
+        lot
+        for group in valid_groups
+        for lot in group.resolved_lots
+    ]
+    terminal = [group for group in valid_groups if group.terminal]
     open_roots = [
         group.root
-        for group in groups
-        if group.valid
-        and not group.terminal
+        for group in valid_groups
+        if not group.terminal
         and group.root["status"]
         in {"PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"}
         and group.root["realized_pnl"] is None

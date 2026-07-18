@@ -1119,7 +1119,7 @@ def test_market_summary_counts_partial_exits_as_one_terminal_decision():
         assert summary["capital_at_risk"] == raw_capital
 
 
-def test_market_summary_keeps_rejected_children_visible_to_group_validation():
+def test_market_summary_excludes_invalid_group_counts_and_money():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         decision = TradeDecision(
@@ -1151,9 +1151,9 @@ def test_market_summary_keeps_rejected_children_visible_to_group_validation():
         store.close_paper_order(child_id, 0.20)
         with store.connect() as conn:
             conn.execute(
-                "UPDATE paper_orders SET parent_order_id=?, status='REJECTED' "
+                "UPDATE paper_orders SET parent_order_id=?, market_ticker=? "
                 "WHERE id=?",
-                (root_id, child_id),
+                (root_id, "KXHIGHTSFO-TEST-B71.5", child_id),
             )
             raw_contracts, raw_capital, raw_pnl = conn.execute(
                 "SELECT SUM(contracts), "
@@ -1162,14 +1162,71 @@ def test_market_summary_keeps_rejected_children_visible_to_group_validation():
                 (root_id, root_id),
             ).fetchone()
 
+        assert raw_contracts > 0
+        assert raw_capital > 0
+        assert raw_pnl != 0
+        summary = store.market_backtest_summary()
+
+        assert summary == {
+            "orders": 0.0,
+            "contracts": 0,
+            "capital_at_risk": 0,
+            "realized_pnl": 0,
+            "roi": 0.0,
+            "hit_rate": 0.0,
+            "wins": 0.0,
+            "losses": 0.0,
+            "avg_edge": 0.0,
+            "open_orders": 0.0,
+            "open_capital_at_risk": 0,
+        }
+        assert 1000.0 + summary["realized_pnl"] == 1000.0
+
+
+def test_market_summary_counts_partial_realization_money_without_resolving_root():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.62,
+            yes_bid=0.48,
+            yes_ask=0.50,
+            spread=0.02,
+            fee_per_contract=0.02,
+            cost_per_contract=0.52,
+            edge=0.18,
+            edge_lcb=0.10,
+            kelly_fraction=0.01,
+            recommended_contracts=2.0,
+            expected_profit=0.36,
+            reasons=[],
+        )
+        root_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        realized_lot = store.close_paper_order(
+            root_id, 0.70, max_quantity=1.0
+        )
+
         summary = store.market_backtest_summary()
 
         assert summary["orders"] == 0
         assert summary["wins"] == 0
         assert summary["losses"] == 0
-        assert summary["contracts"] == raw_contracts
-        assert summary["capital_at_risk"] == raw_capital
-        assert summary["realized_pnl"] == raw_pnl
+        assert summary["hit_rate"] == 0.0
+        assert summary["contracts"] == realized_lot["contracts"]
+        expected_capital = (
+            realized_lot["contracts"] * realized_lot["cost_per_contract"]
+        )
+        assert summary["capital_at_risk"] == expected_capital
+        assert summary["realized_pnl"] == realized_lot["realized_pnl"]
+        assert summary["roi"] == realized_lot["realized_pnl"] / expected_capital
+        assert summary["open_orders"] == 1
+        assert summary["open_capital_at_risk"] > 0
 
 
 def test_open_paper_orders_returns_named_rows_for_monitor():
