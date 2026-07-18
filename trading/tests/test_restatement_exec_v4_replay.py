@@ -16,6 +16,7 @@ from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION
 from sfo_kalshi_quant.paper_pnl import settled_position_pnl
 from sfo_kalshi_quant.replay import replay_from_database
 from sfo_kalshi_quant.restatement import restate
+from sfo_kalshi_quant.store.schema import OPEN_POSITION_GUARD_INDEX
 from test_audit_2026_07_13 import _decision, _resting_order, _trade
 
 
@@ -376,6 +377,14 @@ def test_restatement_rejects_price_time_priority_inversion() -> None:
             placed_at=T0 + timedelta(seconds=1),
         )
         with store.connect() as conn:
+            # This adversarial replay fixture must manufacture history that
+            # production admission now makes impossible: two active orders for
+            # one account/date/market/side. Remove only the DB backstop while
+            # constructing the corrupted tape, then restore its canonical
+            # definition as soon as the duplicate active state is gone.
+            conn.execute(
+                "DROP INDEX ux_paper_orders_open_market_side_profile"
+            )
             conn.execute(
                 "UPDATE paper_orders SET account_id='paper-shared' WHERE id=?",
                 (higher_id,),
@@ -402,6 +411,13 @@ def test_restatement_rejects_price_time_priority_inversion() -> None:
                 "fill_evidence_json=? WHERE id=?",
                 (higher_evidence, lower_id),
             )
+            conn.execute(OPEN_POSITION_GUARD_INDEX)
+            guard = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND name='ux_paper_orders_open_market_side_profile'"
+            ).fetchone()
+            assert guard is not None
+            assert "COALESCE(account_id, 'paper-shared')" in str(guard[0])
         _settle(store)
 
         _assert_unverified_and_readiness_ineligible(
