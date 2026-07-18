@@ -1359,11 +1359,7 @@ def restate(db_path: Path) -> dict[str, Any]:
         if str(row["entry_mode"] or "") == "limit"
         and _finite_number(row["limit_price"], minimum=0, maximum=1)
         is not None
-        and (
-            str(row["execution_model_version"] or "")
-            == EXECUTION_MODEL_VERSION
-            or order_id in current_entry_fill_owner_ids
-        )
+        and order_id in current_entry_fill_owner_ids
     }
     maker_candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
     for order_id, row in orders_by_id.items():

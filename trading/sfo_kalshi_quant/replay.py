@@ -417,11 +417,7 @@ def replay_from_database(
                 and str(_row_value(row, "entry_mode") or "") == "limit"
                 and _finite_probability(_row_value(row, "limit_price"))
                 is not None
-                and (
-                    str(_row_value(row, "execution_model_version") or "")
-                    == EXECUTION_MODEL_VERSION
-                    or order_id in current_entry_fill_owner_ids
-                )
+                and order_id in current_entry_fill_owner_ids
             }
             trades = (
                 conn.execute(

@@ -1926,3 +1926,34 @@ def test_valid_genuine_v3_allocation_does_not_poison_v4_candidate() -> None:
         historical = _result(db_path, historical_id)
         assert historical["verification"] == "UNVERIFIABLE"
         assert "EXEC_V3_HISTORICAL_SEMANTICS" in historical["findings"]
+
+
+def test_immediate_crossing_limit_is_not_misclassified_as_maker_v4() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = store.record_paper_order(
+            TARGET_DATE,
+            _decision(
+                TICKER,
+                side="NO",
+                limit_price=0.72,
+                contracts=5.0,
+            ),
+            status="PAPER_FILLED",
+            entry_mode="limit",
+        )
+        assert order_id is not None
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET created_at=?, filled_at=? WHERE id=?",
+                (T0.isoformat(), T0.isoformat(), order_id),
+            )
+        _settle(store)
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "VERIFIED"
+        assert result["findings"] == []
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 1
+        assert replay["verified_decisions"] == 1
