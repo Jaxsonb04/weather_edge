@@ -141,3 +141,121 @@ def test_successful_forecast_event_count_is_unchanged(monkeypatch):
     result = google_api.fetch_google_forecast("test-key")
 
     assert result["google_weather_events_used"] == 5
+
+
+@pytest.mark.parametrize(
+    "forecast_hours",
+    [1, {"unexpected": "mapping"}, "unexpected string", [1]],
+)
+def test_invalid_nested_hourly_shape_counts_dispatched_page_safely(
+    forecast_hours, monkeypatch
+):
+    key = "test-secret-key"
+    full_url = f"{google_api.HOURLY_API_URL}?key={key}"
+    monkeypatch.setattr(
+        google_api,
+        "fetch_hourly_page",
+        lambda _key, _page_token=None: {"forecastHours": forecast_hours},
+    )
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_DAILY_FORECAST", False)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_CURRENT_CONDITIONS", False)
+
+    with pytest.raises(google_api.GoogleFetchError) as raised:
+        google_api.fetch_google_forecast(key)
+
+    assert raised.value.dispatched_events == 1
+    assert raised.value.endpoint == "hourly forecast"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    rendered = _rendered_exception(raised.value)
+    assert key not in rendered
+    assert full_url not in rendered
+
+
+def test_invalid_second_page_shape_counts_both_dispatched_pages(monkeypatch):
+    pages = iter(
+        [
+            {"forecastHours": [{"id": "first"}], "nextPageToken": "second"},
+            {"forecastHours": {"unexpected": "mapping"}},
+        ]
+    )
+    monkeypatch.setattr(
+        google_api,
+        "fetch_hourly_page",
+        lambda _key, _page_token=None: next(pages),
+    )
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_DAILY_FORECAST", False)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_CURRENT_CONDITIONS", False)
+
+    with pytest.raises(google_api.GoogleFetchError) as raised:
+        google_api.fetch_google_forecast("test-key")
+
+    assert raised.value.dispatched_events == 2
+
+
+def test_unrecognized_tagged_endpoint_failure_is_sanitized_without_double_count(
+    monkeypatch
+):
+    key = "test-secret-key"
+    full_url = f"{google_api.HOURLY_API_URL}?key={key}&pageToken=second"
+    calls = 0
+
+    class UnknownEndpointError(RuntimeError):
+        dispatched_events = 1
+
+    def fetch_page(_key, _page_token=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "forecastHours": [{"id": "first"}],
+                "nextPageToken": "second",
+            }
+        raise UnknownEndpointError(f"request failed for {full_url}")
+
+    monkeypatch.setattr(google_api, "fetch_hourly_page", fetch_page)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_DAILY_FORECAST", False)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_CURRENT_CONDITIONS", False)
+
+    with pytest.raises(google_api.GoogleFetchError) as raised:
+        google_api.fetch_google_forecast(key)
+
+    assert raised.value.dispatched_events == 2
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    rendered = _rendered_exception(raised.value)
+    assert key not in rendered
+    assert full_url not in rendered
+
+
+@pytest.mark.parametrize("successful_prior_pages", [0, 1])
+def test_unrecognized_untagged_endpoint_failure_is_counted_conservatively(
+    successful_prior_pages, monkeypatch
+):
+    key = "test-secret-key"
+    full_url = f"{google_api.HOURLY_API_URL}?key={key}"
+    calls = 0
+
+    def fetch_page(_key, _page_token=None):
+        nonlocal calls
+        calls += 1
+        if calls <= successful_prior_pages:
+            return {
+                "forecastHours": [{"id": f"page-{calls}"}],
+                "nextPageToken": "next",
+            }
+        raise RuntimeError(f"unexpected failure for {full_url}")
+
+    monkeypatch.setattr(google_api, "fetch_hourly_page", fetch_page)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_DAILY_FORECAST", False)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_CURRENT_CONDITIONS", False)
+
+    with pytest.raises(google_api.GoogleFetchError) as raised:
+        google_api.fetch_google_forecast(key)
+
+    assert raised.value.dispatched_events == successful_prior_pages + 1
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    rendered = _rendered_exception(raised.value)
+    assert key not in rendered
+    assert full_url not in rendered

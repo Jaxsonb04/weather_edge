@@ -119,13 +119,22 @@ def main():
 
     usage = reserve_google_weather_events(usage, estimated_events)
     write_json(USAGE_PATH, usage)
+    maximum_events = max(
+        estimated_events,
+        max(4, HOURLY_LOOKAHEAD_HOURS // 24 + 2)
+        + int(ENABLE_GOOGLE_DAILY_FORECAST)
+        + int(ENABLE_GOOGLE_CURRENT_CONDITIONS),
+    )
     actual_events = 0
     failure = None
     try:
         raw = fetch_google_forecast(key)
-        actual_events = int(
-            raw.get("google_weather_events_used") or estimated_events
-        )
+        # A returned payload proves the fetch completed. Keep the conservative
+        # reservation unless its reported count validates below.
+        actual_events = estimated_events
+        reported_events = raw.get("google_weather_events_used")
+        if type(reported_events) is int and reported_events > 0:
+            actual_events = min(reported_events, maximum_events)
         reconciled_usage = adjust_reserved_google_weather_events(
             usage,
             estimated_events,
@@ -134,8 +143,8 @@ def main():
         summary = summarize_forecast(raw, target_iso, reconciled_usage)
     except Exception as exc:
         dispatched_events = getattr(exc, "dispatched_events", None)
-        if isinstance(dispatched_events, int):
-            actual_events = max(0, dispatched_events)
+        if type(dispatched_events) is int:
+            actual_events = min(max(0, dispatched_events), maximum_events)
         failure = exc
     finally:
         usage = adjust_reserved_google_weather_events(

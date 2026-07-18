@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 import google_weather_cache as gwc
 
 
@@ -294,6 +296,20 @@ def test_google_event_reservation_adjustment_is_exact(tmp_path, monkeypatch):
     assert adjusted["limit"] == 260
 
 
+def test_negative_actual_adjustment_cannot_refund_pre_refresh_usage():
+    usage = {
+        "daily_events": 17,
+        "monthly_events": 611,
+    }
+
+    reserved = gwc.reserve_google_weather_events(dict(usage), 5)
+    adjusted = gwc.adjust_reserved_google_weather_events(reserved, 5, -3)
+
+    assert adjusted["daily_events"] == 17
+    assert adjusted["monthly_events"] == 611
+    assert adjusted["last_refresh_events"] == 0
+
+
 class _DispatchedFetchFailure(RuntimeError):
     def __init__(self, dispatched_events):
         super().__init__("safe synthetic Google fetch failure")
@@ -358,7 +374,9 @@ def test_postdispatch_failure_keeps_ambiguous_events_consumed(tmp_path, monkeypa
     assert usage["last_refresh_events"] == 2
 
 
-def test_success_reconciles_actual_events_before_summarizing(tmp_path, monkeypatch):
+def _run_successful_refresh(
+    tmp_path, monkeypatch, reported_events=None, fetch_result=None
+):
     cache_path = tmp_path / "google_weather_cache.json"
     usage_path = tmp_path / "usage.json"
     starting_usage = {
@@ -381,11 +399,18 @@ def test_success_reconciles_actual_events_before_summarizing(tmp_path, monkeypat
     monkeypatch.setattr(gwc, "api_key", lambda: "test-key")
     monkeypatch.setattr(gwc, "load_usage", lambda: dict(starting_usage))
     monkeypatch.setattr(gwc, "estimated_google_weather_events_per_refresh", lambda: 5)
+    monkeypatch.setattr(gwc, "HOURLY_LOOKAHEAD_HOURS", 72)
+    monkeypatch.setattr(gwc, "ENABLE_GOOGLE_DAILY_FORECAST", True)
+    monkeypatch.setattr(gwc, "ENABLE_GOOGLE_CURRENT_CONDITIONS", True)
     monkeypatch.setattr(gwc, "usage_has_budget", lambda _usage, _events: True)
     monkeypatch.setattr(
         gwc,
         "fetch_google_forecast",
-        lambda _key: {"google_weather_events_used": 3},
+        lambda _key: (
+            fetch_result
+            if fetch_result is not None
+            else {"google_weather_events_used": reported_events}
+        ),
     )
 
     def summarize(_raw, target_iso, usage):
@@ -401,11 +426,72 @@ def test_success_reconciles_actual_events_before_summarizing(tmp_path, monkeypat
     gwc.main()
 
     usage = json.loads(usage_path.read_text(encoding="utf-8"))
+    return usage, summarized_usage
+
+
+def test_success_reconciles_actual_events_before_summarizing(tmp_path, monkeypatch):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        reported_events=3,
+    )
+
     assert usage["daily_events"] == 20
     assert usage["monthly_events"] == 614
     assert usage["last_refresh_events"] == 3
     assert summarized_usage["daily_events"] == 20
     assert summarized_usage["monthly_events"] == 614
+
+
+@pytest.mark.parametrize("reported_events", [-3, "not-an-integer", 3.5, True])
+def test_invalid_success_count_keeps_conservative_reservation(
+    reported_events, tmp_path, monkeypatch
+):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        reported_events=reported_events,
+    )
+
+    assert usage["daily_events"] == 22
+    assert usage["monthly_events"] == 616
+    assert usage["daily_events"] >= 17
+    assert usage["monthly_events"] >= 611
+    assert summarized_usage["daily_events"] == 22
+    assert summarized_usage["monthly_events"] == 616
+
+
+def test_excessive_success_count_is_capped_at_known_fetch_maximum(
+    tmp_path, monkeypatch
+):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        reported_events=999,
+    )
+
+    assert usage["daily_events"] == 24
+    assert usage["monthly_events"] == 618
+    assert usage["daily_events"] >= 17
+    assert usage["monthly_events"] >= 611
+    assert summarized_usage["daily_events"] == 24
+    assert summarized_usage["monthly_events"] == 618
+
+
+def test_malformed_success_result_keeps_conservative_reservation(
+    tmp_path, monkeypatch
+):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        fetch_result=[],
+    )
+
+    assert usage["daily_events"] == 22
+    assert usage["monthly_events"] == 616
+    assert usage["daily_events"] >= 17
+    assert usage["monthly_events"] >= 611
+    assert summarized_usage == {}
 
 
 def _learner_row(target_date, actual, google, nws, open_meteo=80.0, history=80.0):

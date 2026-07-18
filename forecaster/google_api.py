@@ -45,6 +45,16 @@ class GoogleFetchError(RuntimeError):
         self.dispatched_events = max(0, int(dispatched_events))
         super().__init__(f"Google Weather {endpoint} request failed")
 
+    @classmethod
+    def from_unrecognized(cls, endpoint, prior_events, exc):
+        try:
+            current_events = getattr(exc, "dispatched_events", 1)
+        except Exception:
+            current_events = 1
+        if type(current_events) is not int or current_events < 0:
+            current_events = 1
+        return cls(endpoint, prior_events + current_events)
+
 
 def finite(value):
     return isinstance(value, (int, float)) and math.isfinite(value)
@@ -178,6 +188,7 @@ def reserve_google_weather_events(usage, events_reserved):
 
 def adjust_reserved_google_weather_events(usage, reserved_events, actual_events):
     usage = dict(usage)
+    actual_events = max(0, actual_events)
     delta = actual_events - reserved_events
     if delta:
         usage["daily_events"] = max(0, usage.get("daily_events", 0) + delta)
@@ -491,16 +502,38 @@ def fetch_google_forecast(key):
     # break on no forward progress.
     max_hourly_pages = max(4, HOURLY_LOOKAHEAD_HOURS // 24 + 2)
     while True:
+        failure = None
         try:
             payload = fetch_hourly_page(key, page_token)
         except GoogleFetchError as exc:
             exc.dispatched_events += events_used
             raise
+        except Exception as exc:
+            failure = GoogleFetchError.from_unrecognized(
+                "hourly forecast",
+                events_used,
+                exc,
+            )
+        if failure is not None:
+            raise failure
+
         events_used += 1
-        new_hours = payload.get("forecastHours") or []
-        hours.extend(new_hours)
-        time_zone = time_zone or payload.get("timeZone")
-        page_token = payload.get("nextPageToken")
+        try:
+            new_hours = payload.get("forecastHours") or []
+            if not isinstance(new_hours, list) or not all(
+                isinstance(hour, dict) for hour in new_hours
+            ):
+                raise ValueError("Google hourly forecast rows must be objects")
+            hours.extend(new_hours)
+            time_zone = time_zone or payload.get("timeZone")
+            page_token = payload.get("nextPageToken")
+            if page_token is not None and not isinstance(page_token, str):
+                raise ValueError("Google hourly page token must be a string")
+        except Exception:
+            failure = GoogleFetchError("hourly forecast", events_used)
+        if failure is not None:
+            raise failure
+
         if not page_token or len(hours) >= HOURLY_LOOKAHEAD_HOURS:
             break
         if events_used >= max_hourly_pages:
@@ -515,20 +548,38 @@ def fetch_google_forecast(key):
 
     daily_forecast = None
     if ENABLE_GOOGLE_DAILY_FORECAST:
+        failure = None
         try:
             daily_forecast = fetch_daily_forecast(key)
         except GoogleFetchError as exc:
             exc.dispatched_events += events_used
             raise
+        except Exception as exc:
+            failure = GoogleFetchError.from_unrecognized(
+                "daily forecast",
+                events_used,
+                exc,
+            )
+        if failure is not None:
+            raise failure
         events_used += 1
 
     current_conditions = None
     if ENABLE_GOOGLE_CURRENT_CONDITIONS:
+        failure = None
         try:
             current_conditions = fetch_current_conditions(key)
         except GoogleFetchError as exc:
             exc.dispatched_events += events_used
             raise
+        except Exception as exc:
+            failure = GoogleFetchError.from_unrecognized(
+                "current conditions",
+                events_used,
+                exc,
+            )
+        if failure is not None:
+            raise failure
         events_used += 1
 
     return {
