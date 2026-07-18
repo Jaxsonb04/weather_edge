@@ -740,6 +740,40 @@ def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
             conn.execute(expected_sql)
 
 
+def _ensure_research_daily_goal_triggers(conn: sqlite3.Connection) -> None:
+    """Make frozen daily objective rows append-only, including old databases."""
+
+    definitions = {
+        "trg_research_daily_goals_immutable_update": """
+            CREATE TRIGGER trg_research_daily_goals_immutable_update
+            BEFORE UPDATE ON research_daily_goals
+            BEGIN
+                SELECT RAISE(ABORT, 'research daily goals are immutable');
+            END
+        """,
+        "trg_research_daily_goals_immutable_delete": """
+            CREATE TRIGGER trg_research_daily_goals_immutable_delete
+            BEFORE DELETE ON research_daily_goals
+            BEGIN
+                SELECT RAISE(ABORT, 'research daily goals are immutable');
+            END
+        """,
+    }
+    for trigger, expected_sql in definitions.items():
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger,),
+        ).fetchone()
+        if (
+            stored is not None
+            and _normalized_sql_tokens(str(stored[0] or ""))
+            == _normalized_sql_tokens(expected_sql)
+        ):
+            continue
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute(expected_sql)
+
+
 def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
     """Bootstrap isolated $1,000 ledgers without touching legacy accounts."""
 
@@ -929,6 +963,7 @@ def _init_store_locked(self) -> None:
             }
             _add_missing_columns(conn, table, existing_monitor, MONITOR_AUDIT_COLUMNS)
         _ensure_research_identity_triggers(conn)
+        _ensure_research_daily_goal_triggers(conn)
         existing_forecast = {
             row[1]
             for row in conn.execute("PRAGMA table_info(forecast_snapshots)").fetchall()

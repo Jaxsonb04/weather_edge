@@ -19,6 +19,7 @@ from .._util import (
     _to_float,
 )
 from ..config import strategy_config_for_profile, normalize_risk_profile_name
+from ..db import PaperStore
 from ..exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
     DEFAULT_NO_TAKE_PROFIT_PCT,
@@ -37,6 +38,7 @@ from ..logical_positions import (
     OPEN_STATUSES,
     group_logical_positions,
 )
+from ..research_policy import TARGET_POLICY
 from ..settlement_day import settlement_today
 from . import DEFAULT_MODEL_VETO_BUFFER, DEFAULT_MODEL_VETO_MAX_LOSS_PCT
 from .status_alerts import _why_trade_good
@@ -239,6 +241,20 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "recent_monitor_actions": [],
         "diagnostics": _empty_paper_diagnostics(),
         "profiles": [],
+        "research_daily_target": {
+            "available": False,
+            "reason": "target research has not activated yet",
+        },
+        "legacy_research": {
+            "available": False,
+            "label": "Legacy research history",
+            "profile": None,
+            "excluded_from": [
+                "active_books",
+                "daily_target",
+                "live_readiness",
+            ],
+        },
     }
     if not db_path.exists():
         return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
@@ -309,8 +325,8 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                 {
                     **dict(row),
                     "label": valid_roots[int(row["order_id"])].get("label"),
-                    "risk_profile": valid_roots[int(row["order_id"])].get(
-                        "risk_profile"
+                    "risk_profile": _row_risk_profile(
+                        valid_roots[int(row["order_id"])]
                     ),
                 }
                 for row in monitor_rows
@@ -319,17 +335,33 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         scanning_profiles = []
         if _db_table_exists(db_path, "decision_snapshots"):
             scanning_profiles = [
-                str(row[0])
+                _row_risk_profile(row) or "unknown"
                 for row in conn.execute(
                     """
-                    SELECT DISTINCT COALESCE(risk_profile, 'unknown')
+                    SELECT DISTINCT COALESCE(risk_profile, 'unknown') AS risk_profile,
+                                    research_sleeve
                     FROM decision_snapshots
                     WHERE created_at >= datetime('now', '-7 days')
-                    ORDER BY 1
+                    ORDER BY 1, 2
                     """
                 ).fetchall()
             ]
         profile_rows = _paper_profile_rows(journal)
+
+    research_daily_target = _research_daily_target_payload(db_path)
+    all_profile_rows = _profiles_with_scanners(profile_rows, scanning_profiles)
+    legacy_research_row = next(
+        (
+            dict(row)
+            for row in all_profile_rows
+            if row.get("risk_profile") == "research"
+        ),
+        None,
+    )
+    profile_rows = _research_book_profiles(
+        all_profile_rows,
+        research_daily_target,
+    )
 
     open_positions = [
         _paper_row(row, _position_mark_for(row, monitor_marks, decision_marks), monitor)
@@ -446,11 +478,115 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "recent_monitor_actions": action_rows,
         "duplicate_open_groups": duplicate_groups,
         "diagnostics": _paper_diagnostics(journal),
-        "profiles": _profiles_with_scanners(
-            profile_rows,
-            scanning_profiles,
-        ),
+        "profiles": profile_rows,
+        "research_daily_target": research_daily_target,
+        "legacy_research": {
+            "available": legacy_research_row is not None,
+            "label": "Legacy research history",
+            "profile": legacy_research_row,
+            "excluded_from": [
+                "active_books",
+                "daily_target",
+                "live_readiness",
+            ],
+        },
     }
+
+
+def _research_daily_target_payload(db_path: Path) -> dict[str, Any]:
+    if not _db_table_exists(db_path, "research_daily_goals"):
+        return {
+            "available": False,
+            "reason": "target research has not activated yet",
+        }
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM research_daily_goals WHERE account_id=? "
+            "AND policy_version=? LIMIT 1",
+            (TARGET_POLICY.account_id, TARGET_POLICY.policy_version),
+        ).fetchone()
+    if row is None:
+        return {
+            "available": False,
+            "reason": "target research has not activated yet",
+        }
+    try:
+        return {
+            "available": True,
+            **PaperStore(db_path, init=False).research_daily_goal_report(),
+        }
+    except (RuntimeError, ValueError, sqlite3.Error) as exc:
+        return {
+            "available": False,
+            "reason": f"target research goal unavailable: {type(exc).__name__}: {exc}",
+        }
+
+
+def _research_book_profiles(
+    profiles: list[dict[str, Any]],
+    target: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not target.get("available"):
+        return profiles
+    by_name = {str(row["risk_profile"]): row for row in profiles}
+    by_name.pop("research", None)
+    by_name.setdefault(
+        "live",
+        _profile_summary_row(
+            {
+                "risk_profile": "live",
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            }
+        ),
+    )
+    target_row = by_name.setdefault(
+        "research-target",
+        _profile_summary_row(
+            {
+                "risk_profile": "research-target",
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            }
+        ),
+    )
+    target_row["daily_target"] = target
+    motion_row = by_name.setdefault(
+        "research-motion",
+        _profile_summary_row(
+            {
+                "risk_profile": "research-motion",
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            }
+        ),
+    )
+    motion_row["excluded_from"] = ["daily_target", "live_readiness"]
+    return sorted(by_name.values(), key=lambda row: str(row["risk_profile"]))
 
 
 def _paper_diagnostics(
@@ -636,7 +772,15 @@ def _row_risk_profile(row: sqlite3.Row) -> str | None:
         value = row["risk_profile"]
     except (IndexError, KeyError):
         return None
-    return str(value) if value else None
+    profile = str(value) if value else None
+    if profile == "research":
+        try:
+            sleeve = row["research_sleeve"]
+        except (IndexError, KeyError):
+            sleeve = None
+        if sleeve in {"target", "motion"}:
+            return f"research-{sleeve}"
+    return profile
 
 
 def _latest_monitor_marks(db_path: Path) -> dict[int, dict[str, Any]]:
@@ -811,7 +955,10 @@ def _monitor_thresholds_for_side(monitor: dict[str, Any], side: str) -> tuple[fl
 
 def _settlement_first_no_min_cost_for_row(row: sqlite3.Row) -> float | None:
     profile = _row_risk_profile(row)
-    if profile is not None and normalize_risk_profile_name(profile) == "research":
+    if profile is not None and (
+        profile.startswith("research-")
+        or normalize_risk_profile_name(profile) == "research"
+    ):
         return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
     return None
 

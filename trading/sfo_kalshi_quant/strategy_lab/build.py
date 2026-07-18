@@ -30,6 +30,7 @@ from ..dataset_research import build_dataset_research as build_dataset_research_
 from ..forecast import ForecastDataError, SfoForecasterAdapter
 from ..forecast_scorecards import build_forecast_scorecards
 from ..maker_fills import EXECUTION_MODEL_VERSION
+from ..research_policy import MOTION_POLICY, TARGET_POLICY
 from ..replay import replay_from_database
 from ..summary import build_paper_summary
 from . import CHALLENGER_CALIBRATION_SOURCE
@@ -181,6 +182,10 @@ def build_strategy_research(
         "real_money_readiness": real_money_readiness,
         "live_frequency_tuning": live_frequency_tuning,
         "research_shadow": research_shadow,
+        "research_daily_target": paper.get("research_daily_target") or {
+            "available": False,
+            "reason": "target research has not activated yet",
+        },
         "paper_trading": paper,
         "profiles": profiles,
         "dataset_research": _dataset_research_summary(dataset_research),
@@ -263,6 +268,16 @@ def _accounting_payload(
     store = PaperStore(db_path, init=False)
     live = _account_snapshot(store, SHARED_ACCOUNT_ID, role="live")
     research = _account_snapshot(store, RESEARCH_ACCOUNT_ID, role="research")
+    research_target = _account_snapshot(
+        store,
+        TARGET_POLICY.account_id,
+        role="research_target",
+    )
+    research_motion = _account_snapshot(
+        store,
+        MOTION_POLICY.account_id,
+        role="research_motion",
+    )
     if live is None:
         return {
             "schema_version": 2,
@@ -273,6 +288,10 @@ def _accounting_payload(
     accounts: dict[str, Any] = {"live": live}
     if research is not None:
         accounts["research"] = research
+    if research_target is not None:
+        accounts["research_target"] = research_target
+    if research_motion is not None:
+        accounts["research_motion"] = research_motion
     combined = _combined_account(live, research) if research is not None else None
     goal = _weekly_goal_payload(store, live)
 
@@ -304,6 +323,10 @@ def _accounting_payload(
         "profile_attributed_pnl": live["realized_pnl"],
         "reconciliation_status": live["reconciliation_status"],
         "reconciliation_difference": live["reconciliation_difference"],
+        "research_accounts_excluded_from_live_goal_and_readiness": [
+            TARGET_POLICY.account_id,
+            MOTION_POLICY.account_id,
+        ],
     }
 
 

@@ -653,6 +653,60 @@ def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position()
         assert len(live["daily_summary"]["biggest_winners"]) == 1
 
 
+def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path):
+    db_path = tmp_path / "paper.db"
+    forecaster_root = tmp_path / "forecaster"
+    _write_lstm_fixture(forecaster_root)
+    store = PaperStore(
+        db_path,
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    legacy_id = store.record_paper_order(
+        "2026-07-18", _approved_decision(), risk_profile="research"
+    )
+    assert legacy_id is not None
+    store.close_paper_order(legacy_id, 0.70)
+    store.research_daily_goal_state(objective_day=date(2026, 7, 18))
+
+    paper = strategy_research_module._paper_payload(db_path)
+
+    target = paper["research_daily_target"]
+    assert target["account_id"] == "paper-research-target-v1"
+    assert target["days"][-1]["target_pnl"] == 50.0
+    assert target["days"][-1]["realized_pnl"] == 0.0
+    profiles = {row["risk_profile"]: row for row in paper["profiles"]}
+    assert set(profiles) == {"live", "research-target", "research-motion"}
+    assert profiles["research-target"]["daily_target"] == target
+    assert profiles["research-motion"]["excluded_from"] == [
+        "daily_target",
+        "live_readiness",
+    ]
+    assert paper["legacy_research"]["available"] is True
+    assert paper["legacy_research"]["profile"]["risk_profile"] == "research"
+    assert "active_books" in paper["legacy_research"]["excluded_from"]
+    assert "guaranteed" in target["disclaimer"]
+
+    payload = build_strategy_research(
+        forecaster_root=forecaster_root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 50.0
+    profile_views = {row["risk_profile"]: row for row in payload["profiles"]}
+    assert set(profile_views) == {"live", "research-target", "research-motion"}
+    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 50.0
+    assert profile_views["research-motion"]["excluded_from"] == [
+        "daily_target",
+        "live_readiness",
+    ]
+    assert payload["real_money_readiness"]["profile"] == "live"
+    assert set(payload["accounting"]["accounts"]) >= {
+        "live",
+        "research_target",
+        "research_motion",
+    }
+
+
 def test_strategy_research_card_keeps_partially_realized_root_open_and_undecided():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"

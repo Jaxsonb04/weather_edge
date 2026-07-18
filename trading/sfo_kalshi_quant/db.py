@@ -38,7 +38,7 @@ from .fees import (
     quadratic_fee_per_contract,
 )
 from .execution import BuyLimitQuote, initial_queue_ahead, target_research_quote
-from .logical_positions import LOGICAL_IDENTITY_FIELDS
+from .logical_positions import LOGICAL_IDENTITY_FIELDS, group_logical_positions
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
@@ -57,6 +57,7 @@ from .research_policy import (
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
 )
+from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
@@ -537,6 +538,230 @@ class PaperStore:
 
         return self._research_objective_day()
 
+    def research_daily_goal_state(
+        self,
+        *,
+        objective_day: date | None = None,
+    ) -> DailyGoalState:
+        """Freeze and return one target-account Pacific-day objective.
+
+        The target is derived from the policy's original reference equity only
+        when the row is first inserted.  Every later read uses the persisted
+        values, so account gains or a later configuration change cannot
+        compound or rewrite the historical objective.
+        """
+
+        civil_day = objective_day or self._research_objective_day()
+        if not isinstance(civil_day, date):
+            raise ValueError("research objective day must be a date")
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            target_pnl = self._ensure_research_daily_goal_on_connection(
+                conn,
+                civil_day,
+            )
+            realized_pnl = self._research_realized_pnl_on_connection(
+                conn,
+                account_id=TARGET_POLICY.account_id,
+                objective_day=civil_day,
+            )
+            if realized_pnl is None:
+                conn.rollback()
+                raise ValueError("research daily P&L is invalid")
+            conn.commit()
+        return daily_goal_state(
+            objective_day=civil_day,
+            realized_pnl=realized_pnl,
+            target_pnl=target_pnl,
+        )
+
+    @staticmethod
+    def _ensure_research_daily_goal_on_connection(
+        conn: sqlite3.Connection,
+        civil_day: date,
+    ) -> float:
+        conn.execute(
+            "INSERT OR IGNORE INTO research_daily_goals "
+            "(objective_day, account_id, policy_version, created_at, "
+            "reference_equity, target_return, target_pnl) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                civil_day.isoformat(),
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.policy_version,
+                _now(),
+                TARGET_POLICY.reference_equity,
+                TARGET_POLICY.target_return,
+                TARGET_POLICY.target_pnl,
+            ),
+        )
+        row = conn.execute(
+            "SELECT reference_equity, target_return, target_pnl "
+            "FROM research_daily_goals WHERE objective_day=? "
+            "AND account_id=? AND policy_version=?",
+            (
+                civil_day.isoformat(),
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.policy_version,
+            ),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("research daily goal disappeared after insert")
+        try:
+            reference_equity = float(row[0])
+            target_return = float(row[1])
+            target_pnl = float(row[2])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("research daily goal is malformed") from exc
+        if (
+            not all(
+                math.isfinite(value)
+                for value in (reference_equity, target_return, target_pnl)
+            )
+            or reference_equity <= 0
+            or target_return <= 0
+            or target_pnl <= 0
+            or not math.isclose(
+                target_pnl,
+                reference_equity * target_return,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            raise ValueError("research daily goal is malformed")
+        return target_pnl
+
+    def research_daily_goal_report(
+        self,
+        *,
+        through_day: date | None = None,
+        target_feasible: bool | None = None,
+    ) -> dict[str, object]:
+        """Return target-only daily history, backfilling every civil day."""
+
+        last_day = through_day or self._research_objective_day()
+        if not isinstance(last_day, date):
+            raise ValueError("research report through day must be a date")
+        if last_day > self._research_objective_day():
+            raise ValueError("research report cannot include future objective days")
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            first_row = conn.execute(
+                "SELECT MIN(objective_day) FROM research_daily_goals "
+                "WHERE account_id=? AND policy_version=?",
+                (TARGET_POLICY.account_id, TARGET_POLICY.policy_version),
+            ).fetchone()
+            first_day = (
+                date.fromisoformat(str(first_row[0]))
+                if first_row and first_row[0]
+                else last_day
+            )
+            if first_day > last_day:
+                conn.rollback()
+                raise ValueError("research report ends before target activation")
+            frozen_targets: list[tuple[date, float]] = []
+            cursor = first_day
+            while cursor <= last_day:
+                frozen_targets.append(
+                    (
+                        cursor,
+                        self._ensure_research_daily_goal_on_connection(conn, cursor),
+                    )
+                )
+                cursor += timedelta(days=1)
+            rows = conn.execute(
+                "SELECT * FROM paper_orders WHERE account_id=? "
+                "AND status!='REJECTED' ORDER BY id",
+                (TARGET_POLICY.account_id,),
+            ).fetchall()
+            positions = group_logical_positions(rows)
+            pnl_by_day = self._research_realized_pnl_by_day(positions)
+            if pnl_by_day is None:
+                conn.rollback()
+                raise ValueError("research daily P&L is invalid")
+            states = [
+                daily_goal_state(
+                    objective_day=objective_day,
+                    realized_pnl=pnl_by_day.get(objective_day, 0.0),
+                    target_pnl=frozen_target,
+                )
+                for objective_day, frozen_target in frozen_targets
+            ]
+            available_profit: float | None = None
+            if target_feasible is None and states:
+                target_feasible, available_profit = (
+                    self._research_target_feasibility_on_connection(
+                        conn,
+                        objective_day=states[-1].objective_day,
+                        remaining_pnl=states[-1].remaining_pnl,
+                    )
+                )
+            conn.commit()
+        return summarize_daily_goals(
+            states,
+            positions=positions,
+            target_feasible=target_feasible,
+            available_conservative_expected_profit=available_profit,
+            policy_version=TARGET_POLICY.policy_version,
+        )
+
+    @staticmethod
+    def _research_target_feasibility_on_connection(
+        conn: sqlite3.Connection,
+        *,
+        objective_day: date,
+        remaining_pnl: float,
+    ) -> tuple[bool | None, float | None]:
+        latest = conn.execute(
+            "SELECT scan_run_id FROM decision_snapshots "
+            "WHERE research_sleeve='target' AND objective_day=? "
+            "AND research_policy_version=? AND scan_run_id IS NOT NULL "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (objective_day.isoformat(), TARGET_POLICY.policy_version),
+        ).fetchone()
+        if latest is None:
+            return (True, 0.0) if remaining_pnl <= 1e-9 else (None, None)
+        decision_rows = conn.execute(
+            "SELECT typeof(edge_lcb), edge_lcb, "
+            "typeof(recommended_contracts), recommended_contracts "
+            "FROM decision_snapshots WHERE research_sleeve='target' "
+            "AND objective_day=? AND research_policy_version=? "
+            "AND scan_run_id=?",
+            (
+                objective_day.isoformat(),
+                TARGET_POLICY.policy_version,
+                str(latest[0]),
+            ),
+        ).fetchall()
+        contributions: list[float] = []
+        for edge_type, raw_edge, contracts_type, raw_contracts in decision_rows:
+            if edge_type not in {"integer", "real"} or contracts_type not in {
+                "integer",
+                "real",
+            }:
+                return None, None
+            try:
+                edge_lcb = float(raw_edge)
+                contracts = float(raw_contracts)
+            except (TypeError, ValueError, OverflowError):
+                return None, None
+            if (
+                not math.isfinite(edge_lcb)
+                or not math.isfinite(contracts)
+                or contracts < 0
+            ):
+                return None, None
+            contributions.append(max(0.0, edge_lcb) * contracts)
+        try:
+            available = math.fsum(contributions)
+        except (OverflowError, ValueError):
+            return None, None
+        if not math.isfinite(available):
+            return None, None
+        return available + 1e-9 >= remaining_pnl, available
+
     def research_realized_pnl_for_day(
         self,
         *,
@@ -545,27 +770,75 @@ class PaperStore:
     ) -> float:
         if account_id not in _RESEARCH_POLICIES_BY_ACCOUNT:
             raise ValueError("research daily P&L requires a target or motion account")
-        day_start = datetime.combine(
-            objective_day, time.min, tzinfo=RESEARCH_OBJECTIVE_TZ
-        ).astimezone(UTC)
-        day_end = datetime.combine(
-            objective_day + timedelta(days=1),
-            time.min,
-            tzinfo=RESEARCH_OBJECTIVE_TZ,
-        ).astimezone(UTC)
         with self.connect() as conn:
-            value = conn.execute(
-                "SELECT COALESCE(SUM(realized_pnl),0) FROM paper_orders "
-                "WHERE account_id=? AND realized_pnl IS NOT NULL "
-                "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
-                "AND COALESCE(closed_at,settled_at)>=? "
-                "AND COALESCE(closed_at,settled_at)<?",
-                (account_id, day_start.isoformat(), day_end.isoformat()),
-            ).fetchone()[0]
-        result = float(value or 0.0)
-        if not math.isfinite(result):
+            conn.row_factory = sqlite3.Row
+            if account_id == TARGET_POLICY.account_id:
+                conn.execute("BEGIN IMMEDIATE")
+                self._ensure_research_daily_goal_on_connection(conn, objective_day)
+            result = self._research_realized_pnl_on_connection(
+                conn,
+                account_id=account_id,
+                objective_day=objective_day,
+            )
+            if account_id == TARGET_POLICY.account_id:
+                conn.commit()
+        if result is None or not math.isfinite(result):
             raise ValueError("research daily P&L is invalid")
         return result
+
+    @staticmethod
+    def _research_realized_pnl_on_connection(
+        conn: sqlite3.Connection,
+        *,
+        account_id: str,
+        objective_day: date,
+    ) -> float | None:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM paper_orders WHERE account_id=? "
+            "AND status!='REJECTED' ORDER BY id",
+            (account_id,),
+        ).fetchall()
+        positions = group_logical_positions(rows)
+        pnl_by_day = PaperStore._research_realized_pnl_by_day(positions)
+        if pnl_by_day is None:
+            return None
+        return pnl_by_day.get(objective_day, 0.0)
+
+    @staticmethod
+    def _research_realized_pnl_by_day(
+        positions: Sequence[object],
+    ) -> dict[date, float] | None:
+        if any(not getattr(position, "valid", False) for position in positions):
+            return None
+        values_by_day: dict[date, list[float]] = {}
+        for position in positions:
+            for lot in getattr(position, "resolved_lots", ()):
+                raw_resolved_at = lot.get("closed_at") or lot.get("settled_at")
+                if not isinstance(raw_resolved_at, str):
+                    return None
+                try:
+                    resolved_at = datetime.fromisoformat(
+                        raw_resolved_at.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    return None
+                if resolved_at.tzinfo is None:
+                    return None
+                civil_day = resolved_at.astimezone(RESEARCH_OBJECTIVE_TZ).date()
+                values_by_day.setdefault(civil_day, []).append(
+                    float(lot["realized_pnl"])
+                )
+        output: dict[date, float] = {}
+        for civil_day, values in values_by_day.items():
+            try:
+                result = math.fsum(values)
+            except (OverflowError, ValueError):
+                return None
+            if not math.isfinite(result):
+                return None
+            output[civil_day] = result
+        return output
 
     def _account_state(self, account_id: str) -> dict[str, object] | None:
         with self.connect() as conn:
@@ -819,34 +1092,22 @@ class PaperStore:
             return {"allowed_spend": 0.0, "reason": "research account cash is invalid"}
 
         civil_day = civil_day or self._research_objective_day()
-        day_start = datetime.combine(
-            civil_day,
-            time.min,
-            tzinfo=RESEARCH_OBJECTIVE_TZ,
-        ).astimezone(UTC)
-        day_end = datetime.combine(
-            civil_day + timedelta(days=1),
-            time.min,
-            tzinfo=RESEARCH_OBJECTIVE_TZ,
-        ).astimezone(UTC)
-        daily_pnl = float(
-            conn.execute(
-                "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
-                "WHERE account_id=? AND realized_pnl IS NOT NULL "
-                "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
-                "AND COALESCE(closed_at, settled_at) >= ? "
-                "AND COALESCE(closed_at, settled_at) < ?",
-                (
-                    policy.account_id,
-                    day_start.isoformat(),
-                    day_end.isoformat(),
-                ),
-            ).fetchone()[0]
-            or 0.0
+        frozen_target_pnl = (
+            self._ensure_research_daily_goal_on_connection(conn, civil_day)
+            if policy is TARGET_POLICY
+            else None
         )
-        if not math.isfinite(daily_pnl):
+        daily_pnl = self._research_realized_pnl_on_connection(
+            conn,
+            account_id=policy.account_id,
+            objective_day=civil_day,
+        )
+        if daily_pnl is None or not math.isfinite(daily_pnl):
             return {"allowed_spend": 0.0, "reason": "research daily P&L is invalid"}
-        if policy is TARGET_POLICY and daily_pnl >= policy.target_pnl - 1e-9:
+        if (
+            frozen_target_pnl is not None
+            and daily_pnl >= frozen_target_pnl - 1e-9
+        ):
             return {
                 "allowed_spend": 0.0,
                 "reason": "target attained: new target risk is locked for the objective day",
