@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, timedelta
+from decimal import Decimal
+
+import pytest
 
 from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
 from sfo_kalshi_quant.config import strategy_config_for_profile
@@ -13,6 +16,7 @@ from sfo_kalshi_quant.research_portfolio import (
     allocate_research_plans,
     city_target_worst_case_loss,
 )
+from sfo_kalshi_quant.research_policy import TARGET_POLICY
 
 
 def _market(
@@ -491,6 +495,7 @@ def test_target_clips_to_correlated_region_scenario_room() -> None:
             decision.expected_profit,
             0.0,
             target_date=target,
+            account_id=TARGET_POLICY.account_id,
             pending=True,
         )
 
@@ -555,6 +560,7 @@ def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
         active_decision.expected_profit,
         0.0,
         target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
         pending=True,
     )
     candidate = ResearchOpportunity(
@@ -793,6 +799,7 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
         active_decision.expected_profit,
         0.0,
         target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
         pending=True,
     )
     candidate = ResearchOpportunity(
@@ -822,6 +829,296 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
     assert plans.target.legs[0].spend == 10.0
 
 
+def test_malformed_active_exposure_fails_closed_instead_of_omitting_risk() -> None:
+    active_decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.50,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    malformed = PortfolioLeg(
+        "target",
+        replace(active_decision, cost_per_contract=float("nan")),
+        20.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+    )
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[malformed])
+
+    assert plans.target.legs == []
+    assert plans.target.dispositions[0].status == "capacity_blocked"
+    assert "active exposure is invalid" in (plans.target.dispositions[0].reason or "")
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "edge",
+        "edge_lcb",
+        "probability",
+        "probability_lcb",
+        "yes_bid",
+        "yes_ask",
+        "entry_bid",
+        "entry_ask",
+        "limit_price",
+        "fee_per_contract",
+        "cost_per_contract",
+        "limit_fee_per_contract",
+        "limit_cost_per_contract",
+        "recommended_contracts",
+        "floor_strike",
+        "cap_strike",
+    ),
+)
+@pytest.mark.parametrize(
+    "bad_value",
+    ("0.2", Decimal("0.2"), True, float("nan"), float("inf")),
+    ids=("string", "decimal", "bool", "nan", "inf"),
+)
+def test_candidate_numeric_evidence_is_normalized_once_or_rejected(
+    field: str,
+    bad_value: object,
+) -> None:
+    decision = _decision(
+        _market(
+            "72° to 73°",
+            ticker="KXHIGHDEN-26JUL20-B72.5",
+            floor=72,
+            cap=73,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, **{field: bad_value}),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([opportunity])
+
+    assert plans.target.legs == []
+    assert plans.motion.legs == []
+    assert plans.target.dispositions[0].status == "rejected"
+    assert plans.motion.dispositions[0].status == "rejected"
+
+
+@pytest.mark.parametrize("bad_side", (None, True, 7, "MAYBE"))
+def test_malformed_candidate_side_is_rejected_without_disposition_crash(
+    bad_side: object,
+) -> None:
+    decision = _decision(
+        _market(
+            "72° to 73°",
+            ticker="KXHIGHDEN-26JUL20-B72.5",
+            floor=72,
+            cap=73,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(replace(decision, side=bad_side), "2026-07-20", 2)]
+    )
+
+    assert plans.target.dispositions[0].status == "rejected"
+    assert plans.target.dispositions[0].side == "<INVALID>"
+
+
+def test_unknown_strike_type_is_rejected_instead_of_treated_as_between() -> None:
+    decision = _decision(
+        _market(
+            "72° to 73°",
+            ticker="KXHIGHDEN-26JUL20-B72.5",
+            floor=72,
+            cap=73,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, strike_type="mystery"),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert plans.target.legs == []
+    assert "strike type" in (plans.target.dispositions[0].reason or "")
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "account",
+        "sleeve",
+        "date",
+        "side",
+        "strike",
+        "contracts",
+        "cost",
+        "spend",
+        "spend_mismatch",
+        "pending_flag",
+        "child_flag",
+        "child_identity",
+    ),
+)
+def test_each_malformed_active_leg_field_fails_only_that_sleeve_closed(
+    corruption: str,
+) -> None:
+    active_decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.50,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    active = PortfolioLeg(
+        "target",
+        active_decision,
+        20.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+    )
+    if corruption == "account":
+        active = replace(active, account_id="wrong")
+    elif corruption == "sleeve":
+        active = replace(active, sleeve="motion")
+    elif corruption == "date":
+        active = replace(active, target_date="not-a-date")
+    elif corruption == "side":
+        active = replace(active, decision=replace(active.decision, side="MAYBE"))
+    elif corruption == "strike":
+        active = replace(active, decision=replace(active.decision, strike_type="unknown"))
+    elif corruption == "contracts":
+        active = replace(
+            active,
+            decision=replace(active.decision, recommended_contracts=float("nan")),
+        )
+    elif corruption == "cost":
+        active = replace(
+            active,
+            decision=replace(active.decision, cost_per_contract=float("nan")),
+        )
+    elif corruption == "spend":
+        active = replace(active, spend=float("nan"))
+    elif corruption == "spend_mismatch":
+        active = replace(active, spend=19.0)
+    elif corruption == "pending_flag":
+        active = replace(active, pending=1)
+    elif corruption == "child_flag":
+        active = replace(active, is_partial_child=1)
+    elif corruption == "child_identity":
+        active = replace(active, is_partial_child=True, logical_position_id=None)
+
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[active])
+
+    assert plans.target.legs == []
+    assert plans.target.worst_case_loss == TARGET_POLICY.reference_equity
+    assert "active exposure is invalid" in plans.target.reasons[0]
+    assert len(plans.motion.legs) == 1
+
+
+def test_huge_typed_strike_range_uses_transition_scenarios_without_expansion() -> None:
+    decision = _decision(
+        _market(
+            "extreme bounded range",
+            ticker="KXHIGHDEN-26JUL20-B0",
+            floor=-1e300,
+            cap=1e300,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-20", 2)]
+    )
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.worst_case_loss == 20.0
+
+
 def test_target_clips_to_aggregate_open_scenario_room() -> None:
     active = []
     series = ("KXHIGHTSFO", "KXHIGHDEN", "KXHIGHMIA", "KXHIGHCHI")
@@ -849,6 +1146,7 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
                 decision.expected_profit,
                 0.0,
                 target_date=f"2026-07-{10 + idx:02d}",
+                account_id=TARGET_POLICY.account_id,
                 pending=True,
             )
         )
