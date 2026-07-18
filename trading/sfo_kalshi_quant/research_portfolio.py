@@ -28,7 +28,7 @@ from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
 
 
 MIN_EXECUTABLE_CONTRACT_COST = 0.01
-MAX_EXECUTABLE_CONTRACT_COST = 0.99
+MAX_EXECUTABLE_PRICE = 0.99
 MAX_TARGET_CONTRACTS = math.floor(
     TARGET_POLICY.reference_equity
     * TARGET_POLICY.max_position_risk_pct
@@ -65,7 +65,8 @@ class _ExposureSummary:
 
     @property
     def aggregate(self) -> float:
-        return sum(self.aggregate_by_book.values())
+        total = _finite_sum(self.aggregate_by_book.values())
+        return math.inf if total is None else total
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ class _PreparedTarget:
     source: "_PreparedOpportunity"
     rejection: str | None
     sized_decision: TradeDecision | None
+    conservative_per_worst_dollar: float | None = None
+    log_growth: float | None = None
 
 
 @dataclass(frozen=True)
@@ -99,14 +102,18 @@ def city_target_worst_case_loss(
         return 0.0
     bins = tuple(settlement_bins)
     if not bins:
-        return sum(leg.spend for leg in logical_legs)
-    worst = max(
-        -sum(
+        total = _finite_sum(leg.spend for leg in logical_legs)
+        return math.inf if total is None else total
+    scenario_losses: list[float] = []
+    for high in bins:
+        pnl = _finite_sum(
             -leg.spend if leg.pending else decision_pnl_at_settlement(leg.decision, high)
             for leg in logical_legs
         )
-        for high in bins
-    )
+        if pnl is None:
+            return math.inf
+        scenario_losses.append(-pnl)
+    worst = max(scenario_losses)
     return max(0.0, worst)
 
 
@@ -285,6 +292,17 @@ def allocate_research_plans(
             expected_profit=opportunity.decision.edge,
         )
         spend = decision.cost_per_contract
+        derived = _derived_leg_metrics(decision, MOTION_POLICY.reference_equity)
+        if derived is None:
+            motion_dispositions.append(
+                _disposition(
+                    audit_opportunity,
+                    "motion",
+                    "rejected",
+                    "candidate derived motion metrics are invalid",
+                )
+            )
+            continue
         if motion_cash_used + spend > motion_available_cash + 1e-9:
             motion_dispositions.append(
                 _disposition(
@@ -342,10 +360,21 @@ def allocate_research_plans(
         ),
     )
     remaining = max(0.0, TARGET_POLICY.target_pnl - realized_today)
-    available = sum(
+    available = _finite_sum(
         max(0.0, leg.decision.edge_lcb) * leg.decision.recommended_contracts
         for leg in target_legs
     )
+    if available is None:
+        available = 0.0
+        target_plan = replace(
+            target_plan,
+            approved=False,
+            legs=[],
+            total_spend=0.0,
+            worst_case_loss=TARGET_POLICY.reference_equity,
+            expected_profit=0.0,
+            reasons=["derived target result is invalid"],
+        )
     return ResearchPlans(
         target=target_plan,
         motion=motion_plan,
@@ -369,7 +398,24 @@ def _plan(
     plan_reason: str | None = None,
     worst_case_override: float | None = None,
 ) -> PortfolioPlan:
-    total_spend = sum(leg.spend for leg in legs)
+    total_spend = _finite_sum(leg.spend for leg in legs)
+    expected_profit = _finite_sum(leg.expected_profit for leg in legs)
+    worst_case_loss = (
+        worst_case_override
+        if worst_case_override is not None
+        else _exposure_summary(exposure_legs).aggregate
+    )
+    invalid_derived = (
+        total_spend is None
+        or expected_profit is None
+        or not math.isfinite(worst_case_loss)
+    )
+    if invalid_derived:
+        legs = []
+        total_spend = 0.0
+        expected_profit = 0.0
+        worst_case_loss = bankroll
+        plan_reason = "derived portfolio metrics are invalid"
     return PortfolioPlan(
         run_id=run_id,
         risk_profile=sleeve,
@@ -377,12 +423,8 @@ def _plan(
         legs=legs,
         arbitrage_opportunities=[],
         total_spend=total_spend,
-        worst_case_loss=(
-            worst_case_override
-            if worst_case_override is not None
-            else _exposure_summary(exposure_legs).aggregate
-        ),
-        expected_profit=sum(leg.expected_profit for leg in legs),
+        worst_case_loss=worst_case_loss,
+        expected_profit=expected_profit,
         reasons=(
             [plan_reason]
             if plan_reason is not None
@@ -551,6 +593,13 @@ def _normalize_decision(
         for name in probability_names
     ):
         return None, "candidate probability is outside [0, 1]"
+    edge_names = ("edge", "edge_lcb", "limit_edge", "limit_edge_lcb")
+    if any(
+        normalized[name] is not None
+        and not -1.0 <= float(normalized[name]) <= 1.0
+        for name in edge_names
+    ):
+        return None, "candidate edge is outside [-1, 1]"
     price_names = ("yes_bid", "yes_ask", "entry_bid", "entry_ask", "limit_price")
     if any(
         normalized[name] is not None
@@ -560,18 +609,18 @@ def _normalize_decision(
         return None, "candidate price is outside [0, 1]"
     if not MIN_EXECUTABLE_CONTRACT_COST <= float(
         normalized["cost_per_contract"]
-    ) <= MAX_EXECUTABLE_CONTRACT_COST:
-        return None, "candidate cost is outside the executable 1-99 cent range"
+    ) < 1.0:
+        return None, "candidate all-in cost is outside [0.01, 1.00)"
     limit_cost = normalized["limit_cost_per_contract"]
     if limit_cost is not None and not MIN_EXECUTABLE_CONTRACT_COST <= float(
         limit_cost
-    ) <= MAX_EXECUTABLE_CONTRACT_COST:
-        return None, "candidate limit cost is outside the executable 1-99 cent range"
+    ) < 1.0:
+        return None, "candidate all-in limit cost is outside [0.01, 1.00)"
     for name in ("entry_ask", "limit_price"):
         value = normalized[name]
         if value is not None and not MIN_EXECUTABLE_CONTRACT_COST <= float(
             value
-        ) <= MAX_EXECUTABLE_CONTRACT_COST:
+        ) <= MAX_EXECUTABLE_PRICE:
             return None, f"candidate {name} is outside the executable 1-99 cent range"
     nonnegative_names = (
         "spread",
@@ -604,7 +653,12 @@ def _normalize_decision(
 
     contracts = float(normalized["recommended_contracts"])
     edge = float(normalized["edge"])
-    normalized["expected_profit"] = edge * contracts
+    if abs(float(normalized["expected_profit"])) > contracts + 1e-9:
+        return None, "candidate expected profit exceeds executable payoff bounds"
+    expected_profit = edge * contracts
+    if not math.isfinite(expected_profit):
+        return None, "candidate derived expected profit is invalid"
+    normalized["expected_profit"] = expected_profit
     return replace(decision, side=side, **normalized), None
 
 
@@ -727,6 +781,16 @@ def _plain_finite_float(value: object) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _finite_sum(values: object) -> float | None:
+    """Sum derived floats without allowing overflow or non-finite results."""
+
+    try:
+        total = math.fsum(values)  # type: ignore[arg-type]
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return total if math.isfinite(total) else None
+
+
 def _is_iso_date(value: object) -> bool:
     try:
         raw = str(value)
@@ -762,7 +826,31 @@ def _prepare_target(source: _PreparedOpportunity) -> _PreparedTarget:
         if rejection is not None or opportunity is None
         else _target_sized_decision(opportunity.decision)
     )
-    return _PreparedTarget(source, rejection, sized)
+    if sized is None:
+        return _PreparedTarget(source, rejection, None)
+    derived = _derived_leg_metrics(sized, TARGET_POLICY.reference_equity)
+    conservative_profit = float(sized.edge_lcb) * float(
+        sized.recommended_contracts
+    )
+    worst_case_dollar = float(sized.cost_per_contract) * float(
+        sized.recommended_contracts
+    )
+    conservative_ratio = (
+        conservative_profit / worst_case_dollar
+        if worst_case_dollar > 0.0
+        else math.inf
+    )
+    if derived is None or not all(
+        math.isfinite(value)
+        for value in (conservative_profit, worst_case_dollar, conservative_ratio)
+    ):
+        return _PreparedTarget(
+            source,
+            "candidate derived target metrics are invalid",
+            None,
+        )
+    _, _, growth = derived
+    return _PreparedTarget(source, None, sized, conservative_ratio, growth)
 
 
 def _fit_target_leg(
@@ -821,13 +909,15 @@ def _research_leg(
     policy = TARGET_POLICY if sleeve == "target" else MOTION_POLICY
     city = city_for_market_ticker(decision.ticker)
     assert city is not None  # guarded by _common_rejection
-    spend = decision.recommended_contracts * decision.cost_per_contract
+    derived = _derived_leg_metrics(decision, policy.reference_equity)
+    assert derived is not None  # normalized and checked before leg construction
+    spend, expected_profit, growth = derived
     return PortfolioLeg(
         sleeve=sleeve,
         decision=decision,
         spend=spend,
-        expected_profit=decision.expected_profit,
-        growth_score=_expected_log_growth(decision, policy.reference_equity),
+        expected_profit=expected_profit,
+        growth_score=growth,
         target_date=opportunity.target_date,
         account_id=policy.account_id,
         region=REGION_BY_SERIES.get(city.series_ticker, "unknown"),
@@ -848,15 +938,16 @@ def _target_priority(
             str(opportunity.decision.ticker),
             str(opportunity.decision.side).upper(),
         )
-    cost = float(decision.cost_per_contract)
-    edge_lcb = float(decision.edge_lcb)
-    contracts = float(decision.recommended_contracts)
-    conservative_profit = edge_lcb * contracts
-    worst_case_dollar = cost * contracts
-    conservative_per_worst_dollar = (
-        conservative_profit / worst_case_dollar if worst_case_dollar > 0 else -math.inf
-    )
-    growth = _expected_log_growth(decision, TARGET_POLICY.reference_equity)
+    conservative_per_worst_dollar = prepared.conservative_per_worst_dollar
+    growth = prepared.log_growth
+    if conservative_per_worst_dollar is None or growth is None:
+        return (
+            math.inf,
+            math.inf,
+            str(opportunity.target_date),
+            str(opportunity.decision.ticker),
+            str(opportunity.decision.side).upper(),
+        )
     return (
         -conservative_per_worst_dollar,
         -growth,
@@ -885,7 +976,24 @@ def _expected_log_growth(decision: TradeDecision, bankroll: float) -> float:
         return -math.inf
     p = min(0.999999, max(0.000001, probability))
     profit = contracts * (1.0 - cost)
-    return p * math.log1p(profit / bankroll) + (1.0 - p) * math.log1p(-loss / bankroll)
+    growth = p * math.log1p(profit / bankroll) + (1.0 - p) * math.log1p(
+        -loss / bankroll
+    )
+    return growth if math.isfinite(growth) else -math.inf
+
+
+def _derived_leg_metrics(
+    decision: TradeDecision,
+    bankroll: float,
+) -> tuple[float, float, float] | None:
+    spend = float(decision.recommended_contracts) * float(
+        decision.cost_per_contract
+    )
+    expected_profit = float(decision.expected_profit)
+    growth = _expected_log_growth(decision, bankroll)
+    if not all(math.isfinite(value) for value in (spend, expected_profit, growth)):
+        return None
+    return spend, expected_profit, growth
 
 
 def _finite_float(value: object) -> float | None:
@@ -933,6 +1041,14 @@ def _risk_cap_reason(
         default_account=policy.account_id,
         default_sleeve=policy.sleeve.value,
     )
+    derived_losses = (
+        *summary.city_target.values(),
+        *summary.region_day.values(),
+        *summary.aggregate_by_book.values(),
+        summary.aggregate,
+    )
+    if not all(math.isfinite(value) for value in derived_losses):
+        return "scenario-risk derivation is invalid"
     series = _series_for_leg(candidate)
     target = candidate.target_date or "__unknown__"
     account = candidate.account_id or policy.account_id
@@ -973,8 +1089,8 @@ def _exposure_summary(
         groups[(account, sleeve, series, target)].append(leg)
 
     city_losses: dict[tuple[str, str, str, str], float] = {}
-    region_losses: dict[tuple[str, str, str, str], float] = defaultdict(float)
-    aggregate: dict[tuple[str, str], float] = defaultdict(float)
+    region_loss_parts: dict[tuple[str, str, str, str], list[float]] = defaultdict(list)
+    aggregate_parts: dict[tuple[str, str], list[float]] = defaultdict(list)
     for key, group in groups.items():
         account, sleeve, series, target = key
         loss = city_target_worst_case_loss(group, _settlement_bins(group))
@@ -985,9 +1101,17 @@ def _exposure_summary(
             if len(explicit_regions) == 1
             else REGION_BY_SERIES.get(series, "unknown")
         )
-        region_losses[(account, sleeve, region, target)] += loss
-        aggregate[(account, sleeve)] += loss
-    return _ExposureSummary(city_losses, dict(region_losses), dict(aggregate))
+        region_loss_parts[(account, sleeve, region, target)].append(loss)
+        aggregate_parts[(account, sleeve)].append(loss)
+    region_losses = {
+        key: total if (total := _finite_sum(parts)) is not None else math.inf
+        for key, parts in region_loss_parts.items()
+    }
+    aggregate = {
+        key: total if (total := _finite_sum(parts)) is not None else math.inf
+        for key, parts in aggregate_parts.items()
+    }
+    return _ExposureSummary(city_losses, region_losses, aggregate)
 
 
 def _series_for_leg(leg: PortfolioLeg) -> str:

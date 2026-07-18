@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
@@ -1350,7 +1351,7 @@ def test_overflowing_integer_quantity_is_rejected_without_crashing() -> None:
     assert plans.target.dispositions[0].status == "rejected"
 
 
-def test_non_tick_cost_above_ninety_nine_cents_is_rejected() -> None:
+def test_ninety_nine_cent_quote_with_sub_dollar_all_in_cost_is_valid() -> None:
     decision = _decision(
         _market(
             "70° to 71°",
@@ -1369,7 +1370,40 @@ def test_non_tick_cost_above_ninety_nine_cents_is_rejected() -> None:
     plans = allocate_research_plans(
         [
             ResearchOpportunity(
-                replace(decision, cost_per_contract=0.999),
+                replace(decision, cost_per_contract=0.9907),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert len(plans.target.legs) == 1
+    assert len(plans.motion.legs) == 1
+
+
+@pytest.mark.parametrize("bad_cost", (1.0, 1.0001, 1e308))
+def test_all_in_contract_cost_at_or_above_one_dollar_is_rejected(
+    bad_cost: float,
+) -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.99,
+        ),
+        side="YES",
+        spend=9.90,
+        probability=0.995,
+        edge=0.005,
+        edge_lcb=0.001,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, cost_per_contract=bad_cost),
                 "2026-07-20",
                 2,
             )
@@ -1378,6 +1412,74 @@ def test_non_tick_cost_above_ninety_nine_cents_is_rejected() -> None:
 
     assert plans.target.legs == []
     assert plans.motion.legs == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("edge", "edge_lcb", "limit_edge", "limit_edge_lcb", "expected_profit"),
+)
+@pytest.mark.parametrize("extreme", (1e308, -1e308), ids=("positive", "negative"))
+def test_extreme_finite_edge_and_profit_fields_reject_before_derivation(
+    field: str,
+    extreme: float,
+) -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, **{field: extreme}),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert plans.target.legs == []
+    assert plans.motion.legs == []
+
+
+def test_maximum_semantic_edge_with_huge_input_quantity_reports_only_finite_metrics() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.01,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.999,
+        edge=1.0,
+        edge_lcb=1.0,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, recommended_contracts=1e308),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([opportunity])
+
+    assert plans.target.legs[0].decision.recommended_contracts == 3000.0
+    assert math.isfinite(plans.target.expected_profit)
+    assert math.isfinite(plans.target.worst_case_loss)
+    assert math.isfinite(plans.available_conservative_expected_profit)
+    assert math.isfinite(plans.target.legs[0].growth_score)
 
 
 def test_target_clips_to_aggregate_open_scenario_room() -> None:
