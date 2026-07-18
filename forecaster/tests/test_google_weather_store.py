@@ -23,6 +23,266 @@ def _usage_ledger(tmp_path, **limits):
     return GoogleUsageLedger(tmp_path / "weather.db", **limits)
 
 
+def _runtime_store(tmp_path):
+    from google_weather_store import GoogleRuntimeStore
+
+    return GoogleRuntimeStore(tmp_path / "google_runtime.db", production=False)
+
+
+def test_hourly_runtime_expiry_boundary_is_exact_to_the_microsecond(tmp_path):
+    store = _runtime_store(tmp_path)
+    valid_at = TEST_NOW + timedelta(hours=1)
+    store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        valid_at=valid_at,
+        temperature_f=72.5,
+        stored_at=TEST_NOW,
+    )
+    expiry = TEST_NOW + timedelta(hours=1)
+
+    assert len(
+        store.active_hourly(
+            city_slug="sfo",
+            station_id="KSFO",
+            now=expiry - timedelta(microseconds=1),
+        )
+    ) == 1
+    assert store.active_hourly(
+        city_slug="sfo", station_id="KSFO", now=expiry
+    ) == ()
+
+
+def test_daily_runtime_expiry_uses_distinct_today_and_future_ttls(tmp_path):
+    store = _runtime_store(tmp_path)
+    store.write_daily(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        target_date="2026-07-18",
+        high_f=73.0,
+        stored_at=TEST_NOW,
+    )
+    store.write_daily(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        target_date="2026-07-19",
+        high_f=75.0,
+        stored_at=TEST_NOW,
+    )
+
+    today, future = store.active_daily(
+        city_slug="sfo", station_id="KSFO", now=TEST_NOW
+    )
+    assert today.target_date == "2026-07-18"
+    assert today.expires_at == TEST_NOW + timedelta(days=30)
+    assert future.target_date == "2026-07-19"
+    assert future.expires_at == TEST_NOW + timedelta(hours=24)
+    at_future_expiry = store.active_daily(
+        city_slug="sfo",
+        station_id="KSFO",
+        now=TEST_NOW + timedelta(hours=24),
+    )
+    assert tuple(row.target_date for row in at_future_expiry) == ("2026-07-18",)
+
+
+def test_current_runtime_expiry_is_exactly_one_hour(tmp_path):
+    store = _runtime_store(tmp_path)
+    store.write_current(
+        city_slug="mia",
+        station_id="KMIA",
+        issued_at=TEST_NOW,
+        observed_at=TEST_NOW - timedelta(minutes=5),
+        temperature_f=88.0,
+        stored_at=TEST_NOW,
+    )
+
+    active = store.active_current(
+        city_slug="mia",
+        station_id="KMIA",
+        now=TEST_NOW + timedelta(minutes=59),
+    )
+    assert active is not None
+    assert active.temperature_f == 88.0
+    assert (
+        store.active_current(
+            city_slug="mia",
+            station_id="KMIA",
+            now=TEST_NOW + timedelta(hours=1),
+        )
+        is None
+    )
+
+
+def test_runtime_high_and_next_expiry_use_minimum_constituent_expiry(tmp_path):
+    store = _runtime_store(tmp_path)
+    earliest = TEST_NOW + timedelta(minutes=45)
+    store.write_runtime_high(
+        city_slug="den",
+        station_id="KDEN",
+        issued_at=TEST_NOW,
+        target_date="2026-07-18",
+        high_f=91.0,
+        covered_hours=24,
+        complete=True,
+        constituent_expiries=(TEST_NOW + timedelta(hours=24), earliest),
+    )
+
+    active = store.active_runtime_high(
+        city_slug="den",
+        station_id="KDEN",
+        target_date="2026-07-18",
+        now=TEST_NOW,
+    )
+    assert active is not None
+    assert active.expires_at == earliest
+    assert store.next_expiry(now=TEST_NOW) == earliest
+    assert store.next_expiry(now=earliest) is None
+    assert (
+        store.active_runtime_high(
+            city_slug="den",
+            station_id="KDEN",
+            target_date="2026-07-18",
+            now=earliest,
+        )
+        is None
+    )
+
+
+def test_purge_expired_is_a_transactional_physical_delete(tmp_path):
+    store = _runtime_store(tmp_path)
+    store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        valid_at=TEST_NOW + timedelta(hours=1),
+        temperature_f=72.0,
+        stored_at=TEST_NOW,
+    )
+    store.write_daily(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        target_date="2026-07-18",
+        high_f=74.0,
+        stored_at=TEST_NOW,
+    )
+    purge_at = TEST_NOW + timedelta(days=31)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_test_daily_delete
+            BEFORE DELETE ON google_daily_runtime
+            BEGIN
+                SELECT RAISE(ABORT, 'forced purge failure');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced purge failure"):
+        store.purge_expired(now=purge_at)
+
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM google_hourly_runtime"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM google_daily_runtime"
+        ).fetchone()[0] == 1
+        connection.execute("DROP TRIGGER reject_test_daily_delete")
+
+    assert store.purge_expired(now=purge_at) == 2
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM google_hourly_runtime"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM google_daily_runtime"
+        ).fetchone()[0] == 0
+
+
+def test_runtime_schema_allowlist_has_no_raw_secret_or_google_gap_columns(tmp_path):
+    store = _runtime_store(tmp_path)
+    expected = {
+        "google_hourly_runtime": {
+            "city_slug",
+            "station_id",
+            "issued_at",
+            "valid_at",
+            "temperature_f",
+            "expires_at",
+        },
+        "google_daily_runtime": {
+            "city_slug",
+            "station_id",
+            "issued_at",
+            "target_date",
+            "high_f",
+            "expires_at",
+        },
+        "google_current_runtime": {
+            "city_slug",
+            "station_id",
+            "issued_at",
+            "observed_at",
+            "temperature_f",
+            "expires_at",
+        },
+        "google_runtime_high": {
+            "city_slug",
+            "station_id",
+            "issued_at",
+            "target_date",
+            "high_f",
+            "covered_hours",
+            "complete",
+            "expires_at",
+        },
+    }
+    forbidden_fragments = (
+        "raw",
+        "json",
+        "url",
+        "key",
+        "token",
+        "response",
+        "body",
+        "google_gap",
+    )
+
+    with sqlite3.connect(store.db_path) as connection:
+        for table, allowed_columns in expected.items():
+            columns = {
+                row[1]
+                for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            assert columns == allowed_columns
+            assert not any(
+                fragment in column.lower()
+                for column in columns
+                for fragment in forbidden_fragments
+            )
+
+
+def test_runtime_store_rejects_non_tmpfs_production_path_but_allows_test_injection(
+    tmp_path,
+):
+    from google_weather_store import GoogleRuntimeStore, assert_runtime_path
+
+    injected = tmp_path / "google_runtime.db"
+    with pytest.raises(
+        RuntimeError,
+        match="Google runtime content must live under /run/weatheredge",
+    ):
+        assert_runtime_path(injected, production=True)
+
+    assert_runtime_path(Path("/run/weatheredge/google_runtime.db"), production=True)
+    store = GoogleRuntimeStore(injected, production=False)
+    assert store.db_path == injected
+
+
 def _seed_billable_events(ledger, count: int, *, billing_date: str) -> None:
     """Arrange valid near-limit history without thousands of tiny transactions."""
 
