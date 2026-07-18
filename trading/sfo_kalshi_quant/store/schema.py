@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -462,6 +463,62 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_orders_open_market_side_profile
       AND closed_at IS NULL
 """
 
+_OPEN_POSITION_GUARD_NAME = "ux_paper_orders_open_market_side_profile"
+
+
+def _normalized_sql_tokens(sql: str) -> tuple[str, ...]:
+    """Return a whitespace-insensitive, literal-preserving SQL token stream."""
+
+    tokens = re.findall(
+        r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[(),]",
+        sql,
+    )
+    normalized = [token if token.startswith("'") else token.upper() for token in tokens]
+    for index in range(len(normalized) - 2):
+        if normalized[index : index + 3] == ["IF", "NOT", "EXISTS"]:
+            del normalized[index : index + 3]
+            break
+    return tuple(normalized)
+
+
+_CANONICAL_OPEN_POSITION_GUARD_TOKENS = _normalized_sql_tokens(
+    OPEN_POSITION_GUARD_INDEX
+)
+
+
+def _open_position_guard_is_canonical(
+    conn: sqlite3.Connection,
+    stored_sql: str,
+) -> bool:
+    """Verify the complete guard definition and SQLite's realized metadata."""
+
+    if _normalized_sql_tokens(stored_sql) != _CANONICAL_OPEN_POSITION_GUARD_TOKENS:
+        return False
+    index_row = next(
+        (
+            row
+            for row in conn.execute("PRAGMA index_list(paper_orders)").fetchall()
+            if str(row[1]) == _OPEN_POSITION_GUARD_NAME
+        ),
+        None,
+    )
+    if index_row is None:
+        return False
+    # seq, name, unique, origin, partial
+    if int(index_row[2]) != 1 or str(index_row[3]) != "c" or int(index_row[4]) != 1:
+        return False
+    xinfo = conn.execute(
+        f"PRAGMA index_xinfo({_OPEN_POSITION_GUARD_NAME})"
+    ).fetchall()
+    # Two expressions surround the exact target/ticker columns; the final row
+    # is SQLite's non-key rowid payload.
+    return (
+        [int(row[1]) for row in xinfo] == [-2, 2, 3, -2, -1]
+        and [row[2] for row in xinfo]
+        == [None, "target_date", "market_ticker", None, None]
+        and [int(row[5]) for row in xinfo] == [1, 1, 1, 1, 0]
+    )
+
 RESEARCH_IDENTITY_COLUMNS = {
     "research_sleeve": "TEXT",
     "research_policy_version": "TEXT",
@@ -881,14 +938,12 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
     """
     existing = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='index' "
-        "AND name='ux_paper_orders_open_market_side_profile'"
+        f"AND name='{_OPEN_POSITION_GUARD_NAME}'"
     ).fetchone()
     existing_sql = str(existing[0] or "") if existing else ""
-    normalized_existing = " ".join(existing_sql.upper().split())
-    is_current = (
-        "COALESCE(ACCOUNT_ID, 'PAPER-SHARED')" in normalized_existing
-        and "PAPER_PARTIALLY_FILLED" in normalized_existing
-        and "PAPER_PARTIAL_EXPIRED" in normalized_existing
+    is_current = bool(
+        existing
+        and _open_position_guard_is_canonical(conn, existing_sql)
     )
     if is_current:
         return
@@ -922,7 +977,7 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
         )
 
     if existing:
-        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
+        conn.execute(f"DROP INDEX {_OPEN_POSITION_GUARD_NAME}")
     try:
         conn.execute(OPEN_POSITION_GUARD_INDEX)
     except sqlite3.IntegrityError as exc:  # concurrent writes outside init lock

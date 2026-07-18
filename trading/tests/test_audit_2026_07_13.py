@@ -32,9 +32,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from sfo_kalshi_quant.account import strategy_fingerprint
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book, main
 from sfo_kalshi_quant.colors import Color
-from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import (
     BucketProbability,
@@ -104,13 +105,14 @@ def _resting_order(
     created_at: datetime,
     queue_ahead: float = 0.0,
     risk_profile: str = "live",
+    strategy_config: StrategyConfig | None = None,
 ) -> int:
     order_id = store.record_paper_order(
         target_date,
         decision,
         status="PAPER_LIMIT_RESTING",
         entry_mode="limit",
-        strategy_config=StrategyConfig(),
+        strategy_config=strategy_config or StrategyConfig(),
         risk_profile=risk_profile,
     )
     assert order_id is not None
@@ -139,11 +141,15 @@ def _move_to_target_account(
     """Adapt pre-sleeve audit fixtures without bypassing account uniqueness."""
 
     with store.connect() as conn:
+        research_strategy_fingerprint = strategy_fingerprint(
+            strategy_config_for_profile("research"), entry_mode="limit"
+        )
         conn.execute(
             """
             UPDATE paper_orders
-            SET market_ticker=?, account_id=?, research_sleeve=?,
-                research_policy_version=?, policy_fingerprint=?
+            SET market_ticker=?, risk_profile='research', account_id=?,
+                research_sleeve=?, research_policy_version=?,
+                policy_fingerprint=?, sleeve=?, strategy_fingerprint=?
             WHERE id=?
             """,
             (
@@ -152,6 +158,8 @@ def _move_to_target_account(
                 TARGET_POLICY.sleeve.value,
                 TARGET_POLICY.policy_version,
                 TARGET_POLICY.policy_fingerprint,
+                TARGET_POLICY.sleeve.value,
+                research_strategy_fingerprint,
                 order_id,
             ),
         )
@@ -159,6 +167,39 @@ def _move_to_target_account(
             "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
             (TARGET_POLICY.account_id, order_id),
         )
+
+
+def test_target_audit_fixture_has_coherent_research_identity() -> None:
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        ticker = "KXHIGHTSEA-26JUL13-B82.5"
+        order_id = _resting_order(
+            store,
+            "2026-07-13",
+            _decision(
+                ticker + "-TARGET",
+                side="NO",
+                limit_price=0.70,
+                contracts=8.0,
+            ),
+            created_at=NOW - timedelta(minutes=9),
+            risk_profile="research",
+            strategy_config=strategy_config_for_profile("research"),
+        )
+        _move_to_target_account(store, order_id, market_ticker=ticker)
+
+        row = store.paper_order(order_id)
+
+    assert row is not None
+    assert row["risk_profile"] == "research"
+    assert row["account_id"] == TARGET_POLICY.account_id
+    assert row["research_sleeve"] == TARGET_POLICY.sleeve.value
+    assert row["research_policy_version"] == TARGET_POLICY.policy_version
+    assert row["policy_fingerprint"] == TARGET_POLICY.policy_fingerprint
+    assert row["sleeve"] == TARGET_POLICY.sleeve.value
+    assert row["strategy_fingerprint"] == strategy_fingerprint(
+        strategy_config_for_profile("research"), entry_mode="limit"
+    )
 
 
 def _trade(
@@ -358,6 +399,8 @@ def test_ex01_trade_volume_is_allocated_once_across_same_side_orders() -> None:
                 contracts=8.0,
             ),
             created_at=NOW - timedelta(minutes=9),
+            risk_profile="research",
+            strategy_config=strategy_config_for_profile("research"),
         )
         _move_to_target_account(
             store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
@@ -405,6 +448,8 @@ def test_ex01_equal_price_priority_earlier_order_wins() -> None:
                 contracts=8.0,
             ),
             created_at=NOW - timedelta(minutes=9),
+            risk_profile="research",
+            strategy_config=strategy_config_for_profile("research"),
         )
         _move_to_target_account(
             store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
@@ -492,6 +537,8 @@ def test_ex01_volume_is_not_recredited_across_monitor_passes() -> None:
                 contracts=8.0,
             ),
             created_at=NOW - timedelta(minutes=9),
+            risk_profile="research",
+            strategy_config=strategy_config_for_profile("research"),
         )
         _move_to_target_account(
             store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"

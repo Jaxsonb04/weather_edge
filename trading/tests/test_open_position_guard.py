@@ -18,6 +18,7 @@ import pytest
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
+from sfo_kalshi_quant.store.schema import OPEN_POSITION_GUARD_INDEX
 from test_research_sleeves import _insert_research_order
 
 
@@ -71,7 +72,8 @@ def _open_count(store: PaperStore, ticker: str, side: str, profile: str) -> int:
 
 def test_guard_index_is_created_on_init():
     with TemporaryDirectory() as tmp:
-        store = PaperStore(Path(tmp) / "paper.db")
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
         with store.connect() as conn:
             names = {
                 row[0]
@@ -79,7 +81,18 @@ def test_guard_index_is_created_on_init():
                     "SELECT name FROM sqlite_master WHERE type='index'"
                 ).fetchall()
             }
+            before = conn.execute(
+                "SELECT sql, rootpage FROM sqlite_master WHERE type='index' "
+                "AND name='ux_paper_orders_open_market_side_profile'"
+            ).fetchone()
+        PaperStore(db_path)
+        with store.connect() as conn:
+            after = conn.execute(
+                "SELECT sql, rootpage FROM sqlite_master WHERE type='index' "
+                "AND name='ux_paper_orders_open_market_side_profile'"
+            ).fetchone()
         assert "ux_paper_orders_open_market_side_profile" in names
+        assert after == before
 
 
 def test_duplicate_open_same_market_side_profile_is_rejected():
@@ -228,3 +241,118 @@ def test_account_guard_migration_fails_closed_before_dropping_legacy_index(
         ).fetchone()[0]
     assert "risk_profile" in index_sql
     assert "account_id" not in index_sql
+
+
+def _canonical_guard_sql(sql: str) -> str:
+    return " ".join(sql.replace(" IF NOT EXISTS", "").split())
+
+
+@pytest.mark.parametrize(
+    "malformed_sql",
+    [
+        OPEN_POSITION_GUARD_INDEX.replace("        target_date,\n", ""),
+        OPEN_POSITION_GUARD_INDEX.replace("        market_ticker,\n", ""),
+        OPEN_POSITION_GUARD_INDEX.replace(
+            ",\n        UPPER(COALESCE(side, 'YES'))", ""
+        ),
+        OPEN_POSITION_GUARD_INDEX.replace("        'PAPER_FILLED', ", "        "),
+        OPEN_POSITION_GUARD_INDEX.replace("'PAPER_LIMIT_RESTING',\n", "\n"),
+        OPEN_POSITION_GUARD_INDEX.replace("      AND settled_at IS NULL\n", ""),
+        OPEN_POSITION_GUARD_INDEX.replace("      AND closed_at IS NULL\n", ""),
+        OPEN_POSITION_GUARD_INDEX.replace(
+            "CREATE UNIQUE INDEX", "CREATE INDEX"
+        ),
+        OPEN_POSITION_GUARD_INDEX.replace("'paper-shared'", "'PAPER-SHARED'"),
+        OPEN_POSITION_GUARD_INDEX.replace("'PAPER_FILLED'", "'paper_filled'"),
+    ],
+    ids=[
+        "missing-target-date",
+        "missing-market-ticker",
+        "missing-side-expression",
+        "missing-filled-status",
+        "missing-resting-status",
+        "missing-unsettled-predicate",
+        "missing-unclosed-predicate",
+        "not-unique",
+        "changed-account-literal-case",
+        "changed-status-literal-case",
+    ],
+)
+def test_init_replaces_every_noncanonical_same_name_guard(
+    tmp_path: Path,
+    malformed_sql: str,
+) -> None:
+    db_path = tmp_path / "malformed-guard.db"
+    store = PaperStore(db_path)
+    with store.connect() as conn:
+        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
+        conn.execute(malformed_sql)
+
+    PaperStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        stored_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='ux_paper_orders_open_market_side_profile'"
+        ).fetchone()[0]
+        index_list_row = next(
+            row
+            for row in conn.execute("PRAGMA index_list(paper_orders)").fetchall()
+            if row[1] == "ux_paper_orders_open_market_side_profile"
+        )
+        key_rows = conn.execute(
+            "PRAGMA index_xinfo(ux_paper_orders_open_market_side_profile)"
+        ).fetchall()
+
+    assert _canonical_guard_sql(stored_sql) == _canonical_guard_sql(
+        OPEN_POSITION_GUARD_INDEX
+    )
+    assert index_list_row[2] == 1  # unique
+    assert index_list_row[4] == 1  # partial
+    assert [row[1] for row in key_rows] == [-2, 2, 3, -2, -1]
+    assert [row[5] for row in key_rows] == [1, 1, 1, 1, 0]
+
+
+def test_guard_recreate_failure_rolls_back_to_the_previous_index(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "recreate-failure.db"
+    store = PaperStore(db_path)
+    malformed_sql = OPEN_POSITION_GUARD_INDEX.replace("        target_date,\n", "")
+    with store.connect() as conn:
+        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
+        conn.execute(malformed_sql)
+
+    denied = PaperStore(db_path, init=False)
+    normal_connect = denied.connect
+
+    def connect_denying_guard_create() -> sqlite3.Connection:
+        conn = normal_connect()
+
+        def authorizer(
+            action: int,
+            arg1: str | None,
+            _arg2: str | None,
+            _db_name: str | None,
+            _trigger_name: str | None,
+        ) -> int:
+            if (
+                action == sqlite3.SQLITE_CREATE_INDEX
+                and arg1 == "ux_paper_orders_open_market_side_profile"
+            ):
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(authorizer)
+        return conn
+
+    denied.connect = connect_denying_guard_create  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        denied.init()
+
+    with sqlite3.connect(db_path) as conn:
+        stored_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='ux_paper_orders_open_market_side_profile'"
+        ).fetchone()[0]
+    assert _canonical_guard_sql(stored_sql) == _canonical_guard_sql(malformed_sql)
