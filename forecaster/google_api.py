@@ -502,7 +502,7 @@ def fetch_google_forecast(key):
     # full 24-hour pages cover the 72-hour lookahead; underfilled responses stop
     # at the same official ceiling and are marked incomplete by their row count.
     max_hourly_pages = GOOGLE_HOURLY_MAX_PAGES
-    while True:
+    while events_used < max_hourly_pages:
         failure = None
         try:
             payload = fetch_hourly_page(key, page_token)

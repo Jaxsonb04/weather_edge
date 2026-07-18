@@ -171,6 +171,28 @@ def test_hourly_transport_stops_after_three_underfilled_pages(monkeypatch):
     ]
 
 
+def test_zero_hourly_page_limit_skips_hourly_transport_only(monkeypatch):
+    calls = []
+
+    def fake_urlopen(url, **_kwargs):
+        calls.append(url)
+        return _Response({})
+
+    monkeypatch.setattr(google_api, "urlopen", fake_urlopen)
+    monkeypatch.setattr(google_api, "GOOGLE_HOURLY_MAX_PAGES", 0)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_DAILY_FORECAST", True)
+    monkeypatch.setattr(google_api, "ENABLE_GOOGLE_CURRENT_CONDITIONS", True)
+
+    result = google_api.fetch_google_forecast("test-key")
+
+    assert len(calls) == 2
+    assert all(not url.startswith(google_api.HOURLY_API_URL) for url in calls)
+    assert calls[0].startswith(google_api.DAILY_API_URL)
+    assert calls[1].startswith(google_api.CURRENT_API_URL)
+    assert result["forecastHours"] == []
+    assert result["google_weather_events_used"] == 2
+
+
 @pytest.mark.parametrize(
     "forecast_hours",
     [1, {"unexpected": "mapping"}, "unexpected string", [1]],
