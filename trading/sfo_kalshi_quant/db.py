@@ -1758,6 +1758,11 @@ class PaperStore:
                 )
                 if limit_price is None or remaining <= 0:
                     continue
+                queue_price = (
+                    row["entry_bid"]
+                    if row["entry_bid"] is not None
+                    else limit_price
+                )
                 order = RestingMakerOrder(
                     order_id=int(row["id"]),
                     side=str(row["side"] or "YES").upper(),  # type: ignore[arg-type]
@@ -1767,6 +1772,9 @@ class PaperStore:
                         str(max(0.0, float(row["queue_remaining"] or 0.0)))
                     ),
                     placed_at=created_at,
+                    queue_price=Decimal(
+                        str(round(float(queue_price), 6))
+                    ),
                 )
                 if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID:
                     shadow_orders.append(order)

@@ -25,7 +25,11 @@ from .backtest_rescore import _day_clustered_roi_ci
 from .config import normalize_risk_profile_name
 from .execution import initial_queue_ahead
 from .logical_positions import LogicalPaperPosition, group_logical_positions
-from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
+from .maker_fills import (
+    EXECUTION_MODEL_VERSION,
+    maker_trade_reaches_price,
+    normalize_public_trade,
+)
 from .restatement import VERIFIED, restate
 from .settlement_truth import (
     normalize_settlement_truth,
@@ -52,6 +56,7 @@ class ReplayOrder:
     queue_ahead: float = 0.0
     ttl_minutes: int = 15
     immediate: bool = False
+    queue_price: float | None = None
 
     @property
     def cost(self) -> float:
@@ -191,12 +196,26 @@ def run_replay(
                     break
                 if model.require_bid_taker and maker_side != order.side:
                     continue
-                if event.side != order.side or event.price is None or event.price > order.limit_price + 1e-12:
+                if event.side != order.side or event.price is None:
                     continue
-                queue_take = min(queue_remaining.get(order_id, 0.0), residual)
-                queue_remaining[order_id] = queue_remaining.get(order_id, 0.0) - queue_take
-                residual -= queue_take
-                if residual <= 0 or queue_remaining[order_id] > 0:
+                fills_order = maker_trade_reaches_price(
+                    event.price, order.limit_price
+                )
+                current_queue = queue_remaining.get(order_id, 0.0)
+                if current_queue > 0:
+                    queue_price = (
+                        order.queue_price
+                        if order.queue_price is not None
+                        else order.limit_price
+                    )
+                    if not maker_trade_reaches_price(event.price, queue_price):
+                        continue
+                    queue_take = min(current_queue, residual)
+                    queue_remaining[order_id] = current_queue - queue_take
+                    residual -= queue_take
+                    if residual <= 0 or queue_remaining[order_id] > 0:
+                        continue
+                if not fills_order:
                     continue
                 fill_take = min(order.contracts - allocated.get(order_id, 0.0), residual)
                 allocated[order_id] = allocated.get(order_id, 0.0) + fill_take
@@ -425,6 +444,11 @@ def replay_from_database(
             ),
             ttl_minutes=15,
             immediate=immediate,
+            queue_price=(
+                float(row["entry_bid"])
+                if row["entry_bid"] is not None
+                else limit_price
+            ),
         )
         events.append(ReplayEvent(placed, "order", order.ticker, order=order))
         closed_at = _parse_time(row["closed_at"])

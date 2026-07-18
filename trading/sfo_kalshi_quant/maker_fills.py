@@ -104,6 +104,7 @@ class RestingMakerOrder:
     quantity: Decimal
     queue_ahead: Decimal
     placed_at: datetime
+    queue_price: Decimal | None = None  # displayed price where queue was seen
 
 
 @dataclass(frozen=True)
@@ -245,6 +246,18 @@ def apply_volume_claims(
     return remaining
 
 
+def maker_trade_reaches_price(trade_price: object, price_level: object) -> bool:
+    """Whether a maker-side trade occurred at or through a resting bid level."""
+
+    normalized_trade = _decimal(trade_price)
+    normalized_level = _decimal(price_level)
+    return (
+        normalized_trade is not None
+        and normalized_level is not None
+        and normalized_trade <= normalized_level
+    )
+
+
 def _priority(order: RestingMakerOrder) -> tuple[Decimal, datetime, int]:
     # Better (higher) bid first, then time priority, then a stable id tiebreak.
     return (-order.limit_price, order.placed_at, order.order_id)
@@ -256,11 +269,11 @@ def allocate_maker_fills(
 ) -> dict[int, OrderAllocation]:
     """Allocate each trade's volume once across compatible resting orders.
 
-    For every normalized trade, compatible orders (same maker side, placed
-    strictly earlier, limit at/through the traded price) consume the trade's
-    residual volume in price-time priority: first each order's own estimated
-    queue ahead, then order quantity. Volume spent on one order is never
-    reused for another -- conservation is structural, not asserted.
+    For every normalized trade, compatible orders consume residual volume in
+    price-time priority. An order's estimated queue consumes maker-side tape at
+    or through the price where that queue was observed; its own quantity fills
+    only from tape at or through the order limit. Volume spent on one order is
+    never reused for another -- conservation is structural, not asserted.
     """
 
     ordered_trades = sorted(trades, key=lambda trade: (trade.created_at, trade.trade_id))
@@ -280,21 +293,36 @@ def allocate_maker_fills(
                 continue
             if trade.created_at <= order.placed_at:
                 continue
-            if trade.side_price(order.side) > order.limit_price:
-                continue
             if unfilled[order.order_id] <= 0:
                 continue
-            queue_take = min(queue_remaining[order.order_id], residual)
-            queue_remaining[order.order_id] -= queue_take
-            residual -= queue_take
-            if residual <= 0 or queue_remaining[order.order_id] > 0:
+            trade_price = trade.side_price(order.side)
+            queue_price = (
+                order.queue_price
+                if order.queue_price is not None
+                else order.limit_price
+            )
+            fills_order = maker_trade_reaches_price(
+                trade_price, order.limit_price
+            )
+            queue_take = Decimal(0)
+            if queue_remaining[order.order_id] > 0:
+                if not maker_trade_reaches_price(trade_price, queue_price):
+                    continue
+                queue_take = min(queue_remaining[order.order_id], residual)
+                queue_remaining[order.order_id] -= queue_take
+                residual -= queue_take
+            if (
+                residual <= 0
+                or queue_remaining[order.order_id] > 0
+                or not fills_order
+            ):
                 if queue_take > 0:
                     fills[order.order_id].append(
                         AllocatedFill(
                             order_id=order.order_id,
                             trade_id=trade.trade_id,
                             quantity=Decimal(0),
-                            price=trade.side_price(order.side),
+                            price=trade_price,
                             queue_consumed=queue_take,
                         )
                     )
@@ -307,7 +335,7 @@ def allocate_maker_fills(
                     order_id=order.order_id,
                     trade_id=trade.trade_id,
                     quantity=fill_take,
-                    price=trade.side_price(order.side),
+                    price=trade_price,
                     queue_consumed=queue_take,
                 )
             )

@@ -209,6 +209,11 @@ def restate(db_path: Path) -> dict[str, Any]:
             if row["limit_price"] is not None
             else row["entry_price"]
         )
+        queue_price = float(
+            row["entry_bid"]
+            if row["entry_bid"] is not None
+            else limit_price
+        )
         created_at = str(row["created_at"] or "")
         for allocation_row in order_allocations:
             trade_id = str(allocation_row["trade_id"])
@@ -220,7 +225,16 @@ def restate(db_path: Path) -> dict[str, Any]:
                 findings.append("EXEC_V3_DIRECTION_INVALID")
             if str(allocation_row["trade_created_at"]) <= created_at:
                 findings.append("EXEC_V3_TRADE_NOT_LATER")
-            if float(allocation_row["side_price"]) > limit_price + 1e-9:
+            side_price = float(allocation_row["side_price"])
+            queue_quantity = float(allocation_row["queue_quantity"] or 0.0)
+            fill_quantity = float(allocation_row["fill_quantity"] or 0.0)
+            if (
+                fill_quantity > 0
+                and side_price > limit_price + 1e-9
+            ) or (
+                queue_quantity > 0
+                and side_price > queue_price + 1e-9
+            ):
                 findings.append("EXEC_V3_PRICE_INVALID")
             if trade_id in overclaimed_trade_ids:
                 findings.append("EXEC_V3_VOLUME_OVERCLAIMED")

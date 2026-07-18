@@ -39,6 +39,7 @@ def _order(
     limit: str,
     quantity: str,
     queue: str = "0",
+    queue_price: str | None = None,
     minutes: int = 0,
 ) -> RestingMakerOrder:
     return RestingMakerOrder(
@@ -48,6 +49,7 @@ def _order(
         quantity=Decimal(quantity),
         queue_ahead=Decimal(queue),
         placed_at=T0 + timedelta(minutes=minutes),
+        queue_price=Decimal(queue_price) if queue_price is not None else None,
     )
 
 
@@ -89,6 +91,45 @@ def test_allocator_consumes_queue_before_quantity() -> None:
     assert allocation.queue_consumed == Decimal(5)
     assert allocation.filled_quantity == Decimal(7)
     assert not allocation.complete
+
+
+def test_allocator_clears_better_price_queue_before_filling_below_bid() -> None:
+    order = _order(
+        1,
+        side="NO",
+        limit="0.71",
+        quantity="5",
+        queue="100",
+        queue_price="0.72",
+    )
+    trades = [
+        _trade("QUEUE", maker_side="NO", yes_price="0.28", quantity="100"),
+        _trade(
+            "FILL",
+            maker_side="NO",
+            yes_price="0.29",
+            quantity="5",
+            minutes=11,
+        ),
+    ]
+
+    allocation = allocate_maker_fills(trades, [order])[1]
+
+    assert allocation.complete
+    assert allocation.queue_consumed == Decimal("100")
+    assert allocation.filled_quantity == Decimal("5")
+    assert allocation.consumption_by_trade() == {
+        "QUEUE": {
+            "queue_quantity": 100.0,
+            "fill_quantity": 0.0,
+            "total_quantity": 100.0,
+        },
+        "FILL": {
+            "queue_quantity": 0.0,
+            "fill_quantity": 5.0,
+            "total_quantity": 5.0,
+        },
+    }
 
 
 def test_allocator_accumulates_across_trades_until_complete() -> None:

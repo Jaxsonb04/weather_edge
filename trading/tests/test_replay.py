@@ -11,6 +11,7 @@ from sfo_kalshi_quant.replay import (
     replay_from_database,
     run_replay,
 )
+from sfo_kalshi_quant.restatement import restate
 
 
 def _at(minutes: int) -> datetime:
@@ -54,6 +55,48 @@ def test_replay_cancels_ttl_and_never_uses_future_settlement_as_fill_evidence() 
     assert result.settled == 0
     assert result.ending_cash == 1000.0
     assert result.promotion_eligible is False
+
+
+def test_replay_clears_better_price_queue_before_filling_below_bid() -> None:
+    order = ReplayOrder(
+        order_id="below-bid",
+        placed_at=_at(0),
+        target_date="2026-07-02",
+        ticker="KXHIGHTSFO-BELOW-BID",
+        side="NO",
+        limit_price=0.71,
+        contracts=5,
+        fee_per_contract=0,
+        queue_ahead=100,
+        queue_price=0.72,
+    )
+
+    result = run_replay(
+        [
+            ReplayEvent(_at(0), "order", order.ticker, order=order),
+            ReplayEvent(
+                _at(1),
+                "trade",
+                order.ticker,
+                side="NO",
+                price=0.72,
+                quantity=100,
+                taker_book_side="bid",
+            ),
+            ReplayEvent(
+                _at(2),
+                "trade",
+                order.ticker,
+                side="NO",
+                price=0.71,
+                quantity=5,
+                taker_book_side="bid",
+            ),
+        ]
+    )
+
+    assert result.filled == 1
+    assert [event["event"] for event in result.events].count("FILL_MAKER") == 1
 
 
 def test_replay_matches_runtime_for_inside_spread_queue_priority() -> None:
@@ -110,6 +153,86 @@ def test_replay_matches_runtime_for_inside_spread_queue_priority() -> None:
         runtime_order = store.paper_order(order_id)
         assert runtime_order is not None
         assert runtime_order["status"] == "PAPER_FILLED"
+
+        replay = replay_from_database(db_path, {})
+        assert replay["filled"] == 1
+        assert [event["event"] for event in replay["events"]].count("FILL_MAKER") == 1
+
+
+def test_replay_matches_runtime_when_queue_is_above_order_limit() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-BELOW-BID",
+            label="below bid",
+            action="BUY_NO",
+            approved=True,
+            probability=0.82,
+            probability_lcb=0.78,
+            yes_bid=0.25,
+            yes_ask=0.29,
+            spread=0.04,
+            fee_per_contract=0.0,
+            cost_per_contract=0.71,
+            edge=0.11,
+            edge_lcb=0.07,
+            kelly_fraction=0.01,
+            recommended_contracts=5.0,
+            expected_profit=0.55,
+            reasons=[],
+            side="NO",
+            entry_bid=0.72,
+            entry_ask=0.75,
+            entry_bid_size=100.0,
+            entry_ask_size=100.0,
+            limit_price=0.71,
+        )
+        order_id = store.record_paper_order(
+            "2026-07-18",
+            decision,
+            risk_profile="live",
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        assert order_id is not None
+        resting = store.paper_order(order_id)
+        assert resting is not None
+        placed_at = datetime.fromisoformat(resting["created_at"])
+        queue_trade = {
+            "trade_id": "below-bid-queue",
+            "created_time": (placed_at + timedelta(seconds=1)).isoformat(),
+            "taker_book_side": "bid",
+            "yes_price_dollars": "0.28",
+            "no_price_dollars": "0.72",
+            "count_fp": "100.00",
+        }
+        fill_trade = {
+            "trade_id": "below-bid-fill",
+            "created_time": (placed_at + timedelta(seconds=2)).isoformat(),
+            "taker_book_side": "bid",
+            "yes_price_dollars": "0.29",
+            "no_price_dollars": "0.71",
+            "count_fp": "5.00",
+        }
+
+        store.apply_maker_trade_batch(decision.ticker, [queue_trade])
+        after_queue = store.paper_order(order_id)
+        assert after_queue is not None
+        assert after_queue["status"] == "PAPER_LIMIT_RESTING"
+        assert after_queue["queue_remaining"] == 0
+
+        store.apply_maker_trade_batch(decision.ticker, [fill_trade])
+        runtime_order = store.paper_order(order_id)
+        assert runtime_order is not None
+        assert runtime_order["status"] == "PAPER_FILLED"
+        assert runtime_order["filled_contracts"] == 5
+
+        restated = next(
+            row for row in restate(db_path)["orders"] if row["order_id"] == order_id
+        )
+        assert "EXEC_V3_PRICE_INVALID" not in restated["findings"]
 
         replay = replay_from_database(db_path, {})
         assert replay["filled"] == 1
