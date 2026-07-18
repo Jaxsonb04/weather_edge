@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass, replace
@@ -349,6 +350,12 @@ def main(argv: list[str] | None = None) -> int:
     except ForecastDataError as exc:
         print(f"forecast data error: {exc}", file=sys.stderr)
         return 2
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower():
+            print(f"temporary sqlite lock: {exc}", file=sys.stderr)
+            return 75
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -2,8 +2,22 @@
 
 from collections.abc import Callable
 from datetime import date
+import sqlite3
 from types import SimpleNamespace
 from typing import get_type_hints
+
+
+def test_cli_reports_sqlite_lock_as_retryable_tempfail(monkeypatch, capsys) -> None:
+    from sfo_kalshi_quant import cli
+
+    def locked(_args) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    parser = SimpleNamespace(parse_args=lambda _argv: SimpleNamespace(func=locked))
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+
+    assert cli.main([]) == 75
+    assert "temporary sqlite lock: database is locked" in capsys.readouterr().err
 
 
 def test_format_module_owns_pnl_formatting() -> None:

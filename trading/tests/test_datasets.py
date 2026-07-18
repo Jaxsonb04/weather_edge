@@ -8,6 +8,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+import pytest
+
+from sfo_kalshi_quant import datasets as datasets_module
 from sfo_kalshi_quant.datasets import (
     DatasetStore,
     OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS,
@@ -24,6 +27,26 @@ from sfo_kalshi_quant.datasets import (
     parse_iem_asos_csv,
     parse_noaa_isd_row,
 )
+
+
+def test_dataset_store_releases_each_write_connection_without_gc(tmp_path, monkeypatch):
+    opened: list[sqlite3.Connection] = []
+    original_connect = sqlite3.connect
+
+    def tracked_connect(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(datasets_module.sqlite3, "connect", tracked_connect)
+    store = DatasetStore(tmp_path / "dataset.db")
+    run_id = store.start_run("open-meteo-previous-runs", {})
+    store.finish_run(run_id, status="success", rows_written=0)
+
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            conn.execute("SELECT 1")
 
 
 def test_parse_noaa_isd_row_converts_encoded_units():

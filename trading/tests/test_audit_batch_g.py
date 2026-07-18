@@ -226,6 +226,12 @@ args = sys.argv[1:]
 with open(os.environ['CALL_LOG'], 'a') as stream: stream.write(' '.join(args) + '\\n')
 if 'dataset-backfill' in args:
     source = args[args.index('--source') + 1]
+    if source in os.environ.get('LOCK_ONCE_SOURCES', '').split(','):
+        marker = os.environ['LOCK_ONCE_MARKER'] + '-' + source
+        if not os.path.exists(marker):
+            open(marker, 'w').close()
+            print('sqlite3.OperationalError: database is locked', file=sys.stderr)
+            raise SystemExit(75)
     if source in os.environ.get('FAIL_SOURCES', '').split(','): raise SystemExit(11)
 if 'dataset-research' in args and os.environ.get('FAIL_RESEARCH') == '1': raise SystemExit(12)
 if args[:1] == ['-c']:
@@ -271,6 +277,22 @@ def test_backfill_partial_failure_commits_success_then_exits_nonzero(tmp_path: P
 def test_backfill_success_exits_zero(tmp_path: Path) -> None:
     result = _backfill_result(tmp_path, "good,also-good")
     assert result.returncode == 0, result.stderr
+
+
+def test_backfill_retries_a_transient_sqlite_lock_without_partial_failure(tmp_path: Path) -> None:
+    marker = tmp_path / "lock-once"
+    result = _backfill_result(
+        tmp_path,
+        "open-meteo-previous-runs",
+        LOCK_ONCE_SOURCES="open-meteo-previous-runs",
+        LOCK_ONCE_MARKER=str(marker),
+        SFO_DATASET_LOCK_RETRY_DELAY_SECONDS="0",
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text()
+    assert calls.count("dataset-backfill") == 2
+    assert calls.count("dataset-research") == 1
 
 
 def test_backfill_all_fail_and_research_failure_exit_nonzero(tmp_path: Path) -> None:

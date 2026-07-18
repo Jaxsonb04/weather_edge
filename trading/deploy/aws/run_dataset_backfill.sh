@@ -13,6 +13,15 @@ PREVIOUS_DAYS="${SFO_DATASET_PREVIOUS_DAYS:-7}"
 KALSHI_CANDLE_INTERVAL="${SFO_DATASET_KALSHI_CANDLE_INTERVAL:-60}"
 KALSHI_MAX_PAGES="${SFO_DATASET_KALSHI_MAX_PAGES:-20}"
 KALSHI_MAX_TRADE_PAGES="${SFO_DATASET_KALSHI_MAX_TRADE_PAGES:-1}"
+LOCK_RETRY_ATTEMPTS="${SFO_DATASET_LOCK_RETRY_ATTEMPTS:-3}"
+LOCK_RETRY_DELAY_SECONDS="${SFO_DATASET_LOCK_RETRY_DELAY_SECONDS:-5}"
+
+case "$LOCK_RETRY_ATTEMPTS" in
+  '' | *[!0-9]* | 0)
+    echo "SFO_DATASET_LOCK_RETRY_ATTEMPTS must be a positive integer" >&2
+    exit 2
+    ;;
+esac
 
 if [[ "$PYTHON_BIN" != */* ]]; then
   if ! PYTHON_BIN="$(command -v "$PYTHON_BIN")"; then
@@ -46,6 +55,25 @@ truthy() {
     1 | true | yes | y | on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+run_dataset_source() {
+  local attempt=1
+  local status=0
+  while (( attempt <= LOCK_RETRY_ATTEMPTS )); do
+    if "$PYTHON_BIN" -m sfo_kalshi_quant.cli "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    if (( status != 75 || attempt >= LOCK_RETRY_ATTEMPTS )); then
+      return "$status"
+    fi
+    echo "warning: transient SQLite lock; retrying dataset source ($attempt/$LOCK_RETRY_ATTEMPTS)" >&2
+    sleep "$LOCK_RETRY_DELAY_SECONDS"
+    ((attempt += 1))
+  done
+  return "$status"
 }
 
 mkdir -p "$(dirname "$DB_PATH")"
@@ -98,7 +126,7 @@ for raw_source in "${sources[@]}"; do
   esac
 
   echo "running dataset backfill source=$source start=$source_start end=$source_end db=$DB_PATH"
-  if ! "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}"; then
+  if ! run_dataset_source "${args[@]}"; then
     failed_sources+=("$source")
     echo "warning: dataset backfill source=$source failed; continuing" >&2
   fi
