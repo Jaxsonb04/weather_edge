@@ -407,6 +407,7 @@ def _exec_v4_replay_findings(
     *,
     known_order_ids: set[int] | None = None,
     known_order_tickers: dict[int, str] | None = None,
+    plausible_current_maker_ids: set[int] | None = None,
 ) -> dict[int, list[str]]:
     """Reproduce v4 allocation evidence through the production allocator."""
 
@@ -419,8 +420,11 @@ def _exec_v4_replay_findings(
         order_id: row
         for row in orders
         if (order_id := _positive_row_id(row["id"])) is not None
-        and evidences[order_id].get("model")
-        == "maker_allocator_price_time_v4"
+        and (
+            evidences[order_id].get("model")
+            == "maker_allocator_price_time_v4"
+            or order_id in (plausible_current_maker_ids or set())
+        )
     }
     findings: dict[int, list[str]] = {order_id: [] for order_id in candidates}
     candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
@@ -1312,6 +1316,18 @@ def restate(db_path: Path) -> dict[str, Any]:
             if has_tape
             else []
         )
+        ledger_rows = (
+            conn.execute(
+                "SELECT order_id, event_type, details_json, idempotency_key "
+                "FROM paper_account_ledger"
+            ).fetchall()
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='paper_account_ledger'"
+            ).fetchone()
+            is not None
+            else []
+        )
 
     all_orders_by_id = {
         order_id: row
@@ -1322,6 +1338,32 @@ def restate(db_path: Path) -> dict[str, Any]:
         order_id: row
         for row in orders
         if (order_id := _positive_row_id(row["id"])) is not None
+    }
+    current_entry_fill_owner_ids = {
+        order_id
+        for ledger_row in ledger_rows
+        if str(ledger_row["event_type"] or "") == "ENTRY_FILL"
+        and (order_id := _positive_row_id(ledger_row["order_id"])) is not None
+        and (
+            _json_object(ledger_row["details_json"]).get(
+                "execution_model_version"
+            )
+            == EXECUTION_MODEL_VERSION
+            or EXECUTION_MODEL_VERSION
+            in str(ledger_row["idempotency_key"] or "")
+        )
+    }
+    plausible_current_maker_ids = {
+        order_id
+        for order_id, row in orders_by_id.items()
+        if str(row["entry_mode"] or "") == "limit"
+        and _finite_number(row["limit_price"], minimum=0, maximum=1)
+        is not None
+        and (
+            str(row["execution_model_version"] or "")
+            == EXECUTION_MODEL_VERSION
+            or order_id in current_entry_fill_owner_ids
+        )
     }
     maker_candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
     for order_id, row in orders_by_id.items():
@@ -1525,6 +1567,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             order_id: str(row["market_ticker"])
             for order_id, row in all_orders_by_id.items()
         },
+        plausible_current_maker_ids=plausible_current_maker_ids,
     )
     for order_id, findings in replay_findings.items():
         combined = current_findings_by_order.setdefault(order_id, [])
@@ -1576,12 +1619,18 @@ def restate(db_path: Path) -> dict[str, Any]:
                 evidence = parent_evidence
         entry_evidence_order_id = parent_id if parent_id is not None else order_id
         outcome = _json_object(row["outcome_diagnostics_json"])
+        immutable_replay_findings = current_findings_by_order.get(
+            entry_evidence_order_id
+        )
         findings += _entry_findings(
             row,
             evidence,
             duplicate_trade_ids,
-            current_findings_by_order.get(entry_evidence_order_id),
+            immutable_replay_findings,
         )
+        if entry_evidence_order_id in plausible_current_maker_ids:
+            for finding in immutable_replay_findings or []:
+                _append_finding(findings, finding)
         if (
             evidence.get("model") == "maker_allocator_price_time_v4"
             and str(row["execution_model_version"] or "")
@@ -1655,6 +1704,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             _row_uses_current_maker_semantics(root)
             or root_id in v4_allocation_owner_ids
             or (row_generation_is_current and root_id in claim_owner_ids)
+            or root_id in plausible_current_maker_ids
         )
         if not has_current_maker_authority:
             continue

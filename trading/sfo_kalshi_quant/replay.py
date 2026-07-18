@@ -58,6 +58,16 @@ def _positive_integral_id(value: object) -> int | None:
     )
 
 
+def _finite_probability(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) and 0 <= parsed <= 1 else None
+
+
 @dataclass(frozen=True)
 class ReplayOrder:
     order_id: str
@@ -374,6 +384,45 @@ def replay_from_database(
                 ).fetchall()
                 if (order_id := _positive_integral_id(row[0])) is not None
             } if _table_exists(conn, "maker_volume_claims") else set()
+            entry_fill_rows = (
+                conn.execute(
+                    "SELECT order_id, details_json, idempotency_key "
+                    "FROM paper_account_ledger WHERE event_type='ENTRY_FILL'"
+                ).fetchall()
+                if _table_exists(conn, "paper_account_ledger")
+                else []
+            )
+            current_entry_fill_owner_ids = {
+                order_id
+                for row in entry_fill_rows
+                if (order_id := _positive_integral_id(row["order_id"]))
+                is not None
+                and (
+                    _json_object(row["details_json"]).get(
+                        "execution_model_version"
+                    )
+                    == EXECUTION_MODEL_VERSION
+                    or EXECUTION_MODEL_VERSION
+                    in str(row["idempotency_key"] or "")
+                )
+            }
+            plausible_current_maker_ids = {
+                order_id
+                for row in all_orders
+                if str(row["status"] or "") != "REJECTED"
+                and (
+                    order_id := _positive_integral_id(row["id"])
+                )
+                is not None
+                and str(_row_value(row, "entry_mode") or "") == "limit"
+                and _finite_probability(_row_value(row, "limit_price"))
+                is not None
+                and (
+                    str(_row_value(row, "execution_model_version") or "")
+                    == EXECUTION_MODEL_VERSION
+                    or order_id in current_entry_fill_owner_ids
+                )
+            }
             trades = (
                 conn.execute(
                     "SELECT * FROM dataset_kalshi_trades ORDER BY created_time, trade_id"
@@ -446,6 +495,7 @@ def replay_from_database(
             )
             or root_id in v4_allocation_owner_ids
             or (row_generation_is_current and root_id in claim_owner_ids)
+            or root_id in plausible_current_maker_ids
         )
         if not has_current_maker_authority:
             continue

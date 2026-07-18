@@ -1797,3 +1797,132 @@ def test_persisted_v4_allocation_prevents_maker_identity_opt_out(
         assert replay["verified_decisions"] == 0
         assert replay["readiness_metrics"]["candidate"]["capital_at_risk"] == 0.0
         assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0
+
+
+def test_malformed_v4_allocation_identity_survives_triple_label_tamper() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, "triple-identity", no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            evidence["model"] = "maker_allocator_price_time_v3"
+            conn.execute(
+                "UPDATE paper_orders SET fill_model='immediate_visible_quote', "
+                "fill_evidence_json=? WHERE id=?",
+                (json.dumps(evidence, sort_keys=True), order_id),
+            )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE paper_maker_allocations SET order_id='bad' WHERE order_id=?",
+                (order_id,),
+            )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, order_id, "EXEC_V4_ALLOCATION_ORDER_ID_INVALID"
+        )
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 0
+        assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0
+
+
+def test_valid_rejected_v4_allocation_is_provably_unrelated() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        candidate_id = _order(store, queue_ahead=0.0)
+        _apply(store, "candidate-owner", no_price=0.72, quantity=5.0)
+        _settle(store)
+        rejected_id = _order(
+            store,
+            queue_ahead=0.0,
+            placed_at=T0 + timedelta(seconds=1),
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET status='REJECTED' WHERE id=?",
+                (rejected_id,),
+            )
+        _apply(
+            store,
+            "rejected-owner",
+            no_price=0.72,
+            quantity=1.0,
+            at=T0 + timedelta(minutes=3),
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "INSERT INTO paper_maker_allocations ("
+                "created_at, execution_model_version, market_ticker, trade_id, "
+                "order_id, trade_created_at, maker_side, side_price, "
+                "queue_quantity, fill_quantity, counterfactual, evidence_json"
+                ") VALUES (?, ?, ?, 'rejected-owner', ?, ?, 'NO', 0.72, "
+                "0, 0, 0, ?)",
+                (
+                    datetime.now(UTC).isoformat(),
+                    EXECUTION_MODEL_VERSION,
+                    TICKER,
+                    rejected_id,
+                    (T0 + timedelta(minutes=3)).isoformat(),
+                    json.dumps(
+                        {
+                            "queue_quantity": 0.0,
+                            "fill_quantity": 0.0,
+                            "total_quantity": 0.0,
+                        },
+                        sort_keys=True,
+                    ),
+                ),
+            )
+
+        assert _result(db_path, candidate_id)["verification"] == "VERIFIED"
+
+
+def test_valid_genuine_v3_allocation_does_not_poison_v4_candidate() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        candidate_id = _order(store, queue_ahead=0.0)
+        historical_id = _order(
+            store,
+            queue_ahead=0.0,
+            placed_at=T0 + timedelta(seconds=1),
+            risk_profile="research",
+        )
+        _apply(store, "mixed-generation", no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (historical_id,),
+                ).fetchone()[0]
+            )
+            evidence["model"] = "maker_allocator_price_time_v3"
+            evidence["execution_model_version"] = "exec-v3-2026-07-14"
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=?, "
+                "fill_evidence_json=? WHERE id=?",
+                (
+                    "exec-v3-2026-07-14",
+                    json.dumps(evidence, sort_keys=True),
+                    historical_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_maker_allocations SET execution_model_version=? "
+                "WHERE order_id=?",
+                ("exec-v3-2026-07-14", historical_id),
+            )
+
+        assert _result(db_path, candidate_id)["verification"] == "VERIFIED"
+        historical = _result(db_path, historical_id)
+        assert historical["verification"] == "UNVERIFIABLE"
+        assert "EXEC_V3_HISTORICAL_SEMANTICS" in historical["findings"]
