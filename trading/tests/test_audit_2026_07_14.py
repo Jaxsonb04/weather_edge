@@ -971,7 +971,12 @@ def test_readiness_rejects_group_with_scope_mismatched_child(
             for row in restate(db_path)["orders"]
             if row["verification"] == "VERIFIED"
         }
-        assert order_id in verified
+        group_evidence_invalid = field in {
+            "account_id",
+            "execution_model_version",
+        }
+        assert (order_id in verified) is not group_evidence_invalid
+        assert (child["id"] in verified) is not group_evidence_invalid
         if field == "execution_model_version":
             assert child["id"] not in verified
             child_result = next(
@@ -980,8 +985,6 @@ def test_readiness_rejects_group_with_scope_mismatched_child(
                 if row["order_id"] == child["id"]
             )
             assert "EXEC_V4_ORDER_VERSION_MISMATCH" in child_result["findings"]
-        else:
-            assert child["id"] in verified
 
         result = replay_from_database(
             db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
@@ -1171,11 +1174,13 @@ def test_readiness_research_group_is_neutral_only_with_consistent_scope(
         restated = {
             row["order_id"]: row for row in restate(db_path)["orders"]
         }
-        assert {live_id, research_id} <= {
+        verified_ids = {
             order_id
             for order_id, row in restated.items()
             if row["verification"] == "VERIFIED"
         }
+        assert live_id in verified_ids
+        assert (research_id in verified_ids) is child_verified
         assert (restated[child["id"]]["verification"] == "VERIFIED") is (
             child_verified
         )

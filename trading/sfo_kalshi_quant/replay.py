@@ -29,6 +29,7 @@ from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     maker_trade_reaches_price,
     normalize_public_trade,
+    uses_current_maker_semantics,
 )
 from .restatement import VERIFIED, restate
 from .settlement_truth import (
@@ -402,8 +403,11 @@ def replay_from_database(
     # event counts on their own.
     invalid_logical_lot_ids: set[int] = set()
     for group in group_logical_positions(all_orders):
-        root_evidence = _json_object(group.root.get("fill_evidence_json"))
-        if root_evidence.get("model") != "maker_allocator_price_time_v4":
+        if not uses_current_maker_semantics(
+            group.root.get("execution_model_version"),
+            group.root.get("entry_mode"),
+            group.root.get("fill_model"),
+        ):
             continue
         lot_ids = {
             int(lot["id"])

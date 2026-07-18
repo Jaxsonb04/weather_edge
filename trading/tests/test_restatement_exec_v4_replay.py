@@ -13,6 +13,7 @@ import pytest
 
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION
+from sfo_kalshi_quant.paper_pnl import settled_position_pnl
 from sfo_kalshi_quant.replay import replay_from_database
 from sfo_kalshi_quant.restatement import restate
 from test_audit_2026_07_13 import _decision, _resting_order, _trade
@@ -1412,7 +1413,14 @@ def test_restatement_does_not_poison_candidates_for_resolvable_rejected_order(
 
 def _partial_lot_group(store: PaperStore) -> tuple[int, tuple[int, int]]:
     root_id = _order(store, contracts=4.0, queue_ahead=0.0)
-    _apply(store, "logical-partials", no_price=0.72, quantity=4.0)
+    _apply(store, "logical-partials-a", no_price=0.72, quantity=2.0)
+    _apply(
+        store,
+        "logical-partials-b",
+        no_price=0.72,
+        quantity=2.0,
+        at=T0 + timedelta(minutes=2),
+    )
     child_ids: list[int] = []
     for quantity in (1.0, 1.0):
         child = store.close_paper_order(
@@ -1464,10 +1472,274 @@ def test_invalid_child_excludes_entire_logical_decision_from_replay() -> None:
                 (json.dumps(outcome, sort_keys=True), child_ids[0]),
             )
 
-        assert _result(db_path, root_id)["verification"] == "VERIFIED"
+        assert _result(db_path, root_id)["verification"] == "UNVERIFIABLE"
         assert _result(db_path, child_ids[0])["verification"] == "UNVERIFIABLE"
         replay = replay_from_database(db_path, TRUTH)
         assert replay["source_orders"] == 0
         assert replay["verified_decisions"] == 0
         assert replay["readiness_metrics"]["counts"]["settled_decisions"] == 0
         assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0
+
+
+def _coordinate_settled_accounting(
+    store: PaperStore,
+    order_id: int,
+    *,
+    contracts: float | None = None,
+    cost_per_contract: float | None = None,
+) -> None:
+    with store.connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM paper_orders WHERE id=?", (order_id,)
+        ).fetchone()
+        assert row is not None
+        quantity = contracts if contracts is not None else float(row["contracts"])
+        cost = (
+            cost_per_contract
+            if cost_per_contract is not None
+            else float(row["cost_per_contract"])
+        )
+        resolved_yes = bool(row["resolved_yes"])
+        position_won = (
+            resolved_yes if str(row["side"]) == "YES" else not resolved_yes
+        )
+        pnl = settled_position_pnl(quantity, cost, position_won)
+        outcome = json.loads(row["outcome_diagnostics_json"])
+        outcome["entry"]["contracts"] = quantity
+        outcome["entry"]["cost_per_contract"] = cost
+        outcome["outcome"]["realized_pnl"] = pnl
+        outcome["outcome"]["pnl_per_contract"] = pnl / quantity
+        conn.execute(
+            "UPDATE paper_orders SET contracts=?, cost_per_contract=?, "
+            "realized_pnl=?, outcome_diagnostics_json=? WHERE id=?",
+            (
+                quantity,
+                cost,
+                pnl,
+                json.dumps(outcome, sort_keys=True),
+                order_id,
+            ),
+        )
+
+
+def test_coordinated_entry_cost_tamper_is_excluded_from_readiness() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, "cost-authority", no_price=0.72, quantity=5.0)
+        _settle(store)
+        _coordinate_settled_accounting(
+            store, order_id, cost_per_contract=0.01
+        )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, order_id, "EXEC_V4_ENTRY_COST_MISMATCH"
+        )
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 0
+        assert replay["readiness_metrics"]["candidate"]["capital_at_risk"] == 0.0
+        assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0
+
+
+def test_coordinated_terminal_contract_tamper_is_excluded_from_readiness() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, "quantity-authority", no_price=0.72, quantity=5.0)
+        _settle(store)
+        _coordinate_settled_accounting(store, order_id, contracts=100.0)
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path,
+            order_id,
+            "EXEC_V4_LOGICAL_RESOLVED_QUANTITY_MISMATCH",
+        )
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 0
+        assert replay["readiness_metrics"]["candidate"]["capital_at_risk"] == 0.0
+        assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0
+
+
+def test_closed_child_contracts_must_equal_exit_executed_quantity() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        root_id, child_ids = _partial_lot_group(store)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET contracts=2 WHERE id=?", (child_ids[0],)
+            )
+
+        for order_id in (root_id, *child_ids):
+            result = _result(db_path, order_id)
+            assert result["verification"] == "UNVERIFIABLE"
+            assert "EXEC_V4_EXIT_QUANTITY_MISMATCH" in result["findings"]
+        assert replay_from_database(db_path, TRUTH)["source_orders"] == 0
+
+
+def test_partial_open_multi_fill_quantity_balance_remains_verified() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, contracts=5.0, queue_ahead=0.0)
+        _apply(store, "partial-open-a", no_price=0.72, quantity=1.0)
+        _apply(
+            store,
+            "partial-open-b",
+            no_price=0.72,
+            quantity=1.0,
+            at=T0 + timedelta(minutes=2),
+        )
+
+        assert _result(db_path, order_id)["verification"] == "VERIFIED"
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 1
+        assert replay["verified_decisions"] == 0
+
+
+def test_closed_partial_expiry_uses_earlier_cancelled_at_boundary() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, contracts=5.0, queue_ahead=0.0)
+        first_trade_at = T0 + timedelta(minutes=1)
+        cancelled_at = T0 + timedelta(minutes=20)
+        late_trade_at = T0 + timedelta(minutes=21)
+        closed_at = T0 + timedelta(minutes=22)
+        _apply(
+            store,
+            "before-cancel",
+            no_price=0.72,
+            quantity=2.0,
+            at=first_trade_at,
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_PARTIAL_EXPIRED', "
+                "cancelled_at=?, remaining_contracts=0, queue_remaining=0, "
+                "reserved_cost=0 WHERE id=?",
+                (cancelled_at.isoformat(), order_id),
+            )
+        _apply(
+            store,
+            "after-cancel",
+            no_price=0.72,
+            quantity=3.0,
+            at=late_trade_at,
+        )
+        store.close_paper_order(
+            order_id,
+            0.80,
+            max_quantity=2.0,
+            liquidity_evidence={
+                "displayed_depth": 2.0,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        with store.connect() as conn:
+            outcome = json.loads(
+                conn.execute(
+                    "SELECT outcome_diagnostics_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            outcome["outcome"]["resolved_at"] = closed_at.isoformat()
+            outcome["exit_execution"]["observed_at"] = closed_at.isoformat()
+            conn.execute(
+                "UPDATE paper_orders SET closed_at=?, outcome_diagnostics_json=? "
+                "WHERE id=?",
+                (closed_at.isoformat(), json.dumps(outcome, sort_keys=True), order_id),
+            )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "VERIFIED"
+        assert result["findings"] == []
+
+
+def test_partial_expiry_requires_expiry_after_order_placement() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, contracts=5.0, queue_ahead=0.0)
+        _apply(store, "invalid-expiry-context", no_price=0.72, quantity=2.0)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_PARTIAL_EXPIRED', "
+                "expires_at=?, cancelled_at=?, remaining_contracts=0 WHERE id=?",
+                (
+                    (T0 - timedelta(minutes=1)).isoformat(),
+                    (T0 + timedelta(minutes=2)).isoformat(),
+                    order_id,
+                ),
+            )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "UNVERIFIABLE"
+        assert "EXEC_V4_ORDER_EXPIRES_AT_NOT_LATER" in result["findings"]
+        assert replay_from_database(db_path, TRUTH)["source_orders"] == 0
+
+
+def test_v4_semantics_cannot_escape_logical_gate_by_model_tamper() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        root_id, child_ids = _partial_lot_group(store)
+        with store.connect() as conn:
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (root_id,),
+                ).fetchone()[0]
+            )
+            evidence["model"] = "maker_allocator_price_time_v3"
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                (json.dumps(evidence, sort_keys=True), root_id),
+            )
+
+        for order_id in (root_id, *child_ids):
+            assert _result(db_path, order_id)["verification"] == "UNVERIFIABLE"
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 0
+        assert replay["verified_decisions"] == 0
+
+
+def test_genuine_exec_v3_row_remains_historical_and_outside_v4_gate() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, "genuine-v3", no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            evidence["model"] = "maker_allocator_price_time_v3"
+            evidence["execution_model_version"] = "exec-v3-2026-07-14"
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=?, "
+                "fill_evidence_json=? WHERE id=?",
+                (
+                    "exec-v3-2026-07-14",
+                    json.dumps(evidence, sort_keys=True),
+                    order_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_maker_allocations SET execution_model_version=? "
+                "WHERE order_id=?",
+                ("exec-v3-2026-07-14", order_id),
+            )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "UNVERIFIABLE"
+        assert "EXEC_V3_HISTORICAL_SEMANTICS" in result["findings"]
+        assert replay_from_database(db_path, TRUTH)["source_orders"] == 0

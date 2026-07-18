@@ -40,6 +40,20 @@ _MAKER_SIDE_BY_TAKER_BOOK_SIDE: dict[str, MakerSide] = {"bid": "NO", "ask": "YES
 _MAKER_SIDE_BY_TAKER_OUTCOME: dict[str, MakerSide] = {"yes": "NO", "no": "YES"}
 
 
+def uses_current_maker_semantics(
+    execution_model_version: object,
+    entry_mode: object,
+    fill_model: object,
+) -> bool:
+    """Identify v4 maker rows without trusting mutable evidence payloads."""
+
+    return (
+        str(execution_model_version or "") == EXECUTION_MODEL_VERSION
+        and str(entry_mode or "") == "limit"
+        and str(fill_model or "") != "immediate_visible_quote"
+    )
+
+
 def depth_observation_is_contemporaneous(
     observed_at: object,
     executed_at: object,

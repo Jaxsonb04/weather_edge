@@ -56,6 +56,8 @@ from typing import Any
 from ._util import _json_object
 from .account import ACCOUNTING_POLICY_VERSION, RESEARCH_ACCOUNT_ID
 from .execution import initial_queue_ahead
+from .fees import quadratic_fee_average_per_contract
+from .logical_positions import LogicalPaperPosition, group_logical_positions
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
@@ -64,6 +66,7 @@ from .maker_fills import (
     apply_volume_claims,
     depth_observation_is_contemporaneous,
     normalize_public_trade,
+    uses_current_maker_semantics,
 )
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .settlement_truth import integer_settlement_high_f, row_resolves_yes
@@ -186,34 +189,50 @@ def _order_replay_input_findings(row: sqlite3.Row) -> list[str]:
         and active_until <= placed_at
     ):
         findings.append("EXEC_V4_ORDER_ACTIVE_UNTIL_NOT_LATER")
+    if str(_row_value(row, "status") or "") in {
+        "PAPER_EXPIRED",
+        "PAPER_PARTIAL_EXPIRED",
+    }:
+        expires_at = _parse_replay_time(_row_value(row, "expires_at"))
+        if (
+            expires_at is not None
+            and placed_at is not None
+            and expires_at <= placed_at
+        ):
+            findings.append("EXEC_V4_ORDER_EXPIRES_AT_NOT_LATER")
     return findings
 
 
 def _order_active_until(
     row: sqlite3.Row,
 ) -> tuple[datetime | None, str | None]:
-    """Return the authoritative inclusive terminal instant for a quote."""
+    """Return the earliest authoritative inclusive quote-terminal instant."""
 
     status = str(_row_value(row, "status") or "")
-    if status == "PAPER_CLOSED":
-        parsed = _parse_replay_time(_row_value(row, "closed_at"))
-        return (
-            (parsed, None)
-            if parsed is not None
-            else (None, "EXEC_V4_ORDER_CLOSED_AT_INVALID")
-        )
     cancelled_at = _row_value(row, "cancelled_at")
+    if status == "PAPER_CLOSED":
+        closed_at = _parse_replay_time(_row_value(row, "closed_at"))
+        if closed_at is None:
+            return None, "EXEC_V4_ORDER_CLOSED_AT_INVALID"
+        if cancelled_at is None:
+            return closed_at, None
+        cancelled = _parse_replay_time(cancelled_at)
+        if cancelled is None:
+            return None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID"
+        return min(cancelled, closed_at), None
     if cancelled_at is not None or status in {
         "PAPER_CANCELLED",
         "PAPER_EXPIRED",
         "PAPER_PARTIAL_EXPIRED",
     }:
         parsed = _parse_replay_time(cancelled_at)
-        return (
-            (parsed, None)
-            if parsed is not None
-            else (None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID")
-        )
+        if parsed is None:
+            return None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID"
+        if status in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}:
+            expires_at = _parse_replay_time(_row_value(row, "expires_at"))
+            if expires_at is None:
+                return None, "EXEC_V4_ORDER_EXPIRES_AT_INVALID"
+        return parsed, None
     return None, None
 
 
@@ -1071,6 +1090,182 @@ def _closed_accounting_findings(
     return [] if _close_number(recorded_pnl, expected_pnl) else ["REALIZED_PNL_MISMATCH"]
 
 
+def _row_uses_current_maker_semantics(row: object) -> bool:
+    return uses_current_maker_semantics(
+        _row_value(row, "execution_model_version"),
+        _row_value(row, "entry_mode"),
+        _row_value(row, "fill_model"),
+    )
+
+
+def _logical_maker_authority_findings(
+    group: LogicalPaperPosition,
+    allocations_by_order: dict[int, list[sqlite3.Row]],
+) -> list[str]:
+    """Reconcile a v4 maker decision to immutable entry and lot evidence."""
+
+    root = group.root
+    lots = group.lots
+    root_id = _positive_row_id(root.get("id"))
+    if root_id is None:
+        return ["EXEC_V4_LOGICAL_QUANTITY_INVALID"]
+    findings: list[str] = []
+
+    evidence = _json_object(root.get("fill_evidence_json"))
+    if evidence.get("model") != "maker_allocator_price_time_v4":
+        findings.append("EXEC_V4_EVIDENCE_MODEL_MISMATCH")
+
+    requested = _finite_number(root.get("requested_contracts"), minimum=0)
+    filled = _finite_number(root.get("filled_contracts"), minimum=0)
+    row_remaining = _finite_number(root.get("remaining_contracts"), minimum=0)
+    evidence_requested = _finite_number(
+        evidence.get("requested_quantity"), minimum=0
+    )
+    evidence_filled = _finite_number(evidence.get("filled_quantity"), minimum=0)
+    evidence_remaining = _finite_number(
+        evidence.get("remaining_quantity"), minimum=0
+    )
+    allocation_quantities = [
+        _finite_number(row["fill_quantity"], minimum=0)
+        for row in allocations_by_order.get(root_id, [])
+    ]
+    if (
+        requested in {None, 0.0}
+        or filled is None
+        or row_remaining is None
+        or evidence_requested in {None, 0.0}
+        or evidence_filled is None
+        or evidence_remaining is None
+        or any(quantity is None for quantity in allocation_quantities)
+    ):
+        findings.append("EXEC_V4_LOGICAL_QUANTITY_INVALID")
+    else:
+        allocation_filled = sum(
+            quantity for quantity in allocation_quantities if quantity is not None
+        )
+        if not _close_number(filled, allocation_filled):
+            findings.append("EXEC_V4_PARENT_FILLED_QUANTITY_MISMATCH")
+        if not _close_number(filled, evidence_filled):
+            findings.append("EXEC_V4_EVIDENCE_QUANTITY_MISMATCH")
+        if not _close_number(requested, evidence_requested):
+            findings.append("EXEC_V4_EVIDENCE_QUANTITY_MISMATCH")
+        cancelled = root.get("cancelled_at") is not None
+        authoritative_unfilled = evidence_remaining if cancelled else row_remaining
+        if not cancelled and not _close_number(row_remaining, evidence_remaining):
+            findings.append("EXEC_V4_REQUESTED_QUANTITY_BALANCE_MISMATCH")
+        if cancelled and not _close_number(row_remaining, 0.0):
+            findings.append("EXEC_V4_REQUESTED_QUANTITY_BALANCE_MISMATCH")
+        if not _close_number(requested, filled + authoritative_unfilled):
+            findings.append("EXEC_V4_REQUESTED_QUANTITY_BALANCE_MISMATCH")
+
+    quote = _json_object(root.get("quote_snapshot_json"))
+    entry_price = _finite_number(root.get("entry_price"), minimum=0, maximum=1)
+    limit_price = _finite_number(root.get("limit_price"), minimum=0, maximum=1)
+    fee = _finite_number(root.get("fee_per_contract"), minimum=0)
+    cost = _finite_number(root.get("cost_per_contract"), minimum=0)
+    quote_price = _finite_number(quote.get("limit_price"), minimum=0, maximum=1)
+    quote_fee = _finite_number(quote.get("fee_per_contract"), minimum=0)
+    quote_cost = _finite_number(quote.get("cost_per_contract"), minimum=0)
+    quote_contracts = _finite_number(quote.get("contracts"), minimum=0)
+    if (
+        entry_price is None
+        or limit_price is None
+        or fee is None
+        or cost is None
+        or quote_price is None
+        or quote_fee is None
+        or quote_cost is None
+        or quote_contracts in {None, 0.0}
+        or requested in {None, 0.0}
+    ):
+        findings.append("EXEC_V4_ENTRY_QUOTE_INVALID")
+    else:
+        canonical_fee = quadratic_fee_average_per_contract(
+            entry_price,
+            requested,
+            maker=True,
+            series_ticker=str(root.get("market_ticker") or ""),
+        )
+        canonical_cost = entry_price + canonical_fee
+        if any(
+            not matches
+            for matches in (
+                _close_number(entry_price, limit_price),
+                _close_number(entry_price, quote_price),
+                _close_number(fee, canonical_fee),
+                _close_number(fee, quote_fee),
+                _close_number(cost, canonical_cost),
+                _close_number(cost, quote_cost),
+                _close_number(quote_contracts, requested),
+            )
+        ):
+            findings.append("EXEC_V4_ENTRY_COST_MISMATCH")
+        for lot in lots:
+            if any(
+                not _close_number(lot.get(field), root.get(field))
+                for field in (
+                    "entry_price",
+                    "fee_per_contract",
+                    "cost_per_contract",
+                )
+            ):
+                findings.append("EXEC_V4_ENTRY_COST_MISMATCH")
+                break
+
+    terminal_statuses = {"PAPER_SETTLED", "PAPER_CLOSED"}
+    resolved_quantity = 0.0
+    resolved_quantity_valid = True
+    for lot in lots:
+        lot_contracts = _finite_number(lot.get("contracts"), minimum=0)
+        if lot_contracts in {None, 0.0}:
+            resolved_quantity_valid = False
+        elif str(lot.get("status") or "") in terminal_statuses:
+            resolved_quantity += lot_contracts
+        if str(lot.get("status") or "") == "PAPER_CLOSED":
+            execution = _json_object(lot.get("outcome_diagnostics_json")).get(
+                "exit_execution"
+            )
+            executed = (
+                _finite_number(execution.get("executed_quantity"), minimum=0)
+                if isinstance(execution, dict)
+                else None
+            )
+            if (
+                lot_contracts not in {None, 0.0}
+                and executed not in {None, 0.0}
+                and not _close_number(lot_contracts, executed)
+            ):
+                findings.append("EXEC_V4_EXIT_QUANTITY_MISMATCH")
+
+    if filled is not None:
+        root_status = str(root.get("status") or "")
+        if root_status in terminal_statuses:
+            if not resolved_quantity_valid or not _close_number(
+                resolved_quantity, filled
+            ):
+                findings.append("EXEC_V4_LOGICAL_RESOLVED_QUANTITY_MISMATCH")
+        else:
+            open_root_quantity = (
+                _finite_number(root.get("contracts"), minimum=0)
+                if root_status
+                in {
+                    "PAPER_FILLED",
+                    "PAPER_PARTIALLY_FILLED",
+                    "PAPER_PARTIAL_EXPIRED",
+                }
+                else 0.0
+            )
+            if (
+                not resolved_quantity_valid
+                or open_root_quantity is None
+                or not _close_number(
+                    resolved_quantity + open_root_quantity, filled
+                )
+            ):
+                findings.append("EXEC_V4_LOGICAL_OPEN_QUANTITY_MISMATCH")
+    return list(dict.fromkeys(findings))
+
+
 def restate(db_path: Path) -> dict[str, Any]:
     """Build the immutable-evidence restatement report for one database."""
 
@@ -1425,12 +1620,62 @@ def restate(db_path: Path) -> dict[str, Any]:
                 else None,
             }
         )
-        if status in resolved_statuses:
-            totals[verification]["orders"] += 1
-            per_profile[profile][verification]["orders"] += 1
-            if realized is not None:
-                totals[verification]["realized_pnl"] += realized
-                per_profile[profile][verification]["realized_pnl"] += realized
+
+    classes_by_order_id = {
+        int(entry["order_id"]): entry
+        for entry in classes
+        if isinstance(entry.get("order_id"), int)
+    }
+    for group in group_logical_positions(orders):
+        root = group.root
+        if not _row_uses_current_maker_semantics(root):
+            continue
+        lot_ids = [
+            order_id
+            for lot in group.lots
+            if (order_id := _positive_row_id(lot.get("id"))) is not None
+        ]
+        group_findings = _logical_maker_authority_findings(
+            group, allocations_by_order
+        )
+        if not group.valid:
+            _append_finding(
+                group_findings, "EXEC_V4_LOGICAL_INTEGRITY_INVALID"
+            )
+        lot_has_findings = any(
+            classes_by_order_id.get(order_id, {}).get("findings")
+            for order_id in lot_ids
+        )
+        if not group_findings and not lot_has_findings:
+            continue
+        if lot_has_findings:
+            _append_finding(
+                group_findings, "EXEC_V4_LOGICAL_LOT_UNVERIFIABLE"
+            )
+        for order_id in lot_ids:
+            entry = classes_by_order_id.get(order_id)
+            if entry is None:
+                continue
+            for finding in group_findings:
+                _append_finding(entry["findings"], finding)
+            entry["verification"] = UNVERIFIABLE
+
+    for entry in classes:
+        status = str(entry["status"])
+        if status not in resolved_statuses:
+            continue
+        verification = str(entry["verification"])
+        profile = str(entry["risk_profile"])
+        order_id = _positive_row_id(entry["order_id"])
+        source_row = orders_by_id.get(order_id) if order_id is not None else None
+        realized = _finite_number(
+            _row_value(source_row, "realized_pnl") if source_row is not None else None
+        )
+        totals[verification]["orders"] += 1
+        per_profile[profile][verification]["orders"] += 1
+        if realized is not None:
+            totals[verification]["realized_pnl"] += realized
+            per_profile[profile][verification]["realized_pnl"] += realized
 
     legacy_realized = sum(
         bucket["realized_pnl"] for bucket in totals.values()
