@@ -27,6 +27,15 @@ from .portfolio import (
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
 
 
+MIN_EXECUTABLE_CONTRACT_COST = 0.01
+MAX_EXECUTABLE_CONTRACT_COST = 0.99
+MAX_TARGET_CONTRACTS = math.floor(
+    TARGET_POLICY.reference_equity
+    * TARGET_POLICY.max_position_risk_pct
+    / MIN_EXECUTABLE_CONTRACT_COST
+)
+
+
 @dataclass(frozen=True)
 class ResearchOpportunity:
     """One fully-gated market-side opportunity from a shared research scan."""
@@ -114,7 +123,12 @@ def allocate_research_plans(
 ) -> ResearchPlans:
     """Build independent target and motion plans from one opportunity set."""
 
-    _validate_account_inputs(
+    (
+        target_available_cash,
+        motion_available_cash,
+        realized_today,
+        motion_realized_today,
+    ) = _normalize_account_inputs(
         target_available_cash=target_available_cash,
         motion_available_cash=motion_available_cash,
         realized_today=realized_today,
@@ -544,11 +558,21 @@ def _normalize_decision(
         for name in price_names
     ):
         return None, "candidate price is outside [0, 1]"
-    if not 0.0 < float(normalized["cost_per_contract"]) < 1.0:
-        return None, "candidate cost is outside (0, 1)"
+    if not MIN_EXECUTABLE_CONTRACT_COST <= float(
+        normalized["cost_per_contract"]
+    ) <= MAX_EXECUTABLE_CONTRACT_COST:
+        return None, "candidate cost is outside the executable 1-99 cent range"
     limit_cost = normalized["limit_cost_per_contract"]
-    if limit_cost is not None and not 0.0 < float(limit_cost) < 1.0:
-        return None, "candidate limit cost is outside (0, 1)"
+    if limit_cost is not None and not MIN_EXECUTABLE_CONTRACT_COST <= float(
+        limit_cost
+    ) <= MAX_EXECUTABLE_CONTRACT_COST:
+        return None, "candidate limit cost is outside the executable 1-99 cent range"
+    for name in ("entry_ask", "limit_price"):
+        value = normalized[name]
+        if value is not None and not MIN_EXECUTABLE_CONTRACT_COST <= float(
+            value
+        ) <= MAX_EXECUTABLE_CONTRACT_COST:
+            return None, f"candidate {name} is outside the executable 1-99 cent range"
     nonnegative_names = (
         "spread",
         "fee_per_contract",
@@ -602,6 +626,10 @@ def _normalize_active_legs(
             return [], f"{prefix}: target date"
         if type(leg.pending) is not bool or type(leg.is_partial_child) is not bool:
             return [], f"{prefix}: pending/child flags"
+        if leg.logical_position_id is not None and not _valid_logical_position_id(
+            leg.logical_position_id
+        ):
+            return [], f"{prefix}: logical identity"
         if leg.is_partial_child and leg.logical_position_id is None:
             return [], f"{prefix}: child logical identity"
         if leg.is_partial_child and leg.pending:
@@ -636,7 +664,55 @@ def _normalize_active_legs(
                 region=canonical_region,
             )
         )
+
+    roots: dict[str | int, PortfolioLeg] = {}
+    for index, leg in enumerate(normalized):
+        logical_id = leg.logical_position_id
+        if leg.is_partial_child or logical_id is None:
+            continue
+        if logical_id in roots:
+            return [], (
+                f"{policy.sleeve.value} active exposure is invalid at leg {index}: "
+                "duplicate logical root"
+            )
+        roots[logical_id] = leg
+    for index, child in enumerate(normalized):
+        if not child.is_partial_child:
+            continue
+        root = roots.get(child.logical_position_id)
+        if root is None:
+            return [], (
+                f"{policy.sleeve.value} active exposure is invalid at leg {index}: "
+                "orphan partial child"
+            )
+        if _logical_leg_identity(child) != _logical_leg_identity(root):
+            return [], (
+                f"{policy.sleeve.value} active exposure is invalid at leg {index}: "
+                "partial child identity mismatch"
+            )
     return normalized, None
+
+
+def _valid_logical_position_id(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _logical_leg_identity(leg: PortfolioLeg) -> tuple[object, ...]:
+    decision = leg.decision
+    return (
+        leg.sleeve,
+        leg.account_id,
+        leg.target_date,
+        decision.ticker,
+        decision.side,
+        decision.strike_type,
+        decision.floor_strike,
+        decision.cap_strike,
+    )
 
 
 def _plain_finite_float(value: object) -> float | None:
@@ -644,7 +720,10 @@ def _plain_finite_float(value: object) -> float | None:
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except (OverflowError, ValueError):
+        return None
     return parsed if math.isfinite(parsed) else None
 
 
@@ -663,7 +742,7 @@ def _target_sized_decision(decision: TradeDecision) -> TradeDecision | None:
         * TARGET_POLICY.max_position_risk_pct
         / float(decision.cost_per_contract),
     )
-    contracts = math.floor(max_contracts + 1e-12)
+    contracts = min(MAX_TARGET_CONTRACTS, math.floor(max_contracts + 1e-12))
     if contracts < 1:
         return None
     return replace(
@@ -701,8 +780,16 @@ def _fit_target_leg(
     """
 
     cost = float(desired.cost_per_contract)
-    cash_contracts = math.floor((max(0.0, remaining_cash) + 1e-9) / cost)
-    upper = min(int(desired.recommended_contracts), cash_contracts)
+    desired_contracts = min(
+        MAX_TARGET_CONTRACTS,
+        int(desired.recommended_contracts),
+    )
+    cash_ratio = max(0.0, remaining_cash) / cost
+    if not math.isfinite(cash_ratio) or cash_ratio >= desired_contracts:
+        cash_contracts = desired_contracts
+    else:
+        cash_contracts = math.floor(cash_ratio + 1e-9)
+    upper = min(desired_contracts, cash_contracts)
     if upper < 1:
         return None, "target cash cap cannot fund one contract"
 
@@ -818,12 +905,21 @@ def _pause_reason(policy: ResearchSleevePolicy, realized_pnl: float) -> str | No
     return None
 
 
-def _validate_account_inputs(**values: float) -> None:
+def _normalize_account_inputs(**values: object) -> tuple[float, float, float, float]:
+    normalized: dict[str, float] = {}
     for name, value in values.items():
-        if not math.isfinite(float(value)):
-            raise ValueError(f"{name} must be finite")
-        if name.endswith("available_cash") and value < 0:
+        parsed = _plain_finite_float(value)
+        if parsed is None:
+            raise ValueError(f"{name} must be a finite plain int or float")
+        if name.endswith("available_cash") and parsed < 0:
             raise ValueError(f"{name} must be non-negative")
+        normalized[name] = parsed
+    return (
+        normalized["target_available_cash"],
+        normalized["motion_available_cash"],
+        normalized["realized_today"],
+        normalized["motion_realized_today"],
+    )
 
 
 def _risk_cap_reason(
