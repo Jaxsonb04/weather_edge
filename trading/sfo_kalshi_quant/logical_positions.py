@@ -19,13 +19,19 @@ OPEN_STATUSES = frozenset(
     }
 )
 
-_EXACT_MATCH_FIELDS = (
+LOGICAL_IDENTITY_FIELDS = (
     "market_ticker",
     "target_date",
     "side",
     "risk_profile",
     "account_id",
+    "research_sleeve",
+    "research_policy_version",
+    "policy_fingerprint",
+    "strategy_fingerprint",
+    "execution_model_version",
 )
+_EXACT_MATCH_FIELDS = LOGICAL_IDENTITY_FIELDS
 _NUMERIC_MATCH_FIELDS = ("entry_price", "cost_per_contract")
 _OPTIONAL_NUMERIC_FIELDS = ("exit_price", "exit_fee_per_contract")
 _NUMERIC_TOLERANCE = 1e-9

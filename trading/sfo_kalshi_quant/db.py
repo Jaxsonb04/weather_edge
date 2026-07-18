@@ -38,6 +38,7 @@ from .fees import (
     quadratic_fee_per_contract,
 )
 from .execution import BuyLimitQuote, buy_limit_for_decision, initial_queue_ahead
+from .logical_positions import LOGICAL_IDENTITY_FIELDS
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
@@ -166,6 +167,24 @@ _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
+
+
+def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
+    """Copy the immutable root identity used by every materialized child lot."""
+
+    available = set(row.keys())
+    missing = [
+        field
+        for field in LOGICAL_IDENTITY_FIELDS
+        if field not in available
+    ]
+    if missing:
+        raise ValueError(
+            "paper order root is missing logical identity fields: "
+            + ", ".join(missing)
+        )
+    return {field: row[field] for field in LOGICAL_IDENTITY_FIELDS}
+
 
 class PaperStore:
     def __init__(
@@ -3789,6 +3808,11 @@ class PaperStore:
         """
 
         values = {key: row[key] for key in row.keys() if key != "id"}
+        # Keep research generation, strategy, and execution attribution exact
+        # on every child lot. Settlement mutates these children in place, so
+        # this is the single materialization boundary for both close and later
+        # settlement reporting.
+        values.update(_copy_logical_order_identity(row))
         values.update(
             {
                 "contracts": executed,

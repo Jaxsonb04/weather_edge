@@ -36,6 +36,11 @@ def _paper_order(
     exit_price: object = 0.86,
     closed_at: str | None = "2026-07-15T21:00:00+00:00",
     market_ticker: str = "KXHIGHPHX-26JUL15-T97",
+    research_sleeve: str | None = None,
+    research_policy_version: str | None = None,
+    policy_fingerprint: str | None = None,
+    strategy_fingerprint: str | None = None,
+    execution_model_version: str | None = None,
 ) -> dict[str, object]:
     return {
         "id": order_id,
@@ -48,6 +53,11 @@ def _paper_order(
         "side": "NO",
         "risk_profile": "live",
         "account_id": "paper-shared",
+        "research_sleeve": research_sleeve,
+        "research_policy_version": research_policy_version,
+        "policy_fingerprint": policy_fingerprint,
+        "strategy_fingerprint": strategy_fingerprint,
+        "execution_model_version": execution_model_version,
         "entry_price": 0.93,
         "cost_per_contract": 0.93,
         "contracts": contracts,
@@ -259,6 +269,39 @@ def test_rejects_child_with_mismatched_market_ticker() -> None:
     assert position.valid is False
     assert position.terminal is False
     assert "market_ticker mismatch on child 11" in position.integrity_findings
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("research_sleeve", "motion"),
+        ("research_policy_version", "research-motion-v1"),
+        ("policy_fingerprint", "motion-policy-fingerprint"),
+        ("strategy_fingerprint", "different-strategy-fingerprint"),
+        ("execution_model_version", "exec-v3-2026-07-14"),
+    ],
+)
+def test_rejects_child_with_cross_generation_identity(
+    field: str,
+    value: object,
+) -> None:
+    research_identity = {
+        "research_sleeve": "target",
+        "research_policy_version": "research-target-v1",
+        "policy_fingerprint": "target-policy-fingerprint",
+        "strategy_fingerprint": "strategy-fingerprint",
+        "execution_model_version": "exec-v4-2026-07-17",
+    }
+    root = _paper_order(10, **research_identity)
+    child = _paper_order(11, parent_order_id=10, **research_identity)
+    child[field] = value
+
+    position = group_logical_positions([root, child])[0]
+
+    assert position.valid is False
+    assert position.terminal is False
+    assert f"{field} mismatch on child 11" in position.integrity_findings
+    _assert_invalid_aggregates_fail_closed(position)
 
 
 def _assert_invalid_aggregates_fail_closed(
