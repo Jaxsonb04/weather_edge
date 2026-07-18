@@ -1,6 +1,16 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from sfo_kalshi_quant.replay import ReplayEvent, ReplayOrder, run_replay
+from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.models import TradeDecision
+from sfo_kalshi_quant.replay import (
+    ReplayEvent,
+    ReplayOrder,
+    replay_from_database,
+    run_replay,
+)
 
 
 def _at(minutes: int) -> datetime:
@@ -44,6 +54,66 @@ def test_replay_cancels_ttl_and_never_uses_future_settlement_as_fill_evidence() 
     assert result.settled == 0
     assert result.ending_cash == 1000.0
     assert result.promotion_eligible is False
+
+
+def test_replay_matches_runtime_for_inside_spread_queue_priority() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-INSIDE-SPREAD",
+            label="inside spread",
+            action="BUY_NO",
+            approved=True,
+            probability=0.82,
+            probability_lcb=0.78,
+            yes_bid=0.25,
+            yes_ask=0.28,
+            spread=0.03,
+            fee_per_contract=0.0,
+            cost_per_contract=0.73,
+            edge=0.09,
+            edge_lcb=0.05,
+            kelly_fraction=0.01,
+            recommended_contracts=5.0,
+            expected_profit=0.45,
+            reasons=[],
+            side="NO",
+            entry_bid=0.72,
+            entry_ask=0.75,
+            entry_bid_size=100.0,
+            entry_ask_size=100.0,
+            limit_price=0.73,
+        )
+        order_id = store.record_paper_order(
+            "2026-07-18",
+            decision,
+            risk_profile="live",
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        assert order_id is not None
+        resting = store.paper_order(order_id)
+        assert resting is not None
+        placed_at = datetime.fromisoformat(resting["created_at"])
+        trade = {
+            "trade_id": "replay-inside-spread-five-lot",
+            "created_time": (placed_at + timedelta(seconds=1)).isoformat(),
+            "taker_book_side": "bid",
+            "yes_price_dollars": "0.27",
+            "no_price_dollars": "0.73",
+            "count_fp": "5.00",
+        }
+
+        store.apply_maker_trade_batch(decision.ticker, [trade])
+        runtime_order = store.paper_order(order_id)
+        assert runtime_order is not None
+        assert runtime_order["status"] == "PAPER_FILLED"
+
+        replay = replay_from_database(db_path, {})
+        assert replay["filled"] == 1
+        assert [event["event"] for event in replay["events"]].count("FILL_MAKER") == 1
 
 
 def test_replay_log_growth_uses_each_days_opening_equity() -> None:

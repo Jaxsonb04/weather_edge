@@ -18,6 +18,28 @@ class BuyLimitQuote:
     would_cross: bool
 
 
+def initial_queue_ahead(
+    limit_price: float,
+    visible_bid: float | None,
+    displayed_bid_size: float | None,
+) -> float:
+    """Return known queue ahead when posting a buy limit.
+
+    Improving the visible bid creates a new best price with no displayed queue
+    known ahead of it. At the visible bid, its displayed size is ahead. A limit
+    below the visible bid conservatively retains that size as known liquidity
+    at a better price. Missing bid evidence preserves the displayed-depth
+    estimate rather than inventing priority.
+    """
+
+    depth = max(0.0, float(displayed_bid_size or 0.0))
+    if visible_bid is None:
+        return depth
+    if _round_price(float(limit_price)) > _round_price(float(visible_bid)):
+        return 0.0
+    return depth
+
+
 def buy_limit_for_decision(
     decision: TradeDecision,
     config: StrategyConfig,

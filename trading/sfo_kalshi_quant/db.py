@@ -30,6 +30,7 @@ from .fees import (
     quadratic_fee_average_per_contract,
     quadratic_fee_per_contract,
 )
+from .execution import initial_queue_ahead
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
@@ -986,6 +987,11 @@ class PaperStore:
             else None
         )
         reserved_cost = contracts * cost_per_contract if normalized_status == "PAPER_LIMIT_RESTING" else 0.0
+        queue_remaining = (
+            initial_queue_ahead(entry_price, decision.bid, decision.bid_size)
+            if normalized_status == "PAPER_LIMIT_RESTING"
+            else 0.0
+        )
         fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
         sleeve = sleeve_for(profile, list(decision.reasons), decision.side)
         quote_snapshot_json = json.dumps(
@@ -1096,9 +1102,7 @@ class PaperStore:
                         contracts,
                         contracts if normalized_status == "PAPER_FILLED" else 0.0,
                         contracts if normalized_status == "PAPER_LIMIT_RESTING" else 0.0,
-                        float(decision.bid_size or 0.0)
-                        if normalized_status == "PAPER_LIMIT_RESTING"
-                        else 0.0,
+                        queue_remaining,
                         EXECUTION_MODEL_VERSION,
                     ),
                 )

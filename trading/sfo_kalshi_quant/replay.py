@@ -23,6 +23,7 @@ from ._util import _json_object, _row_value, _table_exists
 from .account import ACCOUNTING_POLICY_VERSION, SHARED_ACCOUNT_ID
 from .backtest_rescore import _day_clustered_roi_ci
 from .config import normalize_risk_profile_name
+from .execution import initial_queue_ahead
 from .logical_positions import LogicalPaperPosition, group_logical_positions
 from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
 from .restatement import VERIFIED, restate
@@ -401,16 +402,27 @@ def replay_from_database(
         original_contracts = remaining_contracts + child_quantity_by_parent.get(
             str(row["id"]), 0.0
         )
+        limit_price = float(
+            _row_value(row, "limit_price") or row["entry_price"] or row["yes_ask"]
+        )
         order = ReplayOrder(
             order_id=str(row["id"]),
             placed_at=placed,
             target_date=str(row["target_date"]),
             ticker=str(row["market_ticker"]),
             side=str(row["side"] or "YES").upper(),
-            limit_price=float(_row_value(row, "limit_price") or row["entry_price"] or row["yes_ask"]),
+            limit_price=limit_price,
             contracts=original_contracts,
             fee_per_contract=float(row["fee_per_contract"] or 0.0),
-            queue_ahead=float(row["entry_bid_size"] or 0.0),
+            queue_ahead=initial_queue_ahead(
+                limit_price,
+                (
+                    float(row["entry_bid"])
+                    if row["entry_bid"] is not None
+                    else None
+                ),
+                float(row["entry_bid_size"] or 0.0),
+            ),
             ttl_minutes=15,
             immediate=immediate,
         )
