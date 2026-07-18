@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 from ._util import (
     _row_value as _shared_row_value,
@@ -209,6 +209,15 @@ class ResearchDecisionIdentity:
             lead_bucket=self.lead_bucket,
             entry_decision_id=entry_decision_id,
         )
+
+
+@dataclass(frozen=True)
+class ResearchDecisionEvidence:
+    """One ordered research disposition in a shared immutable scan batch."""
+
+    decision: TradeDecision
+    identity: ResearchDecisionIdentity
+    admission_pending: bool
 
 
 _RESEARCH_POLICIES_BY_ACCOUNT = {
@@ -1220,9 +1229,18 @@ class PaperStore:
         forecast_snapshot_id: int | None = None,
         market_snapshot_id: int | None = None,
         _research_identity: ResearchDecisionIdentity | None = None,
+        _research_evidence: Sequence[ResearchDecisionEvidence] | None = None,
     ) -> list[int]:
         created_at = _now()
-        rows = []
+        evidence_batch = (
+            tuple(_research_evidence) if _research_evidence is not None else None
+        )
+        decision_list = (
+            [evidence.decision for evidence in evidence_batch]
+            if evidence_batch is not None
+            else list(decisions)
+        )
+        rows: list[tuple[tuple[object, ...], tuple[object, ...]]] = []
         markets_by_ticker = {}
         if event is not None:
             markets_by_ticker = {market.ticker: market for market in event.markets}
@@ -1253,7 +1271,37 @@ class PaperStore:
             if _research_identity is not None
             else (None, None, None, None, None, None, None)
         )
-        for decision in decisions:
+        for index, decision in enumerate(decision_list):
+            evidence = evidence_batch[index] if evidence_batch is not None else None
+            decision_identity_values = (
+                (
+                    evidence.identity.sleeve.value,
+                    evidence.identity.policy_version,
+                    evidence.identity.policy_fingerprint,
+                    evidence.identity.objective_day,
+                    evidence.identity.lead_bucket,
+                    evidence.identity.scan_run_id,
+                    evidence.identity.reentry_fingerprint,
+                )
+                if evidence is not None
+                else research_identity_values
+            )
+            admission_pending = bool(evidence and evidence.admission_pending)
+            persisted_approved = decision.approved and not admission_pending
+            persisted_signal_approved = (
+                True
+                if admission_pending
+                else (
+                    decision.signal_approved
+                    if decision.signal_approved is not None
+                    else decision.approved
+                )
+            )
+            persisted_block_reason = (
+                "research admission pending"
+                if admission_pending
+                else decision.entry_block_reason
+            )
             spend = decision.recommended_contracts * decision.cost_per_contract
             market = markets_by_ticker.get(decision.ticker)
             diagnostics_json = json.dumps(
@@ -1264,23 +1312,16 @@ class PaperStore:
                 },
                 sort_keys=True,
             )
-            rows.append(
-                (
+            row_values = (
                     created_at,
                     target_date,
                     decision.ticker,
                     decision.label,
                     decision.action,
                     decision.side,
-                    1 if decision.approved else 0,
-                    1
-                    if (
-                        decision.signal_approved
-                        if decision.signal_approved is not None
-                        else decision.approved
-                    )
-                    else 0,
-                    decision.entry_block_reason,
+                    1 if persisted_approved else 0,
+                    1 if persisted_signal_approved else 0,
+                    persisted_block_reason,
                     decision.probability,
                     decision.probability_lcb,
                     decision.model_probability,
@@ -1328,9 +1369,23 @@ class PaperStore:
                     None,
                     diagnostics_json,
                     json.dumps(decision.reasons),
-                )
             )
+            rows.append((row_values, decision_identity_values))
         with self.connect() as conn:
+            if evidence_batch is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    UPDATE decision_snapshots
+                    SET approved=0, signal_approved=1,
+                        entry_block_reason='abandoned research admission',
+                        recommended_contracts=0, recommended_spend=0,
+                        expected_profit=0
+                    WHERE research_sleeve IS NOT NULL
+                      AND approved=0
+                      AND entry_block_reason='research admission pending'
+                    """
+                )
             context = conn.execute(
                 """
                 INSERT INTO scan_context_snapshots (
@@ -1392,10 +1447,10 @@ class PaperStore:
                 VALUES ({})
                 """.format(", ".join("?" for _ in range(1 + 56 + 7)))
             decision_ids: list[int] = []
-            for row in rows:
+            for row, decision_identity_values in rows:
                 cursor = conn.execute(
                     decision_sql,
-                    (scan_context_id, *row, *research_identity_values),
+                    (scan_context_id, *row, *decision_identity_values),
                 )
                 decision_ids.append(int(cursor.lastrowid))
             return decision_ids
@@ -1414,82 +1469,135 @@ class PaperStore:
         forecast_snapshot_id: int | None = None,
         market_snapshot_id: int | None = None,
     ) -> int:
-        """Persist one exact, sleeve-qualified decision and return its audit id."""
+        """Persist one pending sleeve-qualified decision and return its audit id."""
 
-        if not isinstance(identity, ResearchDecisionIdentity):
-            raise ValueError("research decision identity is required")
-        self._policy_for_research_admission(identity.admission(1))
-        canonical = strategy_config_for_profile("research")
-        if strategy_config != canonical:
-            raise ValueError("research evidence requires the canonical research strategy")
-        decision_ids = self.record_decisions(
+        decision_ids = self.record_research_decision_batch(
             target_date,
-            [decision],
+            [
+                ResearchDecisionEvidence(
+                    decision=decision,
+                    identity=identity,
+                    admission_pending=bool(decision.approved),
+                )
+            ],
             forecast=forecast,
             intraday=intraday,
             event=event,
             market_consensus=market_consensus,
-            risk_profile="research",
-            bankroll=_RESEARCH_POLICIES_BY_ACCOUNT[identity.account_id].reference_equity,
             strategy_config=strategy_config,
             forecast_snapshot_id=forecast_snapshot_id,
             market_snapshot_id=market_snapshot_id,
-            _research_identity=identity,
         )
         if len(decision_ids) != 1:
             raise RuntimeError("research decision evidence was not persisted exactly once")
         return decision_ids[0]
 
+    def record_research_decision_batch(
+        self,
+        target_date: str,
+        evidence: Sequence[ResearchDecisionEvidence],
+        *,
+        forecast: ForecastSnapshot | None = None,
+        intraday: IntradaySnapshot | None = None,
+        event: EventSnapshot | None = None,
+        market_consensus: MarketConsensus | None = None,
+        strategy_config: StrategyConfig,
+        forecast_snapshot_id: int | None = None,
+        market_snapshot_id: int | None = None,
+    ) -> list[int]:
+        """Persist one shared context and ordered per-sleeve decision evidence."""
+
+        evidence_batch = tuple(evidence)
+        if not evidence_batch:
+            return []
+        canonical = strategy_config_for_profile("research")
+        if strategy_config != canonical:
+            raise ValueError("research evidence requires the canonical research strategy")
+        for item in evidence_batch:
+            if not isinstance(item, ResearchDecisionEvidence):
+                raise ValueError("research decision evidence item is required")
+            if not isinstance(item.identity, ResearchDecisionIdentity):
+                raise ValueError("research decision identity is required")
+            self._policy_for_research_admission(item.identity.admission(1))
+            if item.admission_pending and not item.decision.approved:
+                raise ValueError("pending research evidence requires an approved decision")
+        scan_run_ids = {item.identity.scan_run_id for item in evidence_batch}
+        objective_days = {item.identity.objective_day for item in evidence_batch}
+        if len(scan_run_ids) != 1 or len(objective_days) != 1:
+            raise ValueError("research evidence batch requires one scan and objective day")
+        decision_ids = self.record_decisions(
+            target_date,
+            (),
+            forecast=forecast,
+            intraday=intraday,
+            event=event,
+            market_consensus=market_consensus,
+            risk_profile="research",
+            bankroll=TARGET_POLICY.reference_equity,
+            strategy_config=strategy_config,
+            forecast_snapshot_id=forecast_snapshot_id,
+            market_snapshot_id=market_snapshot_id,
+            _research_evidence=evidence_batch,
+        )
+        if len(decision_ids) != len(evidence_batch):
+            raise RuntimeError("research decision evidence batch was not persisted exactly")
+        return decision_ids
+
     def mark_research_decision_admission_blocked(
         self,
         decision_id: int,
         reason: str,
-    ) -> None:
-        """Fail closed an approved research row after atomic admission declines it."""
+    ) -> bool:
+        """Fail closed an admission-pending row after preflight declines it."""
 
         block_reason = str(reason).strip()
         if not block_reason:
             raise ValueError("research admission block reason is required")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT approved, signal_approved, reasons_json, research_sleeve "
-                "FROM decision_snapshots WHERE id=?",
-                (int(decision_id),),
-            ).fetchone()
-            if row is None or not row[3]:
-                conn.rollback()
-                raise ValueError("research decision evidence is missing")
-            try:
-                reasons = json.loads(row[2] or "[]")
-            except (TypeError, ValueError, json.JSONDecodeError):
-                reasons = []
-            if not isinstance(reasons, list):
-                reasons = []
-            if block_reason not in reasons:
-                reasons.append(block_reason)
-            signal_approved = row[1]
-            if signal_approved is None:
-                signal_approved = row[0]
-            cursor = conn.execute(
-                """
-                UPDATE decision_snapshots
-                SET approved=0, signal_approved=?, entry_block_reason=?,
-                    recommended_contracts=0, recommended_spend=0,
-                    expected_profit=0, reasons_json=?
-                WHERE id=? AND research_sleeve IS NOT NULL
-                """,
-                (
-                    int(bool(signal_approved)),
-                    block_reason,
-                    json.dumps(reasons, sort_keys=True),
-                    int(decision_id),
-                ),
+            changed = self._block_pending_research_decision_on_connection(
+                conn,
+                decision_id=int(decision_id),
+                reason=block_reason,
             )
-            if cursor.rowcount != 1:
-                conn.rollback()
-                raise ValueError("research decision evidence is missing")
             conn.commit()
+            return changed
+
+    @staticmethod
+    def _block_pending_research_decision_on_connection(
+        conn: sqlite3.Connection,
+        *,
+        decision_id: int,
+        reason: str,
+    ) -> bool:
+        row = conn.execute(
+            "SELECT reasons_json FROM decision_snapshots "
+            "WHERE id=? AND research_sleeve IS NOT NULL AND approved=0 "
+            "AND entry_block_reason='research admission pending'",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            reasons = json.loads(row[0] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            reasons = []
+        if not isinstance(reasons, list):
+            reasons = []
+        if reason not in reasons:
+            reasons.append(reason)
+        cursor = conn.execute(
+            """
+            UPDATE decision_snapshots
+            SET approved=0, signal_approved=1, entry_block_reason=?,
+                recommended_contracts=0, recommended_spend=0,
+                expected_profit=0, reasons_json=?
+            WHERE id=? AND research_sleeve IS NOT NULL AND approved=0
+              AND entry_block_reason='research admission pending'
+            """,
+            (reason, json.dumps(reasons, sort_keys=True), decision_id),
+        )
+        return cursor.rowcount == 1
 
     def motion_reentry_block_reason(
         self,
@@ -1773,16 +1881,12 @@ class PaperStore:
                    c.market_consensus_json AS scan_context_market_consensus_json,
                    c.prediction_features_json AS scan_context_prediction_features_json,
                    c.strategy_config_json AS scan_context_strategy_config_json,
-                   c.research_sleeve AS context_research_sleeve,
-                   c.research_policy_version AS context_research_policy_version,
-                   c.policy_fingerprint AS context_policy_fingerprint,
-                   c.objective_day AS context_objective_day,
-                   c.lead_bucket AS context_lead_bucket,
-                   c.scan_run_id AS context_scan_run_id,
-                   c.reentry_fingerprint AS context_reentry_fingerprint,
+                   fs.id AS scan_context_forecast_snapshot_joined_id,
+                   ms.id AS scan_context_market_snapshot_joined_id,
                    ms.raw_json AS scan_context_market_snapshot_json
             FROM decision_snapshots d
             JOIN scan_context_snapshots c ON c.id = d.scan_context_id
+            LEFT JOIN forecast_snapshots fs ON fs.id = c.forecast_snapshot_id
             LEFT JOIN market_snapshots ms ON ms.id = c.market_snapshot_id
             WHERE d.id = ?
             """,
@@ -1803,9 +1907,6 @@ class PaperStore:
         identity_matches = all(
             str(row[field] or "") == expected
             for field, expected in expected_identity.items()
-        ) and all(
-            str(row[f"context_{field}"] or "") == expected
-            for field, expected in expected_identity.items()
         )
         identity_matches = identity_matches and all(
             (
@@ -1816,6 +1917,16 @@ class PaperStore:
                 str(row["risk_profile"] or "") == "research",
                 str(row["scan_context_risk_profile"] or "") == "research",
                 int(row["scan_context_id"]) == int(row["scan_context_joined_id"]),
+                row["forecast_snapshot_id"]
+                == row["scan_context_forecast_snapshot_id"],
+                row["market_snapshot_id"]
+                == row["scan_context_market_snapshot_id"],
+                row["scan_context_forecast_snapshot_id"] is None
+                or row["scan_context_forecast_snapshot_joined_id"]
+                == row["scan_context_forecast_snapshot_id"],
+                row["scan_context_market_snapshot_id"] is None
+                or row["scan_context_market_snapshot_joined_id"]
+                == row["scan_context_market_snapshot_id"],
             )
         )
         if not identity_matches:
@@ -1824,7 +1935,10 @@ class PaperStore:
         if (
             str(row["label"]) != decision.label
             or str(row["action"]) != decision.action
-            or int(row["approved"] or 0) != int(decision.approved)
+            or int(row["approved"] or 0) != 0
+            or int(row["signal_approved"] or 0) != 1
+            or str(row["entry_block_reason"] or "")
+            != "research admission pending"
         ):
             raise ValueError("research entry decision evidence decision mismatch")
         numeric_expected = {
@@ -2102,7 +2216,18 @@ class PaperStore:
                 civil_day=civil_day,
             )
             if capacity["allowed_spend"] + 1e-9 < requested_spend:
-                conn.rollback()
+                reason = str(
+                    capacity.get("reason")
+                    or "research account capacity rejected admission"
+                )
+                if not self._block_pending_research_decision_on_connection(
+                    conn,
+                    decision_id=admission.entry_decision_id,
+                    reason=reason,
+                ):
+                    conn.rollback()
+                    raise ValueError("research pending evidence changed during admission")
+                conn.commit()
                 return None
             if conn.execute(
                 "SELECT 1 FROM paper_orders WHERE account_id=? "
@@ -2110,7 +2235,14 @@ class PaperStore:
                 "AND status NOT IN ('REJECTED','PAPER_EXPIRED') LIMIT 1",
                 (admission.account_id, admission.reentry_fingerprint),
             ).fetchone():
-                conn.rollback()
+                if not self._block_pending_research_decision_on_connection(
+                    conn,
+                    decision_id=admission.entry_decision_id,
+                    reason="duplicate research reentry fingerprint",
+                ):
+                    conn.rollback()
+                    raise ValueError("research pending evidence changed during admission")
+                conn.commit()
                 return None
 
             diagnostics_json = json.dumps(
@@ -2212,7 +2344,14 @@ class PaperStore:
                     ),
                 )
             except sqlite3.IntegrityError:
-                conn.rollback()
+                if not self._block_pending_research_decision_on_connection(
+                    conn,
+                    decision_id=admission.entry_decision_id,
+                    reason="research order uniqueness rejected admission",
+                ):
+                    conn.rollback()
+                    raise ValueError("research pending evidence changed during admission")
+                conn.commit()
                 return None
             order_id = int(cursor.lastrowid)
             conn.execute(
@@ -2238,6 +2377,25 @@ class PaperStore:
                 filled_quantity=contracts,
                 admission=admission,
             )
+            approved = conn.execute(
+                """
+                UPDATE decision_snapshots
+                SET approved=1, signal_approved=1, entry_block_reason=NULL,
+                    recommended_contracts=?, recommended_spend=?,
+                    expected_profit=?
+                WHERE id=? AND research_sleeve=? AND approved=0
+                  AND entry_block_reason='research admission pending'
+                """,
+                (
+                    contracts,
+                    requested_spend,
+                    expected_profit,
+                    admission.entry_decision_id,
+                    admission.sleeve.value,
+                ),
+            )
+            if approved.rowcount != 1:
+                raise ValueError("research pending evidence changed during admission")
             conn.commit()
             return order_id
 

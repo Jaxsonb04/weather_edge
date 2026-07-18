@@ -9,7 +9,11 @@ from typing import NoReturn
 from .arbitrage import ArbitrageOpportunity
 from .config import StrategyConfig
 from .consensus import MarketConsensus
-from .db import PaperStore, ResearchDecisionIdentity
+from .db import (
+    PaperStore,
+    ResearchDecisionEvidence,
+    ResearchDecisionIdentity,
+)
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
@@ -173,6 +177,14 @@ class ResearchExecutionResult:
     motion_decision_ids: tuple[int, ...]
     target_order_ids: tuple[int, ...]
     motion_order_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _ResearchAttempt:
+    policy: ResearchSleevePolicy
+    decision: TradeDecision
+    identity: ResearchDecisionIdentity
+    admission_pending: bool
 
 
 class PaperTrader:
@@ -356,7 +368,7 @@ class PaperTrader:
                 else motion_source_decisions
             )
         }
-        target_decision_ids, target_order_ids = self._execute_research_plan(
+        target_attempts = self._prepare_research_plan(
             target_date,
             plans.target,
             policy=TARGET_POLICY,
@@ -365,15 +377,10 @@ class PaperTrader:
             lead_bucket=lead_bucket,
             scan_run_id=scan_run_id,
             observed_high_state=observed_high_state,
-            forecast=forecast,
             intraday=intraday,
-            event=event,
-            market_consensus=market_consensus,
-            forecast_snapshot_id=forecast_snapshot_id,
-            market_snapshot_id=market_snapshot_id,
             admit_orders=admit_orders,
         )
-        motion_decision_ids, motion_order_ids = self._execute_research_plan(
+        motion_attempts = self._prepare_research_plan(
             target_date,
             plans.motion,
             policy=MOTION_POLICY,
@@ -382,14 +389,59 @@ class PaperTrader:
             lead_bucket=lead_bucket,
             scan_run_id=scan_run_id,
             observed_high_state=observed_high_state,
+            intraday=intraday,
+            admit_orders=admit_orders,
+        )
+        attempts = [*target_attempts, *motion_attempts]
+        decision_ids = self.store.record_research_decision_batch(
+            target_date,
+            [
+                ResearchDecisionEvidence(
+                    decision=attempt.decision,
+                    identity=attempt.identity,
+                    admission_pending=attempt.admission_pending,
+                )
+                for attempt in attempts
+            ],
             forecast=forecast,
             intraday=intraday,
             event=event,
             market_consensus=market_consensus,
+            strategy_config=self.config,
             forecast_snapshot_id=forecast_snapshot_id,
             market_snapshot_id=market_snapshot_id,
-            admit_orders=admit_orders,
         )
+        target_decision_ids: list[int] = []
+        motion_decision_ids: list[int] = []
+        target_order_ids: list[int] = []
+        motion_order_ids: list[int] = []
+        for attempt, decision_id in zip(attempts, decision_ids, strict=True):
+            sleeve_decision_ids = (
+                target_decision_ids
+                if attempt.policy is TARGET_POLICY
+                else motion_decision_ids
+            )
+            sleeve_order_ids = (
+                target_order_ids
+                if attempt.policy is TARGET_POLICY
+                else motion_order_ids
+            )
+            sleeve_decision_ids.append(decision_id)
+            if not attempt.admission_pending:
+                continue
+            order_id = self.store.record_research_order_atomic(
+                target_date,
+                attempt.decision,
+                admission=attempt.identity.admission(decision_id),
+                strategy_config=self.config,
+            )
+            if order_id is not None:
+                sleeve_order_ids.append(order_id)
+            else:
+                self.store.mark_research_decision_admission_blocked(
+                    decision_id,
+                    "atomic research admission rejected",
+                )
         return ResearchExecutionResult(
             target_decision_ids=tuple(target_decision_ids),
             motion_decision_ids=tuple(motion_decision_ids),
@@ -397,7 +449,7 @@ class PaperTrader:
             motion_order_ids=tuple(motion_order_ids),
         )
 
-    def _execute_research_plan(
+    def _prepare_research_plan(
         self,
         target_date: str,
         plan,
@@ -408,19 +460,13 @@ class PaperTrader:
         lead_bucket: str,
         scan_run_id: str,
         observed_high_state: str,
-        forecast: ForecastSnapshot | None,
         intraday: IntradaySnapshot | None,
-        event: EventSnapshot | None,
-        market_consensus: MarketConsensus | None,
-        forecast_snapshot_id: int | None,
-        market_snapshot_id: int | None,
         admit_orders: bool,
-    ) -> tuple[list[int], list[int]]:
+    ) -> list[_ResearchAttempt]:
         selected_by_key = {
             _decision_key(leg.decision): leg.decision for leg in plan.legs
         }
-        decision_ids: list[int] = []
-        order_ids: list[int] = []
+        attempts: list[_ResearchAttempt] = []
         for disposition in plan.dispositions:
             key = (str(disposition.ticker), str(disposition.side).upper())
             base = selected_by_key.get(key) or source_by_key.get(key)
@@ -460,6 +506,18 @@ class PaperTrader:
                         reasons=[*prepared.reasons, reentry_reason],
                     )
                     selected = False
+            if selected and prepared.approved and not admit_orders:
+                block_reason = "research order admission disabled"
+                prepared = replace(
+                    prepared,
+                    approved=False,
+                    signal_approved=True,
+                    entry_block_reason=block_reason,
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                    reasons=[*prepared.reasons, block_reason],
+                )
+                selected = False
             executable_price = (
                 float(prepared.limit_price)
                 if prepared.limit_price is not None
@@ -482,35 +540,17 @@ class PaperTrader:
                 scan_run_id=scan_run_id,
                 reentry_fingerprint=reentry_fingerprint,
             )
-            decision_id = self.store.record_research_decision_evidence(
-                target_date,
-                prepared,
-                identity=identity,
-                forecast=forecast,
-                intraday=intraday,
-                event=event,
-                market_consensus=market_consensus,
-                strategy_config=self.config,
-                forecast_snapshot_id=forecast_snapshot_id,
-                market_snapshot_id=market_snapshot_id,
-            )
-            decision_ids.append(decision_id)
-            if not admit_orders or not selected or not prepared.approved:
-                continue
-            order_id = self.store.record_research_order_atomic(
-                target_date,
-                prepared,
-                admission=identity.admission(decision_id),
-                strategy_config=self.config,
-            )
-            if order_id is not None:
-                order_ids.append(order_id)
-            else:
-                self.store.mark_research_decision_admission_blocked(
-                    decision_id,
-                    "atomic research admission rejected",
+            attempts.append(
+                _ResearchAttempt(
+                    policy=policy,
+                    decision=prepared,
+                    identity=identity,
+                    admission_pending=bool(
+                        admit_orders and selected and prepared.approved
+                    ),
                 )
-        return decision_ids, order_ids
+            )
+        return attempts
 
     def place_approved(
         self,

@@ -743,7 +743,8 @@ def _insert_research_decision_evidence(
             """
             INSERT INTO decision_snapshots (
                 scan_context_id, created_at, target_date, market_ticker, label,
-                action, side, approved, probability, probability_lcb, yes_bid,
+                action, side, approved, signal_approved, entry_block_reason,
+                probability, probability_lcb, yes_bid,
                 yes_ask, entry_bid, entry_ask, entry_bid_size, entry_ask_size,
                 spread, fee_per_contract, cost_per_contract, edge, edge_lcb,
                 kelly_fraction, recommended_contracts, recommended_spend,
@@ -751,7 +752,8 @@ def _insert_research_decision_evidence(
                 research_sleeve, research_policy_version, policy_fingerprint,
                 objective_day, lead_bucket, scan_run_id, reentry_fingerprint
             ) VALUES (
-                ?, '2026-07-18T12:00:01+00:00', ?, ?, ?, ?, ?, 1,
+                ?, '2026-07-18T12:00:01+00:00', ?, ?, ?, ?, ?, 0, 1,
+                'research admission pending',
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]',
                 'research', ?, ?, ?, ?, ?, ?, ?
             )
@@ -1410,13 +1412,6 @@ def test_atomic_admission_links_supplied_target_evidence_not_newer_motion(
         ("decision", "target_date", "2026-07-20"),
         ("decision", "market_ticker", "KXHIGHTSFO-WRONG"),
         ("decision", "side", "YES"),
-        ("context", "research_sleeve", "motion"),
-        ("context", "research_policy_version", "wrong-version"),
-        ("context", "policy_fingerprint", "wrong-fingerprint"),
-        ("context", "objective_day", "2026-07-17"),
-        ("context", "lead_bucket", "same-day"),
-        ("context", "scan_run_id", "wrong-scan"),
-        ("context", "reentry_fingerprint", "wrong-reentry"),
         ("context", "target_date", "2026-07-20"),
     ),
 )
@@ -2880,6 +2875,215 @@ def test_target_depth_downsize_is_exact_in_evidence_and_order_ledger(
     assert order[1] == pytest.approx(5.0)
     assert order[2] == pytest.approx(0.90)
     assert order[3] == "PAPER_FILLED"
+
+
+def test_research_scan_batches_one_shared_context_for_all_dispositions(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "one-research-context.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decisions = [
+        _atomic_decision("KXHIGHTSFO-BATCH-A"),
+        _atomic_decision("KXHIGHTSFO-BATCH-B"),
+    ]
+    plans = allocate_research_plans(
+        [ResearchOpportunity(row, "2026-07-19", 1) for row in decisions],
+        run_id="one-research-context",
+    )
+
+    result = PaperTrader(
+        store,
+        config,
+        risk_profile="research",
+        entry_mode="limit",
+    ).execute_research_plans(
+        "2026-07-19",
+        plans,
+        source_decisions=decisions,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="one-research-context",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    with store.connect() as conn:
+        context_count = conn.execute(
+            "SELECT COUNT(*) FROM scan_context_snapshots"
+        ).fetchone()[0]
+        decision_rows = conn.execute(
+            "SELECT id, scan_context_id, research_sleeve, scan_run_id "
+            "FROM decision_snapshots ORDER BY id"
+        ).fetchall()
+        context_identity = conn.execute(
+            "SELECT research_sleeve, research_policy_version, policy_fingerprint, "
+            "objective_day, lead_bucket, scan_run_id, reentry_fingerprint "
+            "FROM scan_context_snapshots"
+        ).fetchone()
+        order_links = conn.execute(
+            "SELECT research_sleeve, entry_decision_snapshot_id "
+            "FROM paper_orders ORDER BY id"
+        ).fetchall()
+
+    expected_ids = (*result.target_decision_ids, *result.motion_decision_ids)
+    assert context_count == 1
+    assert len(decision_rows) == 4
+    assert len({row[1] for row in decision_rows}) == 1
+    assert tuple(row[0] for row in decision_rows) == expected_ids
+    assert context_identity == (None, None, None, None, None, None, None)
+    assert all(row[2] in {"target", "motion"} for row in decision_rows)
+    assert all(row[3] == "one-research-context" for row in decision_rows)
+    assert order_links == [
+        ("target", result.target_decision_ids[0]),
+        ("target", result.target_decision_ids[1]),
+        ("motion", result.motion_decision_ids[0]),
+        ("motion", result.motion_decision_ids[1]),
+    ]
+
+
+def test_research_admission_exception_leaves_pending_then_next_scan_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "pending-recovery.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decision = _atomic_decision("KXHIGHTSFO-PENDING-RECOVERY")
+    trader = PaperTrader(
+        store,
+        config,
+        risk_profile="research",
+        entry_mode="limit",
+    )
+    first_plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-19", 1)],
+        run_id="pending-crash",
+    )
+    original_atomic = store.record_research_order_atomic
+    monkeypatch.setattr(
+        store,
+        "record_research_order_atomic",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated crash")),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        trader.execute_research_plans(
+            "2026-07-19",
+            first_plans,
+            source_decisions=[decision],
+            objective_day="2026-07-18",
+            lead_bucket="day-ahead",
+            scan_run_id="pending-crash",
+            observed_high_state="complete=0;high=unavailable",
+        )
+
+    with store.connect() as conn:
+        pending = conn.execute(
+            "SELECT approved, signal_approved, entry_block_reason "
+            "FROM decision_snapshots WHERE scan_run_id='pending-crash' ORDER BY id"
+        ).fetchall()
+        assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
+        non_opening_ledger = conn.execute(
+            "SELECT COUNT(*) FROM paper_account_ledger WHERE order_id IS NOT NULL"
+        ).fetchone()[0]
+    assert pending
+    assert all(row == (0, 1, "research admission pending") for row in pending)
+    assert non_opening_ledger == 0
+
+    monkeypatch.setattr(store, "record_research_order_atomic", original_atomic)
+    second_plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-19", 1)],
+        run_id="pending-recovery-next",
+    )
+    recovered = trader.execute_research_plans(
+        "2026-07-19",
+        second_plans,
+        source_decisions=[decision],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="pending-recovery-next",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert recovered.target_order_ids or recovered.motion_order_ids
+    with store.connect() as conn:
+        abandoned = conn.execute(
+            "SELECT approved, signal_approved, entry_block_reason, "
+            "recommended_contracts, recommended_spend, expected_profit "
+            "FROM decision_snapshots WHERE scan_run_id='pending-crash' ORDER BY id"
+        ).fetchall()
+        admitted = conn.execute(
+            "SELECT approved, signal_approved, entry_block_reason "
+            "FROM decision_snapshots WHERE scan_run_id='pending-recovery-next' "
+            "AND id IN (SELECT entry_decision_snapshot_id FROM paper_orders) "
+            "ORDER BY id"
+        ).fetchall()
+    assert all(
+        row == (0, 1, "abandoned research admission", 0.0, 0.0, 0.0)
+        for row in abandoned
+    )
+    assert admitted
+    assert all(row == (1, 1, None) for row in admitted)
+
+
+def test_research_approval_order_and_ledger_rollback_together(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore, ResearchDecisionIdentity
+
+    store = PaperStore(tmp_path / "approval-atomic.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decision = _atomic_decision("KXHIGHTSFO-APPROVAL-ATOMIC")
+    identity = ResearchDecisionIdentity.for_policy(
+        TARGET_POLICY,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="approval-atomic",
+        reentry_fingerprint="approval-atomic",
+    )
+    decision_id = store.record_research_decision_evidence(
+        "2026-07-19",
+        decision,
+        identity=identity,
+        strategy_config=config,
+    )
+    with store.connect() as conn:
+        pending = conn.execute(
+            "SELECT approved, signal_approved, entry_block_reason "
+            "FROM decision_snapshots WHERE id=?",
+            (decision_id,),
+        ).fetchone()
+        conn.execute(
+            "CREATE TRIGGER abort_research_approval BEFORE UPDATE OF approved "
+            "ON decision_snapshots WHEN NEW.id=%d AND NEW.approved=1 "
+            "BEGIN SELECT RAISE(ABORT, 'simulated approval failure'); END" % decision_id
+        )
+    assert pending == (0, 1, "research admission pending")
+
+    with pytest.raises(sqlite3.DatabaseError, match="simulated approval failure"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=identity.admission(decision_id),
+            strategy_config=config,
+        )
+
+    with store.connect() as conn:
+        still_pending = conn.execute(
+            "SELECT approved, signal_approved, entry_block_reason "
+            "FROM decision_snapshots WHERE id=?",
+            (decision_id,),
+        ).fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
+        non_opening_ledger = conn.execute(
+            "SELECT COUNT(*) FROM paper_account_ledger WHERE order_id IS NOT NULL"
+        ).fetchone()[0]
+    assert still_pending == (0, 1, "research admission pending")
+    assert non_opening_ledger == 0
 
 
 def test_motion_reentry_projects_root_when_newest_partial_child_is_terminal(
