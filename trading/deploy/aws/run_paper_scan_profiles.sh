@@ -72,7 +72,7 @@ fi
 cd "$TRADING_DIR"
 
 IFS=',' read -r -a profiles <<< "$PROFILES_CSV"
-profile_index=0
+canonical_profiles=()
 for raw_profile in "${profiles[@]}"; do
   trimmed_profile="${raw_profile#"${raw_profile%%[![:space:]]*}"}"
   trimmed_profile="${trimmed_profile%"${trimmed_profile##*[![:space:]]}"}"
@@ -83,7 +83,11 @@ for raw_profile in "${profiles[@]}"; do
     echo "invalid paper risk profile: $trimmed_profile" >&2
     exit 2
   fi
+  canonical_profiles+=("$profile")
+done
 
+profile_index=0
+for profile in "${canonical_profiles[@]}"; do
   skip_context=0
   if (( profile_index > 0 )); then
     skip_context=1

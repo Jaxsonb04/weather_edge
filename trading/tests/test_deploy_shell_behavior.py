@@ -37,10 +37,10 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-def _run_paper_scan_with_placement_flags(
+def _invoke_paper_scan_with_placement_flags(
     tmp_path: Path,
     **placement_flags: str,
-) -> list[list[str]]:
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
     trading_root = tmp_path / "trading"
     trading_root.mkdir()
     call_log = tmp_path / "paper-scan-calls.jsonl"
@@ -78,8 +78,24 @@ with open(os.environ['PAPER_SCAN_CALL_LOG'], 'a', encoding='utf-8') as handle:
         capture_output=True,
         text=True,
     )
+    calls = (
+        [json.loads(line) for line in call_log.read_text().splitlines()]
+        if call_log.exists()
+        else []
+    )
+    return result, calls
+
+
+def _run_paper_scan_with_placement_flags(
+    tmp_path: Path,
+    **placement_flags: str,
+) -> list[list[str]]:
+    result, calls = _invoke_paper_scan_with_placement_flags(
+        tmp_path,
+        **placement_flags,
+    )
     assert result.returncode == 0, result.stderr
-    return [json.loads(line) for line in call_log.read_text().splitlines()]
+    return calls
 
 
 def _paper_scan_call_for_profile(calls: list[list[str]], profile: str) -> list[str]:
@@ -208,6 +224,44 @@ def test_paper_scan_normalizes_supported_profile_aliases_before_dispatch(
         assert "--place-research-motion" not in call
     else:
         assert "--place-paper" not in call
+
+
+@pytest.mark.parametrize("profiles", ("live,bogus", "bogus,research"))
+def test_paper_scan_rejects_invalid_profile_csv_before_any_dispatch(
+    tmp_path: Path,
+    profiles: str,
+) -> None:
+    result, calls = _invoke_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_RISK_PROFILES=profiles,
+        PAPER_PLACE_LIVE="1",
+        PAPER_PLACE_RESEARCH_TARGET="1",
+        PAPER_PLACE_RESEARCH_MOTION="1",
+    )
+
+    assert result.returncode != 0
+    assert "invalid paper risk profile: bogus" in result.stderr
+    assert calls == []
+
+
+def test_paper_scan_preserves_validated_order_and_ignores_empty_tokens(
+    tmp_path: Path,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_RISK_PROFILES=" , FAST_FEEDBACK, , conservative, ",
+        PAPER_PLACE_LIVE="1",
+        PAPER_PLACE_RESEARCH_MOTION="1",
+    )
+
+    assert [call[call.index("--risk-profile") + 1] for call in calls] == [
+        "research",
+        "live",
+    ]
+    assert "--place-research-motion" in calls[0]
+    assert "--place-paper" in calls[1]
+    assert "--skip-context-snapshots" not in calls[0]
+    assert "--skip-context-snapshots" in calls[1]
 
 
 def _stub_clean_main_git(fake_bin: Path) -> None:
