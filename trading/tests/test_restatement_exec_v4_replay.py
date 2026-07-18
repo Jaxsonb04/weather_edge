@@ -1743,3 +1743,57 @@ def test_genuine_exec_v3_row_remains_historical_and_outside_v4_gate() -> None:
         assert result["verification"] == "UNVERIFIABLE"
         assert "EXEC_V3_HISTORICAL_SEMANTICS" in result["findings"]
         assert replay_from_database(db_path, TRUTH)["source_orders"] == 0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("fill-model", "EXEC_V4_FILL_MODEL_MISMATCH"),
+        ("evidence-model", "EXEC_V4_EVIDENCE_MODEL_MISMATCH"),
+        ("both-models", "EXEC_V4_FILL_MODEL_MISMATCH"),
+        ("missing-allocation", "EXEC_V4_ALLOCATION_MISSING"),
+    ],
+)
+def test_persisted_v4_allocation_prevents_maker_identity_opt_out(
+    mutation: str,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, f"identity-{mutation}", no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            if mutation in {"evidence-model", "both-models"}:
+                evidence = json.loads(
+                    conn.execute(
+                        "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                        (order_id,),
+                    ).fetchone()[0]
+                )
+                evidence["model"] = "maker_allocator_price_time_v3"
+                conn.execute(
+                    "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                    (json.dumps(evidence, sort_keys=True), order_id),
+                )
+            if mutation in {"fill-model", "both-models"}:
+                conn.execute(
+                    "UPDATE paper_orders SET fill_model='immediate_visible_quote' "
+                    "WHERE id=?",
+                    (order_id,),
+                )
+            if mutation == "missing-allocation":
+                conn.execute(
+                    "DELETE FROM paper_maker_allocations WHERE order_id=?",
+                    (order_id,),
+                )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "UNVERIFIABLE"
+        assert reason in result["findings"]
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 0
+        assert replay["verified_decisions"] == 0
+        assert replay["readiness_metrics"]["candidate"]["capital_at_risk"] == 0.0
+        assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0

@@ -44,6 +44,20 @@ from .settlement_truth import (
 _MAKER_SIDE_BY_TAKER_BOOK_SIDE = {"bid": "NO", "ask": "YES"}
 
 
+def _positive_integral_id(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return (
+        int(parsed)
+        if math.isfinite(parsed) and parsed >= 1 and parsed.is_integer()
+        else None
+    )
+
+
 @dataclass(frozen=True)
 class ReplayOrder:
     order_id: str
@@ -344,6 +358,22 @@ def replay_from_database(
             all_orders = conn.execute(
                 "SELECT * FROM paper_orders ORDER BY created_at, id"
             ).fetchall()
+            v4_allocation_owner_ids = {
+                order_id
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM paper_maker_allocations "
+                    "WHERE execution_model_version=?",
+                    (EXECUTION_MODEL_VERSION,),
+                ).fetchall()
+                if (order_id := _positive_integral_id(row[0])) is not None
+            } if _table_exists(conn, "paper_maker_allocations") else set()
+            claim_owner_ids = {
+                order_id
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM maker_volume_claims"
+                ).fetchall()
+                if (order_id := _positive_integral_id(row[0])) is not None
+            } if _table_exists(conn, "maker_volume_claims") else set()
             trades = (
                 conn.execute(
                     "SELECT * FROM dataset_kalshi_trades ORDER BY created_time, trade_id"
@@ -403,11 +433,21 @@ def replay_from_database(
     # event counts on their own.
     invalid_logical_lot_ids: set[int] = set()
     for group in group_logical_positions(all_orders):
-        if not uses_current_maker_semantics(
-            group.root.get("execution_model_version"),
-            group.root.get("entry_mode"),
-            group.root.get("fill_model"),
-        ):
+        root_id = _positive_integral_id(group.root.get("id"))
+        row_generation_is_current = (
+            str(group.root.get("execution_model_version") or "")
+            == EXECUTION_MODEL_VERSION
+        )
+        has_current_maker_authority = (
+            uses_current_maker_semantics(
+                group.root.get("execution_model_version"),
+                group.root.get("entry_mode"),
+                group.root.get("fill_model"),
+            )
+            or root_id in v4_allocation_owner_ids
+            or (row_generation_is_current and root_id in claim_owner_ids)
+        )
+        if not has_current_maker_authority:
             continue
         lot_ids = {
             int(lot["id"])

@@ -1114,6 +1114,12 @@ def _logical_maker_authority_findings(
     evidence = _json_object(root.get("fill_evidence_json"))
     if evidence.get("model") != "maker_allocator_price_time_v4":
         findings.append("EXEC_V4_EVIDENCE_MODEL_MISMATCH")
+    if (
+        str(root.get("entry_mode") or "") != "limit"
+        or str(root.get("fill_model") or "")
+        != "maker_trade_through_required"
+    ):
+        findings.append("EXEC_V4_FILL_MODEL_MISMATCH")
 
     requested = _finite_number(root.get("requested_contracts"), minimum=0)
     filled = _finite_number(root.get("filled_contracts"), minimum=0)
@@ -1626,9 +1632,31 @@ def restate(db_path: Path) -> dict[str, Any]:
         for entry in classes
         if isinstance(entry.get("order_id"), int)
     }
+    v4_allocation_owner_ids = {
+        order_id
+        for allocation in allocation_rows
+        if str(allocation["execution_model_version"] or "")
+        == EXECUTION_MODEL_VERSION
+        and (order_id := _positive_row_id(allocation["order_id"])) is not None
+    }
+    claim_owner_ids = {
+        order_id
+        for claim in maker_claim_rows
+        if (order_id := _positive_row_id(claim["order_id"])) is not None
+    }
     for group in group_logical_positions(orders):
         root = group.root
-        if not _row_uses_current_maker_semantics(root):
+        root_id = _positive_row_id(root.get("id"))
+        row_generation_is_current = (
+            str(root.get("execution_model_version") or "")
+            == EXECUTION_MODEL_VERSION
+        )
+        has_current_maker_authority = (
+            _row_uses_current_maker_semantics(root)
+            or root_id in v4_allocation_owner_ids
+            or (row_generation_is_current and root_id in claim_owner_ids)
+        )
+        if not has_current_maker_authority:
             continue
         lot_ids = [
             order_id
