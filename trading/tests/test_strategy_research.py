@@ -556,6 +556,195 @@ def test_strategy_research_summary_win_loss_counts_use_full_book():
         assert diagnostics["worst_segments"][0]["exit_reason"] == "held_to_settlement"
 
 
+def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            ticker="KXHIGHTPHX-TEST-B110.5",
+            label="110 to 111",
+            floor_strike=110.0,
+            cap_strike=111.0,
+        )
+        today = datetime.now(UTC).astimezone(SFO_TZ).date().isoformat()
+        root_id = store.record_paper_order(today, decision, risk_profile="live")
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        store.close_paper_order(root_id, 0.70, max_quantity=3.0)
+        store.close_paper_order(root_id, 0.70)
+
+        with store.connect() as conn:
+            raw_lots = conn.execute(
+                "SELECT contracts, cost_per_contract, exit_fee_per_contract, realized_pnl "
+                "FROM paper_orders WHERE id=? OR parent_order_id=?",
+                (root_id, root_id),
+            ).fetchall()
+        expected_pnl = round(sum(float(row[3]) for row in raw_lots), 2)
+        expected_capital = round(
+            sum(float(row[0]) * float(row[1]) for row in raw_lots),
+            2,
+        )
+        expected_exit_fees = sum(
+            float(row[0]) * float(row[2] or 0.0) for row in raw_lots
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        paper = payload["paper_trading"]
+        paper_summary = paper["summary"]
+        assert paper_summary["closed_positions"] == 1
+        assert paper_summary["win_count"] + paper_summary["loss_count"] == 1
+        assert paper_summary["realized_pnl"] == expected_pnl
+        assert paper_summary["capital_at_risk"] == expected_capital
+
+        assert len(paper["closed_positions"]) == 1
+        closed = paper["closed_positions"][0]
+        assert closed["id"] == root_id
+        assert closed["ticker"].startswith("KXHIGHTPHX-")
+        assert closed["contracts"] == 10.0
+        assert closed["exit_fill_count"] == 3
+        assert closed["realized_pnl"] == expected_pnl
+        assert closed["initial_cost"] == expected_capital
+        assert closed["contracts"] * closed["exit_fee_per_contract"] == pytest.approx(
+            expected_exit_fees
+        )
+
+        diagnostics = paper["diagnostics"]
+        assert diagnostics["resolved_positions"] == 1
+        assert diagnostics["by_profile"]["live"]["resolved"] == 1
+        assert diagnostics["by_side"]["YES"]["resolved"] == 1
+        assert diagnostics["by_exit_reason"]["monitor_exit"]["resolved"] == 1
+        assert diagnostics["worst_segments"][0]["resolved"] == 1
+
+        daily = payload["daily_summary"]
+        assert daily["totals"]["trades_closed"] == 1
+        assert daily["totals"]["wins"] + daily["totals"]["losses"] == 1
+        assert daily["totals"]["realized_pnl"] == expected_pnl
+        assert daily["totals"]["capital_resolved"] == expected_capital
+        assert daily["side_performance"]["YES"]["trades"] == 1
+        assert daily["exit_reasons"]["closed_take_profit"] == 1
+        assert len(daily["biggest_winners"]) == 1
+        assert daily["biggest_winners"][0]["id"] == root_id
+        assert daily["biggest_losers"] == []
+
+        live = next(row for row in payload["profiles"] if row["risk_profile"] == "live")
+        live_paper = live["paper_trading"]
+        assert live_paper["summary"]["closed_positions"] == 1
+        assert (
+            live_paper["summary"]["win_count"]
+            + live_paper["summary"]["loss_count"]
+            == 1
+        )
+        assert live_paper["summary"]["realized_pnl"] == expected_pnl
+        assert live_paper["summary"]["capital_at_risk"] == expected_capital
+        # The UI's city chips are derived from this profile-scoped ledger.
+        assert len(live_paper["closed_positions"]) == 1
+        assert live_paper["closed_positions"][0]["ticker"].startswith(
+            "KXHIGHTPHX-"
+        )
+        assert live["daily_summary"]["side_performance"]["YES"]["trades"] == 1
+        assert live["daily_summary"]["exit_reasons"]["closed_take_profit"] == 1
+        assert len(live["daily_summary"]["biggest_winners"]) == 1
+
+
+def test_strategy_research_card_keeps_partially_realized_root_open_and_undecided():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            ticker="KXHIGHTPHX-TEST-B111.5",
+            label="111 to 112",
+            floor_strike=111.0,
+            cap_strike=112.0,
+        )
+        today = datetime.now(UTC).astimezone(SFO_TZ).date().isoformat()
+        root_id = store.record_paper_order(today, decision, risk_profile="live")
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        with store.connect() as conn:
+            realized_pnl, realized_capital = conn.execute(
+                "SELECT SUM(realized_pnl), SUM(contracts * cost_per_contract) "
+                "FROM paper_orders WHERE parent_order_id=?",
+                (root_id,),
+            ).fetchone()
+
+        paper = strategy_research_module._paper_payload(db_path)
+
+        assert paper["available"] is True
+        assert paper["summary"]["open_positions"] == 1
+        assert paper["summary"]["closed_positions"] == 0
+        assert paper["summary"]["win_count"] == 0
+        assert paper["summary"]["loss_count"] == 0
+        assert paper["summary"]["realized_pnl"] == round(realized_pnl, 2)
+        assert paper["summary"]["capital_at_risk"] == round(realized_capital, 2)
+        assert len(paper["open_positions"]) == 1
+        assert paper["open_positions"][0]["id"] == root_id
+        assert paper["open_positions"][0]["contracts"] == 8.0
+        assert paper["closed_positions"] == []
+        assert paper["diagnostics"]["resolved_positions"] == 0
+        assert paper["diagnostics"]["by_profile"] == {}
+
+        live = next(row for row in paper["profiles"] if row["risk_profile"] == "live")
+        assert live["orders"] == 0
+        assert live["resolved"] == 0
+        assert live["wins"] == 0
+        assert live["losses"] == 0
+        assert live["realized_pnl"] == round(realized_pnl, 2)
+        assert live["capital_resolved"] == round(realized_capital, 2)
+        assert live["open_positions"] == 1
+
+
+def test_strategy_research_card_fails_closed_on_inconsistent_logical_group():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            ticker="KXHIGHTPHX-TEST-B112.5",
+            label="112 to 113",
+            floor_strike=112.0,
+            cap_strike=113.0,
+        )
+        today = datetime.now(UTC).astimezone(SFO_TZ).date().isoformat()
+        root_id = store.record_paper_order(today, decision, risk_profile="live")
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        store.close_paper_order(root_id, 0.70)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET market_ticker='KXHIGHTPHX-BROKEN' "
+                "WHERE parent_order_id=?",
+                (root_id,),
+            )
+
+        paper = strategy_research_module._paper_payload(db_path)
+
+        assert paper["available"] is True
+        assert paper["summary"]["open_positions"] == 0
+        assert paper["summary"]["closed_positions"] == 0
+        assert paper["summary"]["win_count"] == 0
+        assert paper["summary"]["loss_count"] == 0
+        assert paper["summary"]["realized_pnl"] == 0.0
+        assert paper["summary"]["capital_at_risk"] == 0.0
+        assert paper["open_positions"] == []
+        assert paper["pending_limit_orders"] == []
+        assert paper["closed_positions"] == []
+        assert paper["recent_monitor_actions"] == []
+        assert paper["diagnostics"] == {
+            "resolved_positions": 0,
+            "by_profile": {},
+            "by_side": {},
+            "by_exit_reason": {},
+            "worst_segments": [],
+        }
+        assert paper["profiles"] == []
+
+
 # 2026-06-27 16:00 UTC: every traded station (fixed standard offsets -5..-8)
 # is mid-morning/midday on 2026-06-27, so all 15 share the same settlement day
 # and the SFO-based rolling window [06-27, 06-28, 06-29].
