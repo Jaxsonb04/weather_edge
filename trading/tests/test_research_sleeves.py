@@ -1,6 +1,8 @@
-from dataclasses import FrozenInstanceError
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import FrozenInstanceError, replace
 import sqlite3
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -10,6 +12,7 @@ from sfo_kalshi_quant.account import (
     strategy_fingerprint,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
+from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
@@ -559,3 +562,345 @@ def test_clean_reinit_leaves_identity_trigger_schema_unchanged(
 
     assert len(before[1]) == 10
     assert after == before
+
+
+def _atomic_decision(
+    ticker: str,
+    *,
+    contracts: float = 1.0,
+    resting: bool = True,
+) -> TradeDecision:
+    limit_price = 0.80 if resting else None
+    return TradeDecision(
+        ticker=ticker,
+        label="80° to 81°",
+        action="BUY_NO",
+        approved=True,
+        probability=0.90,
+        probability_lcb=0.88,
+        yes_bid=0.17,
+        yes_ask=0.18,
+        spread=0.02,
+        fee_per_contract=0.0,
+        cost_per_contract=0.82,
+        edge=0.08,
+        edge_lcb=0.06,
+        kelly_fraction=0.03,
+        recommended_contracts=contracts,
+        expected_profit=0.08 * contracts,
+        reasons=[],
+        side="NO",
+        entry_bid=0.79,
+        entry_ask=0.82,
+        entry_bid_size=0.0,
+        entry_ask_size=100.0,
+        strike_type="between",
+        floor_strike=80.0,
+        cap_strike=81.0,
+        trade_quality_score=75.0,
+        limit_price=limit_price,
+        limit_fee_per_contract=0.0 if resting else None,
+        limit_cost_per_contract=0.80 if resting else None,
+        limit_edge=0.10 if resting else None,
+        limit_edge_lcb=0.08 if resting else None,
+    )
+
+
+def _admission(policy, suffix: str):
+    from sfo_kalshi_quant.db import ResearchAdmission
+
+    return ResearchAdmission(
+        account_id=policy.account_id,
+        sleeve=policy.sleeve,
+        policy_version=policy.policy_version,
+        policy_fingerprint=policy.policy_fingerprint,
+        objective_day="2026-07-18",
+        scan_run_id=f"scan-{suffix}",
+        reentry_fingerprint=f"reentry-{suffix}",
+        lead_bucket="day-ahead",
+    )
+
+
+def test_research_admission_is_immutable() -> None:
+    admission = _admission(TARGET_POLICY, "frozen")
+
+    with pytest.raises(FrozenInstanceError):
+        admission.account_id = MOTION_POLICY.account_id  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("account_id", MOTION_POLICY.account_id),
+        ("sleeve", ResearchSleeve.MOTION),
+        ("policy_version", "research-target-v999"),
+        ("policy_fingerprint", MOTION_POLICY.policy_fingerprint),
+    ),
+)
+def test_atomic_admission_requires_exact_policy_identity(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / f"identity-{field}.db")
+    admission = replace(_admission(TARGET_POLICY, field), **{field: value})
+
+    with pytest.raises(ValueError, match="research admission identity"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            _atomic_decision(f"KXHIGHTSFO-IDENTITY-{field}"),
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM paper_orders WHERE scan_run_id=?",
+            (admission.scan_run_id,),
+        ).fetchone()[0] == 0
+
+
+def test_atomic_admission_requires_nonblank_lead_bucket(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "lead-bucket.db")
+    admission = replace(_admission(TARGET_POLICY, "missing-lead"), lead_bucket=None)
+
+    with pytest.raises(ValueError, match="research admission lead bucket"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            _atomic_decision("KXHIGHTSFO-MISSING-LEAD"),
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def test_atomic_admission_fails_closed_on_tampered_account_policy(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "tampered-account.db")
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_accounts SET initial_capital=999 WHERE account_id=?",
+            (TARGET_POLICY.account_id,),
+        )
+
+    order_id = store.record_research_order_atomic(
+        "2026-07-19",
+        _atomic_decision("KXHIGHTSFO-TAMPERED-ACCOUNT"),
+        admission=_admission(TARGET_POLICY, "tampered-account"),
+        strategy_config=strategy_config_for_profile("research"),
+    )
+
+    assert order_id is None
+    assert store.entries_for_market_side(
+        "2026-07-19",
+        "KXHIGHTSFO-TAMPERED-ACCOUNT",
+        "NO",
+        risk_profile="research",
+        account_id=TARGET_POLICY.account_id,
+    ) == 0
+
+
+def test_concurrent_atomic_admissions_cannot_overreserve_account_cash(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    db_path = tmp_path / "concurrent.db"
+    setup = PaperStore(db_path)
+    # Leave $30 available while preserving the fixed $1,000 policy reference.
+    # Each candidate needs $20; a check-then-write race would admit both.
+    with setup.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO paper_account_ledger (
+                created_at, account_id, order_id, event_type, amount,
+                idempotency_key, details_json
+            ) VALUES (
+                '2026-07-18T08:00:00+00:00', ?, NULL, 'TEST_WITHDRAWAL',
+                -970, 'test:target:withdrawal', '{}'
+            )
+            """,
+            (TARGET_POLICY.account_id,),
+        )
+
+    stores = (PaperStore(db_path), PaperStore(db_path))
+    barrier = Barrier(2)
+
+    def admit(index: int) -> int | None:
+        barrier.wait(timeout=5)
+        return stores[index].record_research_order_atomic(
+            "2026-07-19",
+            _atomic_decision(
+                f"KXHIGHTSFO-CONCURRENT-{index}", contracts=25.0
+            ),
+            admission=_admission(TARGET_POLICY, f"concurrent-{index}"),
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(admit, range(2)))
+
+    assert sum(order_id is not None for order_id in results) == 1
+    state = setup.research_account_state(account_id=TARGET_POLICY.account_id)
+    assert state is not None
+    assert state["available_cash"] == pytest.approx(10.0)
+    assert state["reservations"] == pytest.approx(20.0)
+    assert state["available_cash"] >= 0.0
+
+
+def test_research_reservations_are_isolated_by_account(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "reservations.db")
+    target_id = store.record_research_order_atomic(
+        "2026-07-19",
+        _atomic_decision("KXHIGHTSFO-RESERVE-TARGET", contracts=10.0),
+        admission=_admission(TARGET_POLICY, "reserve-target"),
+        strategy_config=strategy_config_for_profile("research"),
+    )
+
+    assert target_id is not None
+    target = store.research_account_state(account_id=TARGET_POLICY.account_id)
+    motion = store.research_account_state(account_id=MOTION_POLICY.account_id)
+    assert target is not None and motion is not None
+    assert target["reservations"] == pytest.approx(8.0)
+    assert target["available_cash"] == pytest.approx(992.0)
+    assert motion["reservations"] == 0.0
+    assert motion["available_cash"] == 1000.0
+
+
+def test_active_research_exposure_releases_after_close(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "release.db")
+    order_id = store.record_research_order_atomic(
+        "2026-07-19",
+        _atomic_decision("KXHIGHTSFO-RELEASE", contracts=20.0, resting=False),
+        admission=_admission(TARGET_POLICY, "release"),
+        strategy_config=strategy_config_for_profile("research"),
+    )
+    assert order_id is not None
+    order = store.paper_order(order_id)
+    assert order is not None
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == pytest.approx(
+        float(order["contracts"]) * float(order["cost_per_contract"])
+    )
+
+    store.close_paper_order(order_id, 0.90)
+
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
+    capacity = store.account_policy_capacity(
+        target_date="2026-07-19",
+        market_ticker="KXHIGHTSFO-RELEASE-NEW",
+        risk_profile="research",
+        account_id=TARGET_POLICY.account_id,
+        requested_spend=20.0,
+    )
+    assert capacity["allowed_spend"] == pytest.approx(20.0)
+
+
+def test_same_market_allowed_across_sleeves_but_duplicate_account_rejected(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "duplicates.db")
+    ticker = "KXHIGHTSFO-SAME-MARKET"
+    target = store.record_research_order_atomic(
+        "2026-07-19",
+        _atomic_decision(ticker),
+        admission=_admission(TARGET_POLICY, "target-first"),
+        strategy_config=strategy_config_for_profile("research"),
+    )
+    motion = store.record_research_order_atomic(
+        "2026-07-19",
+        _atomic_decision(ticker),
+        admission=_admission(MOTION_POLICY, "motion-first"),
+        strategy_config=strategy_config_for_profile("research"),
+    )
+    duplicate = store.record_research_order_atomic(
+        "2026-07-19",
+        _atomic_decision(ticker),
+        admission=_admission(TARGET_POLICY, "target-duplicate"),
+        strategy_config=strategy_config_for_profile("research"),
+    )
+
+    assert target is not None
+    assert motion is not None
+    assert duplicate is None
+    assert store.entries_for_market_side(
+        "2026-07-19",
+        ticker,
+        "NO",
+        risk_profile="research",
+        account_id=TARGET_POLICY.account_id,
+    ) == 1
+    assert store.entries_for_market_side(
+        "2026-07-19",
+        ticker,
+        "NO",
+        risk_profile="research",
+        account_id=MOTION_POLICY.account_id,
+    ) == 1
+
+
+def test_atomic_failure_rolls_back_order_and_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "rollback.db")
+
+    def fail_ledger(**_kwargs: object) -> None:
+        raise RuntimeError("injected ledger failure")
+
+    monkeypatch.setattr(store, "_record_research_reservation_or_fill", fail_ledger)
+    admission = _admission(TARGET_POLICY, "rollback")
+    with pytest.raises(RuntimeError, match="injected ledger failure"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            _atomic_decision("KXHIGHTSFO-ROLLBACK"),
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM paper_orders WHERE scan_run_id=?",
+            (admission.scan_run_id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM paper_account_ledger "
+            "WHERE idempotency_key LIKE 'order:%'"
+        ).fetchone()[0] == 0
+
+
+def test_legacy_live_recording_api_and_fingerprints_remain_unchanged(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "legacy-live.db")
+    config = strategy_config_for_profile("live")
+    order_id = store.record_paper_order(
+        "2026-07-19",
+        _atomic_decision("KXHIGHTSFO-LIVE", resting=False),
+        risk_profile="live",
+        strategy_config=config,
+    )
+
+    assert order_id is not None
+    row = store.paper_order(order_id)
+    assert row is not None
+    assert row["account_id"] == "paper-shared"
+    assert row["research_sleeve"] is None
+    assert row["research_policy_version"] is None
+    assert row["policy_fingerprint"] is None
+    assert row["strategy_fingerprint"] == "73b10240c1c00a8937b5314f"

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
-from datetime import UTC, datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
@@ -18,6 +20,7 @@ from .account import (
     INITIAL_CAPITAL,
     RESEARCH_ACCOUNT_ID,
     RESEARCH_VIRTUAL_CAPITAL,
+    REGION_BY_SERIES,
     SHARED_ACCOUNT_ID,
     account_for_profile,
     policy_capacity,
@@ -41,6 +44,13 @@ from .maker_fills import (
     normalize_public_trade,
 )
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .research_policy import (
+    MOTION_POLICY,
+    RESEARCH_OBJECTIVE_TZ,
+    TARGET_POLICY,
+    ResearchSleeve,
+    ResearchSleevePolicy,
+)
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
@@ -129,6 +139,26 @@ PAUSE_LOOKBACK_DAYS = 21
 PAUSE_THRESHOLDS = {
     "live": (10, -0.35, 0.010),
     "research": (5, -0.25, 0.005),
+}
+
+
+@dataclass(frozen=True)
+class ResearchAdmission:
+    """Immutable identity attached to one atomic research order admission."""
+
+    account_id: str
+    sleeve: ResearchSleeve
+    policy_version: str
+    policy_fingerprint: str
+    objective_day: str
+    scan_run_id: str
+    reentry_fingerprint: str
+    lead_bucket: str
+
+
+_RESEARCH_POLICIES_BY_ACCOUNT = {
+    TARGET_POLICY.account_id: TARGET_POLICY,
+    MOTION_POLICY.account_id: MOTION_POLICY,
 }
 
 class PaperStore:
@@ -392,62 +422,107 @@ class PaperStore:
     def shared_account_state(self) -> dict[str, object] | None:
         return self._account_state(SHARED_ACCOUNT_ID)
 
-    def research_account_state(self) -> dict[str, object] | None:
-        """The research shadow account's own virtual ledger state (AC-01)."""
+    def research_account_state(
+        self,
+        *,
+        account_id: str = RESEARCH_ACCOUNT_ID,
+    ) -> dict[str, object] | None:
+        """One research account's virtual ledger state.
 
-        return self._account_state(RESEARCH_ACCOUNT_ID)
+        The default preserves the legacy shadow-account API. New target/motion
+        callers must pass their explicit account identity.
+        """
+
+        return self._account_state(account_id)
 
     def _account_state(self, account_id: str) -> dict[str, object] | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_accounts'"
-            ).fetchone() is None:
-                return None
-            account = conn.execute(
-                "SELECT * FROM paper_accounts WHERE account_id = ?", (account_id,)
-            ).fetchone()
-            if account is None:
-                return None
-            cash = float(conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM paper_account_ledger WHERE account_id = ?",
+            return self._account_state_on_connection(conn, account_id)
+
+    @staticmethod
+    def _account_state_on_connection(
+        conn: sqlite3.Connection,
+        account_id: str,
+    ) -> dict[str, object] | None:
+        """Read one complete account state without leaving the transaction."""
+
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_accounts'"
+        ).fetchone() is None:
+            return None
+        account = conn.execute(
+            "SELECT * FROM paper_accounts WHERE account_id = ?", (account_id,)
+        ).fetchone()
+        if account is None:
+            return None
+        cash = float(
+            conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM paper_account_ledger "
+                "WHERE account_id = ?",
                 (account_id,),
-            ).fetchone()[0] or 0.0)
-            risk = conn.execute(
-                "SELECT "
-                "COALESCE(SUM(CASE WHEN status IN "
-                "('PAPER_FILLED','PAPER_PARTIALLY_FILLED','PAPER_PARTIAL_EXPIRED') "
-                "AND settled_at IS NULL AND closed_at IS NULL "
-                "THEN contracts * cost_per_contract ELSE 0 END), 0), "
-                "COALESCE(SUM(CASE WHEN status IN "
-                "('PAPER_LIMIT_RESTING','PAPER_PARTIALLY_FILLED') "
-                "AND settled_at IS NULL AND closed_at IS NULL "
-                "THEN reserved_cost ELSE 0 END), 0) FROM paper_orders WHERE account_id = ?",
+            ).fetchone()[0]
+            or 0.0
+        )
+        risk = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(CASE WHEN status IN "
+            "('PAPER_FILLED','PAPER_PARTIALLY_FILLED','PAPER_PARTIAL_EXPIRED') "
+            "AND settled_at IS NULL AND closed_at IS NULL "
+            "THEN contracts * cost_per_contract ELSE 0 END), 0), "
+            "COALESCE(SUM(CASE WHEN status IN "
+            "('PAPER_LIMIT_RESTING','PAPER_PARTIALLY_FILLED') "
+            "AND settled_at IS NULL AND closed_at IS NULL "
+            "THEN reserved_cost ELSE 0 END), 0) FROM paper_orders WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        open_cost = float(risk[0] or 0.0)
+        reservations = float(risk[1] or 0.0)
+        cash_balance = cash + reservations
+        realized_equity = cash_balance + open_cost
+        stored_high_water = float(account["high_water_equity"])
+        high_water = max(stored_high_water, realized_equity)
+        if high_water > stored_high_water:
+            conn.execute(
+                "UPDATE paper_accounts SET high_water_equity=? WHERE account_id=?",
+                (high_water, account_id),
+            )
+        return {
+            "account_id": account_id,
+            "initial_capital": float(account["initial_capital"]),
+            "opening_cash": float(account["opening_cash"]),
+            "cash_balance": cash_balance,
+            "open_cost_basis": open_cost,
+            "reservations": reservations,
+            "available_cash": cash,
+            "realized_equity": realized_equity,
+            "high_water_equity": high_water,
+            "drawdown": (
+                (high_water - realized_equity) / high_water if high_water > 0 else 0.0
+            ),
+            "status": account["status"],
+        }
+
+    def research_open_risk(self, *, account_id: str) -> float:
+        """Return only active filled plus reserved at-risk exposure."""
+
+        if account_id not in _RESEARCH_POLICIES_BY_ACCOUNT:
+            raise ValueError("research open risk requires a target or motion account")
+        state = self.research_account_state(account_id=account_id)
+        if state is None:
+            return 0.0
+        return float(state["open_cost_basis"]) + float(state["reservations"])
+
+    def account_ledger(self, *, account_id: str) -> list[sqlite3.Row]:
+        """Return one account's immutable ledger without cross-account totals."""
+
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                "SELECT * FROM paper_account_ledger WHERE account_id=? "
+                "ORDER BY created_at, id",
                 (account_id,),
-            ).fetchone()
-            open_cost = float(risk[0] or 0.0)
-            reservations = float(risk[1] or 0.0)
-            cash_balance = cash + reservations
-            realized_equity = cash_balance + open_cost
-            high_water = max(float(account["high_water_equity"]), realized_equity)
-            if high_water > float(account["high_water_equity"]):
-                conn.execute(
-                    "UPDATE paper_accounts SET high_water_equity=? WHERE account_id=?",
-                    (high_water, account_id),
-                )
-            return {
-                "account_id": account_id,
-                "initial_capital": float(account["initial_capital"]),
-                "opening_cash": float(account["opening_cash"]),
-                "cash_balance": cash_balance,
-                "open_cost_basis": open_cost,
-                "reservations": reservations,
-                "available_cash": cash,
-                "realized_equity": realized_equity,
-                "high_water_equity": high_water,
-                "drawdown": (high_water - realized_equity) / high_water if high_water > 0 else 0.0,
-                "status": account["status"],
-            }
+            ).fetchall()
 
     def account_policy_capacity(
         self,
@@ -456,6 +531,7 @@ class PaperStore:
         market_ticker: str,
         risk_profile: str | None,
         requested_spend: float,
+        account_id: str | None = None,
     ) -> dict[str, object]:
         """Maximum safe new notional under the paper account policy.
 
@@ -467,10 +543,24 @@ class PaperStore:
         shrink live entries and vice-versa research keeps its own discipline.
         """
 
+        if account_id in _RESEARCH_POLICIES_BY_ACCOUNT:
+            with self.connect() as conn:
+                conn.row_factory = sqlite3.Row
+                return self._research_capacity_on_connection(
+                    conn,
+                    policy=_RESEARCH_POLICIES_BY_ACCOUNT[account_id],
+                    objective_day=datetime.now(RESEARCH_OBJECTIVE_TZ).date().isoformat(),
+                    target_date=target_date,
+                    market_ticker=market_ticker,
+                    requested_spend=requested_spend,
+                )
+        if account_id is not None and account_id != account_for_profile(risk_profile):
+            return {"allowed_spend": 0.0, "reason": "account/profile identity mismatch"}
+
         state = self.shared_account_state()
         if state is None:
             return {"allowed_spend": 0.0, "reason": "shared account cutover requires a flat book"}
-        entry_account = account_for_profile(risk_profile)
+        entry_account = account_id or account_for_profile(risk_profile)
         if entry_account != SHARED_ACCOUNT_ID:
             research_state = self.research_account_state()
             if research_state is None:
@@ -516,6 +606,150 @@ class PaperStore:
             risk_profile=risk_profile,
             requested_spend=requested_spend,
         )
+
+    def _research_capacity_on_connection(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        policy: ResearchSleevePolicy,
+        objective_day: str,
+        target_date: str,
+        market_ticker: str,
+        requested_spend: float,
+        side: str | None = None,
+        contracts: float | None = None,
+    ) -> dict[str, object]:
+        """Compute one sleeve's capacity entirely inside the admission lock."""
+
+        if not math.isfinite(float(requested_spend)) or requested_spend <= 0:
+            return {"allowed_spend": 0.0, "reason": "research spend must be positive"}
+        state = self._account_state_on_connection(conn, policy.account_id)
+        if state is None or state["status"] != "ACTIVE":
+            return {"allowed_spend": 0.0, "reason": "research account is not active"}
+        if (
+            not math.isclose(
+                float(state["initial_capital"]), policy.reference_equity, abs_tol=1e-9
+            )
+            or not math.isclose(
+                float(state["opening_cash"]), policy.reference_equity, abs_tol=1e-9
+            )
+        ):
+            return {
+                "allowed_spend": 0.0,
+                "reason": "research account reference equity does not match policy",
+            }
+        if not math.isfinite(float(state["available_cash"])):
+            return {"allowed_spend": 0.0, "reason": "research account cash is invalid"}
+
+        try:
+            civil_day = date.fromisoformat(objective_day)
+        except (TypeError, ValueError):
+            return {"allowed_spend": 0.0, "reason": "invalid research objective day"}
+        day_start = datetime.combine(
+            civil_day,
+            time.min,
+            tzinfo=RESEARCH_OBJECTIVE_TZ,
+        ).astimezone(UTC)
+        day_end = datetime.combine(
+            civil_day + timedelta(days=1),
+            time.min,
+            tzinfo=RESEARCH_OBJECTIVE_TZ,
+        ).astimezone(UTC)
+        daily_pnl = float(
+            conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
+                "WHERE account_id=? AND realized_pnl IS NOT NULL "
+                "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
+                "AND COALESCE(closed_at, settled_at) >= ? "
+                "AND COALESCE(closed_at, settled_at) < ?",
+                (
+                    policy.account_id,
+                    day_start.isoformat(),
+                    day_end.isoformat(),
+                ),
+            ).fetchone()[0]
+            or 0.0
+        )
+        if not math.isfinite(daily_pnl):
+            return {"allowed_spend": 0.0, "reason": "research daily P&L is invalid"}
+        loss_limit = -policy.reference_equity * policy.daily_loss_pause_pct
+        if daily_pnl <= loss_limit:
+            return {
+                "allowed_spend": 0.0,
+                "reason": (
+                    f"{policy.sleeve.value} research paused: daily loss "
+                    f"${daily_pnl:.2f} reached ${loss_limit:.2f}"
+                ),
+            }
+
+        normalized_side = side.upper() if side is not None else None
+        if normalized_side is not None and normalized_side not in {"YES", "NO"}:
+            return {"allowed_spend": 0.0, "reason": "invalid research order side"}
+        if policy.one_contract and contracts is not None and contracts > 1.0 + 1e-9:
+            return {"allowed_spend": 0.0, "reason": "motion research is one contract"}
+
+        active = conn.execute(
+            "SELECT target_date, market_ticker, side, "
+            "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
+            "WHEN status='PAPER_PARTIALLY_FILLED' THEN "
+            "contracts * cost_per_contract + reserved_cost "
+            "ELSE contracts * cost_per_contract END AS risk "
+            "FROM paper_orders WHERE account_id=? AND status IN "
+            "('PAPER_FILLED','PAPER_LIMIT_RESTING','PAPER_PARTIALLY_FILLED',"
+            "'PAPER_PARTIAL_EXPIRED') AND settled_at IS NULL AND closed_at IS NULL",
+            (policy.account_id,),
+        ).fetchall()
+        if any(
+            not math.isfinite(float(row[3])) or float(row[3]) < 0
+            for row in active
+        ):
+            return {"allowed_spend": 0.0, "reason": "research active risk is invalid"}
+        if normalized_side is not None and any(
+            str(row[0]) == target_date
+            and str(row[1]) == market_ticker
+            and str(row[2] or "YES").upper() == normalized_side
+            for row in active
+        ):
+            return {"allowed_spend": 0.0, "reason": "duplicate active research entry"}
+
+        equity = policy.reference_equity
+        series = market_ticker.split("-", 1)[0].upper()
+        region = REGION_BY_SERIES.get(series, "unknown")
+        aggregate = sum(float(row[3] or 0.0) for row in active)
+        city_target = sum(
+            float(row[3] or 0.0)
+            for row in active
+            if str(row[0]) == target_date
+            and str(row[1]).upper().startswith(series + "-")
+        )
+        region_day = sum(
+            float(row[3] or 0.0)
+            for row in active
+            if str(row[0]) == target_date
+            and REGION_BY_SERIES.get(
+                str(row[1]).split("-", 1)[0].upper(), "unknown"
+            )
+            == region
+        )
+        position_room = (
+            requested_spend
+            if policy.one_contract
+            else policy.max_position_risk_pct * equity
+        )
+        allowed = min(
+            float(requested_spend),
+            position_room,
+            policy.max_city_target_risk_pct * equity - city_target,
+            policy.max_region_day_risk_pct * equity - region_day,
+            policy.max_aggregate_risk_pct * equity - aggregate,
+            float(state["available_cash"]),
+        )
+        if allowed + 1e-9 < requested_spend:
+            return {
+                "allowed_spend": max(0.0, allowed),
+                "reason": "research account capacity below requested spend",
+            }
+        return {"allowed_spend": float(requested_spend), "reason": None}
 
     def record_forecast(self, forecast: ForecastSnapshot) -> int:
         created_at = _now()
@@ -971,6 +1205,324 @@ class PaperStore:
                 """,
                 ((scan_context_id, *row) for row in rows),
             )
+
+    @staticmethod
+    def _policy_for_research_admission(
+        admission: ResearchAdmission,
+    ) -> ResearchSleevePolicy:
+        policy = _RESEARCH_POLICIES_BY_ACCOUNT.get(admission.account_id)
+        if (
+            policy is None
+            or admission.sleeve is not policy.sleeve
+            or admission.policy_version != policy.policy_version
+            or admission.policy_fingerprint != policy.policy_fingerprint
+        ):
+            raise ValueError("research admission identity does not match fixed policy")
+        for label, value in (
+            ("objective day", admission.objective_day),
+            ("scan run id", admission.scan_run_id),
+            ("reentry fingerprint", admission.reentry_fingerprint),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"research admission {label} is required")
+        try:
+            date.fromisoformat(admission.objective_day)
+        except ValueError as exc:
+            raise ValueError("research admission objective day is invalid") from exc
+        if (
+            not isinstance(admission.lead_bucket, str)
+            or not admission.lead_bucket.strip()
+        ):
+            raise ValueError("research admission lead bucket is required")
+        return policy
+
+    def record_research_order_atomic(
+        self,
+        target_date: str,
+        decision: TradeDecision,
+        *,
+        admission: ResearchAdmission,
+        strategy_config: StrategyConfig,
+    ) -> int | None:
+        """Validate, reserve/fill, and journal one research entry atomically."""
+
+        policy = self._policy_for_research_admission(admission)
+        if not isinstance(strategy_config, StrategyConfig):
+            raise ValueError("research admission requires a strategy configuration")
+        try:
+            date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise ValueError("research target date is invalid") from exc
+        if not decision.approved:
+            return None
+        contracts = float(decision.recommended_contracts)
+        if not math.isfinite(contracts) or contracts <= 0:
+            return None
+        if policy.one_contract and abs(contracts - 1.0) > 1e-9:
+            return None
+        side = str(decision.side or "").upper()
+        if side not in {"YES", "NO"}:
+            raise ValueError("research order side must be YES or NO")
+
+        ask = float(decision.ask)
+        if not math.isfinite(ask) or ask <= 0 or ask >= 1:
+            return None
+        has_limit = decision.limit_price is not None
+        limit_price = float(decision.limit_price) if has_limit else None
+        if limit_price is not None and (
+            not math.isfinite(limit_price) or limit_price <= 0 or limit_price >= 1
+        ):
+            return None
+        resting = limit_price is not None and limit_price < ask - 1e-9
+        entry_mode = "limit" if has_limit else "market"
+        entry_price = float(limit_price if resting else ask)
+        fee_per_contract = quadratic_fee_average_per_contract(
+            entry_price,
+            contracts,
+            maker=resting,
+            series_ticker=decision.ticker,
+        )
+        cost_per_contract = entry_price + fee_per_contract
+        if (
+            not math.isfinite(cost_per_contract)
+            or cost_per_contract <= 0
+            or cost_per_contract >= 1
+        ):
+            return None
+        requested_spend = contracts * cost_per_contract
+        status = "PAPER_LIMIT_RESTING" if resting else "PAPER_FILLED"
+        created_at = _now()
+        filled_at = None if resting else created_at
+        expires_at = (
+            (datetime.fromisoformat(created_at) + timedelta(minutes=15)).isoformat()
+            if resting
+            else None
+        )
+        reserved_cost = requested_spend if resting else 0.0
+        queue_remaining = (
+            initial_queue_ahead(entry_price, decision.bid, decision.bid_size)
+            if resting
+            else 0.0
+        )
+        fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
+        edge = decision.probability - cost_per_contract
+        edge_lcb = decision.probability_lcb - cost_per_contract
+        expected_profit = edge * contracts
+        quote_snapshot_json = json.dumps(
+            {
+                "side": side,
+                "bid": decision.bid,
+                "ask": ask,
+                "limit_price": limit_price,
+                "contracts": contracts,
+                "fee_per_contract": fee_per_contract,
+                "cost_per_contract": cost_per_contract,
+            },
+            sort_keys=True,
+        )
+        fill_model = (
+            "maker_trade_through_required" if resting else "immediate_visible_quote"
+        )
+
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            capacity = self._research_capacity_on_connection(
+                conn,
+                policy=policy,
+                objective_day=admission.objective_day,
+                target_date=target_date,
+                market_ticker=decision.ticker,
+                requested_spend=requested_spend,
+                side=side,
+                contracts=contracts,
+            )
+            if capacity["allowed_spend"] + 1e-9 < requested_spend:
+                conn.rollback()
+                return None
+            if conn.execute(
+                "SELECT 1 FROM paper_orders WHERE account_id=? "
+                "AND reentry_fingerprint=? "
+                "AND status NOT IN ('REJECTED','PAPER_EXPIRED') LIMIT 1",
+                (admission.account_id, admission.reentry_fingerprint),
+            ).fetchone():
+                conn.rollback()
+                return None
+
+            entry_decision = _latest_entry_decision_snapshot(
+                conn,
+                target_date,
+                decision,
+                risk_profile="research",
+            )
+            diagnostics_json = json.dumps(
+                _order_entry_diagnostics_payload(
+                    target_date,
+                    decision,
+                    created_at=created_at,
+                    kind="paper_order",
+                    risk_profile="research",
+                    status=status,
+                    entry_mode=entry_mode,
+                    group_id=None,
+                    strategy_config=strategy_config,
+                    sample_probability=None,
+                    sampled=None,
+                    entry_decision=entry_decision,
+                ),
+                sort_keys=True,
+            )
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO paper_orders (
+                        created_at, target_date, market_ticker, label, action,
+                        risk_profile, side, contracts, yes_ask, entry_price,
+                        entry_bid, entry_bid_size, entry_ask_size, strike_type,
+                        floor_strike, cap_strike, entry_mode, limit_price,
+                        limit_fee_per_contract, limit_cost_per_contract,
+                        limit_edge, limit_edge_lcb, fee_per_contract,
+                        cost_per_contract, probability, probability_lcb, edge,
+                        edge_lcb, trade_quality_score, expected_profit, status,
+                        entry_decision_snapshot_id, diagnostics_json, reasons_json,
+                        account_id, strategy_fingerprint, sleeve, filled_at,
+                        expires_at, reserved_cost, quote_snapshot_json, fill_model,
+                        requested_contracts, filled_contracts, remaining_contracts,
+                        queue_remaining, execution_model_version, research_sleeve,
+                        research_policy_version, policy_fingerprint, objective_day,
+                        lead_bucket, scan_run_id, reentry_fingerprint
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, 'research', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, 'research', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?
+                    )
+                    """,
+                    (
+                        created_at,
+                        target_date,
+                        decision.ticker,
+                        decision.label,
+                        decision.action,
+                        side,
+                        contracts,
+                        ask,
+                        entry_price,
+                        decision.bid,
+                        decision.bid_size,
+                        decision.ask_size,
+                        decision.strike_type,
+                        decision.floor_strike,
+                        decision.cap_strike,
+                        entry_mode,
+                        limit_price,
+                        fee_per_contract if has_limit else None,
+                        cost_per_contract if has_limit else None,
+                        decision.probability - cost_per_contract if has_limit else None,
+                        decision.probability_lcb - cost_per_contract if has_limit else None,
+                        fee_per_contract,
+                        cost_per_contract,
+                        decision.probability,
+                        decision.probability_lcb,
+                        edge,
+                        edge_lcb,
+                        decision.trade_quality_score,
+                        expected_profit,
+                        status,
+                        _row_value(entry_decision, "id") if entry_decision is not None else None,
+                        diagnostics_json,
+                        json.dumps(decision.reasons),
+                        admission.account_id,
+                        fingerprint,
+                        filled_at,
+                        expires_at,
+                        reserved_cost,
+                        quote_snapshot_json,
+                        fill_model,
+                        contracts,
+                        0.0 if resting else contracts,
+                        contracts if resting else 0.0,
+                        queue_remaining,
+                        EXECUTION_MODEL_VERSION,
+                        admission.sleeve.value,
+                        admission.policy_version,
+                        admission.policy_fingerprint,
+                        admission.objective_day,
+                        admission.lead_bucket,
+                        admission.scan_run_id,
+                        admission.reentry_fingerprint,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return None
+            order_id = int(cursor.lastrowid)
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_versions "
+                "(fingerprint, created_at, config_json, status) "
+                "VALUES (?, ?, ?, 'PAPER')",
+                (
+                    fingerprint,
+                    created_at,
+                    json.dumps(
+                        _strategy_config_snapshot(strategy_config) or {},
+                        sort_keys=True,
+                    ),
+                ),
+            )
+            self._record_research_reservation_or_fill(
+                conn=conn,
+                order_id=order_id,
+                account_id=admission.account_id,
+                status=status,
+                amount=requested_spend,
+                expires_at=expires_at,
+                filled_quantity=contracts,
+                admission=admission,
+            )
+            conn.commit()
+            return order_id
+
+    def _record_research_reservation_or_fill(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        order_id: int,
+        account_id: str,
+        status: str,
+        amount: float,
+        expires_at: str | None,
+        filled_quantity: float,
+        admission: ResearchAdmission,
+    ) -> None:
+        common = {
+            "research_sleeve": admission.sleeve.value,
+            "research_policy_version": admission.policy_version,
+            "policy_fingerprint": admission.policy_fingerprint,
+            "objective_day": admission.objective_day,
+            "scan_run_id": admission.scan_run_id,
+            "reentry_fingerprint": admission.reentry_fingerprint,
+        }
+        if status == "PAPER_LIMIT_RESTING":
+            self._record_ledger_event(
+                conn,
+                account_id=account_id,
+                order_id=order_id,
+                event_type="RESERVE",
+                amount=-amount,
+                idempotency_key=f"order:{order_id}:reserve",
+                details={**common, "expires_at": expires_at},
+            )
+            return
+        self._record_ledger_event(
+            conn,
+            account_id=account_id,
+            order_id=order_id,
+            event_type="ENTRY_FILL",
+            amount=-amount,
+            idempotency_key=f"order:{order_id}:entry-fill",
+            details={**common, "filled_quantity": filled_quantity},
+        )
 
     def record_paper_order(
         self,
@@ -1442,6 +1994,7 @@ class PaperStore:
         *,
         risk_profile: str | None = None,
         series_ticker: str | None = None,
+        account_id: str | None = None,
     ) -> float:
         """Capital already deployed for one settlement target.
 
@@ -1450,6 +2003,7 @@ class PaperStore:
         """
 
         profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        account_filter, account_params = _paper_account_filter(account_id)
         series_filter = ""
         series_params: tuple = ()
         if series_ticker:
@@ -1462,15 +2016,32 @@ class PaperStore:
             # notional inflated cumulative spend and blocked valid re-entries on
             # the next scan -- exactly the cap-freeing the settle path documents
             # when it expires them. (REJECTED was never placed.)
+            lifecycle_filter = (
+                " AND status IN ('PAPER_FILLED','PAPER_LIMIT_RESTING',"
+                "'PAPER_PARTIALLY_FILLED','PAPER_PARTIAL_EXPIRED') "
+                "AND settled_at IS NULL AND closed_at IS NULL"
+                if account_id in _RESEARCH_POLICIES_BY_ACCOUNT
+                else ""
+            )
+            risk_expression = (
+                "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
+                "WHEN status='PAPER_PARTIALLY_FILLED' THEN "
+                "contracts * cost_per_contract + reserved_cost "
+                "ELSE contracts * cost_per_contract END"
+                if account_id in _RESEARCH_POLICIES_BY_ACCOUNT
+                else "contracts * cost_per_contract"
+            )
             row = conn.execute(
                 f"""
-                SELECT COALESCE(SUM(contracts * cost_per_contract), 0)
+                SELECT COALESCE(SUM({risk_expression}), 0)
                 FROM paper_orders
                 WHERE target_date = ? AND status NOT IN ('REJECTED', 'PAPER_EXPIRED')
                 {series_filter}
                 {profile_filter}
+                {account_filter}
+                {lifecycle_filter}
                 """,
-                (target_date, *series_params, *profile_params),
+                (target_date, *series_params, *profile_params, *account_params),
             ).fetchone()
         return float(row[0] or 0.0)
 
@@ -1480,10 +2051,15 @@ class PaperStore:
         daily_budget: float,
         *,
         risk_profile: str | None = None,
+        account_id: str | None = None,
     ) -> float:
         if daily_budget < 0:
             raise ValueError("daily budget cannot be negative")
-        spent = self.paper_spend_for_target(target_date, risk_profile=risk_profile)
+        spent = self.paper_spend_for_target(
+            target_date,
+            risk_profile=risk_profile,
+            account_id=account_id,
+        )
         return max(0.0, daily_budget - spent)
 
     def entries_for_market_side(
@@ -1493,6 +2069,7 @@ class PaperStore:
         side: str,
         *,
         risk_profile: str | None = None,
+        account_id: str | None = None,
     ) -> int:
         """Count all recorded paper entries for a market/side and target date.
 
@@ -1511,6 +2088,7 @@ class PaperStore:
         """
 
         profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        account_filter, account_params = _paper_account_filter(account_id)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -1522,8 +2100,15 @@ class PaperStore:
                   AND status NOT IN ('REJECTED', 'PAPER_EXPIRED')
                   AND parent_order_id IS NULL
                   {profile_filter}
+                  {account_filter}
                 """,
-                (target_date, market_ticker, side.upper(), *profile_params),
+                (
+                    target_date,
+                    market_ticker,
+                    side.upper(),
+                    *profile_params,
+                    *account_params,
+                ),
             ).fetchone()
         return int(row[0] or 0)
 
@@ -1534,6 +2119,7 @@ class PaperStore:
         side: str | None = None,
         *,
         risk_profile: str | None = None,
+        account_id: str | None = None,
     ) -> bool:
         filters = [
             "target_date = ?",
@@ -1549,6 +2135,9 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+        if account_id is not None:
+            filters.append("COALESCE(account_id, 'paper-shared') = ?")
+            params.append(account_id)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -1567,6 +2156,7 @@ class PaperStore:
         market_ticker: str,
         *,
         risk_profile: str | None = None,
+        account_id: str | None = None,
     ) -> bool:
         filters = [
             "target_date = ?",
@@ -1580,6 +2170,9 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+        if account_id is not None:
+            filters.append("COALESCE(account_id, 'paper-shared') = ?")
+            params.append(account_id)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -1599,6 +2192,7 @@ class PaperStore:
         side: str,
         *,
         risk_profile: str | None = None,
+        account_id: str | None = None,
     ) -> list[sqlite3.Row]:
         filters = [
             "target_date = ?",
@@ -1612,6 +2206,9 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+        if account_id is not None:
+            filters.append("COALESCE(account_id, 'paper-shared') = ?")
+            params.append(account_id)
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
@@ -2825,7 +3422,12 @@ class PaperStore:
     def open_paper_order(self, order_id: int) -> sqlite3.Row | None:
         return self._open_order(order_id)
 
-    def resting_paper_orders(self, limit: int | None = None) -> list[sqlite3.Row]:
+    def resting_paper_orders(
+        self,
+        limit: int | None = None,
+        *,
+        account_id: str | None = None,
+    ) -> list[sqlite3.Row]:
         """Every live resting maker limit order, for the monitor's fill pass."""
 
         with self.connect() as conn:
@@ -2836,15 +3438,23 @@ class PaperStore:
                 WHERE status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
                   AND settled_at IS NULL
                   AND closed_at IS NULL
-                ORDER BY created_at, id
                 """
             params: tuple[object, ...] = ()
+            if account_id is not None:
+                query += " AND COALESCE(account_id, 'paper-shared') = ?"
+                params = (account_id,)
+            query += " ORDER BY created_at, id"
             if limit is not None:
                 query += " LIMIT ?"
-                params = (limit,)
+                params = (*params, limit)
             return conn.execute(query, params).fetchall()
 
-    def open_paper_orders(self, limit: int | None = None) -> list[sqlite3.Row]:
+    def open_paper_orders(
+        self,
+        limit: int | None = None,
+        *,
+        account_id: str | None = None,
+    ) -> list[sqlite3.Row]:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             query = """
@@ -2855,12 +3465,15 @@ class PaperStore:
                 )
                   AND settled_at IS NULL
                   AND closed_at IS NULL
-                ORDER BY created_at DESC
                 """
             params: tuple[object, ...] = ()
+            if account_id is not None:
+                query += " AND COALESCE(account_id, 'paper-shared') = ?"
+                params = (account_id,)
+            query += " ORDER BY created_at DESC"
             if limit is not None:
                 query += " LIMIT ?"
-                params = (limit,)
+                params = (*params, limit)
             return conn.execute(query, params).fetchall()
 
     def open_no_basket_orders(
@@ -2868,6 +3481,7 @@ class PaperStore:
         target_date: str,
         *,
         risk_profile: str | None = None,
+        account_id: str | None = None,
     ) -> list[sqlite3.Row]:
         filters = [
             "target_date = ?",
@@ -2880,6 +3494,9 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+        if account_id is not None:
+            filters.append("COALESCE(account_id, 'paper-shared') = ?")
+            params.append(account_id)
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
@@ -2955,7 +3572,12 @@ class PaperStore:
                 "contexts_dropped": context_cursor.rowcount,
             }
 
-    def open_paper_target_dates(self, *, series_ticker: str | None = None) -> list[str]:
+    def open_paper_target_dates(
+        self,
+        *,
+        series_ticker: str | None = None,
+        account_id: str | None = None,
+    ) -> list[str]:
         query = """
             SELECT DISTINCT target_date
             FROM paper_orders
@@ -2970,6 +3592,9 @@ class PaperStore:
         if series_ticker:
             query += " AND market_ticker LIKE ?"
             params = (f"{series_ticker}-%",)
+        if account_id is not None:
+            query += " AND COALESCE(account_id, 'paper-shared') = ?"
+            params = (*params, account_id)
         query += " ORDER BY target_date"
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -2983,7 +3608,13 @@ class PaperStore:
     ) -> dict[str, float]:
         return market_backtest_summary(self, since=since, until=until)
 
-    def paper_equity(self, starting_bankroll: float, *, risk_profile: str | None = None) -> float:
+    def paper_equity(
+        self,
+        starting_bankroll: float,
+        *,
+        risk_profile: str | None = None,
+        account_id: str | None = None,
+    ) -> float:
         """Live paper equity = starting bankroll + realized PnL to date.
 
         Kelly and the percentage risk caps should fraction CURRENT wealth, not a
@@ -2993,6 +3624,7 @@ class PaperStore:
         """
 
         profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        account_filter, account_params = _paper_account_filter(account_id)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -3002,8 +3634,9 @@ class PaperStore:
                   AND status != 'REJECTED'
                   AND status != 'PAPER_EXPIRED'
                   {profile_filter}
+                  {account_filter}
                 """,
-                tuple(profile_params),
+                (*profile_params, *account_params),
             ).fetchone()
         return float(starting_bankroll) + float(row[0] or 0.0)
 
@@ -3018,6 +3651,7 @@ class PaperStore:
         daily_loss_pct: float | None = None,
         lookback_days: int = PAUSE_LOOKBACK_DAYS,
         now: datetime | None = None,
+        account_id: str | None = None,
     ) -> str | None:
         """Circuit breaker for paper entries, per profile.
 
@@ -3041,16 +3675,31 @@ class PaperStore:
 
         now_utc = now.astimezone(UTC) if now is not None else datetime.now(UTC)
         window_start = (now_utc - timedelta(days=lookback_days)).isoformat()
-        pst_now = now_utc.astimezone(SETTLEMENT_TZ)
+        pause_tz = (
+            RESEARCH_OBJECTIVE_TZ
+            if account_id in _RESEARCH_POLICIES_BY_ACCOUNT
+            else SETTLEMENT_TZ
+        )
+        pst_now = now_utc.astimezone(pause_tz)
         day_start = (
             pst_now.replace(hour=0, minute=0, second=0, microsecond=0)
             .astimezone(UTC)
             .isoformat()
         )
 
+        resolved_account_filter = ""
+        daily_account_filter = ""
+        account_params: tuple[str, ...] = ()
+        if account_id is not None:
+            resolved_account_filter = (
+                "AND COALESCE(root.account_id, 'paper-shared') = ?"
+            )
+            daily_account_filter = "AND COALESCE(account_id, 'paper-shared') = ?"
+            account_params = (account_id,)
+
         with self.connect() as conn:
             resolved = conn.execute(
-                """
+                f"""
                 SELECT
                     COUNT(DISTINCT root.id) AS trades,
                     COALESCE(SUM(lot.realized_pnl), 0) AS pnl,
@@ -3065,11 +3714,12 @@ class PaperStore:
                   AND lot.status != 'PAPER_EXPIRED'
                   AND COALESCE(root.risk_profile, 'live') = ?
                   AND COALESCE(root.closed_at, root.settled_at) >= ?
+                  {resolved_account_filter}
                 """,
-                (profile, window_start),
+                (profile, window_start, *account_params),
             ).fetchone()
             daily = conn.execute(
-                """
+                f"""
                 SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
                 FROM paper_orders
                 WHERE realized_pnl IS NOT NULL
@@ -3077,8 +3727,9 @@ class PaperStore:
                   AND status != 'PAPER_EXPIRED'
                   AND COALESCE(risk_profile, 'live') = ?
                   AND COALESCE(closed_at, settled_at) >= ?
+                  {daily_account_filter}
                 """,
-                (profile, day_start),
+                (profile, day_start, *account_params),
             ).fetchone()
 
         trades = int(resolved[0] or 0)
@@ -3183,4 +3834,13 @@ def _paper_profile_filter(risk_profile: str | None) -> tuple[str, tuple[str, ...
     return (
         "AND COALESCE(risk_profile, 'live') = ?",
         (normalize_risk_profile_name(risk_profile),),
+    )
+
+
+def _paper_account_filter(account_id: str | None) -> tuple[str, tuple[str, ...]]:
+    if account_id is None:
+        return "", ()
+    return (
+        "AND COALESCE(account_id, 'paper-shared') = ?",
+        (account_id,),
     )
