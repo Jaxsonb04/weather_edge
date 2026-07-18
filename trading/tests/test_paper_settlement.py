@@ -2,6 +2,7 @@ import io
 import json
 import sqlite3
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from datetime import date, datetime, timezone
 from tempfile import TemporaryDirectory
@@ -17,8 +18,73 @@ from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBin, TradeDecision
 from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
+from sfo_kalshi_quant.store.scoring import _sample_decision_rows
 
 from support import pre_resolution_event
+
+
+@pytest.mark.parametrize(
+    "profile_probabilities",
+    [
+        [
+            (None, 0.91),
+            ("balanced", 0.91),
+            ("fast-feedback", 0.71),
+            ("research", 0.71),
+        ],
+        [
+            ("fast_feedback", 0.71),
+            ("research", 0.71),
+            ("balanced", 0.91),
+            (None, 0.91),
+        ],
+    ],
+)
+@pytest.mark.parametrize(
+    "sample_mode", ["entry-per-market-side", "latest-per-market-side"]
+)
+def test_python_sampling_fallback_normalizes_profile_before_deduplication(
+    profile_probabilities, sample_mode
+):
+    base = TradeDecision(
+        ticker="KXHIGHTSFO-TEST-B66.5",
+        label="66 to 67",
+        action="BUY_YES",
+        approved=True,
+        probability=0.91,
+        probability_lcb=0.61,
+        yes_bid=0.20,
+        yes_ask=0.30,
+        spread=0.10,
+        fee_per_contract=0.01,
+        cost_per_contract=0.31,
+        edge=0.60,
+        edge_lcb=0.30,
+        kelly_fraction=0.02,
+        recommended_contracts=10.0,
+        expected_profit=6.0,
+        reasons=[],
+        trade_quality_score=72.0,
+        strike_type="between",
+        floor_strike=66.0,
+        cap_strike=67.0,
+    )
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        for profile, probability in profile_probabilities:
+            decision = replace(base, probability=probability)
+            store.record_decisions(
+                "2026-06-03",
+                [decision],
+                event=pre_resolution_event([decision]),
+                risk_profile=profile,
+            )
+        raw_rows = store.sampled_decision_rows(sample_mode="all")
+
+        rows = _sample_decision_rows(raw_rows, sample_mode)
+
+    assert {float(row["probability"]) for row in rows} == {0.91, 0.71}
+    assert len(rows) == 2
 
 
 def test_auto_settle_waits_until_six_am_next_standard_day_in_winter():

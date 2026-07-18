@@ -14,6 +14,8 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from sfo_kalshi_quant.backtest_rescore import (
     reconstruct_market,
     reconstruct_probability,
@@ -75,6 +77,43 @@ def _record_and_read(store: PaperStore, target_date: str, decision):
     rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
     assert len(rows) == 1
     return rows[0]
+
+
+@pytest.mark.parametrize(
+    "profile_probabilities",
+    [
+        [("live", 0.91), ("research", 0.71)],
+        [("research", 0.71), ("live", 0.91)],
+    ],
+)
+@pytest.mark.parametrize(
+    "sample_mode", ["entry-per-market-side", "latest-per-market-side"]
+)
+def test_sql_sampling_keeps_one_snapshot_per_profile_regardless_of_insertion_order(
+    profile_probabilities, sample_mode
+):
+    config = StrategyConfig()
+    base = TradeEvaluator(config).evaluate_market(
+        _no_favorite_market(), _no_favorite_probability(), bankroll=1000.0, side="NO"
+    )
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        for profile, probability in profile_probabilities:
+            decision = replace(base, probability=probability)
+            store.record_decisions(
+                "2026-06-03",
+                [decision],
+                event=pre_resolution_event([decision]),
+                risk_profile=profile,
+            )
+
+        rows = store.sampled_decision_rows(sample_mode=sample_mode)
+
+    assert {(row["risk_profile"], row["probability"]) for row in rows} == {
+        ("live", 0.91),
+        ("research", 0.71),
+    }
 
 
 def test_rescore_roundtrip_reproduces_no_side_decision():

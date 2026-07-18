@@ -17,7 +17,7 @@ from sfo_kalshi_quant.cities import CITIES
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
-from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
+from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.exits import convergence_take_profit_net, exit_bid_for_net, net_exit_per_contract
 from sfo_kalshi_quant.strategy_research import (
     _dataset_research_summary,
@@ -1739,6 +1739,64 @@ def test_strategy_research_includes_config_rescore():
         assert 0.0 <= readiness["readiness_pct"] <= 100.0
         assert readiness["ready"] is False  # a one-day fixture cannot be ready
         assert readiness["checks"] and all("progress" in c for c in readiness["checks"])
+
+
+@pytest.mark.parametrize(
+    "profile_probabilities",
+    [
+        [
+            (None, 0.91),
+            ("balanced", 0.91),
+            ("fast-feedback", 0.71),
+            ("research", 0.71),
+        ],
+        [
+            ("fast_feedback", 0.71),
+            ("research", 0.71),
+            ("balanced", 0.91),
+            (None, 0.91),
+        ],
+    ],
+)
+def test_config_rescore_replays_only_each_profiles_matching_snapshots(
+    tmp_path, monkeypatch, profile_probabilities
+):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    base = _approved_decision()
+    for profile, probability in profile_probabilities:
+        decision = replace(base, probability=probability)
+        store.record_decisions(
+            "2026-06-03",
+            [decision],
+            event=pre_resolution_event([decision]),
+            risk_profile=profile,
+        )
+
+    calls = []
+
+    def capture_rescore(rows, settlements, config, **kwargs):
+        calls.append((config, [float(row["probability"]) for row in rows]))
+        return {"evidence_kind": "snapshot_rescore", "per_day": []}
+
+    monkeypatch.setattr(strategy_calibration_module, "run_rescore", capture_rescore)
+    payload = strategy_calibration_module._config_rescore_payload(
+        SfoForecasterAdapter(tmp_path),
+        db_path,
+        settlements={"2026-06-03": 67.0},
+    )
+
+    assert calls == [
+        (strategy_config_for_profile("live"), [0.91]),
+        (strategy_config_for_profile("research"), [0.71]),
+    ]
+    assert payload["evidence_kind"] == "profile_specific_snapshot_replay"
+    assert all(
+        result["evidence_kind"] == "profile_specific_snapshot_replay"
+        for result in payload["by_profile"].values()
+    )
+    assert "source_neutral" not in payload
+    assert "counterfactual" not in payload
 
 
 def test_strategy_research_includes_research_shadow_comparison():

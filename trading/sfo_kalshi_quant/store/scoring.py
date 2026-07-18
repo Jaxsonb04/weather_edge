@@ -6,6 +6,7 @@ from functools import partial
 from typing import Iterable
 
 from .._util import _row_value as _shared_row_value
+from ..config import normalize_risk_profile_name
 from ..logical_positions import group_logical_positions
 from ..settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
@@ -124,6 +125,12 @@ def sampled_decision_rows(
     with self.connect() as conn:
         conn.row_factory = sqlite3.Row
         if sample_mode != "all":
+            conn.create_function(
+                "normalize_risk_profile",
+                1,
+                _normalize_sample_profile,
+                deterministic=True,
+            )
             pre_filter = (
                 # Both values are canonical UTC ISO strings, so lexical
                 # ordering preserves the pre-close instant comparison.
@@ -144,6 +151,7 @@ def sampled_decision_rows(
                     SELECT id,
                            ROW_NUMBER() OVER (
                                PARTITION BY target_date, market_ticker,
+                               normalize_risk_profile(risk_profile),
                                CASE
                                    WHEN UPPER(side) IN ('YES', 'NO') THEN UPPER(side)
                                    WHEN instr(UPPER(action), 'NO') > 0 THEN 'NO'
@@ -349,7 +357,12 @@ def _sample_decision_rows(rows: Iterable[sqlite3.Row], sample_mode: str) -> list
         return _entry_decision_rows(rows)
     latest = {}
     for row in rows:
-        key = (str(row["target_date"]), str(row["market_ticker"]), _row_side(row))
+        key = (
+            str(row["target_date"]),
+            str(row["market_ticker"]),
+            _normalize_row_profile(row),
+            _row_side(row),
+        )
         current = latest.get(key)
         if current is None or _row_sort_time(row) >= _row_sort_time(current):
             latest[key] = row
@@ -365,9 +378,14 @@ def _entry_decision_rows(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
     sample it.
     """
 
-    entries: dict[tuple[str, str, str], sqlite3.Row] = {}
+    entries: dict[tuple[str, str, str, str], sqlite3.Row] = {}
     for row in rows:
-        key = (str(row["target_date"]), str(row["market_ticker"]), _row_side(row))
+        key = (
+            str(row["target_date"]),
+            str(row["market_ticker"]),
+            _normalize_row_profile(row),
+            _row_side(row),
+        )
         current = entries.get(key)
         if current is None:
             entries[key] = row
@@ -381,6 +399,18 @@ def _entry_decision_rows(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
 
 def _row_sort_time(row: sqlite3.Row) -> tuple[str, int]:
     return (str(row["created_at"]), int(row["id"]))
+
+
+def _normalize_sample_profile(value: object) -> str:
+    return normalize_risk_profile_name(str(value) if value else "live")
+
+
+def _normalize_row_profile(row: sqlite3.Row) -> str:
+    try:
+        value = row["risk_profile"]
+    except (IndexError, KeyError):
+        value = None
+    return _normalize_sample_profile(value)
 
 
 def _row_position_won(row: sqlite3.Row) -> bool:

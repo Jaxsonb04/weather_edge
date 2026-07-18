@@ -18,7 +18,11 @@ from .._util import (
 )
 from ..backtest import run_walk_forward_calibration_backtest
 from ..backtest_rescore import run_rescore
-from ..config import StrategyConfig, strategy_config_for_profile
+from ..config import (
+    StrategyConfig,
+    normalize_risk_profile_name,
+    strategy_config_for_profile,
+)
 from ..db import PaperStore
 from ..forecast import ForecastDataError, SfoForecasterAdapter
 from ..research_shadow import build_research_shadow_report
@@ -220,18 +224,21 @@ def _config_rescore_payload(
     settlements: dict[object, float] | None = None,
     sampled_rows: list[sqlite3.Row] | None = None,
 ) -> dict[str, Any]:
-    """Re-score recorded decision snapshots under each scanning profile's CURRENT
-    config and settle vs the official integer KSFO highs.
+    """Replay each profile's recorded decision snapshots under its current config.
 
-    This is the counterfactual the validation report needed and the signal
-    backtest cannot give: signal_backtest replays the OLD config's recorded
-    approve/size flags, while this re-runs every gate + Kelly sizing from scratch
-    under today's StrategyConfig (see backtest_rescore.run_rescore). Diagnostic
-    only -- never places, closes, or settles orders. Keyed by profile so the card
-    can show the rescore for the active profile tab.
+    Live and research scans may construct different forecast probabilities, so
+    each profile is replayed only from snapshots recorded for that normalized
+    profile. This is diagnostic only and never places, closes, or settles orders.
     """
 
-    empty = {"available": False, "by_profile": {}, "settlement_days": 0, "sampled_snapshots": 0}
+    evidence_kind = "profile_specific_snapshot_replay"
+    empty = {
+        "available": False,
+        "evidence_kind": evidence_kind,
+        "by_profile": {},
+        "settlement_days": 0,
+        "sampled_snapshots": 0,
+    }
     if not db_path.exists():
         return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
     if not _db_table_exists(db_path, "decision_snapshots"):
@@ -245,11 +252,15 @@ def _config_rescore_payload(
             if sampled_rows is not None
             else store.sampled_decision_rows(sample_mode="entry-per-market-side")
         )
+        rows_by_profile: dict[str, list[sqlite3.Row]] = {"live": [], "research": []}
+        for row in rows:
+            profile = normalize_risk_profile_name(_row_risk_profile(row) or "live")
+            rows_by_profile[profile].append(row)
         by_profile: dict[str, Any] = {}
         for name in ("live", "research"):
             cfg = strategy_config_for_profile(name)
             result = run_rescore(
-                rows,
+                rows_by_profile[name],
                 settlements,
                 cfg,
                 bankroll=cfg.paper_bankroll,
@@ -259,9 +270,11 @@ def _config_rescore_payload(
             # rollups (candidate vs recorded, per-side, per-cohort, CI), and
             # three profiles' worth of daily rows would bloat the JSON.
             result.pop("per_day", None)
+            result["evidence_kind"] = evidence_kind
             by_profile[name] = result
         return {
             "available": True,
+            "evidence_kind": evidence_kind,
             "settlement_days": len(settlements),
             "sampled_snapshots": len(rows),
             "by_profile": by_profile,
