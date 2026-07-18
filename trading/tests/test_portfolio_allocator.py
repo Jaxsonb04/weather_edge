@@ -7,7 +7,7 @@ from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
 from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
 from sfo_kalshi_quant.portfolio import allocate_portfolio, portfolio_limits_for_profile
-from sfo_kalshi_quant.portfolio import PortfolioLeg
+from sfo_kalshi_quant.portfolio import PortfolioLeg, decision_pnl_at_settlement
 from sfo_kalshi_quant.research_portfolio import (
     ResearchOpportunity,
     allocate_research_plans,
@@ -409,7 +409,66 @@ def test_pending_orders_reserve_their_full_possible_loss() -> None:
     assert city_target_worst_case_loss(pending, range(68, 76)) == 40.0
 
 
-def test_target_enforces_city_and_correlated_region_scenario_caps() -> None:
+def test_typed_yes_bounded_bracket_uses_integer_settlement_payoff() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHTSFO-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.25,
+        ),
+        side="YES",
+        spend=10.0,
+        probability=0.50,
+        edge=0.25,
+        edge_lcb=0.10,
+    )
+
+    assert decision_pnl_at_settlement(decision, 70) == 30.0
+    assert decision_pnl_at_settlement(decision, 71) == 30.0
+    assert decision_pnl_at_settlement(decision, 72) == -10.0
+
+
+def test_typed_less_and_greater_brackets_include_both_tail_losses() -> None:
+    below = _decision(
+        _market(
+            "69° or below",
+            ticker="KXHIGHTSFO-26JUL20-T70",
+            strike_type="less",
+            floor=None,
+            cap=70,
+            yes_ask=0.25,
+        ),
+        side="YES",
+        spend=10.0,
+        probability=0.50,
+        edge=0.25,
+        edge_lcb=0.10,
+    )
+    above = _decision(
+        _market(
+            "71° or above",
+            ticker="KXHIGHTSFO-26JUL20-T71",
+            strike_type="greater",
+            floor=70,
+            cap=None,
+            yes_ask=0.25,
+        ),
+        side="YES",
+        spend=10.0,
+        probability=0.50,
+        edge=0.25,
+        edge_lcb=0.10,
+    )
+
+    assert decision_pnl_at_settlement(below, 69) == 30.0
+    assert decision_pnl_at_settlement(below, 70) == -10.0
+    assert decision_pnl_at_settlement(above, 70) == -10.0
+    assert decision_pnl_at_settlement(above, 71) == 30.0
+
+
+def test_target_clips_to_correlated_region_scenario_room() -> None:
     def pending_leg(series: str, target: str, spend: float) -> PortfolioLeg:
         decision = _decision(
             _market(
@@ -463,13 +522,17 @@ def test_target_enforces_city_and_correlated_region_scenario_caps() -> None:
 
     plans = allocate_research_plans(candidates, target_active_legs=active)
 
-    assert [leg.decision.ticker for leg in plans.target.legs] == [candidates[1].decision.ticker]
+    assert [leg.decision.ticker for leg in plans.target.legs] == [
+        candidates[1].decision.ticker,
+        candidates[0].decision.ticker,
+    ]
+    assert plans.target.legs[1].decision.recommended_contracts == 40.0
+    assert plans.target.legs[1].spend == 20.0
     dispositions = {row.ticker: row for row in plans.target.dispositions}
-    assert dispositions[candidates[0].decision.ticker].status == "capacity_blocked"
-    assert "region-day" in (dispositions[candidates[0].decision.ticker].reason or "")
+    assert dispositions[candidates[0].decision.ticker].status == "selected"
 
 
-def test_target_enforces_city_target_cap_against_pending_full_loss() -> None:
+def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
     market = _market(
         "70° to 71°",
         ticker="KXHIGHTSFO-26JUL20-B70.5",
@@ -480,7 +543,7 @@ def test_target_enforces_city_target_cap_against_pending_full_loss() -> None:
     active_decision = _decision(
         market,
         side="YES",
-        spend=50.0,
+        spend=60.0,
         probability=0.70,
         edge=0.20,
         edge_lcb=0.10,
@@ -488,7 +551,7 @@ def test_target_enforces_city_target_cap_against_pending_full_loss() -> None:
     active = PortfolioLeg(
         "target",
         active_decision,
-        50.0,
+        60.0,
         active_decision.expected_profit,
         0.0,
         target_date="2026-07-20",
@@ -634,7 +697,132 @@ def test_target_allocation_is_input_order_invariant_and_uses_conservative_priori
     assert [leg.decision.ticker for leg in reverse.target.legs] == expected
 
 
-def test_target_enforces_aggregate_open_scenario_cap() -> None:
+def test_target_priority_uses_position_capped_quantity_before_log_growth() -> None:
+    oversized = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHDEN-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=1200.0,
+            probability=0.90,
+            edge=0.20,
+            edge_lcb=0.04,
+        ),
+        "2026-07-20",
+        2,
+    )
+    ordinary = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.50,
+            edge=0.20,
+            edge_lcb=0.04,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([ordinary, oversized])
+
+    assert [leg.decision.ticker for leg in plans.target.legs] == [
+        oversized.decision.ticker,
+        ordinary.decision.ticker,
+    ]
+    assert plans.target.legs[0].decision.recommended_contracts == 150.0
+
+
+def test_target_clips_to_remaining_cash_in_integer_contracts() -> None:
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHDEN-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=80.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_available_cash=10.0)
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.legs[0].decision.recommended_contracts == 50.0
+    assert plans.target.legs[0].spend == 10.0
+
+
+def test_target_clips_to_remaining_city_scenario_room() -> None:
+    active_decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.50,
+        ),
+        side="YES",
+        spend=50.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    active = PortfolioLeg(
+        "target",
+        active_decision,
+        50.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        pending=True,
+    )
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=80.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+        pending=True,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[active])
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.legs[0].decision.recommended_contracts == 50.0
+    assert plans.target.legs[0].spend == 10.0
+
+
+def test_target_clips_to_aggregate_open_scenario_room() -> None:
     active = []
     series = ("KXHIGHTSFO", "KXHIGHDEN", "KXHIGHMIA", "KXHIGHCHI")
     for idx in range(8):
@@ -685,8 +873,9 @@ def test_target_enforces_aggregate_open_scenario_cap() -> None:
 
     plans = allocate_research_plans([candidate], target_active_legs=active)
 
-    assert plans.target.legs == []
-    assert "aggregate" in (plans.target.dispositions[0].reason or "")
+    assert len(plans.target.legs) == 1
+    assert plans.target.legs[0].decision.recommended_contracts == 20.0
+    assert plans.target.legs[0].spend == 10.0
 
 
 def test_motion_has_no_count_throttle_and_stops_only_at_scenario_cap() -> None:

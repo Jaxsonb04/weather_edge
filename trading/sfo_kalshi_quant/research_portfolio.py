@@ -59,6 +59,13 @@ class _ExposureSummary:
         return sum(self.aggregate_by_book.values())
 
 
+@dataclass(frozen=True)
+class _PreparedTarget:
+    opportunity: ResearchOpportunity
+    rejection: str | None
+    sized_decision: TradeDecision | None
+
+
 def city_target_worst_case_loss(
     legs: Sequence[PortfolioLeg],
     settlement_bins: Sequence[int],
@@ -111,11 +118,17 @@ def allocate_research_plans(
     target_dispositions: list[PortfolioDisposition] = []
     target_cash_used = 0.0
     target_paused_reason = _pause_reason(TARGET_POLICY, realized_today)
-    for opportunity in sorted(opportunities, key=_target_priority):
-        rejection = _target_rejection(opportunity)
-        if rejection is not None:
+    prepared_targets = [_prepare_target(opportunity) for opportunity in opportunities]
+    for prepared in sorted(prepared_targets, key=_target_priority):
+        opportunity = prepared.opportunity
+        if prepared.rejection is not None:
             target_dispositions.append(
-                _disposition(opportunity, "target", "rejected", rejection)
+                _disposition(
+                    opportunity,
+                    "target",
+                    "rejected",
+                    prepared.rejection,
+                )
             )
             continue
         if target_paused_reason is not None:
@@ -123,7 +136,7 @@ def allocate_research_plans(
                 _disposition(opportunity, "target", "capacity_blocked", target_paused_reason)
             )
             continue
-        decision = _target_sized_decision(opportunity.decision)
+        decision = prepared.sized_decision
         if decision is None:
             target_dispositions.append(
                 _disposition(
@@ -134,25 +147,20 @@ def allocate_research_plans(
                 )
             )
             continue
-        leg = _research_leg(opportunity, decision, sleeve="target")
-        if target_cash_used + leg.spend > target_available_cash + 1e-9:
+        leg, capacity_reason = _fit_target_leg(
+            opportunity,
+            desired=decision,
+            remaining_cash=target_available_cash - target_cash_used,
+            exposure_legs=[*target_active_legs, *target_legs],
+        )
+        if leg is None:
             target_dispositions.append(
                 _disposition(
                     opportunity,
                     "target",
                     "capacity_blocked",
-                    "target cash cap",
+                    capacity_reason,
                 )
-            )
-            continue
-        risk_reason = _risk_cap_reason(
-            [*target_active_legs, *target_legs, leg],
-            candidate=leg,
-            policy=TARGET_POLICY,
-        )
-        if risk_reason is not None:
-            target_dispositions.append(
-                _disposition(opportunity, "target", "capacity_blocked", risk_reason)
             )
             continue
         target_legs.append(leg)
@@ -379,6 +387,55 @@ def _target_sized_decision(decision: TradeDecision) -> TradeDecision | None:
     )
 
 
+def _prepare_target(opportunity: ResearchOpportunity) -> _PreparedTarget:
+    rejection = _target_rejection(opportunity)
+    sized = (
+        None
+        if rejection is not None
+        else _target_sized_decision(opportunity.decision)
+    )
+    return _PreparedTarget(opportunity, rejection, sized)
+
+
+def _fit_target_leg(
+    opportunity: ResearchOpportunity,
+    *,
+    desired: TradeDecision,
+    remaining_cash: float,
+    exposure_legs: Sequence[PortfolioLeg],
+) -> tuple[PortfolioLeg | None, str]:
+    """Return the largest integer target quantity that satisfies every cap.
+
+    Scenario loss can include offsets from existing mutually exclusive legs,
+    so the exact descending re-evaluation is intentionally preferred to a
+    ratio-based clip that assumes spend and settlement loss are identical.
+    """
+
+    cost = float(desired.cost_per_contract)
+    cash_contracts = math.floor((max(0.0, remaining_cash) + 1e-9) / cost)
+    upper = min(int(desired.recommended_contracts), cash_contracts)
+    if upper < 1:
+        return None, "target cash cap cannot fund one contract"
+
+    last_reason = "target scenario-loss capacity cannot fund one contract"
+    for contracts in range(upper, 0, -1):
+        decision = replace(
+            desired,
+            recommended_contracts=float(contracts),
+            expected_profit=float(desired.edge) * float(contracts),
+        )
+        leg = _research_leg(opportunity, decision, sleeve="target")
+        reason = _risk_cap_reason(
+            [*exposure_legs, leg],
+            candidate=leg,
+            policy=TARGET_POLICY,
+        )
+        if reason is None:
+            return leg, ""
+        last_reason = reason
+    return None, last_reason
+
+
 def _research_leg(
     opportunity: ResearchOpportunity,
     decision: TradeDecision,
@@ -403,15 +460,25 @@ def _research_leg(
 
 
 def _target_priority(
-    opportunity: ResearchOpportunity,
+    prepared: _PreparedTarget,
 ) -> tuple[float, float, str, str, str]:
-    decision = opportunity.decision
-    cost = _finite_float(decision.cost_per_contract)
-    edge_lcb = _finite_float(decision.edge_lcb)
+    opportunity = prepared.opportunity
+    decision = prepared.sized_decision
+    if decision is None:
+        return (
+            math.inf,
+            math.inf,
+            str(opportunity.target_date),
+            str(opportunity.decision.ticker),
+            str(opportunity.decision.side).upper(),
+        )
+    cost = float(decision.cost_per_contract)
+    edge_lcb = float(decision.edge_lcb)
+    contracts = float(decision.recommended_contracts)
+    conservative_profit = edge_lcb * contracts
+    worst_case_dollar = cost * contracts
     conservative_per_worst_dollar = (
-        edge_lcb / cost
-        if edge_lcb is not None and cost is not None and cost > 0
-        else -math.inf
+        conservative_profit / worst_case_dollar if worst_case_dollar > 0 else -math.inf
     )
     growth = _expected_log_growth(decision, TARGET_POLICY.reference_equity)
     return (
