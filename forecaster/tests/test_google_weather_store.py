@@ -59,8 +59,8 @@ def _race_two_reservations(ledger, *, now: datetime) -> tuple[int, list[str]]:
         start.wait()
         try:
             ledger.reserve_event(
-                city_slug="phoenix",
-                station_id="USW00023183",
+                city_slug="phx",
+                station_id="KPHX",
                 endpoint="daily",
                 page_number=index,
                 now=now,
@@ -221,8 +221,8 @@ def test_cancelled_reservation_releases_budget_before_dispatch(tmp_path):
         soft_monthly_ceiling=1,
     )
     first = ledger.reserve_event(
-        city_slug="san-francisco",
-        station_id="USW00023234",
+        city_slug="sfo",
+        station_id="KSFO",
         endpoint="hourly",
         page_number=1,
         now=TEST_NOW,
@@ -230,8 +230,8 @@ def test_cancelled_reservation_releases_budget_before_dispatch(tmp_path):
 
     assert ledger.cancel_before_dispatch(first, now=TEST_NOW + timedelta(seconds=1))
     second = ledger.reserve_event(
-        city_slug="san-francisco",
-        station_id="USW00023234",
+        city_slug="sfo",
+        station_id="KSFO",
         endpoint="hourly",
         page_number=1,
         now=TEST_NOW + timedelta(seconds=2),
@@ -244,8 +244,8 @@ def test_cancelled_reservation_releases_budget_before_dispatch(tmp_path):
 def test_dispatched_reservation_is_consumed_and_cannot_be_cancelled(tmp_path):
     ledger = _usage_ledger(tmp_path)
     event = ledger.reserve_event(
-        city_slug="denver",
-        station_id="USW00003017",
+        city_slug="den",
+        station_id="KDEN",
         endpoint="current",
         page_number=0,
         now=TEST_NOW,
@@ -277,8 +277,8 @@ def test_completed_dispatch_always_remains_billable(
 ):
     ledger = _usage_ledger(tmp_path)
     event = ledger.reserve_event(
-        city_slug="seattle",
-        station_id="USW00024233",
+        city_slug="sea",
+        station_id="KSEA",
         endpoint="daily",
         page_number=0,
         now=TEST_NOW,
@@ -305,15 +305,15 @@ def test_completed_dispatch_always_remains_billable(
 def test_stale_undispatched_reservations_are_cancelled_in_bulk(tmp_path):
     ledger = _usage_ledger(tmp_path)
     stale = ledger.reserve_event(
-        city_slug="miami",
-        station_id="USW00012839",
+        city_slug="mia",
+        station_id="KMIA",
         endpoint="hourly",
         page_number=1,
         now=TEST_NOW,
     )
     dispatched = ledger.reserve_event(
-        city_slug="miami",
-        station_id="USW00012839",
+        city_slug="mia",
+        station_id="KMIA",
         endpoint="hourly",
         page_number=2,
         now=TEST_NOW,
@@ -385,15 +385,15 @@ def test_usage_billing_day_uses_pacific_civil_time(tmp_path):
     after_midnight = datetime(2026, 7, 18, 7, 0, tzinfo=timezone.utc)
 
     ledger.reserve_event(
-        city_slug="boston",
-        station_id="USW00014739",
+        city_slug="bos",
+        station_id="KBOS",
         endpoint="current",
         page_number=0,
         now=before_midnight,
     )
     ledger.reserve_event(
-        city_slug="boston",
-        station_id="USW00014739",
+        city_slug="bos",
+        station_id="KBOS",
         endpoint="current",
         page_number=0,
         now=after_midnight,
@@ -408,10 +408,13 @@ def test_usage_ledger_rejects_request_urls_and_never_persists_keys(tmp_path):
     ledger = _usage_ledger(tmp_path)
     sentinel_key = "top-secret-google-key"
 
-    with pytest.raises(ValueError, match="endpoint must be a safe identifier"):
+    with pytest.raises(
+        ValueError,
+        match="endpoint must be a supported Google Weather endpoint",
+    ):
         ledger.reserve_event(
-            city_slug="new-york",
-            station_id="USW00094728",
+            city_slug="nyc",
+            station_id="KNYC",
             endpoint=f"https://weather.googleapis.com/hourly?key={sentinel_key}",
             page_number=1,
             now=TEST_NOW,
@@ -429,3 +432,277 @@ def test_usage_ledger_rejects_request_urls_and_never_persists_keys(tmp_path):
     assert "page_token" not in columns
     assert "response_body" not in columns
     assert sentinel_key.encode() not in ledger.db_path.read_bytes()
+
+
+def test_dispatch_transition_can_only_be_owned_once(tmp_path):
+    from google_weather_store import GoogleUsageLifecycleError
+
+    ledger = _usage_ledger(tmp_path)
+    event = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=1,
+        now=TEST_NOW,
+    )
+
+    ledger.mark_dispatched(event, now=TEST_NOW + timedelta(seconds=1))
+
+    with pytest.raises(
+        GoogleUsageLifecycleError,
+        match="Google Weather event is not dispatchable",
+    ):
+        ledger.mark_dispatched(event, now=TEST_NOW + timedelta(seconds=2))
+
+
+def test_concurrent_dispatch_transition_has_exactly_one_owner(tmp_path):
+    from google_weather_store import GoogleUsageLifecycleError
+
+    ledger = _usage_ledger(tmp_path)
+    event = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=1,
+        now=TEST_NOW,
+    )
+    start = threading.Barrier(2)
+
+    def claim_dispatch(_index: int) -> str:
+        start.wait()
+        try:
+            ledger.mark_dispatched(event, now=TEST_NOW + timedelta(seconds=1))
+            return "owner"
+        except GoogleUsageLifecycleError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(claim_dispatch, range(2)))
+
+    assert sorted(outcomes) == ["owner", "rejected"]
+
+
+@pytest.mark.parametrize("existing_state", ["success", "error", "cancelled"])
+def test_terminal_or_cancelled_event_cannot_reclaim_dispatch(
+    tmp_path, existing_state
+):
+    from google_weather_store import GoogleUsageLifecycleError
+
+    ledger = _usage_ledger(tmp_path)
+    event = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=1,
+        now=TEST_NOW,
+    )
+    if existing_state == "cancelled":
+        ledger.cancel_before_dispatch(event, now=TEST_NOW + timedelta(seconds=1))
+    else:
+        ledger.mark_dispatched(event, now=TEST_NOW + timedelta(seconds=1))
+        ledger.complete_event(
+            event,
+            success=existing_state == "success",
+            response_status_class=2,
+            error_kind=None if existing_state == "success" else "parse",
+            now=TEST_NOW + timedelta(seconds=2),
+        )
+
+    with pytest.raises(
+        GoogleUsageLifecycleError,
+        match="Google Weather event is not dispatchable",
+    ):
+        ledger.mark_dispatched(event, now=TEST_NOW + timedelta(seconds=3))
+
+
+def test_unknown_event_cannot_claim_dispatch(tmp_path):
+    from google_weather_store import GoogleUsageEvent
+
+    ledger = _usage_ledger(tmp_path)
+    unknown = GoogleUsageEvent(
+        reservation_id="123e4567e89b42d3a456426614174000",
+        endpoint="hourly",
+        page_number=1,
+    )
+
+    with pytest.raises(KeyError, match="unknown Google Weather usage event"):
+        ledger.mark_dispatched(unknown, now=TEST_NOW)
+
+
+def test_every_configured_city_station_pair_is_accepted(tmp_path):
+    from cities import CITIES
+
+    ledger = _usage_ledger(tmp_path)
+
+    for page_number, city in enumerate(CITIES):
+        event = ledger.reserve_event(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            endpoint="daily",
+            page_number=page_number,
+            now=TEST_NOW,
+        )
+        assert ledger.event(event).status == "reserved"
+
+
+@pytest.mark.parametrize(
+    ("field", "overrides"),
+    [
+        ("city_slug", {"city_slug": "AIzaSySecretMaterial123456789"}),
+        ("station_id", {"station_id": "AIzaSySecretMaterial123456789"}),
+        ("endpoint", {"endpoint": "AIzaSySecretMaterial123456789"}),
+        (
+            "reservation_id",
+            {"reservation_id": "AIzaSySecretMaterial123456789"},
+        ),
+    ],
+)
+def test_reservation_identity_fields_reject_key_shaped_values_without_echoing(
+    tmp_path, field, overrides
+):
+    ledger = _usage_ledger(tmp_path)
+    sentinel = "AIzaSySecretMaterial123456789"
+    values = {
+        "city_slug": "sfo",
+        "station_id": "KSFO",
+        "endpoint": "hourly",
+        "page_number": 1,
+        "now": TEST_NOW,
+        **overrides,
+    }
+
+    with pytest.raises(ValueError) as rejected:
+        ledger.reserve_event(**values)
+
+    assert sentinel not in str(rejected.value)
+    assert sentinel.encode() not in ledger.db_path.read_bytes()
+    assert field in {"city_slug", "station_id", "endpoint", "reservation_id"}
+
+
+def test_city_and_station_must_be_the_same_canonical_pair(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    with pytest.raises(ValueError, match="city and station must match"):
+        ledger.reserve_event(
+            city_slug="sfo",
+            station_id="KMIA",
+            endpoint="daily",
+            page_number=0,
+            now=TEST_NOW,
+        )
+    assert b"KMIA" not in ledger.db_path.read_bytes()
+
+
+def test_error_kind_is_closed_and_cannot_persist_key_material(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+    sentinel = "AIzaSySecretMaterial123456789"
+    event = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="current",
+        page_number=0,
+        now=TEST_NOW,
+    )
+    ledger.mark_dispatched(event, now=TEST_NOW + timedelta(seconds=1))
+
+    with pytest.raises(ValueError) as rejected:
+        ledger.complete_event(
+            event,
+            success=False,
+            error_kind=sentinel,
+            now=TEST_NOW + timedelta(seconds=2),
+        )
+
+    assert sentinel not in str(rejected.value)
+    assert sentinel.encode() not in ledger.db_path.read_bytes()
+    assert ledger.event(event).status == "consumed"
+
+
+def test_exact_reservation_retry_is_idempotent_before_budget_check(tmp_path):
+    ledger = _usage_ledger(
+        tmp_path,
+        daily_budget=1,
+        monthly_budget=1,
+        soft_monthly_ceiling=1,
+    )
+    reservation_id = "123e4567e89b42d3a456426614174000"
+    first = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="daily",
+        page_number=0,
+        reservation_id=reservation_id,
+        now=TEST_NOW,
+    )
+
+    retried = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="daily",
+        page_number=0,
+        reservation_id=reservation_id,
+        now=TEST_NOW + timedelta(seconds=1),
+    )
+
+    assert retried == first
+    assert ledger.usage(now=TEST_NOW).daily_events == 1
+
+
+def test_reservation_retry_with_conflicting_metadata_fails_deterministically(tmp_path):
+    from google_weather_store import GoogleUsageLifecycleError
+
+    ledger = _usage_ledger(
+        tmp_path,
+        daily_budget=1,
+        monthly_budget=1,
+        soft_monthly_ceiling=1,
+    )
+    reservation_id = "123e4567e89b42d3a456426614174000"
+    ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="daily",
+        page_number=0,
+        reservation_id=reservation_id,
+        now=TEST_NOW,
+    )
+
+    with pytest.raises(
+        GoogleUsageLifecycleError,
+        match="reservation metadata conflicts",
+    ):
+        ledger.reserve_event(
+            city_slug="mia",
+            station_id="KMIA",
+            endpoint="daily",
+            page_number=0,
+            reservation_id=reservation_id,
+            now=TEST_NOW,
+        )
+
+
+def test_usage_daily_and_monthly_counts_share_one_database_snapshot(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+    original_count = ledger._count
+    calls = 0
+
+    def insert_between_legacy_reads(connection, column, value):
+        nonlocal calls
+        result = original_count(connection, column, value)
+        calls += 1
+        if calls == 1:
+            other = _usage_ledger(tmp_path)
+            other.reserve_event(
+                city_slug="sfo",
+                station_id="KSFO",
+                endpoint="current",
+                page_number=0,
+                now=TEST_NOW,
+            )
+        return result
+
+    ledger._count = insert_between_legacy_reads
+
+    counts = ledger.usage(now=TEST_NOW)
+
+    assert counts.daily_events == counts.monthly_events

@@ -7,7 +7,6 @@ from this module's permanent schema.
 
 from __future__ import annotations
 
-import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from cities import CITY_BY_SLUG
 from weather_cache_config import (
     GOOGLE_WEATHER_DAILY_EVENT_BUDGET,
     GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
@@ -23,7 +23,10 @@ from weather_cache_config import (
 
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
-_SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+GOOGLE_USAGE_ENDPOINTS = frozenset({"hourly", "daily", "current"})
+GOOGLE_USAGE_ERROR_KINDS = frozenset(
+    {"timeout", "transport", "http", "parse", "unknown"}
+)
 
 
 class GoogleWeatherBudgetExceeded(RuntimeError):
@@ -101,9 +104,44 @@ def _utc_text(value: datetime | None) -> str:
     return _aware_utc(value).isoformat(timespec="microseconds")
 
 
-def _safe_label(name: str, value: object) -> str:
-    if type(value) is not str or not _SAFE_LABEL.fullmatch(value):
-        raise ValueError(f"{name} must be a safe identifier")
+def _canonical_city_station(
+    city_slug: object, station_id: object
+) -> tuple[str, str]:
+    city = CITY_BY_SLUG.get(city_slug) if type(city_slug) is str else None
+    if city is None:
+        raise ValueError("city_slug must be a configured canonical city")
+    if type(station_id) is not str or station_id != city.nws_station_id:
+        raise ValueError("city and station must match the configured canonical pair")
+    return city_slug, station_id
+
+
+def _endpoint(value: object) -> str:
+    if type(value) is not str or value not in GOOGLE_USAGE_ENDPOINTS:
+        raise ValueError("endpoint must be a supported Google Weather endpoint")
+    return value
+
+
+def _reservation_id(value: object | None) -> str:
+    if value is None:
+        return uuid.uuid4().hex
+    if type(value) is not str:
+        raise ValueError("reservation_id must be a canonical version-4 UUID")
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError):
+        raise ValueError("reservation_id must be a canonical version-4 UUID") from None
+    if (
+        value != parsed.hex
+        or parsed.version != 4
+        or parsed.variant != uuid.RFC_4122
+    ):
+        raise ValueError("reservation_id must be a canonical version-4 UUID")
+    return value
+
+
+def _error_kind(value: object) -> str:
+    if type(value) is not str or value not in GOOGLE_USAGE_ERROR_KINDS:
+        raise ValueError("error_kind must be a supported failure category")
     return value
 
 
@@ -160,14 +198,11 @@ class GoogleUsageLedger:
         reservation_id: str | None = None,
         now: datetime | None = None,
     ) -> GoogleUsageEvent:
-        city_slug = _safe_label("city_slug", city_slug)
-        station_id = _safe_label("station_id", station_id)
-        endpoint = _safe_label("endpoint", endpoint)
+        city_slug, station_id = _canonical_city_station(city_slug, station_id)
+        endpoint = _endpoint(endpoint)
         if type(page_number) is not int or page_number < 0:
             raise ValueError("page_number must be a non-negative integer")
-        reservation_id = _safe_label(
-            "reservation_id", reservation_id or uuid.uuid4().hex
-        )
+        reservation_id = _reservation_id(reservation_id)
         instant = _aware_utc(now)
         pacific = instant.astimezone(PACIFIC)
         billing_date = pacific.date().isoformat()
@@ -177,6 +212,24 @@ class GoogleUsageLedger:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT city_slug, station_id
+                FROM google_weather_usage_events
+                WHERE reservation_id = ? AND endpoint = ? AND page_number = ?
+                """,
+                (reservation_id, endpoint, page_number),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["city_slug"] == city_slug
+                    and existing["station_id"] == station_id
+                ):
+                    connection.commit()
+                    return handle
+                raise GoogleUsageLifecycleError(
+                    "Google Weather reservation metadata conflicts with existing event"
+                )
             daily_events = self._count(connection, "billing_date_pacific", billing_date)
             monthly_events = self._count(connection, "billing_month", billing_month)
             if daily_events >= self.daily_budget:
@@ -277,7 +330,9 @@ class GoogleUsageLedger:
         self, event: GoogleUsageEvent, *, now: datetime | None = None
     ) -> GoogleUsageEventState:
         dispatched_at = _utc_text(now)
-        with self._connect() as connection:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
                 UPDATE google_weather_usage_events
@@ -302,11 +357,26 @@ class GoogleUsageLedger:
                 ).fetchone()
                 if status_row is None:
                     raise KeyError("unknown Google Weather usage event")
-                if status_row["status"] == "cancelled":
-                    raise GoogleUsageLifecycleError(
-                        "cancelled Google Weather event cannot be dispatched"
-                    )
-        return self.event(event)
+                raise GoogleUsageLifecycleError(
+                    "Google Weather event is not dispatchable"
+                )
+            row = connection.execute(
+                """
+                SELECT reservation_id, endpoint, page_number, status,
+                       billable_events, dispatched_at, completed_at,
+                       response_status_class, error_kind
+                FROM google_weather_usage_events
+                WHERE reservation_id = ? AND endpoint = ? AND page_number = ?
+                """,
+                (event.reservation_id, event.endpoint, event.page_number),
+            ).fetchone()
+            connection.commit()
+            return GoogleUsageEventState(**dict(row))
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def complete_event(
         self,
@@ -329,7 +399,7 @@ class GoogleUsageLedger:
                 raise ValueError("successful events cannot have an error_kind")
             status = "success"
         else:
-            error_kind = _safe_label("error_kind", error_kind)
+            error_kind = _error_kind(error_kind)
             status = "consumed"
 
         completed_at = _utc_text(now)
@@ -395,11 +465,21 @@ class GoogleUsageLedger:
         instant = _aware_utc(now)
         pacific = instant.astimezone(PACIFIC)
         with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(
+                        CASE WHEN billing_date_pacific = ?
+                             THEN billable_events ELSE 0 END
+                    ), 0) AS daily_events,
+                    COALESCE(SUM(billable_events), 0) AS monthly_events
+                FROM google_weather_usage_events
+                WHERE billing_month = ?
+                  AND status IN ('reserved', 'consumed', 'success')
+                """,
+                (pacific.date().isoformat(), pacific.strftime("%Y-%m")),
+            ).fetchone()
             return GoogleUsageCounts(
-                daily_events=self._count(
-                    connection, "billing_date_pacific", pacific.date().isoformat()
-                ),
-                monthly_events=self._count(
-                    connection, "billing_month", pacific.strftime("%Y-%m")
-                ),
+                daily_events=int(row["daily_events"]),
+                monthly_events=int(row["monthly_events"]),
             )
