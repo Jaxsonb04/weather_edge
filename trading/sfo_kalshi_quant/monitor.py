@@ -35,6 +35,7 @@ from .forecast import (
     has_forecaster_observed_high_adjustment,
 )
 from .kalshi import KalshiPublicClient, KalshiUnavailable
+from .maker_fills import EXECUTION_MODEL_VERSION
 from .models import MarketBin
 from .probability import ResidualCalibrator
 from .settlement_day import settlement_clock
@@ -744,7 +745,8 @@ def _fill_resting_orders_against_live_book(
                 side=str(updated["side"] or "YES").upper(),
                 action=action,
                 reason=(
-                    f"exec-v3 consumed {float(update['queue_consumed']):.2f} "
+                    f"{EXECUTION_MODEL_VERSION} consumed "
+                    f"{float(update['queue_consumed']):.2f} "
                     f"queue and filled {float(update['filled_quantity']):.2f}; "
                     f"{float(update['remaining_quantity']):.2f} remains"
                 ),

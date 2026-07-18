@@ -10,8 +10,11 @@ Classification rules (conservative -- insufficient evidence is UNVERIFIABLE,
 never "filled by assumption"):
 
 Entry evidence
-  - ``maker_allocator_price_time_v2`` fill evidence: VERIFIED (single-aggressor
-    direction, once-only volume allocation, persisted claims).
+  - ``maker_allocator_price_time_v4`` fill evidence: VERIFIED when its
+    persisted queue-price allocation and public tape reproduce cleanly.
+  - ``maker_allocator_price_time_v3`` evidence remains historical and is
+    reported as pre-corrected queue semantics; it is never rewritten as v4.
+  - ``maker_allocator_price_time_v2`` evidence has unreplayable queue state.
   - Legacy ``later_trade_at_or_through_with_queue_ahead`` evidence:
       * YES-side orders: the legacy filter demanded ``taker_book_side ==
         "bid"``, the WRONG aggressor direction for a resting YES bid --
@@ -69,7 +72,7 @@ def _entry_findings(
     row: sqlite3.Row,
     evidence: dict[str, Any],
     duplicate_trade_ids: set[str],
-    v3_findings: list[str] | None = None,
+    current_findings: list[str] | None = None,
 ) -> list[str]:
     status = str(row["status"])
     entry_mode = str(row["entry_mode"] or "market")
@@ -81,8 +84,10 @@ def _entry_findings(
             return ["TAKER_PRE_SIZING_FIX"]
         return []
     model = str(evidence.get("model") or "")
+    if model == "maker_allocator_price_time_v4":
+        return list(current_findings or [])
     if model == "maker_allocator_price_time_v3":
-        return list(v3_findings or [])
+        return ["EXEC_V3_HISTORICAL_SEMANTICS"]
     if model == "maker_allocator_price_time_v2":
         return ["EXEC_V2_QUEUE_STATE_UNREPLAYABLE"]
     findings: list[str] = []
@@ -148,13 +153,13 @@ def restate(db_path: Path) -> dict[str, Any]:
                 "SELECT order_id, verification_status FROM paper_settlement_verifications"
             ).fetchall()
         }
-        has_v3_allocations = conn.execute(
+        has_allocator_evidence = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='paper_maker_allocations'"
         ).fetchone() is not None
         allocation_rows = (
             conn.execute("SELECT * FROM paper_maker_allocations").fetchall()
-            if has_v3_allocations
+            if has_allocator_evidence
             else []
         )
         has_tape = conn.execute(
@@ -183,16 +188,16 @@ def restate(db_path: Path) -> dict[str, Any]:
         or consumed > float(tape_by_id[trade_id]["count"] or 0.0) + 1e-9
     }
 
-    v3_findings_by_order: dict[int, list[str]] = {}
+    current_findings_by_order: dict[int, list[str]] = {}
     for row in orders:
         order_id = int(row["id"])
         evidence = _json_object(row["fill_evidence_json"])
-        if evidence.get("model") != "maker_allocator_price_time_v3":
+        if evidence.get("model") != "maker_allocator_price_time_v4":
             continue
         findings: list[str] = []
         order_allocations = allocations_by_order.get(order_id, [])
         if not order_allocations:
-            findings.append("EXEC_V3_ALLOCATION_MISSING")
+            findings.append("EXEC_V4_ALLOCATION_MISSING")
         expected_fill = float(
             row["filled_contracts"]
             if "filled_contracts" in row.keys() and row["filled_contracts"] is not None
@@ -202,7 +207,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             float(item["fill_quantity"] or 0.0) for item in order_allocations
         )
         if abs(recorded_fill - expected_fill) > 1e-9:
-            findings.append("EXEC_V3_FILL_QUANTITY_MISMATCH")
+            findings.append("EXEC_V4_FILL_QUANTITY_MISMATCH")
         side = str(row["side"] or "YES").upper()
         limit_price = float(
             row["limit_price"]
@@ -219,12 +224,12 @@ def restate(db_path: Path) -> dict[str, Any]:
             trade_id = str(allocation_row["trade_id"])
             tape = tape_by_id.get(trade_id)
             if tape is None:
-                findings.append("EXEC_V3_TAPE_MISSING")
+                findings.append("EXEC_V4_TAPE_MISSING")
                 continue
             if str(allocation_row["maker_side"]).upper() != side:
-                findings.append("EXEC_V3_DIRECTION_INVALID")
+                findings.append("EXEC_V4_DIRECTION_INVALID")
             if str(allocation_row["trade_created_at"]) <= created_at:
-                findings.append("EXEC_V3_TRADE_NOT_LATER")
+                findings.append("EXEC_V4_TRADE_NOT_LATER")
             side_price = float(allocation_row["side_price"])
             queue_quantity = float(allocation_row["queue_quantity"] or 0.0)
             fill_quantity = float(allocation_row["fill_quantity"] or 0.0)
@@ -235,10 +240,10 @@ def restate(db_path: Path) -> dict[str, Any]:
                 queue_quantity > 0
                 and side_price > queue_price + 1e-9
             ):
-                findings.append("EXEC_V3_PRICE_INVALID")
+                findings.append("EXEC_V4_PRICE_INVALID")
             if trade_id in overclaimed_trade_ids:
-                findings.append("EXEC_V3_VOLUME_OVERCLAIMED")
-        v3_findings_by_order[order_id] = list(dict.fromkeys(findings))
+                findings.append("EXEC_V4_VOLUME_OVERCLAIMED")
+        current_findings_by_order[order_id] = list(dict.fromkeys(findings))
 
     # A public trade id credited by more than one capital-consuming order's
     # evidence is the double-credit signature (production 226/227, 261/262).
@@ -277,7 +282,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             row,
             evidence,
             duplicate_trade_ids,
-            v3_findings_by_order.get(entry_evidence_order_id),
+            current_findings_by_order.get(entry_evidence_order_id),
         )
         findings += _exit_findings(row, outcome)
         settlement_check = settlement_checks.get(order_id)
@@ -293,6 +298,10 @@ def restate(db_path: Path) -> dict[str, Any]:
                 "target_date": str(row["target_date"]),
                 "status": str(row["status"]),
                 "risk_profile": profile,
+                "execution_model_version": str(
+                    row["execution_model_version"] or ""
+                ),
+                "fill_evidence_model": str(evidence.get("model") or ""),
                 "verification": verification,
                 "findings": findings,
                 "realized_pnl": round(realized, 4)

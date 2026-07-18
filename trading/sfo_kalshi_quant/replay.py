@@ -351,7 +351,8 @@ def replay_from_database(
                 else []
             )
             # The explicit execution transition marks when this database first
-            # ran exec-v3/account-v4. Only live rows written after it can count;
+            # ran the current execution/accounting semantics. Only live rows
+            # written after it can count;
             # only trading days entirely after it count toward the promotion
             # clock (audit Batch D: reset at the version boundary).
             semantics_boundary = None
@@ -672,13 +673,13 @@ def _post_boundary_readiness_metrics(
         }
 
     cohort = side_bucket(resolved)
-    cohort["source"] = "post-boundary exec-v3 paper-shared chronological outcomes"
+    cohort["source"] = "post-boundary exec-v4 paper-shared chronological outcomes"
     return {
         "evidence_kind": "chronological_account_replay",
         "promotion_eligible": promotion_eligible,
-        "config_basis": "post-boundary exec-v3 live evidence only",
+        "config_basis": "post-boundary exec-v4 live evidence only",
         "semantics_boundary": semantics_boundary,
-        "source_cohort": "post_exec_v3_live",
+        "source_cohort": "post_exec_v4_live",
         "counts": {
             "settled_decisions": len(resolved),
             "independent_days": len(per_day),
@@ -695,8 +696,8 @@ def _post_boundary_readiness_metrics(
             ),
             "max_drawdown_pct": round(max_drawdown, 6),
         },
-        "by_forecast_cohort": {"post_exec_v3_live": cohort} if resolved else {},
-        "by_cohort": {"post_exec_v3_live": cohort} if resolved else {},
+        "by_forecast_cohort": {"post_exec_v4_live": cohort} if resolved else {},
+        "by_cohort": {"post_exec_v4_live": cohort} if resolved else {},
         "by_side": {
             side: side_bucket(rows) for side, rows in sorted(by_side_rows.items())
         },

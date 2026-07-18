@@ -247,7 +247,10 @@ class PaperStore:
             details={
                 "execution_model_version": EXECUTION_MODEL_VERSION,
                 "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
-                "note": "exec-v3 replayable tape, conserved queue volume, and partial fills",
+                "note": (
+                    "exec-v4 queue-price priority with replayable tape, "
+                    "conserved volume, and partial fills"
+                ),
             },
         )
 
@@ -297,8 +300,10 @@ class PaperStore:
             details={"initial_capital": INITIAL_CAPITAL, "legacy_realized_pnl": opening_cash - INITIAL_CAPITAL},
         )
 
-    def _expire_pre_v3_resting_orders(self, conn: sqlite3.Connection) -> None:
-        """Cancel pre-v3 quotes whose historical queue cannot be reconstructed."""
+    def _expire_pre_current_execution_orders(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Cancel resting quotes from older execution semantics."""
 
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -317,7 +322,9 @@ class PaperStore:
                     json.dumps(
                         {
                             "event": "execution_model_cutover",
-                            "reason": "pre-v3 maker queue state is not safely replayable",
+                            "reason": (
+                                "prior-version maker queue state is not safely replayable"
+                            ),
                             "previous_execution_model_version": row[
                                 "execution_model_version"
                             ],
@@ -335,7 +342,9 @@ class PaperStore:
                     order_id=int(row["id"]),
                     event_type="RESERVATION_RELEASE",
                     amount=float(row["reserved_cost"] or 0.0),
-                    idempotency_key=f"order:{row['id']}:exec-v3-cutover-release",
+                    idempotency_key=(
+                        f"order:{row['id']}:{EXECUTION_MODEL_VERSION}:cutover-release"
+                    ),
                     details={"execution_model_version": EXECUTION_MODEL_VERSION},
                 )
 
@@ -1874,7 +1883,7 @@ class PaperStore:
                     evidence = {}
                 evidence.update(
                     {
-                        "model": "maker_allocator_price_time_v3",
+                        "model": "maker_allocator_price_time_v4",
                         "execution_model_version": EXECUTION_MODEL_VERSION,
                         "requested_quantity": requested,
                         "filled_quantity": new_filled,

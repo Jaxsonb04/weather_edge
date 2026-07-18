@@ -372,7 +372,10 @@ def _account_snapshot(
     return {
         "account_id": account_id,
         "role": role,
-        "verification_scope": "exec-v3 fills only; legacy outcomes retained as unverified",
+        "verification_scope": (
+            f"{EXECUTION_MODEL_VERSION} fills only; "
+            "legacy outcomes retained as unverified"
+        ),
         "initial_equity": _round(initial, 2),
         "cash_balance": _round(state["cash_balance"], 2),
         "available_cash": _round(state["available_cash"], 2),

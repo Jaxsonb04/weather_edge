@@ -232,7 +232,7 @@ def test_replay_matches_runtime_when_queue_is_above_order_limit() -> None:
         restated = next(
             row for row in restate(db_path)["orders"] if row["order_id"] == order_id
         )
-        assert "EXEC_V3_PRICE_INVALID" not in restated["findings"]
+        assert "EXEC_V4_PRICE_INVALID" not in restated["findings"]
 
         replay = replay_from_database(db_path, {})
         assert replay["filled"] == 1

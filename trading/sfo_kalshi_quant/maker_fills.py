@@ -31,7 +31,9 @@ MakerSide = Literal["YES", "NO"]
 #     depth-aware partial exits.
 # v3: persist queue depletion as consumed public volume and retain partial
 #     maker fills across monitor passes and restarts.
-EXECUTION_MODEL_VERSION = "exec-v3-2026-07-14"
+# v4: attach queue depth to its observed price so better-price tape clears it
+#     before a below-bid order becomes fill-eligible.
+EXECUTION_MODEL_VERSION = "exec-v4-2026-07-17"
 EXIT_DEPTH_MAX_AGE_SECONDS = 120.0
 
 _MAKER_SIDE_BY_TAKER_BOOK_SIDE: dict[str, MakerSide] = {"bid": "NO", "ask": "YES"}

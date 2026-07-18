@@ -641,7 +641,7 @@ def _init_store_locked(self) -> None:
         }
         _add_missing_columns(conn, "paper_orders", existing, PAPER_ORDER_AUDIT_COLUMNS)
         # Legacy rows have no trustworthy partial queue state. Preserve their
-        # booked quantity and mark the evidence generation explicitly; new v3
+        # booked quantity and mark the evidence generation explicitly; current
         # orders write all progress fields at insertion time.
         conn.execute(
             """
@@ -768,7 +768,7 @@ def _init_store_locked(self) -> None:
                 "idx_decision_snapshots_created_market is missing; pause paper "
                 "scan/monitor and run deploy/aws/create_decision_snapshot_index.sh"
             )
-        self._expire_pre_v3_resting_orders(conn)
+        self._expire_pre_current_execution_orders(conn)
         self._ensure_shared_paper_account(conn)
         self._ensure_open_position_guard_index(conn)
 
