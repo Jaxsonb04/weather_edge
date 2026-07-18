@@ -567,10 +567,7 @@ def replay_from_database(
             )
         ):
             continue
-        if (
-            str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED")
-            or root["realized_pnl"] is None
-        ):
+        if str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
             continue
         execution_verified = bool(group.resolved_lots) and all(
             int(row["id"]) in verified_order_ids for row in group.resolved_lots

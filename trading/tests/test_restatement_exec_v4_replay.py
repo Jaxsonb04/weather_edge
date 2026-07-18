@@ -579,3 +579,323 @@ def test_restatement_fails_closed_on_malformed_prior_claim_quantity() -> None:
         _assert_unverified_and_readiness_ineligible(
             db_path, order_id, "EXEC_V4_PRIOR_CLAIM_QUANTITY_INVALID"
         )
+
+
+def _resolved_order(store: PaperStore, lifecycle: str) -> int:
+    order_id = _order(store, queue_ahead=0.0)
+    _apply(
+        store,
+        f"malformed-{lifecycle}-lifecycle",
+        no_price=0.72,
+        quantity=5.0,
+    )
+    if lifecycle == "settled":
+        _settle(store)
+    else:
+        store.close_paper_order(
+            order_id,
+            0.80,
+            max_quantity=5.0,
+            liquidity_evidence={
+                "displayed_depth": 5.0,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    return order_id
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "target", "field", "value", "reason"),
+    [
+        ("settled", "order", "realized_pnl", "bad", "REALIZED_PNL_INVALID"),
+        ("settled", "order", "realized_pnl", None, "REALIZED_PNL_INVALID"),
+        ("settled", "order", "realized_pnl", "NaN", "REALIZED_PNL_INVALID"),
+        (
+            "settled",
+            "order",
+            "realized_pnl",
+            float("inf"),
+            "REALIZED_PNL_INVALID",
+        ),
+        ("closed", "order", "realized_pnl", "bad", "REALIZED_PNL_INVALID"),
+        ("settled", "order", "settled_at", "", "SETTLED_AT_INVALID"),
+        ("settled", "order", "settled_at", None, "SETTLED_AT_INVALID"),
+        (
+            "settled",
+            "order",
+            "settlement_high_f",
+            "bad",
+            "SETTLEMENT_HIGH_INVALID",
+        ),
+        (
+            "settled",
+            "order",
+            "settlement_high_f",
+            float("nan"),
+            "SETTLEMENT_HIGH_INVALID",
+        ),
+        (
+            "settled",
+            "order",
+            "settlement_high_f",
+            float("inf"),
+            "SETTLEMENT_HIGH_INVALID",
+        ),
+        (
+            "settled",
+            "order",
+            "settlement_high_f",
+            None,
+            "SETTLEMENT_HIGH_INVALID",
+        ),
+        ("settled", "order", "resolved_yes", "bad", "RESOLVED_YES_INVALID"),
+        ("settled", "order", "resolved_yes", 2, "RESOLVED_YES_INVALID"),
+        ("settled", "order", "parent_order_id", "bad", "PARENT_ORDER_ID_INVALID"),
+        ("settled", "order", "contracts", "bad", "ORDER_CONTRACTS_INVALID"),
+        (
+            "settled",
+            "order",
+            "contracts",
+            "NaN",
+            "ORDER_CONTRACTS_INVALID",
+        ),
+        (
+            "settled",
+            "order",
+            "contracts",
+            float("inf"),
+            "ORDER_CONTRACTS_INVALID",
+        ),
+        ("closed", "order", "exit_price", "bad", "EXIT_PRICE_INVALID"),
+        ("closed", "order", "exit_price", None, "EXIT_PRICE_INVALID"),
+        ("closed", "order", "exit_price", "NaN", "EXIT_PRICE_INVALID"),
+        (
+            "closed",
+            "order",
+            "exit_price",
+            float("inf"),
+            "EXIT_PRICE_INVALID",
+        ),
+        ("closed", "order", "exit_price", -0.1, "EXIT_PRICE_INVALID"),
+        (
+            "closed",
+            "order",
+            "exit_fee_per_contract",
+            "bad",
+            "EXIT_FEE_INVALID",
+        ),
+        (
+            "closed",
+            "order",
+            "exit_fee_per_contract",
+            None,
+            "EXIT_FEE_INVALID",
+        ),
+        (
+            "closed",
+            "order",
+            "exit_fee_per_contract",
+            float("inf"),
+            "EXIT_FEE_INVALID",
+        ),
+        (
+            "closed",
+            "order",
+            "exit_fee_per_contract",
+            float("nan"),
+            "EXIT_FEE_INVALID",
+        ),
+        (
+            "closed",
+            "order",
+            "exit_fee_per_contract",
+            -0.01,
+            "EXIT_FEE_INVALID",
+        ),
+        ("closed", "order", "closed_at", "", "CLOSED_AT_INVALID"),
+        ("closed", "order", "closed_at", None, "CLOSED_AT_INVALID"),
+        (
+            "closed",
+            "outcome",
+            "executed_quantity",
+            "bad",
+            "EXIT_EXECUTED_QUANTITY_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "executed_quantity",
+            None,
+            "EXIT_EXECUTED_QUANTITY_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "executed_quantity",
+            "NaN",
+            "EXIT_EXECUTED_QUANTITY_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "executed_quantity",
+            float("inf"),
+            "EXIT_EXECUTED_QUANTITY_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "executed_quantity",
+            -1.0,
+            "EXIT_EXECUTED_QUANTITY_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "displayed_depth",
+            "bad",
+            "EXIT_DISPLAYED_DEPTH_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "displayed_depth",
+            None,
+            "EXIT_DISPLAYED_DEPTH_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "displayed_depth",
+            "NaN",
+            "EXIT_DISPLAYED_DEPTH_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "displayed_depth",
+            float("inf"),
+            "EXIT_DISPLAYED_DEPTH_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "displayed_depth",
+            -1.0,
+            "EXIT_DISPLAYED_DEPTH_INVALID",
+        ),
+        (
+            "closed",
+            "outcome",
+            "observed_at",
+            "",
+            "EXIT_OBSERVED_AT_INVALID",
+        ),
+    ],
+)
+def test_restatement_never_raises_on_malformed_lifecycle_fields(
+    lifecycle: str,
+    target: str,
+    field: str,
+    value: object,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _resolved_order(store, lifecycle)
+        if target == "order":
+            connection = (
+                sqlite3.connect(db_path)
+                if field == "parent_order_id"
+                else store.connect()
+            )
+            with connection as conn:
+                conn.execute(
+                    f"UPDATE paper_orders SET {field}=? WHERE id=?",
+                    (value, order_id),
+                )
+        else:
+            with store.connect() as conn:
+                outcome = json.loads(
+                    conn.execute(
+                        "SELECT outcome_diagnostics_json FROM paper_orders WHERE id=?",
+                        (order_id,),
+                    ).fetchone()[0]
+                )
+                outcome["exit_execution"][field] = value
+                conn.execute(
+                    "UPDATE paper_orders SET outcome_diagnostics_json=? WHERE id=?",
+                    (json.dumps(outcome), order_id),
+                )
+
+        _assert_unverified_and_readiness_ineligible(db_path, order_id, reason)
+        if field == "realized_pnl":
+            report = restate(db_path)
+            assert _result(db_path, order_id)["realized_pnl"] is None
+            json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("verification_ticker", [TICKER, None], ids=["ticker", "global"])
+def test_restatement_propagates_malformed_settlement_verification_identity(
+    verification_ticker: str | None,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        first_id = _order(store, queue_ahead=0.0)
+        second_id = _order(
+            store,
+            queue_ahead=0.0,
+            placed_at=T0 + timedelta(seconds=1),
+            risk_profile="research",
+        )
+        _apply(store, "malformed-settlement-identity", no_price=0.72, quantity=10.0)
+        _settle(store)
+        with store.connect() as conn:
+            conn.execute("DROP TABLE paper_settlement_verifications")
+            conn.execute(
+                "CREATE TABLE paper_settlement_verifications ("
+                "order_id TEXT PRIMARY KEY, checked_at TEXT, market_ticker TEXT, "
+                "target_date TEXT, booked_high_f REAL, final_high_f REAL, "
+                "verification_status TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO paper_settlement_verifications VALUES ("
+                "'bad', ?, ?, ?, 85, 85, 'MATCH')",
+                (T0.isoformat(), verification_ticker, TARGET_DATE),
+            )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, first_id, "SETTLEMENT_VERIFICATION_ORDER_ID_INVALID"
+        )
+        research_result = _result(db_path, second_id)
+        assert research_result["verification"] == "UNVERIFIABLE"
+        assert (
+            "SETTLEMENT_VERIFICATION_ORDER_ID_INVALID"
+            in research_result["findings"]
+        )
+
+
+def test_restatement_rejects_malformed_exit_execution_container() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _resolved_order(store, "closed")
+        with store.connect() as conn:
+            outcome = json.loads(
+                conn.execute(
+                    "SELECT outcome_diagnostics_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            outcome["exit_execution"] = "bad"
+            conn.execute(
+                "UPDATE paper_orders SET outcome_diagnostics_json=? WHERE id=?",
+                (json.dumps(outcome), order_id),
+            )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, order_id, "EXIT_EXECUTION_INVALID"
+        )

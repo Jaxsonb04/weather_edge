@@ -133,6 +133,18 @@ def _binary_flag(value: object) -> bool | None:
     return bool(int(parsed))
 
 
+def _optional_parent_id(value: object) -> tuple[int | None, bool]:
+    """Return a parent id and whether a persisted non-null value was invalid."""
+
+    if value is None:
+        return None, False
+    parsed = _finite_number(value, minimum=0)
+    if parsed is not None and parsed.is_integer() and parsed == 0:
+        return None, False
+    parent_id = _positive_row_id(value)
+    return parent_id, parent_id is None
+
+
 def _order_replay_input_findings(row: sqlite3.Row) -> list[str]:
     findings: list[str] = []
     limit_value = row["limit_price"]
@@ -236,8 +248,10 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
         if entry_bid is not None
         else None
     )
+    order_id = _positive_row_id(row["id"])
     if (
-        placed_at is None
+        order_id is None
+        or placed_at is None
         or side not in {"YES", "NO"}
         or quantity in {None, 0.0}
         or limit_price is None
@@ -259,7 +273,7 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
         return None
     queue_price = visible_bid if visible_bid is not None else limit_price
     return RestingMakerOrder(
-        order_id=int(row["id"]),
+        order_id=order_id,
         side=side,  # type: ignore[arg-type]
         limit_price=Decimal(str(round(limit_price, 6))),
         quantity=Decimal(str(quantity)),
@@ -323,12 +337,15 @@ def _exec_v4_replay_findings(
     """Reproduce v4 allocation evidence through the production allocator."""
 
     evidences = {
-        int(row["id"]): _json_object(row["fill_evidence_json"]) for row in orders
+        order_id: _json_object(row["fill_evidence_json"])
+        for row in orders
+        if (order_id := _positive_row_id(row["id"])) is not None
     }
     candidates = {
-        int(row["id"]): row
+        order_id: row
         for row in orders
-        if evidences[int(row["id"])].get("model")
+        if (order_id := _positive_row_id(row["id"])) is not None
+        and evidences[order_id].get("model")
         == "maker_allocator_price_time_v4"
     }
     findings: dict[int, list[str]] = {order_id: [] for order_id in candidates}
@@ -389,14 +406,18 @@ def _exec_v4_replay_findings(
     scope_rows = [
         row
         for row in orders
-        if _maker_replay_scope(row, evidences[int(row["id"])])
+        if (order_id := _positive_row_id(row["id"])) is not None
+        and _maker_replay_scope(row, evidences[order_id])
     ]
     for row in scope_rows:
         attach_to_ticker(row["market_ticker"], _order_replay_input_findings(row))
     scope_by_key: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
     for row in scope_rows:
+        order_id = _positive_row_id(row["id"])
+        if order_id is None:
+            continue
         isolation = (
-            f"research:{int(row['id'])}"
+            f"research:{order_id}"
             if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID
             else "capital"
         )
@@ -406,9 +427,17 @@ def _exec_v4_replay_findings(
     for tape_row in tape_rows:
         tape_by_ticker[str(tape_row["ticker"])].append(tape_row)
 
-    all_scope_ids = {int(row["id"]) for row in scope_rows}
+    all_scope_ids = {
+        order_id
+        for row in scope_rows
+        if (order_id := _positive_row_id(row["id"])) is not None
+    }
     for (ticker, isolation), rows in scope_by_key.items():
-        candidate_ids = {int(row["id"]) for row in rows} & set(candidates)
+        candidate_ids = {
+            order_id
+            for row in rows
+            if (order_id := _positive_row_id(row["id"])) is not None
+        } & set(candidates)
         if any(
             reason.endswith("_INVALID")
             for order_id in candidate_ids
@@ -418,7 +447,9 @@ def _exec_v4_replay_findings(
                 _append_finding(findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE")
             continue
         replay_orders_by_id = {
-            int(row["id"]): _replay_order(row) for row in rows
+            order_id: _replay_order(row)
+            for row in rows
+            if (order_id := _positive_row_id(row["id"])) is not None
         }
         if any(order is None for order in replay_orders_by_id.values()):
             for order_id in candidate_ids:
@@ -562,6 +593,15 @@ def _exec_v4_replay_findings(
             expected_trade_ids = sorted(expected)
             replay_order = replay_orders_by_id[order_id]
             assert replay_order is not None
+            requested_quantity = _finite_number(
+                row["requested_contracts"], minimum=0
+            )
+            queue_ahead = _finite_number(replay_order.queue_ahead, minimum=0)
+            if requested_quantity is None or queue_ahead is None:
+                _append_finding(
+                    findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE"
+                )
+                continue
             if (
                 not _consumption_mapping_matches(evidence.get("consumptions"), expected)
                 or not fills_match
@@ -574,11 +614,11 @@ def _exec_v4_replay_findings(
                 )
                 or not _close_number(
                     evidence.get("remaining_quantity"),
-                    float(row["requested_contracts"] or 0) - expected_fill_total,
+                    requested_quantity - expected_fill_total,
                 )
                 or not _close_number(
                     evidence.get("queue_remaining"),
-                    float(replay_order.queue_ahead) - expected_queue_total,
+                    queue_ahead - expected_queue_total,
                 )
                 or bool(evidence.get("counterfactual")) != expected_counterfactual
                 or bool(evidence.get("research_shadow")) != expected_counterfactual
@@ -594,6 +634,54 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _row_value(row: object, key: str, default: object = None) -> object:
+    try:
+        return row[key]  # type: ignore[index]
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def _order_lifecycle_findings(row: sqlite3.Row) -> list[str]:
+    """Validate persisted lifecycle fields before classification arithmetic."""
+
+    findings: list[str] = []
+    if _positive_row_id(_row_value(row, "id")) is None:
+        findings.append("ORDER_ID_INVALID")
+    if _parse_replay_time(_row_value(row, "created_at")) is None:
+        findings.append("ORDER_PLACED_AT_INVALID")
+    contracts = _finite_number(_row_value(row, "contracts"), minimum=0)
+    if contracts is None or contracts <= 0:
+        findings.append("ORDER_CONTRACTS_INVALID")
+    _, parent_invalid = _optional_parent_id(_row_value(row, "parent_order_id"))
+    if parent_invalid:
+        findings.append("PARENT_ORDER_ID_INVALID")
+
+    status = str(_row_value(row, "status") or "")
+    if status in {"PAPER_SETTLED", "PAPER_CLOSED"} and _finite_number(
+        _row_value(row, "realized_pnl")
+    ) is None:
+        findings.append("REALIZED_PNL_INVALID")
+    if status == "PAPER_SETTLED":
+        if _parse_replay_time(_row_value(row, "settled_at")) is None:
+            findings.append("SETTLED_AT_INVALID")
+        if _finite_number(_row_value(row, "settlement_high_f")) is None:
+            findings.append("SETTLEMENT_HIGH_INVALID")
+        if _binary_flag(_row_value(row, "resolved_yes")) is None:
+            findings.append("RESOLVED_YES_INVALID")
+    elif status == "PAPER_CLOSED":
+        if _parse_replay_time(_row_value(row, "closed_at")) is None:
+            findings.append("CLOSED_AT_INVALID")
+        if _finite_number(
+            _row_value(row, "exit_price"), minimum=0, maximum=1
+        ) is None:
+            findings.append("EXIT_PRICE_INVALID")
+        if _finite_number(
+            _row_value(row, "exit_fee_per_contract"), minimum=0
+        ) is None:
+            findings.append("EXIT_FEE_INVALID")
+    return findings
 
 
 def _entry_findings(
@@ -635,32 +723,42 @@ def _exit_findings(row: sqlite3.Row, outcome: dict[str, Any]) -> list[str]:
         return []  # settlement verified separately against final truth
     if status != "PAPER_CLOSED":
         return []
-    execution = outcome.get("exit_execution") or {}
-    try:
-        executed = float(execution.get("executed_quantity"))
-    except (TypeError, ValueError):
+    if "exit_execution" not in outcome:
         return ["EXIT_DEPTH_UNVERIFIED"]
-    depth_value = execution.get(
-        "displayed_depth", execution.get("displayed_bid_size")
+    execution = outcome.get("exit_execution")
+    if not isinstance(execution, dict):
+        return ["EXIT_EXECUTION_INVALID"]
+    if "executed_quantity" not in execution:
+        return ["EXIT_DEPTH_UNVERIFIED"]
+    executed = _finite_number(execution.get("executed_quantity"), minimum=0)
+    if executed is None or executed <= 0:
+        return ["EXIT_EXECUTED_QUANTITY_INVALID"]
+    depth_field = (
+        "displayed_depth"
+        if "displayed_depth" in execution
+        else "displayed_bid_size"
+        if "displayed_bid_size" in execution
+        else None
     )
-    try:
-        displayed_depth = float(depth_value)
-    except (TypeError, ValueError):
+    if depth_field is None:
         return ["EXIT_DEPTH_UNVERIFIED"]
+    displayed_depth = _finite_number(execution.get(depth_field), minimum=0)
+    if displayed_depth is None or displayed_depth <= 0:
+        return ["EXIT_DISPLAYED_DEPTH_INVALID"]
     if displayed_depth + 1e-9 < executed:
         return ["EXIT_DEPTH_INSUFFICIENT"]
-    try:
-        closed_at = row["closed_at"]
-    except (IndexError, KeyError, TypeError):
-        closed_at = None
+    closed_at = _row_value(row, "closed_at")
+    if _parse_replay_time(closed_at) is None:
+        return ["CLOSED_AT_INVALID"]
+    observed_at = execution.get("observed_at")
+    if "observed_at" in execution and _parse_replay_time(observed_at) is None:
+        return ["EXIT_OBSERVED_AT_INVALID"]
     if not depth_observation_is_contemporaneous(
-        execution.get("observed_at"), closed_at
+        observed_at, closed_at
     ):
         return ["EXIT_DEPTH_STALE"]
     if (
-        executed <= 0
-        or displayed_depth <= 0
-        or not execution.get("source")
+        not execution.get("source")
         or not execution.get("observed_at")
         or execution.get("verification_status") != VERIFIED
     ):
@@ -675,12 +773,9 @@ def restate(db_path: Path) -> dict[str, Any]:
         orders = conn.execute(
             "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
         ).fetchall()
-        settlement_checks = {
-            int(check_row["order_id"]): str(check_row["verification_status"])
-            for check_row in conn.execute(
-                "SELECT order_id, verification_status FROM paper_settlement_verifications"
-            ).fetchall()
-        }
+        settlement_rows = conn.execute(
+            "SELECT * FROM paper_settlement_verifications"
+        ).fetchall()
         has_allocator_evidence = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='paper_maker_allocations'"
@@ -707,6 +802,18 @@ def restate(db_path: Path) -> dict[str, Any]:
             conn.execute("SELECT * FROM dataset_kalshi_trades").fetchall()
             if has_tape
             else []
+        )
+
+    settlement_checks: dict[int, str] = {}
+    invalid_settlement_tickers: set[str | None] = set()
+    for check_row in settlement_rows:
+        check_order_id = _positive_row_id(_row_value(check_row, "order_id"))
+        if check_order_id is None:
+            check_ticker = str(_row_value(check_row, "market_ticker") or "").strip()
+            invalid_settlement_tickers.add(check_ticker or None)
+            continue
+        settlement_checks[check_order_id] = str(
+            _row_value(check_row, "verification_status") or ""
         )
 
     allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
@@ -742,7 +849,9 @@ def restate(db_path: Path) -> dict[str, Any]:
 
     current_findings_by_order: dict[int, list[str]] = {}
     for row in orders:
-        order_id = int(row["id"])
+        order_id = _positive_row_id(row["id"])
+        if order_id is None:
+            continue
         evidence = _json_object(row["fill_evidence_json"])
         if evidence.get("model") != "maker_allocator_price_time_v4":
             continue
@@ -840,12 +949,15 @@ def restate(db_path: Path) -> dict[str, Any]:
     trade_id_owners: dict[str, set[int]] = defaultdict(set)
     evidences: dict[int, dict[str, Any]] = {}
     for row in orders:
+        order_id = _positive_row_id(row["id"])
+        if order_id is None:
+            continue
         evidence = _json_object(row["fill_evidence_json"])
-        evidences[int(row["id"])] = evidence
+        evidences[order_id] = evidence
         if evidence.get("research_shadow") or evidence.get("counterfactual"):
             continue
         for trade_id in evidence.get("trade_ids") or []:
-            trade_id_owners[str(trade_id)].add(int(row["id"]))
+            trade_id_owners[str(trade_id)].add(order_id)
     duplicate_trade_ids = {
         trade_id for trade_id, owners in trade_id_owners.items() if len(owners) > 1
     }
@@ -859,16 +971,25 @@ def restate(db_path: Path) -> dict[str, Any]:
     )
     resolved_statuses = ("PAPER_SETTLED", "PAPER_CLOSED")
     for row in orders:
-        order_id = int(row["id"])
-        evidence = evidences[order_id]
+        order_id = _positive_row_id(row["id"])
+        own_evidence = _json_object(row["fill_evidence_json"])
+        evidence = evidences.get(order_id, own_evidence)
+        findings = _order_lifecycle_findings(row)
         # A partial-close lot carries no fill evidence of its own -- its entry
         # was executed (and verified) on the parent order it split from.
-        parent_id = row["parent_order_id"] if "parent_order_id" in row.keys() else None
-        if parent_id:
-            evidence = evidences.get(int(parent_id), {})
-        entry_evidence_order_id = int(parent_id) if parent_id else order_id
+        parent_id, _ = _optional_parent_id(
+            _row_value(row, "parent_order_id")
+        )
+        if parent_id is not None:
+            parent_evidence = evidences.get(parent_id)
+            if parent_evidence is None:
+                _append_finding(findings, "PARENT_ORDER_MISSING")
+                evidence = {}
+            else:
+                evidence = parent_evidence
+        entry_evidence_order_id = parent_id if parent_id is not None else order_id
         outcome = _json_object(row["outcome_diagnostics_json"])
-        findings = _entry_findings(
+        findings += _entry_findings(
             row,
             evidence,
             duplicate_trade_ids,
@@ -881,19 +1002,28 @@ def restate(db_path: Path) -> dict[str, Any]:
         ):
             _append_finding(findings, "EXEC_V4_ORDER_VERSION_MISMATCH")
         findings += _exit_findings(row, outcome)
-        settlement_check = settlement_checks.get(order_id)
+        settlement_check = (
+            settlement_checks.get(order_id) if order_id is not None else None
+        )
         if settlement_check == "MISMATCH":
             findings.append("SETTLEMENT_MISMATCH")
+        ticker = str(row["market_ticker"])
+        if evidence.get("model") == "maker_allocator_price_time_v4" and (
+            None in invalid_settlement_tickers
+            or ticker in invalid_settlement_tickers
+        ):
+            findings.append("SETTLEMENT_VERIFICATION_ORDER_ID_INVALID")
         findings = list(dict.fromkeys(findings))
         verification = UNVERIFIABLE if findings else VERIFIED
-        realized = float(row["realized_pnl"] or 0.0)
+        realized = _finite_number(row["realized_pnl"])
         profile = str(row["risk_profile"] or "live")
+        status = str(row["status"])
         classes.append(
             {
-                "order_id": order_id,
-                "market_ticker": str(row["market_ticker"]),
+                "order_id": order_id if order_id is not None else row["id"],
+                "market_ticker": ticker,
                 "target_date": str(row["target_date"]),
-                "status": str(row["status"]),
+                "status": status,
                 "risk_profile": profile,
                 "execution_model_version": str(
                     row["execution_model_version"] or ""
@@ -902,15 +1032,16 @@ def restate(db_path: Path) -> dict[str, Any]:
                 "verification": verification,
                 "findings": findings,
                 "realized_pnl": round(realized, 4)
-                if str(row["status"]) in resolved_statuses
+                if status in resolved_statuses and realized is not None
                 else None,
             }
         )
-        if str(row["status"]) in resolved_statuses:
+        if status in resolved_statuses:
             totals[verification]["orders"] += 1
-            totals[verification]["realized_pnl"] += realized
             per_profile[profile][verification]["orders"] += 1
-            per_profile[profile][verification]["realized_pnl"] += realized
+            if realized is not None:
+                totals[verification]["realized_pnl"] += realized
+                per_profile[profile][verification]["realized_pnl"] += realized
 
     legacy_realized = sum(
         bucket["realized_pnl"] for bucket in totals.values()
