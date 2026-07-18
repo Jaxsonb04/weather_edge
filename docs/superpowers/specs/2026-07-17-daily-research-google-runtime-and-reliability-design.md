@@ -444,6 +444,10 @@ The deep audit already identified these P1 defects:
 3. A new inside-spread maker order inherits queue-ahead depth from the old lower
    bid. Depth at a worse price is behind the new order, so this understates fills
    and biases execution evaluation.
+4. Google refreshes reserve an estimated batch before fetching but reconcile
+   only after a successful return. Immediate and partial failures therefore
+   persist inaccurate event counts. The transactional per-dispatch ledger in
+   this design replaces estimated batch accounting before multi-city expansion.
 
 The implementation must add focused red tests for each reproduction before the
 fix. The remaining audit may add only evidence-backed performance, settlement,
