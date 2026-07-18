@@ -1,12 +1,10 @@
-"""DB-level backstop for the concurrent-open guard.
+"""DB-level backstop for account-scoped concurrent active-order admission.
 
-The application guard (has_active_paper_entry) is a check-then-insert across
-separate SQLite connections, so a transient profile-normalization gap during a
-deploy (the 2026-06-18 duplicate-open incident) or a check-then-insert race can
-still slip a second OPEN order onto the same market/side/profile. A partial
-UNIQUE index makes that physically impossible, while leaving arbitrage YES+NO
-boxes and post-close re-entry untouched. record_paper_order translates the
-constraint violation into a None return so the scan skips gracefully.
+The application check is a check-then-insert across separate SQLite
+connections. The partial UNIQUE index therefore enforces one active order for
+an account/date/market/side across filled, resting, partially filled, and
+partial-expired exposure. Separate accounts and opposite-side boxes remain
+independent, and re-entry is allowed after close or settlement.
 """
 
 from pathlib import Path
@@ -15,6 +13,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
+from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID, SHARED_ACCOUNT_ID
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
@@ -54,18 +53,21 @@ def _decision(
     )
 
 
-def _open_count(store: PaperStore, ticker: str, side: str, profile: str) -> int:
+def _open_count(store: PaperStore, ticker: str, side: str, account_id: str) -> int:
     with store.connect() as conn:
         row = conn.execute(
             """
             SELECT COUNT(*) FROM paper_orders
             WHERE target_date = ? AND market_ticker = ?
               AND UPPER(COALESCE(side, 'YES')) = ?
-              AND COALESCE(risk_profile, 'live') = ?
-              AND status IN ('PAPER_FILLED', 'PAPER_LIMIT_RESTING')
+              AND COALESCE(account_id, 'paper-shared') = ?
+              AND status IN (
+                  'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+                  'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+              )
               AND settled_at IS NULL AND closed_at IS NULL
             """,
-            ("2026-06-19", ticker, side.upper(), profile),
+            ("2026-06-19", ticker, side.upper(), account_id),
         ).fetchone()
     return int(row[0])
 
@@ -95,7 +97,7 @@ def test_guard_index_is_created_on_init():
         assert after == before
 
 
-def test_duplicate_open_same_market_side_profile_is_rejected():
+def test_duplicate_open_same_market_side_account_is_rejected():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         first = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
@@ -104,11 +106,19 @@ def test_duplicate_open_same_market_side_profile_is_rejected():
         assert isinstance(first, int)
         # The backstop rejects the concurrent duplicate; the store signals None.
         assert second is None
-        assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "NO", "research") == 1
+        assert (
+            _open_count(
+                store,
+                "KXHIGHTSFO-26JUN19-B72.5",
+                "NO",
+                RESEARCH_ACCOUNT_ID,
+            )
+            == 1
+        )
 
 
-def test_same_market_other_profile_is_independent():
-    # live and research are separate books; one open per book is fine.
+def test_same_market_other_account_is_independent():
+    # Live and legacy research shadow accounts have independent active guards.
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         research = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
@@ -116,8 +126,24 @@ def test_same_market_other_profile_is_independent():
 
         assert isinstance(research, int)
         assert isinstance(live, int)
-        assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "NO", "research") == 1
-        assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "NO", "live") == 1
+        assert (
+            _open_count(
+                store,
+                "KXHIGHTSFO-26JUN19-B72.5",
+                "NO",
+                RESEARCH_ACCOUNT_ID,
+            )
+            == 1
+        )
+        assert (
+            _open_count(
+                store,
+                "KXHIGHTSFO-26JUN19-B72.5",
+                "NO",
+                SHARED_ACCOUNT_ID,
+            )
+            == 1
+        )
 
 
 def test_arbitrage_yes_and_no_box_on_one_market_is_allowed():
@@ -133,8 +159,24 @@ def test_arbitrage_yes_and_no_box_on_one_market_is_allowed():
 
         assert isinstance(no_leg, int)
         assert isinstance(yes_leg, int)
-        assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "NO", "research") == 1
-        assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "YES", "research") == 1
+        assert (
+            _open_count(
+                store,
+                "KXHIGHTSFO-26JUN19-B72.5",
+                "NO",
+                RESEARCH_ACCOUNT_ID,
+            )
+            == 1
+        )
+        assert (
+            _open_count(
+                store,
+                "KXHIGHTSFO-26JUN19-B72.5",
+                "YES",
+                RESEARCH_ACCOUNT_ID,
+            )
+            == 1
+        )
 
 
 def test_reentry_after_close_is_allowed():
@@ -147,7 +189,55 @@ def test_reentry_after_close_is_allowed():
 
         assert isinstance(first, int)
         assert isinstance(second, int)
-        assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "NO", "research") == 1
+        assert (
+            _open_count(
+                store,
+                "KXHIGHTSFO-26JUN19-B72.5",
+                "NO",
+                RESEARCH_ACCOUNT_ID,
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        "PAPER_FILLED",
+        "PAPER_LIMIT_RESTING",
+        "PAPER_PARTIALLY_FILLED",
+        "PAPER_PARTIAL_EXPIRED",
+    ),
+)
+def test_every_active_status_is_counted_and_uniquely_guarded(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    store = PaperStore(tmp_path / f"{status}.db")
+    first = store.record_paper_order(
+        "2026-06-19",
+        _decision(),
+        risk_profile="research",
+        status=status,
+    )
+    second = store.record_paper_order(
+        "2026-06-19",
+        _decision(),
+        risk_profile="research",
+        status=status,
+    )
+
+    assert isinstance(first, int)
+    assert second is None
+    assert (
+        _open_count(
+            store,
+            "KXHIGHTSFO-26JUN19-B72.5",
+            "NO",
+            RESEARCH_ACCOUNT_ID,
+        )
+        == 1
+    )
 
 
 def test_target_and_motion_can_hold_same_market_but_same_account_cannot(

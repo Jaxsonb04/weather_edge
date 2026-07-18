@@ -663,8 +663,11 @@ _RESEARCH_IDENTITY_TABLES = (
 def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
     """Require complete identity on new sleeve evidence, never legacy rows."""
 
-    any_identity = " OR ".join(
+    new_identity = " OR ".join(
         f"NEW.{column} IS NOT NULL" for column in RESEARCH_IDENTITY_COLUMNS
+    )
+    old_identity = " OR ".join(
+        f"OLD.{column} IS NOT NULL" for column in RESEARCH_IDENTITY_COLUMNS
     )
     missing_core = " OR ".join(
         f"NULLIF(TRIM(NEW.{column}), '') IS NULL"
@@ -674,18 +677,41 @@ def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
             "policy_fingerprint",
         )
     )
-    research_accounts = (
+    new_research_account = (
         f"NEW.account_id IN ('{TARGET_POLICY.account_id}', "
         f"'{MOTION_POLICY.account_id}')"
     )
+    old_research_account = (
+        f"OLD.account_id IN ('{TARGET_POLICY.account_id}', "
+        f"'{MOTION_POLICY.account_id}')"
+    )
     for table in _RESEARCH_IDENTITY_TABLES:
-        account_condition = f"{research_accounts} OR " if table == "paper_orders" else ""
-        condition = f"({account_condition}{any_identity}) AND ({missing_core})"
         for operation in ("INSERT", "UPDATE"):
             trigger = f"trg_{table}_research_identity_{operation.lower()}"
+            if operation == "INSERT":
+                account_condition = (
+                    f"{new_research_account} OR "
+                    if table == "paper_orders"
+                    else ""
+                )
+                established_identity = f"{account_condition}{new_identity}"
+            else:
+                account_condition = (
+                    f"{old_research_account} OR {new_research_account} OR "
+                    if table == "paper_orders"
+                    else ""
+                )
+                established_identity = (
+                    f"{account_condition}{old_identity} OR {new_identity}"
+                )
+            condition = f"({established_identity}) AND ({missing_core})"
+            # Trigger names are schema API. Recreate them transactionally on
+            # every init so a stale/permissive same-name definition can never
+            # bypass current identity invariants.
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
             conn.execute(
                 f"""
-                CREATE TRIGGER IF NOT EXISTS {trigger}
+                CREATE TRIGGER {trigger}
                 BEFORE {operation} ON {table}
                 WHEN {condition}
                 BEGIN

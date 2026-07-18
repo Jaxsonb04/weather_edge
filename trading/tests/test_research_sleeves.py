@@ -65,6 +65,110 @@ def _insert_research_order(
     return int(cursor.lastrowid)
 
 
+_IDENTITY_TABLES = (
+    "paper_orders",
+    "decision_snapshots",
+    "scan_context_snapshots",
+    "paper_monitor_snapshots",
+    "research_shadow_monitor_snapshots",
+)
+
+
+def _insert_identity_row(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    established: bool,
+) -> int:
+    identity = (
+        (
+            TARGET_POLICY.sleeve.value,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.policy_fingerprint,
+        )
+        if established
+        else (None, None, None)
+    )
+    if table == "paper_orders":
+        return _insert_research_order(
+            conn,
+            ticker=(
+                "KXHIGHTSFO-IDENTITY-ESTABLISHED"
+                if established
+                else "KXHIGHTSFO-IDENTITY-LEGACY"
+            ),
+            account_id=TARGET_POLICY.account_id if established else "paper-shared",
+            sleeve=identity[0],
+            policy_version=identity[1],
+            policy_fingerprint=identity[2],
+            risk_profile="research" if established else "live",
+        )
+    if table == "decision_snapshots":
+        cursor = conn.execute(
+            """
+            INSERT INTO decision_snapshots (
+                created_at, target_date, market_ticker, label, action, side,
+                approved, probability, probability_lcb, yes_bid, yes_ask,
+                spread, fee_per_contract, cost_per_contract, edge, edge_lcb,
+                kelly_fraction, recommended_contracts, recommended_spend,
+                expected_profit, trade_quality_score, reasons_json,
+                research_sleeve, research_policy_version, policy_fingerprint
+            ) VALUES (
+                '2026-07-18T12:00:00+00:00', '2026-07-19',
+                'KXHIGHTSFO-IDENTITY', '80 to 81', 'BUY_NO', 'NO', 1,
+                0.70, 0.65, 0.20, 0.21, 0.01, 0.01, 0.81, 0.10, 0.05,
+                0.01, 1, 0.81, 0.10, 50, '[]', ?, ?, ?
+            )
+            """,
+            identity,
+        )
+        return int(cursor.lastrowid)
+    if table == "scan_context_snapshots":
+        cursor = conn.execute(
+            """
+            INSERT INTO scan_context_snapshots (
+                created_at, target_date, prediction_features_json,
+                schema_version, research_sleeve, research_policy_version,
+                policy_fingerprint
+            ) VALUES (
+                '2026-07-18T12:00:00+00:00', '2026-07-19', '{}', 1, ?, ?, ?
+            )
+            """,
+            identity,
+        )
+        return int(cursor.lastrowid)
+    if table == "paper_monitor_snapshots":
+        cursor = conn.execute(
+            """
+            INSERT INTO paper_monitor_snapshots (
+                created_at, order_id, target_date, market_ticker, side, action,
+                research_sleeve, research_policy_version, policy_fingerprint
+            ) VALUES (
+                '2026-07-18T12:00:00+00:00', 999, '2026-07-19',
+                'KXHIGHTSFO-IDENTITY', 'NO', 'HOLD', ?, ?, ?
+            )
+            """,
+            identity,
+        )
+        return int(cursor.lastrowid)
+    if table == "research_shadow_monitor_snapshots":
+        cursor = conn.execute(
+            """
+            INSERT INTO research_shadow_monitor_snapshots (
+                created_at, shadow_order_id, target_date, market_ticker, side,
+                action, research_sleeve, research_policy_version,
+                policy_fingerprint
+            ) VALUES (
+                '2026-07-18T12:00:00+00:00', 999, '2026-07-19',
+                'KXHIGHTSFO-IDENTITY', 'NO', 'HOLD', ?, ?, ?
+            )
+            """,
+            identity,
+        )
+        return int(cursor.lastrowid)
+    raise AssertionError(f"unsupported identity table {table}")
+
+
 def test_research_policy_constants_are_fixed() -> None:
     assert TARGET_POLICY.sleeve is ResearchSleeve.TARGET
     assert TARGET_POLICY.account_id == "paper-research-target-v1"
@@ -258,3 +362,171 @@ def test_new_research_write_requires_sleeve_policy_identity(tmp_path: Path) -> N
             risk_profile="live",
         )
         assert legacy_id > 0
+
+
+def test_target_order_cannot_atomically_move_account_and_erase_identity(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "paper.db")
+    with store.connect() as conn:
+        order_id = _insert_identity_row(conn, "paper_orders", established=True)
+        with pytest.raises(sqlite3.IntegrityError, match="research identity"):
+            conn.execute(
+                """
+                UPDATE paper_orders
+                SET account_id='paper-shared', research_sleeve=NULL,
+                    research_policy_version=NULL, policy_fingerprint=NULL
+                WHERE id=?
+                """,
+                (order_id,),
+            )
+
+
+@pytest.mark.parametrize("table", _IDENTITY_TABLES)
+def test_established_research_identity_cannot_be_erased(
+    tmp_path: Path,
+    table: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / f"{table}.db")
+    with store.connect() as conn:
+        row_id = _insert_identity_row(conn, table, established=True)
+        with pytest.raises(sqlite3.IntegrityError, match="research identity"):
+            conn.execute(
+                f"""
+                UPDATE {table}
+                SET research_sleeve=NULL, research_policy_version=NULL,
+                    policy_fingerprint=NULL
+                WHERE id=?
+                """,
+                (row_id,),
+            )
+
+
+@pytest.mark.parametrize("table", _IDENTITY_TABLES)
+def test_identity_preserving_and_legacy_updates_remain_allowed(
+    tmp_path: Path,
+    table: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / f"{table}.db")
+    with store.connect() as conn:
+        research_id = _insert_identity_row(conn, table, established=True)
+        legacy_id = _insert_identity_row(conn, table, established=False)
+        conn.execute(
+            f"UPDATE {table} SET objective_day='2026-07-18' WHERE id=?",
+            (research_id,),
+        )
+        conn.execute(
+            f"UPDATE {table} SET created_at='2026-07-18T13:00:00+00:00' WHERE id=?",
+            (legacy_id,),
+        )
+
+        rows = conn.execute(
+            f"SELECT id, research_sleeve, research_policy_version, "
+            f"policy_fingerprint FROM {table} WHERE id IN (?, ?) ORDER BY id",
+            (research_id, legacy_id),
+        ).fetchall()
+
+    assert rows == [
+        (
+            research_id,
+            TARGET_POLICY.sleeve.value,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.policy_fingerprint,
+        ),
+        (legacy_id, None, None, None),
+    ]
+
+
+def test_init_replaces_permissive_same_name_identity_trigger(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    db_path = tmp_path / "permissive-trigger.db"
+    store = PaperStore(db_path)
+    trigger_name = "trg_paper_orders_research_identity_insert"
+    with store.connect() as conn:
+        conn.execute(f"DROP TRIGGER {trigger_name}")
+        conn.execute(
+            f"""
+            CREATE TRIGGER {trigger_name}
+            BEFORE INSERT ON paper_orders
+            BEGIN
+                SELECT 1;
+            END
+            """
+        )
+
+    PaperStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        trigger_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger_name,),
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError, match="research identity"):
+            _insert_research_order(
+                conn,
+                ticker="KXHIGHTSFO-PERMISSIVE",
+                account_id=TARGET_POLICY.account_id,
+                sleeve=None,
+                policy_version=TARGET_POLICY.policy_version,
+                policy_fingerprint=TARGET_POLICY.policy_fingerprint,
+            )
+    assert "research identity requires" in trigger_sql
+
+
+def test_identity_trigger_recreate_failure_rolls_back_old_definition(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    db_path = tmp_path / "trigger-recreate-failure.db"
+    store = PaperStore(db_path)
+    trigger_name = "trg_paper_orders_research_identity_insert"
+    permissive_sql = f"""
+        CREATE TRIGGER {trigger_name}
+        BEFORE INSERT ON paper_orders
+        BEGIN
+            SELECT 1;
+        END
+    """
+    with store.connect() as conn:
+        conn.execute(f"DROP TRIGGER {trigger_name}")
+        conn.execute(permissive_sql)
+
+    denied = PaperStore(db_path, init=False)
+    normal_connect = denied.connect
+
+    def connect_denying_trigger_create() -> sqlite3.Connection:
+        conn = normal_connect()
+
+        def authorizer(
+            action: int,
+            arg1: str | None,
+            _arg2: str | None,
+            _db_name: str | None,
+            _trigger_name: str | None,
+        ) -> int:
+            if action == sqlite3.SQLITE_CREATE_TRIGGER and arg1 == trigger_name:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(authorizer)
+        return conn
+
+    denied.connect = connect_denying_trigger_create  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        denied.init()
+
+    with sqlite3.connect(db_path) as conn:
+        stored_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger_name,),
+        ).fetchone()[0]
+    assert "SELECT 1" in stored_sql
+    assert "research identity requires" not in stored_sql
