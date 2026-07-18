@@ -135,6 +135,81 @@ def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
     assert ("--place-research-motion" in research) is expected_motion
 
 
+@pytest.mark.parametrize(
+    ("raw_profile", "placement_flags", "canonical_profile", "expected_flag"),
+    [
+        ("live", {"PAPER_PLACE_LIVE": "1"}, "live", "--place-paper"),
+        ("BALANCED", {"PAPER_PLACE_LIVE": "1"}, "live", "--place-paper"),
+        ("conservative", {"PAPER_PLACE_LIVE": "1"}, "live", "--place-paper"),
+        (" REAL ", {"PAPER_PLACE_LIVE": "yes"}, "live", "--place-paper"),
+        (
+            "research",
+            {"PAPER_PLACE_RESEARCH_TARGET": "1"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "fast_feedback",
+            {"PAPER_PLACE_RESEARCH_TARGET": "on"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "FAST-FEEDBACK",
+            {"PAPER_PLACE_RESEARCH_MOTION": "TRUE"},
+            "research",
+            "--place-research-motion",
+        ),
+        (
+            " ExPlOrAtOrY ",
+            {"PAPER_PLACE_RESEARCH_TARGET": "y"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "FAST",
+            {"PAPER_PLACE_RESEARCH_MOTION": "1"},
+            "research",
+            "--place-research-motion",
+        ),
+        (
+            "collector",
+            {"PAPER_PLACE_RESEARCH_TARGET": "1"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "EXPLORE",
+            {"PAPER_PLACE_RESEARCH_MOTION": "1"},
+            "research",
+            "--place-research-motion",
+        ),
+    ],
+)
+def test_paper_scan_normalizes_supported_profile_aliases_before_dispatch(
+    tmp_path: Path,
+    raw_profile: str,
+    placement_flags: dict[str, str],
+    canonical_profile: str,
+    expected_flag: str,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_RISK_PROFILES=raw_profile,
+        **placement_flags,
+    )
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call[call.index("--risk-profile") + 1] == canonical_profile
+    assert expected_flag in call
+    if canonical_profile == "live":
+        assert "--place-research-target" not in call
+        assert "--place-research-motion" not in call
+    else:
+        assert "--place-paper" not in call
+
+
 def _stub_clean_main_git(fake_bin: Path) -> None:
     _write_executable(
         fake_bin / "git",

@@ -41,6 +41,24 @@ truthy() {
   esac
 }
 
+normalize_profile() {
+  local value="$1"
+  # Match Python's strip().lower().replace("_", "-") normalization without
+  # deleting whitespace inside a value. The alias sets must stay identical to
+  # config.py:normalize_risk_profile_name.
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  value="${value//_/-}"
+  case "$value" in
+    "" | live | balanced | conservative | real) printf '%s\n' live ;;
+    research | exploratory | fast-feedback | fast | collector | explore)
+      printf '%s\n' research
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 if [[ "$PYTHON_BIN" != */* ]]; then
   if ! PYTHON_BIN="$(command -v "$PYTHON_BIN")"; then
     echo "missing trading Python runtime: $SFO_TRADING_PYTHON" >&2
@@ -56,9 +74,14 @@ cd "$TRADING_DIR"
 IFS=',' read -r -a profiles <<< "$PROFILES_CSV"
 profile_index=0
 for raw_profile in "${profiles[@]}"; do
-  profile="${raw_profile//[[:space:]]/}"
-  if [[ -z "$profile" ]]; then
+  trimmed_profile="${raw_profile#"${raw_profile%%[![:space:]]*}"}"
+  trimmed_profile="${trimmed_profile%"${trimmed_profile##*[![:space:]]}"}"
+  if [[ -z "$trimmed_profile" ]]; then
     continue
+  fi
+  if ! profile="$(normalize_profile "$raw_profile")"; then
+    echo "invalid paper risk profile: $trimmed_profile" >&2
+    exit 2
   fi
 
   skip_context=0
@@ -98,9 +121,6 @@ for raw_profile in "${profiles[@]}"; do
       if ! truthy "$PAPER_PLACE_RESEARCH_TARGET" && ! truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
         echo "research allocators shadow mode: recording decisions without paper placement"
       fi
-      ;;
-    *)
-      echo "unknown profile has no placement control and remains shadow-only: $profile" >&2
       ;;
   esac
   # Forecast/probability/market context is identical across profiles in one
