@@ -37,7 +37,7 @@ from .fees import (
     quadratic_fee_average_per_contract,
     quadratic_fee_per_contract,
 )
-from .execution import initial_queue_ahead
+from .execution import BuyLimitQuote, buy_limit_for_decision, initial_queue_ahead
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
@@ -1366,6 +1366,65 @@ class PaperStore:
         return snapshot
 
     @staticmethod
+    def _canonical_research_limit_quote(
+        decision: TradeDecision,
+        strategy_config: StrategyConfig,
+    ) -> BuyLimitQuote:
+        """Rebuild and bind the executable quote from journaled market inputs."""
+
+        quote = buy_limit_for_decision(decision, strategy_config)
+        if quote is None:
+            raise ValueError("canonical research limit quote is unavailable")
+        try:
+            limit_price = float(decision.limit_price)
+            limit_fee = float(decision.limit_fee_per_contract)
+            limit_cost = float(decision.limit_cost_per_contract)
+            limit_edge = float(decision.limit_edge)
+            limit_edge_lcb = float(decision.limit_edge_lcb)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("canonical research limit quote is invalid") from exc
+        if (
+            not math.isfinite(limit_price)
+            or not math.isclose(
+                limit_price,
+                quote.price,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isfinite(limit_fee)
+            or not math.isclose(
+                limit_fee,
+                quote.fee_per_contract,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isfinite(limit_cost)
+            or not math.isclose(
+                limit_cost,
+                quote.cost_per_contract,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isfinite(limit_edge)
+            or not math.isclose(
+                limit_edge,
+                quote.edge,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isfinite(limit_edge_lcb)
+            or not math.isclose(
+                limit_edge_lcb,
+                quote.edge_lcb,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or (limit_price >= float(decision.ask) - 1e-12) != quote.would_cross
+        ):
+            raise ValueError("canonical research limit quote does not match")
+        return quote
+
+    @staticmethod
     def _research_entry_decision_on_connection(
         conn: sqlite3.Connection,
         *,
@@ -1544,6 +1603,10 @@ class PaperStore:
             decision,
             contracts=contracts,
         )
+        canonical_limit_quote = self._canonical_research_limit_quote(
+            decision,
+            strategy_config,
+        )
         side = str(decision.side or "").upper()
         if side not in {"YES", "NO"}:
             raise ValueError("research order side must be YES or NO")
@@ -1551,22 +1614,14 @@ class PaperStore:
         ask = float(decision.ask)
         if not math.isfinite(ask) or ask <= 0 or ask >= 1:
             return None
-        has_limit = decision.limit_price is not None
-        limit_price = float(decision.limit_price) if has_limit else None
-        if limit_price is not None and (
-            not math.isfinite(limit_price) or limit_price <= 0 or limit_price >= 1
-        ):
+        limit_price = canonical_limit_quote.price
+        if limit_price <= 0 or limit_price >= 1:
             return None
-        resting = limit_price is not None and limit_price < ask - 1e-9
-        entry_mode = "limit" if has_limit else "market"
-        entry_price = float(limit_price if resting else ask)
-        fee_per_contract = quadratic_fee_average_per_contract(
-            entry_price,
-            contracts,
-            maker=resting,
-            series_ticker=decision.ticker,
-        )
-        cost_per_contract = entry_price + fee_per_contract
+        resting = not canonical_limit_quote.would_cross
+        entry_mode = "limit"
+        entry_price = limit_price
+        fee_per_contract = canonical_limit_quote.fee_per_contract
+        cost_per_contract = canonical_limit_quote.cost_per_contract
         if (
             not math.isfinite(cost_per_contract)
             or cost_per_contract <= 0
@@ -1589,8 +1644,8 @@ class PaperStore:
             else 0.0
         )
         fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
-        edge = decision.probability - cost_per_contract
-        edge_lcb = decision.probability_lcb - cost_per_contract
+        edge = canonical_limit_quote.edge
+        edge_lcb = canonical_limit_quote.edge_lcb
         expected_profit = edge * contracts
         quote_snapshot_json = json.dumps(
             {
@@ -1721,10 +1776,10 @@ class PaperStore:
                         decision.cap_strike,
                         entry_mode,
                         limit_price,
-                        fee_per_contract if has_limit else None,
-                        cost_per_contract if has_limit else None,
-                        decision.probability - cost_per_contract if has_limit else None,
-                        decision.probability_lcb - cost_per_contract if has_limit else None,
+                        fee_per_contract,
+                        cost_per_contract,
+                        edge,
+                        edge_lcb,
                         fee_per_contract,
                         cost_per_contract,
                         decision.probability,

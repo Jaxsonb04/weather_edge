@@ -14,6 +14,7 @@ from sfo_kalshi_quant.account import (
     strategy_fingerprint,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
+from sfo_kalshi_quant.execution import with_buy_limit
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
@@ -573,8 +574,7 @@ def _atomic_decision(
     contracts: float = 1.0,
     resting: bool = True,
 ) -> TradeDecision:
-    limit_price = 0.80 if resting else None
-    return TradeDecision(
+    decision = TradeDecision(
         ticker=ticker,
         label="80° to 81°",
         action="BUY_NO",
@@ -593,7 +593,7 @@ def _atomic_decision(
         expected_profit=0.08 * contracts,
         reasons=[],
         side="NO",
-        entry_bid=0.79,
+        entry_bid=0.79 if resting else 0.81,
         entry_ask=0.82,
         entry_bid_size=0.0,
         entry_ask_size=100.0,
@@ -601,12 +601,11 @@ def _atomic_decision(
         floor_strike=80.0,
         cap_strike=81.0,
         trade_quality_score=75.0,
-        limit_price=limit_price,
-        limit_fee_per_contract=0.0 if resting else None,
-        limit_cost_per_contract=0.80 if resting else None,
-        limit_edge=0.10 if resting else None,
-        limit_edge_lcb=0.08 if resting else None,
     )
+    limited = with_buy_limit(decision, strategy_config_for_profile("research"))
+    assert limited.approved
+    assert limited.limit_price is not None
+    return limited
 
 
 def _fixed_research_clock() -> datetime:
@@ -1772,6 +1771,274 @@ def test_atomic_admission_rechecks_research_spread_limit(
         store.record_research_order_atomic(
             "2026-07-19",
             decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def test_atomic_admission_rejects_limit_price_changed_after_evidence(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "changed-limit-price.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision("KXHIGHTSFO-CHANGED-LIMIT-PRICE")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "changed-limit-price",
+        evidenced,
+    )
+    mutated = replace(evidenced, limit_price=0.01)
+
+    with pytest.raises(ValueError, match="canonical research limit quote"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            mutated,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+    with store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
+
+
+def test_atomic_admission_rejects_limit_fee_changed_after_evidence(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "changed-limit-fee.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision("KXHIGHTSFO-CHANGED-LIMIT-FEE")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "changed-limit-fee",
+        evidenced,
+    )
+    assert evidenced.limit_fee_per_contract is not None
+    mutated = replace(
+        evidenced,
+        limit_fee_per_contract=evidenced.limit_fee_per_contract + 0.01,
+    )
+
+    with pytest.raises(ValueError, match="canonical research limit quote"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            mutated,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def test_atomic_admission_rejects_limit_cost_changed_after_evidence(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "changed-limit-cost.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision("KXHIGHTSFO-CHANGED-LIMIT-COST")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "changed-limit-cost",
+        evidenced,
+    )
+    assert evidenced.limit_cost_per_contract is not None
+    mutated = replace(
+        evidenced,
+        limit_cost_per_contract=evidenced.limit_cost_per_contract + 0.01,
+    )
+
+    with pytest.raises(ValueError, match="canonical research limit quote"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            mutated,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def test_atomic_admission_rejects_limit_edge_changed_after_evidence(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "changed-limit-edge.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision("KXHIGHTSFO-CHANGED-LIMIT-EDGE")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "changed-limit-edge",
+        evidenced,
+    )
+    assert evidenced.limit_edge is not None
+    mutated = replace(evidenced, limit_edge=evidenced.limit_edge + 0.01)
+
+    with pytest.raises(ValueError, match="canonical research limit quote"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            mutated,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def test_atomic_admission_rejects_limit_edge_lcb_changed_after_evidence(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "changed-limit-edge-lcb.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision("KXHIGHTSFO-CHANGED-LIMIT-EDGE-LCB")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "changed-limit-edge-lcb",
+        evidenced,
+    )
+    assert evidenced.limit_edge_lcb is not None
+    mutated = replace(evidenced, limit_edge_lcb=evidenced.limit_edge_lcb + 0.01)
+
+    with pytest.raises(ValueError, match="canonical research limit quote"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            mutated,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("resting", "expected_status"),
+    ((True, "PAPER_LIMIT_RESTING"), (False, "PAPER_FILLED")),
+)
+def test_atomic_admission_accepts_canonical_resting_and_crossing_quotes(
+    tmp_path: Path,
+    resting: bool,
+    expected_status: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"canonical-quote-{resting}.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision(
+        f"KXHIGHTSFO-CANONICAL-QUOTE-{resting}",
+        resting=resting,
+    )
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"canonical-quote-{resting}",
+        decision,
+    )
+
+    order_id = store.record_research_order_atomic(
+        "2026-07-19",
+        decision,
+        admission=admission,
+        strategy_config=strategy_config_for_profile("research"),
+    )
+    assert order_id is not None
+    order = store.paper_order(order_id)
+    assert order is not None
+    assert order["status"] == expected_status
+    assert order["entry_mode"] == "limit"
+    assert order["limit_price"] == pytest.approx(decision.limit_price)
+    assert order["limit_fee_per_contract"] == pytest.approx(
+        decision.limit_fee_per_contract
+    )
+    assert order["limit_cost_per_contract"] == pytest.approx(
+        decision.limit_cost_per_contract
+    )
+
+
+@pytest.mark.parametrize("starts_resting", (True, False))
+def test_atomic_admission_rejects_crossing_resting_transition_after_evidence(
+    tmp_path: Path,
+    starts_resting: bool,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"quote-transition-{starts_resting}.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision(
+        f"KXHIGHTSFO-QUOTE-TRANSITION-{starts_resting}",
+        resting=starts_resting,
+    )
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"quote-transition-{starts_resting}",
+        evidenced,
+    )
+    transitioned_price = evidenced.ask if starts_resting else evidenced.ask - 0.01
+    transitioned = replace(evidenced, limit_price=transitioned_price)
+
+    with pytest.raises(ValueError, match="canonical research limit quote"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            transitioned,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "limit_price",
+        "limit_fee_per_contract",
+        "limit_cost_per_contract",
+        "limit_edge",
+        "limit_edge_lcb",
+    ),
+)
+def test_atomic_admission_rejects_nonfinite_canonical_quote_field(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"nonfinite-quote-{field}.db",
+        research_clock=_fixed_research_clock,
+    )
+    evidenced = _atomic_decision(f"KXHIGHTSFO-NONFINITE-QUOTE-{field}")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"nonfinite-quote-{field}",
+        evidenced,
+    )
+    mutated = replace(evidenced, **{field: float("nan")})
+
+    with pytest.raises(
+        ValueError,
+        match="(?:research strategy entry limits|canonical research limit quote)",
+    ):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            mutated,
             admission=admission,
             strategy_config=strategy_config_for_profile("research"),
         )
