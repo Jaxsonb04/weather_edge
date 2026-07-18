@@ -401,3 +401,40 @@ def test_paper_summary_keeps_partially_realized_open_root_undecided():
         assert today_row["losses"] == 0
         assert today_row["realized_pnl"] == round(realized_pnl, 2)
         assert today_row["resolved_spend"] == round(capital, 2)
+
+
+def test_paper_summary_excludes_malformed_exit_evidence_without_crashing():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+
+        today = _now_local().date().isoformat()
+        order_id = store.record_paper_order(
+            today,
+            _decision("KXHIGHTPHX-TEST-B112.5"),
+            risk_profile="live",
+        )
+        store.close_paper_order(order_id, 0.70)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET exit_price='not-a-price', "
+                "exit_fee_per_contract='not-a-fee' WHERE id=?",
+                (order_id,),
+            )
+
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=7,
+        )
+
+        assert payload["totals"]["trades_opened"] == 0
+        assert payload["totals"]["trades_closed"] == 0
+        assert payload["totals"]["wins"] == 0
+        assert payload["totals"]["realized_pnl"] == 0.0
+        assert payload["totals"]["capital_resolved"] == 0.0
+        assert payload["current_equity"] == 1000.0

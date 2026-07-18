@@ -566,16 +566,8 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
             "status": row["status"],
             "closed_at": row["closed_at"],
             "settled_at": row["settled_at"],
-            "exit_price": (
-                float(row["exit_price"])
-                if _row_value(row, "exit_price") is not None
-                else None
-            ),
-            "exit_fee_per_contract": (
-                float(row["exit_fee_per_contract"])
-                if _row_value(row, "exit_fee_per_contract") is not None
-                else None
-            ),
+            "exit_price": _row_value(row, "exit_price"),
+            "exit_fee_per_contract": _row_value(row, "exit_fee_per_contract"),
             "realized_pnl": float(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
         }
         for row in rows
