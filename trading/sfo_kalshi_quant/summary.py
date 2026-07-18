@@ -10,6 +10,7 @@ from typing import Any
 from ._util import _parse_timestamp, _row_value, _table_exists
 from .config import SFO_TZ, StrategyConfig
 from .forecast import ForecastDataError, SfoForecasterAdapter
+from .logical_positions import group_logical_positions
 
 
 def build_paper_summary(
@@ -35,6 +36,16 @@ def build_paper_summary(
     day_keys = [(window_start + timedelta(days=offset)).isoformat() for offset in range(days)]
 
     orders = _load_orders(db_path)
+    positions = group_logical_positions(orders)
+    valid_positions = [position for position in positions if position.valid]
+    valid_position_rows = [position.as_row() for position in valid_positions]
+    terminal_positions = [position for position in valid_positions if position.terminal]
+    terminal_rows = [position.as_row() for position in terminal_positions]
+    resolved_lots = [
+        lot
+        for position in valid_positions
+        for lot in position.resolved_lots
+    ]
     decision_stats = _decision_stats(db_path, window_start)
     forecast_errors = _forecast_error_by_date(forecaster_root, window_start, today)
 
@@ -42,11 +53,29 @@ def build_paper_summary(
     realized_before_window = 0.0
     total_realized_all_time = 0.0
 
-    for order in orders:
+    for order in valid_position_rows:
         opened_at = order.get("filled_at")
-        if opened_at is None and order["status"] in {"PAPER_FILLED", "PAPER_SETTLED", "PAPER_CLOSED"}:
+        if opened_at is None and order["status"] in {
+            "PAPER_FILLED",
+            "PAPER_PARTIALLY_FILLED",
+            "PAPER_PARTIAL_EXPIRED",
+            "PAPER_SETTLED",
+            "PAPER_CLOSED",
+        }:
             opened_at = order["created_at"]  # legacy rows predate filled_at
         opened_day = _local_day(opened_at) if opened_at else None
+        spend = order["contracts"] * order["cost_per_contract"]
+
+        profile = order["risk_profile"]
+        if opened_day in per_day:
+            day = per_day[opened_day]
+            day["opened"] += 1
+            day["opened_spend"] += spend
+            day_profile = _day_profile(day, profile)
+            day_profile["opened"] += 1
+            day_profile["opened_spend"] += spend
+
+    for order in resolved_lots:
         resolved_at = order["closed_at"] or order["settled_at"]
         resolved_day = _local_day(resolved_at) if resolved_at else None
         pnl = order["realized_pnl"]
@@ -58,42 +87,47 @@ def build_paper_summary(
                 realized_before_window += pnl
 
         profile = order["risk_profile"]
-        if opened_day in per_day:
-            day = per_day[opened_day]
-            day["opened"] += 1
-            day["opened_spend"] += spend
-            day_profile = _day_profile(day, profile)
-            day_profile["opened"] += 1
-            day_profile["opened_spend"] += spend
-        # PAPER_EXPIRED rows are resting limits that never filled (realized_pnl
-        # 0.0); they resolved no position, so they must not inflate the settled
-        # count or the hit-rate denominator as phantom non-wins.
-        if (
-            resolved_day in per_day
-            and pnl is not None
-            and order["status"] != "PAPER_EXPIRED"
-        ):
+        if resolved_day in per_day and pnl is not None:
             day = per_day[resolved_day]
             day["realized_pnl"] += pnl
             day["resolved_spend"] += spend
             day_profile = _day_profile(day, profile)
             day_profile["realized_pnl"] += pnl
-            day_profile["resolved"] += 1
             day_profile["resolved_spend"] += spend
-            if order["closed_at"]:
-                day["closed"] += 1
-                day_profile["closed"] += 1
-            else:
-                day["settled"] += 1
-                day_profile["settled"] += 1
-            if pnl > 0:
-                day["wins"] += 1
-                day_profile["wins"] += 1
-            elif pnl < 0:
-                day["losses"] += 1
-                day_profile["losses"] += 1
 
-    open_orders = [order for order in orders if order["realized_pnl"] is None and order["status"] == "PAPER_FILLED"]
+    for order in terminal_rows:
+        resolved_at = (
+            order["latest_resolved_at"]
+            or order["closed_at"]
+            or order["settled_at"]
+        )
+        resolved_day = _local_day(resolved_at) if resolved_at else None
+        if resolved_day not in per_day:
+            continue
+        day = per_day[resolved_day]
+        day_profile = _day_profile(day, order["risk_profile"])
+        day_profile["resolved"] += 1
+        if order["status"] == "PAPER_CLOSED":
+            day["closed"] += 1
+            day_profile["closed"] += 1
+        else:
+            day["settled"] += 1
+            day_profile["settled"] += 1
+        if order["logical_outcome"] == "win":
+            day["wins"] += 1
+            day_profile["wins"] += 1
+        elif order["logical_outcome"] == "loss":
+            day["losses"] += 1
+            day_profile["losses"] += 1
+
+    open_orders = [
+        position.root
+        for position in valid_positions
+        if not position.terminal
+        and position.root["realized_pnl"] is None
+        and position.root["status"]
+        in {"PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"}
+    ]
     open_risk = sum(order["contracts"] * order["cost_per_contract"] for order in open_orders)
 
     cumulative = realized_before_window
@@ -140,26 +174,52 @@ def build_paper_summary(
         day["forecast_error_f"] = forecast["error"] if forecast else None
         days_out.append(day)
 
-    window_orders = [
+    window_terminal_rows = [
         order
-        for order in orders
-        if order["realized_pnl"] is not None
-        and order["status"] in {"PAPER_SETTLED", "PAPER_CLOSED"}
-        and (resolved := order["closed_at"] or order["settled_at"]) is not None
+        for order in terminal_rows
+        if (
+            resolved := order["latest_resolved_at"]
+            or order["closed_at"]
+            or order["settled_at"]
+        )
+        is not None
         and _local_day(resolved) >= window_start.isoformat()
     ]
-    window_pnl = sum(order["realized_pnl"] for order in window_orders)
-    window_spend = sum(order["contracts"] * order["cost_per_contract"] for order in window_orders)
-    window_wins = sum(1 for order in window_orders if order["realized_pnl"] > 0)
-    window_losses = sum(1 for order in window_orders if order["realized_pnl"] < 0)
+    window_resolved_lots = [
+        order
+        for order in resolved_lots
+        if (resolved := order["closed_at"] or order["settled_at"]) is not None
+        and _local_day(resolved) >= window_start.isoformat()
+    ]
+    window_pnl = sum(order["realized_pnl"] for order in window_resolved_lots)
+    window_spend = sum(
+        order["contracts"] * order["cost_per_contract"]
+        for order in window_resolved_lots
+    )
+    window_wins = sum(
+        1 for order in window_terminal_rows if order["logical_outcome"] == "win"
+    )
+    window_losses = sum(
+        1 for order in window_terminal_rows if order["logical_outcome"] == "loss"
+    )
     scanning_profiles = [
         row["risk_profile"]
         for row in (decision_stats["gate_behavior"].get("by_profile") or [])
     ]
-    window_profiles = _window_profile_totals(window_orders, open_orders, scanning_profiles)
+    window_profiles = _window_profile_totals(
+        window_terminal_rows,
+        window_resolved_lots,
+        open_orders,
+        scanning_profiles,
+    )
     forecast_abs_errors = [row["error"] for row in forecast_errors.values() if row["error"] is not None]
 
-    ranked = sorted(window_orders, key=lambda order: order["realized_pnl"], reverse=True)
+    ranked = sorted(
+        window_terminal_rows,
+        key=lambda order: order["realized_pnl"],
+        reverse=True,
+    )
+    profile_keys = _profile_keys(window_terminal_rows + window_resolved_lots)
     payload = {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -195,8 +255,10 @@ def build_paper_summary(
             else None,
         },
         "profiles": window_profiles,
-        "side_performance": _side_performance(window_orders),
-        "exit_reasons": _exit_reason_breakdown(window_orders),
+        "side_performance": _side_performance(
+            window_terminal_rows, window_resolved_lots
+        ),
+        "exit_reasons": _exit_reason_breakdown(window_terminal_rows),
         # Per-profile views of the same two breakdowns, keyed by risk_profile, so
         # selecting a profile tab on the dashboard shows that profile's YES/NO
         # split and exit-reason mix instead of the aggregate-only cards going
@@ -204,22 +266,36 @@ def build_paper_summary(
         # (_load_orders) and are aggregate-only -- excluded here so the published
         # maps never carry an "unknown" key (consistent with _profile_names).
         "side_performance_by_profile": {
-            name: _side_performance([o for o in window_orders if o["risk_profile"] == name])
-            for name in _profile_keys(window_orders)
+            name: _side_performance(
+                [o for o in window_terminal_rows if o["risk_profile"] == name],
+                [o for o in window_resolved_lots if o["risk_profile"] == name],
+            )
+            for name in profile_keys
         },
         "exit_reasons_by_profile": {
-            name: _exit_reason_breakdown([o for o in window_orders if o["risk_profile"] == name])
-            for name in _profile_keys(window_orders)
+            name: _exit_reason_breakdown(
+                [o for o in window_terminal_rows if o["risk_profile"] == name]
+            )
+            for name in profile_keys
         },
-        "biggest_winners": [_order_brief(order) for order in ranked[:3] if order["realized_pnl"] > 0],
+        "biggest_winners": [
+            _order_brief(order)
+            for order in ranked[:3]
+            if order["logical_outcome"] == "win"
+        ],
         "biggest_losers": [
-            _order_brief(order) for order in sorted(window_orders, key=lambda order: order["realized_pnl"])[:3]
-            if order["realized_pnl"] < 0
+            _order_brief(order)
+            for order in sorted(
+                window_terminal_rows, key=lambda order: order["realized_pnl"]
+            )[:3]
+            if order["logical_outcome"] == "loss"
         ],
         "gate_behavior": decision_stats["gate_behavior"],
         "model_vs_market": decision_stats["model_vs_market"],
         "data_collected": _data_collected(db_path, window_start),
-        "learnings": _learnings(window_orders, decision_stats, forecast_abs_errors),
+        "learnings": _learnings(
+            window_terminal_rows, decision_stats, forecast_abs_errors
+        ),
     }
     payload["recommended_changes"] = _recommended_changes(payload)
     return payload
@@ -347,7 +423,10 @@ def _exit_reason_breakdown(window_orders: list) -> dict[str, int]:
     return counts
 
 
-def _side_performance(window_orders: list) -> dict[str, dict[str, Any]]:
+def _side_performance(
+    terminal_rows: list[dict[str, Any]],
+    resolved_lots: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     """Per-side (YES vs NO) realized performance over the window.
 
     Surfaces the structural YES-vs-NO gap directly on the dashboard (live: the
@@ -360,21 +439,25 @@ def _side_performance(window_orders: list) -> dict[str, dict[str, Any]]:
         side: {"trades": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0, "capital": 0.0}
         for side in ("YES", "NO")
     }
-    for order in window_orders:
-        if order["status"] == "PAPER_EXPIRED":
-            continue
+    for order in terminal_rows:
         side = str(order["side"] or "YES").upper()
         if side not in sides:
             continue
         bucket = sides[side]
-        pnl = float(order["realized_pnl"])
         bucket["trades"] += 1
-        bucket["realized_pnl"] += pnl
-        bucket["capital"] += float(order["contracts"]) * float(order["cost_per_contract"])
-        if pnl > 0:
+        if order["logical_outcome"] == "win":
             bucket["wins"] += 1
-        elif pnl < 0:
+        elif order["logical_outcome"] == "loss":
             bucket["losses"] += 1
+    for order in resolved_lots:
+        side = str(order["side"] or "YES").upper()
+        if side not in sides:
+            continue
+        bucket = sides[side]
+        bucket["realized_pnl"] += float(order["realized_pnl"])
+        bucket["capital"] += float(order["contracts"]) * float(
+            order["cost_per_contract"]
+        )
     for bucket in sides.values():
         decided = bucket["wins"] + bucket["losses"]
         bucket["hit_rate"] = round(bucket["wins"] / decided, 4) if decided else None
@@ -387,7 +470,8 @@ def _side_performance(window_orders: list) -> dict[str, dict[str, Any]]:
 
 
 def _window_profile_totals(
-    window_orders: list[dict[str, Any]],
+    terminal_rows: list[dict[str, Any]],
+    resolved_lots: list[dict[str, Any]],
     open_orders: list[dict[str, Any]],
     scanning_profiles: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -411,15 +495,17 @@ def _window_profile_totals(
             },
         )
 
-    for order in window_orders:
+    for order in terminal_rows:
         stats = bucket(order["risk_profile"])
         stats["resolved"] += 1
+        if order["logical_outcome"] == "win":
+            stats["wins"] += 1
+        elif order["logical_outcome"] == "loss":
+            stats["losses"] += 1
+    for order in resolved_lots:
+        stats = bucket(order["risk_profile"])
         stats["realized_pnl"] += order["realized_pnl"]
         stats["capital_resolved"] += order["contracts"] * order["cost_per_contract"]
-        if order["realized_pnl"] > 0:
-            stats["wins"] += 1
-        elif order["realized_pnl"] < 0:
-            stats["losses"] += 1
     for order in open_orders:
         stats = bucket(order["risk_profile"])
         stats["open_positions"] += 1
@@ -460,6 +546,7 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
     return [
         {
             "id": int(row["id"]),
+            "parent_order_id": _row_value(row, "parent_order_id"),
             "created_at": row["created_at"],
             "filled_at": _row_value(row, "filled_at"),
             "cancelled_at": _row_value(row, "cancelled_at"),
@@ -469,6 +556,7 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
             "label": row["label"],
             "side": str(row["side"] or "YES").upper(),
             "risk_profile": _row_value(row, "risk_profile") or "unknown",
+            "account_id": _row_value(row, "account_id"),
             "contracts": float(row["contracts"] or 0.0),
             "entry_price": float(row["entry_price"] if row["entry_price"] is not None else row["yes_ask"]),
             "cost_per_contract": float(row["cost_per_contract"] or 0.0),
@@ -478,6 +566,16 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
             "status": row["status"],
             "closed_at": row["closed_at"],
             "settled_at": row["settled_at"],
+            "exit_price": (
+                float(row["exit_price"])
+                if _row_value(row, "exit_price") is not None
+                else None
+            ),
+            "exit_fee_per_contract": (
+                float(row["exit_fee_per_contract"])
+                if _row_value(row, "exit_fee_per_contract") is not None
+                else None
+            ),
             "realized_pnl": float(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
         }
         for row in rows
