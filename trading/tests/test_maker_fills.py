@@ -41,6 +41,7 @@ def _order(
     queue: str = "0",
     queue_price: str | None = None,
     minutes: int = 0,
+    active_until: datetime | None = None,
 ) -> RestingMakerOrder:
     return RestingMakerOrder(
         order_id=order_id,
@@ -50,6 +51,7 @@ def _order(
         queue_ahead=Decimal(queue),
         placed_at=T0 + timedelta(minutes=minutes),
         queue_price=Decimal(queue_price) if queue_price is not None else None,
+        active_until=active_until,
     )
 
 
@@ -169,6 +171,73 @@ def test_allocator_never_fills_from_wrong_direction_or_earlier_trades() -> None:
     allocation = allocate_maker_fills(trades, orders)[1]
 
     assert allocation.filled_quantity == Decimal(0)
+
+
+def test_allocator_includes_cutoff_trade_and_excludes_just_after() -> None:
+    cutoff = T0 + timedelta(minutes=10)
+    orders = [
+        _order(
+            1,
+            side="NO",
+            limit="0.70",
+            quantity="2",
+            active_until=cutoff,
+        )
+    ]
+    trades = [
+        _trade("AT-CUTOFF", maker_side="NO", yes_price="0.30", quantity="1"),
+        _trade(
+            "AFTER-CUTOFF",
+            maker_side="NO",
+            yes_price="0.30",
+            quantity="1",
+            minutes=10,
+        ),
+    ]
+    trades[1] = PublicAggressorTrade(
+        **{
+            **trades[1].__dict__,
+            "created_at": cutoff + timedelta(microseconds=1),
+        }
+    )
+
+    allocation = allocate_maker_fills(trades, orders)[1]
+
+    assert allocation.allocations_by_trade() == {"AT-CUTOFF": 1.0}
+
+
+def test_omitted_active_until_preserves_unbounded_allocation() -> None:
+    order = _order(1, side="NO", limit="0.70", quantity="1")
+    late_trade = _trade(
+        "LATE",
+        maker_side="NO",
+        yes_price="0.30",
+        quantity="1",
+        minutes=10_000,
+    )
+
+    assert order.active_until is None
+    assert allocate_maker_fills([late_trade], [order])[1].complete
+
+
+def test_inactive_higher_priority_order_does_not_consume_later_volume() -> None:
+    cutoff = T0 + timedelta(minutes=9)
+    orders = [
+        _order(
+            1,
+            side="NO",
+            limit="0.72",
+            quantity="5",
+            active_until=cutoff,
+        ),
+        _order(2, side="NO", limit="0.71", quantity="5", minutes=1),
+    ]
+    trades = [_trade("AFTER-CANCEL", maker_side="NO", yes_price="0.29", quantity="5")]
+
+    allocations = allocate_maker_fills(trades, orders)
+
+    assert allocations[1].filled_quantity == Decimal(0)
+    assert allocations[2].complete
 
 
 def test_allocator_is_deterministic_and_conserves_volume() -> None:

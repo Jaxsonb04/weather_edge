@@ -65,6 +65,8 @@ from .maker_fills import (
     depth_observation_is_contemporaneous,
     normalize_public_trade,
 )
+from .paper_pnl import closed_position_pnl, settled_position_pnl
+from .settlement_truth import integer_settlement_high_f, row_resolves_yes
 
 # The taker-entry displayed-ask sizing cap landed 2026-07-10; taker entries
 # before it could exceed displayed liquidity.
@@ -174,7 +176,45 @@ def _order_replay_input_findings(row: sqlite3.Row) -> list[str]:
         findings.append("EXEC_V4_ORDER_FILLED_QUANTITY_INVALID")
     if _parse_replay_time(row["created_at"]) is None:
         findings.append("EXEC_V4_ORDER_PLACED_AT_INVALID")
+    active_until, active_finding = _order_active_until(row)
+    if active_finding is not None:
+        findings.append(active_finding)
+    placed_at = _parse_replay_time(row["created_at"])
+    if (
+        active_until is not None
+        and placed_at is not None
+        and active_until <= placed_at
+    ):
+        findings.append("EXEC_V4_ORDER_ACTIVE_UNTIL_NOT_LATER")
     return findings
+
+
+def _order_active_until(
+    row: sqlite3.Row,
+) -> tuple[datetime | None, str | None]:
+    """Return the authoritative inclusive terminal instant for a quote."""
+
+    status = str(_row_value(row, "status") or "")
+    if status == "PAPER_CLOSED":
+        parsed = _parse_replay_time(_row_value(row, "closed_at"))
+        return (
+            (parsed, None)
+            if parsed is not None
+            else (None, "EXEC_V4_ORDER_CLOSED_AT_INVALID")
+        )
+    cancelled_at = _row_value(row, "cancelled_at")
+    if cancelled_at is not None or status in {
+        "PAPER_CANCELLED",
+        "PAPER_EXPIRED",
+        "PAPER_PARTIAL_EXPIRED",
+    }:
+        parsed = _parse_replay_time(cancelled_at)
+        return (
+            (parsed, None)
+            if parsed is not None
+            else (None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID")
+        )
+    return None, None
 
 
 def _allocation_replay_input_findings(row: sqlite3.Row) -> list[str]:
@@ -280,6 +320,9 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
     except (TypeError, ValueError):
         return None
     queue_price = visible_bid if visible_bid is not None else limit_price
+    active_until, active_finding = _order_active_until(row)
+    if active_finding is not None:
+        return None
     return RestingMakerOrder(
         order_id=order_id,
         side=side,  # type: ignore[arg-type]
@@ -288,6 +331,7 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
         queue_ahead=Decimal(str(queue_ahead)),
         placed_at=placed_at,
         queue_price=Decimal(str(round(queue_price, 6))),
+        active_until=active_until,
     )
 
 
@@ -875,6 +919,158 @@ def _exit_findings(row: sqlite3.Row, outcome: dict[str, Any]) -> list[str]:
     return []
 
 
+def _outcome_accounting_matches(
+    outcome: dict[str, Any],
+    *,
+    event: str,
+    resolved_at: datetime,
+    settlement_high_f: float | None,
+    resolved_yes: bool | None,
+    position_won: bool | None,
+    realized_pnl: float,
+    contracts: float,
+) -> bool:
+    recorded = outcome.get("outcome")
+    if not isinstance(recorded, dict) or recorded.get("event") != event:
+        return False
+    recorded_at = _parse_replay_time(recorded.get("resolved_at"))
+    if recorded_at != resolved_at:
+        return False
+    if settlement_high_f is not None and not _close_number(
+        recorded.get("settlement_high_f"), settlement_high_f
+    ):
+        return False
+    if recorded.get("resolved_yes") is not resolved_yes:
+        return False
+    if recorded.get("position_won") is not position_won:
+        return False
+    recorded_pnl = _finite_number(recorded.get("realized_pnl"))
+    recorded_per_contract = _finite_number(recorded.get("pnl_per_contract"))
+    return (
+        recorded_pnl is not None
+        and abs(recorded_pnl - realized_pnl) <= 1e-6
+        and recorded_per_contract is not None
+        and abs(recorded_per_contract - realized_pnl / contracts) <= 1e-6
+    )
+
+
+def _settled_accounting_findings(
+    row: sqlite3.Row,
+    outcome: dict[str, Any],
+    check: sqlite3.Row | None,
+) -> list[str]:
+    findings: list[str] = []
+    if check is None or str(_row_value(check, "verification_status") or "") != "MATCH":
+        if check is not None and str(
+            _row_value(check, "verification_status") or ""
+        ) == "MISMATCH":
+            findings.append("SETTLEMENT_MISMATCH")
+        else:
+            findings.append("SETTLEMENT_VERIFICATION_REQUIRED")
+        return findings
+
+    checked_at = _parse_replay_time(_row_value(check, "checked_at"))
+    settled_at = _parse_replay_time(_row_value(row, "settled_at"))
+    if checked_at is None or settled_at is None or checked_at < settled_at:
+        findings.append("SETTLEMENT_VERIFICATION_CHECKED_AT_INVALID")
+    booked_high = _finite_number(
+        _row_value(check, "booked_high_f"), minimum=-100, maximum=200
+    )
+    final_high = _finite_number(
+        _row_value(check, "final_high_f"), minimum=-100, maximum=200
+    )
+    order_high = _finite_number(
+        _row_value(row, "settlement_high_f"), minimum=-100, maximum=200
+    )
+    if final_high is None:
+        findings.append("SETTLEMENT_VERIFICATION_FINAL_HIGH_INVALID")
+    elif not _close_number(final_high, integer_settlement_high_f(final_high)):
+        findings.append("SETTLEMENT_VERIFICATION_FINAL_HIGH_INVALID")
+    if booked_high is None:
+        findings.append("SETTLEMENT_VERIFICATION_BOOKED_HIGH_INVALID")
+    elif not _close_number(booked_high, integer_settlement_high_f(booked_high)):
+        findings.append("SETTLEMENT_VERIFICATION_BOOKED_HIGH_INVALID")
+    if order_high is None or not _close_number(
+        order_high, integer_settlement_high_f(order_high)
+    ):
+        findings.append("SETTLEMENT_HIGH_INVALID")
+    if (
+        booked_high is not None
+        and order_high is not None
+        and not _close_number(booked_high, order_high)
+    ):
+        findings.append("SETTLEMENT_VERIFICATION_BOOKED_HIGH_MISMATCH")
+    if (
+        final_high is not None
+        and order_high is not None
+        and not _close_number(final_high, order_high)
+    ):
+        findings.append("SETTLEMENT_VERIFICATION_FINAL_HIGH_MISMATCH")
+    if findings or final_high is None or settled_at is None:
+        return findings
+
+    canonical_high = integer_settlement_high_f(final_high)
+    canonical_resolved_yes = row_resolves_yes(row, canonical_high)
+    recorded_resolved_yes = _binary_flag(_row_value(row, "resolved_yes"))
+    side = str(_row_value(row, "side") or "").upper()
+    if recorded_resolved_yes is not canonical_resolved_yes or side not in {
+        "YES",
+        "NO",
+    }:
+        findings.append("SETTLEMENT_OUTCOME_MISMATCH")
+        return findings
+    position_won = (
+        canonical_resolved_yes if side == "YES" else not canonical_resolved_yes
+    )
+    contracts = _finite_number(_row_value(row, "contracts"), minimum=0)
+    cost = _finite_number(
+        _row_value(row, "cost_per_contract"), minimum=0, maximum=1
+    )
+    recorded_pnl = _finite_number(_row_value(row, "realized_pnl"))
+    if contracts in {None, 0.0} or cost is None or recorded_pnl is None:
+        return findings
+    expected_pnl = settled_position_pnl(contracts, cost, position_won)
+    if not _close_number(recorded_pnl, expected_pnl):
+        findings.append("REALIZED_PNL_MISMATCH")
+    if not _outcome_accounting_matches(
+        outcome,
+        event="settlement",
+        resolved_at=settled_at,
+        settlement_high_f=canonical_high,
+        resolved_yes=canonical_resolved_yes,
+        position_won=position_won,
+        realized_pnl=expected_pnl,
+        contracts=contracts,
+    ):
+        findings.append("OUTCOME_DIAGNOSTICS_MISMATCH")
+    return findings
+
+
+def _closed_accounting_findings(
+    row: sqlite3.Row,
+    outcome: dict[str, Any],
+) -> list[str]:
+    contracts = _finite_number(_row_value(row, "contracts"), minimum=0)
+    cost = _finite_number(
+        _row_value(row, "cost_per_contract"), minimum=0, maximum=1
+    )
+    exit_price = _finite_number(
+        _row_value(row, "exit_price"), minimum=0, maximum=1
+    )
+    exit_fee = _finite_number(_row_value(row, "exit_fee_per_contract"), minimum=0)
+    recorded_pnl = _finite_number(_row_value(row, "realized_pnl"))
+    if (
+        contracts in {None, 0.0}
+        or cost is None
+        or exit_price is None
+        or exit_fee is None
+        or recorded_pnl is None
+    ):
+        return []
+    expected_pnl = closed_position_pnl(contracts, cost, exit_price, exit_fee)
+    return [] if _close_number(recorded_pnl, expected_pnl) else ["REALIZED_PNL_MISMATCH"]
+
+
 def restate(db_path: Path) -> dict[str, Any]:
     """Build the immutable-evidence restatement report for one database."""
 
@@ -934,7 +1130,7 @@ def restate(db_path: Path) -> dict[str, Any]:
         ):
             maker_candidate_ids_by_ticker[str(row["market_ticker"])].add(order_id)
 
-    settlement_checks: dict[int, str] = {}
+    settlement_checks: dict[int, sqlite3.Row] = {}
     settlement_findings_by_order: dict[int, list[str]] = defaultdict(list)
     global_settlement_findings: list[str] = []
 
@@ -968,9 +1164,7 @@ def restate(db_path: Path) -> dict[str, Any]:
                 check_row, "SETTLEMENT_VERIFICATION_ORDER_ID_INVALID"
             )
             continue
-        settlement_checks[check_order_id] = str(
-            _row_value(check_row, "verification_status") or ""
-        )
+        settlement_checks[check_order_id] = check_row
         order = all_orders_by_id.get(check_order_id)
         if order is None:
             attach_unowned_settlement_finding(
@@ -1197,13 +1391,17 @@ def restate(db_path: Path) -> dict[str, Any]:
         settlement_check = (
             settlement_checks.get(order_id) if order_id is not None else None
         )
-        if settlement_check == "MISMATCH":
-            findings.append("SETTLEMENT_MISMATCH")
         ticker = str(row["market_ticker"])
         if order_id is not None:
             findings += settlement_findings_by_order.get(order_id, [])
         if evidence.get("model") == "maker_allocator_price_time_v4":
             findings += global_settlement_findings
+            if str(row["status"]) == "PAPER_SETTLED":
+                findings += _settled_accounting_findings(
+                    row, outcome, settlement_check
+                )
+            elif str(row["status"]) == "PAPER_CLOSED":
+                findings += _closed_accounting_findings(row, outcome)
         findings = list(dict.fromkeys(findings))
         verification = UNVERIFIABLE if findings else VERIFIED
         realized = _finite_number(row["realized_pnl"])

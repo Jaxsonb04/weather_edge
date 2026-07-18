@@ -29,6 +29,14 @@ from test_audit_2026_07_13 import _TradesClient, _decision, _resting_order, _tra
 T0 = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 
 
+def _verify_final_truth(store: PaperStore) -> None:
+    result = store.verify_paper_settlements(
+        {("KXHIGHTSEA", "2026-07-14"): 85.0},
+        intervals={"KXHIGHTSEA": ("2026-07-14", "2026-07-14")},
+    )
+    assert result["mismatches"] == 0
+
+
 def test_exec_v3_exposes_queue_and_fill_consumption_per_trade() -> None:
     """Queue depletion is finite public volume, not free bookkeeping."""
 
@@ -232,6 +240,7 @@ def test_exec_v3_partial_fill_survives_restart_and_ttl_expiry() -> None:
         assert {row["id"] for row in store.open_paper_orders()} == {order_id}
 
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         settled = store.paper_order(order_id)
         assert settled["status"] == "PAPER_SETTLED"
         assert settled["contracts"] == 5.0
@@ -492,6 +501,7 @@ def test_exec_v4_cutover_freezes_exec_v3_partial_remainder_once() -> None:
         assert {row["id"] for row in store.open_paper_orders()} == {order_id}
 
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         settled = store.paper_order(order_id)
         assert settled["status"] == "PAPER_SETTLED"
         assert settled["contracts"] == 4.0
@@ -625,6 +635,7 @@ def test_exec_v3_restatement_requires_immutable_allocation_and_tape() -> None:
             store, _TradesClient([payload]), Color.from_no_color(True)
         )
         store.settle_paper_orders("2026-07-14", 85.0)
+        _verify_final_truth(store)
 
         verified = next(
             row for row in restate(db_path)["orders"] if row["order_id"] == order_id
@@ -725,6 +736,7 @@ def _verified_terminal_readiness_root(
         store, _TradesClient([payload]), Color.from_no_color(True)
     )
     assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+    _verify_final_truth(store)
     return order_id
 
 
@@ -882,6 +894,7 @@ def test_readiness_aggregates_verified_partial_close_lots_into_one_decision() ->
             },
         )
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         with store.connect() as conn:
             expected_pnl, expected_capital = conn.execute(
                 "SELECT SUM(realized_pnl), SUM(contracts * cost_per_contract) "
@@ -947,6 +960,7 @@ def test_readiness_rejects_group_with_scope_mismatched_child(
             },
         )
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         with store.connect() as conn:
             conn.execute(
                 f"UPDATE paper_orders SET {field}=? WHERE id=?",
@@ -1093,7 +1107,7 @@ def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
     ),
     [
         (EXECUTION_MODEL_VERSION, 3, 1, True),
-        ("exec-v2-2026-07-13", 2, 0, False),
+        ("exec-v2-2026-07-13", 1, 0, False),
     ],
 )
 def test_readiness_research_group_is_neutral_only_with_consistent_scope(
@@ -1142,6 +1156,7 @@ def test_readiness_research_group_is_neutral_only_with_consistent_scope(
             },
         )
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         with store.connect() as conn:
             conn.execute(
                 "UPDATE paper_orders "

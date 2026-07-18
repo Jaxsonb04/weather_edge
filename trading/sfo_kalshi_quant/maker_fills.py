@@ -107,6 +107,7 @@ class RestingMakerOrder:
     queue_ahead: Decimal
     placed_at: datetime
     queue_price: Decimal | None = None  # displayed price where queue was seen
+    active_until: datetime | None = None  # terminal instant remains inclusive
 
 
 @dataclass(frozen=True)
@@ -294,6 +295,11 @@ def allocate_maker_fills(
             if order.side != trade.maker_side:
                 continue
             if trade.created_at <= order.placed_at:
+                continue
+            if (
+                order.active_until is not None
+                and trade.created_at > order.active_until
+            ):
                 continue
             if unfilled[order.order_id] <= 0:
                 continue

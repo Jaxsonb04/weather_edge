@@ -396,6 +396,28 @@ def replay_from_database(
         != "maker_allocator_price_time_v4"
         or int(row["id"]) in verified_order_ids
     ]
+    # A partial-close child is one lot of its root decision, not an independent
+    # replay candidate. If any lot fails immutable restatement, exclude the
+    # complete maker-v4 decision so its siblings cannot contribute money or
+    # event counts on their own.
+    invalid_logical_lot_ids: set[int] = set()
+    for group in group_logical_positions(all_orders):
+        root_evidence = _json_object(group.root.get("fill_evidence_json"))
+        if root_evidence.get("model") != "maker_allocator_price_time_v4":
+            continue
+        lot_ids = {
+            int(lot["id"])
+            for lot in group.lots
+            if isinstance(lot.get("id"), int)
+            or str(lot.get("id") or "").isdigit()
+        }
+        if not group.valid or not lot_ids or not lot_ids.issubset(
+            verified_order_ids
+        ):
+            invalid_logical_lot_ids.update(lot_ids)
+    event_orders = [
+        row for row in event_orders if int(row["id"]) not in invalid_logical_lot_ids
+    ]
 
     truth = normalize_settlement_truth(settlements)
     events: list[ReplayEvent] = []

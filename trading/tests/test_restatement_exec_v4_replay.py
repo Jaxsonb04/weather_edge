@@ -93,12 +93,46 @@ def _apply(
 
 def _settle(store: PaperStore) -> None:
     assert store.settle_paper_orders(TARGET_DATE, 85.0) >= 1
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, market_ticker, target_date, settlement_high_f "
+            "FROM paper_orders WHERE status='PAPER_SETTLED'"
+        ).fetchall()
+        for order_id, ticker, target_date, booked_high in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO paper_settlement_verifications "
+                "(order_id, checked_at, market_ticker, target_date, "
+                "booked_high_f, final_high_f, verification_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'MATCH')",
+                (
+                    order_id,
+                    datetime.now(UTC).isoformat(),
+                    ticker,
+                    target_date,
+                    booked_high,
+                    booked_high,
+                ),
+            )
 
 
 def _result(db_path: Path, order_id: int) -> dict[str, object]:
     return next(
         row for row in restate(db_path)["orders"] if row["order_id"] == order_id
     )
+
+
+def _settlement_check_update(
+    store: PaperStore,
+    order_id: int,
+    **values: object,
+) -> None:
+    assignments = ", ".join(f"{column}=?" for column in values)
+    with store.connect() as conn:
+        conn.execute(
+            f"UPDATE paper_settlement_verifications SET {assignments} "
+            "WHERE order_id=?",
+            (*values.values(), order_id),
+        )
 
 
 def _assert_unverified_and_readiness_ineligible(
@@ -165,6 +199,123 @@ def test_restatement_verifies_valid_exec_v4_partial_queue_and_fill() -> None:
 
         assert result["verification"] == "VERIFIED"
         assert result["findings"] == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "SETTLEMENT_VERIFICATION_REQUIRED"),
+        ("missing-final", "SETTLEMENT_VERIFICATION_REQUIRED"),
+        ("unknown", "SETTLEMENT_VERIFICATION_REQUIRED"),
+        ("null-final", "SETTLEMENT_VERIFICATION_FINAL_HIGH_INVALID"),
+        ("implausible-final", "SETTLEMENT_VERIFICATION_FINAL_HIGH_INVALID"),
+        ("mismatched-final", "SETTLEMENT_VERIFICATION_FINAL_HIGH_MISMATCH"),
+        ("mismatched-booked", "SETTLEMENT_VERIFICATION_BOOKED_HIGH_MISMATCH"),
+        ("bad-time", "SETTLEMENT_VERIFICATION_CHECKED_AT_INVALID"),
+        ("early-time", "SETTLEMENT_VERIFICATION_CHECKED_AT_INVALID"),
+    ],
+)
+def test_restatement_requires_valid_matching_settlement_evidence(
+    mutation: str,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, f"settlement-{mutation}", no_price=0.72, quantity=5.0)
+        _settle(store)
+        if mutation == "missing":
+            with store.connect() as conn:
+                conn.execute(
+                    "DELETE FROM paper_settlement_verifications WHERE order_id=?",
+                    (order_id,),
+                )
+        elif mutation == "missing-final":
+            _settlement_check_update(
+                store,
+                order_id,
+                verification_status="MISSING_FINAL",
+                final_high_f=None,
+            )
+        elif mutation == "unknown":
+            _settlement_check_update(
+                store, order_id, verification_status="SURPRISING"
+            )
+        elif mutation == "null-final":
+            _settlement_check_update(store, order_id, final_high_f=None)
+        elif mutation == "implausible-final":
+            _settlement_check_update(store, order_id, final_high_f=999.0)
+        elif mutation == "mismatched-final":
+            _settlement_check_update(store, order_id, final_high_f=84.0)
+        elif mutation == "mismatched-booked":
+            _settlement_check_update(store, order_id, booked_high_f=84.0)
+        elif mutation == "bad-time":
+            _settlement_check_update(store, order_id, checked_at="")
+        else:
+            _settlement_check_update(store, order_id, checked_at=T0.isoformat())
+
+        _assert_unverified_and_readiness_ineligible(db_path, order_id, reason)
+
+
+@pytest.mark.parametrize("delta", [0.01, 999.0], ids=["one-cent", "sentinel"])
+def test_restatement_recomputes_settlement_pnl(delta: float) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, "settlement-pnl", no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            pnl = float(
+                conn.execute(
+                    "SELECT realized_pnl FROM paper_orders WHERE id=?", (order_id,)
+                ).fetchone()[0]
+            )
+            conn.execute(
+                "UPDATE paper_orders SET realized_pnl=? WHERE id=?",
+                (pnl + delta, order_id),
+            )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, order_id, "REALIZED_PNL_MISMATCH"
+        )
+
+
+@pytest.mark.parametrize("target", ["resolved", "diagnostics"])
+def test_restatement_rejects_inconsistent_settlement_outcome(target: str) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        _apply(store, "settlement-outcome", no_price=0.72, quantity=5.0)
+        _settle(store)
+        with store.connect() as conn:
+            if target == "resolved":
+                conn.execute(
+                    "UPDATE paper_orders SET resolved_yes=1-resolved_yes WHERE id=?",
+                    (order_id,),
+                )
+            else:
+                outcome = json.loads(
+                    conn.execute(
+                        "SELECT outcome_diagnostics_json FROM paper_orders WHERE id=?",
+                        (order_id,),
+                    ).fetchone()[0]
+                )
+                outcome["outcome"]["realized_pnl"] = 999.0
+                conn.execute(
+                    "UPDATE paper_orders SET outcome_diagnostics_json=? WHERE id=?",
+                    (json.dumps(outcome, sort_keys=True), order_id),
+                )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path,
+            order_id,
+            "SETTLEMENT_OUTCOME_MISMATCH"
+            if target == "resolved"
+            else "OUTCOME_DIAGNOSTICS_MISMATCH",
+        )
 
 
 def test_restatement_rejects_skipped_at_touch_queue() -> None:
@@ -241,8 +392,8 @@ def test_restatement_rejects_price_time_priority_inversion() -> None:
             conn.execute(
                 "UPDATE paper_orders SET status='PAPER_EXPIRED', "
                 "filled_contracts=0, remaining_contracts=0, "
-                "fill_evidence_json=NULL WHERE id=?",
-                (higher_id,),
+                "fill_evidence_json=NULL, cancelled_at=? WHERE id=?",
+                ((T0 + timedelta(minutes=2)).isoformat(), higher_id),
             )
             conn.execute(
                 "UPDATE paper_orders SET status='PAPER_FILLED', contracts=5, "
@@ -254,6 +405,84 @@ def test_restatement_rejects_price_time_priority_inversion() -> None:
 
         _assert_unverified_and_readiness_ineligible(
             db_path, lower_id, "EXEC_V4_ALLOCATION_REPLAY_MISMATCH"
+        )
+
+
+@pytest.mark.parametrize(
+    ("cancel_offset", "verification"),
+    [
+        (timedelta(0), "VERIFIED"),
+        (timedelta(microseconds=-1), "UNVERIFIABLE"),
+    ],
+    ids=["exact-cutoff-inclusive", "just-after-cutoff"],
+)
+def test_restatement_honors_authoritative_cancelled_at_for_partial_expiry(
+    cancel_offset: timedelta,
+    verification: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, contracts=5.0, queue_ahead=0.0)
+        trade_at = T0 + timedelta(minutes=1)
+        _apply(
+            store,
+            "partial-expiry-cutoff",
+            no_price=0.72,
+            quantity=2.0,
+            at=trade_at,
+        )
+        _settle(store)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET expires_at=?, cancelled_at=? WHERE id=?",
+                (
+                    (T0 + timedelta(seconds=30)).isoformat(),
+                    (trade_at + cancel_offset).isoformat(),
+                    order_id,
+                ),
+            )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == verification
+        if verification == "UNVERIFIABLE":
+            assert "EXEC_V4_ALLOCATION_REPLAY_MISMATCH" in result["findings"]
+
+
+def test_restatement_stops_closed_root_at_closed_at() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, queue_ahead=0.0)
+        trade_at = T0 + timedelta(minutes=1)
+        _apply(store, "closed-root-cutoff", no_price=0.72, quantity=5.0, at=trade_at)
+        store.close_paper_order(
+            order_id,
+            0.80,
+            max_quantity=5.0,
+            liquidity_evidence={
+                "displayed_depth": 5.0,
+                "source": "test_depth",
+                "observed_at": trade_at.isoformat(),
+            },
+        )
+        cutoff = trade_at - timedelta(microseconds=1)
+        with store.connect() as conn:
+            outcome = json.loads(
+                conn.execute(
+                    "SELECT outcome_diagnostics_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            outcome["exit_execution"]["observed_at"] = cutoff.isoformat()
+            conn.execute(
+                "UPDATE paper_orders SET closed_at=?, outcome_diagnostics_json=? "
+                "WHERE id=?",
+                (cutoff.isoformat(), json.dumps(outcome, sort_keys=True), order_id),
+            )
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path, order_id, "EXEC_V4_ALLOCATION_REPLAY_MISMATCH"
         )
 
 
@@ -443,6 +672,12 @@ def test_restatement_fails_closed_without_initial_queue_evidence() -> None:
             "created_at",
             "",
             "EXEC_V4_ORDER_PLACED_AT_INVALID",
+        ),
+        (
+            "order",
+            "cancelled_at",
+            "",
+            "EXEC_V4_ORDER_CANCELLED_AT_INVALID",
         ),
         (
             "allocation",
@@ -642,6 +877,13 @@ def _resolved_order(store: PaperStore, lifecycle: str) -> int:
             "order",
             "settlement_high_f",
             float("inf"),
+            "SETTLEMENT_HIGH_INVALID",
+        ),
+        (
+            "settled",
+            "order",
+            "settlement_high_f",
+            999.0,
             "SETTLEMENT_HIGH_INVALID",
         ),
         (
@@ -1114,15 +1356,11 @@ def test_restatement_rejects_inconsistent_settlement_attribution(
         verification[field] = value
         with store.connect() as conn:
             conn.execute(
-                "INSERT INTO paper_settlement_verifications "
-                "(order_id, checked_at, market_ticker, target_date, "
-                "booked_high_f, final_high_f, verification_status) "
-                "VALUES (?, ?, ?, ?, 85, 85, 'MATCH')",
+                f"UPDATE paper_settlement_verifications SET {field}=? "
+                "WHERE order_id=?",
                 (
+                    value,
                     first_id,
-                    T0.isoformat(),
-                    verification["market_ticker"],
-                    verification["target_date"],
                 ),
             )
 
@@ -1170,3 +1408,66 @@ def test_restatement_does_not_poison_candidates_for_resolvable_rejected_order(
 
         result = _result(db_path, candidate_id)
         assert result["verification"] == "VERIFIED"
+
+
+def _partial_lot_group(store: PaperStore) -> tuple[int, tuple[int, int]]:
+    root_id = _order(store, contracts=4.0, queue_ahead=0.0)
+    _apply(store, "logical-partials", no_price=0.72, quantity=4.0)
+    child_ids: list[int] = []
+    for quantity in (1.0, 1.0):
+        child = store.close_paper_order(
+            root_id,
+            0.80,
+            max_quantity=quantity,
+            liquidity_evidence={
+                "displayed_depth": quantity,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        child_ids.append(int(child["id"]))
+    _settle(store)
+    return root_id, (child_ids[0], child_ids[1])
+
+
+def test_valid_multi_child_decision_is_replayed_as_one_verified_decision() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        root_id, child_ids = _partial_lot_group(store)
+
+        assert all(
+            _result(db_path, order_id)["verification"] == "VERIFIED"
+            for order_id in (root_id, *child_ids)
+        )
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 3
+        assert replay["verified_decisions"] == 1
+        assert replay["readiness_metrics"]["counts"]["settled_decisions"] == 1
+
+
+def test_invalid_child_excludes_entire_logical_decision_from_replay() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        root_id, child_ids = _partial_lot_group(store)
+        with store.connect() as conn:
+            outcome = json.loads(
+                conn.execute(
+                    "SELECT outcome_diagnostics_json FROM paper_orders WHERE id=?",
+                    (child_ids[0],),
+                ).fetchone()[0]
+            )
+            outcome["exit_execution"]["executed_quantity"] = "bad"
+            conn.execute(
+                "UPDATE paper_orders SET outcome_diagnostics_json=? WHERE id=?",
+                (json.dumps(outcome, sort_keys=True), child_ids[0]),
+            )
+
+        assert _result(db_path, root_id)["verification"] == "VERIFIED"
+        assert _result(db_path, child_ids[0])["verification"] == "UNVERIFIABLE"
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 0
+        assert replay["verified_decisions"] == 0
+        assert replay["readiness_metrics"]["counts"]["settled_decisions"] == 0
+        assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0

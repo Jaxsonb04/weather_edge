@@ -41,6 +41,7 @@ from .maker_fills import (
     normalize_public_trade,
 )
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
@@ -2386,7 +2387,9 @@ class PaperStore:
                 position_wins = resolved_yes if side == "YES" else not resolved_yes
                 cost = float(row["cost_per_contract"])
                 contracts = float(row["contracts"])
-                realized_pnl = contracts * ((1.0 - cost) if position_wins else -cost)
+                realized_pnl = settled_position_pnl(
+                    contracts, cost, position_wins
+                )
                 outcome_json = json.dumps(
                     _outcome_diagnostics_payload(
                         row,
@@ -2560,7 +2563,9 @@ class PaperStore:
         exit_fee = quadratic_fee_average_per_contract(
             exit_price, executed, series_ticker=str(row["market_ticker"])
         )
-        realized_pnl = executed * (exit_price - exit_fee - entry_cost)
+        realized_pnl = closed_position_pnl(
+            executed, entry_cost, exit_price, exit_fee
+        )
         # Persist resolved_yes on close so a closed order is classified by the
         # same resolved_yes-driven path as a settled order (db.py settle path),
         # not the realized_pnl > 0 fallback in _row_position_won. A break-even
