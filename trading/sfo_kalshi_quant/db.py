@@ -163,6 +163,54 @@ class ResearchAdmission:
     entry_decision_id: int
 
 
+@dataclass(frozen=True)
+class ResearchDecisionIdentity:
+    """Research scan identity persisted before an order can be admitted."""
+
+    account_id: str
+    sleeve: ResearchSleeve
+    policy_version: str
+    policy_fingerprint: str
+    objective_day: str
+    scan_run_id: str
+    reentry_fingerprint: str
+    lead_bucket: str
+
+    @classmethod
+    def for_policy(
+        cls,
+        policy: ResearchSleevePolicy,
+        *,
+        objective_day: str,
+        scan_run_id: str,
+        reentry_fingerprint: str,
+        lead_bucket: str,
+    ) -> "ResearchDecisionIdentity":
+        return cls(
+            account_id=policy.account_id,
+            sleeve=policy.sleeve,
+            policy_version=policy.policy_version,
+            policy_fingerprint=policy.policy_fingerprint,
+            objective_day=objective_day,
+            scan_run_id=scan_run_id,
+            reentry_fingerprint=reentry_fingerprint,
+            lead_bucket=lead_bucket,
+        )
+
+    def admission(self, entry_decision_id: int) -> ResearchAdmission:
+        return ResearchAdmission(
+            account_id=self.account_id,
+            sleeve=self.sleeve,
+            policy_version=self.policy_version,
+            policy_fingerprint=self.policy_fingerprint,
+            objective_day=self.objective_day,
+            scan_run_id=self.scan_run_id,
+            reentry_fingerprint=self.reentry_fingerprint,
+            lead_bucket=self.lead_bucket,
+            entry_decision_id=entry_decision_id,
+        )
+
+
 _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
@@ -475,6 +523,41 @@ class PaperStore:
 
         return self._account_state(account_id)
 
+    def research_objective_day(self) -> date:
+        """Return the current Pacific civil day used by both research books."""
+
+        return self._research_objective_day()
+
+    def research_realized_pnl_for_day(
+        self,
+        *,
+        account_id: str,
+        objective_day: date,
+    ) -> float:
+        if account_id not in _RESEARCH_POLICIES_BY_ACCOUNT:
+            raise ValueError("research daily P&L requires a target or motion account")
+        day_start = datetime.combine(
+            objective_day, time.min, tzinfo=RESEARCH_OBJECTIVE_TZ
+        ).astimezone(UTC)
+        day_end = datetime.combine(
+            objective_day + timedelta(days=1),
+            time.min,
+            tzinfo=RESEARCH_OBJECTIVE_TZ,
+        ).astimezone(UTC)
+        with self.connect() as conn:
+            value = conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl),0) FROM paper_orders "
+                "WHERE account_id=? AND realized_pnl IS NOT NULL "
+                "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
+                "AND COALESCE(closed_at,settled_at)>=? "
+                "AND COALESCE(closed_at,settled_at)<?",
+                (account_id, day_start.isoformat(), day_end.isoformat()),
+            ).fetchone()[0]
+        result = float(value or 0.0)
+        if not math.isfinite(result):
+            raise ValueError("research daily P&L is invalid")
+        return result
+
     def _account_state(self, account_id: str) -> dict[str, object] | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -754,6 +837,11 @@ class PaperStore:
         )
         if not math.isfinite(daily_pnl):
             return {"allowed_spend": 0.0, "reason": "research daily P&L is invalid"}
+        if policy is TARGET_POLICY and daily_pnl >= policy.target_pnl - 1e-9:
+            return {
+                "allowed_spend": 0.0,
+                "reason": "target attained: new target risk is locked for the objective day",
+            }
         loss_limit = -policy.reference_equity * policy.daily_loss_pause_pct
         if daily_pnl <= loss_limit:
             return {
@@ -1131,7 +1219,8 @@ class PaperStore:
         strategy_config: StrategyConfig | None = None,
         forecast_snapshot_id: int | None = None,
         market_snapshot_id: int | None = None,
-    ) -> None:
+        _research_identity: ResearchDecisionIdentity | None = None,
+    ) -> list[int]:
         created_at = _now()
         rows = []
         markets_by_ticker = {}
@@ -1150,6 +1239,19 @@ class PaperStore:
         prediction_features_json = json.dumps(
             prediction_features,
             sort_keys=True,
+        )
+        research_identity_values = (
+            (
+                _research_identity.sleeve.value,
+                _research_identity.policy_version,
+                _research_identity.policy_fingerprint,
+                _research_identity.objective_day,
+                _research_identity.lead_bucket,
+                _research_identity.scan_run_id,
+                _research_identity.reentry_fingerprint,
+            )
+            if _research_identity is not None
+            else (None, None, None, None, None, None, None)
         )
         for decision in decisions:
             spend = decision.recommended_contracts * decision.cost_per_contract
@@ -1236,8 +1338,10 @@ class PaperStore:
                     forecast_snapshot_id, market_snapshot_id, forecast_json,
                     intraday_json, market_json, market_consensus_json,
                     prediction_features_json,
-                    strategy_config_json, schema_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    strategy_config_json, schema_version,
+                    research_sleeve, research_policy_version, policy_fingerprint,
+                    objective_day, lead_bucket, scan_run_id, reentry_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -1258,11 +1362,11 @@ class PaperStore:
                     _json_text(_market_consensus_diagnostics_payload(market_consensus)),
                     prediction_features_json,
                     _json_text(_strategy_config_snapshot(strategy_config)),
+                    *research_identity_values,
                 ),
             )
             scan_context_id = int(context.lastrowid)
-            conn.executemany(
-                """
+            decision_sql = """
                 INSERT INTO decision_snapshots (
                     scan_context_id,
                     created_at, target_date, market_ticker, label, action, side,
@@ -1281,12 +1385,151 @@ class PaperStore:
                     forecast_predicted_high_f, forecast_source_spread_f,
                     forecast_lead_hours, risk_profile, bankroll,
                     forecast_snapshot_id, market_snapshot_id,
-                    prediction_features_json, diagnostics_json, reasons_json
+                    prediction_features_json, diagnostics_json, reasons_json,
+                    research_sleeve, research_policy_version, policy_fingerprint,
+                    objective_day, lead_bucket, scan_run_id, reentry_fingerprint
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ({})
+                """.format(", ".join("?" for _ in range(1 + 56 + 7)))
+            decision_ids: list[int] = []
+            for row in rows:
+                cursor = conn.execute(
+                    decision_sql,
+                    (scan_context_id, *row, *research_identity_values),
+                )
+                decision_ids.append(int(cursor.lastrowid))
+            return decision_ids
+
+    def record_research_decision_evidence(
+        self,
+        target_date: str,
+        decision: TradeDecision,
+        *,
+        identity: ResearchDecisionIdentity,
+        forecast: ForecastSnapshot | None = None,
+        intraday: IntradaySnapshot | None = None,
+        event: EventSnapshot | None = None,
+        market_consensus: MarketConsensus | None = None,
+        strategy_config: StrategyConfig,
+        forecast_snapshot_id: int | None = None,
+        market_snapshot_id: int | None = None,
+    ) -> int:
+        """Persist one exact, sleeve-qualified decision and return its audit id."""
+
+        if not isinstance(identity, ResearchDecisionIdentity):
+            raise ValueError("research decision identity is required")
+        self._policy_for_research_admission(identity.admission(1))
+        canonical = strategy_config_for_profile("research")
+        if strategy_config != canonical:
+            raise ValueError("research evidence requires the canonical research strategy")
+        decision_ids = self.record_decisions(
+            target_date,
+            [decision],
+            forecast=forecast,
+            intraday=intraday,
+            event=event,
+            market_consensus=market_consensus,
+            risk_profile="research",
+            bankroll=_RESEARCH_POLICIES_BY_ACCOUNT[identity.account_id].reference_equity,
+            strategy_config=strategy_config,
+            forecast_snapshot_id=forecast_snapshot_id,
+            market_snapshot_id=market_snapshot_id,
+            _research_identity=identity,
+        )
+        if len(decision_ids) != 1:
+            raise RuntimeError("research decision evidence was not persisted exactly once")
+        return decision_ids[0]
+
+    def motion_reentry_block_reason(
+        self,
+        *,
+        target_date: str,
+        market_ticker: str,
+        side: str,
+        scan_run_id: str,
+        executable_price: float,
+        probability: float,
+        intraday_observed_high_f: float | None,
+        intraday_is_complete: bool,
+    ) -> str | None:
+        """Enforce versioned terminal re-entry changes for the motion book."""
+
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT p.status, p.scan_run_id, p.entry_price,
+                       d.probability, d.intraday_observed_high_f,
+                       d.intraday_is_complete
+                FROM paper_orders p
+                LEFT JOIN decision_snapshots d
+                  ON d.id = p.entry_decision_snapshot_id
+                WHERE p.account_id=? AND p.target_date=?
+                  AND p.market_ticker=? AND UPPER(COALESCE(p.side,'YES'))=?
+                ORDER BY p.id DESC
+                LIMIT 1
                 """,
-                ((scan_context_id, *row) for row in rows),
+                (
+                    MOTION_POLICY.account_id,
+                    target_date,
+                    market_ticker,
+                    side.upper(),
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        status = str(row["status"])
+        if status in {
+            "PAPER_FILLED",
+            "PAPER_LIMIT_RESTING",
+            "PAPER_PARTIALLY_FILLED",
+            "PAPER_PARTIAL_EXPIRED",
+        }:
+            return "duplicate active motion research entry"
+        if str(row["scan_run_id"] or "") == scan_run_id:
+            return "motion re-entry requires a new scan run"
+        try:
+            previous_price = float(row["entry_price"])
+            previous_probability = float(row["probability"])
+        except (TypeError, ValueError, OverflowError):
+            return "motion re-entry evidence is invalid"
+        if not all(
+            math.isfinite(value)
+            for value in (
+                previous_price,
+                previous_probability,
+                executable_price,
+                probability,
             )
+        ):
+            return "motion re-entry evidence is invalid"
+        price_changed = abs(executable_price - previous_price) + 1e-12 >= 0.01
+        probability_changed = (
+            abs(probability - previous_probability) + 1e-12 >= 0.02
+        )
+        prior_high = row["intraday_observed_high_f"]
+        try:
+            high_changed = (
+                (prior_high is None) != (intraday_observed_high_f is None)
+                or (
+                    prior_high is not None
+                    and intraday_observed_high_f is not None
+                    and not math.isclose(
+                        float(prior_high),
+                        float(intraday_observed_high_f),
+                        rel_tol=0.0,
+                        abs_tol=1e-9,
+                    )
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            return "motion re-entry evidence is invalid"
+        completeness_changed = bool(row["intraday_is_complete"] or 0) != bool(
+            intraday_is_complete
+        )
+        if price_changed or probability_changed or high_changed or completeness_changed:
+            return None
+        return "motion re-entry requires price, probability, or observed-state change"
 
     @staticmethod
     def _policy_for_research_admission(
@@ -1610,6 +1853,12 @@ class PaperStore:
             target_day = date.fromisoformat(target_date)
         except ValueError as exc:
             raise ValueError("research target date is invalid") from exc
+        preflight_civil_day = self._research_objective_day()
+        if admission.objective_day != preflight_civil_day.isoformat():
+            raise ValueError(
+                "research admission objective day must equal the current "
+                "Pacific civil day"
+            )
         if not decision.approved:
             return None
         contracts = float(decision.recommended_contracts)
@@ -1622,10 +1871,6 @@ class PaperStore:
             decision,
             contracts=contracts,
         )
-        canonical_limit_quote = self._canonical_research_limit_quote(
-            decision,
-            strategy_config,
-        )
         side = str(decision.side or "").upper()
         if side not in {"YES", "NO"}:
             raise ValueError("research order side must be YES or NO")
@@ -1633,14 +1878,86 @@ class PaperStore:
         ask = float(decision.ask)
         if not math.isfinite(ask) or ask <= 0 or ask >= 1:
             return None
-        limit_price = canonical_limit_quote.price
-        if limit_price <= 0 or limit_price >= 1:
-            return None
-        resting = not canonical_limit_quote.would_cross
-        entry_mode = "limit"
-        entry_price = limit_price
-        fee_per_contract = canonical_limit_quote.fee_per_contract
-        cost_per_contract = canonical_limit_quote.cost_per_contract
+        if policy.sleeve is ResearchSleeve.MOTION:
+            if any(
+                value is not None
+                for value in (
+                    decision.limit_price,
+                    decision.limit_fee_per_contract,
+                    decision.limit_cost_per_contract,
+                    decision.limit_edge,
+                    decision.limit_edge_lcb,
+                )
+            ):
+                raise ValueError("motion research requires immediate taker execution")
+            if float(decision.ask_size) + 1e-9 < contracts:
+                return None
+            fee_per_contract = quadratic_fee_average_per_contract(
+                ask,
+                contracts,
+                maker=False,
+                fee_multiplier=strategy_config.fee_multiplier,
+                taker_rate=strategy_config.taker_fee_rate,
+                maker_rate=strategy_config.maker_fee_rate,
+                series_ticker=decision.ticker,
+            )
+            cost_per_contract = ask + fee_per_contract
+            edge = decision.probability - cost_per_contract
+            edge_lcb = decision.probability_lcb - cost_per_contract
+            represented = (
+                decision.fee_per_contract,
+                decision.cost_per_contract,
+                decision.edge,
+                decision.edge_lcb,
+                decision.expected_profit,
+            )
+            canonical = (
+                fee_per_contract,
+                cost_per_contract,
+                edge,
+                edge_lcb,
+                edge * contracts,
+            )
+            if not all(
+                math.isfinite(float(actual))
+                and math.isclose(
+                    float(actual), expected, rel_tol=0.0, abs_tol=1e-9
+                )
+                for actual, expected in zip(represented, canonical, strict=True)
+            ):
+                raise ValueError("motion research taker quote does not match")
+            if edge <= 0 or edge_lcb + 1e-12 < strategy_config.min_edge_lcb:
+                return None
+            resting = False
+            entry_mode = "market"
+            entry_price = ask
+            limit_price = None
+        else:
+            if any(
+                value is None
+                for value in (
+                    decision.limit_price,
+                    decision.limit_fee_per_contract,
+                    decision.limit_cost_per_contract,
+                    decision.limit_edge,
+                    decision.limit_edge_lcb,
+                )
+            ):
+                raise ValueError("target research requires canonical limit execution")
+            canonical_limit_quote = self._canonical_research_limit_quote(
+                decision,
+                strategy_config,
+            )
+            limit_price = canonical_limit_quote.price
+            if limit_price <= 0 or limit_price >= 1:
+                return None
+            resting = not canonical_limit_quote.would_cross
+            entry_mode = "limit"
+            entry_price = limit_price
+            fee_per_contract = canonical_limit_quote.fee_per_contract
+            cost_per_contract = canonical_limit_quote.cost_per_contract
+            edge = canonical_limit_quote.edge
+            edge_lcb = canonical_limit_quote.edge_lcb
         if (
             not math.isfinite(cost_per_contract)
             or cost_per_contract <= 0
@@ -1663,8 +1980,6 @@ class PaperStore:
             else 0.0
         )
         fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
-        edge = canonical_limit_quote.edge
-        edge_lcb = canonical_limit_quote.edge_lcb
         expected_profit = edge * contracts
         quote_snapshot_json = json.dumps(
             {

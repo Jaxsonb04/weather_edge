@@ -628,6 +628,29 @@ def _atomic_decision(
     return limited
 
 
+def _motion_atomic_decision(
+    ticker: str,
+    *,
+    contracts: float = 1.0,
+) -> TradeDecision:
+    from sfo_kalshi_quant.paper import with_motion_taker_execution
+
+    raw = replace(
+        _atomic_decision(ticker, contracts=contracts),
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+    prepared = with_motion_taker_execution(
+        raw,
+        strategy_config_for_profile("research"),
+    )
+    assert prepared is not None
+    return prepared
+
+
 def _fixed_research_clock() -> datetime:
     return datetime(2026, 7, 18, 20, tzinfo=UTC)
 
@@ -1037,11 +1060,12 @@ def test_same_market_allowed_across_sleeves_but_duplicate_account_rejected(
     )
     ticker = "KXHIGHTSFO-SAME-MARKET"
     decision = _atomic_decision(ticker)
+    motion_decision = _motion_atomic_decision(ticker)
     target_admission = _linked_admission(
         store, TARGET_POLICY, "target-first", decision
     )
     motion_admission = _linked_admission(
-        store, MOTION_POLICY, "motion-first", decision
+        store, MOTION_POLICY, "motion-first", motion_decision
     )
     duplicate_admission = _linked_admission(
         store, TARGET_POLICY, "target-duplicate", decision
@@ -1054,7 +1078,7 @@ def test_same_market_allowed_across_sleeves_but_duplicate_account_rejected(
     )
     motion = store.record_research_order_atomic(
         "2026-07-19",
-        decision,
+        motion_decision,
         admission=motion_admission,
         strategy_config=strategy_config_for_profile("research"),
     )
@@ -1546,7 +1570,7 @@ def test_motion_atomic_admission_allows_canonical_same_day_target(
         tmp_path / "motion-same-day.db",
         research_clock=_fixed_research_clock,
     )
-    decision = _atomic_decision("KXHIGHTSFO-MOTION-SAME-DAY", contracts=1)
+    decision = _motion_atomic_decision("KXHIGHTSFO-MOTION-SAME-DAY", contracts=1)
     admission = _linked_admission(
         store,
         MOTION_POLICY,
@@ -2154,3 +2178,359 @@ def test_research_admission_fails_closed_on_malformed_ledger_amount(
     ) is None
     with store.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
+
+
+def test_research_evidence_api_binds_target_and_motion_execution_styles(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore, ResearchDecisionIdentity
+    from sfo_kalshi_quant.paper import with_motion_taker_execution
+
+    store = PaperStore(tmp_path / "research-styles.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+
+    target = _atomic_decision("KXHIGHTSFO-TARGET-STYLE", resting=True)
+    target_identity = ResearchDecisionIdentity.for_policy(
+        TARGET_POLICY,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="scan-target-style",
+        reentry_fingerprint="reentry-target-style",
+    )
+    target_decision_id = store.record_research_decision_evidence(
+        "2026-07-19",
+        target,
+        identity=target_identity,
+        strategy_config=config,
+    )
+    target_order_id = store.record_research_order_atomic(
+        "2026-07-19",
+        target,
+        admission=target_identity.admission(target_decision_id),
+        strategy_config=config,
+    )
+
+    raw_motion = replace(
+        _atomic_decision("KXHIGHTSFO-MOTION-STYLE", resting=True),
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+    motion = with_motion_taker_execution(raw_motion, config)
+    assert motion is not None
+    motion_identity = ResearchDecisionIdentity.for_policy(
+        MOTION_POLICY,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="scan-motion-style",
+        reentry_fingerprint="reentry-motion-style",
+    )
+    motion_decision_id = store.record_research_decision_evidence(
+        "2026-07-19",
+        motion,
+        identity=motion_identity,
+        strategy_config=config,
+    )
+    motion_order_id = store.record_research_order_atomic(
+        "2026-07-19",
+        motion,
+        admission=motion_identity.admission(motion_decision_id),
+        strategy_config=config,
+    )
+
+    assert target_order_id is not None
+    target_row = store.paper_order(target_order_id)
+    assert target_row is not None
+    assert target_row["entry_mode"] == "limit"
+    assert target_row["fill_model"] == "maker_trade_through_required"
+    assert motion_order_id is not None
+    motion_row = store.paper_order(motion_order_id)
+    assert motion_row is not None
+    assert motion_row["entry_mode"] == "market"
+    assert motion_row["status"] == "PAPER_FILLED"
+    assert motion_row["fill_model"] == "immediate_visible_quote"
+    assert motion_row["contracts"] == pytest.approx(1.0)
+    assert motion_row["entry_price"] == pytest.approx(motion.ask)
+
+    wrong_target_identity = ResearchDecisionIdentity.for_policy(
+        TARGET_POLICY,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="scan-target-cross-style",
+        reentry_fingerprint="reentry-target-cross-style",
+    )
+    wrong_target_id = store.record_research_decision_evidence(
+        "2026-07-19",
+        motion,
+        identity=wrong_target_identity,
+        strategy_config=config,
+    )
+    with pytest.raises(ValueError, match="target research requires canonical limit"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            motion,
+            admission=wrong_target_identity.admission(wrong_target_id),
+            strategy_config=config,
+        )
+
+    wrong_motion_identity = ResearchDecisionIdentity.for_policy(
+        MOTION_POLICY,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="scan-motion-cross-style",
+        reentry_fingerprint="reentry-motion-cross-style",
+    )
+    wrong_motion_id = store.record_research_decision_evidence(
+        "2026-07-19",
+        target,
+        identity=wrong_motion_identity,
+        strategy_config=config,
+    )
+    with pytest.raises(ValueError, match="motion research requires immediate taker"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            target,
+            admission=wrong_motion_identity.admission(wrong_motion_id),
+            strategy_config=config,
+        )
+
+
+def test_same_shared_research_context_blocks_same_day_target_and_fills_motion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "same-context.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decision = _atomic_decision("KXHIGHTSFO-SAME-CONTEXT", resting=True)
+    opportunity = ResearchOpportunity(decision, "2026-07-18", 0)
+    plans = allocate_research_plans([opportunity], run_id="shared-scan")
+
+    monkeypatch.setattr(
+        "sfo_kalshi_quant.paper._deterministic_sample",
+        lambda *args, **kwargs: pytest.fail("legacy 25% sampler must not run"),
+    )
+    result = PaperTrader(
+        store,
+        config,
+        risk_profile="research",
+        entry_mode="limit",
+    ).execute_research_plans(
+        "2026-07-18",
+        plans,
+        source_decisions=[decision],
+        objective_day="2026-07-18",
+        lead_bucket="same-day",
+        scan_run_id="shared-scan",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert result.target_order_ids == ()
+    assert len(result.motion_order_ids) == 1
+    assert len(result.target_decision_ids) == 1
+    assert len(result.motion_decision_ids) == 1
+    motion = store.paper_order(result.motion_order_ids[0])
+    assert motion is not None
+    assert motion["account_id"] == MOTION_POLICY.account_id
+    assert motion["entry_mode"] == "market"
+    assert motion["contracts"] == pytest.approx(1.0)
+    with store.connect() as conn:
+        evidence = conn.execute(
+            "SELECT research_sleeve, approved, entry_block_reason "
+            "FROM decision_snapshots ORDER BY id"
+        ).fetchall()
+    assert evidence == [
+        ("target", 0, "target requires day-ahead lead"),
+        ("motion", 1, None),
+    ]
+
+
+def test_motion_attempts_every_candidate_in_priority_order_without_minimum_notional(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "motion-priority.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    low = replace(
+        _atomic_decision("KXHIGHTSFO-MOTION-LOW", resting=True),
+        edge=0.08,
+        edge_lcb=0.04,
+        expected_profit=0.08,
+    )
+    high = replace(
+        _atomic_decision("KXHIGHTSFO-MOTION-HIGH", resting=True),
+        probability=0.94,
+        probability_lcb=0.91,
+        edge=0.12,
+        edge_lcb=0.09,
+        expected_profit=0.12,
+    )
+    no_depth = replace(
+        _atomic_decision("KXHIGHTSFO-MOTION-NO-DEPTH", resting=True),
+        probability=0.92,
+        probability_lcb=0.80,
+        edge=0.10,
+        edge_lcb=-0.02,
+        expected_profit=0.10,
+        entry_ask_size=0.5,
+    )
+    decisions = [low, no_depth, high]
+    plans = allocate_research_plans(
+        [ResearchOpportunity(row, "2026-07-19", 1) for row in decisions],
+        run_id="motion-priority",
+    )
+
+    result = PaperTrader(
+        store,
+        config,
+        risk_profile="research",
+        entry_mode="limit",
+    ).execute_research_plans(
+        "2026-07-19",
+        plans,
+        source_decisions=decisions,
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="motion-priority",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert len(result.motion_decision_ids) == 3
+    assert len(result.motion_order_ids) == 2
+    with store.connect() as conn:
+        motion_orders = conn.execute(
+            "SELECT market_ticker, contracts, cost_per_contract "
+            "FROM paper_orders WHERE account_id=? ORDER BY id",
+            (MOTION_POLICY.account_id,),
+        ).fetchall()
+        motion_evidence = conn.execute(
+            "SELECT market_ticker, approved, entry_block_reason "
+            "FROM decision_snapshots WHERE research_sleeve='motion' ORDER BY id"
+        ).fetchall()
+    assert [row[0] for row in motion_orders] == [
+        "KXHIGHTSFO-MOTION-HIGH",
+        "KXHIGHTSFO-MOTION-LOW",
+    ]
+    assert all(row[1] == pytest.approx(1.0) for row in motion_orders)
+    assert all(row[2] < 1.0 for row in motion_orders)  # deliberately below the old $5 floor
+    assert [row[0] for row in motion_evidence] == [
+        "KXHIGHTSFO-MOTION-HIGH",
+        "KXHIGHTSFO-MOTION-NO-DEPTH",
+        "KXHIGHTSFO-MOTION-LOW",
+    ]
+    assert motion_evidence[1][1:] == (
+        0,
+        "motion visible-ask taker quote is not executable",
+    )
+
+
+@pytest.mark.parametrize(
+    ("second_scan", "price_delta", "probability_delta", "observed_high", "expected"),
+    (
+        ("reentry-2", 0.0, 0.0, None, False),
+        ("reentry-2", 0.009, 0.019, None, False),
+        ("reentry-2", 0.01, 0.0, None, True),
+        ("reentry-2", 0.0, 0.02, None, True),
+        ("reentry-2", 0.0, 0.0, 81.0, True),
+        ("reentry-1", 0.0, 0.0, None, False),
+        ("reentry-1", 0.01, 0.0, None, False),
+    ),
+)
+def test_terminal_motion_reentry_requires_new_scan_and_exact_change_threshold(
+    tmp_path: Path,
+    second_scan: str,
+    price_delta: float,
+    probability_delta: float,
+    observed_high: float | None,
+    expected: bool,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.models import IntradaySnapshot
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(tmp_path / "motion-reentry.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    trader = PaperTrader(store, config, risk_profile="research", entry_mode="limit")
+    initial = replace(
+        _atomic_decision("KXHIGHTSFO-MOTION-REENTRY", resting=True),
+        probability_lcb=0.80,
+        edge_lcb=-0.02,
+    )
+    initial_plans = allocate_research_plans(
+        [ResearchOpportunity(initial, "2026-07-19", 1)],
+        run_id="reentry-1",
+    )
+    first = trader.execute_research_plans(
+        "2026-07-19",
+        initial_plans,
+        source_decisions=[initial],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="reentry-1",
+        observed_high_state="complete=0;high=unavailable",
+    )
+    assert len(first.motion_order_ids) == 1
+    store.close_paper_order(first.motion_order_ids[0], 0.80)
+
+    changed = replace(
+        initial,
+        entry_ask=initial.ask + price_delta,
+        probability=initial.probability + probability_delta,
+        probability_lcb=initial.probability_lcb + probability_delta,
+        edge=initial.edge + probability_delta - price_delta,
+        edge_lcb=initial.edge_lcb + probability_delta - price_delta,
+        expected_profit=initial.edge + probability_delta - price_delta,
+    )
+    intraday = (
+        IntradaySnapshot(
+            target_date=datetime(2026, 7, 19, tzinfo=UTC).date(),
+            observed_high_f=observed_high,
+            latest_temp_f=observed_high,
+            latest_observed_at="2026-07-18T20:15:00+00:00",
+            remaining_forecast_high_f=None,
+            forecast_fetched_at=None,
+        )
+        if observed_high is not None
+        else None
+    )
+    changed_plans = allocate_research_plans(
+        [ResearchOpportunity(changed, "2026-07-19", 1)],
+        run_id=second_scan,
+    )
+    second = trader.execute_research_plans(
+        "2026-07-19",
+        changed_plans,
+        source_decisions=[changed],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id=second_scan,
+        observed_high_state=(
+            f"complete=0;high={observed_high:.1f}"
+            if observed_high is not None
+            else "complete=0;high=unavailable"
+        ),
+        intraday=intraday,
+    )
+
+    assert bool(second.motion_order_ids) is expected
+    with store.connect() as conn:
+        attempts = conn.execute(
+            "SELECT approved, entry_block_reason, reentry_fingerprint "
+            "FROM decision_snapshots WHERE research_sleeve='motion' ORDER BY id"
+        ).fetchall()
+    assert len(attempts) == 2
+    if expected:
+        assert attempts[-1][0:2] == (1, None)
+    else:
+        assert attempts[-1][0] == 0
+        assert attempts[-1][1].startswith("motion re-entry requires")
+    if second_scan == "reentry-1" and price_delta == 0.01:
+        assert attempts[0][2] != attempts[1][2]  # price changed, but scan id did not
+    if second_scan == "reentry-1" and price_delta == probability_delta == 0.0:
+        assert attempts[0][2] == attempts[1][2]

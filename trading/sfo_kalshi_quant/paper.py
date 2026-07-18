@@ -1,23 +1,87 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import NoReturn
 
 from .arbitrage import ArbitrageOpportunity
 from .config import StrategyConfig
-from .db import PaperStore
+from .consensus import MarketConsensus
+from .db import PaperStore, ResearchDecisionIdentity
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
 )
 from .execution import buy_limit_for_decision, with_buy_limit
-from .models import TradeDecision
+from .models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
+from .research_portfolio import ResearchPlans
 
 
 class ArbitrageContainmentError(RuntimeError):
     """A partial arbitrage group still has active financial exposure."""
+
+
+def with_motion_taker_execution(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> TradeDecision | None:
+    """Reprice one motion entry at the contemporaneous visible ask.
+
+    Motion is evidence-seeking but never invents liquidity: exactly one whole
+    contract must be displayed, point edge must remain positive after the exact
+    taker fee, and the fixed research lower-bound floor still applies.
+    """
+
+    if not decision.approved:
+        return None
+    try:
+        ask = float(decision.ask)
+        ask_size = float(decision.ask_size)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 0.0 < ask < 1.0 or ask_size + 1e-9 < 1.0:
+        return None
+    fee = quadratic_fee_average_per_contract(
+        ask,
+        1.0,
+        maker=False,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=decision.ticker,
+    )
+    cost = ask + fee
+    edge = float(decision.probability) - cost
+    edge_lcb = float(decision.probability_lcb) - cost
+    if edge <= 0.0 or edge_lcb + 1e-12 < config.min_edge_lcb:
+        return None
+    return replace(
+        decision,
+        fee_per_contract=fee,
+        cost_per_contract=cost,
+        edge=edge,
+        edge_lcb=edge_lcb,
+        recommended_contracts=1.0,
+        expected_profit=edge,
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+
+
+@dataclass(frozen=True)
+class ResearchExecutionResult:
+    """Exact evidence and filled/reserved order ids for both research books."""
+
+    target_decision_ids: tuple[int, ...]
+    motion_decision_ids: tuple[int, ...]
+    target_order_ids: tuple[int, ...]
+    motion_order_ids: tuple[int, ...]
 
 
 class PaperTrader:
@@ -154,6 +218,194 @@ class PaperTrader:
             else decision
             for decision in decisions
         ]
+
+    def execute_research_plans(
+        self,
+        target_date: str,
+        plans: ResearchPlans,
+        *,
+        source_decisions: list[TradeDecision],
+        objective_day: str,
+        lead_bucket: str,
+        scan_run_id: str,
+        observed_high_state: str,
+        forecast: ForecastSnapshot | None = None,
+        intraday: IntradaySnapshot | None = None,
+        event: EventSnapshot | None = None,
+        market_consensus: MarketConsensus | None = None,
+        forecast_snapshot_id: int | None = None,
+        market_snapshot_id: int | None = None,
+        admit_orders: bool = True,
+    ) -> ResearchExecutionResult:
+        """Persist and independently admit target and motion plans.
+
+        The caller supplies one already-built scan context.  This method only
+        clones those immutable inputs into per-sleeve audit rows; it never
+        fetches forecasts, markets, or probabilities and never touches the
+        legacy research-shadow placement path.
+        """
+
+        if self.risk_profile != "research":
+            raise ValueError("research plans require the research profile")
+        canonical = StrategyConfig()
+        # Equality against the actual profile is performed by the evidence and
+        # admission APIs.  This local type check keeps malformed callers from
+        # reaching either journal path.
+        if not isinstance(self.config, type(canonical)):
+            raise ValueError("research plans require a strategy configuration")
+        source_by_key = {
+            _decision_key(decision): decision for decision in source_decisions
+        }
+        target_decision_ids, target_order_ids = self._execute_research_plan(
+            target_date,
+            plans.target,
+            policy=TARGET_POLICY,
+            source_by_key=source_by_key,
+            objective_day=objective_day,
+            lead_bucket=lead_bucket,
+            scan_run_id=scan_run_id,
+            observed_high_state=observed_high_state,
+            forecast=forecast,
+            intraday=intraday,
+            event=event,
+            market_consensus=market_consensus,
+            forecast_snapshot_id=forecast_snapshot_id,
+            market_snapshot_id=market_snapshot_id,
+            admit_orders=admit_orders,
+        )
+        motion_decision_ids, motion_order_ids = self._execute_research_plan(
+            target_date,
+            plans.motion,
+            policy=MOTION_POLICY,
+            source_by_key=source_by_key,
+            objective_day=objective_day,
+            lead_bucket=lead_bucket,
+            scan_run_id=scan_run_id,
+            observed_high_state=observed_high_state,
+            forecast=forecast,
+            intraday=intraday,
+            event=event,
+            market_consensus=market_consensus,
+            forecast_snapshot_id=forecast_snapshot_id,
+            market_snapshot_id=market_snapshot_id,
+            admit_orders=admit_orders,
+        )
+        return ResearchExecutionResult(
+            target_decision_ids=tuple(target_decision_ids),
+            motion_decision_ids=tuple(motion_decision_ids),
+            target_order_ids=tuple(target_order_ids),
+            motion_order_ids=tuple(motion_order_ids),
+        )
+
+    def _execute_research_plan(
+        self,
+        target_date: str,
+        plan,
+        *,
+        policy: ResearchSleevePolicy,
+        source_by_key: dict[tuple[str, str], TradeDecision],
+        objective_day: str,
+        lead_bucket: str,
+        scan_run_id: str,
+        observed_high_state: str,
+        forecast: ForecastSnapshot | None,
+        intraday: IntradaySnapshot | None,
+        event: EventSnapshot | None,
+        market_consensus: MarketConsensus | None,
+        forecast_snapshot_id: int | None,
+        market_snapshot_id: int | None,
+        admit_orders: bool,
+    ) -> tuple[list[int], list[int]]:
+        selected_by_key = {
+            _decision_key(leg.decision): leg.decision for leg in plan.legs
+        }
+        decision_ids: list[int] = []
+        order_ids: list[int] = []
+        for disposition in plan.dispositions:
+            key = (str(disposition.ticker), str(disposition.side).upper())
+            base = selected_by_key.get(key) or source_by_key.get(key)
+            if base is None:
+                continue
+            selected = disposition.status == "selected" and key in selected_by_key
+            prepared = _prepare_research_disposition(
+                base,
+                policy=policy,
+                selected=selected,
+                reason=disposition.reason,
+                config=self.config,
+            )
+            if policy is MOTION_POLICY and selected and prepared.approved:
+                reentry_reason = self.store.motion_reentry_block_reason(
+                    target_date=target_date,
+                    market_ticker=prepared.ticker,
+                    side=prepared.side,
+                    scan_run_id=scan_run_id,
+                    executable_price=float(prepared.ask),
+                    probability=float(prepared.probability),
+                    intraday_observed_high_f=(
+                        intraday.observed_high_f if intraday is not None else None
+                    ),
+                    intraday_is_complete=(
+                        bool(intraday.is_complete) if intraday is not None else False
+                    ),
+                )
+                if reentry_reason is not None:
+                    prepared = replace(
+                        prepared,
+                        approved=False,
+                        signal_approved=True,
+                        entry_block_reason=reentry_reason,
+                        recommended_contracts=0.0,
+                        expected_profit=0.0,
+                        reasons=[*prepared.reasons, reentry_reason],
+                    )
+                    selected = False
+            executable_price = (
+                float(prepared.limit_price)
+                if prepared.limit_price is not None
+                else float(prepared.ask)
+            )
+            reentry_fingerprint = research_reentry_fingerprint(
+                account_id=policy.account_id,
+                sleeve=policy.sleeve.value,
+                scan_run_id=scan_run_id,
+                ticker=prepared.ticker,
+                side=prepared.side,
+                executable_price=executable_price,
+                probability=prepared.probability,
+                observed_high_state=observed_high_state,
+            )
+            identity = ResearchDecisionIdentity.for_policy(
+                policy,
+                objective_day=objective_day,
+                lead_bucket=lead_bucket,
+                scan_run_id=scan_run_id,
+                reentry_fingerprint=reentry_fingerprint,
+            )
+            decision_id = self.store.record_research_decision_evidence(
+                target_date,
+                prepared,
+                identity=identity,
+                forecast=forecast,
+                intraday=intraday,
+                event=event,
+                market_consensus=market_consensus,
+                strategy_config=self.config,
+                forecast_snapshot_id=forecast_snapshot_id,
+                market_snapshot_id=market_snapshot_id,
+            )
+            decision_ids.append(decision_id)
+            if not admit_orders or not selected or not prepared.approved:
+                continue
+            order_id = self.store.record_research_order_atomic(
+                target_date,
+                prepared,
+                admission=identity.admission(decision_id),
+                strategy_config=self.config,
+            )
+            if order_id is not None:
+                order_ids.append(order_id)
+        return decision_ids, order_ids
 
     def place_approved(
         self,
@@ -698,6 +950,92 @@ class PaperTrader:
         if not adjusted.approved or adjusted.total_spend > exposure_remaining + 1e-9:
             return None
         return adjusted
+
+
+def _prepare_research_disposition(
+    decision: TradeDecision,
+    *,
+    policy: ResearchSleevePolicy,
+    selected: bool,
+    reason: str | None,
+    config: StrategyConfig,
+) -> TradeDecision:
+    if not selected:
+        block_reason = (
+            decision.entry_block_reason
+            or reason
+            or f"{policy.sleeve.value} research not selected"
+        )
+        return replace(
+            decision,
+            approved=False,
+            signal_approved=(
+                decision.signal_approved
+                if decision.signal_approved is not None
+                else decision.approved
+            ),
+            entry_block_reason=block_reason,
+            recommended_contracts=0.0,
+            expected_profit=0.0,
+            reasons=[*decision.reasons, block_reason],
+        )
+    if policy is MOTION_POLICY:
+        prepared = with_motion_taker_execution(decision, config)
+        if prepared is not None:
+            return prepared
+        block_reason = "motion visible-ask taker quote is not executable"
+    else:
+        prepared = with_buy_limit(decision, config)
+        if prepared.approved and prepared.limit_price is not None:
+            quote_crosses = prepared.limit_price >= prepared.ask - 1e-12
+            if quote_crosses and prepared.recommended_contracts > prepared.ask_size:
+                contracts = float(int(prepared.ask_size))
+                prepared = replace(
+                    prepared,
+                    recommended_contracts=contracts,
+                    expected_profit=prepared.edge * contracts,
+                )
+                prepared = with_buy_limit(prepared, config)
+            if prepared.approved and prepared.recommended_contracts > 0:
+                return prepared
+        block_reason = "target canonical maker-or-taker quote is not executable"
+    return replace(
+        decision,
+        approved=False,
+        signal_approved=True,
+        entry_block_reason=block_reason,
+        recommended_contracts=0.0,
+        expected_profit=0.0,
+        reasons=[*decision.reasons, block_reason],
+    )
+
+
+def research_reentry_fingerprint(
+    *,
+    account_id: str,
+    sleeve: str,
+    scan_run_id: str,
+    ticker: str,
+    side: str,
+    executable_price: float,
+    probability: float,
+    observed_high_state: str,
+) -> str:
+    """Hash the exact versioned opportunity identity from the design."""
+
+    payload = {
+        "account_id": account_id,
+        "sleeve": sleeve,
+        "scan_run_id": scan_run_id,
+        "ticker": ticker,
+        "side": side.upper(),
+        "executable_price_cents": round(executable_price * 100),
+        "probability_bucket": round(probability * 50),
+        "observed_high_state": observed_high_state,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _normalize_entry_mode(entry_mode: str) -> str:
