@@ -2716,6 +2716,172 @@ def test_target_atomic_admission_uses_zero_lcb_floor_quote(
     assert result.motion_order_ids == ()
 
 
+def _crossing_target_candidate(
+    ticker: str,
+    *,
+    contracts: float = 25.0,
+    ask_size: object = 5.0,
+) -> TradeDecision:
+    return replace(
+        _atomic_decision(ticker),
+        approved=True,
+        probability=0.95,
+        probability_lcb=0.95,
+        model_probability=0.95,
+        entry_bid=0.89,
+        entry_ask=0.90,
+        entry_ask_size=ask_size,
+        spread=0.01,
+        recommended_contracts=contracts,
+        expected_profit=0.05 * contracts,
+        reasons=[],
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+
+
+def test_target_crossing_quote_downsizes_to_visible_whole_contract_depth() -> None:
+    from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
+    from sfo_kalshi_quant.paper import with_target_research_execution
+
+    config = strategy_config_for_profile("research")
+    candidate = _crossing_target_candidate("KXHIGHTSFO-TARGET-DEPTH")
+
+    prepared = with_target_research_execution(candidate, config)
+
+    assert prepared is not None
+    assert prepared.recommended_contracts == 5.0
+    fee = quadratic_fee_average_per_contract(
+        0.90,
+        5.0,
+        maker=False,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=candidate.ticker,
+    )
+    assert prepared.fee_per_contract == pytest.approx(fee)
+    assert prepared.cost_per_contract == pytest.approx(0.90 + fee)
+    assert prepared.edge == pytest.approx(0.95 - 0.90 - fee)
+    assert prepared.edge_lcb == pytest.approx(0.95 - 0.90 - fee)
+    assert prepared.expected_profit == pytest.approx(prepared.edge * 5.0)
+    assert prepared.limit_price == pytest.approx(0.90)
+
+
+def test_target_crossing_quote_floors_fractional_depth() -> None:
+    from sfo_kalshi_quant.paper import with_target_research_execution
+
+    prepared = with_target_research_execution(
+        _crossing_target_candidate(
+            "KXHIGHTSFO-TARGET-FRACTIONAL-DEPTH",
+            ask_size=5.9,
+        ),
+        strategy_config_for_profile("research"),
+    )
+
+    assert prepared is not None
+    assert prepared.recommended_contracts == 5.0
+
+
+@pytest.mark.parametrize("ask_size", [0.0, 0.99, -1.0, float("nan"), float("inf"), "bad"])
+def test_target_crossing_quote_rejects_nonexecutable_depth(ask_size: object) -> None:
+    from sfo_kalshi_quant.paper import with_target_research_execution
+
+    assert with_target_research_execution(
+        _crossing_target_candidate(
+            "KXHIGHTSFO-TARGET-BAD-DEPTH",
+            ask_size=ask_size,
+        ),
+        strategy_config_for_profile("research"),
+    ) is None
+
+
+def test_target_maker_quote_does_not_downsize_to_visible_ask_depth() -> None:
+    from sfo_kalshi_quant.paper import with_target_research_execution
+
+    candidate = replace(
+        _crossing_target_candidate(
+            "KXHIGHTSFO-TARGET-MAKER-DEPTH",
+            ask_size=5.0,
+        ),
+        entry_bid=0.88,
+        spread=0.02,
+    )
+
+    prepared = with_target_research_execution(
+        candidate,
+        strategy_config_for_profile("research"),
+    )
+
+    assert prepared is not None
+    assert prepared.recommended_contracts == 25.0
+    assert prepared.limit_price == pytest.approx(0.89)
+
+
+def test_target_depth_downsize_is_exact_in_evidence_and_order_ledger(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import (
+        PaperTrader,
+        prepare_research_sleeve_decisions,
+    )
+
+    config = strategy_config_for_profile("research")
+    target_decisions, _motion_decisions = prepare_research_sleeve_decisions(
+        [_crossing_target_candidate("KXHIGHTSFO-TARGET-LEDGER")],
+        config,
+    )
+    assert target_decisions[0].recommended_contracts == 5.0
+    plans = allocate_research_plans(
+        [ResearchOpportunity(target_decisions[0], "2026-07-19", 1)],
+        motion_opportunities=[],
+        run_id="target-depth-ledger",
+    )
+    store = PaperStore(
+        tmp_path / "target-depth-ledger.db",
+        research_clock=_fixed_research_clock,
+    )
+
+    result = PaperTrader(
+        store,
+        config,
+        risk_profile="research",
+        entry_mode="limit",
+    ).execute_research_plans(
+        "2026-07-19",
+        plans,
+        source_decisions=target_decisions,
+        motion_source_decisions=[],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id="target-depth-ledger",
+        observed_high_state="complete=0;high=unavailable",
+    )
+
+    assert len(result.target_order_ids) == 1
+    with store.connect() as conn:
+        evidence = conn.execute(
+            "SELECT recommended_contracts, recommended_spend FROM decision_snapshots "
+            "WHERE id=?",
+            (result.target_decision_ids[0],),
+        ).fetchone()
+        order = conn.execute(
+            "SELECT contracts, requested_contracts, entry_price, status "
+            "FROM paper_orders WHERE id=?",
+            (result.target_order_ids[0],),
+        ).fetchone()
+    assert evidence[0] == pytest.approx(5.0)
+    assert evidence[1] == pytest.approx(target_decisions[0].cost_per_contract * 5.0)
+    assert order[0] == pytest.approx(5.0)
+    assert order[1] == pytest.approx(5.0)
+    assert order[2] == pytest.approx(0.90)
+    assert order[3] == "PAPER_FILLED"
+
+
 def test_motion_reentry_projects_root_when_newest_partial_child_is_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

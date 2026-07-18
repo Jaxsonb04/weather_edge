@@ -1698,7 +1698,13 @@ class PaperStore:
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("canonical research limit quote is invalid") from exc
         if (
-            not math.isfinite(limit_price)
+            not math.isclose(
+                float(decision.recommended_contracts),
+                quote.contracts,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            or not math.isfinite(limit_price)
             or not math.isclose(
                 limit_price,
                 quote.price,
