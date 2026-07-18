@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from ._util import (
     _row_value as _shared_row_value,
@@ -154,6 +154,7 @@ class ResearchAdmission:
     scan_run_id: str
     reentry_fingerprint: str
     lead_bucket: str
+    entry_decision_id: int
 
 
 _RESEARCH_POLICIES_BY_ACCOUNT = {
@@ -162,8 +163,15 @@ _RESEARCH_POLICIES_BY_ACCOUNT = {
 }
 
 class PaperStore:
-    def __init__(self, db_path: Path, *, init: bool = True) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        init: bool = True,
+        research_clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self._research_clock = research_clock or partial(datetime.now, UTC)
         if init:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self.init()
@@ -186,6 +194,14 @@ class PaperStore:
 
     def init(self) -> None:
         init_store(self)
+
+    def _research_objective_day(self) -> date:
+        """Return the current Pacific civil day from the admission clock."""
+
+        now = self._research_clock()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("research admission clock must be timezone-aware")
+        return now.astimezone(RESEARCH_OBJECTIVE_TZ).date()
 
     def _ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
         ensure_open_position_guard_index(self, conn)
@@ -549,7 +565,6 @@ class PaperStore:
                 return self._research_capacity_on_connection(
                     conn,
                     policy=_RESEARCH_POLICIES_BY_ACCOUNT[account_id],
-                    objective_day=datetime.now(RESEARCH_OBJECTIVE_TZ).date().isoformat(),
                     target_date=target_date,
                     market_ticker=market_ticker,
                     requested_spend=requested_spend,
@@ -612,12 +627,12 @@ class PaperStore:
         conn: sqlite3.Connection,
         *,
         policy: ResearchSleevePolicy,
-        objective_day: str,
         target_date: str,
         market_ticker: str,
         requested_spend: float,
         side: str | None = None,
         contracts: float | None = None,
+        civil_day: date | None = None,
     ) -> dict[str, object]:
         """Compute one sleeve's capacity entirely inside the admission lock."""
 
@@ -641,10 +656,7 @@ class PaperStore:
         if not math.isfinite(float(state["available_cash"])):
             return {"allowed_spend": 0.0, "reason": "research account cash is invalid"}
 
-        try:
-            civil_day = date.fromisoformat(objective_day)
-        except (TypeError, ValueError):
-            return {"allowed_spend": 0.0, "reason": "invalid research objective day"}
+        civil_day = civil_day or self._research_objective_day()
         day_start = datetime.combine(
             civil_day,
             time.min,
@@ -1234,7 +1246,135 @@ class PaperStore:
             or not admission.lead_bucket.strip()
         ):
             raise ValueError("research admission lead bucket is required")
+        if (
+            isinstance(admission.entry_decision_id, bool)
+            or not isinstance(admission.entry_decision_id, int)
+            or admission.entry_decision_id <= 0
+        ):
+            raise ValueError("research admission entry decision id is required")
         return policy
+
+    @staticmethod
+    def _research_entry_decision_on_connection(
+        conn: sqlite3.Connection,
+        *,
+        admission: ResearchAdmission,
+        target_date: str,
+        decision: TradeDecision,
+    ) -> sqlite3.Row:
+        """Load and exactly validate the evidence explicitly named by admission."""
+
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT d.*,
+                   c.id AS scan_context_joined_id,
+                   c.schema_version AS scan_context_schema_version,
+                   c.created_at AS scan_context_created_at,
+                   c.target_date AS scan_context_target_date,
+                   c.risk_profile AS scan_context_risk_profile,
+                   c.bankroll AS scan_context_bankroll,
+                   c.forecast_snapshot_id AS scan_context_forecast_snapshot_id,
+                   c.market_snapshot_id AS scan_context_market_snapshot_id,
+                   c.forecast_json AS scan_context_forecast_json,
+                   c.intraday_json AS scan_context_intraday_json,
+                   c.market_json AS scan_context_market_json,
+                   c.market_consensus_json AS scan_context_market_consensus_json,
+                   c.prediction_features_json AS scan_context_prediction_features_json,
+                   c.strategy_config_json AS scan_context_strategy_config_json,
+                   c.research_sleeve AS context_research_sleeve,
+                   c.research_policy_version AS context_research_policy_version,
+                   c.policy_fingerprint AS context_policy_fingerprint,
+                   c.objective_day AS context_objective_day,
+                   c.lead_bucket AS context_lead_bucket,
+                   c.scan_run_id AS context_scan_run_id,
+                   c.reentry_fingerprint AS context_reentry_fingerprint,
+                   ms.raw_json AS scan_context_market_snapshot_json
+            FROM decision_snapshots d
+            JOIN scan_context_snapshots c ON c.id = d.scan_context_id
+            LEFT JOIN market_snapshots ms ON ms.id = c.market_snapshot_id
+            WHERE d.id = ?
+            """,
+            (admission.entry_decision_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("research entry decision evidence is missing")
+
+        expected_identity = {
+            "research_sleeve": admission.sleeve.value,
+            "research_policy_version": admission.policy_version,
+            "policy_fingerprint": admission.policy_fingerprint,
+            "objective_day": admission.objective_day,
+            "lead_bucket": admission.lead_bucket,
+            "scan_run_id": admission.scan_run_id,
+            "reentry_fingerprint": admission.reentry_fingerprint,
+        }
+        identity_matches = all(
+            str(row[field] or "") == expected
+            for field, expected in expected_identity.items()
+        ) and all(
+            str(row[f"context_{field}"] or "") == expected
+            for field, expected in expected_identity.items()
+        )
+        identity_matches = identity_matches and all(
+            (
+                str(row["target_date"]) == target_date,
+                str(row["scan_context_target_date"]) == target_date,
+                str(row["market_ticker"]) == decision.ticker,
+                str(row["side"] or "").upper() == decision.side.upper(),
+                str(row["risk_profile"] or "") == "research",
+                str(row["scan_context_risk_profile"] or "") == "research",
+                int(row["scan_context_id"]) == int(row["scan_context_joined_id"]),
+            )
+        )
+        if not identity_matches:
+            raise ValueError("research entry decision evidence identity mismatch")
+
+        if (
+            str(row["label"]) != decision.label
+            or str(row["action"]) != decision.action
+            or int(row["approved"] or 0) != int(decision.approved)
+        ):
+            raise ValueError("research entry decision evidence decision mismatch")
+        numeric_expected = {
+            "probability": decision.probability,
+            "probability_lcb": decision.probability_lcb,
+            "yes_bid": decision.yes_bid,
+            "yes_ask": decision.yes_ask,
+            "entry_bid": decision.bid,
+            "entry_ask": decision.ask,
+            "entry_bid_size": decision.bid_size,
+            "entry_ask_size": decision.ask_size,
+            "spread": decision.spread,
+            "fee_per_contract": decision.fee_per_contract,
+            "cost_per_contract": decision.cost_per_contract,
+            "edge": decision.edge,
+            "edge_lcb": decision.edge_lcb,
+            "kelly_fraction": decision.kelly_fraction,
+            "recommended_contracts": decision.recommended_contracts,
+            "recommended_spend": (
+                decision.recommended_contracts * decision.cost_per_contract
+            ),
+            "expected_profit": decision.expected_profit,
+            "trade_quality_score": decision.trade_quality_score,
+        }
+        try:
+            numeric_matches = all(
+                math.isfinite(float(row[field]))
+                and math.isfinite(float(expected))
+                and math.isclose(
+                    float(row[field]),
+                    float(expected),
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                )
+                for field, expected in numeric_expected.items()
+            )
+        except (TypeError, ValueError):
+            numeric_matches = False
+        if not numeric_matches:
+            raise ValueError("research entry decision evidence decision mismatch")
+        return row
 
     def record_research_order_atomic(
         self,
@@ -1327,15 +1467,28 @@ class PaperStore:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
+            civil_day = self._research_objective_day()
+            if admission.objective_day != civil_day.isoformat():
+                conn.rollback()
+                raise ValueError(
+                    "research admission objective day must equal the current "
+                    "Pacific civil day"
+                )
+            entry_decision = self._research_entry_decision_on_connection(
+                conn,
+                admission=admission,
+                target_date=target_date,
+                decision=decision,
+            )
             capacity = self._research_capacity_on_connection(
                 conn,
                 policy=policy,
-                objective_day=admission.objective_day,
                 target_date=target_date,
                 market_ticker=decision.ticker,
                 requested_spend=requested_spend,
                 side=side,
                 contracts=contracts,
+                civil_day=civil_day,
             )
             if capacity["allowed_spend"] + 1e-9 < requested_spend:
                 conn.rollback()
@@ -1349,12 +1502,6 @@ class PaperStore:
                 conn.rollback()
                 return None
 
-            entry_decision = _latest_entry_decision_snapshot(
-                conn,
-                target_date,
-                decision,
-                risk_profile="research",
-            )
             diagnostics_json = json.dumps(
                 _order_entry_diagnostics_payload(
                     target_date,
@@ -1504,25 +1651,62 @@ class PaperStore:
             "reentry_fingerprint": admission.reentry_fingerprint,
         }
         if status == "PAPER_LIMIT_RESTING":
-            self._record_ledger_event(
-                conn,
-                account_id=account_id,
-                order_id=order_id,
-                event_type="RESERVE",
-                amount=-amount,
-                idempotency_key=f"order:{order_id}:reserve",
-                details={**common, "expires_at": expires_at},
-            )
-            return
-        self._record_ledger_event(
-            conn,
-            account_id=account_id,
-            order_id=order_id,
-            event_type="ENTRY_FILL",
-            amount=-amount,
-            idempotency_key=f"order:{order_id}:entry-fill",
-            details={**common, "filled_quantity": filled_quantity},
+            event_type = "RESERVE"
+            idempotency_key = f"order:{order_id}:reserve"
+            details = {**common, "expires_at": expires_at}
+        else:
+            event_type = "ENTRY_FILL"
+            idempotency_key = f"order:{order_id}:entry-fill"
+            details = {**common, "filled_quantity": filled_quantity}
+        expected_amount = -float(amount)
+        details_json = json.dumps(details, sort_keys=True)
+        cursor = conn.execute(
+            "INSERT INTO paper_account_ledger "
+            "(created_at, account_id, order_id, event_type, amount, "
+            "idempotency_key, details_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                _now(),
+                account_id,
+                order_id,
+                event_type,
+                expected_amount,
+                idempotency_key,
+                details_json,
+            ),
         )
+        if cursor.rowcount != 1:
+            raise sqlite3.IntegrityError(
+                "research admission ledger debit was not inserted"
+            )
+        rows = conn.execute(
+            "SELECT account_id, order_id, event_type, amount, idempotency_key, "
+            "details_json FROM paper_account_ledger WHERE order_id=?",
+            (order_id,),
+        ).fetchall()
+        if len(rows) != 1:
+            raise sqlite3.IntegrityError(
+                "research admission requires exactly one order-linked ledger debit"
+            )
+        row = rows[0]
+        try:
+            exact = all(
+                (
+                    str(row[0]) == account_id,
+                    int(row[1]) == order_id,
+                    str(row[2]) == event_type,
+                    math.isclose(
+                        float(row[3]), expected_amount, rel_tol=0.0, abs_tol=1e-9
+                    ),
+                    str(row[4]) == idempotency_key,
+                    str(row[5]) == details_json,
+                )
+            )
+        except (TypeError, ValueError):
+            exact = False
+        if not exact:
+            raise sqlite3.IntegrityError(
+                "research admission ledger debit does not match the order"
+            )
 
     def record_paper_order(
         self,
