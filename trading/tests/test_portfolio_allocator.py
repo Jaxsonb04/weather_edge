@@ -1381,6 +1381,50 @@ def test_ninety_nine_cent_quote_with_sub_dollar_all_in_cost_is_valid() -> None:
     assert len(plans.motion.legs) == 1
 
 
+@pytest.mark.parametrize(
+    "invalid_opportunity",
+    (None, 7, object()),
+    ids=("none", "integer", "object"),
+)
+@pytest.mark.parametrize("mixed_with_valid", (False, True), ids=("only", "mixed"))
+def test_invalid_outer_opportunity_is_safely_rejected_by_both_sleeves(
+    invalid_opportunity: object,
+    mixed_with_valid: bool,
+) -> None:
+    valid = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHDEN-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.60,
+            edge=0.40,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+    opportunities: list[object] = [invalid_opportunity]
+    if mixed_with_valid:
+        opportunities.insert(0, valid)
+
+    plans = allocate_research_plans(opportunities)  # type: ignore[arg-type]
+
+    for plan in (plans.target, plans.motion):
+        rejected = [row for row in plan.dispositions if row.status == "rejected"]
+        assert len(rejected) == 1
+        assert rejected[0].reason == "candidate opportunity type is invalid"
+        assert rejected[0].ticker == "<invalid>"
+        assert rejected[0].target_date == "<invalid>"
+        assert rejected[0].side == "<INVALID>"
+        assert len(plan.legs) == int(mixed_with_valid)
+
+
 @pytest.mark.parametrize("bad_cost", (1.0, 1.0001, 1e308))
 def test_all_in_contract_cost_at_or_above_one_dollar_is_rejected(
     bad_cost: float,

@@ -80,7 +80,7 @@ class _PreparedTarget:
 
 @dataclass(frozen=True)
 class _PreparedOpportunity:
-    original: ResearchOpportunity
+    original: object
     normalized: ResearchOpportunity | None
     rejection: str | None
 
@@ -465,7 +465,7 @@ def _motion_rejection(opportunity: ResearchOpportunity) -> str | None:
     return None
 
 
-def _normalize_opportunity(opportunity: ResearchOpportunity) -> _PreparedOpportunity:
+def _normalize_opportunity(opportunity: object) -> _PreparedOpportunity:
     if not isinstance(opportunity, ResearchOpportunity):
         return _PreparedOpportunity(
             opportunity,
@@ -928,7 +928,9 @@ def _research_leg(
 def _target_priority(
     prepared: _PreparedTarget,
 ) -> tuple[float, float, str, str, str]:
-    opportunity = prepared.source.normalized or prepared.source.original
+    opportunity = prepared.source.normalized
+    if opportunity is None:
+        return (math.inf, math.inf, "<invalid>", "<invalid>", "<INVALID>")
     decision = prepared.sized_decision
     if decision is None:
         return (
@@ -1146,7 +1148,9 @@ def _settlement_bins(legs: Sequence[PortfolioLeg]) -> tuple[int, ...]:
 
 
 def _motion_priority(source: _PreparedOpportunity) -> tuple[float, str, str, str]:
-    opportunity = source.normalized or source.original
+    opportunity = source.normalized
+    if opportunity is None:
+        return (math.inf, "<invalid>", "<invalid>", "<INVALID>")
     decision = opportunity.decision
     edge = _plain_finite_float(decision.edge)
     return (
@@ -1158,17 +1162,28 @@ def _motion_priority(source: _PreparedOpportunity) -> tuple[float, str, str, str
 
 
 def _disposition(
-    opportunity: ResearchOpportunity,
+    opportunity: object,
     sleeve: str,
     status: str,
     reason: str | None,
     *,
     contracts: float = 0.0,
 ) -> PortfolioDisposition:
+    if not isinstance(opportunity, ResearchOpportunity):
+        return PortfolioDisposition(
+            ticker="<invalid>",
+            target_date="<invalid>",
+            side="<INVALID>",
+            sleeve=sleeve,
+            status=status,
+            reason=reason,
+            contracts=contracts,
+        )
+    decision = opportunity.decision
     return PortfolioDisposition(
-        ticker=str(getattr(opportunity.decision, "ticker", "<invalid>")),
+        ticker=str(getattr(decision, "ticker", "<invalid>")),
         target_date=str(opportunity.target_date),
-        side=_audit_side(getattr(opportunity.decision, "side", None)),
+        side=_audit_side(getattr(decision, "side", None)),
         sleeve=sleeve,
         status=status,
         reason=reason,
