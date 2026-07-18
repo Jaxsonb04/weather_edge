@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
+from ..research_policy import MOTION_POLICY, TARGET_POLICY
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover -- POSIX-only production/dev hosts
@@ -377,6 +379,17 @@ CREATE TABLE IF NOT EXISTS research_shadow_monitor_snapshots (
     unrealized_roi REAL,
     diagnostics_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS research_daily_goals (
+    objective_day TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reference_equity REAL NOT NULL CHECK(reference_equity > 0),
+    target_return REAL NOT NULL CHECK(target_return > 0),
+    target_pnl REAL NOT NULL CHECK(target_pnl > 0),
+    PRIMARY KEY(objective_day, account_id, policy_version)
+);
 """
 
 # Created after column migrations in init() so they can reference late-added
@@ -427,24 +440,19 @@ CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pre_entry
       AND created_at < market_close_time
 """
 
-# DB-level backstop for the application's concurrent-open guard
-# (has_active_paper_entry). The app guard is a check-then-insert across separate
-# connections, so a transient profile-normalization gap during a deploy (the
-# 2026-06-18 duplicate-open incident) or a check-then-insert race can still leave
-# two OPEN orders on the same market/side/profile. This partial UNIQUE index makes
-# that physically impossible. It is SIDE-INCLUSIVE on purpose: a deliberate
-# arbitrage YES+NO box on one market (opposite sides) stays legal, while a second
-# OPEN order on the *identical* market/side/profile is rejected. Partial on the
-# open lifecycle so re-entry after a close/settlement is unaffected. Created
-# best-effort in init() because a book that still holds legacy duplicates cannot
-# build it until they are closed.
+# DB-level backstop for the application's concurrent-open guard. Account is the
+# isolation boundary: target and motion may independently hold the same side of
+# one market, while duplicate active exposure inside either account is forbidden.
+# Keep the historical object name so operational scripts that temporarily drop
+# the guard continue to work; the indexed identity is deliberately account-, not
+# profile-, scoped. NULL pre-account rows retain shared-book semantics.
 OPEN_POSITION_GUARD_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_orders_open_market_side_profile
     ON paper_orders (
+        COALESCE(account_id, 'paper-shared'),
         target_date,
         market_ticker,
-        UPPER(COALESCE(side, 'YES')),
-        COALESCE(risk_profile, 'live')
+        UPPER(COALESCE(side, 'YES'))
     )
     WHERE status IN (
         'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
@@ -453,6 +461,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_orders_open_market_side_profile
       AND settled_at IS NULL
       AND closed_at IS NULL
 """
+
+RESEARCH_IDENTITY_COLUMNS = {
+    "research_sleeve": "TEXT",
+    "research_policy_version": "TEXT",
+    "policy_fingerprint": "TEXT",
+    "objective_day": "TEXT",
+    "lead_bucket": "TEXT",
+    "scan_run_id": "TEXT",
+    "reentry_fingerprint": "TEXT",
+}
 
 PAPER_ORDER_AUDIT_COLUMNS = {
     "settled_at": "TEXT",
@@ -500,6 +518,7 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     # Depth-aware partial closes (audit EX-02): the executed slice of a partial
     # close becomes its own PAPER_CLOSED row linked back to the original order.
     "parent_order_id": "INTEGER",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
 
 PROBABILITY_AUDIT_COLUMNS = {
@@ -541,6 +560,7 @@ DECISION_AUDIT_COLUMNS = {
     "diagnostics_json": "TEXT",
     "signal_approved": "INTEGER",
     "entry_block_reason": "TEXT",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
 
 RESEARCH_SHADOW_AUDIT_COLUMNS = {
@@ -551,6 +571,7 @@ RESEARCH_SHADOW_AUDIT_COLUMNS = {
 
 MONITOR_AUDIT_COLUMNS = {
     "diagnostics_json": "TEXT",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
 
 SCAN_CONTEXT_AUDIT_COLUMNS = {
@@ -569,7 +590,84 @@ SCAN_CONTEXT_AUDIT_COLUMNS = {
     "prediction_features_json": "TEXT",
     "strategy_config_json": "TEXT",
     "schema_version": "INTEGER",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
+
+
+_RESEARCH_IDENTITY_TABLES = (
+    "paper_orders",
+    "decision_snapshots",
+    "scan_context_snapshots",
+    "paper_monitor_snapshots",
+    "research_shadow_monitor_snapshots",
+)
+
+
+def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
+    """Require complete identity on new sleeve evidence, never legacy rows."""
+
+    any_identity = " OR ".join(
+        f"NEW.{column} IS NOT NULL" for column in RESEARCH_IDENTITY_COLUMNS
+    )
+    missing_core = " OR ".join(
+        f"NULLIF(TRIM(NEW.{column}), '') IS NULL"
+        for column in (
+            "research_sleeve",
+            "research_policy_version",
+            "policy_fingerprint",
+        )
+    )
+    research_accounts = (
+        f"NEW.account_id IN ('{TARGET_POLICY.account_id}', "
+        f"'{MOTION_POLICY.account_id}')"
+    )
+    for table in _RESEARCH_IDENTITY_TABLES:
+        account_condition = f"{research_accounts} OR " if table == "paper_orders" else ""
+        condition = f"({account_condition}{any_identity}) AND ({missing_core})"
+        for operation in ("INSERT", "UPDATE"):
+            trigger = f"trg_{table}_research_identity_{operation.lower()}"
+            conn.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {trigger}
+                BEFORE {operation} ON {table}
+                WHEN {condition}
+                BEGIN
+                    SELECT RAISE(ABORT, 'research identity requires sleeve, policy version, and fingerprint');
+                END
+                """
+            )
+
+
+def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
+    """Bootstrap isolated $1,000 ledgers without touching legacy accounts."""
+
+    for policy in (TARGET_POLICY, MOTION_POLICY):
+        created_at = _now()
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_accounts "
+            "(account_id, created_at, initial_capital, opening_cash, "
+            "high_water_equity, status, cutover_note) "
+            "VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)",
+            (
+                policy.account_id,
+                created_at,
+                policy.reference_equity,
+                policy.reference_equity,
+                policy.reference_equity,
+                f"isolated {policy.sleeve.value} research ledger ({policy.policy_version})",
+            ),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_account_ledger "
+            "(created_at, account_id, order_id, event_type, amount, "
+            "idempotency_key, details_json) VALUES (?, ?, NULL, 'OPENING_CASH', ?, ?, NULL)",
+            (
+                created_at,
+                policy.account_id,
+                policy.reference_equity,
+                f"{policy.account_id}:opening",
+            ),
+        )
 
 
 def _add_missing_columns(
@@ -728,6 +826,7 @@ def _init_store_locked(self) -> None:
                 for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
             }
             _add_missing_columns(conn, table, existing_monitor, MONITOR_AUDIT_COLUMNS)
+        _ensure_research_identity_triggers(conn)
         existing_forecast = {
             row[1]
             for row in conn.execute("PRAGMA table_info(forecast_snapshots)").fetchall()
@@ -771,48 +870,65 @@ def _init_store_locked(self) -> None:
         self._expire_pre_current_execution_orders(conn)
         self._ensure_shared_paper_account(conn)
         self._ensure_open_position_guard_index(conn)
+        _ensure_research_sleeve_accounts(conn)
 
 def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
-    """Build the unique open-position backstop index, tolerating a dirty book.
+    """Migrate the active-order guard to account scope, or fail closed.
 
-    A database that still holds pre-existing duplicate OPEN orders (a book
-    from before this guard, e.g. the 2026-06-18 incident) cannot build the
-    unique index. Rather than brick every init()/scan, log which groups block
-    it so an operator can close the surplus with `paper-close`; the index then
-    builds automatically on the next run.
+    Duplicate validation happens before the prior profile-scoped index is
+    dropped. A dirty legacy book therefore keeps its existing protection and
+    cannot enable target/motion writes without the required account boundary.
     """
     existing = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='index' "
         "AND name='ux_paper_orders_open_market_side_profile'"
     ).fetchone()
-    if existing and "PAPER_PARTIALLY_FILLED" not in str(existing[0] or ""):
+    existing_sql = str(existing[0] or "") if existing else ""
+    normalized_existing = " ".join(existing_sql.upper().split())
+    is_current = (
+        "COALESCE(ACCOUNT_ID, 'PAPER-SHARED')" in normalized_existing
+        and "PAPER_PARTIALLY_FILLED" in normalized_existing
+        and "PAPER_PARTIAL_EXPIRED" in normalized_existing
+    )
+    if is_current:
+        return
+
+    offending = conn.execute(
+        """
+        SELECT COALESCE(account_id, 'paper-shared') AS account_id,
+               target_date,
+               market_ticker,
+               UPPER(COALESCE(side, 'YES')) AS side,
+               COUNT(*) AS open_orders
+        FROM paper_orders
+        WHERE status IN (
+            'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+            'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+        )
+          AND settled_at IS NULL
+          AND closed_at IS NULL
+        GROUP BY 1, 2, 3, 4
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    if offending:
+        groups = "; ".join(
+            f"{row[4]}x {row[2]} {row[3]} [{row[0]}] on {row[1]}"
+            for row in offending
+        )
+        raise sqlite3.IntegrityError(
+            "account-scoped open-position guard migration blocked by "
+            f"{len(offending)} duplicate active group(s): {groups}"
+        )
+
+    if existing:
         conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
     try:
         conn.execute(OPEN_POSITION_GUARD_INDEX)
-    except sqlite3.IntegrityError:
-        offending = conn.execute(
-            """
-            SELECT market_ticker,
-                   UPPER(COALESCE(side, 'YES')) AS side,
-                   COALESCE(risk_profile, 'live') AS risk_profile,
-                   COUNT(*) AS open_orders
-            FROM paper_orders
-            WHERE status IN (
-                'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
-                'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
-            )
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            GROUP BY 1, 2, 3
-            HAVING COUNT(*) > 1
-            """
-        ).fetchall()
-        logger.warning(
-            "open-position guard index not built: %d duplicate open group(s) "
-            "must be closed first (e.g. via `paper-close`): %s",
-            len(offending),
-            "; ".join(f"{row[3]}x {row[0]} {row[1]} [{row[2]}]" for row in offending),
-        )
+    except sqlite3.IntegrityError as exc:  # concurrent writes outside init lock
+        raise sqlite3.IntegrityError(
+            "account-scoped open-position guard could not be built"
+        ) from exc
 
 # One-time rename of stored risk_profile strings written before the 4->2 profile
 # collapse, so raw-SQL filters (which compare against the literal new names)

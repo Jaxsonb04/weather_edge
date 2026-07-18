@@ -10,10 +10,15 @@ constraint violation into a None return so the scan skips gracefully.
 """
 
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
+
+import pytest
 
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
+from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
+from test_research_sleeves import _insert_research_order
 
 
 def _decision(
@@ -130,3 +135,96 @@ def test_reentry_after_close_is_allowed():
         assert isinstance(first, int)
         assert isinstance(second, int)
         assert _open_count(store, "KXHIGHTSFO-26JUN19-B72.5", "NO", "research") == 1
+
+
+def test_target_and_motion_can_hold_same_market_but_same_account_cannot(
+    tmp_path: Path,
+) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    ticker = "KXHIGHTSFO-26JUL19-B80.5"
+    with store.connect() as conn:
+        target_id = _insert_research_order(
+            conn,
+            ticker=ticker,
+            account_id=TARGET_POLICY.account_id,
+            sleeve=TARGET_POLICY.sleeve.value,
+            policy_version=TARGET_POLICY.policy_version,
+            policy_fingerprint=TARGET_POLICY.policy_fingerprint,
+        )
+        motion_id = _insert_research_order(
+            conn,
+            ticker=ticker,
+            account_id=MOTION_POLICY.account_id,
+            sleeve=MOTION_POLICY.sleeve.value,
+            policy_version=MOTION_POLICY.policy_version,
+            policy_fingerprint=MOTION_POLICY.policy_fingerprint,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_research_order(
+                conn,
+                ticker=ticker,
+                account_id=TARGET_POLICY.account_id,
+                sleeve=TARGET_POLICY.sleeve.value,
+                policy_version=TARGET_POLICY.policy_version,
+                policy_fingerprint=TARGET_POLICY.policy_fingerprint,
+            )
+
+        rows = conn.execute(
+            "SELECT id, account_id FROM paper_orders WHERE market_ticker=? ORDER BY id",
+            (ticker,),
+        ).fetchall()
+    assert rows == [
+        (target_id, TARGET_POLICY.account_id),
+        (motion_id, MOTION_POLICY.account_id),
+    ]
+
+
+def test_account_guard_migration_fails_closed_before_dropping_legacy_index(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-duplicates.db"
+    store = PaperStore(db_path)
+    ticker = "KXHIGHTSFO-26JUL19-B81.5"
+    legacy_index = """
+        CREATE UNIQUE INDEX ux_paper_orders_open_market_side_profile
+        ON paper_orders (
+            target_date, market_ticker, UPPER(COALESCE(side, 'YES')),
+            COALESCE(risk_profile, 'live')
+        )
+        WHERE status IN (
+            'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+            'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+        ) AND settled_at IS NULL AND closed_at IS NULL
+    """
+    with store.connect() as conn:
+        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
+        conn.execute(legacy_index)
+        _insert_research_order(
+            conn,
+            ticker=ticker,
+            account_id="paper-shared",
+            sleeve=None,
+            policy_version=None,
+            policy_fingerprint=None,
+            risk_profile="live",
+        )
+        _insert_research_order(
+            conn,
+            ticker=ticker,
+            account_id="paper-shared",
+            sleeve=None,
+            policy_version=None,
+            policy_fingerprint=None,
+            risk_profile="research",
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="account-scoped open-position"):
+        PaperStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        index_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='ux_paper_orders_open_market_side_profile'"
+        ).fetchone()[0]
+    assert "risk_profile" in index_sql
+    assert "account_id" not in index_sql

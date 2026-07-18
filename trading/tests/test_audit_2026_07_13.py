@@ -44,6 +44,7 @@ from sfo_kalshi_quant.models import (
     TradeDecision,
 )
 from sfo_kalshi_quant.probability import ResidualCalibrator
+from sfo_kalshi_quant.research_policy import TARGET_POLICY
 
 AUDIT_HEAD = "2a1a771a749c78ef03175b79b3f75a1f5b60239b"
 
@@ -127,6 +128,37 @@ def _resting_order(
             ),
         )
     return order_id
+
+
+def _move_to_target_account(
+    store: PaperStore,
+    order_id: int,
+    *,
+    market_ticker: str,
+) -> None:
+    """Adapt pre-sleeve audit fixtures without bypassing account uniqueness."""
+
+    with store.connect() as conn:
+        conn.execute(
+            """
+            UPDATE paper_orders
+            SET market_ticker=?, account_id=?, research_sleeve=?,
+                research_policy_version=?, policy_fingerprint=?
+            WHERE id=?
+            """,
+            (
+                market_ticker,
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.sleeve.value,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                order_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (TARGET_POLICY.account_id, order_id),
+        )
 
 
 def _trade(
@@ -302,13 +334,12 @@ def test_ex01_single_trade_never_fills_both_yes_and_no_makers() -> None:
         )
 
 
-def test_ex01_trade_volume_is_allocated_once_across_same_side_orders(monkeypatch) -> None:
+def test_ex01_trade_volume_is_allocated_once_across_same_side_orders() -> None:
     """Quantity 10 cannot fully fill two 8-contract same-price orders. The
     earlier order takes 8; the later order may receive at most the residual 2.
-    (Shared-capital mode keeps both orders capital-consuming; the default
-    research-shadow policy is covered by the production regression below.)"""
+    The orders use separate accounts because active-order uniqueness is now
+    account-scoped; public tape volume is still conserved globally."""
 
-    monkeypatch.setenv("PAPER_RESEARCH_SHARED_CAPITAL_ENABLED", "1")
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         first = _resting_order(
@@ -320,9 +351,16 @@ def test_ex01_trade_volume_is_allocated_once_across_same_side_orders(monkeypatch
         second = _resting_order(
             store,
             "2026-07-13",
-            _decision(side="NO", limit_price=0.70, contracts=8.0),
+            _decision(
+                "KXHIGHTSEA-26JUL13-B82.5-TARGET",
+                side="NO",
+                limit_price=0.70,
+                contracts=8.0,
+            ),
             created_at=NOW - timedelta(minutes=9),
-            risk_profile="research",
+        )
+        _move_to_target_account(
+            store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
         )
         client = _TradesClient(
             [
@@ -348,8 +386,7 @@ def test_ex01_trade_volume_is_allocated_once_across_same_side_orders(monkeypatch
         )
 
 
-def test_ex01_equal_price_priority_earlier_order_wins(monkeypatch) -> None:
-    monkeypatch.setenv("PAPER_RESEARCH_SHARED_CAPITAL_ENABLED", "1")
+def test_ex01_equal_price_priority_earlier_order_wins() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         first = _resting_order(
@@ -361,9 +398,16 @@ def test_ex01_equal_price_priority_earlier_order_wins(monkeypatch) -> None:
         second = _resting_order(
             store,
             "2026-07-13",
-            _decision(side="NO", limit_price=0.70, contracts=8.0),
+            _decision(
+                "KXHIGHTSEA-26JUL13-B82.5-TARGET",
+                side="NO",
+                limit_price=0.70,
+                contracts=8.0,
+            ),
             created_at=NOW - timedelta(minutes=9),
-            risk_profile="research",
+        )
+        _move_to_target_account(
+            store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
         )
         client = _TradesClient(
             [
@@ -424,13 +468,12 @@ def test_ex01_rerunning_the_same_trade_batch_creates_no_duplicate_fill() -> None
         assert fills == 1
 
 
-def test_ex01_volume_is_not_recredited_across_monitor_passes(monkeypatch) -> None:
+def test_ex01_volume_is_not_recredited_across_monitor_passes() -> None:
     """Verifier-confirmed defect: an order filled in pass N left the resting
     set, so pass N+1 re-credited the volume it consumed to the next resting
     order -- the 261/262 double credit spread across two passes. Persisted
     volume claims must make consumed volume unavailable forever."""
 
-    monkeypatch.setenv("PAPER_RESEARCH_SHARED_CAPITAL_ENABLED", "1")
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         first = _resting_order(
@@ -442,9 +485,16 @@ def test_ex01_volume_is_not_recredited_across_monitor_passes(monkeypatch) -> Non
         second = _resting_order(
             store,
             "2026-07-13",
-            _decision(side="NO", limit_price=0.70, contracts=8.0),
+            _decision(
+                "KXHIGHTSEA-26JUL13-B82.5-TARGET",
+                side="NO",
+                limit_price=0.70,
+                contracts=8.0,
+            ),
             created_at=NOW - timedelta(minutes=9),
-            risk_profile="research",
+        )
+        _move_to_target_account(
+            store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
         )
         client = _TradesClient(
             [
@@ -1088,9 +1138,7 @@ def test_ac01_live_and_research_ledgers_reconcile_independently() -> None:
 
 
 def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Path) -> None:
-    """Concurrent initializers on a fresh database must serialize: exactly one
-    shared account row, exactly one opening-cash ledger event, no
-    UNIQUE-constraint or schema races, and a clean integrity check."""
+    """Concurrent init creates each account/opening once without schema races."""
 
     for attempt in range(40):
         db_path = tmp_path / f"race-{attempt}.db"
@@ -1105,21 +1153,27 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
         assert not errors, f"attempt {attempt}: concurrent init raised {errors}"
         with sqlite3.connect(db_path) as conn:
             accounts = conn.execute(
-                "SELECT account_id, COUNT(*) FROM paper_accounts GROUP BY account_id"
+                "SELECT account_id, COUNT(*), MIN(initial_capital), "
+                "MIN(opening_cash), MIN(high_water_equity) "
+                "FROM paper_accounts GROUP BY account_id"
             ).fetchall()
             openings = conn.execute(
-                "SELECT account_id, COUNT(*) FROM paper_account_ledger "
+                "SELECT account_id, COUNT(*), SUM(amount) FROM paper_account_ledger "
                 "WHERE event_type='OPENING_CASH' GROUP BY account_id"
             ).fetchall()
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        # Exactly the shared account and the research shadow account, each
-        # bootstrapped exactly once with exactly one opening-cash event.
+        # Legacy shared/shadow and both isolated research sleeves are each
+        # bootstrapped exactly once at the unchanged $1,000 opening capital.
         assert sorted(accounts) == [
-            ("paper-research-shadow", 1),
-            ("paper-shared", 1),
+            ("paper-research-motion-v1", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-shadow", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-target-v1", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-shared", 1, 1000.0, 1000.0, 1000.0),
         ], f"attempt {attempt}: unexpected account rows {accounts}"
         assert sorted(openings) == [
-            ("paper-research-shadow", 1),
-            ("paper-shared", 1),
+            ("paper-research-motion-v1", 1, 1000.0),
+            ("paper-research-shadow", 1, 1000.0),
+            ("paper-research-target-v1", 1, 1000.0),
+            ("paper-shared", 1, 1000.0),
         ], f"attempt {attempt}: unexpected opening events {openings}"
         assert integrity == "ok"
