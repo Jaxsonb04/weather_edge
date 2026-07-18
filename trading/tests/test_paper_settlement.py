@@ -19,6 +19,7 @@ from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBin, TradeDecision
 from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
 from sfo_kalshi_quant.store.scoring import _sample_decision_rows
+from sfo_kalshi_quant.summary import build_paper_summary
 
 from support import pre_resolution_event
 
@@ -1121,7 +1122,8 @@ def test_market_summary_counts_partial_exits_as_one_terminal_decision():
 
 def test_market_summary_excludes_invalid_group_counts_and_money():
     with TemporaryDirectory() as tmp:
-        store = PaperStore(Path(tmp) / "paper.db")
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
         decision = TradeDecision(
             ticker="KXHIGHTSFO-TEST-B70.5",
             label="70° to 71°",
@@ -1144,11 +1146,11 @@ def test_market_summary_excludes_invalid_group_counts_and_money():
         root_id = store.record_paper_order(
             "2026-06-03", decision, risk_profile="live"
         )
-        store.close_paper_order(root_id, 0.20)
+        store.close_paper_order(root_id, 0.90)
         child_id = store.record_paper_order(
             "2026-06-03", decision, risk_profile="live"
         )
-        store.close_paper_order(child_id, 0.20)
+        store.close_paper_order(child_id, 0.90)
         with store.connect() as conn:
             conn.execute(
                 "UPDATE paper_orders SET parent_order_id=?, market_ticker=? "
@@ -1162,25 +1164,104 @@ def test_market_summary_excludes_invalid_group_counts_and_money():
                 (root_id, root_id),
             ).fetchone()
 
+        valid_decision = replace(
+            decision,
+            ticker="KXHIGHTSFO-TEST-B72.5",
+            label="72° to 73°",
+            action="BUY_NO",
+            side="NO",
+            entry_bid=0.48,
+            entry_ask=0.50,
+            edge=0.17,
+        )
+        valid_id = store.record_paper_order(
+            "2026-06-03", valid_decision, risk_profile="research"
+        )
+        valid_lot = store.close_paper_order(valid_id, 0.70)
+        valid_contracts = float(valid_lot["contracts"])
+        valid_capital = valid_contracts * float(valid_lot["cost_per_contract"])
+        valid_pnl = float(valid_lot["realized_pnl"])
+
         assert raw_contracts > 0
         assert raw_capital > 0
-        assert raw_pnl != 0
+        assert raw_pnl > 0
+        assert valid_pnl > 0
         summary = store.market_backtest_summary()
 
         assert summary == {
-            "orders": 0.0,
-            "contracts": 0,
-            "capital_at_risk": 0,
-            "realized_pnl": 0,
-            "roi": 0.0,
-            "hit_rate": 0.0,
-            "wins": 0.0,
+            "orders": 1.0,
+            "contracts": valid_contracts,
+            "capital_at_risk": valid_capital,
+            "realized_pnl": valid_pnl,
+            "roi": valid_pnl / valid_capital,
+            "hit_rate": 1.0,
+            "wins": 1.0,
             "losses": 0.0,
-            "avg_edge": 0.0,
+            "avg_edge": valid_lot["edge"],
             "open_orders": 0.0,
             "open_capital_at_risk": 0,
         }
-        assert 1000.0 + summary["realized_pnl"] == 1000.0
+        assert 1000.0 + summary["realized_pnl"] == 1000.0 + valid_pnl
+
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=1,
+            now=datetime.fromisoformat(valid_lot["closed_at"]),
+        )
+
+        totals = payload["totals"]
+        assert totals["trades_opened"] == 1
+        assert totals["trades_closed"] == 1
+        assert totals["trades_settled"] == 0
+        assert totals["open_positions"] == 0
+        assert totals["open_risk"] == 0.0
+        assert totals["wins"] == 1
+        assert totals["losses"] == 0
+        assert totals["hit_rate"] == 1.0
+        assert totals["realized_pnl"] == round(valid_pnl, 2)
+        assert totals["cumulative_realized_pnl"] == round(valid_pnl, 2)
+        assert totals["capital_resolved"] == round(valid_capital, 2)
+        assert totals["roi"] == round(valid_pnl / valid_capital, 4)
+        assert payload["bankroll"] == 1000.0
+        assert payload["current_equity"] == round(1000.0 + valid_pnl, 2)
+
+        assert [row["risk_profile"] for row in payload["profiles"]] == [
+            "research"
+        ]
+        profile = payload["profiles"][0]
+        assert profile["resolved"] == 1
+        assert profile["wins"] == 1
+        assert profile["losses"] == 0
+        assert profile["realized_pnl"] == round(valid_pnl, 2)
+        assert profile["capital_resolved"] == round(valid_capital, 2)
+        assert profile["hit_rate"] == 1.0
+        assert profile["roi"] == round(valid_pnl / valid_capital, 4)
+
+        no_side = payload["side_performance"]["NO"]
+        assert no_side["trades"] == 1
+        assert no_side["wins"] == 1
+        assert no_side["losses"] == 0
+        assert no_side["realized_pnl"] == round(valid_pnl, 2)
+        assert no_side["capital"] == round(valid_capital, 2)
+        assert no_side["hit_rate"] == 1.0
+        assert no_side["roi"] == round(valid_pnl / valid_capital, 4)
+        assert payload["side_performance"]["YES"] == {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "realized_pnl": 0.0,
+            "capital": 0.0,
+            "hit_rate": None,
+            "roi": None,
+        }
+        assert set(payload["side_performance_by_profile"]) == {"research"}
+        research_sides = payload["side_performance_by_profile"]["research"]
+        assert research_sides["NO"] == no_side
+        assert research_sides["YES"] == payload["side_performance"]["YES"]
 
 
 def test_market_summary_counts_partial_realization_money_without_resolving_root():
