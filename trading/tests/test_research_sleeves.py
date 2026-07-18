@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import json
 import sqlite3
 from pathlib import Path
 from threading import Barrier
@@ -19,6 +20,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY,
     ResearchSleeve,
 )
+from sfo_kalshi_quant.store.diagnostics import _strategy_config_snapshot
 
 
 _RESEARCH_IDENTITY_COLUMNS = {
@@ -611,7 +613,7 @@ def _fixed_research_clock() -> datetime:
     return datetime(2026, 7, 18, 20, tzinfo=UTC)
 
 
-def _admission(policy, suffix: str):
+def _admission(policy, suffix: str, *, lead_bucket: str = "day-ahead"):
     from sfo_kalshi_quant.db import ResearchAdmission
 
     return ResearchAdmission(
@@ -622,7 +624,7 @@ def _admission(policy, suffix: str):
         objective_day="2026-07-18",
         scan_run_id=f"scan-{suffix}",
         reentry_fingerprint=f"reentry-{suffix}",
-        lead_bucket="day-ahead",
+        lead_bucket=lead_bucket,
         entry_decision_id=1,
     )
 
@@ -634,6 +636,9 @@ def _insert_research_decision_evidence(
     decision: TradeDecision,
     *,
     objective_day: str = "2026-07-18",
+    target_date: str = "2026-07-19",
+    lead_bucket: str = "day-ahead",
+    strategy_config_json: str | None = None,
     decision_overrides: dict[str, object] | None = None,
     context_overrides: dict[str, object] | None = None,
 ) -> int:
@@ -642,18 +647,26 @@ def _insert_research_decision_evidence(
         "research_policy_version": policy.policy_version,
         "policy_fingerprint": policy.policy_fingerprint,
         "objective_day": objective_day,
-        "lead_bucket": "day-ahead",
+        "lead_bucket": lead_bucket,
         "scan_run_id": f"scan-{suffix}",
         "reentry_fingerprint": f"reentry-{suffix}",
     }
     context = {
         **identity,
-        "target_date": "2026-07-19",
+        "target_date": target_date,
+        "strategy_config_json": (
+            strategy_config_json
+            if strategy_config_json is not None
+            else json.dumps(
+                _strategy_config_snapshot(strategy_config_for_profile("research")),
+                sort_keys=True,
+            )
+        ),
         **(context_overrides or {}),
     }
     snapshot = {
         **identity,
-        "target_date": "2026-07-19",
+        "target_date": target_date,
         "market_ticker": decision.ticker,
         "side": decision.side,
         **(decision_overrides or {}),
@@ -665,10 +678,11 @@ def _insert_research_decision_evidence(
                 created_at, target_date, risk_profile,
                 prediction_features_json, schema_version, research_sleeve,
                 research_policy_version, policy_fingerprint, objective_day,
-                lead_bucket, scan_run_id, reentry_fingerprint
+                lead_bucket, scan_run_id, reentry_fingerprint,
+                strategy_config_json
             ) VALUES (
                 '2026-07-18T12:00:00+00:00', ?, 'research', '{}', 1,
-                ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -680,6 +694,7 @@ def _insert_research_decision_evidence(
                 context["lead_bucket"],
                 context["scan_run_id"],
                 context["reentry_fingerprint"],
+                context["strategy_config_json"],
             ),
         )
         decision_cursor = conn.execute(
@@ -743,6 +758,9 @@ def _linked_admission(
     decision: TradeDecision,
     *,
     objective_day: str = "2026-07-18",
+    target_date: str = "2026-07-19",
+    lead_bucket: str = "day-ahead",
+    strategy_config_json: str | None = None,
     decision_overrides: dict[str, object] | None = None,
     context_overrides: dict[str, object] | None = None,
 ):
@@ -752,11 +770,14 @@ def _linked_admission(
         suffix,
         decision,
         objective_day=objective_day,
+        target_date=target_date,
+        lead_bucket=lead_bucket,
+        strategy_config_json=strategy_config_json,
         decision_overrides=decision_overrides,
         context_overrides=context_overrides,
     )
     return replace(
-        _admission(policy, suffix),
+        _admission(policy, suffix, lead_bucket=lead_bucket),
         objective_day=objective_day,
         entry_decision_id=entry_decision_id,
     )
@@ -1167,6 +1188,9 @@ def test_atomic_admission_uses_current_pacific_day_at_dst_boundaries(
         tmp_path / f"dst-{now_utc.timestamp()}.db",
         research_clock=lambda: now_utc,
     )
+    target_date = (
+        datetime.fromisoformat(valid_day) + timedelta(days=1)
+    ).date().isoformat()
     invalid_decision = _atomic_decision(
         f"KXHIGHTSFO-DST-INVALID-{int(now_utc.timestamp())}"
     )
@@ -1176,10 +1200,11 @@ def test_atomic_admission_uses_current_pacific_day_at_dst_boundaries(
         f"dst-invalid-{int(now_utc.timestamp())}",
         invalid_decision,
         objective_day=invalid_day,
+        target_date=target_date,
     )
     with pytest.raises(ValueError, match="current Pacific civil day"):
         store.record_research_order_atomic(
-            "2026-07-19",
+            target_date,
             invalid_decision,
             admission=invalid,
             strategy_config=strategy_config_for_profile("research"),
@@ -1194,9 +1219,10 @@ def test_atomic_admission_uses_current_pacific_day_at_dst_boundaries(
         f"dst-valid-{int(now_utc.timestamp())}",
         valid_decision,
         objective_day=valid_day,
+        target_date=target_date,
     )
     assert store.record_research_order_atomic(
-        "2026-07-19",
+        target_date,
         valid_decision,
         admission=valid,
         strategy_config=strategy_config_for_profile("research"),
@@ -1456,3 +1482,388 @@ def test_atomic_admission_rejects_missing_entry_decision_evidence(
             admission=admission,
             strategy_config=strategy_config_for_profile("research"),
         )
+
+
+@pytest.mark.parametrize("target_date", ("2026-07-17", "2026-07-18"))
+def test_target_atomic_admission_rejects_past_and_same_day_targets(
+    tmp_path: Path,
+    target_date: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"target-min-lead-{target_date}.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision(f"KXHIGHTSFO-TARGET-MIN-LEAD-{target_date}")
+    lead_bucket = "same-day" if target_date == "2026-07-18" else "day-ahead"
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"target-min-lead-{target_date}",
+        decision,
+        target_date=target_date,
+        lead_bucket=lead_bucket,
+    )
+
+    with pytest.raises(ValueError, match="minimum lead"):
+        store.record_research_order_atomic(
+            target_date,
+            decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+    with store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
+
+
+def test_motion_atomic_admission_allows_canonical_same_day_target(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "motion-same-day.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision("KXHIGHTSFO-MOTION-SAME-DAY", contracts=1)
+    admission = _linked_admission(
+        store,
+        MOTION_POLICY,
+        "motion-same-day",
+        decision,
+        target_date="2026-07-18",
+        lead_bucket="same-day",
+    )
+
+    assert store.record_research_order_atomic(
+        "2026-07-18",
+        decision,
+        admission=admission,
+        strategy_config=strategy_config_for_profile("research"),
+    ) is not None
+
+
+@pytest.mark.parametrize("target_date", ("2026-07-19", "2026-07-22"))
+def test_target_atomic_admission_uses_one_canonical_day_ahead_bucket(
+    tmp_path: Path,
+    target_date: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"target-day-ahead-{target_date}.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision(f"KXHIGHTSFO-TARGET-DAY-AHEAD-{target_date}")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"target-day-ahead-{target_date}",
+        decision,
+        target_date=target_date,
+        lead_bucket="day-ahead",
+    )
+
+    assert store.record_research_order_atomic(
+        target_date,
+        decision,
+        admission=admission,
+        strategy_config=strategy_config_for_profile("research"),
+    ) is not None
+
+
+def test_atomic_admission_rejects_noncanonical_lead_bucket(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "noncanonical-lead.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision("KXHIGHTSFO-NONCANONICAL-LEAD")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "noncanonical-lead",
+        decision,
+        target_date="2026-07-19",
+        lead_bucket="same-day",
+    )
+
+    with pytest.raises(ValueError, match="canonical lead bucket"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("now_utc", "target_date"),
+    (
+        (datetime(2026, 3, 8, 7, 59, tzinfo=UTC), "2026-03-08"),
+        (datetime(2026, 3, 8, 8, 0, tzinfo=UTC), "2026-03-09"),
+        (datetime(2026, 11, 1, 6, 59, tzinfo=UTC), "2026-11-01"),
+        (datetime(2026, 11, 1, 7, 0, tzinfo=UTC), "2026-11-02"),
+    ),
+)
+def test_target_minimum_lead_uses_pacific_civil_day_across_dst(
+    tmp_path: Path,
+    now_utc: datetime,
+    target_date: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"lead-dst-{now_utc.timestamp()}.db",
+        research_clock=lambda: now_utc,
+    )
+    objective_day = (datetime.fromisoformat(target_date) - timedelta(days=1)).date()
+    decision = _atomic_decision(f"KXHIGHTSFO-LEAD-DST-{int(now_utc.timestamp())}")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"lead-dst-{int(now_utc.timestamp())}",
+        decision,
+        objective_day=objective_day.isoformat(),
+        target_date=target_date,
+        lead_bucket="day-ahead",
+    )
+
+    assert store.record_research_order_atomic(
+        target_date,
+        decision,
+        admission=admission,
+        strategy_config=strategy_config_for_profile("research"),
+    ) is not None
+
+
+def test_atomic_admission_rejects_live_strategy_config_injection(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "live-config-injection.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision("KXHIGHTSFO-LIVE-CONFIG-INJECTION")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "live-config-injection",
+        decision,
+    )
+
+    with pytest.raises(ValueError, match="canonical research strategy"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("live"),
+        )
+
+
+def test_atomic_admission_requires_type_exact_canonical_strategy_config(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "type-exact-config.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision("KXHIGHTSFO-TYPE-EXACT-CONFIG")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "type-exact-config",
+        decision,
+    )
+    type_changed = replace(
+        strategy_config_for_profile("research"),
+        paper_bankroll=1000,
+    )
+
+    with pytest.raises(ValueError, match="canonical research strategy"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=admission,
+            strategy_config=type_changed,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_context_config",
+    (
+        "{}",
+        "null",
+        "not-json",
+        json.dumps(
+            {
+                **(_strategy_config_snapshot(strategy_config_for_profile("research")) or {}),
+                "min_edge": 0.99,
+            },
+            sort_keys=True,
+        ),
+        json.dumps(
+            {
+                **(_strategy_config_snapshot(strategy_config_for_profile("research")) or {}),
+                "paper_bankroll": 1000,
+            },
+            sort_keys=True,
+        ),
+    ),
+)
+def test_atomic_admission_rejects_context_strategy_config_mismatch(
+    tmp_path: Path,
+    bad_context_config: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"context-config-{abs(hash(bad_context_config))}.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision("KXHIGHTSFO-CONTEXT-CONFIG-MISMATCH")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"context-config-{abs(hash(bad_context_config))}",
+        decision,
+        strategy_config_json=bad_context_config,
+    )
+
+    with pytest.raises(ValueError, match="scan context strategy configuration"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def test_atomic_admission_rechecks_research_spread_limit(
+    tmp_path: Path,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / "spread-limit.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = replace(
+        _atomic_decision("KXHIGHTSFO-SPREAD-LIMIT"),
+        spread=strategy_config_for_profile("research").max_spread + 0.01,
+    )
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "spread-limit",
+        decision,
+    )
+
+    with pytest.raises(ValueError, match="research strategy entry limits"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+
+
+def _replace_ledger_with_corruptible_amount_column(store) -> None:
+    with store.connect() as conn:
+        conn.executescript(
+            """
+            ALTER TABLE paper_account_ledger RENAME TO paper_account_ledger_strict;
+            CREATE TABLE paper_account_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                order_id INTEGER,
+                event_type TEXT NOT NULL,
+                amount,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                details_json TEXT
+            );
+            INSERT INTO paper_account_ledger
+            SELECT * FROM paper_account_ledger_strict;
+            DROP TABLE paper_account_ledger_strict;
+            CREATE INDEX idx_paper_account_ledger_account
+                ON paper_account_ledger (account_id, created_at, id);
+            """
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "bad_amount", "expected_type"),
+    (
+        ("text", "12.5", "text"),
+        ("malformed", "not-money", "text"),
+        ("blob", sqlite3.Binary(b"\x01\x02"), "blob"),
+        ("null", None, "null"),
+        ("nan", float("nan"), "null"),
+        ("positive-infinity", float("inf"), "real"),
+        ("negative-infinity", float("-inf"), "real"),
+    ),
+)
+def test_research_admission_fails_closed_on_malformed_ledger_amount(
+    tmp_path: Path,
+    label: str,
+    bad_amount: object,
+    expected_type: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(
+        tmp_path / f"malformed-ledger-{label}.db",
+        research_clock=_fixed_research_clock,
+    )
+    _replace_ledger_with_corruptible_amount_column(store)
+    with store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO paper_account_ledger (
+                created_at, account_id, order_id, event_type, amount,
+                idempotency_key, details_json
+            ) VALUES ('2026-07-18T12:00:00+00:00', ?, NULL, 'CORRUPT', ?, ?, '{}')
+            """,
+            (TARGET_POLICY.account_id, bad_amount, f"corrupt:{label}"),
+        )
+        assert conn.execute(
+            "SELECT typeof(amount) FROM paper_account_ledger "
+            "WHERE idempotency_key=?",
+            (f"corrupt:{label}",),
+        ).fetchone()[0] == expected_type
+
+    capacity = store.account_policy_capacity(
+        target_date="2026-07-19",
+        market_ticker=f"KXHIGHTSFO-MALFORMED-LEDGER-{label}",
+        risk_profile="research",
+        account_id=TARGET_POLICY.account_id,
+        requested_spend=1.0,
+    )
+    assert capacity["allowed_spend"] == 0.0
+    assert capacity["reason"] == "research ledger amount is invalid"
+
+    decision = _atomic_decision(f"KXHIGHTSFO-MALFORMED-LEDGER-{label}")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        f"malformed-ledger-{label}",
+        decision,
+    )
+    assert store.record_research_order_atomic(
+        "2026-07-19",
+        decision,
+        admission=admission,
+        strategy_config=strategy_config_for_profile("research"),
+    ) is None
+    with store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0

@@ -14,7 +14,11 @@ from typing import Callable, Iterable
 from ._util import (
     _row_value as _shared_row_value,
 )
-from .config import StrategyConfig, normalize_risk_profile_name
+from .config import (
+    StrategyConfig,
+    normalize_risk_profile_name,
+    strategy_config_for_profile,
+)
 from .account import (
     ACCOUNTING_POLICY_VERSION,
     INITIAL_CAPITAL,
@@ -50,6 +54,7 @@ from .research_policy import (
     TARGET_POLICY,
     ResearchSleeve,
     ResearchSleevePolicy,
+    canonical_research_lead_bucket,
 )
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
@@ -460,6 +465,8 @@ class PaperStore:
     def _account_state_on_connection(
         conn: sqlite3.Connection,
         account_id: str,
+        *,
+        validated_ledger_total: float | None = None,
     ) -> dict[str, object] | None:
         """Read one complete account state without leaving the transaction."""
 
@@ -472,14 +479,17 @@ class PaperStore:
         ).fetchone()
         if account is None:
             return None
-        cash = float(
-            conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM paper_account_ledger "
-                "WHERE account_id = ?",
-                (account_id,),
-            ).fetchone()[0]
-            or 0.0
-        )
+        if validated_ledger_total is None:
+            cash = float(
+                conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM paper_account_ledger "
+                    "WHERE account_id = ?",
+                    (account_id,),
+                ).fetchone()[0]
+                or 0.0
+            )
+        else:
+            cash = validated_ledger_total
         risk = conn.execute(
             "SELECT "
             "COALESCE(SUM(CASE WHEN status IN "
@@ -518,6 +528,34 @@ class PaperStore:
             ),
             "status": account["status"],
         }
+
+    @staticmethod
+    def _validated_research_ledger_total_on_connection(
+        conn: sqlite3.Connection,
+        account_id: str,
+    ) -> float | None:
+        """Return exact finite research cash, or ``None`` for any bad row."""
+
+        amounts: list[float] = []
+        for storage_type, raw_amount in conn.execute(
+            "SELECT typeof(amount), amount FROM paper_account_ledger "
+            "WHERE account_id=? ORDER BY id",
+            (account_id,),
+        ):
+            if storage_type not in {"integer", "real"}:
+                return None
+            try:
+                amount = float(raw_amount)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(amount):
+                return None
+            amounts.append(amount)
+        try:
+            total = math.fsum(amounts)
+        except (OverflowError, ValueError):
+            return None
+        return total if math.isfinite(total) else None
 
     def research_open_risk(self, *, account_id: str) -> float:
         """Return only active filled plus reserved at-risk exposure."""
@@ -638,7 +676,20 @@ class PaperStore:
 
         if not math.isfinite(float(requested_spend)) or requested_spend <= 0:
             return {"allowed_spend": 0.0, "reason": "research spend must be positive"}
-        state = self._account_state_on_connection(conn, policy.account_id)
+        ledger_total = self._validated_research_ledger_total_on_connection(
+            conn,
+            policy.account_id,
+        )
+        if ledger_total is None:
+            return {
+                "allowed_spend": 0.0,
+                "reason": "research ledger amount is invalid",
+            }
+        state = self._account_state_on_connection(
+            conn,
+            policy.account_id,
+            validated_ledger_total=ledger_total,
+        )
         if state is None or state["status"] != "ACTIVE":
             return {"allowed_spend": 0.0, "reason": "research account is not active"}
         if (
@@ -1255,12 +1306,73 @@ class PaperStore:
         return policy
 
     @staticmethod
+    def _validate_research_strategy_config(
+        strategy_config: StrategyConfig,
+        decision: TradeDecision,
+        *,
+        contracts: float,
+    ) -> dict[str, object]:
+        """Bind admission to the fixed research gates and represented limits."""
+
+        canonical = strategy_config_for_profile("research")
+        snapshot = _strategy_config_snapshot(canonical)
+        supplied_snapshot = _strategy_config_snapshot(strategy_config)
+        if not isinstance(snapshot, dict) or not isinstance(supplied_snapshot, dict):
+            raise ValueError("canonical research strategy snapshot is unavailable")
+        try:
+            snapshot_json = json.dumps(
+                snapshot,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            supplied_snapshot_json = json.dumps(
+                supplied_snapshot,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "research admission requires the canonical research strategy"
+            ) from exc
+        if strategy_config != canonical or supplied_snapshot_json != snapshot_json:
+            raise ValueError(
+                "research admission requires the canonical research strategy"
+            )
+        try:
+            spread = float(decision.spread)
+            ask_size = float(decision.ask_size)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("research strategy entry limits are invalid") from exc
+        if (
+            not math.isfinite(spread)
+            or spread < 0
+            or spread > canonical.max_spread + 1e-9
+            or not math.isfinite(ask_size)
+            or ask_size + 1e-9 < canonical.min_ask_size
+            or contracts > canonical.max_contracts_per_market + 1e-9
+            or (
+                not canonical.allow_fractional_contracts
+                and abs(contracts - round(contracts)) > 1e-9
+            )
+        ):
+            raise ValueError("research strategy entry limits are violated")
+        if decision.limit_price is not None:
+            limit_price = float(decision.limit_price)
+            ticks = limit_price / canonical.limit_price_tick
+            if not math.isfinite(ticks) or abs(ticks - round(ticks)) > 1e-9:
+                raise ValueError("research strategy entry limits are violated")
+        return snapshot
+
+    @staticmethod
     def _research_entry_decision_on_connection(
         conn: sqlite3.Connection,
         *,
         admission: ResearchAdmission,
         target_date: str,
         decision: TradeDecision,
+        expected_strategy_snapshot: dict[str, object],
     ) -> sqlite3.Row:
         """Load and exactly validate the evidence explicitly named by admission."""
 
@@ -1374,6 +1486,33 @@ class PaperStore:
             numeric_matches = False
         if not numeric_matches:
             raise ValueError("research entry decision evidence decision mismatch")
+        try:
+            context_strategy = json.loads(row["scan_context_strategy_config_json"])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "research scan context strategy configuration is invalid"
+            ) from exc
+        try:
+            context_strategy_json = json.dumps(
+                context_strategy,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            expected_strategy_json = json.dumps(
+                expected_strategy_snapshot,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "research scan context strategy configuration is invalid"
+            ) from exc
+        if context_strategy_json != expected_strategy_json:
+            raise ValueError(
+                "research scan context strategy configuration does not match"
+            )
         return row
 
     def record_research_order_atomic(
@@ -1390,7 +1529,7 @@ class PaperStore:
         if not isinstance(strategy_config, StrategyConfig):
             raise ValueError("research admission requires a strategy configuration")
         try:
-            date.fromisoformat(target_date)
+            target_day = date.fromisoformat(target_date)
         except ValueError as exc:
             raise ValueError("research target date is invalid") from exc
         if not decision.approved:
@@ -1400,6 +1539,11 @@ class PaperStore:
             return None
         if policy.one_contract and abs(contracts - 1.0) > 1e-9:
             return None
+        expected_strategy_snapshot = self._validate_research_strategy_config(
+            strategy_config,
+            decision,
+            contracts=contracts,
+        )
         side = str(decision.side or "").upper()
         if side not in {"YES", "NO"}:
             raise ValueError("research order side must be YES or NO")
@@ -1474,11 +1618,25 @@ class PaperStore:
                     "research admission objective day must equal the current "
                     "Pacific civil day"
                 )
+            lead_days = (target_day - civil_day).days
+            if lead_days < policy.min_lead_days:
+                conn.rollback()
+                raise ValueError(
+                    f"{policy.sleeve.value} research minimum lead is "
+                    f"{policy.min_lead_days} civil day(s); got {lead_days}"
+                )
+            canonical_lead_bucket = canonical_research_lead_bucket(lead_days)
+            if admission.lead_bucket != canonical_lead_bucket:
+                conn.rollback()
+                raise ValueError(
+                    "research admission canonical lead bucket does not match target"
+                )
             entry_decision = self._research_entry_decision_on_connection(
                 conn,
                 admission=admission,
                 target_date=target_date,
                 decision=decision,
+                expected_strategy_snapshot=expected_strategy_snapshot,
             )
             capacity = self._research_capacity_on_connection(
                 conn,

@@ -63,6 +63,15 @@ class ResearchSleevePolicy:
 RESEARCH_OBJECTIVE_TZ = ZoneInfo("America/Los_Angeles")
 RESEARCH_OBJECTIVE_ROLLOVER = time(0, 0)
 
+
+def canonical_research_lead_bucket(lead_days: int) -> str:
+    """Return the one audit label used for a non-past research horizon."""
+
+    if isinstance(lead_days, bool) or not isinstance(lead_days, int) or lead_days < 0:
+        raise ValueError("research lead days must be a non-negative integer")
+    return "same-day" if lead_days == 0 else "day-ahead"
+
+
 TARGET_POLICY = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-target-v1",
