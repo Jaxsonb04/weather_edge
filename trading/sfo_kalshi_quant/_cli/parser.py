@@ -361,6 +361,22 @@ def register_scan_commands(sub) -> None:
     )
     portfolio.add_argument("--place-paper", action="store_true", help="Record approved paper portfolio orders")
     portfolio.add_argument(
+        "--place-research-target",
+        action="store_true",
+        help=(
+            "Admit approved target-sleeve paper orders only. This flag has no "
+            "effect on the live profile or the research motion sleeve."
+        ),
+    )
+    portfolio.add_argument(
+        "--place-research-motion",
+        action="store_true",
+        help=(
+            "Admit approved motion-sleeve paper orders only. This flag has no "
+            "effect on the live profile or the research target sleeve."
+        ),
+    )
+    portfolio.add_argument(
         "--paper-entry-mode",
         choices=("market", "limit"),
         default=_default_paper_entry_mode(),

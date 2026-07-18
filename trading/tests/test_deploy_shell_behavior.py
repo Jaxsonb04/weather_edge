@@ -29,11 +29,110 @@ TIMERS = (
     "sfo-forecast-freshness.timer",
 )
 SERVICES = tuple(timer.removesuffix(".timer") + ".service" for timer in TIMERS)
+PAPER_SCAN_RUNNER = AWS_DIR / "run_paper_scan_profiles.sh"
 
 
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _run_paper_scan_with_placement_flags(
+    tmp_path: Path,
+    **placement_flags: str,
+) -> list[list[str]]:
+    trading_root = tmp_path / "trading"
+    trading_root.mkdir()
+    call_log = tmp_path / "paper-scan-calls.jsonl"
+    python_stub = tmp_path / "python-stub"
+    _write_executable(
+        python_stub,
+        f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ['PAPER_SCAN_CALL_LOG'], 'a', encoding='utf-8') as handle:
+    handle.write(json.dumps(sys.argv[1:]) + '\\n')
+""",
+    )
+    env = {
+        **os.environ,
+        "SFO_TRADING_ROOT": str(trading_root),
+        "SFO_FORECASTER_ROOT": str(tmp_path / "forecaster"),
+        "SFO_TRADING_PYTHON": str(python_stub),
+        "SFO_KALSHI_DB": str(tmp_path / "paper.db"),
+        "SFO_PAPER_SCAN_LOCK": str(tmp_path / "paper-scan.lock"),
+        "PAPER_RISK_PROFILES": "live,research",
+        "PAPER_SCAN_CALL_LOG": str(call_log),
+        **placement_flags,
+    }
+    for name in (
+        "PAPER_PLACE_LIVE",
+        "PAPER_PLACE_RESEARCH_TARGET",
+        "PAPER_PLACE_RESEARCH_MOTION",
+        "SFO_PAPER_PLACE_ORDERS",
+    ):
+        if name not in placement_flags:
+            env.pop(name, None)
+    result = subprocess.run(
+        ["bash", str(PAPER_SCAN_RUNNER)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return [json.loads(line) for line in call_log.read_text().splitlines()]
+
+
+def _paper_scan_call_for_profile(calls: list[list[str]], profile: str) -> list[str]:
+    return next(call for call in calls if call[call.index("--risk-profile") + 1] == profile)
+
+
+@pytest.mark.parametrize(
+    ("placement_flags", "expected_live", "expected_target", "expected_motion"),
+    [
+        ({}, False, False, False),
+        ({"PAPER_PLACE_LIVE": "TRUE"}, True, False, False),
+        ({"PAPER_PLACE_RESEARCH_TARGET": "yes"}, False, True, False),
+        ({"PAPER_PLACE_RESEARCH_MOTION": "1"}, False, False, True),
+        (
+            {
+                "PAPER_PLACE_RESEARCH_TARGET": "on",
+                "PAPER_PLACE_RESEARCH_MOTION": "Y",
+            },
+            False,
+            True,
+            True,
+        ),
+        (
+            {
+                "PAPER_PLACE_LIVE": "unknown",
+                "PAPER_PLACE_RESEARCH_TARGET": "unknown",
+                "PAPER_PLACE_RESEARCH_MOTION": "unknown",
+                "SFO_PAPER_PLACE_ORDERS": "1",
+            },
+            False,
+            False,
+            False,
+        ),
+    ],
+)
+def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
+    tmp_path: Path,
+    placement_flags: dict[str, str],
+    expected_live: bool,
+    expected_target: bool,
+    expected_motion: bool,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(tmp_path, **placement_flags)
+    assert len(calls) == 2
+    live = _paper_scan_call_for_profile(calls, "live")
+    research = _paper_scan_call_for_profile(calls, "research")
+
+    assert ("--place-paper" in live) is expected_live
+    assert "--place-research-target" not in live
+    assert "--place-research-motion" not in live
+    assert "--place-paper" not in research
+    assert ("--place-research-target" in research) is expected_target
+    assert ("--place-research-motion" in research) is expected_motion
 
 
 def _stub_clean_main_git(fake_bin: Path) -> None:

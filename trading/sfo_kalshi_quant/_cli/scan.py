@@ -83,6 +83,29 @@ def _risk_profile_name(args: argparse.Namespace) -> str:
     return normalize_risk_profile_name(str(explicit) if explicit else None)
 
 
+def _research_placement_flags(args: argparse.Namespace) -> tuple[bool, bool]:
+    """Return target/motion admission intent only for the research profile.
+
+    ``--place-paper`` remains the backwards-compatible manual research switch
+    for both sleeves. The explicit AWS switches are narrower and are ignored
+    for every other profile, so a research flag cannot enable live placement.
+    """
+
+    if _risk_profile_name(args) != "research":
+        return False, False
+    place_all = bool(getattr(args, "place_paper", False))
+    return (
+        place_all or bool(getattr(args, "place_research_target", False)),
+        place_all or bool(getattr(args, "place_research_motion", False)),
+    )
+
+
+def _paper_placement_requested(args: argparse.Namespace) -> bool:
+    if bool(getattr(args, "place_paper", False)):
+        return True
+    return any(_research_placement_flags(args))
+
+
 def _analysis_sides(side_arg: str) -> tuple[str, ...]:
     if side_arg == "both":
         return ("YES", "NO")
@@ -125,7 +148,7 @@ def _resolve_analysis_targets(
             with_nested_markets=True,
         )
     except (URLError, OSError) as exc:
-        if args.place_paper:
+        if _paper_placement_requested(args):
             print(
                 color.yellow(
                     f"warning: live Kalshi rolling target lookup failed ({exc}); "
@@ -147,7 +170,7 @@ def _resolve_analysis_targets(
     if targets:
         return targets, events_by_target
 
-    if args.place_paper:
+    if _paper_placement_requested(args):
         print(
             color.yellow(
                 f"warning: no active Kalshi {series_ticker} events found; skipping paper "
@@ -558,6 +581,8 @@ def _execute_research_scan_context(
     place_paper: bool,
     forecast_snapshot_id: int | None,
     market_snapshot_id: int | None,
+    place_research_target: bool | None = None,
+    place_research_motion: bool | None = None,
     scan_run_id: str | None = None,
 ):
     """Evaluate two books from one immutable in-memory research context."""
@@ -603,6 +628,12 @@ def _execute_research_scan_context(
         motion_realized_today=motion_realized,
         run_id=run_id,
     )
+    admit_target_orders = (
+        place_paper if place_research_target is None else place_research_target
+    )
+    admit_motion_orders = (
+        place_paper if place_research_motion is None else place_research_motion
+    )
     execution = PaperTrader(
         store,
         execution_config,
@@ -625,6 +656,8 @@ def _execute_research_scan_context(
         forecast_snapshot_id=forecast_snapshot_id,
         market_snapshot_id=market_snapshot_id,
         admit_orders=place_paper and entry_allowed,
+        admit_target_orders=admit_target_orders and entry_allowed,
+        admit_motion_orders=admit_motion_orders and entry_allowed,
     )
     return plans, execution, decisions
 
@@ -637,9 +670,11 @@ def _research_portfolio_scan_from_context(
     store: PaperStore,
     color: Color,
 ) -> None:
+    place_research_target, place_research_motion = _research_placement_flags(args)
+    placement_requested = place_research_target or place_research_motion
     entry_allowed = True
     entry_block_reason = None
-    if args.place_paper:
+    if placement_requested:
         if context.event is None:
             entry_allowed = False
             entry_block_reason = (
@@ -673,6 +708,8 @@ def _research_portfolio_scan_from_context(
         entry_allowed=entry_allowed,
         entry_block_reason=entry_block_reason,
         place_paper=bool(args.place_paper),
+        place_research_target=place_research_target,
+        place_research_motion=place_research_motion,
         forecast_snapshot_id=forecast_snapshot_id,
         market_snapshot_id=market_snapshot_id,
     )

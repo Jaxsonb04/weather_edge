@@ -155,7 +155,9 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
             config=strategy_config_for_profile("research"),
             entry_allowed=True,
             entry_block_reason=None,
-            place_paper=True,
+            place_paper=False,
+            place_research_target=True,
+            place_research_motion=False,
             forecast_snapshot_id=10,
             market_snapshot_id=20,
             scan_run_id="one-shared-scan",
@@ -184,7 +186,9 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     assert call.kwargs["source_decisions"] == target_decisions
     assert call.kwargs["motion_source_decisions"] == motion_decisions
     assert call.kwargs["scan_run_id"] == "one-shared-scan"
-    assert call.kwargs["admit_orders"] is True
+    assert call.kwargs["admit_orders"] is False
+    assert call.kwargs["admit_target_orders"] is True
+    assert call.kwargs["admit_motion_orders"] is False
     assert store.research_account_state.call_args_list[0].kwargs == {
         "account_id": TARGET_POLICY.account_id
     }

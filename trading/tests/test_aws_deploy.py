@@ -504,15 +504,27 @@ def test_project_docs_describe_split_publication_cadences():
 def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():
     runner = _read(AWS_DIR / "run_paper_scan_profiles.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
+    service = _read(AWS_DIR / "systemd" / "sfo-kalshi-paper-scan.service.in")
 
     # Overlap guard: a slow scan must not be double-run by the 5-minute timer.
     assert "SFO_PAPER_SCAN_LOCK" in runner
     assert "flock -n" in runner
+    assert runner.count("flock -n") == 1
     assert runner.count("    portfolio-scan") == 1
     assert "tail-basket" not in runner
     assert " arbitrage" not in runner
     assert " analyze" not in runner
     assert "SFO_PORTFOLIO_MAX_ARB_SPEND=12" in example_env
+    for flag in (
+        "PAPER_PLACE_LIVE",
+        "PAPER_PLACE_RESEARCH_TARGET",
+        "PAPER_PLACE_RESEARCH_MOTION",
+    ):
+        assert f'{flag}="${{{flag}:-0}}"' in runner
+        assert f"{flag}=0" in example_env
+    assert "SFO_PAPER_PLACE_ORDERS" not in runner
+    assert "SFO_PAPER_PLACE_ORDERS" not in example_env
+    assert "UnsetEnvironment=SFO_PAPER_PLACE_ORDERS" in service
 
 
 def test_pull_paper_db_script_exists_for_offline_rescore():

@@ -340,6 +340,8 @@ class PaperTrader:
         forecast_snapshot_id: int | None = None,
         market_snapshot_id: int | None = None,
         admit_orders: bool = True,
+        admit_target_orders: bool | None = None,
+        admit_motion_orders: bool | None = None,
     ) -> ResearchExecutionResult:
         """Persist and independently admit target and motion plans.
 
@@ -368,6 +370,12 @@ class PaperTrader:
                 else motion_source_decisions
             )
         }
+        target_admission_enabled = (
+            admit_orders if admit_target_orders is None else admit_target_orders
+        )
+        motion_admission_enabled = (
+            admit_orders if admit_motion_orders is None else admit_motion_orders
+        )
         target_attempts = self._prepare_research_plan(
             target_date,
             plans.target,
@@ -378,7 +386,7 @@ class PaperTrader:
             scan_run_id=scan_run_id,
             observed_high_state=observed_high_state,
             intraday=intraday,
-            admit_orders=admit_orders,
+            admit_orders=target_admission_enabled,
         )
         motion_attempts = self._prepare_research_plan(
             target_date,
@@ -390,7 +398,7 @@ class PaperTrader:
             scan_run_id=scan_run_id,
             observed_high_state=observed_high_state,
             intraday=intraday,
-            admit_orders=admit_orders,
+            admit_orders=motion_admission_enabled,
         )
         attempts = [*target_attempts, *motion_attempts]
         decision_ids = self.store.record_research_decision_batch(

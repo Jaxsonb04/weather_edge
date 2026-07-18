@@ -695,7 +695,7 @@ def test_paper_scan_truthy_is_bash3_portable_and_case_insensitive(tmp_path: Path
             "SFO_TRADING_ROOT": str(trading),
             "SFO_TRADING_PYTHON": str(python),
             "SFO_PAPER_SCAN_LOCK": str(tmp_path / "lock"),
-            "SFO_PAPER_PLACE_ORDERS": "TRUE",
+            "PAPER_PLACE_LIVE": "TRUE",
             "CALL_LOG": str(tmp_path / "call"),
         },
         capture_output=True,

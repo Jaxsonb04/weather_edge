@@ -40,9 +40,41 @@ def test_portfolio_scan_parser_is_paper_only_by_default() -> None:
     assert args.target_date == "rolling"
     assert args.side == "both"
     assert args.place_paper is False
+    assert args.place_research_target is False
+    assert args.place_research_motion is False
     assert args.paper_entry_mode == "market"
     assert args.max_arb_spend == 12.0
     assert args.min_profit == 0.01
+
+
+def test_portfolio_scan_parser_exposes_independent_research_placement() -> None:
+    args = build_parser().parse_args(
+        [
+            "--risk-profile",
+            "research",
+            "portfolio-scan",
+            "--place-research-target",
+        ]
+    )
+
+    assert args.place_paper is False
+    assert args.place_research_target is True
+    assert args.place_research_motion is False
+
+
+def test_research_placement_switches_cannot_request_live_placement() -> None:
+    args = build_parser().parse_args(
+        [
+            "--risk-profile",
+            "live",
+            "portfolio-scan",
+            "--place-research-target",
+            "--place-research-motion",
+        ]
+    )
+
+    assert scan_module._research_placement_flags(args) == (False, False)
+    assert scan_module._paper_placement_requested(args) is False
 
 
 def test_paper_prune_help_marks_command_low_level_and_points_to_scheduled_service() -> None:

@@ -2943,6 +2943,70 @@ def test_research_scan_batches_one_shared_context_for_all_dispositions(
     ]
 
 
+@pytest.mark.parametrize(
+    ("admit_target", "admit_motion", "expected_sleeve"),
+    ((True, False, "target"), (False, True, "motion")),
+)
+def test_research_scan_admits_sleeves_independently_in_one_batch(
+    tmp_path: Path,
+    admit_target: bool,
+    admit_motion: bool,
+    expected_sleeve: str,
+) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader
+
+    store = PaperStore(
+        tmp_path / f"independent-{expected_sleeve}.db",
+        research_clock=_fixed_research_clock,
+    )
+    decision = _atomic_decision(f"KXHIGHTSFO-INDEPENDENT-{expected_sleeve}")
+    plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-19", 1)],
+        run_id=f"independent-{expected_sleeve}",
+    )
+
+    result = PaperTrader(
+        store,
+        strategy_config_for_profile("research"),
+        risk_profile="research",
+        entry_mode="limit",
+    ).execute_research_plans(
+        "2026-07-19",
+        plans,
+        source_decisions=[decision],
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+        scan_run_id=f"independent-{expected_sleeve}",
+        observed_high_state="complete=0;high=unavailable",
+        admit_target_orders=admit_target,
+        admit_motion_orders=admit_motion,
+    )
+
+    assert bool(result.target_order_ids) is admit_target
+    assert bool(result.motion_order_ids) is admit_motion
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM scan_context_snapshots"
+        ).fetchone()[0] == 1
+        orders = conn.execute(
+            "SELECT research_sleeve FROM paper_orders ORDER BY id"
+        ).fetchall()
+        disabled = conn.execute(
+            "SELECT research_sleeve, approved, entry_block_reason "
+            "FROM decision_snapshots WHERE entry_block_reason="
+            "'research order admission disabled'"
+        ).fetchall()
+    assert orders == [(expected_sleeve,)]
+    assert disabled == [
+        (
+            "motion" if expected_sleeve == "target" else "target",
+            0,
+            "research order admission disabled",
+        )
+    ]
+
+
 def test_research_admission_exception_leaves_pending_then_next_scan_recovers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

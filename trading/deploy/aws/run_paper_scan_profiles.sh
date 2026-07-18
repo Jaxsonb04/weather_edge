@@ -29,7 +29,9 @@ TARGET_DATE="${SFO_PAPER_SCAN_TARGET_DATE:-rolling}"
 SIDE="${SFO_PAPER_SCAN_SIDE:-both}"
 PORTFOLIO_MAX_ARB_SPEND="${SFO_PORTFOLIO_MAX_ARB_SPEND:-12}"
 PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"
-PAPER_PLACE_ORDERS="${SFO_PAPER_PLACE_ORDERS:-1}"
+PAPER_PLACE_LIVE="${PAPER_PLACE_LIVE:-0}"
+PAPER_PLACE_RESEARCH_TARGET="${PAPER_PLACE_RESEARCH_TARGET:-0}"
+PAPER_PLACE_RESEARCH_MOTION="${PAPER_PLACE_RESEARCH_MOTION:-0}"
 
 truthy() {
   value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
@@ -78,11 +80,29 @@ for raw_profile in "${profiles[@]}"; do
     --max-arb-spend "$PORTFOLIO_MAX_ARB_SPEND"
     --min-profit "$PORTFOLIO_MIN_PROFIT"
   )
-  if truthy "$PAPER_PLACE_ORDERS"; then
-    args+=(--place-paper)
-  else
-    echo "allocator shadow mode: recording decisions without paper placement"
-  fi
+  case "$profile" in
+    live)
+      if truthy "$PAPER_PLACE_LIVE"; then
+        args+=(--place-paper)
+      else
+        echo "live allocator shadow mode: recording decisions without paper placement"
+      fi
+      ;;
+    research)
+      if truthy "$PAPER_PLACE_RESEARCH_TARGET"; then
+        args+=(--place-research-target)
+      fi
+      if truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
+        args+=(--place-research-motion)
+      fi
+      if ! truthy "$PAPER_PLACE_RESEARCH_TARGET" && ! truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
+        echo "research allocators shadow mode: recording decisions without paper placement"
+      fi
+      ;;
+    *)
+      echo "unknown profile has no placement control and remains shadow-only: $profile" >&2
+      ;;
+  esac
   # Forecast/probability/market context is identical across profiles in one
   # scan; only the first profile's first command records it.
   if (( skip_context > 0 )); then
