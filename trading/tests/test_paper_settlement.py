@@ -23,6 +23,32 @@ from sfo_kalshi_quant.store.scoring import _sample_decision_rows
 from support import pre_resolution_event
 
 
+def _profile_sampling_decision(probability: float = 0.91) -> TradeDecision:
+    return TradeDecision(
+        ticker="KXHIGHTSFO-TEST-B66.5",
+        label="66 to 67",
+        action="BUY_YES",
+        approved=True,
+        probability=probability,
+        probability_lcb=0.61,
+        yes_bid=0.20,
+        yes_ask=0.30,
+        spread=0.10,
+        fee_per_contract=0.01,
+        cost_per_contract=0.31,
+        edge=0.60,
+        edge_lcb=0.30,
+        kelly_fraction=0.02,
+        recommended_contracts=10.0,
+        expected_profit=6.0,
+        reasons=[],
+        trade_quality_score=72.0,
+        strike_type="between",
+        floor_strike=66.0,
+        cap_strike=67.0,
+    )
+
+
 @pytest.mark.parametrize(
     "profile_probabilities",
     [
@@ -46,29 +72,7 @@ from support import pre_resolution_event
 def test_python_sampling_fallback_normalizes_profile_before_deduplication(
     profile_probabilities, sample_mode
 ):
-    base = TradeDecision(
-        ticker="KXHIGHTSFO-TEST-B66.5",
-        label="66 to 67",
-        action="BUY_YES",
-        approved=True,
-        probability=0.91,
-        probability_lcb=0.61,
-        yes_bid=0.20,
-        yes_ask=0.30,
-        spread=0.10,
-        fee_per_contract=0.01,
-        cost_per_contract=0.31,
-        edge=0.60,
-        edge_lcb=0.30,
-        kelly_fraction=0.02,
-        recommended_contracts=10.0,
-        expected_profit=6.0,
-        reasons=[],
-        trade_quality_score=72.0,
-        strike_type="between",
-        floor_strike=66.0,
-        cap_strike=67.0,
-    )
+    base = _profile_sampling_decision()
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         for profile, probability in profile_probabilities:
@@ -85,6 +89,47 @@ def test_python_sampling_fallback_normalizes_profile_before_deduplication(
 
     assert {float(row["probability"]) for row in rows} == {0.91, 0.71}
     assert len(rows) == 2
+
+
+def test_sql_sampling_reports_unknown_stored_profile_clearly():
+    decision = _profile_sampling_decision()
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03",
+            [decision],
+            event=pre_resolution_event([decision]),
+            risk_profile="mystery-profile",
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            store.sampled_decision_rows(sample_mode="entry-per-market-side")
+
+    assert str(exc_info.value) == (
+        "invalid stored risk_profile 'mystery-profile': "
+        "risk profile must be 'live' or 'research'"
+    )
+
+
+def test_python_sampling_reports_unknown_stored_profile_clearly():
+    decision = _profile_sampling_decision()
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03",
+            [decision],
+            event=pre_resolution_event([decision]),
+            risk_profile="mystery-profile",
+        )
+        rows = store.sampled_decision_rows(sample_mode="all")
+
+        with pytest.raises(ValueError) as exc_info:
+            _sample_decision_rows(rows, "entry-per-market-side")
+
+    assert str(exc_info.value) == (
+        "invalid stored risk_profile 'mystery-profile': "
+        "risk profile must be 'live' or 'research'"
+    )
 
 
 def test_auto_settle_waits_until_six_am_next_standard_day_in_winter():

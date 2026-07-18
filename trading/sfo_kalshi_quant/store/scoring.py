@@ -145,8 +145,7 @@ def sampled_decision_rows(
                 else "created_at DESC, id DESC"
             )
             ranked_where = f"{where} {'AND' if where else 'WHERE'} {pre_filter}"
-            return conn.execute(
-                f"""
+            sample_query = f"""
                 WITH ranked AS (
                     SELECT id,
                            ROW_NUMBER() OVER (
@@ -167,9 +166,19 @@ def sampled_decision_rows(
                 JOIN decision_snapshots d ON d.id = r.id
                 WHERE r.sample_rank = 1
                 ORDER BY d.target_date, d.created_at, d.id
-                """,
-                params,
-            ).fetchall()
+                """
+            try:
+                return conn.execute(sample_query, params).fetchall()
+            except sqlite3.OperationalError as exc:
+                if str(exc) != "user-defined function raised exception":
+                    raise
+                stored_profiles = conn.execute(
+                    f"SELECT DISTINCT risk_profile FROM decision_snapshots {ranked_where}",
+                    params,
+                ).fetchall()
+                for row in stored_profiles:
+                    _normalize_sample_profile(row[0])
+                raise
         # Stream the cursor instead of fetchall(): decision_snapshots grows
         # by thousands of ~7KB-JSON rows per day, and materializing every
         # row memory-thrashed the 1GB refresh box. Sampling keeps at most
@@ -402,7 +411,11 @@ def _row_sort_time(row: sqlite3.Row) -> tuple[str, int]:
 
 
 def _normalize_sample_profile(value: object) -> str:
-    return normalize_risk_profile_name(str(value) if value else "live")
+    stored = str(value) if value else "live"
+    try:
+        return normalize_risk_profile_name(stored)
+    except ValueError as exc:
+        raise ValueError(f"invalid stored risk_profile {stored!r}: {exc}") from exc
 
 
 def _normalize_row_profile(row: sqlite3.Row) -> str:
