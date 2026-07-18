@@ -893,6 +893,188 @@ def _entry_findings(
     return findings
 
 
+def _current_immediate_entry_findings(
+    row: sqlite3.Row,
+    entry_fill_rows: list[sqlite3.Row],
+) -> list[str]:
+    """Reconcile a current immediate fill to quote, sizing, fee, and ledger."""
+
+    findings: list[str] = []
+    raw_evidence = _row_value(row, "fill_evidence_json")
+    if raw_evidence is not None:
+        try:
+            parsed_evidence = json.loads(str(raw_evidence))
+        except (TypeError, ValueError):
+            parsed_evidence = None
+        if not isinstance(parsed_evidence, dict) or str(
+            parsed_evidence.get("model") or "immediate_visible_quote"
+        ) != "immediate_visible_quote":
+            findings.append("CURRENT_ENTRY_FILL_EVIDENCE_INVALID")
+
+    raw_quote = _row_value(row, "quote_snapshot_json")
+    try:
+        quote = json.loads(str(raw_quote)) if raw_quote is not None else None
+    except (TypeError, ValueError):
+        quote = None
+    diagnostics = _json_object(_row_value(row, "diagnostics_json"))
+    signal = diagnostics.get("signal")
+    if not isinstance(quote, dict) or not isinstance(signal, dict):
+        findings.append("CURRENT_ENTRY_QUOTE_INVALID")
+        quote = quote if isinstance(quote, dict) else {}
+        signal = signal if isinstance(signal, dict) else {}
+
+    side = str(_row_value(row, "side") or "").upper()
+    quote_side = str(quote.get("side") or "").upper()
+    signal_side = str(signal.get("side") or "").upper()
+    if side not in {"YES", "NO"} or quote_side != side or signal_side != side:
+        findings.append("CURRENT_ENTRY_SIDE_MISMATCH")
+
+    entry_price = _finite_number(
+        _row_value(row, "entry_price"), minimum=0, maximum=1
+    )
+    quote_ask = _finite_number(quote.get("ask"), minimum=0, maximum=1)
+    signal_ask = _finite_number(
+        signal.get("entry_ask"), minimum=0, maximum=1
+    )
+    if entry_price is None or quote_ask is None or signal_ask is None:
+        findings.append("CURRENT_ENTRY_QUOTE_INVALID")
+    elif not _close_number(entry_price, quote_ask) or not _close_number(
+        entry_price, signal_ask
+    ):
+        findings.append("CURRENT_ENTRY_PRICE_MISMATCH")
+    if str(_row_value(row, "entry_mode") or "market") == "limit":
+        row_limit = _finite_number(
+            _row_value(row, "limit_price"), minimum=0, maximum=1
+        )
+        quote_limit = _finite_number(
+            quote.get("limit_price"), minimum=0, maximum=1
+        )
+        if (
+            row_limit is None
+            or quote_limit is None
+            or entry_price is None
+            or not _close_number(row_limit, quote_limit)
+            or entry_price > row_limit + _REPLAY_TOLERANCE
+        ):
+            _append_finding(findings, "CURRENT_ENTRY_PRICE_MISMATCH")
+
+    requested = _finite_number(
+        _row_value(row, "requested_contracts"), minimum=0
+    )
+    filled = _finite_number(_row_value(row, "filled_contracts"), minimum=0)
+    remaining = _finite_number(
+        _row_value(row, "remaining_contracts"), minimum=0
+    )
+    quote_contracts = _finite_number(quote.get("contracts"), minimum=0)
+    if (
+        requested in {None, 0.0}
+        or filled in {None, 0.0}
+        or remaining is None
+        or quote_contracts in {None, 0.0}
+        or not _close_number(requested, filled)
+        or not _close_number(requested, quote_contracts)
+        or not _close_number(remaining, 0.0)
+    ):
+        findings.append("CURRENT_ENTRY_QUANTITY_MISMATCH")
+
+    displayed_depth = _finite_number(
+        _row_value(row, "entry_ask_size"), minimum=0
+    )
+    signal_depth = _finite_number(signal.get("entry_ask_size"), minimum=0)
+    if displayed_depth is None or signal_depth is None:
+        findings.append("CURRENT_ENTRY_QUOTE_INVALID")
+    elif (
+        filled is not None
+        and (
+            displayed_depth + _REPLAY_TOLERANCE < filled
+            or signal_depth + _REPLAY_TOLERANCE < filled
+        )
+    ):
+        findings.append("CURRENT_ENTRY_DEPTH_INSUFFICIENT")
+    elif not _close_number(displayed_depth, signal_depth):
+        findings.append("CURRENT_ENTRY_DEPTH_MISMATCH")
+
+    fee = _finite_number(_row_value(row, "fee_per_contract"), minimum=0)
+    cost = _finite_number(_row_value(row, "cost_per_contract"), minimum=0)
+    quote_fee = _finite_number(quote.get("fee_per_contract"), minimum=0)
+    quote_cost = _finite_number(quote.get("cost_per_contract"), minimum=0)
+    canonical_fee = (
+        quadratic_fee_average_per_contract(
+            entry_price,
+            requested,
+            maker=False,
+            series_ticker=str(_row_value(row, "market_ticker") or ""),
+        )
+        if entry_price is not None and requested not in {None, 0.0}
+        else None
+    )
+    if canonical_fee is None or fee is None or quote_fee is None:
+        findings.append("CURRENT_ENTRY_FEE_INVALID")
+    elif not _close_number(fee, canonical_fee) or not _close_number(
+        quote_fee, canonical_fee
+    ):
+        findings.append("CURRENT_ENTRY_FEE_MISMATCH")
+    canonical_cost = (
+        entry_price + canonical_fee
+        if entry_price is not None and canonical_fee is not None
+        else None
+    )
+    if canonical_cost is None or cost is None or quote_cost is None:
+        findings.append("CURRENT_ENTRY_COST_INVALID")
+    elif not _close_number(cost, canonical_cost) or not _close_number(
+        quote_cost, canonical_cost
+    ):
+        findings.append("CURRENT_ENTRY_COST_MISMATCH")
+
+    if not entry_fill_rows:
+        findings.append("CURRENT_ENTRY_LEDGER_MISSING")
+        return findings
+    if len(entry_fill_rows) != 1:
+        findings.append("CURRENT_ENTRY_LEDGER_MISMATCH")
+        return findings
+    ledger = entry_fill_rows[0]
+    order_id = _positive_row_id(_row_value(row, "id"))
+    created_at = _parse_replay_time(_row_value(row, "created_at"))
+    filled_at = _parse_replay_time(_row_value(row, "filled_at"))
+    ledger_at = _parse_replay_time(_row_value(ledger, "created_at"))
+    expected_amount = (
+        -(filled * cost)
+        if filled is not None and cost is not None
+        else None
+    )
+    try:
+        ledger_details = json.loads(str(_row_value(ledger, "details_json") or "{}"))
+    except (TypeError, ValueError):
+        ledger_details = None
+    ledger_quantity = (
+        _finite_number(ledger_details.get("filled_quantity"), minimum=0)
+        if isinstance(ledger_details, dict)
+        and "filled_quantity" in ledger_details
+        else filled
+    )
+    if (
+        order_id is None
+        or _positive_row_id(_row_value(ledger, "order_id")) != order_id
+        or str(_row_value(ledger, "account_id") or "")
+        != str(_row_value(row, "account_id") or "")
+        or str(_row_value(ledger, "idempotency_key") or "")
+        != f"order:{order_id}:entry-fill"
+        or expected_amount is None
+        or not _close_number(_row_value(ledger, "amount"), expected_amount)
+        or ledger_quantity is None
+        or filled is None
+        or not _close_number(ledger_quantity, filled)
+        or not isinstance(ledger_details, dict)
+        or created_at is None
+        or filled_at is None
+        or ledger_at is None
+        or filled_at < created_at
+        or ledger_at < filled_at
+    ):
+        findings.append("CURRENT_ENTRY_LEDGER_MISMATCH")
+    return findings
+
+
 def _exit_findings(row: sqlite3.Row, outcome: dict[str, Any]) -> list[str]:
     status = str(row["status"])
     if status == "PAPER_SETTLED":
@@ -1318,8 +1500,7 @@ def restate(db_path: Path) -> dict[str, Any]:
         )
         ledger_rows = (
             conn.execute(
-                "SELECT order_id, event_type, details_json, idempotency_key "
-                "FROM paper_account_ledger"
+                "SELECT * FROM paper_account_ledger"
             ).fetchall()
             if conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -1361,11 +1542,21 @@ def restate(db_path: Path) -> dict[str, Any]:
         is not None
         and order_id in current_entry_fill_owner_ids
     }
+    entry_fill_rows_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    for ledger_row in ledger_rows:
+        ledger_order_id = _positive_row_id(ledger_row["order_id"])
+        if (
+            str(ledger_row["event_type"] or "") == "ENTRY_FILL"
+            and ledger_order_id is not None
+        ):
+            entry_fill_rows_by_order[ledger_order_id].append(ledger_row)
     maker_candidate_ids_by_ticker: dict[str, set[int]] = defaultdict(set)
     for order_id, row in orders_by_id.items():
         if (
             _json_object(row["fill_evidence_json"]).get("model")
             == "maker_allocator_price_time_v4"
+            or str(row["execution_model_version"] or "")
+            == EXECUTION_MODEL_VERSION
         ):
             maker_candidate_ids_by_ticker[str(row["market_ticker"])].add(order_id)
 
@@ -1614,6 +1805,11 @@ def restate(db_path: Path) -> dict[str, Any]:
             else:
                 evidence = parent_evidence
         entry_evidence_order_id = parent_id if parent_id is not None else order_id
+        entry_source_row = (
+            orders_by_id.get(entry_evidence_order_id)
+            if entry_evidence_order_id is not None
+            else None
+        )
         outcome = _json_object(row["outcome_diagnostics_json"])
         immutable_replay_findings = current_findings_by_order.get(
             entry_evidence_order_id
@@ -1628,6 +1824,21 @@ def restate(db_path: Path) -> dict[str, Any]:
             for finding in immutable_replay_findings or []:
                 _append_finding(findings, finding)
         if (
+            entry_source_row is not None
+            and str(entry_source_row["execution_model_version"] or "")
+            == EXECUTION_MODEL_VERSION
+            and (
+                str(entry_source_row["entry_mode"] or "market") != "limit"
+                or str(entry_source_row["fill_model"] or "")
+                == "immediate_visible_quote"
+            )
+        ):
+            for finding in _current_immediate_entry_findings(
+                entry_source_row,
+                entry_fill_rows_by_order.get(entry_evidence_order_id, []),
+            ):
+                _append_finding(findings, finding)
+        if (
             evidence.get("model") == "maker_allocator_price_time_v4"
             and str(row["execution_model_version"] or "")
             != EXECUTION_MODEL_VERSION
@@ -1640,8 +1851,15 @@ def restate(db_path: Path) -> dict[str, Any]:
         ticker = str(row["market_ticker"])
         if order_id is not None:
             findings += settlement_findings_by_order.get(order_id, [])
+        row_generation_is_current = (
+            str(row["execution_model_version"] or "")
+            == EXECUTION_MODEL_VERSION
+        )
         if evidence.get("model") == "maker_allocator_price_time_v4":
             findings += global_settlement_findings
+        if row_generation_is_current:
+            findings += global_settlement_findings
+        if row_generation_is_current:
             if str(row["status"]) == "PAPER_SETTLED":
                 findings += _settled_accounting_findings(
                     row, outcome, settlement_check
@@ -1702,19 +1920,27 @@ def restate(db_path: Path) -> dict[str, Any]:
             or (row_generation_is_current and root_id in claim_owner_ids)
             or root_id in plausible_current_maker_ids
         )
-        if not has_current_maker_authority:
+        has_current_execution_authority = (
+            row_generation_is_current or has_current_maker_authority
+        )
+        if not has_current_execution_authority:
             continue
         lot_ids = [
             order_id
             for lot in group.lots
             if (order_id := _positive_row_id(lot.get("id"))) is not None
         ]
-        group_findings = _logical_maker_authority_findings(
-            group, allocations_by_order
+        group_findings = (
+            _logical_maker_authority_findings(group, allocations_by_order)
+            if has_current_maker_authority
+            else []
         )
         if not group.valid:
             _append_finding(
-                group_findings, "EXEC_V4_LOGICAL_INTEGRITY_INVALID"
+                group_findings,
+                "EXEC_V4_LOGICAL_INTEGRITY_INVALID"
+                if has_current_maker_authority
+                else "CURRENT_LOGICAL_INTEGRITY_INVALID",
             )
         lot_has_findings = any(
             classes_by_order_id.get(order_id, {}).get("findings")
@@ -1724,7 +1950,10 @@ def restate(db_path: Path) -> dict[str, Any]:
             continue
         if lot_has_findings:
             _append_finding(
-                group_findings, "EXEC_V4_LOGICAL_LOT_UNVERIFIABLE"
+                group_findings,
+                "EXEC_V4_LOGICAL_LOT_UNVERIFIABLE"
+                if has_current_maker_authority
+                else "CURRENT_LOGICAL_LOT_UNVERIFIABLE",
             )
         for order_id in lot_ids:
             entry = classes_by_order_id.get(order_id)

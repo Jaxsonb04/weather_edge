@@ -462,20 +462,17 @@ def replay_from_database(
         }
     except (OSError, sqlite3.Error, TypeError, ValueError):
         verified_order_ids = set()
-    # Maker-v4 events consume only evidence that survived immutable
-    # restatement. Legacy/taker rows retain their historical replay behavior;
-    # their independent verification gates are applied to readiness below.
+    # Every current-generation event consumes only evidence that survived
+    # immutable entry, lifecycle, settlement, and accounting restatement.
     event_orders = [
         row
         for row in event_orders
-        if _json_object(_row_value(row, "fill_evidence_json")).get("model")
-        != "maker_allocator_price_time_v4"
-        or int(row["id"]) in verified_order_ids
+        if int(row["id"]) in verified_order_ids
     ]
     # A partial-close child is one lot of its root decision, not an independent
     # replay candidate. If any lot fails immutable restatement, exclude the
-    # complete maker-v4 decision so its siblings cannot contribute money or
-    # event counts on their own.
+    # complete current-generation decision so its siblings cannot contribute
+    # money or event counts on their own.
     invalid_logical_lot_ids: set[int] = set()
     for group in group_logical_positions(all_orders):
         root_id = _positive_integral_id(group.root.get("id"))
@@ -483,8 +480,9 @@ def replay_from_database(
             str(group.root.get("execution_model_version") or "")
             == EXECUTION_MODEL_VERSION
         )
-        has_current_maker_authority = (
-            uses_current_maker_semantics(
+        has_current_execution_authority = (
+            row_generation_is_current
+            or uses_current_maker_semantics(
                 group.root.get("execution_model_version"),
                 group.root.get("entry_mode"),
                 group.root.get("fill_model"),
@@ -493,7 +491,7 @@ def replay_from_database(
             or (row_generation_is_current and root_id in claim_owner_ids)
             or root_id in plausible_current_maker_ids
         )
-        if not has_current_maker_authority:
+        if not has_current_execution_authority:
             continue
         lot_ids = {
             int(lot["id"])

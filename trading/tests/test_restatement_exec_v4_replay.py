@@ -1928,28 +1928,56 @@ def test_valid_genuine_v3_allocation_does_not_poison_v4_candidate() -> None:
         assert "EXEC_V3_HISTORICAL_SEMANTICS" in historical["findings"]
 
 
-def test_immediate_crossing_limit_is_not_misclassified_as_maker_v4() -> None:
+def _immediate_settled_order(
+    store: PaperStore,
+    *,
+    entry_mode: str,
+) -> int:
+    decision = _decision(
+        TICKER,
+        side="NO",
+        limit_price=0.72,
+        contracts=5.0,
+    )
+    decision = replace(
+        decision,
+        entry_ask=0.72 if entry_mode == "limit" else 0.74,
+        entry_ask_size=100.0,
+        limit_price=0.72 if entry_mode == "limit" else None,
+    )
+    order_id = store.record_paper_order(
+        TARGET_DATE,
+        decision,
+        status="PAPER_FILLED",
+        entry_mode=entry_mode,
+    )
+    assert order_id is not None
+    _settle(store)
+    return order_id
+
+
+def _assert_current_execution_excluded(
+    db_path: Path,
+    order_id: int,
+    reason: str,
+) -> None:
+    result = _result(db_path, order_id)
+    assert result["verification"] == "UNVERIFIABLE"
+    assert reason in result["findings"]
+    replay = replay_from_database(db_path, TRUTH)
+    assert replay["source_orders"] == 0
+    assert replay["verified_decisions"] == 0
+    assert replay["readiness_metrics"]["candidate"]["realized_pnl"] == 0.0
+
+
+@pytest.mark.parametrize("entry_mode", ["market", "limit"])
+def test_valid_current_immediate_entry_is_verified_and_replayed(
+    entry_mode: str,
+) -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = _store(db_path)
-        order_id = store.record_paper_order(
-            TARGET_DATE,
-            _decision(
-                TICKER,
-                side="NO",
-                limit_price=0.72,
-                contracts=5.0,
-            ),
-            status="PAPER_FILLED",
-            entry_mode="limit",
-        )
-        assert order_id is not None
-        with store.connect() as conn:
-            conn.execute(
-                "UPDATE paper_orders SET created_at=?, filled_at=? WHERE id=?",
-                (T0.isoformat(), T0.isoformat(), order_id),
-            )
-        _settle(store)
+        order_id = _immediate_settled_order(store, entry_mode=entry_mode)
 
         result = _result(db_path, order_id)
         assert result["verification"] == "VERIFIED"
@@ -1957,3 +1985,152 @@ def test_immediate_crossing_limit_is_not_misclassified_as_maker_v4() -> None:
         replay = replay_from_database(db_path, TRUTH)
         assert replay["source_orders"] == 1
         assert replay["verified_decisions"] == 1
+
+
+def test_current_immediate_missing_settlement_cannot_count_tampered_pnl() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="market")
+        with store.connect() as conn:
+            conn.execute(
+                "DELETE FROM paper_settlement_verifications WHERE order_id=?",
+                (order_id,),
+            )
+            conn.execute(
+                "UPDATE paper_orders SET realized_pnl=999 WHERE id=?",
+                (order_id,),
+            )
+
+        _assert_current_execution_excluded(
+            db_path,
+            order_id,
+            "SETTLEMENT_VERIFICATION_REQUIRED",
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "reason"),
+    [
+        ("entry_price", 0.11, "CURRENT_ENTRY_PRICE_MISMATCH"),
+        ("fee_per_contract", 0.33, "CURRENT_ENTRY_FEE_MISMATCH"),
+        ("cost_per_contract", 0.44, "CURRENT_ENTRY_COST_MISMATCH"),
+    ],
+)
+def test_current_immediate_rejects_entry_cost_tamper(
+    column: str,
+    value: float,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="market")
+        with store.connect() as conn:
+            conn.execute(
+                f"UPDATE paper_orders SET {column}=? WHERE id=?",
+                (value, order_id),
+            )
+
+        _assert_current_execution_excluded(db_path, order_id, reason)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("side", "CURRENT_ENTRY_SIDE_MISMATCH"),
+        ("ask", "CURRENT_ENTRY_PRICE_MISMATCH"),
+        ("depth", "CURRENT_ENTRY_DEPTH_INSUFFICIENT"),
+        ("quantity", "CURRENT_ENTRY_QUANTITY_MISMATCH"),
+    ],
+)
+def test_current_immediate_rejects_quote_tamper(
+    mutation: str,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="market")
+        with store.connect() as conn:
+            if mutation == "depth":
+                conn.execute(
+                    "UPDATE paper_orders SET entry_ask_size=1 WHERE id=?",
+                    (order_id,),
+                )
+            else:
+                quote = json.loads(
+                    conn.execute(
+                        "SELECT quote_snapshot_json FROM paper_orders WHERE id=?",
+                        (order_id,),
+                    ).fetchone()[0]
+                )
+                if mutation == "side":
+                    quote["side"] = "YES"
+                elif mutation == "ask":
+                    quote["ask"] = 0.11
+                else:
+                    quote["contracts"] = 4.0
+                conn.execute(
+                    "UPDATE paper_orders SET quote_snapshot_json=? WHERE id=?",
+                    (json.dumps(quote, sort_keys=True), order_id),
+                )
+
+        _assert_current_execution_excluded(db_path, order_id, reason)
+
+
+def test_current_immediate_rejects_malformed_fill_evidence() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="market")
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json='{' WHERE id=?",
+                (order_id,),
+            )
+
+        _assert_current_execution_excluded(
+            db_path,
+            order_id,
+            "CURRENT_ENTRY_FILL_EVIDENCE_INVALID",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "CURRENT_ENTRY_LEDGER_MISSING"),
+        ("amount", "CURRENT_ENTRY_LEDGER_MISMATCH"),
+        ("account", "CURRENT_ENTRY_LEDGER_MISMATCH"),
+    ],
+)
+def test_current_immediate_rejects_entry_fill_ledger_tamper(
+    mutation: str,
+    reason: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _immediate_settled_order(store, entry_mode="limit")
+        with store.connect() as conn:
+            if mutation == "missing":
+                conn.execute(
+                    "DELETE FROM paper_account_ledger "
+                    "WHERE order_id=? AND event_type='ENTRY_FILL'",
+                    (order_id,),
+                )
+            elif mutation == "amount":
+                conn.execute(
+                    "UPDATE paper_account_ledger SET amount=999 "
+                    "WHERE order_id=? AND event_type='ENTRY_FILL'",
+                    (order_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE paper_account_ledger SET account_id='wrong-account' "
+                    "WHERE order_id=? AND event_type='ENTRY_FILL'",
+                    (order_id,),
+                )
+
+        _assert_current_execution_excluded(db_path, order_id, reason)

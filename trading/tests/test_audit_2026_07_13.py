@@ -25,6 +25,7 @@ import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from io import StringIO
 from pathlib import Path
@@ -484,12 +485,15 @@ def test_ex02_partial_close_replays_as_targeted_exit_of_parent() -> None:
         store = PaperStore(db_path)
         order_id = store.record_paper_order(
             "2026-07-13",
-            _decision(
-                "KXHIGHTSEA-26JUL13-B82.5",
-                side="NO",
-                limit_price=0.80,
-                cost=0.82,
-                contracts=10.0,
+            replace(
+                _decision(
+                    "KXHIGHTSEA-26JUL13-B82.5",
+                    side="NO",
+                    limit_price=0.80,
+                    cost=0.82,
+                    contracts=10.0,
+                ),
+                entry_ask=0.80,
             ),
             risk_profile="live",
         )
@@ -498,9 +502,34 @@ def test_ex02_partial_close_replays_as_targeted_exit_of_parent() -> None:
             order_id,
             0.94,
             max_quantity=3.0,
-            liquidity_evidence={"displayed_bid_size": 3.0},
+            liquidity_evidence={
+                "displayed_bid_size": 3.0,
+                "observed_at": datetime.now(UTC).isoformat(),
+                "source": "test_orderbook",
+            },
         )
         assert store.settle_paper_orders("2026-07-13", 85.0) == 1  # NO wins
+        with store.connect() as conn:
+            settled = conn.execute(
+                "SELECT market_ticker, target_date, settlement_high_f "
+                "FROM paper_orders WHERE id=?",
+                (order_id,),
+            ).fetchone()
+            assert settled is not None
+            conn.execute(
+                "INSERT INTO paper_settlement_verifications ("
+                "order_id, checked_at, market_ticker, target_date, "
+                "booked_high_f, final_high_f, verification_status"
+                ") VALUES (?, ?, ?, ?, ?, ?, 'MATCH')",
+                (
+                    order_id,
+                    datetime.now(UTC).isoformat(),
+                    settled[0],
+                    settled[1],
+                    settled[2],
+                    settled[2],
+                ),
+            )
 
         result = replay_from_database(
             db_path, {("KXHIGHTSEA", "2026-07-13"): 85.0}
