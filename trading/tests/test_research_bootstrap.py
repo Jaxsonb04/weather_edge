@@ -346,3 +346,32 @@ def test_day_clustered_bootstrap_different_seeds_can_diverge_but_stay_determinis
     # count) -- only that re-using one seed is exactly reproducible.
     assert seed_1a["realized_pnl_per_day"].seed == 1
     assert seed_2["realized_pnl_per_day"].seed == 2
+
+
+def test_day_clustered_bootstrap_different_seeds_genuinely_diverge_on_3_cluster_config() -> None:
+    # F6: seed coverage was previously toothless -- every existing test
+    # either reused one fixed seed or (the test directly above) explicitly
+    # declined to assert that a different seed changes anything. Verified
+    # concretely (not merely asserted): with exactly 3 independent
+    # clusters and 500 draws, seed=1 and seed=4 resample different index
+    # sequences and land on genuinely different percentile-95% bounds for
+    # realized_pnl_per_day -- a seed parameter that silently made no
+    # difference to the published interval is exactly the hazard this
+    # test exists to catch.
+    aggregates = [
+        _agg(fold_id="A", target_date=date(2026, 6, 20), pnl_delta=10.0, roi_delta=0.01),
+        _agg(fold_id="B", target_date=date(2026, 6, 21), pnl_delta=-30.0, roi_delta=-0.03),
+        _agg(fold_id="C", target_date=date(2026, 6, 22), pnl_delta=25.0, roi_delta=0.025),
+    ]
+
+    seed_1 = day_clustered_bootstrap(aggregates, seed=1, draws=500)
+    seed_4 = day_clustered_bootstrap(aggregates, seed=4, draws=500)
+
+    assert seed_1 != seed_4
+    assert (
+        seed_1["realized_pnl_per_day"].lower,
+        seed_1["realized_pnl_per_day"].upper,
+    ) != (
+        seed_4["realized_pnl_per_day"].lower,
+        seed_4["realized_pnl_per_day"].upper,
+    )

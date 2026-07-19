@@ -12,21 +12,46 @@ docstring):
 - drawdown/log-growth math verified against hand-computed values;
 - scope labels + engine stamp surfaced on every aggregate (S1/S2);
 - determinism (pure functions; no clock/random reads at all in this file).
+
+Also covers six independently-reviewed strengthening findings (F1-F6) on
+top of the above, none of which change any formula/sign/produced number
+in the honest pipeline -- only guards, labels, and the new max-daily
+capacity figure:
+
+- F1(a)/(b)/(c): coverage-censoring hazards at the case, fold, and
+  duplicate-row granularities that previously produced neither a record
+  nor a recorded exclusion (or silently collapsed duplicate rows).
+- F2: an explicit ``start_day``/``end_day`` on
+  ``build_paired_evidence_report`` now raises rather than silently
+  inflating ``paired_case_count`` past what the KPIs were computed over.
+- F3: ``ArmKpiDelta``'s docstring and the new ``DELTA_DIRECTIONS`` map
+  correctly label ``stdev_daily_pnl`` and the activity fields as
+  direction-free/descriptive, not "positive means improved".
+- F4: parity tests the module's own docstrings already claimed existed.
+- F5: ``capacity_evidence`` publishes both the window-total figure and
+  the concurrency-meaningful max-single-day figure.
+- F6: covered in ``test_research_bootstrap.py`` (bootstrap seed coverage).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
+import typing
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from sfo_kalshi_quant.research_candidates import FoldCandidateEvidence
 from sfo_kalshi_quant.research_evidence import (
+    DELTA_DIRECTIONS,
     ArmDailyKpis,
+    ArmKpiDelta,
     CaseCoverageExclusion,
     DailyPairedEvidence,
     PairedCaseRecord,
+    _FILLED_STATUS,
+    _growth_and_drawdown,
     arm_daily_kpis,
     arm_kpi_delta,
     build_paired_case_records,
@@ -36,8 +61,9 @@ from sfo_kalshi_quant.research_evidence import (
     daily_paired_evidence,
     sleeve_capacity_evidence,
 )
+from sfo_kalshi_quant.research_goals import _growth_and_drawdown as _goals_growth_and_drawdown
 from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
-from sfo_kalshi_quant.research_replay import FoldReplayEvidence
+from sfo_kalshi_quant.research_replay import FoldReplayEvidence, TickerReplayStatus
 from sfo_kalshi_quant.research_walkforward import ResearchCase, WalkForwardFold
 
 # ---------------------------------------------------------------------------
@@ -489,6 +515,31 @@ def test_missing_case_from_one_side_is_a_coverage_exclusion_not_a_crash() -> Non
     assert exclusions[0].reason == "case_missing_from_fold_or_replay_evidence"
 
 
+def test_case_missing_from_both_arms_but_declared_in_fold_test_is_a_coverage_exclusion() -> None:
+    # F1(a): "h1" is declared in fold.test (settled_by_hash) but present in
+    # NEITHER baseline_cases NOR challenger_cases -- before the fix, the
+    # union driving the iteration only walked hashes present in the replay
+    # evidence dicts, so a hash missing from BOTH sides was never even
+    # visited: no record, no exclusion, invisible censoring.
+    case = _research_case(
+        settled_at=datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc), source_context_hash="h1"
+    )
+    fold = _fold("KSFO:2026-06-20", (case,))
+    replay = _replay_evidence(
+        fold_id=fold.fold_id,
+        baseline_cases={},  # hand-built: "h1" missing from BOTH arms
+        challenger_cases={},
+    )
+
+    records, exclusions = build_paired_case_records(fold, replay)
+
+    assert records == ()
+    assert len(exclusions) == 1
+    assert exclusions[0].fold_id == fold.fold_id
+    assert exclusions[0].source_context_hash == "h1"
+    assert exclusions[0].reason == "case_missing_from_fold_or_replay_evidence"
+
+
 # ---------------------------------------------------------------------------
 # build_paired_records_for_experiment: multi-fold plumbing, challenger filter
 # ---------------------------------------------------------------------------
@@ -548,6 +599,123 @@ def test_build_paired_records_for_experiment_raises_without_matching_fold() -> N
         build_paired_records_for_experiment(
             [], [replay], challenger_candidate_key="gaussian-pit-station-lead-v1"
         )
+
+
+def test_build_paired_records_for_experiment_records_exclusion_for_fold_missing_replay_evidence() -> None:
+    # F1(b): fold2 has no matching replay row for this challenger at all
+    # (only fold1 does) -- before the fix, iterating only
+    # `sorted(replay_by_fold)` never visited fold2, so its one declared
+    # test case vanished with neither a record nor an exclusion.
+    case1 = _research_case(
+        target_date=date(2026, 6, 20),
+        settled_at=datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc),
+        source_context_hash="h1",
+    )
+    fold1 = _fold("KSFO:2026-06-20", (case1,))
+    case2 = _research_case(
+        target_date=date(2026, 6, 21),
+        settled_at=datetime(2026, 6, 22, 4, 0, tzinfo=timezone.utc),
+        source_context_hash="h2",
+    )
+    fold2 = _fold("KSFO:2026-06-21", (case2,))
+
+    replay1 = _replay_evidence(
+        fold_id=fold1.fold_id, target_date=date(2026, 6, 20),
+        baseline_cases={"h1": _case_payload(tickers=[_ticker()])},
+        challenger_cases={"h1": _case_payload(tickers=[_ticker()])},
+    )
+    # No replay row supplied for fold2 at all.
+
+    records, exclusions = build_paired_records_for_experiment(
+        [fold1, fold2], [replay1], challenger_candidate_key="gaussian-pit-station-lead-v1"
+    )
+
+    assert len(records) == 1
+    assert records[0].fold_id == fold1.fold_id
+    assert len(exclusions) == 1
+    assert exclusions[0].fold_id == fold2.fold_id
+    assert exclusions[0].source_context_hash == "h2"
+    assert exclusions[0].reason == "fold_missing_replay_evidence_for_challenger"
+
+
+def test_build_paired_records_for_experiment_rejects_duplicate_replay_fold_id() -> None:
+    # F1(c): two replay rows for the same fold_id/challenger_candidate_key
+    # must not silently collapse last-wins.
+    case = _research_case(
+        settled_at=datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc), source_context_hash="h1"
+    )
+    fold = _fold("KSFO:2026-06-20", (case,))
+    replay_a = _replay_evidence(
+        fold_id=fold.fold_id,
+        baseline_cases={"h1": _case_payload(tickers=[_ticker()])},
+        challenger_cases={"h1": _case_payload(tickers=[_ticker()])},
+    )
+    replay_b = _replay_evidence(
+        fold_id=fold.fold_id,
+        baseline_cases={"h1": _case_payload(tickers=[_ticker()], realized_pnl=999.0)},
+        challenger_cases={"h1": _case_payload(tickers=[_ticker()], realized_pnl=999.0)},
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        build_paired_records_for_experiment(
+            [fold], [replay_a, replay_b], challenger_candidate_key="gaussian-pit-station-lead-v1"
+        )
+
+
+def test_build_paired_records_for_experiment_rejects_duplicate_candidate_fold_id() -> None:
+    # F1(c): the same hazard on the candidate_evidence side.
+    case = _research_case(
+        settled_at=datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc), source_context_hash="h1"
+    )
+    fold = _fold("KSFO:2026-06-20", (case,))
+    replay = _replay_evidence(
+        fold_id=fold.fold_id,
+        baseline_cases={"h1": _case_payload(tickers=[_ticker()])},
+        challenger_cases={"h1": _case_payload(tickers=[_ticker()])},
+    )
+    candidate_a = _candidate_evidence(
+        fold_id=fold.fold_id,
+        baseline_cases={"h1": _score_payload()},
+        challenger_cases={"h1": _score_payload()},
+    )
+    candidate_b = _candidate_evidence(
+        fold_id=fold.fold_id,
+        baseline_cases={"h1": _score_payload(crps=9.0)},
+        challenger_cases={"h1": _score_payload(crps=9.0)},
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        build_paired_records_for_experiment(
+            [fold], [replay], [candidate_a, candidate_b],
+            challenger_candidate_key="gaussian-pit-station-lead-v1",
+        )
+
+
+def test_build_paired_records_for_experiment_ignores_duplicate_fold_id_for_other_challenger() -> None:
+    # Sanity: a repeated fold_id is only a "duplicate" for the SAME
+    # challenger_candidate_key -- two different challengers each declaring
+    # one row for the same fold_id is normal, not an error.
+    case = _research_case(
+        settled_at=datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc), source_context_hash="h1"
+    )
+    fold = _fold("KSFO:2026-06-20", (case,))
+    replay_a = _replay_evidence(
+        fold_id=fold.fold_id, challenger_key="gaussian-pit-station-lead-v1",
+        baseline_cases={"h1": _case_payload(tickers=[_ticker()])},
+        challenger_cases={"h1": _case_payload(tickers=[_ticker()])},
+    )
+    replay_b = _replay_evidence(
+        fold_id=fold.fold_id, challenger_key="google-runtime-fixed-v1",
+        baseline_cases={"h1": _case_payload(tickers=[_ticker()])},
+        challenger_cases={"h1": _case_payload(tickers=[_ticker()])},
+    )
+
+    records, exclusions = build_paired_records_for_experiment(
+        [fold], [replay_a, replay_b], challenger_candidate_key="gaussian-pit-station-lead-v1"
+    )
+
+    assert exclusions == ()
+    assert len(records) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -748,7 +916,9 @@ def test_arm_daily_kpis_rejects_non_positive_reference_equity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# arm_kpi_delta: "positive always means the challenger arm improved"
+# arm_kpi_delta: "positive always means the challenger arm improved" --
+# EXCEPT stdev_daily_pnl and the activity fields, which are descriptive
+# only (F3). See DELTA_DIRECTIONS coverage below.
 # ---------------------------------------------------------------------------
 
 
@@ -785,46 +955,88 @@ def test_arm_kpi_delta_drawdown_is_baseline_minus_challenger_so_positive_is_stil
     assert delta.maximum_drawdown_dollars == pytest.approx(80.0)
 
 
+def test_delta_directions_covers_every_arm_kpi_delta_field() -> None:
+    # F3: DELTA_DIRECTIONS is the machine-readable direction map the
+    # ArmKpiDelta docstring points to -- it must cover every field, and
+    # its values must be consistent with the actual math: stdev and the
+    # four activity fields have no universal "positive = improved"
+    # reading and must be labeled "descriptive", not "positive_is_better".
+    field_names = {f.name for f in dataclasses.fields(ArmKpiDelta)}
+
+    assert set(DELTA_DIRECTIONS) == field_names
+    assert all(v in ("positive_is_better", "descriptive") for v in DELTA_DIRECTIONS.values())
+    assert DELTA_DIRECTIONS["stdev_daily_pnl"] == "descriptive"
+    for activity_field in ("turnover_ratio", "fills", "contracts", "dollars_at_risk"):
+        assert DELTA_DIRECTIONS[activity_field] == "descriptive"
+    # The drawdown field really is the one deliberate sign flip that keeps
+    # a positive delta reading as "improved".
+    assert DELTA_DIRECTIONS["maximum_drawdown_dollars"] == "positive_is_better"
+
+
 # ---------------------------------------------------------------------------
-# capacity: hand-computed target/motion envelope utilization
+# capacity: hand-computed target/motion envelope utilization (F5: both the
+# window-total figure AND the concurrency-meaningful max-daily figure)
 # ---------------------------------------------------------------------------
 
 
 def test_sleeve_capacity_evidence_target_hand_computed() -> None:
-    evidence = sleeve_capacity_evidence(100.0, TARGET_POLICY)
+    evidence = sleeve_capacity_evidence(100.0, TARGET_POLICY, max_daily_dollars_at_risk=40.0)
 
     # TARGET_POLICY: reference_equity=1000, max_aggregate_risk_pct=0.25.
     assert evidence.capacity_dollars == pytest.approx(250.0)
-    assert evidence.utilization_pct == pytest.approx(0.4)
+    assert evidence.window_total_dollars_at_risk == pytest.approx(100.0)
+    assert evidence.window_total_utilization_pct == pytest.approx(0.4)
     assert evidence.capacity_remaining_dollars == pytest.approx(150.0)
+    assert evidence.max_daily_dollars_at_risk == pytest.approx(40.0)
+    assert evidence.max_daily_utilization_pct == pytest.approx(0.16)
 
 
 def test_sleeve_capacity_evidence_motion_hand_computed() -> None:
-    evidence = sleeve_capacity_evidence(100.0, MOTION_POLICY)
+    evidence = sleeve_capacity_evidence(100.0, MOTION_POLICY, max_daily_dollars_at_risk=100.0)
 
     # MOTION_POLICY: reference_equity=1000, max_aggregate_risk_pct=0.10.
     assert evidence.capacity_dollars == pytest.approx(100.0)
-    assert evidence.utilization_pct == pytest.approx(1.0)
+    assert evidence.window_total_dollars_at_risk == pytest.approx(100.0)
+    assert evidence.window_total_utilization_pct == pytest.approx(1.0)
     assert evidence.capacity_remaining_dollars == pytest.approx(0.0)
+    assert evidence.max_daily_dollars_at_risk == pytest.approx(100.0)
+    assert evidence.max_daily_utilization_pct == pytest.approx(1.0)
 
 
 def test_sleeve_capacity_evidence_can_exceed_full_utilization() -> None:
-    evidence = sleeve_capacity_evidence(500.0, MOTION_POLICY)
+    evidence = sleeve_capacity_evidence(500.0, MOTION_POLICY, max_daily_dollars_at_risk=500.0)
 
-    assert evidence.utilization_pct == pytest.approx(5.0)
+    assert evidence.window_total_utilization_pct == pytest.approx(5.0)
     assert evidence.capacity_remaining_dollars == 0.0
+    assert evidence.max_daily_utilization_pct == pytest.approx(5.0)
 
 
 def test_capacity_evidence_returns_both_declared_sleeves() -> None:
-    evidence = capacity_evidence(50.0)
+    evidence = capacity_evidence(50.0, max_daily_dollars_at_risk=20.0)
 
     assert set(evidence) == {"target", "motion"}
     assert evidence["target"].policy_version == TARGET_POLICY.policy_version
     assert evidence["motion"].policy_version == MOTION_POLICY.policy_version
 
 
+def test_capacity_evidence_window_total_overstates_versus_max_daily_concurrency_figure() -> None:
+    # F5: the reviewer's construction. max_aggregate_risk_pct is a
+    # CONCURRENT-exposure cap, but the window-total figure sums
+    # dollars-at-risk across the WHOLE window -- 30 days of a steady
+    # $9/day figure sums to $270, which overstates concurrent exposure
+    # ~30x versus the $9 actually open on any single day.
+    window_total = 30 * 9.0  # $270 summed across a 30-day window
+
+    evidence = capacity_evidence(window_total, max_daily_dollars_at_risk=9.0)
+
+    # TARGET_POLICY capacity_dollars = 1000 * 0.25 = $250.
+    assert evidence["target"].window_total_utilization_pct == pytest.approx(1.08)  # 108%
+    assert evidence["target"].max_daily_utilization_pct == pytest.approx(0.036)  # 3.6%
+
+
 # ---------------------------------------------------------------------------
-# build_paired_evidence_report: end-to-end shape, S1/S2 surfacing
+# build_paired_evidence_report: end-to-end shape, S1/S2 surfacing, and F2's
+# explicit-window/paired_case_count guard
 # ---------------------------------------------------------------------------
 
 
@@ -859,8 +1071,19 @@ def test_build_paired_evidence_report_end_to_end_shape() -> None:
     assert report.baseline_kpis.realized_pnl_total == pytest.approx(10.0)
     assert report.challenger_kpis.realized_pnl_total == pytest.approx(15.0)
     assert report.kpi_delta.mean_daily_pnl == pytest.approx(5.0)
-    assert report.baseline_capacity["target"].dollars_at_risk == report.baseline_kpis.dollars_at_risk
-    assert report.challenger_capacity["motion"].dollars_at_risk == report.challenger_kpis.dollars_at_risk
+    assert (
+        report.baseline_capacity["target"].window_total_dollars_at_risk
+        == report.baseline_kpis.dollars_at_risk
+    )
+    assert (
+        report.challenger_capacity["motion"].window_total_dollars_at_risk
+        == report.challenger_kpis.dollars_at_risk
+    )
+    # Single-day report: the max-daily figure equals the window-total one.
+    assert (
+        report.baseline_capacity["target"].max_daily_dollars_at_risk
+        == report.baseline_kpis.dollars_at_risk
+    )
     assert report.coverage_exclusions == ()
     # S1/S2: engine version and scope labels surfaced on the report.
     assert report.execution_model_versions == ("exec-v4-test",)
@@ -928,3 +1151,73 @@ def test_build_paired_evidence_report_surfaces_coverage_exclusions_not_silently_
     assert report.paired_case_count == 0
     assert len(report.coverage_exclusions) == 1
     assert report.coverage_exclusions[0].reason == "challenger_unavailable"
+
+
+def test_build_paired_evidence_report_rejects_record_outside_explicit_day_window() -> None:
+    # F2: paired_case_count on the report is len(records) over the FULL
+    # input sequence, but an explicit start_day/end_day silently narrows
+    # what daily_paired_evidence/arm_daily_kpis actually see. A $60
+    # record sitting on a day outside [start_day, end_day] would inflate
+    # paired_case_count to 2 while the KPIs only ever reflect 1.
+    in_window = _record(
+        fold_id="KSFO:2026-06-20", source_context_hash="hash-1",
+        pacific_day=date(2026, 6, 20), baseline_pnl=10.0, challenger_pnl=12.0,
+    )
+    outside_window = _record(
+        fold_id="KSFO:2026-06-25", source_context_hash="hash-2",
+        pacific_day=date(2026, 6, 25), baseline_pnl=60.0, challenger_pnl=60.0,
+    )
+
+    with pytest.raises(ValueError, match="pacific_day"):
+        build_paired_evidence_report(
+            [in_window, outside_window], (),
+            challenger_candidate_key="gaussian-pit-station-lead-v1",
+            start_day=date(2026, 6, 19), end_day=date(2026, 6, 21),
+        )
+
+
+def test_build_paired_evidence_report_accepts_records_inside_an_explicit_day_window() -> None:
+    # Sanity companion to the guard above: records strictly inside the
+    # window must not raise.
+    records = [
+        _record(
+            fold_id="KSFO:2026-06-20", source_context_hash="hash-1",
+            pacific_day=date(2026, 6, 20), baseline_pnl=10.0, challenger_pnl=12.0,
+        ),
+    ]
+
+    report = build_paired_evidence_report(
+        records, (),
+        challenger_candidate_key="gaussian-pit-station-lead-v1",
+        start_day=date(2026, 6, 19), end_day=date(2026, 6, 21),
+    )
+
+    assert report.paired_case_count == 1
+    assert len(report.days) == 3  # 6/19, 6/20, 6/21
+
+
+# ---------------------------------------------------------------------------
+# F4: parity tests the module's own docstrings already claimed existed
+# ---------------------------------------------------------------------------
+
+
+def test_growth_and_drawdown_matches_research_goals_implementation() -> None:
+    # _growth_and_drawdown here is deliberately duplicated (not imported)
+    # from research_goals.py's own private helper of the same name --
+    # same formula, same convention. Lock the two in step.
+    daily_pnls = [100.0, -50.0, 30.0, -1500.0, 400.0, 0.0]
+    reference_equity = 1000.0
+
+    assert _growth_and_drawdown(
+        daily_pnls, reference_equity=reference_equity
+    ) == _goals_growth_and_drawdown(daily_pnls, reference_equity=reference_equity)
+
+
+def test_filled_status_constant_matches_research_replay_literal() -> None:
+    # _FILLED_STATUS is duplicated (not imported) from research_replay's
+    # TickerReplayStatus Literal -- lock it to that Literal's own allowed
+    # values so the two can never silently drift apart.
+    allowed = typing.get_args(TickerReplayStatus)
+
+    assert _FILLED_STATUS in allowed
+    assert _FILLED_STATUS == "filled"

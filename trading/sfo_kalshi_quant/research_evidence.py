@@ -43,7 +43,12 @@ the Task 4 final review):
   arm is unavailable (e.g. a Google fail-closed corroboration block, or a
   missing market snapshot) is excluded from every paired statistic and
   recorded separately as a ``CaseCoverageExclusion`` -- never silently
-  dropped, and never compared across mismatched case coverage.
+  dropped, and never compared across mismatched case coverage. This
+  extends to coverage gaps at every granularity this module handles: a
+  case entirely missing from both replay arms (see ``settled_by_hash`` in
+  ``build_paired_case_records``), and a whole fold with no matching
+  replay row for a declared challenger (see ``build_paired_records_for_
+  experiment``), are both recorded exclusions too, never a silent zero.
 
 This module never talks to the database, the clock, or unseeded random
 state: every function is a pure function of its own arguments, and the one
@@ -57,7 +62,7 @@ import math
 import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, TypeVar
 
 from .research_candidates import FoldCandidateEvidence
 from .research_policy import MOTION_POLICY, RESEARCH_OBJECTIVE_TZ, TARGET_POLICY, ResearchSleevePolicy
@@ -68,7 +73,9 @@ from .research_walkforward import WalkForwardFold
 # reason for KPI purposes; duplicated here (not imported) because
 # TickerReplayStatus is a Literal type alias, not a runtime value this
 # module can iterate -- this set is the closed, exhaustive complement of
-# "filled" and is parity-tested against research_replay.py's own Literal.
+# "filled" and is parity-tested against research_replay.py's own Literal
+# (see test_research_evidence.py's
+# ``test_filled_status_constant_matches_research_replay_literal``, F4).
 _FILLED_STATUS = "filled"
 
 
@@ -194,7 +201,14 @@ def build_paired_case_records(
 
     records: list[PairedCaseRecord] = []
     exclusions: list[CaseCoverageExclusion] = []
-    for source_hash in sorted(set(baseline_cases) | set(challenger_cases)):
+    # F1(a): union in `settled_by_hash` (every case the fold itself
+    # declares), not just the cases present in the replay evidence dicts.
+    # Without this, a case absent from BOTH baseline_cases AND
+    # challenger_cases is never iterated at all -- no record, no
+    # exclusion, invisible censoring. Adding it here routes that case
+    # through the existing "case_missing_from_fold_or_replay_evidence"
+    # branch below instead.
+    for source_hash in sorted(set(baseline_cases) | set(challenger_cases) | set(settled_by_hash)):
         baseline_payload = baseline_cases.get(source_hash)
         challenger_payload = challenger_cases.get(source_hash)
         settled_at = settled_by_hash.get(source_hash)
@@ -277,6 +291,34 @@ def build_paired_case_records(
     return tuple(records), tuple(exclusions)
 
 
+_RowT = TypeVar("_RowT")
+
+
+def _unique_rows_by_fold_id(
+    rows: Sequence[_RowT], *, challenger_candidate_key: str, label: str
+) -> dict[str, _RowT]:
+    """Filter ``rows`` down to the ones matching ``challenger_candidate_key``,
+    keyed by ``fold_id`` -- raising on a duplicate ``fold_id`` instead of
+    silently keeping the last one (F1(c): a plain dict comprehension over a
+    caller-supplied sequence collapses two rows for the same fold with no
+    signal that anything was dropped, and a hand-built or buggy-upstream
+    duplicate is exactly the case this module must not paper over)."""
+
+    result: dict[str, _RowT] = {}
+    for row in rows:
+        if row.challenger_candidate_key != challenger_candidate_key:  # type: ignore[attr-defined]
+            continue
+        fold_id = row.fold_id  # type: ignore[attr-defined]
+        if fold_id in result:
+            raise ValueError(
+                f"duplicate {label} row for fold_id={fold_id!r} and "
+                f"challenger_candidate_key={challenger_candidate_key!r} -- "
+                "exactly one row per fold is expected for one challenger"
+            )
+        result[fold_id] = row
+    return result
+
+
 def build_paired_records_for_experiment(
     folds: Sequence[WalkForwardFold],
     replay_evidence: Sequence[FoldReplayEvidence],
@@ -289,16 +331,14 @@ def build_paired_records_for_experiment(
     ``replay_evidence``/``candidate_evidence`` are ignored, not mixed in."""
 
     folds_by_id = {f.fold_id: f for f in folds}
-    replay_by_fold = {
-        row.fold_id: row
-        for row in replay_evidence
-        if row.challenger_candidate_key == challenger_candidate_key
-    }
-    candidate_by_fold = {
-        row.fold_id: row
-        for row in candidate_evidence
-        if row.challenger_candidate_key == challenger_candidate_key
-    }
+    replay_by_fold = _unique_rows_by_fold_id(
+        replay_evidence, challenger_candidate_key=challenger_candidate_key, label="replay_evidence"
+    )
+    candidate_by_fold = _unique_rows_by_fold_id(
+        candidate_evidence,
+        challenger_candidate_key=challenger_candidate_key,
+        label="candidate_evidence",
+    )
 
     all_records: list[PairedCaseRecord] = []
     all_exclusions: list[CaseCoverageExclusion] = []
@@ -311,6 +351,21 @@ def build_paired_records_for_experiment(
         )
         all_records.extend(records)
         all_exclusions.extend(exclusions)
+
+    # F1(b): a fold present in `folds` with no matching replay row for this
+    # challenger is not silently skipped -- every one of its declared test
+    # cases becomes a recorded coverage exclusion instead, same as any
+    # other missing-evidence case (S3's "never silently dropped").
+    for fold_id in sorted(set(folds_by_id) - set(replay_by_fold)):
+        fold = folds_by_id[fold_id]
+        for case in fold.test:
+            all_exclusions.append(
+                CaseCoverageExclusion(
+                    fold_id=fold_id,
+                    source_context_hash=case.source_context_hash,
+                    reason="fold_missing_replay_evidence_for_challenger",
+                )
+            )
 
     all_records.sort(key=lambda r: (r.pacific_day, r.fold_id, r.source_context_hash))
     all_exclusions.sort(key=lambda e: (e.fold_id, e.source_context_hash))
@@ -434,7 +489,10 @@ def _growth_and_drawdown(
     private ``_growth_and_drawdown`` -- same formula, same convention
     (never compound past a non-positive running equity), but that
     function is module-private and this module must not couple to another
-    module's internals. A parity test locks the two in step.
+    module's internals. A parity test locks the two in step (see
+    test_research_evidence.py's
+    ``test_growth_and_drawdown_matches_research_goals_implementation``,
+    F4).
     """
 
     equity = reference_equity
@@ -540,13 +598,29 @@ def arm_daily_kpis(
 
 @dataclass(frozen=True)
 class ArmKpiDelta:
-    """Challenger-minus-baseline delta for every ``ArmDailyKpis`` field
-    where "higher is better" (P&L, ROI, log growth, positive-day rate, hit
-    rate, turnover, fills, contracts, dollars at risk). ``maximum_drawdown``
-    is the one field where LOWER is better, so it is reported as
-    baseline-minus-challenger instead -- every field in this dataclass
-    therefore shares the convention "positive means the challenger arm
-    improved on this metric"."""
+    """Challenger-minus-baseline delta for every ``ArmDailyKpis`` field --
+    but NOT every field here shares one "positive is better" convention;
+    see ``DELTA_DIRECTIONS`` for the authoritative, machine-readable
+    per-field direction map (F3).
+
+    - ``mean_daily_pnl``, ``median_daily_pnl``, ``positive_day_rate``,
+      ``target_hit_rate``, ``after_fee_roi``, ``log_growth_per_day`` are
+      ``challenger - baseline``, where a higher raw value is better, so a
+      positive delta here means the challenger arm improved.
+    - ``maximum_drawdown_dollars`` is the one field reported
+      baseline-minus-challenger (LOWER raw drawdown is better), so a
+      positive delta here is ALSO an improvement -- the one deliberate
+      sign flip that keeps this one field on the same "positive =
+      improved" reading as the group above.
+    - ``stdev_daily_pnl`` is ``challenger - baseline`` volatility --
+      positive means the CHALLENGER arm was MORE volatile. There is no
+      universally-better direction for volatility, so this field is
+      DESCRIPTIVE ONLY and must never be read as "improved"/"worsened".
+    - ``turnover_ratio``, ``fills``, ``contracts``, and ``dollars_at_risk``
+      are challenger-minus-baseline ACTIVITY deltas (how much more or less
+      the challenger traded) with no inherent improvement direction at
+      all -- also DESCRIPTIVE ONLY.
+    """
 
     mean_daily_pnl: float | None
     median_daily_pnl: float | None
@@ -560,6 +634,28 @@ class ArmKpiDelta:
     fills: int
     contracts: float
     dollars_at_risk: float
+
+
+# Machine-readable direction map for every ArmKpiDelta field (F3),
+# consistent with the math in ``arm_kpi_delta`` and the docstring above.
+# "positive_is_better": a positive delta may be read as "the challenger
+# arm improved on this metric" without further interpretation.
+# "descriptive": no universal improvement direction -- a positive or
+# negative delta describes a difference, never a verdict.
+DELTA_DIRECTIONS: dict[str, str] = {
+    "mean_daily_pnl": "positive_is_better",
+    "median_daily_pnl": "positive_is_better",
+    "stdev_daily_pnl": "descriptive",
+    "positive_day_rate": "positive_is_better",
+    "target_hit_rate": "positive_is_better",
+    "after_fee_roi": "positive_is_better",
+    "log_growth_per_day": "positive_is_better",
+    "maximum_drawdown_dollars": "positive_is_better",
+    "turnover_ratio": "descriptive",
+    "fills": "descriptive",
+    "contracts": "descriptive",
+    "dollars_at_risk": "descriptive",
+}
 
 
 def _optional_diff(baseline: float | None, challenger: float | None) -> float | None:
@@ -596,44 +692,89 @@ def arm_kpi_delta(baseline: ArmDailyKpis, challenger: ArmDailyKpis) -> ArmKpiDel
 @dataclass(frozen=True)
 class SleeveCapacityEvidence:
     """How much of ONE sleeve's aggregate paper risk envelope a replayed
-    arm's total dollars-at-risk would represent (plan Task 5 Step 3:
-    "capacity under the target/motion account limits"). Pure evidence, not
-    an allocation decision -- this module never assigns replayed dollars to
-    one sleeve; it reports utilization under each declared envelope."""
+    arm's dollars-at-risk would represent (plan Task 5 Step 3: "capacity
+    under the target/motion account limits"). Pure evidence, not an
+    allocation decision -- this module never assigns replayed dollars to
+    one sleeve; it reports utilization under each declared envelope.
+
+    ``max_aggregate_risk_pct`` on ``ResearchSleevePolicy`` is a
+    CONCURRENT-EXPOSURE cap (dollars open at risk at the same time), so
+    two figures are published here and they answer different questions
+    (F5):
+
+    - ``window_total_dollars_at_risk``/``window_total_utilization_pct``
+      sum dollars-at-risk across the WHOLE day range a report covers. For
+      any window longer than one day this OVERSTATES concurrent exposure
+      roughly linearly with window length (e.g. 30 days of a steady
+      $9/day figure sums to $270 -- that is not $270 open at once on any
+      single day). Useful as a total-activity figure; never a proxy for
+      "would this have breached the concurrency cap".
+    - ``max_daily_dollars_at_risk``/``max_daily_utilization_pct`` is the
+      largest SINGLE Pacific day's dollars-at-risk under the same cap --
+      the concurrency-meaningful figure, since the cap itself is a
+      per-moment limit, not a per-window one.
+    """
 
     policy_version: str
     reference_equity: float
     max_aggregate_risk_pct: float
     capacity_dollars: float
-    dollars_at_risk: float
-    utilization_pct: float | None
+    window_total_dollars_at_risk: float
+    window_total_utilization_pct: float | None
     capacity_remaining_dollars: float
+    max_daily_dollars_at_risk: float
+    max_daily_utilization_pct: float | None
 
 
 def sleeve_capacity_evidence(
-    dollars_at_risk: float, policy: ResearchSleevePolicy
+    dollars_at_risk: float,
+    policy: ResearchSleevePolicy,
+    *,
+    max_daily_dollars_at_risk: float,
 ) -> SleeveCapacityEvidence:
     capacity_dollars = policy.reference_equity * policy.max_aggregate_risk_pct
     utilization = dollars_at_risk / capacity_dollars if capacity_dollars > 0 else None
+    max_daily_utilization = (
+        max_daily_dollars_at_risk / capacity_dollars if capacity_dollars > 0 else None
+    )
     return SleeveCapacityEvidence(
         policy_version=policy.policy_version,
         reference_equity=policy.reference_equity,
         max_aggregate_risk_pct=policy.max_aggregate_risk_pct,
         capacity_dollars=capacity_dollars,
-        dollars_at_risk=dollars_at_risk,
-        utilization_pct=utilization,
+        window_total_dollars_at_risk=dollars_at_risk,
+        window_total_utilization_pct=utilization,
         capacity_remaining_dollars=max(0.0, capacity_dollars - dollars_at_risk),
+        max_daily_dollars_at_risk=max_daily_dollars_at_risk,
+        max_daily_utilization_pct=max_daily_utilization,
     )
 
 
-def capacity_evidence(dollars_at_risk: float) -> dict[str, SleeveCapacityEvidence]:
+def capacity_evidence(
+    dollars_at_risk: float, *, max_daily_dollars_at_risk: float
+) -> dict[str, SleeveCapacityEvidence]:
     """Capacity utilization under BOTH declared sleeve envelopes (target
-    and motion) for the same replayed dollars-at-risk figure."""
+    and motion) for the same replayed dollars-at-risk figures -- the
+    window-total figure AND the max-single-day figure (see
+    ``SleeveCapacityEvidence``, F5)."""
 
     return {
-        "target": sleeve_capacity_evidence(dollars_at_risk, TARGET_POLICY),
-        "motion": sleeve_capacity_evidence(dollars_at_risk, MOTION_POLICY),
+        "target": sleeve_capacity_evidence(
+            dollars_at_risk, TARGET_POLICY, max_daily_dollars_at_risk=max_daily_dollars_at_risk
+        ),
+        "motion": sleeve_capacity_evidence(
+            dollars_at_risk, MOTION_POLICY, max_daily_dollars_at_risk=max_daily_dollars_at_risk
+        ),
     }
+
+
+def _max_daily_dollars_at_risk(days: Sequence[DailyPairedEvidence], *, arm: str) -> float:
+    """Largest single Pacific day's dollars-at-risk for one arm across
+    ``days`` (F5's concurrency-meaningful capacity figure); ``0.0`` for an
+    empty day range."""
+
+    attr = "baseline_dollars_at_risk" if arm == "baseline" else "challenger_dollars_at_risk"
+    return max((getattr(day, attr) for day in days), default=0.0)
 
 
 @dataclass(frozen=True)
@@ -659,6 +800,38 @@ class PairedEvidenceReport:
     fill_scopes: tuple[str, ...]
 
 
+def _reject_records_outside_day_window(
+    records: Sequence[PairedCaseRecord], *, start_day: date | None, end_day: date | None
+) -> None:
+    """F2: an explicit ``start_day``/``end_day`` narrows the KPI window
+    ``daily_paired_evidence`` aggregates over, but ``paired_case_count`` on
+    the resulting report is ``len(records)`` over the FULL input sequence
+    -- silently counting a case whose day falls outside the window into a
+    total the KPIs themselves never reflect. Fail closed instead of
+    publishing a ``paired_case_count`` that doesn't match what the KPIs
+    were actually computed over."""
+
+    if start_day is None and end_day is None:
+        return
+    for record in records:
+        if start_day is not None and record.pacific_day < start_day:
+            raise ValueError(
+                f"record pacific_day={record.pacific_day} for "
+                f"fold_id={record.fold_id!r} source_context_hash="
+                f"{record.source_context_hash!r} falls before start_day="
+                f"{start_day} -- would silently inflate paired_case_count "
+                "beyond the KPI window"
+            )
+        if end_day is not None and record.pacific_day > end_day:
+            raise ValueError(
+                f"record pacific_day={record.pacific_day} for "
+                f"fold_id={record.fold_id!r} source_context_hash="
+                f"{record.source_context_hash!r} falls after end_day="
+                f"{end_day} -- would silently inflate paired_case_count "
+                "beyond the KPI window"
+            )
+
+
 def build_paired_evidence_report(
     records: Sequence[PairedCaseRecord],
     exclusions: Sequence[CaseCoverageExclusion],
@@ -669,6 +842,7 @@ def build_paired_evidence_report(
     start_day: date | None = None,
     end_day: date | None = None,
 ) -> PairedEvidenceReport:
+    _reject_records_outside_day_window(records, start_day=start_day, end_day=end_day)
     days = daily_paired_evidence(records, start_day=start_day, end_day=end_day)
     baseline_kpis = arm_daily_kpis(
         days, arm="baseline", reference_equity=reference_equity, target_pnl=target_pnl
@@ -684,8 +858,14 @@ def build_paired_evidence_report(
         baseline_kpis=baseline_kpis,
         challenger_kpis=challenger_kpis,
         kpi_delta=arm_kpi_delta(baseline_kpis, challenger_kpis),
-        baseline_capacity=capacity_evidence(baseline_kpis.dollars_at_risk),
-        challenger_capacity=capacity_evidence(challenger_kpis.dollars_at_risk),
+        baseline_capacity=capacity_evidence(
+            baseline_kpis.dollars_at_risk,
+            max_daily_dollars_at_risk=_max_daily_dollars_at_risk(days, arm="baseline"),
+        ),
+        challenger_capacity=capacity_evidence(
+            challenger_kpis.dollars_at_risk,
+            max_daily_dollars_at_risk=_max_daily_dollars_at_risk(days, arm="challenger"),
+        ),
         coverage_exclusions=tuple(exclusions),
         paired_case_count=len(records),
         execution_model_versions=tuple(sorted({r.execution_model_version for r in records})),
