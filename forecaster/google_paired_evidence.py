@@ -144,7 +144,23 @@ def derive_and_record_paired_evidence(
         tuple(row[column] for column in _COLUMNS),
     )
     conn.commit()
-    return row
+    # W2 (Task 7 review, MEDIUM): INSERT OR IGNORE silently skips the write
+    # when this exact (station, target_date, issued_at, policy_version)
+    # identity is already recorded -- e.g. the Google runtime evidence is
+    # unchanged but the permanent EMOS baseline refit between two calls
+    # inside the same Google issue window. Re-SELECT and return the row
+    # that is actually durably stored rather than the freshly computed
+    # dict above, which may now be stale relative to the database.
+    stored = conn.execute(
+        f"""
+        SELECT {", ".join(_COLUMNS)}
+        FROM {PAIRED_EVIDENCE_TABLE}
+        WHERE station_id = ? AND target_date = ? AND issued_at = ?
+          AND policy_version = ?
+        """,
+        (row["station_id"], row["target_date"], row["issued_at"], row["policy_version"]),
+    ).fetchone()
+    return dict(zip(_COLUMNS, stored))
 
 
 def latest_paired_evidence(

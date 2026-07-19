@@ -219,6 +219,45 @@ def test_derivation_is_idempotent_under_a_repeated_call(tmp_path):
     assert rows[0] == 1
 
 
+def test_returns_the_stored_row_not_a_stale_recompute_when_baseline_refits_between_calls(
+    tmp_path,
+):
+    """W2 (Task 7 review, MEDIUM): INSERT OR IGNORE means a second call that
+    resolves to the same (station_id, target_date, issued_at, policy_version)
+    identity -- e.g. the Google runtime evidence is unchanged but the
+    permanent EMOS baseline refit between calls -- silently skips the write.
+    The return value must reflect what is actually durably stored, never the
+    freshly computed (and in this case discarded) second-call values.
+    """
+
+    city = get_city("nyc")
+    runtime = _runtime_store(tmp_path)
+    target_date = "2026-07-19"
+    _write_full_station_day(
+        runtime, city=city, issued_at=TEST_NOW, target_date=target_date
+    )
+    conn = sqlite3.connect(tmp_path / "weather.db")
+
+    first = derive_and_record_paired_evidence(
+        conn, city=city, target_date=target_date, baseline_mu=80.0,
+        baseline_sigma=3.0, runtime_store=runtime, now=TEST_NOW,
+    )
+    # The Google runtime evidence (and therefore its issued_at identity) is
+    # unchanged, but the permanent baseline moved -- e.g. an EMOS refit
+    # between calls within the same Google issue window.
+    second = derive_and_record_paired_evidence(
+        conn, city=city, target_date=target_date, baseline_mu=85.0,
+        baseline_sigma=3.0, runtime_store=runtime, now=TEST_NOW,
+    )
+
+    assert second == first
+    assert second["baseline_mu"] == 80.0
+    stored = conn.execute(
+        f"SELECT baseline_mu FROM {PAIRED_EVIDENCE_TABLE}"
+    ).fetchone()
+    assert stored[0] == 80.0
+
+
 def test_ensure_paired_evidence_table_is_idempotent(tmp_path):
     conn = sqlite3.connect(tmp_path / "weather.db")
 

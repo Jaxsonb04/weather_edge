@@ -1390,9 +1390,26 @@ class PaperStore:
             if snapshot.challenger_mu is not None
             else None
         )
+        baseline_probabilities_json = json.dumps(
+            baseline_probabilities, sort_keys=True, allow_nan=False
+        )
+        challenger_probabilities_json = (
+            json.dumps(challenger_probabilities, sort_keys=True, allow_nan=False)
+            if challenger_probabilities is not None
+            else None
+        )
         with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO google_challenger_snapshots ("
+            # W1 (Task 7 review, HIGH): a plain INSERT raised a deterministic
+            # sqlite3.IntegrityError the second time any cadence cycle derived
+            # the same (station_id, target_date, issued_at, policy_version)
+            # identity -- e.g. a retried refresh re-deriving identical
+            # evidence inside the same Google issue window. INSERT OR IGNORE
+            # makes an exact-payload replay a safe no-op; a colliding
+            # identity whose payload actually differs is a real
+            # data-integrity problem, so it is still raised loudly below
+            # rather than silently ignored or silently overwritten.
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO google_challenger_snapshots ("
                 "station_id, target_date, issued_at, policy_version, "
                 "baseline_mu, baseline_sigma, challenger_mu, challenger_sigma, "
                 "baseline_probabilities_json, challenger_probabilities_json, action"
@@ -1406,15 +1423,35 @@ class PaperStore:
                     baseline_sigma,
                     challenger_mu,
                     challenger_sigma,
-                    json.dumps(baseline_probabilities, sort_keys=True, allow_nan=False),
-                    (
-                        json.dumps(challenger_probabilities, sort_keys=True, allow_nan=False)
-                        if challenger_probabilities is not None
-                        else None
-                    ),
+                    baseline_probabilities_json,
+                    challenger_probabilities_json,
                     snapshot.action,
                 ),
             )
+            if cursor.rowcount == 0:
+                existing = conn.execute(
+                    "SELECT baseline_mu, baseline_sigma, challenger_mu, "
+                    "challenger_sigma, baseline_probabilities_json, "
+                    "challenger_probabilities_json, action "
+                    "FROM google_challenger_snapshots "
+                    "WHERE station_id = ? AND target_date = ? AND issued_at = ? "
+                    "AND policy_version = ?",
+                    (station_id, target_date, issued_at, policy_version),
+                ).fetchone()
+                incoming = (
+                    baseline_mu,
+                    baseline_sigma,
+                    challenger_mu,
+                    challenger_sigma,
+                    baseline_probabilities_json,
+                    challenger_probabilities_json,
+                    snapshot.action,
+                )
+                if existing is None or tuple(existing) != incoming:
+                    raise ValueError(
+                        "google challenger snapshot identity already recorded "
+                        "with a different payload"
+                    )
             conn.commit()
 
     def record_research_evidence(

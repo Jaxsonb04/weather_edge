@@ -348,6 +348,82 @@ def test_record_google_challenger_snapshot_persists_a_valid_row(tmp_path):
     assert row == ("KSFO", TARGET.isoformat(), "forecast")
 
 
+def test_record_google_challenger_snapshot_is_replay_safe_on_the_same_identity(tmp_path):
+    """W1 (Task 7 review, HIGH): a plain INSERT crashes with sqlite3.IntegrityError
+    on the second cadence cycle that derives the same (station_id, target_date,
+    issued_at, policy_version) identity -- e.g. a retried refresh or a second
+    orchestrator pass inside the same Google issue window. Replaying the exact
+    same snapshot must be a safe no-op, not a crash.
+    """
+
+    store = PaperStore(tmp_path / "paper.db")
+    snapshot = GoogleChallengerSnapshot(
+        station_id="KSFO",
+        target_date=TARGET,
+        issued_at="2026-07-18T19:00:00+00:00",
+        policy_version="google-runtime-fixed-v1",
+        baseline_mu=80.0,
+        baseline_sigma=3.0,
+        challenger_mu=80.45,
+        challenger_sigma=3.0,
+        baseline_probabilities={"KXHIGHTSFO-TEST-T80": 0.4, "KXHIGHTSFO-TEST-T82": 0.6},
+        challenger_probabilities={"KXHIGHTSFO-TEST-T80": 0.35, "KXHIGHTSFO-TEST-T82": 0.65},
+        action="forecast",
+    )
+
+    store.record_google_challenger_snapshot(snapshot)
+    # Replaying the identical identity/payload a second (and third) time must
+    # not raise -- a retried refresh cycle re-deriving the same evidence is
+    # expected operational behavior, not an error.
+    store.record_google_challenger_snapshot(snapshot)
+    store.record_google_challenger_snapshot(snapshot)
+
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM google_challenger_snapshots").fetchone()[0]
+        row = conn.execute(
+            "SELECT station_id, target_date, action FROM google_challenger_snapshots"
+        ).fetchone()
+    assert count == 1
+    assert row == ("KSFO", TARGET.isoformat(), "forecast")
+
+
+def test_record_google_challenger_snapshot_rejects_a_conflicting_replay(tmp_path):
+    """W1: a collision on the same identity with a DIFFERENT payload is a real
+    data-integrity problem (the same issued evidence must never be silently
+    overwritten or silently ignored when it actually changed) -- fail loudly
+    rather than accept whichever payload happened to write first.
+    """
+
+    store = PaperStore(tmp_path / "paper.db")
+    first = GoogleChallengerSnapshot(
+        station_id="KSFO",
+        target_date=TARGET,
+        issued_at="2026-07-18T19:00:00+00:00",
+        policy_version="google-runtime-fixed-v1",
+        baseline_mu=80.0,
+        baseline_sigma=3.0,
+        challenger_mu=80.45,
+        challenger_sigma=3.0,
+        baseline_probabilities={"KXHIGHTSFO-TEST-T80": 0.4, "KXHIGHTSFO-TEST-T82": 0.6},
+        challenger_probabilities={"KXHIGHTSFO-TEST-T80": 0.35, "KXHIGHTSFO-TEST-T82": 0.65},
+        action="forecast",
+    )
+    conflicting = dataclasses.replace(first, baseline_mu=81.0)
+
+    store.record_google_challenger_snapshot(first)
+
+    with pytest.raises(ValueError):
+        store.record_google_challenger_snapshot(conflicting)
+
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM google_challenger_snapshots").fetchone()[0]
+        row = conn.execute(
+            "SELECT baseline_mu FROM google_challenger_snapshots"
+        ).fetchone()
+    assert count == 1
+    assert row == (80.0,)
+
+
 # ---------------------------------------------------------------------------
 # Requirement 3: structural isolation.
 # ---------------------------------------------------------------------------
