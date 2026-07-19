@@ -13,6 +13,7 @@ import os
 import sqlite3
 import stat
 import uuid
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -219,7 +220,81 @@ CREATE TABLE IF NOT EXISTS google_runtime_high (
 );
 CREATE INDEX IF NOT EXISTS idx_google_runtime_high_expiry
     ON google_runtime_high(expires_at);
+CREATE TABLE IF NOT EXISTS google_runtime_generation_watermarks (
+    content_table TEXT NOT NULL CHECK(content_table IN (
+        'google_hourly_runtime',
+        'google_daily_runtime',
+        'google_current_runtime',
+        'google_runtime_high'
+    )),
+    city_slug TEXT NOT NULL,
+    station_id TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    newest_issued_at TEXT NOT NULL,
+    PRIMARY KEY(content_table, city_slug, station_id, target_date)
+);
+CREATE TABLE IF NOT EXISTS google_runtime_schema_metadata (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    schema_version INTEGER NOT NULL
+);
 """
+
+_RUNTIME_SCHEMA_VERSION = 2
+_RUNTIME_OWNED_TABLES = (
+    "google_hourly_runtime",
+    "google_daily_runtime",
+    "google_current_runtime",
+    "google_runtime_high",
+    "google_runtime_generation_watermarks",
+    "google_runtime_schema_metadata",
+)
+_RUNTIME_SCHEMA_COLUMNS = {
+    "google_hourly_runtime": {
+        "city_slug",
+        "station_id",
+        "issued_at",
+        "valid_at",
+        "temperature_f",
+        "expires_at",
+    },
+    "google_daily_runtime": {
+        "city_slug",
+        "station_id",
+        "issued_at",
+        "target_date",
+        "high_f",
+        "expires_at",
+    },
+    "google_current_runtime": {
+        "city_slug",
+        "station_id",
+        "issued_at",
+        "observed_at",
+        "temperature_f",
+        "expires_at",
+    },
+    "google_runtime_high": {
+        "city_slug",
+        "station_id",
+        "issued_at",
+        "target_date",
+        "high_f",
+        "covered_hours",
+        "complete",
+        "expires_at",
+    },
+    "google_runtime_generation_watermarks": {
+        "content_table",
+        "city_slug",
+        "station_id",
+        "target_date",
+        "newest_issued_at",
+    },
+    "google_runtime_schema_metadata": {"singleton", "schema_version"},
+}
+_RUNTIME_SCHEMA_STATEMENTS = tuple(
+    statement.strip() for statement in _RUNTIME_SCHEMA.split(";") if statement.strip()
+)
 
 _RUNTIME_GENERATION_SCOPES = {
     "google_hourly_runtime": ("city_slug", "station_id"),
@@ -313,6 +388,16 @@ def _finite_float(name: str, value: object) -> float:
     return float(value)
 
 
+def _positive_finite_timeout(value: object) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("timeout_seconds must be finite and positive") from None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout_seconds must be finite and positive")
+    return timeout
+
+
 def _datetime_from_text(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(timezone.utc)
 
@@ -329,6 +414,65 @@ def _date_text(name: str, value: object) -> str:
     return value
 
 
+def _runtime_schema_is_current(connection: sqlite3.Connection) -> bool:
+    for table, expected_columns in _RUNTIME_SCHEMA_COLUMNS.items():
+        columns = {
+            row[1]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if columns != expected_columns:
+            return False
+    version_row = connection.execute(
+        """
+        SELECT schema_version
+        FROM google_runtime_schema_metadata
+        WHERE singleton = 1
+        """
+    ).fetchone()
+    if version_row is None or int(version_row[0]) != _RUNTIME_SCHEMA_VERSION:
+        return False
+    high_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("google_runtime_high",),
+    ).fetchone()
+    if high_sql_row is None or high_sql_row[0] is None:
+        return False
+    normalized_high_sql = "".join(str(high_sql_row[0]).lower().split())
+    return (
+        "check(covered_hoursbetween1and24)" in normalized_high_sql
+        and "check(complete=casewhencovered_hours=24then1else0end)"
+        in normalized_high_sql
+    )
+
+
+def _initialize_runtime_schema(connection: sqlite3.Connection) -> None:
+    """Install or transactionally replace only the disposable runtime schema."""
+
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        schema_is_current = _runtime_schema_is_current(connection)
+        if not schema_is_current:
+            for table in reversed(_RUNTIME_OWNED_TABLES):
+                connection.execute(f"DROP TABLE IF EXISTS {table}")
+        for statement in _RUNTIME_SCHEMA_STATEMENTS:
+            connection.execute(statement)
+        if not schema_is_current:
+            connection.execute(
+                """
+                INSERT INTO google_runtime_schema_metadata (
+                    singleton, schema_version
+                ) VALUES (1, ?)
+                """,
+                (_RUNTIME_SCHEMA_VERSION,),
+            )
+            if not _runtime_schema_is_current(connection):
+                raise RuntimeError("Google runtime schema validation failed")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
 class GoogleRuntimeStore:
     """TTL-enforced storage for parsed Google Weather runtime content."""
 
@@ -343,13 +487,11 @@ class GoogleRuntimeStore:
         self.production = production
         self._runtime_identity: tuple[int, int] | None = None
         assert_runtime_path(self.db_path, production=production)
-        self.timeout_seconds = float(timeout_seconds)
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        self.timeout_seconds = _positive_finite_timeout(timeout_seconds)
         if not production:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
-            connection.executescript(_RUNTIME_SCHEMA)
+            _initialize_runtime_schema(connection)
         if production:
             os.chmod(self.db_path, 0o600, follow_symlinks=False)
             assert_runtime_path(self.db_path, production=True)
@@ -370,12 +512,12 @@ class GoogleRuntimeStore:
             timeout=self.timeout_seconds,
             isolation_level=None,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute(
-            f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
-        )
-        if self.production:
-            try:
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute(
+                f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
+            )
+            if self.production:
                 assert_runtime_path(self.db_path, production=True)
                 after = _runtime_file_identity(self.db_path)
                 if before is not None and before != after:
@@ -385,10 +527,10 @@ class GoogleRuntimeStore:
                     and self._runtime_identity != after
                 ):
                     raise RuntimeError("Google runtime database changed identity")
-            except Exception:
-                connection.close()
-                raise
-        return connection
+            return connection
+        except Exception:
+            connection.close()
+            raise
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -409,29 +551,81 @@ class GoogleRuntimeStore:
         insert_sql: str,
         insert_values: tuple[object, ...],
     ) -> bool:
-        """Atomically retain only the newest issue generation for a scope."""
+        return self._store_generation(
+            table=table,
+            scope_values=scope_values,
+            issued_at=issued_at,
+            insert_sql=insert_sql,
+            insert_rows=(insert_values,),
+            replace_scope=False,
+        )
+
+    def _store_generation(
+        self,
+        *,
+        table: str,
+        scope_values: tuple[str, ...],
+        issued_at: str,
+        insert_sql: str,
+        insert_rows: tuple[tuple[object, ...], ...],
+        replace_scope: bool,
+    ) -> bool:
+        """Atomically retain or replace the newest generation for one scope."""
 
         scope_columns = _RUNTIME_GENERATION_SCOPES.get(table)
         if scope_columns is None or len(scope_columns) != len(scope_values):
             raise ValueError("unsupported Google runtime generation scope")
         where = " AND ".join(f"{column} = ?" for column in scope_columns)
+        city_slug, station_id = scope_values[:2]
+        target_date = scope_values[2] if len(scope_values) == 3 else ""
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            watermark_row = connection.execute(
+                """
+                SELECT newest_issued_at
+                FROM google_runtime_generation_watermarks
+                WHERE content_table = ? AND city_slug = ? AND station_id = ?
+                  AND target_date = ?
+                """,
+                (table, city_slug, station_id, target_date),
+            ).fetchone()
             row = connection.execute(
                 f"SELECT MAX(issued_at) AS issued_at FROM {table} WHERE {where}",
                 scope_values,
             ).fetchone()
-            latest = row["issued_at"] if row is not None else None
+            candidates = (
+                watermark_row["newest_issued_at"] if watermark_row is not None else None,
+                row["issued_at"] if row is not None else None,
+            )
+            present_candidates = tuple(
+                value for value in candidates if value is not None
+            )
+            latest = max(present_candidates) if present_candidates else None
             if latest is not None and issued_at < latest:
                 connection.commit()
                 return False
-            if latest is not None and issued_at > latest:
+            connection.execute(
+                """
+                INSERT INTO google_runtime_generation_watermarks (
+                    content_table, city_slug, station_id, target_date,
+                    newest_issued_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(content_table, city_slug, station_id, target_date)
+                DO UPDATE SET newest_issued_at = excluded.newest_issued_at
+                """,
+                (table, city_slug, station_id, target_date, issued_at),
+            )
+            if replace_scope:
+                connection.execute(
+                    f"DELETE FROM {table} WHERE {where}", scope_values
+                )
+            elif latest is not None and issued_at > latest:
                 connection.execute(
                     f"DELETE FROM {table} WHERE {where} AND issued_at < ?",
                     (*scope_values, issued_at),
                 )
-            connection.execute(insert_sql, insert_values)
+            connection.executemany(insert_sql, insert_rows)
             connection.commit()
             return True
         except Exception:
@@ -439,6 +633,48 @@ class GoogleRuntimeStore:
             raise
         finally:
             connection.close()
+
+    def replace_hourly_generation(
+        self,
+        *,
+        city_slug: str,
+        station_id: str,
+        issued_at: datetime,
+        temperatures_by_valid_at: Mapping[datetime, float],
+        stored_at: datetime | None = None,
+    ) -> bool:
+        """Atomically publish the complete hourly issue generation for Task 4."""
+
+        city_slug, station_id = _canonical_city_station(city_slug, station_id)
+        if not isinstance(temperatures_by_valid_at, Mapping):
+            raise ValueError("temperatures_by_valid_at must be a mapping")
+        issued = _aware_utc(issued_at)
+        stored = _aware_utc(stored_at)
+        expires = stored + GOOGLE_HOURLY_TTL
+        insert_rows = tuple(
+            (
+                city_slug,
+                station_id,
+                _utc_text(issued),
+                _utc_text(_aware_utc(valid_at)),
+                _finite_float("temperature_f", temperature_f),
+                _utc_text(expires),
+            )
+            for valid_at, temperature_f in temperatures_by_valid_at.items()
+        )
+        return self._store_generation(
+            table="google_hourly_runtime",
+            scope_values=(city_slug, station_id),
+            issued_at=_utc_text(issued),
+            insert_sql="""
+                INSERT INTO google_hourly_runtime (
+                    city_slug, station_id, issued_at, valid_at,
+                    temperature_f, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+            insert_rows=insert_rows,
+            replace_scope=True,
+        )
 
     def write_hourly(
         self,
@@ -450,34 +686,14 @@ class GoogleRuntimeStore:
         temperature_f: float,
         stored_at: datetime | None = None,
     ) -> bool:
-        city_slug, station_id = _canonical_city_station(city_slug, station_id)
-        issued = _aware_utc(issued_at)
-        valid = _aware_utc(valid_at)
-        stored = _aware_utc(stored_at)
-        temperature = _finite_float("temperature_f", temperature_f)
-        expires = stored + GOOGLE_HOURLY_TTL
-        return self._write_latest_generation(
-            table="google_hourly_runtime",
-            scope_values=(city_slug, station_id),
-            issued_at=_utc_text(issued),
-            insert_sql="""
-                INSERT INTO google_hourly_runtime (
-                    city_slug, station_id, issued_at, valid_at,
-                    temperature_f, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(city_slug, station_id, issued_at, valid_at)
-                DO UPDATE SET
-                    temperature_f = excluded.temperature_f,
-                    expires_at = excluded.expires_at
-                """,
-            insert_values=(
-                city_slug,
-                station_id,
-                _utc_text(issued),
-                _utc_text(valid),
-                temperature,
-                _utc_text(expires),
-            ),
+        """Publish a complete one-row hourly generation."""
+
+        return self.replace_hourly_generation(
+            city_slug=city_slug,
+            station_id=station_id,
+            issued_at=issued_at,
+            temperatures_by_valid_at={valid_at: temperature_f},
+            stored_at=stored_at,
         )
 
     def active_hourly(
@@ -533,19 +749,53 @@ class GoogleRuntimeStore:
         high_f: float,
         stored_at: datetime | None = None,
     ) -> bool:
+        """Publish a complete one-row daily generation."""
+
+        return self.replace_daily_generation(
+            city_slug=city_slug,
+            station_id=station_id,
+            issued_at=issued_at,
+            highs_by_target_date={target_date: high_f},
+            stored_at=stored_at,
+        )
+
+    def replace_daily_generation(
+        self,
+        *,
+        city_slug: str,
+        station_id: str,
+        issued_at: datetime,
+        highs_by_target_date: Mapping[str, float],
+        stored_at: datetime | None = None,
+    ) -> bool:
+        """Atomically publish the complete daily issue generation for Task 4."""
+
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
+        if not isinstance(highs_by_target_date, Mapping):
+            raise ValueError("highs_by_target_date must be a mapping")
         city = CITY_BY_SLUG[city_slug]
         issued = _aware_utc(issued_at)
         stored = _aware_utc(stored_at)
-        target = _date_text("target_date", target_date)
-        high = _finite_float("high_f", high_f)
         local_today = stored.astimezone(ZoneInfo(city.civil_tz_name)).date()
-        ttl = (
-            GOOGLE_TODAY_DAILY_TTL
-            if date.fromisoformat(target) <= local_today
-            else GOOGLE_FUTURE_DAILY_TTL
-        )
-        return self._write_latest_generation(
+        insert_rows: list[tuple[object, ...]] = []
+        for target_date, high_f in highs_by_target_date.items():
+            target = _date_text("target_date", target_date)
+            ttl = (
+                GOOGLE_TODAY_DAILY_TTL
+                if date.fromisoformat(target) <= local_today
+                else GOOGLE_FUTURE_DAILY_TTL
+            )
+            insert_rows.append(
+                (
+                    city_slug,
+                    station_id,
+                    _utc_text(issued),
+                    target,
+                    _finite_float("high_f", high_f),
+                    _utc_text(stored + ttl),
+                )
+            )
+        return self._store_generation(
             table="google_daily_runtime",
             scope_values=(city_slug, station_id),
             issued_at=_utc_text(issued),
@@ -554,19 +804,9 @@ class GoogleRuntimeStore:
                     city_slug, station_id, issued_at, target_date,
                     high_f, expires_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(city_slug, station_id, issued_at, target_date)
-                DO UPDATE SET
-                    high_f = excluded.high_f,
-                    expires_at = excluded.expires_at
                 """,
-            insert_values=(
-                city_slug,
-                station_id,
-                _utc_text(issued),
-                target,
-                high,
-                _utc_text(stored + ttl),
-            ),
+            insert_rows=tuple(insert_rows),
+            replace_scope=True,
         )
 
     def active_daily(
@@ -622,12 +862,34 @@ class GoogleRuntimeStore:
         temperature_f: float,
         stored_at: datetime | None = None,
     ) -> bool:
+        """Publish the complete one-row current-condition generation."""
+
+        return self.replace_current_generation(
+            city_slug=city_slug,
+            station_id=station_id,
+            issued_at=issued_at,
+            observed_at=observed_at,
+            temperature_f=temperature_f,
+            stored_at=stored_at,
+        )
+
+    def replace_current_generation(
+        self,
+        *,
+        city_slug: str,
+        station_id: str,
+        issued_at: datetime,
+        observed_at: datetime,
+        temperature_f: float,
+        stored_at: datetime | None = None,
+    ) -> bool:
+        """Atomically publish the current-condition issue generation for Task 4."""
+
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
         issued = _aware_utc(issued_at)
         observed = _aware_utc(observed_at)
         stored = _aware_utc(stored_at)
-        temperature = _finite_float("temperature_f", temperature_f)
-        return self._write_latest_generation(
+        return self._store_generation(
             table="google_current_runtime",
             scope_values=(city_slug, station_id),
             issued_at=_utc_text(issued),
@@ -636,19 +898,18 @@ class GoogleRuntimeStore:
                     city_slug, station_id, issued_at, observed_at,
                     temperature_f, expires_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(city_slug, station_id, issued_at, observed_at)
-                DO UPDATE SET
-                    temperature_f = excluded.temperature_f,
-                    expires_at = excluded.expires_at
                 """,
-            insert_values=(
-                city_slug,
-                station_id,
-                _utc_text(issued),
-                _utc_text(observed),
-                temperature,
-                _utc_text(stored + GOOGLE_CURRENT_TTL),
+            insert_rows=(
+                (
+                    city_slug,
+                    station_id,
+                    _utc_text(issued),
+                    _utc_text(observed),
+                    _finite_float("temperature_f", temperature_f),
+                    _utc_text(stored + GOOGLE_CURRENT_TTL),
+                ),
             ),
+            replace_scope=True,
         )
 
     def active_current(
@@ -892,9 +1153,7 @@ class GoogleUsageLedger:
         self.soft_monthly_ceiling = self._budget(
             "soft_monthly_ceiling", soft_monthly_ceiling
         )
-        self.timeout_seconds = float(timeout_seconds)
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        self.timeout_seconds = _positive_finite_timeout(timeout_seconds)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             connection.executescript(_USAGE_SCHEMA)
@@ -911,11 +1170,15 @@ class GoogleUsageLedger:
             timeout=self.timeout_seconds,
             isolation_level=None,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute(
-            f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
-        )
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute(
+                f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
+            )
+            return connection
+        except Exception:
+            connection.close()
+            raise
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

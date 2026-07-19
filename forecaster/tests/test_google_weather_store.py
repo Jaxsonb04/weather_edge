@@ -58,6 +58,60 @@ def test_runtime_store_releases_initialization_and_read_connections_without_gc(
     _assert_connections_closed(opened)
 
 
+@pytest.mark.parametrize("timeout_seconds", [float("nan"), float("inf")])
+def test_runtime_store_rejects_nonfinite_timeout_before_opening_sqlite(
+    tmp_path, monkeypatch, timeout_seconds
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleRuntimeStore
+
+    connect_calls = 0
+
+    def unexpected_connect(*args, **kwargs):
+        nonlocal connect_calls
+        connect_calls += 1
+        raise AssertionError("invalid timeout must fail before sqlite connect")
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", unexpected_connect)
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        GoogleRuntimeStore(
+            tmp_path / "google_runtime.db",
+            production=False,
+            timeout_seconds=timeout_seconds,
+        )
+    assert connect_calls == 0
+
+
+def test_runtime_store_closes_sqlite_handle_when_connection_setup_fails(
+    tmp_path, monkeypatch
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleRuntimeStore
+
+    real_connection = sqlite3.connect(":memory:")
+
+    class FailingSetupConnection:
+        row_factory = None
+
+        def execute(self, _sql):
+            raise RuntimeError("forced pragma failure")
+
+        def close(self):
+            real_connection.close()
+
+    monkeypatch.setattr(
+        store_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: FailingSetupConnection(),
+    )
+
+    with pytest.raises(RuntimeError, match="forced pragma failure"):
+        GoogleRuntimeStore(tmp_path / "google_runtime.db", production=False)
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        real_connection.execute("SELECT 1")
+
+
 def test_usage_ledger_releases_initialization_and_lifecycle_connections_without_gc(
     tmp_path, monkeypatch
 ):
@@ -99,6 +153,59 @@ def test_usage_ledger_releases_initialization_and_lifecycle_connections_without_
     assert ledger.event(completed).status == "success"
 
     _assert_connections_closed(opened)
+
+
+@pytest.mark.parametrize("timeout_seconds", [float("nan"), float("inf")])
+def test_usage_ledger_rejects_nonfinite_timeout_before_opening_sqlite(
+    tmp_path, monkeypatch, timeout_seconds
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleUsageLedger
+
+    connect_calls = 0
+
+    def unexpected_connect(*args, **kwargs):
+        nonlocal connect_calls
+        connect_calls += 1
+        raise AssertionError("invalid timeout must fail before sqlite connect")
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", unexpected_connect)
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        GoogleUsageLedger(
+            tmp_path / "weather.db",
+            timeout_seconds=timeout_seconds,
+        )
+    assert connect_calls == 0
+
+
+def test_usage_ledger_closes_sqlite_handle_when_connection_setup_fails(
+    tmp_path, monkeypatch
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleUsageLedger
+
+    real_connection = sqlite3.connect(":memory:")
+
+    class FailingSetupConnection:
+        row_factory = None
+
+        def execute(self, _sql):
+            raise RuntimeError("forced pragma failure")
+
+        def close(self):
+            real_connection.close()
+
+    monkeypatch.setattr(
+        store_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: FailingSetupConnection(),
+    )
+
+    with pytest.raises(RuntimeError, match="forced pragma failure"):
+        GoogleUsageLedger(tmp_path / "weather.db")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        real_connection.execute("SELECT 1")
 
 
 def _runtime_hourly_constituents(
@@ -195,6 +302,93 @@ def test_hourly_runtime_never_falls_back_to_delayed_older_generation(tmp_path):
         ).fetchone()[0] == 0
 
 
+def test_hourly_runtime_rejects_delayed_older_generation_after_content_purge(
+    tmp_path,
+):
+    store = _runtime_store(tmp_path)
+    valid_at = TEST_NOW + timedelta(hours=2)
+    assert store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        valid_at=valid_at,
+        temperature_f=73.0,
+        stored_at=TEST_NOW,
+    ) is True
+    assert store.purge_expired(now=TEST_NOW + timedelta(hours=1)) == 1
+
+    accepted = store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW - timedelta(hours=1),
+        valid_at=valid_at,
+        temperature_f=69.0,
+        stored_at=TEST_NOW + timedelta(hours=1),
+    )
+
+    assert accepted is False
+    assert store.active_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        now=TEST_NOW + timedelta(hours=1),
+    ) == ()
+
+
+def test_generation_watermark_resets_with_disposable_tmpfs_database(tmp_path):
+    store = _runtime_store(tmp_path)
+    store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        valid_at=TEST_NOW + timedelta(hours=2),
+        temperature_f=73.0,
+        stored_at=TEST_NOW,
+    )
+    store.db_path.unlink()
+
+    rebooted_store = _runtime_store(tmp_path)
+    assert rebooted_store.write_hourly(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW - timedelta(hours=1),
+        valid_at=TEST_NOW + timedelta(hours=2),
+        temperature_f=69.0,
+        stored_at=TEST_NOW,
+    ) is True
+
+
+def test_empty_hourly_generation_stays_empty_and_blocks_delayed_resurrection(
+    tmp_path,
+):
+    store = _runtime_store(tmp_path)
+    old_issue = TEST_NOW - timedelta(hours=2)
+    store.replace_hourly_generation(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=old_issue,
+        temperatures_by_valid_at={TEST_NOW: 70.0},
+        stored_at=TEST_NOW,
+    )
+    assert store.replace_hourly_generation(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        temperatures_by_valid_at={},
+        stored_at=TEST_NOW,
+    ) is True
+
+    assert store.active_hourly(
+        city_slug="sfo", station_id="KSFO", now=TEST_NOW
+    ) == ()
+    assert store.replace_hourly_generation(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW - timedelta(hours=1),
+        temperatures_by_valid_at={TEST_NOW: 69.0},
+        stored_at=TEST_NOW,
+    ) is False
+
+
 def test_hourly_runtime_returns_only_one_coherent_latest_generation(tmp_path):
     store = _runtime_store(tmp_path)
     older_issue = TEST_NOW - timedelta(hours=1)
@@ -247,22 +441,121 @@ def test_repeated_hourly_refresh_upserts_without_duplicate_valid_times(tmp_path)
     assert active[0].expires_at == TEST_NOW + timedelta(hours=1, minutes=5)
 
 
-def test_daily_runtime_expiry_uses_distinct_today_and_future_ttls(tmp_path):
+def test_hourly_generation_replacement_removes_absent_same_issue_rows(tmp_path):
     store = _runtime_store(tmp_path)
-    store.write_daily(
-        city_slug="sfo",
-        station_id="KSFO",
+    valid_times = tuple(TEST_NOW + timedelta(hours=offset) for offset in (1, 2, 3))
+    assert store.replace_hourly_generation(
+        city_slug="bos",
+        station_id="KBOS",
         issued_at=TEST_NOW,
-        target_date="2026-07-18",
-        high_f=73.0,
+        temperatures_by_valid_at={
+            valid_at: 70.0 + index for index, valid_at in enumerate(valid_times)
+        },
+        stored_at=TEST_NOW,
+    ) is True
+
+    assert store.replace_hourly_generation(
+        city_slug="bos",
+        station_id="KBOS",
+        issued_at=TEST_NOW,
+        temperatures_by_valid_at={valid_times[0]: 81.0},
+        stored_at=TEST_NOW + timedelta(minutes=5),
+    ) is True
+
+    active = store.active_hourly(
+        city_slug="bos", station_id="KBOS", now=TEST_NOW
+    )
+    assert tuple((row.valid_at, row.temperature_f) for row in active) == (
+        (valid_times[0], 81.0),
+    )
+
+
+def test_hourly_generation_replacement_rolls_back_content_and_watermark_together(
+    tmp_path,
+):
+    store = _runtime_store(tmp_path)
+    older_issue = TEST_NOW - timedelta(hours=2)
+    middle_issue = TEST_NOW - timedelta(hours=1)
+    valid_times = tuple(TEST_NOW + timedelta(hours=offset) for offset in (1, 2))
+    store.replace_hourly_generation(
+        city_slug="sea",
+        station_id="KSEA",
+        issued_at=older_issue,
+        temperatures_by_valid_at={valid_at: 60.0 for valid_at in valid_times},
         stored_at=TEST_NOW,
     )
-    store.write_daily(
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_test_hourly_generation
+            BEFORE INSERT ON google_hourly_runtime
+            WHEN NEW.temperature_f = 99.0
+            BEGIN
+                SELECT RAISE(ABORT, 'forced generation failure');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced generation failure"):
+        store.replace_hourly_generation(
+            city_slug="sea",
+            station_id="KSEA",
+            issued_at=TEST_NOW,
+            temperatures_by_valid_at={valid_times[0]: 80.0, valid_times[1]: 99.0},
+            stored_at=TEST_NOW,
+        )
+
+    active = store.active_hourly(
+        city_slug="sea", station_id="KSEA", now=TEST_NOW
+    )
+    assert tuple(row.issued_at for row in active) == (older_issue, older_issue)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("DROP TRIGGER reject_test_hourly_generation")
+    assert store.replace_hourly_generation(
+        city_slug="sea",
+        station_id="KSEA",
+        issued_at=middle_issue,
+        temperatures_by_valid_at={valid_times[0]: 70.0},
+        stored_at=TEST_NOW,
+    ) is True
+
+
+def test_concurrent_hourly_generation_replacements_finish_on_newest_issue(tmp_path):
+    store = _runtime_store(tmp_path)
+    start = threading.Barrier(2)
+    issues = (TEST_NOW - timedelta(hours=1), TEST_NOW)
+
+    def replace_generation(index: int) -> bool:
+        start.wait()
+        return store.replace_hourly_generation(
+            city_slug="phx",
+            station_id="KPHX",
+            issued_at=issues[index],
+            temperatures_by_valid_at={
+                TEST_NOW + timedelta(hours=1): 90.0 + index
+            },
+            stored_at=TEST_NOW,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(replace_generation, range(2)))
+
+    active = store.active_hourly(
+        city_slug="phx", station_id="KPHX", now=TEST_NOW
+    )
+    assert len(active) == 1
+    assert active[0].issued_at == TEST_NOW
+    assert active[0].temperature_f == 91.0
+    assert any(outcomes)
+
+
+def test_daily_runtime_expiry_uses_distinct_today_and_future_ttls(tmp_path):
+    store = _runtime_store(tmp_path)
+    store.replace_daily_generation(
         city_slug="sfo",
         station_id="KSFO",
         issued_at=TEST_NOW,
-        target_date="2026-07-19",
-        high_f=75.0,
+        highs_by_target_date={"2026-07-18": 73.0, "2026-07-19": 75.0},
         stored_at=TEST_NOW,
     )
 
@@ -307,6 +600,33 @@ def test_daily_runtime_uses_only_the_latest_complete_issue_generation(tmp_path):
     )
     assert tuple((row.issued_at, row.target_date) for row in active) == (
         (TEST_NOW, "2026-07-19"),
+    )
+
+
+def test_daily_generation_replacement_is_atomic_and_exact(tmp_path):
+    store = _runtime_store(tmp_path)
+    older_issue = TEST_NOW - timedelta(hours=1)
+    assert store.replace_daily_generation(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=older_issue,
+        highs_by_target_date={"2026-07-18": 73.0, "2026-07-19": 75.0},
+        stored_at=TEST_NOW,
+    ) is True
+
+    assert store.replace_daily_generation(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        highs_by_target_date={"2026-07-19": 76.0},
+        stored_at=TEST_NOW,
+    ) is True
+
+    active = store.active_daily(
+        city_slug="sfo", station_id="KSFO", now=TEST_NOW
+    )
+    assert tuple((row.issued_at, row.target_date, row.high_f) for row in active) == (
+        (TEST_NOW, "2026-07-19", 76.0),
     )
 
 
@@ -365,6 +685,38 @@ def test_current_runtime_never_falls_back_after_newest_issue_expires(tmp_path):
             now=TEST_NOW + timedelta(hours=1),
         )
         is None
+    )
+
+
+def test_current_generation_replacement_removes_superseded_same_issue_observation(
+    tmp_path,
+):
+    store = _runtime_store(tmp_path)
+    assert store.replace_current_generation(
+        city_slug="mia",
+        station_id="KMIA",
+        issued_at=TEST_NOW,
+        observed_at=TEST_NOW - timedelta(minutes=10),
+        temperature_f=87.0,
+        stored_at=TEST_NOW,
+    ) is True
+    assert store.replace_current_generation(
+        city_slug="mia",
+        station_id="KMIA",
+        issued_at=TEST_NOW,
+        observed_at=TEST_NOW - timedelta(minutes=5),
+        temperature_f=88.0,
+        stored_at=TEST_NOW + timedelta(minutes=5),
+    ) is True
+
+    active = store.active_current(
+        city_slug="mia", station_id="KMIA", now=TEST_NOW
+    )
+    assert active is not None
+    assert active.observed_at == TEST_NOW - timedelta(minutes=5)
+    assert active.temperature_f == 88.0
+    assert store.next_expiry(now=TEST_NOW) == TEST_NOW + timedelta(
+        hours=1, minutes=5
     )
 
 
@@ -449,6 +801,55 @@ def test_runtime_high_never_falls_back_after_newest_issue_expires(tmp_path):
         )
         is None
     )
+
+
+def test_runtime_high_watermarks_are_target_scoped_and_survive_purge(tmp_path):
+    store = _runtime_store(tmp_path)
+    station_day_start = datetime(2026, 7, 18, 8, tzinfo=timezone.utc)
+    store.write_runtime_high(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW,
+        target_date="2026-07-18",
+        constituents=_runtime_hourly_constituents(
+            city_slug="sfo",
+            station_id="KSFO",
+            issued_at=TEST_NOW,
+            start_at=station_day_start,
+            count=1,
+            expires_at=TEST_NOW + timedelta(hours=1),
+        ),
+    )
+    store.purge_expired(now=TEST_NOW + timedelta(hours=1))
+
+    assert store.write_runtime_high(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW - timedelta(hours=1),
+        target_date="2026-07-18",
+        constituents=_runtime_hourly_constituents(
+            city_slug="sfo",
+            station_id="KSFO",
+            issued_at=TEST_NOW - timedelta(hours=1),
+            start_at=station_day_start,
+            count=1,
+            expires_at=TEST_NOW + timedelta(hours=2),
+        ),
+    ) is False
+    assert store.write_runtime_high(
+        city_slug="sfo",
+        station_id="KSFO",
+        issued_at=TEST_NOW - timedelta(hours=1),
+        target_date="2026-07-19",
+        constituents=_runtime_hourly_constituents(
+            city_slug="sfo",
+            station_id="KSFO",
+            issued_at=TEST_NOW - timedelta(hours=1),
+            start_at=station_day_start + timedelta(days=1),
+            count=1,
+            expires_at=TEST_NOW + timedelta(hours=2),
+        ),
+    ) is True
 
 
 def test_runtime_high_partial_coverage_is_derived_as_incomplete(tmp_path):
@@ -558,6 +959,99 @@ def test_runtime_high_schema_rejects_contradictory_completeness(tmp_path):
             )
 
 
+def test_runtime_schema_upgrade_recreates_c88_tables_without_usage_ledger_loss(
+    tmp_path,
+):
+    from google_weather_store import GoogleRuntimeStore, GoogleUsageLedger
+
+    db_path = tmp_path / "combined-test.db"
+    ledger = GoogleUsageLedger(db_path)
+    ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=1,
+        now=TEST_NOW,
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE google_runtime_high (
+                city_slug TEXT NOT NULL,
+                station_id TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                high_f REAL NOT NULL,
+                covered_hours INTEGER NOT NULL
+                    CHECK(covered_hours BETWEEN 0 AND 24),
+                complete INTEGER NOT NULL CHECK(complete IN (0, 1)),
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY(city_slug, station_id, issued_at, target_date)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO google_runtime_high (
+                city_slug, station_id, issued_at, target_date, high_f,
+                covered_hours, complete, expires_at
+            ) VALUES ('sfo', 'KSFO', ?, '2026-07-18', 73.0, 23, 1, ?)
+            """,
+            (
+                TEST_NOW.isoformat(timespec="microseconds"),
+                (TEST_NOW + timedelta(hours=1)).isoformat(timespec="microseconds"),
+            ),
+        )
+
+    store = GoogleRuntimeStore(db_path, production=False)
+
+    assert (
+        store.active_runtime_high(
+            city_slug="sfo",
+            station_id="KSFO",
+            target_date="2026-07-18",
+            now=TEST_NOW,
+        )
+        is None
+    )
+    assert ledger.usage(now=TEST_NOW).daily_events == 1
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO google_runtime_high (
+                    city_slug, station_id, issued_at, target_date, high_f,
+                    covered_hours, complete, expires_at
+                ) VALUES ('sfo', 'KSFO', ?, '2026-07-18', 73.0, 23, 1, ?)
+                """,
+                (
+                    TEST_NOW.isoformat(timespec="microseconds"),
+                    (TEST_NOW + timedelta(hours=1)).isoformat(
+                        timespec="microseconds"
+                    ),
+                ),
+            )
+
+
+def test_runtime_schema_initialization_restores_missing_owned_index(tmp_path):
+    from google_weather_store import GoogleRuntimeStore
+
+    store = _runtime_store(tmp_path)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("DROP INDEX idx_google_hourly_runtime_expiry")
+
+    GoogleRuntimeStore(store.db_path, production=False)
+
+    with sqlite3.connect(store.db_path) as connection:
+        restored = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_google_hourly_runtime_expiry'
+            """
+        ).fetchone()
+    assert restored == (1,)
+
+
 def test_purge_expired_is_a_transactional_physical_delete(tmp_path):
     store = _runtime_store(tmp_path)
     store.write_hourly(
@@ -647,6 +1141,14 @@ def test_runtime_schema_allowlist_has_no_raw_secret_or_google_gap_columns(tmp_pa
             "complete",
             "expires_at",
         },
+        "google_runtime_generation_watermarks": {
+            "content_table",
+            "city_slug",
+            "station_id",
+            "target_date",
+            "newest_issued_at",
+        },
+        "google_runtime_schema_metadata": {"singleton", "schema_version"},
     }
     forbidden_fragments = (
         "raw",
@@ -660,6 +1162,16 @@ def test_runtime_schema_allowlist_has_no_raw_secret_or_google_gap_columns(tmp_pa
     )
 
     with sqlite3.connect(store.db_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name LIKE 'google_%'
+                """
+            )
+        }
+        assert tables == set(expected)
         for table, allowed_columns in expected.items():
             columns = {
                 row[1]
