@@ -100,11 +100,50 @@ git add trading/sfo_kalshi_quant/store/schema.py trading/sfo_kalshi_quant/db.py 
 git commit -m "feat: persist source-neutral research contexts"
 ```
 
+**Decision note (2026-07-18, repair of review finding F4):** `record_source_neutral_scan_context`
+shipped in Task 1 with zero production callers, and no later task in this plan calls it or
+otherwise touches `db.py`/the scanner. The reviewed alternative was to have `record_decisions`
+insert-or-reuse one source-neutral context row per scan, in addition to its existing per-profile
+rows, reusing `record_source_neutral_scan_context`'s validation inside the same transaction.
+That was **not** done: `record_decisions`'s existing per-profile callers (`trading/sfo_kalshi_quant/_cli/scan.py`,
+three call sites) and dozens of test call sites routinely call it with `forecast=None` and/or no
+`event` (empty market payload) -- both of which fail `record_source_neutral_scan_context`'s
+fail-closed validators. Reshaping the hot, 65-placeholder `decision_snapshots` INSERT to
+tolerate those incomplete payloads (or to silently skip source-neutral row creation on them) was
+judged more invasive than the repair budget for this finding, and risked masking exactly the
+kind of incomplete-payload bug Task 1's validators exist to catch.
+
+Instead, the repair added `source_neutral_context_from_scan_context_row` (`trading/sfo_kalshi_quant/db.py`),
+a pure, documented load-time helper that recomputes the same canonical `source_context_hash`
+`record_source_neutral_scan_context` would have produced, directly from one historical
+per-profile `scan_context_snapshots` row's `forecast_json`/`intraday_json`/`market_json`/
+`prediction_features_json` columns. It returns `None` (not a raised error) when a row's payload
+is incomplete or malformed, so a loader can skip a bad historical row instead of crashing. Task 2's
+loader (see the loader contract note below) should use this to deduplicate profile-duplicated
+historical rows into one `ResearchCase` per real-world observation, without any write-path or
+schema change. Separately, `prune_decision_snapshots` was hardened to never delete a
+`scan_context_snapshots` row that carries a non-null `source_context_hash` (protects any row
+written by `record_source_neutral_scan_context`, present or future, from the "unreferenced
+context" prune sweep -- those rows never get a `decision_snapshots` FK pointing at them by
+construction, so the generic sweep would otherwise treat every one of them as orphaned dead
+weight the moment it aged past `full_days`).
+
+If Task 2 or a later task later needs source-neutral rows persisted in the database (rather than
+derived at load time), revisit this note and consider option (i) above at that point, once the
+per-profile call sites' data-completeness expectations are better understood.
+
 ### Task 2: Build leakage-resistant chronological folds
 
 **Files:**
 - Create: `trading/sfo_kalshi_quant/research_walkforward.py`
 - Modify: `trading/tests/test_research_walkforward.py`
+
+**Loader contract (see the Task 1 decision note above):** `scan_context_snapshots` rows are
+still written per-profile with no populated `source_context_hash`. Before grouping rows into
+`ResearchCase`s, call `source_neutral_context_from_scan_context_row(dict(row))`
+(`trading/sfo_kalshi_quant/db.py`) per historical row and group by the returned
+`source_context_hash`; skip any row for which it returns `None` (incomplete or malformed
+forecast/market/feature payload -- record why in fold evidence rather than silently dropping it).
 
 - [ ] **Step 1: Add fold-boundary and embargo regressions**
 
