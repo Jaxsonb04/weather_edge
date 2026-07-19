@@ -50,14 +50,17 @@ class PublicationError(ValueError):
 # used to carry (google_current_conditions/google_daily_forecast_highs), the
 # Google Weather API host, and the API key pattern.
 #
-# Deliberately NOT scoped to `google_high_f`/`sources.google.*`: that is
-# WeatherEdge's OWN derived "source contribution" reporting field name (a
-# sibling of nws_high_f/open_meteo_high_f), reported by the pre-existing,
-# byte-compatible-by-design legacy SFO live blend (trading_signal.json
-# already publishes it in production today). Spec section 7.5 explicitly
-# calls this out: "Legacy Google-bearing rows and artifacts are not deleted
-# automatically... any material historical deletion remains a separate
-# approved action." Removing it is Task 9+ live-promotion-gated work, not a
+# Deliberately NOT scoped to `google_high_f`/`sources.google.*`. That value
+# IS raw Google content in substance -- blend_sources.py passes Google's
+# `highF` through verbatim under the renamed key -- and it is allowed here
+# ONLY as the spec section 7.5 grandfathered legacy exception: the live
+# pre-existing SFO blend already publishes it in production
+# trading_signal.json, section 7.3 forbids silently changing the live
+# forecast to satisfy a cleanup, and section 7.5 says "Legacy Google-bearing
+# rows and artifacts are not deleted automatically... any material
+# historical deletion remains a separate approved action." The exception
+# expires when the Task 9+ live-promotion gate retires the legacy blend;
+# renamed keys are otherwise NOT a sanctioned way past this gate. Not a
 # Task 8 publication-gate change -- blocking it here would silently break
 # the live site's existing publication cadence.
 _RAW_GOOGLE_FIELD_KEYS = frozenset(

@@ -98,8 +98,9 @@ LOCAL_RUNTIME_PLACEHOLDERS = {
 # publish cycle. Kept in sync by hand with
 # trading/sfo_kalshi_quant/publication.py's _RAW_GOOGLE_FIELD_KEYS /
 # _RAW_GOOGLE_VALUE_PATTERNS -- deliberately excludes google_high_f/
-# sources.google.*, the pre-existing legacy SFO live blend's own derived
-# field (spec section 7.5: a known, accepted exception, not a new leak).
+# sources.google.*: Google's raw highF renamed by the pre-existing legacy
+# SFO live blend, allowed ONLY as the spec section 7.5 grandfathered legacy
+# exception (expires with the Task 9+ live-promotion gate), not a new leak.
 RAW_GOOGLE_ARTIFACTS = (
     "forecaster/trading_signal.json",
     "forecaster/cities_data.json",

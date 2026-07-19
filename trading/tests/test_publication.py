@@ -371,9 +371,11 @@ def test_validate_manifest_allows_the_legacy_google_high_f_field():
     """The pre-existing, byte-compatible-by-design legacy SFO live blend
     already reports `sources.google_high_f` in production trading_signal.json
     today (spec section 7.5: legacy Google-bearing artifacts are not deleted
-    automatically). This is WeatherEdge's own derived source-contribution
-    field name, not a raw Google API response shape, and must not be
-    blocked by the Task 8 publication gate.
+    automatically). The value is Google's raw highF passed through verbatim
+    under a renamed key by the legacy blend; it is allowed ONLY as the
+    section 7.5 grandfathered legacy exception (removal is tied to the
+    Task 9+ live-promotion gate), so the Task 8 publication gate must not
+    block it -- and must not treat key-renaming as a general loophole.
     """
     module = _publication()
     with tempfile.TemporaryDirectory() as tmp:

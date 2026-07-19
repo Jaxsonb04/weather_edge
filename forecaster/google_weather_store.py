@@ -1548,8 +1548,13 @@ class GoogleUsageLedger:
         city/endpoint identity (a historical stamp, not a real dispatch)
         under one deterministic reservation id keyed by ``billing_month``,
         with ``billing_date_pacific`` pinned to the 1st of that month so the
-        seed can never inflate any single day's daily budget check -- only
+        seed stays out of every OTHER day's daily budget check -- only
         the monthly total, which is what the legacy count actually measured.
+        One caveat: if the cutover itself runs on the 1st of the seeded
+        month, that day's daily counter includes the seed. That is correct
+        accounting (those were that day's real legacy events) and bounded
+        by the legacy schedule's ~190/day, but a same-day seed plus a full
+        day of new usage can brush the 260 cap on that one day.
         Running this twice (or after a partial failure, or with a larger
         ``event_count`` on a later run because more usage accrued before the
         cutover completed) can only ever reach exactly ``event_count``
