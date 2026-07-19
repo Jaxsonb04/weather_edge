@@ -22,7 +22,11 @@ from pathlib import Path
 
 import pytest
 
-from sfo_kalshi_quant.db import PaperStore, source_context_hash
+from sfo_kalshi_quant.db import (
+    PaperStore,
+    source_context_hash,
+    source_neutral_context_from_scan_context_row,
+)
 
 # Evidence windows chronologically safe on any real test-run date: far enough
 # in the future/past that "declared_at = now()" always sorts as intended.
@@ -405,8 +409,10 @@ def test_init_is_idempotent_and_safe_under_concurrent_construction(
     assert {
         "trg_research_experiments_immutable_update",
         "trg_research_experiments_immutable_delete",
+        "trg_research_experiments_immutable_insert",
         "trg_research_evidence_immutable_update",
         "trg_research_evidence_immutable_delete",
+        "trg_research_evidence_immutable_insert",
         "trg_research_evidence_declared_before_window",
     } <= triggers
 
@@ -625,9 +631,14 @@ def test_evidence_evaluated_before_declaration_is_rejected(tmp_path: Path) -> No
 def test_evidence_target_date_before_declaration_day_is_rejected(
     tmp_path: Path,
 ) -> None:
+    """A target date on or before the declaration's own Pacific day is
+    now caught by the Python-side Pacific check (finding F3 repair) before
+    it ever reaches the UTC trigger backstop, so this raises ValueError
+    rather than the trigger's sqlite3.IntegrityError."""
+
     store = PaperStore(tmp_path / "paper.db")
     _declare(store)
-    with pytest.raises(sqlite3.IntegrityError, match="declared before"):
+    with pytest.raises(ValueError, match="Pacific"):
         store.record_research_evidence(
             experiment_id="exp-1",
             fold_id="fold-1",
@@ -762,3 +773,574 @@ def test_evidence_requires_a_complete_fold_identity(tmp_path: Path) -> None:
             baseline={"mu": 65.0},
             challenger={"mu": 66.0},
         )
+
+
+# ---------------------------------------------------------------------------
+# Repair F1 (HIGH): INSERT OR REPLACE / ON CONFLICT DO UPDATE bypass the
+# UPDATE/DELETE immutability triggers because REPLACE's internal delete does
+# not fire a trigger while PRAGMA recursive_triggers stays off. Immutable
+# BEFORE INSERT triggers close that gap without flipping recursive_triggers.
+# ---------------------------------------------------------------------------
+
+
+def test_insert_or_replace_on_research_experiments_is_rejected(tmp_path: Path) -> None:
+    """A REPLACE-conflict rewrite must abort, and the original row must
+    survive untouched -- covers the reviewer probe that rewrote
+    parameter_json, backdated declared_at, and flipped evidence_role."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    with store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "INSERT OR REPLACE INTO research_experiments (experiment_id, "
+                "declared_at, hypothesis_family, candidate_key, candidate_version, "
+                "parameter_json, evidence_role) VALUES ('exp-1', "
+                "'2020-01-01T00:00:00+00:00', 'gaussian-pit-station-lead', "
+                "'gaussian-pit-station-lead-v1', 'v1', "
+                "'{\"shrinkage_k\": 999.0}', 'exploratory')"
+            )
+    with store.connect() as conn:
+        row = conn.execute(
+            "SELECT declared_at, evidence_role, parameter_json "
+            "FROM research_experiments WHERE experiment_id='exp-1'"
+        ).fetchone()
+    assert row[1] == "confirmatory"
+    assert json.loads(row[2]) == {"shrinkage_k": 40.0}
+
+
+def test_insert_or_replace_on_research_experiments_by_candidate_identity_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """REPLACE conflicting on the UNIQUE candidate identity (a different
+    experiment_id) must abort too, not just a REPLACE on the primary key."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store, experiment_id="exp-1")
+    with store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "INSERT OR REPLACE INTO research_experiments (experiment_id, "
+                "declared_at, hypothesis_family, candidate_key, candidate_version, "
+                "parameter_json, evidence_role) VALUES ('exp-2', "
+                "'2020-01-01T00:00:00+00:00', 'gaussian-pit-station-lead', "
+                "'gaussian-pit-station-lead-v1', 'v1', '{}', 'exploratory')"
+            )
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM research_experiments").fetchone()[0]
+    assert count == 1
+
+
+def test_insert_or_replace_on_research_evidence_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    store.record_research_evidence(
+        experiment_id="exp-1",
+        fold_id="fold-1",
+        station_id="KSFO",
+        target_date=FAR_FUTURE_DATE,
+        evaluated_at=FAR_FUTURE_AT,
+        baseline={"mu": 65.0},
+        challenger={"mu": 66.0},
+    )
+    with store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "INSERT OR REPLACE INTO research_evidence (experiment_id, fold_id, "
+                "station_id, target_date, evaluated_at, baseline_json, "
+                "challenger_json) VALUES ('exp-1', 'fold-1', 'KSFO', ?, ?, "
+                "'{\"mu\": 999.0}', '{\"mu\": 999.0}')",
+                (FAR_FUTURE_DATE, FAR_FUTURE_AT),
+            )
+    with store.connect() as conn:
+        row = conn.execute(
+            "SELECT baseline_json FROM research_evidence WHERE experiment_id='exp-1'"
+        ).fetchone()
+    assert json.loads(row[0]) == {"mu": 65.0}
+
+
+def test_on_conflict_do_update_on_research_experiments_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """The identity columns make an UPSERT expressible on the primary key;
+    it already routes through the ordinary UPDATE trigger (not a REPLACE
+    delete), so this must already abort."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    with store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "INSERT INTO research_experiments (experiment_id, declared_at, "
+                "hypothesis_family, candidate_key, candidate_version, "
+                "parameter_json, evidence_role) VALUES ('exp-1', "
+                "'2020-01-01T00:00:00+00:00', 'gaussian-pit-station-lead', "
+                "'gaussian-pit-station-lead-v1', 'v1', '{}', 'exploratory') "
+                "ON CONFLICT(experiment_id) DO UPDATE SET "
+                "evidence_role=excluded.evidence_role"
+            )
+
+
+def test_on_conflict_do_update_on_research_evidence_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    store.record_research_evidence(
+        experiment_id="exp-1",
+        fold_id="fold-1",
+        station_id="KSFO",
+        target_date=FAR_FUTURE_DATE,
+        evaluated_at=FAR_FUTURE_AT,
+        baseline={"mu": 65.0},
+        challenger={"mu": 66.0},
+    )
+    with store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "INSERT INTO research_evidence (experiment_id, fold_id, station_id, "
+                "target_date, evaluated_at, baseline_json, challenger_json) VALUES "
+                "('exp-1', 'fold-1', 'KSFO', ?, ?, '{}', '{}') "
+                "ON CONFLICT(experiment_id, fold_id, station_id, target_date) "
+                "DO UPDATE SET baseline_json=excluded.baseline_json",
+                (FAR_FUTURE_DATE, FAR_FUTURE_AT),
+            )
+
+
+def test_plain_first_time_insert_still_works_on_both_tables(tmp_path: Path) -> None:
+    """The new immutable-insert triggers must not block a genuine first
+    write -- only ever a write that collides with an existing identity."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    store.record_research_evidence(
+        experiment_id="exp-1",
+        fold_id="fold-1",
+        station_id="KSFO",
+        target_date=FAR_FUTURE_DATE,
+        evaluated_at=FAR_FUTURE_AT,
+        baseline={"mu": 65.0},
+        challenger={"mu": 66.0},
+    )
+    with store.connect() as conn:
+        experiments = conn.execute("SELECT COUNT(*) FROM research_experiments").fetchone()[0]
+        evidence = conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0]
+    assert experiments == 1
+    assert evidence == 1
+
+
+# ---------------------------------------------------------------------------
+# Repair F2 (HIGH): NaN/inf silently accepted and persisted as invalid JSON.
+# ---------------------------------------------------------------------------
+
+
+def test_source_context_hash_rejects_non_finite_forecast_value() -> None:
+    with pytest.raises(ValueError):
+        source_context_hash(
+            target_date="2026-06-20",
+            station_id="KSFO",
+            forecast={"predicted_high_f": float("nan")},
+            intraday={},
+            market=_market_payload(),
+            features=_features_payload(),
+        )
+
+
+def test_market_yes_bid_nan_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    tampered_market = {
+        "KXHIGHTSFO-TEST-B65.5": {
+            "ticker": "KXHIGHTSFO-TEST-B65.5",
+            "yes_bid": float("nan"),
+            "yes_ask": 0.26,
+        }
+    }
+    with pytest.raises(ValueError, match="yes_bid"):
+        store.record_source_neutral_scan_context(
+            target_date="2026-06-20",
+            station_id="KSFO",
+            scan_run_id="run-1",
+            forecast=_forecast_payload(),
+            intraday={},
+            market=tampered_market,
+            features=_features_payload(),
+        )
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM scan_context_snapshots").fetchone()[0]
+    assert count == 0
+
+
+def test_market_yes_ask_inf_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    tampered_market = {
+        "KXHIGHTSFO-TEST-B65.5": {
+            "ticker": "KXHIGHTSFO-TEST-B65.5",
+            "yes_bid": 0.24,
+            "yes_ask": float("inf"),
+        }
+    }
+    with pytest.raises(ValueError, match="yes_ask"):
+        store.record_source_neutral_scan_context(
+            target_date="2026-06-20",
+            station_id="KSFO",
+            scan_run_id="run-1",
+            forecast=_forecast_payload(),
+            intraday={},
+            market=tampered_market,
+            features=_features_payload(),
+        )
+
+
+def test_features_inf_value_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    tampered_features = dict(_features_payload())
+    tampered_features["lead_hours"] = float("inf")
+    with pytest.raises(ValueError):
+        store.record_source_neutral_scan_context(
+            target_date="2026-06-20",
+            station_id="KSFO",
+            scan_run_id="run-1",
+            forecast=_forecast_payload(),
+            intraday={},
+            market=_market_payload(),
+            features=tampered_features,
+        )
+
+
+def test_valid_source_neutral_payload_is_unaffected_by_finiteness_checks(
+    tmp_path: Path,
+) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    context_id = store.record_source_neutral_scan_context(
+        target_date="2026-06-20",
+        station_id="KSFO",
+        scan_run_id="run-1",
+        forecast=_forecast_payload(),
+        intraday={},
+        market=_market_payload(),
+        features=_features_payload(),
+    )
+    assert isinstance(context_id, int)
+
+
+def test_research_experiment_parameter_json_nan_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    with pytest.raises(ValueError):
+        store.record_research_experiment(
+            experiment_id="exp-1",
+            hypothesis_family="fam",
+            candidate_key="key",
+            candidate_version="v1",
+            parameter_json={"shrinkage_k": float("nan")},
+            evidence_role="confirmatory",
+        )
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM research_experiments").fetchone()[0]
+    assert count == 0
+
+
+def test_research_evidence_baseline_inf_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    with pytest.raises(ValueError):
+        store.record_research_evidence(
+            experiment_id="exp-1",
+            fold_id="fold-1",
+            station_id="KSFO",
+            target_date=FAR_FUTURE_DATE,
+            evaluated_at=FAR_FUTURE_AT,
+            baseline={"mu": float("inf")},
+            challenger={"mu": 66.0},
+        )
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0]
+    assert count == 0
+
+
+def test_research_evidence_challenger_nan_is_rejected(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    _declare(store)
+    with pytest.raises(ValueError):
+        store.record_research_evidence(
+            experiment_id="exp-1",
+            fold_id="fold-1",
+            station_id="KSFO",
+            target_date=FAR_FUTURE_DATE,
+            evaluated_at=FAR_FUTURE_AT,
+            baseline={"mu": 65.0},
+            challenger={"mu": float("nan")},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Repair F3 (MEDIUM): the UTC declared-before-window trigger alone admits a
+# declaration up to 16:59:59 PDT *during* the Pacific target day. Strict "<"
+# in the trigger is not the fix (it would reject the legitimate
+# evening-before flow), so record_research_evidence enforces a strict
+# Pacific-day check in Python, in addition to the unchanged UTC trigger.
+# ---------------------------------------------------------------------------
+
+
+def _declare_raw(
+    store: PaperStore,
+    *,
+    experiment_id: str,
+    declared_at: str,
+) -> None:
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO research_experiments (experiment_id, declared_at, "
+            "hypothesis_family, candidate_key, candidate_version, parameter_json, "
+            "evidence_role) VALUES (?, ?, 'fam', 'key', 'v1', '{}', 'confirmatory')",
+            (experiment_id, declared_at),
+        )
+
+
+def test_declaration_same_pacific_day_as_target_is_rejected(tmp_path: Path) -> None:
+    """(1) Declared 2026-07-17T23:30Z = 16:30 PDT on the target's own
+    Pacific day (2026-07-17) -- a same-day leak the UTC-only trigger used to
+    admit."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_raw(store, experiment_id="exp-1", declared_at="2026-07-17T23:30:00+00:00")
+    with pytest.raises(ValueError, match="Pacific"):
+        store.record_research_evidence(
+            experiment_id="exp-1",
+            fold_id="fold-1",
+            station_id="KSFO",
+            target_date="2026-07-17",
+            evaluated_at="2026-07-18T00:00:00+00:00",
+            baseline={"mu": 65.0},
+            challenger={"mu": 66.0},
+        )
+
+
+def test_declaration_19_00_pdt_for_the_same_pacific_day_is_still_rejected(
+    tmp_path: Path,
+) -> None:
+    """(2) Declared 2026-07-18T02:00Z = 19:00 PDT on 2026-07-17, evidence
+    targeting that same Pacific day (2026-07-17) -- still rejected."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_raw(store, experiment_id="exp-1", declared_at="2026-07-18T02:00:00+00:00")
+    with pytest.raises(ValueError, match="Pacific"):
+        store.record_research_evidence(
+            experiment_id="exp-1",
+            fold_id="fold-1",
+            station_id="KSFO",
+            target_date="2026-07-17",
+            evaluated_at="2026-07-18T03:00:00+00:00",
+            baseline={"mu": 65.0},
+            challenger={"mu": 66.0},
+        )
+
+
+def test_declaration_evening_before_pacific_target_day_is_accepted(
+    tmp_path: Path,
+) -> None:
+    """(3) Declared 2026-07-18T06:59Z = 23:59 PDT on 2026-07-17, evidence
+    targeting the *next* Pacific day (2026-07-18) -- the legitimate
+    evening-before flow strict "<" in the trigger alone would have broken."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_raw(store, experiment_id="exp-1", declared_at="2026-07-18T06:59:00+00:00")
+    store.record_research_evidence(
+        experiment_id="exp-1",
+        fold_id="fold-1",
+        station_id="KSFO",
+        target_date="2026-07-18",
+        evaluated_at="2026-07-19T00:00:00+00:00",
+        baseline={"mu": 65.0},
+        challenger={"mu": 66.0},
+    )
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0]
+    assert count == 1
+
+
+def test_malformed_declared_at_is_rejected(tmp_path: Path) -> None:
+    """(4a) A malformed declared_at fails closed rather than comparing
+    against an unparseable day."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_raw(store, experiment_id="exp-1", declared_at="not-a-timestamp")
+    with pytest.raises(ValueError, match="Pacific"):
+        store.record_research_evidence(
+            experiment_id="exp-1",
+            fold_id="fold-1",
+            station_id="KSFO",
+            target_date=FAR_FUTURE_DATE,
+            evaluated_at=FAR_FUTURE_AT,
+            baseline={"mu": 65.0},
+            challenger={"mu": 66.0},
+        )
+
+
+def test_naive_declared_at_is_rejected(tmp_path: Path) -> None:
+    """(4b) A timezone-naive declared_at is ambiguous in Pacific terms and
+    must fail closed rather than being assumed UTC or local."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_raw(store, experiment_id="exp-1", declared_at="2026-01-01T00:00:00")
+    with pytest.raises(ValueError, match="Pacific"):
+        store.record_research_evidence(
+            experiment_id="exp-1",
+            fold_id="fold-1",
+            station_id="KSFO",
+            target_date=FAR_FUTURE_DATE,
+            evaluated_at=FAR_FUTURE_AT,
+            baseline={"mu": 65.0},
+            challenger={"mu": 66.0},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Repair F4 (HIGH): record_source_neutral_scan_context has no production
+# caller (option (ii) -- see the dated decision note in
+# docs/superpowers/plans/2026-07-17-chronological-research-tuning-and-promotion.md).
+# This section covers: (a) the load-time derivation helper Task 2's loader
+# can use instead, and (b) the prune trap -- any row that DOES carry a
+# source_context_hash must survive prune_decision_snapshots even with zero
+# referencing decisions, since it is source-neutral by construction.
+# ---------------------------------------------------------------------------
+
+
+def test_derive_source_neutral_context_matches_direct_hash() -> None:
+    row = {
+        "target_date": "2026-06-20",
+        "station_id": "KSFO",
+        "forecast_json": json.dumps(_forecast_payload(), sort_keys=True),
+        "intraday_json": json.dumps({}, sort_keys=True),
+        "market_json": json.dumps(_market_payload(), sort_keys=True),
+        "prediction_features_json": json.dumps(_features_payload(), sort_keys=True),
+    }
+    derived = source_neutral_context_from_scan_context_row(row)
+    assert derived is not None
+    assert derived["source_context_hash"] == source_context_hash(
+        target_date="2026-06-20",
+        station_id="KSFO",
+        forecast=_forecast_payload(),
+        intraday={},
+        market=_market_payload(),
+        features=_features_payload(),
+    )
+
+
+def test_derive_source_neutral_context_matches_the_hash_actually_stored_by_record(
+    tmp_path: Path,
+) -> None:
+    """The derived hash for a row's raw JSON columns must equal the hash
+    record_source_neutral_scan_context would have stored for the same
+    content -- the whole point of the loader helper."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    store.record_source_neutral_scan_context(
+        target_date="2026-06-20",
+        station_id="KSFO",
+        scan_run_id="run-1",
+        forecast=_forecast_payload(),
+        intraday={},
+        market=_market_payload(),
+        features=_features_payload(),
+    )
+    with store.connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT target_date, station_id, forecast_json, intraday_json, "
+            "market_json, prediction_features_json, source_context_hash "
+            "FROM scan_context_snapshots"
+        ).fetchone()
+    derived = source_neutral_context_from_scan_context_row(dict(row))
+    assert derived is not None
+    assert derived["source_context_hash"] == row["source_context_hash"]
+
+
+def test_derive_source_neutral_context_returns_none_for_missing_market() -> None:
+    row = {
+        "target_date": "2026-06-20",
+        "station_id": "KSFO",
+        "forecast_json": json.dumps(_forecast_payload(), sort_keys=True),
+        "intraday_json": json.dumps({}, sort_keys=True),
+        "market_json": None,
+        "prediction_features_json": json.dumps(_features_payload(), sort_keys=True),
+    }
+    assert source_neutral_context_from_scan_context_row(row) is None
+
+
+def test_derive_source_neutral_context_returns_none_for_malformed_json() -> None:
+    row = {
+        "target_date": "2026-06-20",
+        "station_id": "KSFO",
+        "forecast_json": "{not-json",
+        "intraday_json": "{}",
+        "market_json": json.dumps(_market_payload(), sort_keys=True),
+        "prediction_features_json": json.dumps(_features_payload(), sort_keys=True),
+    }
+    assert source_neutral_context_from_scan_context_row(row) is None
+
+
+def test_derive_source_neutral_context_returns_none_for_non_finite_price() -> None:
+    tampered_market = {
+        "TICK": {"ticker": "TICK", "yes_bid": float("nan"), "yes_ask": 0.5}
+    }
+    row = {
+        "target_date": "2026-06-20",
+        "station_id": "KSFO",
+        "forecast_json": json.dumps(_forecast_payload(), sort_keys=True),
+        "intraday_json": json.dumps({}, sort_keys=True),
+        "market_json": json.dumps(tampered_market, sort_keys=True, allow_nan=True),
+        "prediction_features_json": json.dumps(_features_payload(), sort_keys=True),
+    }
+    assert source_neutral_context_from_scan_context_row(row) is None
+
+
+def test_prune_protects_source_neutral_rows_with_no_referencing_decision(
+    tmp_path: Path,
+) -> None:
+    """record_source_neutral_scan_context rows are source-neutral by
+    construction -- no decision_snapshots row ever references them by FK --
+    so the generic "unreferenced context" prune sweep must not treat them as
+    orphaned dead weight the way it treats an ordinary per-profile context
+    row whose decisions have all aged out."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    store.record_source_neutral_scan_context(
+        target_date="2026-06-20",
+        station_id="KSFO",
+        scan_run_id="run-1",
+        forecast=_forecast_payload(),
+        intraday={},
+        market=_market_payload(),
+        features=_features_payload(),
+    )
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE scan_context_snapshots SET created_at = datetime('now', '-100 days')"
+        )
+
+    result = store.prune_decision_snapshots(full_days=7, dedup_days=45)
+
+    with store.connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM scan_context_snapshots"
+        ).fetchone()[0]
+    assert remaining == 1
+    assert result["contexts_dropped"] == 0
+
+
+def test_prune_still_drops_an_ordinary_unreferenced_context_without_a_hash(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: the new source_context_hash IS NULL clause must not
+    accidentally protect ordinary per-profile context rows too -- only rows
+    that actually carry a canonical hash."""
+
+    store = PaperStore(tmp_path / "paper.db")
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO scan_context_snapshots (created_at, target_date, "
+            "prediction_features_json) VALUES "
+            "(datetime('now', '-100 days'), '2026-06-01', '{}')"
+        )
+
+    result = store.prune_decision_snapshots(full_days=7, dedup_days=45)
+
+    assert result["contexts_dropped"] == 1

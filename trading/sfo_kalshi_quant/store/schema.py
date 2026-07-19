@@ -887,6 +887,18 @@ def _ensure_research_experiment_triggers(conn: sqlite3.Connection) -> None:
     row lands, and evidence can only reference an experiment declared before
     the day it evaluates -- a challenger can never be tuned to, or selected
     by, the days it is later scored on.
+
+    ``INSERT OR REPLACE`` (and ``INSERT ... ON CONFLICT DO UPDATE`` routed
+    through REPLACE conflict resolution) deletes the conflicting row
+    internally before reinserting it. With ``PRAGMA recursive_triggers`` off
+    (the SQLite default, unchanged here), that internal delete does not fire
+    the BEFORE DELETE/UPDATE triggers above, so a REPLACE could silently
+    rewrite an "immutable" row without ever tripping them. The two
+    immutable-insert triggers below close that gap: a BEFORE INSERT trigger
+    runs before REPLACE's conflict resolution removes the existing row, so
+    the conflicting row is still visible to ``WHEN EXISTS`` and the whole
+    statement aborts instead of the trigger-less internal delete silently
+    succeeding.
     """
 
     definitions = {
@@ -904,6 +916,22 @@ def _ensure_research_experiment_triggers(conn: sqlite3.Connection) -> None:
                 SELECT RAISE(ABORT, 'research experiments are immutable');
             END
         """,
+        "trg_research_experiments_immutable_insert": """
+            CREATE TRIGGER trg_research_experiments_immutable_insert
+            BEFORE INSERT ON research_experiments
+            WHEN EXISTS (
+                SELECT 1 FROM research_experiments
+                WHERE experiment_id = NEW.experiment_id
+                   OR (
+                       hypothesis_family = NEW.hypothesis_family
+                       AND candidate_key = NEW.candidate_key
+                       AND candidate_version = NEW.candidate_version
+                   )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'research experiments are immutable');
+            END
+        """,
         "trg_research_evidence_immutable_update": """
             CREATE TRIGGER trg_research_evidence_immutable_update
             BEFORE UPDATE ON research_evidence
@@ -914,6 +942,20 @@ def _ensure_research_experiment_triggers(conn: sqlite3.Connection) -> None:
         "trg_research_evidence_immutable_delete": """
             CREATE TRIGGER trg_research_evidence_immutable_delete
             BEFORE DELETE ON research_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'research evidence is immutable');
+            END
+        """,
+        "trg_research_evidence_immutable_insert": """
+            CREATE TRIGGER trg_research_evidence_immutable_insert
+            BEFORE INSERT ON research_evidence
+            WHEN EXISTS (
+                SELECT 1 FROM research_evidence
+                WHERE experiment_id = NEW.experiment_id
+                  AND fold_id = NEW.fold_id
+                  AND station_id = NEW.station_id
+                  AND target_date = NEW.target_date
+            )
             BEGIN
                 SELECT RAISE(ABORT, 'research evidence is immutable');
             END

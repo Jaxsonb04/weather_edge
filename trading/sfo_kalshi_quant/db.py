@@ -178,7 +178,13 @@ def source_context_hash(
         "market": market,
         "features": features,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # allow_nan=False: a NaN/inf anywhere in the payload (not merely in a
+    # field explicitly validated below) must raise loudly here rather than
+    # silently hashing/persisting invalid JSON (`NaN`/`Infinity` are not
+    # valid JSON tokens even though Python's encoder emits them by default).
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -206,6 +212,12 @@ def _require_complete_mapping(
 
 
 _REQUIRED_MARKET_ENTRY_KEYS = ("ticker", "yes_bid", "yes_ask")
+# Numeric quote fields among the required keys above -- these must be finite
+# reals, not merely present, or a NaN/inf quote silently survives the
+# is-None check and later gets JSON-encoded as an invalid `NaN`/`Infinity`
+# token (or, with allow_nan=False downstream, an opaque encoder failure that
+# does not say which ticker or field was at fault).
+_REQUIRED_MARKET_PRICE_KEYS = ("yes_bid", "yes_ask")
 
 
 def _require_complete_market_mapping(value: object) -> dict[str, object]:
@@ -225,7 +237,130 @@ def _require_complete_market_mapping(value: object) -> dict[str, object]:
                     f"source-neutral scan context market payload for {ticker!r} "
                     f"is missing {key}"
                 )
+        for key in _REQUIRED_MARKET_PRICE_KEYS:
+            quote = entry.get(key)
+            if isinstance(quote, bool) or not isinstance(quote, (int, float)):
+                raise ValueError(
+                    f"source-neutral scan context market payload for {ticker!r} "
+                    f"has a non-numeric {key}"
+                )
+            if not math.isfinite(quote):
+                raise ValueError(
+                    f"source-neutral scan context market payload for {ticker!r} "
+                    f"has a non-finite {key}"
+                )
     return payload
+
+
+def _pacific_declaration_date(declared_at: object) -> date | None:
+    """Return the Pacific civil day a UTC ISO8601 declaration falls on.
+
+    Returns ``None`` for a malformed or timezone-naive value so a caller
+    comparing against it fails closed instead of comparing against an
+    ambiguous or wrong day.
+    """
+
+    if not isinstance(declared_at, str) or not declared_at.strip():
+        return None
+    text = declared_at.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(RESEARCH_OBJECTIVE_TZ).date()
+
+
+def source_neutral_context_from_scan_context_row(
+    row: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Derive the canonical source-neutral scan identity from one legacy,
+    per-profile ``scan_context_snapshots`` row (Task 1 repair, finding F4).
+
+    ``record_source_neutral_scan_context`` writes a canonical,
+    profile-neutral row with a populated ``source_context_hash`` going
+    forward, but it has no production caller yet, and ``record_decisions``
+    keeps writing its existing per-profile row (one per risk profile, no
+    ``source_context_hash``) for every scan -- reshaping that hot,
+    65-placeholder INSERT to also emit a deduplicated source-neutral row
+    turned out to require tolerating incomplete forecast/market payloads at
+    call sites that legitimately omit them (see the dated decision note in
+    docs/superpowers/plans/2026-07-17-chronological-research-tuning-and-promotion.md),
+    so that reshaping was deferred rather than done here.
+
+    This is the load-time alternative for Task 2's walk-forward loader:
+    given one historical ``scan_context_snapshots`` row (as a mapping --
+    pass ``dict(sqlite_row)`` for a ``sqlite3.Row``), recompute the same
+    canonical hash ``record_source_neutral_scan_context`` would have
+    produced for an identical forecast/intraday/market/feature observation.
+    The loader can then group historical, profile-duplicated rows by this
+    derived hash instead of by row identity, without any write-path or
+    schema change.
+
+    Returns ``None`` -- rather than raising -- when the row's forecast,
+    market, or feature payloads are missing, malformed, or would fail
+    ``record_source_neutral_scan_context``'s own validation (including a
+    non-finite quote or feature value), so a loader scanning a large
+    historical table can skip a bad row instead of crashing.
+    """
+
+    target_date_value = row.get("target_date")
+    station_id_value = row.get("station_id")
+    if not isinstance(target_date_value, str) or not target_date_value.strip():
+        return None
+    if not isinstance(station_id_value, str) or not station_id_value.strip():
+        return None
+    try:
+        date.fromisoformat(target_date_value)
+    except ValueError:
+        return None
+
+    forecast_raw = row.get("forecast_json")
+    market_raw = row.get("market_json")
+    features_raw = row.get("prediction_features_json")
+    intraday_raw = row.get("intraday_json")
+    if not forecast_raw or not market_raw or not features_raw:
+        return None
+    try:
+        forecast_obj = json.loads(str(forecast_raw))
+        market_obj = json.loads(str(market_raw))
+        features_obj = json.loads(str(features_raw))
+        intraday_obj = json.loads(str(intraday_raw)) if intraday_raw else {}
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        forecast_payload = _require_complete_mapping(
+            forecast_obj, required=("predicted_high_f",), label="forecast"
+        )
+        market_payload = _require_complete_market_mapping(market_obj)
+        features_payload = _require_complete_mapping(
+            features_obj, required=(), label="features"
+        )
+        intraday_payload = _require_mapping(intraday_obj, label="intraday")
+        context_hash = source_context_hash(
+            target_date=target_date_value,
+            station_id=station_id_value,
+            forecast=forecast_payload,
+            intraday=intraday_payload,
+            market=market_payload,
+            features=features_payload,
+        )
+    except ValueError:
+        return None
+
+    return {
+        "source_context_hash": context_hash,
+        "target_date": target_date_value,
+        "station_id": station_id_value,
+        "forecast": forecast_payload,
+        "intraday": intraday_payload,
+        "market": market_payload,
+        "features": features_payload,
+    }
 
 
 _EVIDENCE_ROLES = frozenset({"exploratory", "confirmatory"})
@@ -1084,10 +1219,10 @@ class PaperStore:
                     created_at,
                     civil_day,
                     station,
-                    json.dumps(forecast_payload, sort_keys=True),
-                    json.dumps(intraday_payload, sort_keys=True),
-                    json.dumps(market_payload, sort_keys=True),
-                    json.dumps(features_payload, sort_keys=True),
+                    json.dumps(forecast_payload, sort_keys=True, allow_nan=False),
+                    json.dumps(intraday_payload, sort_keys=True, allow_nan=False),
+                    json.dumps(market_payload, sort_keys=True, allow_nan=False),
+                    json.dumps(features_payload, sort_keys=True, allow_nan=False),
                     context_hash,
                     run_id,
                 ),
@@ -1147,7 +1282,7 @@ class PaperStore:
                     family,
                     key,
                     version,
-                    json.dumps(dict(parameter_json), sort_keys=True),
+                    json.dumps(dict(parameter_json), sort_keys=True, allow_nan=False),
                     role,
                 ),
             )
@@ -1180,7 +1315,7 @@ class PaperStore:
         if not experiment or not fold or not station or not civil_day or not evaluated:
             raise ValueError("research evidence requires a complete fold identity")
         try:
-            date.fromisoformat(civil_day)
+            target_civil_date = date.fromisoformat(civil_day)
         except ValueError as exc:
             raise ValueError("research evidence target date is malformed") from exc
         if not isinstance(baseline, Mapping) or not baseline:
@@ -1188,6 +1323,27 @@ class PaperStore:
         if not isinstance(challenger, Mapping) or not challenger:
             raise ValueError("research evidence challenger payload is incomplete")
         with self.connect() as conn:
+            # F3: the UTC trigger backstop (date(declared_at) <= date(target))
+            # admits declarations up to 16:59:59 PDT *during* the Pacific
+            # target day itself -- a same-day leak. The declared-before
+            # invariant is meant in Pacific civil-day terms (the account's
+            # objective-day clock), so enforce that strictly here, in
+            # addition to -- not instead of -- the UTC trigger below, which
+            # stays as the unconditional database-level backstop.
+            declared_row = conn.execute(
+                "SELECT declared_at FROM research_experiments WHERE experiment_id=?",
+                (experiment,),
+            ).fetchone()
+            if declared_row is not None:
+                declared_pacific_date = _pacific_declaration_date(declared_row[0])
+                if (
+                    declared_pacific_date is None
+                    or declared_pacific_date >= target_civil_date
+                ):
+                    raise ValueError(
+                        "research evidence must be declared before its "
+                        "evaluation window's Pacific target day"
+                    )
             conn.execute(
                 "INSERT INTO research_evidence ("
                 "experiment_id, fold_id, station_id, target_date, evaluated_at, "
@@ -1199,8 +1355,8 @@ class PaperStore:
                     station,
                     civil_day,
                     evaluated,
-                    json.dumps(dict(baseline), sort_keys=True),
-                    json.dumps(dict(challenger), sort_keys=True),
+                    json.dumps(dict(baseline), sort_keys=True, allow_nan=False),
+                    json.dumps(dict(challenger), sort_keys=True, allow_nan=False),
                 ),
             )
             conn.commit()
@@ -5274,6 +5430,7 @@ class PaperStore:
                 """
                 DELETE FROM scan_context_snapshots
                 WHERE created_at < datetime('now', ?)
+                  AND source_context_hash IS NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM decision_snapshots
                       WHERE decision_snapshots.scan_context_id = scan_context_snapshots.id
