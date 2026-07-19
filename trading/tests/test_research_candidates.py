@@ -290,6 +290,28 @@ def test_google_runtime_candidate_fails_closed_on_corroboration_block() -> None:
     assert candidate.mu is None
 
 
+def test_google_runtime_candidate_reports_a_distinct_reason_for_missing_mu_on_a_forecast_action() -> (  # noqa: E501
+    None
+):
+    """L1: a directly-constructed forecast-action evidence with ``mu=None``
+    (unreachable through ``research_walkforward.py``'s own
+    ``_build_google_evidence`` parsing, which never lets a forecast action
+    through without a finite mu -- only reachable via a hand-built
+    ``GoogleChallengerEvidence``) must not be misreported as
+    ``google_corroboration_blocked``. A genuinely blocked corroboration and
+    malformed forecast-action evidence are different failure modes."""
+
+    case = _case(
+        google_evidence=GoogleChallengerEvidence(
+            mu=None, sigma=3.0, action=GOOGLE_CHALLENGER_FORECAST_ACTION
+        )
+    )
+    candidate = google_runtime_candidate(case)
+    assert candidate.available is False
+    assert candidate.unavailable_reason == "google_forecast_evidence_missing_mu"
+    assert candidate.unavailable_reason != "google_corroboration_blocked"
+
+
 # ---------------------------------------------------------------------------
 # Fold/case fitting: determinism and "train only, never test" (guarantee 5)
 # ---------------------------------------------------------------------------
@@ -404,16 +426,89 @@ def test_case_score_payload_includes_pooling_when_present() -> None:
     assert "recalibration" in payload["pooling"]
 
 
-def test_score_fold_candidates_produces_two_challenger_rows_per_test_case() -> None:
+def test_case_score_payload_pooling_captures_a_shrinkage_k_override() -> None:
+    """L2: a ``shrinkage_k`` override passed at fit time must be captured
+    in the evidence payload, not just the module default -- so the
+    declared ``parameter_json`` for ``gaussian-pit-station-lead-v1`` can be
+    checked against what a fit actually used."""
+
     train = (_case(station_id="KSFO", lead_days=1, actual_high_f=68.0),)
-    test = (_case(station_id="KSFO", lead_days=1, actual_high_f=66.0),)
+    case = _case(station_id="KSFO", lead_days=1, actual_high_f=70.0)
+    candidate = gaussian_pit_candidate(case, train, shrinkage_k=7.0)
+    score = score_candidate_for_case(case, candidate)
+    payload = case_score_payload(score)
+    assert payload["pooling"]["shrinkage_k"] == 7.0
+
+
+def test_score_fold_candidates_produces_two_challenger_rows_per_fold() -> None:
+    """H1: one row per (fold, challenger) -- never per test case.
+
+    A fold's ``test`` tuple is one indivisible station/target-day group
+    that routinely holds more than one case (one per scan cycle). Emitting
+    a row per case instead of per fold would collide every case after the
+    first against ``research_evidence``'s fold-grained primary key -- this
+    pins that two test cases still produce exactly two rows (one per
+    challenger), with every case's score folded into that row's per-case
+    ``cases`` collection rather than spilling into extra rows.
+    """
+
+    train = (_case(station_id="KSFO", lead_days=1, actual_high_f=68.0),)
+    test = (
+        _case(station_id="KSFO", lead_days=1, actual_high_f=66.0),
+        _case(station_id="KSFO", lead_days=1, actual_high_f=67.0),
+    )
     fold = _fold(train, test)
     evidence = score_fold_candidates(fold)
-    assert len(evidence) == 2
+    assert len(evidence) == 2  # one row per challenger, not per test case
     challenger_keys = {row.challenger_candidate_key for row in evidence}
     assert challenger_keys == {GAUSSIAN_PIT_CANDIDATE_KEY, GOOGLE_RUNTIME_CANDIDATE_KEY}
+
+    expected_hashes = {case.source_context_hash for case in test}
     for row in evidence:
-        assert row.baseline.candidate_key == IDENTITY_CANDIDATE_KEY
+        assert set(row.baseline["cases"]) == expected_hashes
+        assert set(row.challenger["cases"]) == expected_hashes
+        for case_payload in row.baseline["cases"].values():
+            assert case_payload["candidate_key"] == IDENTITY_CANDIDATE_KEY
+        for case_payload in row.challenger["cases"].values():
+            assert case_payload["candidate_key"] == row.challenger_candidate_key
+
+
+def test_fold_candidate_evidence_json_fingerprint_is_independent_of_test_case_order() -> None:
+    """The persisted evidence 'fingerprint' -- the exact JSON
+    ``PaperStore.record_research_evidence`` writes via its own
+    ``json.dumps(..., sort_keys=True)`` -- must be identical no matter what
+    order a fold's ``test`` cases happen to be considered in.
+
+    The reshaped per-case ``cases`` collection is a plain dict keyed by
+    ``source_context_hash``, built by iterating ``fold.test`` in whatever
+    order it is given -- so this pins that ``sort_keys=True`` at
+    persistence time fully normalizes that insertion order away, and that
+    reordering a fold's cases never changes which cases end up in the
+    written row (only the presence of every case's own hash matters, not
+    the order it was folded in).
+    """
+
+    train = (_case(station_id="KSFO", lead_days=1, actual_high_f=68.0),)
+    a = _case(station_id="KSFO", lead_days=1, actual_high_f=66.0, source_context_hash="case-a")
+    b = _case(station_id="KSFO", lead_days=1, actual_high_f=67.0, source_context_hash="case-b")
+    c = _case(station_id="KSFO", lead_days=1, actual_high_f=65.0, source_context_hash="case-c")
+
+    forward = {
+        row.challenger_candidate_key: row
+        for row in score_fold_candidates(_fold(train, (a, b, c)))
+    }
+    reordered = {
+        row.challenger_candidate_key: row
+        for row in score_fold_candidates(_fold(train, (c, a, b)))
+    }
+    assert forward.keys() == reordered.keys()
+    for key in forward:
+        assert json.dumps(forward[key].baseline, sort_keys=True) == json.dumps(
+            reordered[key].baseline, sort_keys=True
+        )
+        assert json.dumps(forward[key].challenger, sort_keys=True) == json.dumps(
+            reordered[key].challenger, sort_keys=True
+        )
 
 
 def test_candidate_calibration_gap_pools_pit_values_for_one_candidate() -> None:
@@ -447,10 +542,7 @@ def test_candidate_calibration_gap_returns_none_when_nothing_is_available() -> N
 # ---------------------------------------------------------------------------
 
 
-def test_declared_candidate_identities_round_trip_through_record_research_evidence(
-    tmp_path: Path,
-) -> None:
-    store = PaperStore(tmp_path / "paper.db")
+def _declare_both_challengers(store: PaperStore) -> None:
     for family, key, version, role in declared_research_candidates():
         store.record_research_experiment(
             experiment_id=key,
@@ -461,16 +553,74 @@ def test_declared_candidate_identities_round_trip_through_record_research_eviden
             evidence_role=role,
         )
 
+
+def _multi_case_fold(target_date: date = date(2099, 1, 2)) -> WalkForwardFold:
+    """A fold whose ``test`` tuple has >=2 cases sharing one station/day --
+    the ordinary shape of a real fold (multiple scan cycles per
+    station/day), and the exact shape that reproduced H1: a naive
+    row-per-test-case write collides every case after the first against
+    ``research_evidence``'s fold-grained primary key
+    (``experiment_id, fold_id, station_id, target_date``)."""
+
     train = (_case(station_id="KSFO", lead_days=1, actual_high_f=68.0),)
     test = (
-        _case(
-            station_id="KSFO",
-            lead_days=1,
-            actual_high_f=66.0,
-            target_date=date(2099, 1, 2),
-        ),
+        _case(station_id="KSFO", lead_days=1, actual_high_f=66.0, target_date=target_date),
+        _case(station_id="KSFO", lead_days=1, actual_high_f=67.0, target_date=target_date),
+        _case(station_id="KSFO", lead_days=1, actual_high_f=65.5, target_date=target_date),
     )
-    fold = _fold(train, test)
+    return _fold(train, test)
+
+
+def test_declared_candidate_identities_round_trip_through_record_research_evidence(
+    tmp_path: Path,
+) -> None:
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_both_challengers(store)
+
+    # A degenerate single-test-case fold would hide H1 (each challenger's
+    # one row is a PK the fold's own first case can't collide with) --
+    # this fold carries three, the ordinary multi-scan-cycle shape.
+    fold = _multi_case_fold()
+    evidence = score_fold_candidates(fold)
+    assert len(evidence) == 2  # one row per challenger, not per test case
+
+    for row in evidence:
+        store.record_research_evidence(
+            experiment_id=row.challenger_candidate_key,
+            fold_id=row.fold_id,
+            station_id=row.station_id,
+            target_date=row.target_date.isoformat(),
+            evaluated_at=row.evaluated_at.isoformat(),
+            baseline=row.baseline,
+            challenger=row.challenger,
+        )
+
+    with store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0]
+    assert count == 2
+
+
+def test_multi_case_fold_round_trips_without_integrity_error(tmp_path: Path) -> None:
+    """H1 pinned regression: a fold with >=2 test cases must round-trip
+    through ``PaperStore.record_research_evidence`` without
+    ``sqlite3.IntegrityError``.
+
+    Before the fix, ``score_fold_candidates`` emitted one row per test
+    case per challenger; a fold's second test case (same station_id,
+    target_date, fold_id as its first -- an ordinary multi-scan-cycle
+    fold) collided with the first on ``research_evidence``'s fold-grained
+    primary key and the immutable-insert trigger converted that collision
+    into ``sqlite3.IntegrityError: research evidence is immutable``. This
+    pins that a fold with three test cases -- not the degenerate
+    single-case fold the old round-trip test used -- writes cleanly, and
+    that every case's score actually made it into the persisted payload
+    rather than being silently dropped.
+    """
+
+    store = PaperStore(tmp_path / "paper.db")
+    _declare_both_challengers(store)
+
+    fold = _multi_case_fold()
     evidence = score_fold_candidates(fold)
     assert len(evidence) == 2
 
@@ -481,13 +631,22 @@ def test_declared_candidate_identities_round_trip_through_record_research_eviden
             station_id=row.station_id,
             target_date=row.target_date.isoformat(),
             evaluated_at=row.evaluated_at.isoformat(),
-            baseline=case_score_payload(row.baseline),
-            challenger=case_score_payload(row.challenger),
+            baseline=row.baseline,
+            challenger=row.challenger,
         )
 
     with store.connect() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0]
-    assert count == 2
+        rows = conn.execute(
+            "SELECT baseline_json, challenger_json FROM research_evidence "
+            "ORDER BY fold_id"
+        ).fetchall()
+    assert len(rows) == 2
+    expected_hashes = {case.source_context_hash for case in fold.test}
+    for baseline_json, challenger_json in rows:
+        baseline = json.loads(baseline_json)
+        challenger = json.loads(challenger_json)
+        assert set(baseline["cases"]) == expected_hashes
+        assert set(challenger["cases"]) == expected_hashes
 
 
 def test_writing_evidence_for_an_undeclared_candidate_key_is_impossible(
@@ -522,6 +681,6 @@ def test_writing_evidence_for_an_undeclared_candidate_key_is_impossible(
             station_id=gaussian_row.station_id,
             target_date=gaussian_row.target_date.isoformat(),
             evaluated_at=gaussian_row.evaluated_at.isoformat(),
-            baseline=case_score_payload(gaussian_row.baseline),
-            challenger=case_score_payload(gaussian_row.challenger),
+            baseline=gaussian_row.baseline,
+            challenger=gaussian_row.challenger,
         )
