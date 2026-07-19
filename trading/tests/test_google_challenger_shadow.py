@@ -183,6 +183,12 @@ def test_served_forecast_is_byte_identical_with_shadow_disabled_and_enabled(tmp_
     assert served == disabled
     assert _asdict_json(served) == _asdict_json(disabled)
     assert shadow is not None
+    # W3 (Task 7 review, optional hardening): equality/JSON-equality between
+    # the two arms alone would not catch a regression that moved BOTH arms
+    # away from the correct value together -- pin the exact value seeded in
+    # forecast_blend_daily_high (predicted_high_f=81.2) in both arms.
+    assert served.predicted_high_f == pytest.approx(81.2)
+    assert disabled.predicted_high_f == pytest.approx(81.2)
 
 
 def test_shadow_dual_run_never_mutates_the_permanent_emos_baseline(tmp_path):
