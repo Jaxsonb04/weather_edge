@@ -1,0 +1,476 @@
+"""Task 2: leakage-resistant chronological folds for research walk-forward tuning.
+
+Builds on Task 1's immutable ``research_experiments``/``research_evidence``
+tables and the load-time ``source_neutral_context_from_scan_context_row``
+helper (``trading/sfo_kalshi_quant/db.py``) to turn historical, per-profile
+``scan_context_snapshots`` rows into deduplicated, chronologically ordered
+``WalkForwardFold`` objects that Task 3 can fit and score candidates against.
+
+Five load-bearing leakage-resistance guarantees, enforced structurally
+(not by caller convention) in this module:
+
+1. **Chronology.** A fold's training pool never contains a case whose own
+   ``target_date`` is at-or-after the test fold's ``target_date``
+   (``_case_eligible_for_training``'s day-order check), *and* never
+   contains a case that settled at or after the earliest test decision in
+   the fold (settlement-before-decision). Both checks are independent of
+   each other by design -- the day-order check holds even if a row's
+   ``settled_at`` were wrong or adversarially early.
+2. **Embargo.** A configurable number of days (default
+   ``DEFAULT_EMBARGO_DAYS``) immediately preceding the test day is purged
+   from that *same station's* training pool, to bound weather
+   autocorrelation leakage at the fold boundary. Cross-station data on an
+   adjacent day is not embargoed.
+3. **Load-time dedupe.** Rows are grouped by the derived
+   ``source_context_hash`` before folding, so the same real-world scan
+   observed by multiple risk profiles collapses into exactly one
+   ``ResearchCase``. Rows that cannot be canonicalized, or that disagree
+   with a sibling row sharing their hash, are skipped with a recorded
+   reason rather than guessed at.
+4. **Fail closed.** Malformed contexts, timezone-naive or unparseable
+   timestamps, non-finite outcome values, and cases whose own
+   ``settled_at`` precedes their own ``decision_at`` are all excluded
+   loudly (a ``CaseSkip`` reason), never silently dropped or coerced.
+5. **Determinism.** ``load_research_cases``/``build_walk_forward_folds``
+   take no clock or randomness inputs; every output collection is sorted
+   by content (never by input/row order), so the same input rows -- in any
+   order -- always produce byte-identical folds.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Mapping, Sequence
+
+from .db import source_neutral_context_from_scan_context_row
+
+# Number of days immediately preceding a test day, for the same station,
+# whose training candidates are purged even though they technically settled
+# before the test decision -- bounds weather autocorrelation leakage at the
+# fold boundary (plan Task 2 Step 3: "the configurable one-day embargo").
+DEFAULT_EMBARGO_DAYS = 1
+
+
+@dataclass(frozen=True)
+class ResearchCase:
+    """One settled, source-neutral observation available for folding."""
+
+    station_id: str
+    target_date: date
+    decision_at: datetime
+    settled_at: datetime
+    lead_days: int
+    source_context_hash: str
+    baseline_mu: float
+    baseline_sigma: float
+    actual_high_f: float
+
+    def __post_init__(self) -> None:
+        if self.decision_at.tzinfo is None:
+            raise ValueError("ResearchCase.decision_at must be timezone-aware")
+        if self.settled_at.tzinfo is None:
+            raise ValueError("ResearchCase.settled_at must be timezone-aware")
+        if self.settled_at < self.decision_at:
+            raise ValueError(
+                "ResearchCase cannot settle before its own decision"
+            )
+        if self.lead_days < 0:
+            raise ValueError("ResearchCase.lead_days cannot be negative")
+        for label, value in (
+            ("baseline_mu", self.baseline_mu),
+            ("baseline_sigma", self.baseline_sigma),
+            ("actual_high_f", self.actual_high_f),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"ResearchCase.{label} must be finite")
+        if self.baseline_sigma <= 0:
+            raise ValueError("ResearchCase.baseline_sigma must be positive")
+
+
+@dataclass(frozen=True)
+class CaseSkip:
+    """One historical row excluded from research cases, with why."""
+
+    row_index: int
+    reason: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class CaseLoadResult:
+    cases: tuple[ResearchCase, ...]
+    skips: tuple[CaseSkip, ...]
+
+
+@dataclass(frozen=True)
+class WalkForwardFold:
+    """One indivisible station/target-day test group and its training pool."""
+
+    fold_id: str
+    decision_at: datetime
+    train: tuple[ResearchCase, ...]
+    test: tuple[ResearchCase, ...]
+
+
+@dataclass(frozen=True)
+class UnavailableFold:
+    """A candidate test group with no leakage-safe training pool at all."""
+
+    fold_id: str
+    station_id: str
+    target_date: date
+    reason: str
+
+
+@dataclass(frozen=True)
+class FoldBuildResult:
+    folds: tuple[WalkForwardFold, ...]
+    unavailable: tuple[UnavailableFold, ...]
+
+
+@dataclass(frozen=True)
+class WalkForwardEvidence:
+    """Bundled fold-construction evidence: what folded, what didn't, and why
+    every skipped historical row never made it into a ``ResearchCase``."""
+
+    folds: tuple[WalkForwardFold, ...]
+    unavailable: tuple[UnavailableFold, ...]
+    skips: tuple[CaseSkip, ...]
+
+
+def _parse_strict_timestamp(value: object) -> datetime | None:
+    """Parse a timezone-aware timestamp; return ``None`` on any ambiguity.
+
+    Deliberately does not fall back to assuming UTC for a naive value (the
+    way ``trading/sfo_kalshi_quant/_util.py``'s ``_parse_timestamp`` does
+    for legacy tolerant call sites) -- a chronological fold has no safe
+    default for an ambiguous decision or settlement instant, so it must
+    fail closed instead of guessing.
+    """
+
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def _finite_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _build_case(
+    index: int,
+    row: Mapping[str, object],
+    context: Mapping[str, object],
+    skips: list[CaseSkip],
+) -> ResearchCase | None:
+    decision_at = _parse_strict_timestamp(row.get("decision_at"))
+    if decision_at is None:
+        skips.append(
+            CaseSkip(index, "invalid_decision_at", "missing or timezone-naive")
+        )
+        return None
+    settled_at = _parse_strict_timestamp(row.get("settled_at"))
+    if settled_at is None:
+        skips.append(
+            CaseSkip(index, "invalid_settled_at", "missing or timezone-naive")
+        )
+        return None
+    if settled_at < decision_at:
+        skips.append(
+            CaseSkip(
+                index,
+                "settlement_before_decision",
+                "row's own settled_at precedes its own decision_at",
+            )
+        )
+        return None
+
+    actual_high_f = _finite_float(row.get("actual_high_f"))
+    if actual_high_f is None:
+        skips.append(
+            CaseSkip(index, "invalid_actual_high_f", "missing or non-finite")
+        )
+        return None
+    baseline_mu = _finite_float(row.get("baseline_mu"))
+    if baseline_mu is None:
+        skips.append(CaseSkip(index, "invalid_baseline_mu", "missing or non-finite"))
+        return None
+    baseline_sigma = _finite_float(row.get("baseline_sigma"))
+    if baseline_sigma is None or baseline_sigma <= 0:
+        skips.append(
+            CaseSkip(
+                index,
+                "invalid_baseline_sigma",
+                "missing, non-finite, or non-positive",
+            )
+        )
+        return None
+
+    lead_days = row.get("lead_days")
+    if isinstance(lead_days, bool) or not isinstance(lead_days, int) or lead_days < 0:
+        skips.append(
+            CaseSkip(index, "invalid_lead_days", "missing, non-integer, or negative")
+        )
+        return None
+
+    try:
+        return ResearchCase(
+            station_id=str(context["station_id"]),
+            target_date=date.fromisoformat(str(context["target_date"])),
+            decision_at=decision_at,
+            settled_at=settled_at,
+            lead_days=lead_days,
+            source_context_hash=str(context["source_context_hash"]),
+            baseline_mu=baseline_mu,
+            baseline_sigma=baseline_sigma,
+            actual_high_f=actual_high_f,
+        )
+    except ValueError as exc:
+        skips.append(CaseSkip(index, "invalid_case", str(exc)))
+        return None
+
+
+def _reconcile_duplicates(
+    context_hash: str,
+    built: list[tuple[int, ResearchCase]],
+    skips: list[CaseSkip],
+) -> ResearchCase | None:
+    """Collapse rows sharing one source_context_hash into one canonical case.
+
+    ``decision_at`` legitimately varies by a few seconds across profiles
+    scanning the same content in the same cycle, so the earliest is used.
+    Every other research-relevant field must agree exactly -- a mismatch
+    means two profiles disagree about the same real-world observation's
+    outcome, which is a data-integrity problem this loader must not paper
+    over by picking a winner.
+    """
+
+    if not built:
+        return None
+    if len(built) == 1:
+        return built[0][1]
+
+    reference = built[0][1]
+    for _, case in built[1:]:
+        if (
+            case.settled_at != reference.settled_at
+            or case.actual_high_f != reference.actual_high_f
+            or case.baseline_mu != reference.baseline_mu
+            or case.baseline_sigma != reference.baseline_sigma
+            or case.lead_days != reference.lead_days
+        ):
+            for skip_index, _ in built:
+                skips.append(
+                    CaseSkip(
+                        skip_index,
+                        "inconsistent_duplicate",
+                        f"rows sharing source_context_hash={context_hash} "
+                        "disagree on settlement/outcome fields",
+                    )
+                )
+            return None
+
+    _, canonical = min(built, key=lambda item: (item[1].decision_at, item[0]))
+    return canonical
+
+
+def load_research_cases(rows: Sequence[Mapping[str, object]]) -> CaseLoadResult:
+    """Derive deduplicated, source-neutral ``ResearchCase``s from historical rows.
+
+    Each row is expected to carry the ``scan_context_snapshots`` payload
+    columns (``target_date``, ``station_id``, ``forecast_json``,
+    ``intraday_json``, ``market_json``, ``prediction_features_json``) plus
+    the settled-outcome fields a ``ResearchCase`` needs (``decision_at``,
+    ``settled_at``, ``actual_high_f``, ``baseline_mu``, ``baseline_sigma``,
+    ``lead_days``).
+
+    Rows are grouped by the derived ``source_context_hash`` (Task 1's
+    loader contract, via ``source_neutral_context_from_scan_context_row``)
+    -- the same real-world scan observed by more than one risk profile
+    collapses into one ``ResearchCase``. A row that cannot be
+    canonicalized, has an ambiguous/invalid outcome field, or disagrees
+    with a sibling row sharing its hash, is skipped with a recorded reason
+    instead of being silently dropped or guessed at.
+
+    Output is sorted purely by content (``target_date``, ``station_id``,
+    ``source_context_hash``), never by input row order, so the same input
+    rows in any order produce an identical ``cases`` tuple.
+    """
+
+    by_hash: dict[str, list[tuple[int, Mapping[str, object], Mapping[str, object]]]] = {}
+    skips: list[CaseSkip] = []
+    for index, row in enumerate(rows):
+        context = source_neutral_context_from_scan_context_row(dict(row))
+        if context is None:
+            skips.append(
+                CaseSkip(
+                    index,
+                    "malformed_source_context",
+                    "source_neutral_context_from_scan_context_row returned None",
+                )
+            )
+            continue
+        by_hash.setdefault(str(context["source_context_hash"]), []).append(
+            (index, row, context)
+        )
+
+    cases: list[ResearchCase] = []
+    for context_hash, entries in by_hash.items():
+        built: list[tuple[int, ResearchCase]] = []
+        for index, row, context in entries:
+            case = _build_case(index, row, context, skips)
+            if case is not None:
+                built.append((index, case))
+        canonical = _reconcile_duplicates(context_hash, built, skips)
+        if canonical is not None:
+            cases.append(canonical)
+
+    cases.sort(key=lambda c: (c.target_date, c.station_id, c.source_context_hash))
+    skips.sort(key=lambda s: s.row_index)
+    return CaseLoadResult(cases=tuple(cases), skips=tuple(skips))
+
+
+def _case_eligible_for_training(
+    candidate: ResearchCase,
+    *,
+    station_id: str,
+    target_date: date,
+    min_test_decision_at: datetime,
+    embargo_days: int,
+) -> bool:
+    # Guarantee 1 (structural): never use a case whose own target day is at
+    # or after the day being predicted -- independent of what its
+    # settled_at timestamp claims, so a corrupted or adversarial settled_at
+    # cannot smuggle same-day or future-day truth into training.
+    if candidate.target_date >= target_date:
+        return False
+    # Guarantee 1 (temporal): settlement-before-decision. A training case's
+    # truth value is usable only once it settled strictly before the
+    # earliest test decision in this fold.
+    if not candidate.settled_at < min_test_decision_at:
+        return False
+    # Guarantee 2: embargo. Purge the window immediately preceding the test
+    # day for the SAME station, where weather autocorrelation risk is
+    # highest. A different station on an adjacent day is not embargoed.
+    if candidate.station_id == station_id:
+        gap_days = (target_date - candidate.target_date).days
+        if gap_days <= embargo_days:
+            return False
+    return True
+
+
+def build_walk_forward_folds(
+    cases: Sequence[ResearchCase],
+    *,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+) -> FoldBuildResult:
+    """Group cases into indivisible station/target-day folds.
+
+    Test rows are grouped by ``(station_id, target_date)`` -- an
+    indivisible unit, so correlated market brackets for the same city and
+    target day always stay in one fold's ``test`` tuple. A group with no
+    leakage-safe training candidate at all is reported as an
+    ``UnavailableFold`` rather than silently omitted or backed by future
+    data.
+
+    Deterministic: every fold's ``train``/``test`` tuples and the overall
+    ``folds``/``unavailable`` sequences are sorted by content, never by
+    ``cases`` input order.
+    """
+
+    if embargo_days < 0:
+        raise ValueError("embargo_days cannot be negative")
+
+    groups: dict[tuple[str, date], list[ResearchCase]] = {}
+    for case in cases:
+        groups.setdefault((case.station_id, case.target_date), []).append(case)
+
+    folds: list[WalkForwardFold] = []
+    unavailable: list[UnavailableFold] = []
+
+    for (station_id, target_date), test_cases in groups.items():
+        test_sorted = tuple(
+            sorted(test_cases, key=lambda c: (c.source_context_hash, c.decision_at))
+        )
+        min_test_decision_at = min(c.decision_at for c in test_sorted)
+        fold_id = f"{station_id}:{target_date.isoformat()}"
+
+        train_cases = [
+            candidate
+            for candidate in cases
+            if _case_eligible_for_training(
+                candidate,
+                station_id=station_id,
+                target_date=target_date,
+                min_test_decision_at=min_test_decision_at,
+                embargo_days=embargo_days,
+            )
+        ]
+
+        if not train_cases:
+            unavailable.append(
+                UnavailableFold(
+                    fold_id=fold_id,
+                    station_id=station_id,
+                    target_date=target_date,
+                    reason="no_training_history",
+                )
+            )
+            continue
+
+        train_sorted = tuple(
+            sorted(
+                train_cases,
+                key=lambda c: (c.target_date, c.station_id, c.source_context_hash),
+            )
+        )
+        folds.append(
+            WalkForwardFold(
+                fold_id=fold_id,
+                decision_at=min_test_decision_at,
+                train=train_sorted,
+                test=test_sorted,
+            )
+        )
+
+    folds.sort(key=lambda f: f.fold_id)
+    unavailable.sort(key=lambda f: f.fold_id)
+    return FoldBuildResult(folds=tuple(folds), unavailable=tuple(unavailable))
+
+
+def build_walk_forward_evidence(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
+) -> WalkForwardEvidence:
+    """End-to-end: historical rows -> deduplicated cases -> chronological folds.
+
+    Bundles the fold-construction evidence a research report needs: the
+    folds that were built, the test groups that had no safe training pool,
+    and every historical row that was skipped on the way, with why.
+    """
+
+    load_result = load_research_cases(rows)
+    fold_result = build_walk_forward_folds(load_result.cases, embargo_days=embargo_days)
+    return WalkForwardEvidence(
+        folds=fold_result.folds,
+        unavailable=fold_result.unavailable,
+        skips=load_result.skips,
+    )
