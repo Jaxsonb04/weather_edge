@@ -95,6 +95,7 @@ from ._cli import paper as _paper
 from ._cli import backtest as _backtest_cli
 from ._cli import parser as _parser
 from ._cli import data as _data
+from ._cli import research as _research
 from ._cli.format import (
     _color_edge,
     _color_prob,
@@ -521,6 +522,14 @@ def cmd_daily_report(args: argparse.Namespace) -> int:
 
 def cmd_strategy_research(args: argparse.Namespace) -> int:
     return _data_dispatch("cmd_strategy_research", args)
+
+
+def cmd_research_evaluate(args: argparse.Namespace) -> int:
+    return _research.cmd_research_evaluate(args)
+
+
+def cmd_research_propose_target(args: argparse.Namespace) -> int:
+    return _research.cmd_research_propose_target(args)
 
 
 def _config(args: argparse.Namespace) -> StrategyConfig:
