@@ -89,6 +89,61 @@ here rather than only in the implementer's own notes):
   ``candidate_version`` is welcome, but its Holm-adjusted significance is
   computed against the WHOLE family's p-value history, not in isolation.
 
+Repair notes (2026-07-19, four HIGH review findings plus three cheap
+items on top of G1-G7 above -- see the plan doc's dated decision note
+for the full day-unit rationale):
+
+- HIGH-1 (scope-mismatch confirmation hole): ``_effect_classification``
+  now checks G6 instrument-scope coverage UNCONDITIONALLY, before ever
+  looking at ``roi_ok``/``log_growth_ok`` -- a positive-evidence run
+  declared against a ``no_side_or_maker`` scope can no longer read as
+  ``effect_found`` just because ROI/log-growth happened to clear their
+  own bounds; scope coverage is checked first and blocks regardless of
+  how the P&L numbers came out.
+- HIGH-2 (partial score evidence fails open): CRPS/Brier bootstrap
+  coverage and calibration-gap PIT coverage are now compared against
+  the full evaluated denominator (``len(aggregates)`` folds,
+  ``report.paired_case_count`` cases) -- not just "zero vs. nonzero".
+  A partially-missing score/PIT payload (e.g. 29 of 30 folds' score
+  evidence unavailable) fails closed with
+  ``REASON_CRPS_INCOMPLETE_COVERAGE``/
+  ``REASON_BRIER_INCOMPLETE_COVERAGE``/
+  ``REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE`` instead of silently
+  scoring only the available sliver as though it were the whole
+  picture. The coverage counts themselves are surfaced on
+  ``PromotionDecision`` (``crps_score_coverage_folds``/
+  ``brier_score_coverage_folds``/``calibration_pit_coverage_count``/
+  ``paired_case_count``).
+- HIGH-3 (calibration gate contaminable): both
+  ``candidate_calibration_gap`` calls now receive ``candidate_evidence``
+  FILTERED to rows whose ``challenger_candidate_key`` matches
+  ``declaration.candidate_key`` AND whose ``fold_id`` is one of THIS
+  call's own ``folds`` -- never the raw, caller-supplied sequence. An
+  alien row (a different challenger's row, or a row from an unrelated
+  evaluation window a caller loaded from the whole evidence table --
+  the natural accident once Task 7 exists) can no longer dilute either
+  arm's pooled PIT gap and unblock a genuine regression.
+- HIGH-4 (day unit): a SECOND, additional floor --
+  ``MIN_DISTINCT_CALENDAR_TARGET_DAYS = 10`` -- now blocks alongside
+  the unchanged ``MIN_INDEPENDENT_CONFIRMATORY_DAYS = 30``
+  station-day-fold floor, which stays the spec's own primary unit. See
+  the plan doc's dated decision note for the full rationale (cross-city
+  same-day weather correlation) and why the station-day-fold floor was
+  kept rather than replaced.
+- "Enough filled logical positions" (spec Sec 8, no number given): a
+  paired report with ZERO filled challenger positions
+  (``report.challenger_kpis.fills``) now blocks with
+  ``REASON_INSUFFICIENT_FILLED_POSITIONS`` -- closes the near-zero-fill
+  promotion path (a challenger that never actually trades cannot ride a
+  losing baseline's own drawdown to a positive ROI/log-growth delta).
+  This repair floors at 1; Task 7 may raise it once real fill-rate
+  evidence exists.
+- G1 defense-in-depth: ``reconcile_fold_inventory`` now ALSO reports a
+  ``records``/``exclusions`` row whose ``(fold_id, source_context_hash)``
+  key matches no real fold/case at all (a fabricated or duplicate row)
+  -- previously only the folds-to-records/exclusions direction was
+  checked, never the reverse.
+
 HARD CONSTRAINTS: this module never imports ``config``, ``live_execution``,
 or ``db`` -- it has no way to read or write ``LIVE_PROFILE_OVERRIDES``,
 ``LIVE_ORDERS_ENABLED``, ``SFO_LIVE_TRADING_ENABLED``, any live fingerprint,
@@ -126,6 +181,22 @@ from .research_walkforward import UnavailableFold, WalkForwardFold
 # Plan Task 6 Step 1 / spec Sec 8: "at least 30 independent ... days".
 MIN_INDEPENDENT_CONFIRMATORY_DAYS = 30
 
+# Repair (2026-07-19, HIGH-4 / day unit): a SECOND, additional floor on top
+# of the station-day-fold floor above. Spec Sec 8 splits folds by "complete
+# city-target settlement days" and separately requires "at least 30
+# independent complete days" for promotion -- the spec's own primary unit
+# for both is the station-day fold (one fold per city/target-day), which
+# ``MIN_INDEPENDENT_CONFIRMATORY_DAYS`` already floors. But 15 stations'
+# worth of station-day folds settling on the SAME 2 calendar days (weather
+# that is heavily correlated same-city-same-day) can clear 30 station-day
+# folds while only ever having observed 2 genuinely independent days of
+# weather. This conservative addition -- not a spec change -- requires a
+# SECOND, independent minimum of distinct ``target_date`` values among the
+# paired evidence, so a degenerate few-calendar-day run can no longer clear
+# promotion purely by having enough stations. See the plan doc's dated
+# decision note for the full rationale; Task 7 may strengthen this further.
+MIN_DISTINCT_CALENDAR_TARGET_DAYS = 10
+
 CONFIRMATORY_EVIDENCE_ROLE = "confirmatory"
 EXPLORATORY_EVIDENCE_ROLE = "exploratory"
 _VALID_EVIDENCE_ROLES = (EXPLORATORY_EVIDENCE_ROLE, CONFIRMATORY_EVIDENCE_ROLE)
@@ -154,17 +225,22 @@ REASON_FILL_SCOPE_NOT_UNIFORM = "fill_scope_not_uniform"
 REASON_COVERAGE_EXCLUSIONS_PRESENT = "incomplete_replay_evidence_coverage_exclusions_present"
 REASON_FOLD_NOT_PROMOTION_ELIGIBLE = "incomplete_replay_evidence_promotion_ineligible_fold"
 REASON_INSUFFICIENT_DAYS = "insufficient_independent_confirmatory_days"
+REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS = "insufficient_distinct_calendar_target_days"
 REASON_ROI_LOWER_BOUND = "roi_lower_confidence_bound_not_above_zero"
 REASON_LOG_GROWTH_LOWER_BOUND = "log_growth_lower_confidence_bound_not_above_zero"
 REASON_DRAWDOWN_TOLERANCE = "maximum_drawdown_exceeds_declared_tolerance"
 REASON_CRPS_UNAVAILABLE = "crps_regression_evidence_unavailable"
+REASON_CRPS_INCOMPLETE_COVERAGE = "crps_regression_evidence_incomplete_coverage"
 REASON_CRPS_REGRESSION = "crps_regression_exceeds_declared_tolerance"
 REASON_BRIER_UNAVAILABLE = "brier_regression_evidence_unavailable"
+REASON_BRIER_INCOMPLETE_COVERAGE = "brier_regression_evidence_incomplete_coverage"
 REASON_BRIER_REGRESSION = "brier_regression_exceeds_declared_tolerance"
 REASON_CALIBRATION_GAP_UNAVAILABLE = "calibration_gap_evidence_unavailable"
+REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE = "calibration_gap_evidence_incomplete_coverage"
 REASON_CALIBRATION_GAP_REGRESSION = "calibration_gap_regression_exceeds_declared_tolerance"
 REASON_HOLM_NOT_SIGNIFICANT = "holm_adjusted_significance_not_reached"
 REASON_INSUFFICIENT_INSTRUMENT_COVERAGE = "insufficient_instrument_coverage_for_declared_hypothesis"
+REASON_INSUFFICIENT_FILLED_POSITIONS = "insufficient_filled_challenger_logical_positions"
 
 
 @dataclass(frozen=True)
@@ -248,7 +324,13 @@ class PromotionDecision:
     module's binding conditions require the payload to carry.
 
     ``live_activation_allowed`` is NEVER set to ``True`` anywhere in this
-    module -- see the module docstring's HARD CONSTRAINTS paragraph."""
+    module -- see the module docstring's HARD CONSTRAINTS paragraph.
+
+    Repair (2026-07-19): ``distinct_calendar_target_days``/
+    ``paired_case_count``/``crps_score_coverage_folds``/
+    ``brier_score_coverage_folds``/``calibration_pit_coverage_count`` are
+    new structured evidence surfaced by the HIGH-2/HIGH-4 repairs -- see
+    the module docstring's "Repair notes" paragraph."""
 
     experiment_id: str
     eligible_for_target_paper: bool
@@ -257,12 +339,17 @@ class PromotionDecision:
     effect_classification: str = NO_EFFECT
     instrument_scope_statement: str = ""
     independent_confirmatory_days: int = 0
+    distinct_calendar_target_days: int = 0
     holm_p_value: float | None = None
     holm_adjusted_significant: bool = False
     target_hit_rate_reported: float | None = None
     fold_unavailable_count: int = 0
     coverage_exclusion_count: int = 0
     max_daily_capacity_utilization_pct: float | None = None
+    paired_case_count: int = 0
+    crps_score_coverage_folds: int = 0
+    brier_score_coverage_folds: int = 0
+    calibration_pit_coverage_count: int = 0
 
 
 def reconcile_fold_inventory(
@@ -276,15 +363,23 @@ def reconcile_fold_inventory(
     never trusts that whatever assembled ``records``/``exclusions`` did so
     correctly. A case present in neither (silently scrubbed) or in BOTH
     (double-counted) is reported as a ``FoldInventoryMismatch``; an empty
-    return means full reconciliation."""
+    return means full reconciliation.
+
+    Defense-in-depth (2026-07-19 repair): also checks the REVERSE
+    direction -- a ``records``/``exclusions`` row whose ``(fold_id,
+    source_context_hash)`` key matches no case in any ``folds`` entry at
+    all is a fabricated or duplicate row (never a legitimate settled test
+    case), also reported as a ``FoldInventoryMismatch``."""
 
     paired_keys = {(r.fold_id, r.source_context_hash) for r in records}
     excluded_keys = {(e.fold_id, e.source_context_hash) for e in exclusions}
 
+    fold_keys: set[tuple[str, str]] = set()
     mismatches: list[FoldInventoryMismatch] = []
     for fold in folds:
         for case in fold.test:
             key = (fold.fold_id, case.source_context_hash)
+            fold_keys.add(key)
             in_paired = key in paired_keys
             in_excluded = key in excluded_keys
             if in_paired and in_excluded:
@@ -303,6 +398,28 @@ def reconcile_fold_inventory(
                         reason="case_not_accounted_for",
                     )
                 )
+
+    for record in records:
+        key = (record.fold_id, record.source_context_hash)
+        if key not in fold_keys:
+            mismatches.append(
+                FoldInventoryMismatch(
+                    fold_id=record.fold_id,
+                    source_context_hash=record.source_context_hash,
+                    reason="fabricated_record_not_in_any_fold",
+                )
+            )
+    for exclusion in exclusions:
+        key = (exclusion.fold_id, exclusion.source_context_hash)
+        if key not in fold_keys:
+            mismatches.append(
+                FoldInventoryMismatch(
+                    fold_id=exclusion.fold_id,
+                    source_context_hash=exclusion.source_context_hash,
+                    reason="fabricated_exclusion_not_in_any_fold",
+                )
+            )
+
     mismatches.sort(key=lambda m: (m.fold_id, m.source_context_hash))
     return tuple(mismatches)
 
@@ -346,6 +463,46 @@ def _instrument_scope_statement(report: PairedEvidenceReport) -> str:
     )
 
 
+def _relevant_candidate_evidence(
+    candidate_evidence: Sequence[FoldCandidateEvidence],
+    *,
+    candidate_key: str,
+    fold_ids: frozenset[str],
+) -> tuple[FoldCandidateEvidence, ...]:
+    """HIGH-3 repair: the ONLY ``candidate_evidence`` rows either
+    calibration-gap arm may pool from -- rows for THIS declared
+    challenger (``row.challenger_candidate_key == candidate_key``) whose
+    ``fold_id`` is one of THIS call's own ``folds``. Excludes both an
+    alien challenger's row (whose baseline cases would otherwise pool
+    into the SAME ``active-identity-v1`` baseline gap) and a row from an
+    unrelated evaluation window a caller loaded from the whole evidence
+    table (the natural accident once Task 7 persists evidence history)."""
+
+    return tuple(
+        row
+        for row in candidate_evidence
+        if row.challenger_candidate_key == candidate_key and row.fold_id in fold_ids
+    )
+
+
+def _available_pit_count(evidence: Sequence[FoldCandidateEvidence], *, candidate_key: str) -> int:
+    """HIGH-2 repair: how many available PIT values ``candidate_calibration_gap``
+    would actually pool for ``candidate_key`` from ``evidence`` -- the same
+    per-case ``candidate_key``/``available``/``pit`` filter that function
+    applies internally, duplicated here (read-only, same file) because
+    that function itself returns only the computed gap, never a count."""
+
+    return sum(
+        1
+        for row in evidence
+        for bundle in (row.baseline, row.challenger)
+        for case_payload in bundle["cases"].values()
+        if case_payload["candidate_key"] == candidate_key
+        and case_payload["available"]
+        and case_payload["pit"] is not None
+    )
+
+
 def _effect_classification(
     *,
     roi_ok: bool,
@@ -358,16 +515,28 @@ def _effect_classification(
     declared hypothesis predicts an edge this pipeline's uniform,
     observed instrument scope could actually have shown; otherwise it is
     ``insufficient_instrument_coverage`` (a distinct, non-overridable
-    block reason), never conflated with a genuine null result."""
+    block reason), never conflated with a genuine null result.
 
-    if roi_ok and log_growth_ok:
-        return EFFECT_FOUND, []
+    Repair (2026-07-19, HIGH-1): the scope-coverage check runs FIRST and
+    UNCONDITIONALLY -- before ever looking at ``roi_ok``/``log_growth_ok``.
+    Previously it only ran when ROI/log-growth had FAILED, so a
+    positive-evidence run declared against a scope this pipeline's
+    evidence can never speak to (``no_side_or_maker``) was classified
+    ``effect_found`` and promoted -- confirming a hypothesis no instrument
+    here could have confirmed OR falsified. A declared scope this
+    pipeline's uniform, observed instrument scope does not cover can
+    therefore never reach ``effect_found``, regardless of how the P&L
+    numbers came out."""
 
     uniform_scope = len(report.side_scopes) == 1 and len(report.fill_scopes) == 1
     if uniform_scope and not _instrument_scope_matches(
         declaration.predicted_edge_scope, report.side_scopes[0], report.fill_scopes[0]
     ):
         return INSUFFICIENT_INSTRUMENT_COVERAGE, [REASON_INSUFFICIENT_INSTRUMENT_COVERAGE]
+
+    if roi_ok and log_growth_ok:
+        return EFFECT_FOUND, []
+
     return NO_EFFECT, []
 
 
@@ -446,6 +615,19 @@ def evaluate_promotion(
     if independent_days < MIN_INDEPENDENT_CONFIRMATORY_DAYS:
         block_reasons.append(REASON_INSUFFICIENT_DAYS)
 
+    # HIGH-4 repair: second, independent floor on DISTINCT calendar
+    # target days, alongside the unchanged station-day-fold floor above.
+    distinct_calendar_target_days = len({a.target_date for a in aggregates})
+    if distinct_calendar_target_days < MIN_DISTINCT_CALENDAR_TARGET_DAYS:
+        block_reasons.append(REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS)
+
+    # "Enough filled logical positions" (spec Sec 8): a challenger that
+    # never actually filled a single position carries no real trading
+    # evidence, however its P&L delta happens to compare against the
+    # baseline.
+    if report.challenger_kpis.fills < 1:
+        block_reasons.append(REASON_INSUFFICIENT_FILLED_POSITIONS)
+
     bootstrap_results = day_clustered_bootstrap(aggregates)
     roi_interval = bootstrap_results["roi"]
     log_growth_interval = bootstrap_results["log_growth_per_day"]
@@ -459,22 +641,53 @@ def evaluate_promotion(
     if report.challenger_kpis.maximum_drawdown_pct > declaration.max_drawdown_tolerance_pct:
         block_reasons.append(REASON_DRAWDOWN_TOLERANCE)
 
+    # HIGH-2 repair: a partially-missing score payload (some folds
+    # available, some not) is no longer treated the same as fully
+    # available evidence just because SOME point estimate exists --
+    # ``n_clusters`` (how many folds actually contributed a value) is
+    # compared against ``independent_days`` (every fold this decision is
+    # otherwise evaluated over), never just checked for "is it None".
     crps_interval = bootstrap_results["crps"]
     if crps_interval.point_estimate is None:
         block_reasons.append(REASON_CRPS_UNAVAILABLE)
+    elif crps_interval.n_clusters != independent_days:
+        block_reasons.append(REASON_CRPS_INCOMPLETE_COVERAGE)
     elif crps_interval.point_estimate < -declaration.crps_regression_tolerance:
         block_reasons.append(REASON_CRPS_REGRESSION)
 
     brier_interval = bootstrap_results["brier"]
     if brier_interval.point_estimate is None:
         block_reasons.append(REASON_BRIER_UNAVAILABLE)
+    elif brier_interval.n_clusters != independent_days:
+        block_reasons.append(REASON_BRIER_INCOMPLETE_COVERAGE)
     elif brier_interval.point_estimate < -declaration.brier_regression_tolerance:
         block_reasons.append(REASON_BRIER_REGRESSION)
 
-    baseline_gap = candidate_calibration_gap(candidate_evidence, candidate_key=IDENTITY_CANDIDATE_KEY)
-    challenger_gap = candidate_calibration_gap(candidate_evidence, candidate_key=declaration.candidate_key)
+    # HIGH-3 repair: filter to THIS declared challenger's own rows over
+    # THIS call's own folds before pooling either arm's calibration gap --
+    # never the raw, caller-supplied candidate_evidence sequence, which
+    # may carry alien challengers' or alien evaluation windows' rows.
+    fold_ids = frozenset(fold.fold_id for fold in folds)
+    relevant_candidate_evidence = _relevant_candidate_evidence(
+        candidate_evidence, candidate_key=declaration.candidate_key, fold_ids=fold_ids
+    )
+    baseline_gap = candidate_calibration_gap(relevant_candidate_evidence, candidate_key=IDENTITY_CANDIDATE_KEY)
+    challenger_gap = candidate_calibration_gap(
+        relevant_candidate_evidence, candidate_key=declaration.candidate_key
+    )
+    # HIGH-2 repair: PIT coverage is compared against the paired case
+    # count actually evaluated -- a sliver of available PIT values pooled
+    # from a mostly-unavailable score payload no longer computes a
+    # (misleadingly precise-looking) gap as though it were complete.
+    baseline_pit_count = _available_pit_count(relevant_candidate_evidence, candidate_key=IDENTITY_CANDIDATE_KEY)
+    challenger_pit_count = _available_pit_count(
+        relevant_candidate_evidence, candidate_key=declaration.candidate_key
+    )
+    calibration_pit_coverage_count = min(baseline_pit_count, challenger_pit_count)
     if baseline_gap is None or challenger_gap is None:
         block_reasons.append(REASON_CALIBRATION_GAP_UNAVAILABLE)
+    elif calibration_pit_coverage_count < report.paired_case_count:
+        block_reasons.append(REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE)
     elif (challenger_gap - baseline_gap) > declaration.calibration_gap_regression_tolerance:
         block_reasons.append(REASON_CALIBRATION_GAP_REGRESSION)
 
@@ -508,10 +721,15 @@ def evaluate_promotion(
         effect_classification=effect_classification,
         instrument_scope_statement=_instrument_scope_statement(report),
         independent_confirmatory_days=independent_days,
+        distinct_calendar_target_days=distinct_calendar_target_days,
         holm_p_value=current_p_value,
         holm_adjusted_significant=holm_significant,
         target_hit_rate_reported=report.challenger_kpis.target_hit_rate,
         fold_unavailable_count=len(unavailable_folds),
         coverage_exclusion_count=len(report.coverage_exclusions),
         max_daily_capacity_utilization_pct=target_capacity.max_daily_utilization_pct,
+        paired_case_count=report.paired_case_count,
+        crps_score_coverage_folds=crps_interval.n_clusters,
+        brier_score_coverage_folds=brier_interval.n_clusters,
+        calibration_pit_coverage_count=calibration_pit_coverage_count,
     )

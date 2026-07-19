@@ -17,6 +17,26 @@ live configuration or real-order flags -- plus the binding conditions
 - G7: 30-independent-day minimum; repeated experiments require a new
   candidate_version, never a silent re-run.
 
+Also covers four HIGH review findings plus three cheap items, repaired
+2026-07-19 (see research_promotion.py's own "Repair notes" docstring
+paragraph for the full rationale on each):
+
+- HIGH-1: a positive-evidence run declared against a no_side_or_maker
+  scope stays insufficient_instrument_coverage, never effect_found.
+- HIGH-2: CRPS/Brier/calibration-gap checks fail closed on PARTIAL
+  (not just total) missing score/PIT evidence.
+- HIGH-3: the calibration gate stays blocked despite alien
+  challenger-key/fold-id evidence-row contamination.
+- HIGH-4: a second, independent >=10-distinct-calendar-day floor blocks
+  the 15-stations-x-2-days degenerate case the 30-station-day-fold floor
+  alone lets through.
+- "Enough filled logical positions" (spec Sec 8): zero filled challenger
+  positions blocks even with a positive ROI/log-growth delta.
+- LOW-c: the hardcoded scope strings in ``_instrument_scope_matches``
+  are parity-tested against research_replay's own constants.
+- MEDIUM-1: ``reconcile_fold_inventory`` also catches a fabricated
+  record/exclusion row that matches no real fold at all.
+
 Fixture convention matches the sibling Task 3-5 test files
 (test_research_evidence.py/test_research_replay.py/
 test_research_candidates.py): ``ResearchCase``/``WalkForwardFold``/
@@ -43,12 +63,16 @@ from sfo_kalshi_quant.research_policy import TARGET_POLICY
 from sfo_kalshi_quant.research_promotion import (
     EFFECT_FOUND,
     INSUFFICIENT_INSTRUMENT_COVERAGE,
+    MIN_DISTINCT_CALENDAR_TARGET_DAYS,
     NO_EFFECT,
     PREDICTED_EDGE_SCOPE_NO_SIDE_OR_MAKER,
     PREDICTED_EDGE_SCOPE_YES_SIDE_TAKER,
+    REASON_BRIER_INCOMPLETE_COVERAGE,
     REASON_BRIER_REGRESSION,
+    REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE,
     REASON_CALIBRATION_GAP_REGRESSION,
     REASON_COVERAGE_EXCLUSIONS_PRESENT,
+    REASON_CRPS_INCOMPLETE_COVERAGE,
     REASON_CRPS_REGRESSION,
     REASON_DRAWDOWN_TOLERANCE,
     REASON_EXECUTION_MODEL_VERSION_NOT_UNIFORM,
@@ -57,6 +81,8 @@ from sfo_kalshi_quant.research_promotion import (
     REASON_FOLD_NOT_PROMOTION_ELIGIBLE,
     REASON_HOLM_NOT_SIGNIFICANT,
     REASON_INSUFFICIENT_DAYS,
+    REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS,
+    REASON_INSUFFICIENT_FILLED_POSITIONS,
     REASON_INSUFFICIENT_INSTRUMENT_COVERAGE,
     REASON_LOG_GROWTH_LOWER_BOUND,
     REASON_NOT_CONFIRMATORY_EVIDENCE,
@@ -66,10 +92,13 @@ from sfo_kalshi_quant.research_promotion import (
     FamilyAttempt,
     FoldInventoryMismatch,
     PromotionDecision,
+    _instrument_scope_matches,
     evaluate_promotion,
     reconcile_fold_inventory,
 )
 from sfo_kalshi_quant.research_replay import FoldReplayEvidence
+from sfo_kalshi_quant.research_replay import _FILL_SCOPE as REPLAY_FILL_SCOPE
+from sfo_kalshi_quant.research_replay import _SIDE_SCOPE as REPLAY_SIDE_SCOPE
 from sfo_kalshi_quant.research_walkforward import ResearchCase, WalkForwardFold
 
 STATION = "KSFO"
@@ -218,6 +247,8 @@ def _cluster(
     promotion_eligible: bool = True,
     baseline_available: bool = True,
     challenger_available: bool = True,
+    baseline_score_available: bool = True,
+    challenger_score_available: bool = True,
     execution_model_version: str = "exec-v4-test",
     side_scope: str = "yes_only",
     fill_scope: str = "taker_only_no_tape",
@@ -254,8 +285,14 @@ def _cluster(
         promotion_eligible=promotion_eligible, baseline_stamp=stamp, challenger_stamp=stamp,
     )
 
-    baseline_score = _score_payload(crps=baseline_crps, bracket_brier=baseline_brier, pit=baseline_pit, candidate_key=IDENTITY_CANDIDATE_KEY)
-    challenger_score = _score_payload(crps=challenger_crps, bracket_brier=challenger_brier, pit=challenger_pit, candidate_key=challenger_key)
+    baseline_score = _score_payload(
+        available=baseline_score_available, crps=baseline_crps, bracket_brier=baseline_brier,
+        pit=baseline_pit, candidate_key=IDENTITY_CANDIDATE_KEY,
+    )
+    challenger_score = _score_payload(
+        available=challenger_score_available, crps=challenger_crps, bracket_brier=challenger_brier,
+        pit=challenger_pit, candidate_key=challenger_key,
+    )
     candidate = _candidate_evidence(
         fold_id=fold_id, station_id=station_id, target_date=target_date, challenger_key=challenger_key,
         baseline_cases={source_hash: baseline_score}, challenger_cases={source_hash: challenger_score},
@@ -820,3 +857,307 @@ def test_challenger_declaration_rejects_negative_tolerance() -> None:
 def test_challenger_declaration_rejects_empty_identity_fields() -> None:
     with pytest.raises(ValueError):
         _declaration(experiment_id="")
+
+
+# ---------------------------------------------------------------------------
+# Repair (2026-07-19): HIGH-1 -- scope-mismatch confirmation hole.
+# _effect_classification previously only checked G6 instrument-scope
+# coverage when ROI/log-growth had FAILED -- a positive-evidence run
+# declared against a no_side_or_maker hypothesis promoted as effect_found.
+# ---------------------------------------------------------------------------
+
+
+def test_no_side_or_maker_hypothesis_with_positive_evidence_is_still_insufficient_coverage() -> None:
+    # Reviewer's positive-delta construction: 30 clean, profitable folds
+    # (ROI/log-growth both clearly pass) declared against a scope this
+    # pipeline's evidence can never confirm or falsify. Must block as
+    # insufficient_instrument_coverage, never promote as effect_found.
+    folds, replays, candidates = _experiment(30, baseline_pnl=10.0, challenger_pnl=15.0)
+    declaration = _declaration(predicted_edge_scope=PREDICTED_EDGE_SCOPE_NO_SIDE_OR_MAKER)
+    decision = evaluate_promotion(declaration, folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert decision.effect_classification == INSUFFICIENT_INSTRUMENT_COVERAGE
+    assert decision.effect_classification != EFFECT_FOUND
+    assert REASON_INSUFFICIENT_INSTRUMENT_COVERAGE in decision.block_reasons
+    assert decision.eligible_for_target_paper is False
+
+
+# ---------------------------------------------------------------------------
+# Repair (2026-07-19): HIGH-2 -- partial score evidence fails open.
+# CRPS/Brier/calibration checks previously only failed closed on TOTALLY
+# missing evidence (point_estimate is None) -- a challenger with 29/30
+# folds' score payloads unavailable and one good fold passed clean.
+# ---------------------------------------------------------------------------
+
+
+def _partial_score_experiment(*, available_count: int = 1, total: int = 30):
+    folds, replays, candidates = [], [], []
+    for i in range(total):
+        score_available = i < available_count
+        fold, replay, candidate = _cluster(
+            i, baseline_pnl=10.0, challenger_pnl=15.0,
+            challenger_score_available=score_available,
+        )
+        folds.append(fold); replays.append(replay); candidates.append(candidate)
+    return folds, replays, candidates
+
+
+def test_crps_blocks_on_incomplete_fold_coverage_not_just_total_absence() -> None:
+    # Only 1 of 30 folds carries an available challenger CRPS score;
+    # previously this single good fold's regression-free value let the
+    # whole candidate pass the CRPS gate.
+    folds, replays, candidates = _partial_score_experiment(available_count=1, total=30)
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert REASON_CRPS_INCOMPLETE_COVERAGE in decision.block_reasons
+    assert decision.eligible_for_target_paper is False
+    assert decision.crps_score_coverage_folds == 1
+    assert decision.independent_confirmatory_days == 30
+
+
+def test_brier_blocks_on_incomplete_fold_coverage_not_just_total_absence() -> None:
+    folds, replays, candidates = _partial_score_experiment(available_count=1, total=30)
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert REASON_BRIER_INCOMPLETE_COVERAGE in decision.block_reasons
+    assert decision.brier_score_coverage_folds == 1
+
+
+def test_calibration_gap_blocks_on_incomplete_pit_coverage_not_just_total_absence() -> None:
+    folds, replays, candidates = _partial_score_experiment(available_count=1, total=30)
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE in decision.block_reasons
+    assert decision.calibration_pit_coverage_count == 1
+    assert decision.paired_case_count == 30
+
+
+def test_full_score_coverage_does_not_trigger_incomplete_coverage_reasons() -> None:
+    # Sanity check: the ordinary, fully-available-evidence happy path
+    # never trips the new incomplete-coverage reasons.
+    folds, replays, candidates = _experiment(30, baseline_pnl=10.0, challenger_pnl=15.0)
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert REASON_CRPS_INCOMPLETE_COVERAGE not in decision.block_reasons
+    assert REASON_BRIER_INCOMPLETE_COVERAGE not in decision.block_reasons
+    assert REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE not in decision.block_reasons
+    assert decision.crps_score_coverage_folds == 30
+    assert decision.brier_score_coverage_folds == 30
+    assert decision.calibration_pit_coverage_count == 30
+
+
+# ---------------------------------------------------------------------------
+# Repair (2026-07-19): HIGH-3 -- calibration gate contaminable by alien
+# evidence rows (a different challenger's rows, or rows from folds outside
+# this call's own evaluated window -- the natural accident once Task 7
+# loads a family's whole evidence table).
+# ---------------------------------------------------------------------------
+
+
+def test_calibration_gap_regression_stays_blocked_despite_alien_row_contamination() -> None:
+    # 30 real folds: baseline well-calibrated (pit=0.5 constant),
+    # challenger poorly calibrated (pit=0.95 constant) -> a genuine
+    # calibration-gap regression (delta ~0.45) against a tolerance (0.30)
+    # that alone clearly blocks.
+    folds, replays, candidates = _experiment(30, baseline_pit=0.5, challenger_pit=0.95)
+    declaration = _declaration(calibration_gap_regression_tolerance=0.30)
+
+    clean_decision = evaluate_promotion(declaration, folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+    assert REASON_CALIBRATION_GAP_REGRESSION in clean_decision.block_reasons
+
+    # 8 "alien" rows: same declared candidate_key, but fold_id NOT among
+    # this call's own `folds` (an unrelated evaluation window a caller
+    # loaded from the whole evidence table), well-calibrated (pit=0.5) --
+    # designed to dilute the pooled challenger gap toward the baseline's
+    # own gap and silently unblock the genuine regression above if fed in
+    # unfiltered.
+    alien_candidates = []
+    for i in range(8):
+        alien_baseline_score = _score_payload(crps=2.0, bracket_brier=0.3, pit=0.5, candidate_key=IDENTITY_CANDIDATE_KEY)
+        alien_challenger_score = _score_payload(crps=1.0, bracket_brier=0.1, pit=0.5, candidate_key=CHALLENGER_KEY)
+        alien_candidates.append(
+            _candidate_evidence(
+                fold_id=f"ALIEN:{BASE_DATE.isoformat()}:{i}", station_id=STATION, target_date=BASE_DATE,
+                challenger_key=CHALLENGER_KEY,
+                baseline_cases={f"alien-hash-{i}": alien_baseline_score},
+                challenger_cases={f"alien-hash-{i}": alien_challenger_score},
+            )
+        )
+
+    contaminated_decision = evaluate_promotion(
+        declaration, folds=folds, replay_evidence=replays, candidate_evidence=list(candidates) + alien_candidates,
+    )
+    assert REASON_CALIBRATION_GAP_REGRESSION in contaminated_decision.block_reasons
+    assert contaminated_decision.eligible_for_target_paper is False
+    # The alien rows' PIT values never entered either pooled gap at all.
+    assert contaminated_decision.calibration_pit_coverage_count == clean_decision.calibration_pit_coverage_count
+
+
+# ---------------------------------------------------------------------------
+# Repair (2026-07-19): HIGH-4 -- day unit. The 30-station-day-fold floor
+# alone lets 15 stations x 2 calendar days pass on two days of correlated
+# weather. Secondary floor: >=10 DISTINCT CALENDAR TARGET DAYS among the
+# paired evidence, on top of the unchanged 30 station-day-fold floor.
+# ---------------------------------------------------------------------------
+
+
+def _multi_station_experiment(*, stations: int, days: int, **overrides):
+    station_ids = [f"KST{i:02d}" for i in range(stations)]
+    folds, replays, candidates = [], [], []
+    for day_offset in range(days):
+        for station_id in station_ids:
+            fold, replay, candidate = _cluster(day_offset, station_id=station_id, **overrides)
+            folds.append(fold); replays.append(replay); candidates.append(candidate)
+    return folds, replays, candidates
+
+
+def test_fifteen_stations_two_calendar_days_still_blocks_on_distinct_days() -> None:
+    # Reviewer's degenerate construction: 15 stations x 2 days = 30
+    # station-day folds (clears MIN_INDEPENDENT_CONFIRMATORY_DAYS) but
+    # only 2 genuinely independent calendar days of weather.
+    folds, replays, candidates = _multi_station_experiment(
+        stations=15, days=2, baseline_pnl=10.0, challenger_pnl=15.0,
+    )
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert decision.independent_confirmatory_days == 30
+    assert REASON_INSUFFICIENT_DAYS not in decision.block_reasons
+    assert decision.distinct_calendar_target_days == 2
+    assert REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS in decision.block_reasons
+    assert decision.eligible_for_target_paper is False
+
+
+@pytest.mark.parametrize(
+    "days,expect_blocked",
+    [
+        (MIN_DISTINCT_CALENDAR_TARGET_DAYS - 1, True),
+        (MIN_DISTINCT_CALENDAR_TARGET_DAYS, False),
+        (MIN_DISTINCT_CALENDAR_TARGET_DAYS + 1, False),
+    ],
+)
+def test_distinct_calendar_target_days_boundary(days: int, expect_blocked: bool) -> None:
+    # 4 stations x `days` calendar days always clears the 30-station-day
+    # floor (>=36 folds); only the distinct-day count varies.
+    folds, replays, candidates = _multi_station_experiment(
+        stations=4, days=days, baseline_pnl=10.0, challenger_pnl=15.0,
+    )
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert decision.independent_confirmatory_days >= 30
+    assert REASON_INSUFFICIENT_DAYS not in decision.block_reasons
+    assert decision.distinct_calendar_target_days == days
+    assert (REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS in decision.block_reasons) == expect_blocked
+
+
+# ---------------------------------------------------------------------------
+# Cheap item (2026-07-19): "enough filled logical positions" (spec Sec 8).
+# Closes the near-zero-fill promotion path -- a challenger that never
+# actually fills a position but rides a losing baseline's own drawdown to
+# a positive ROI/log-growth delta.
+# ---------------------------------------------------------------------------
+
+
+def _zero_fill_cluster(day_offset: int, *, baseline_pnl: float = -20.0):
+    target_date = BASE_DATE + timedelta(days=day_offset)
+    fold_id = f"{STATION}:{target_date.isoformat()}"
+    source_hash = f"hash-{STATION}-{day_offset}"
+    settled_at = datetime(target_date.year, target_date.month, target_date.day, 23, 0, tzinfo=timezone.utc)
+    case = _research_case(station_id=STATION, target_date=target_date, settled_at=settled_at, source_context_hash=source_hash)
+    fold = _fold(fold_id, (case,))
+    stamp = _stamp()
+
+    # Baseline: a real filled, losing trade.
+    baseline_case_payload = _case_payload(
+        available=True, realized_pnl=baseline_pnl, filled_count=1,
+        tickers=(_ticker(status="filled", realized_pnl=baseline_pnl),), stamp=stamp, candidate_key=IDENTITY_CANDIDATE_KEY,
+    )
+    # Challenger: available (had a quote to evaluate), but never actually
+    # filled -- flat pnl, zero real trading evidence.
+    challenger_case_payload = _case_payload(
+        available=True, realized_pnl=0.0, filled_count=0,
+        tickers=(_ticker(status="rejected", realized_pnl=0.0),), stamp=stamp, candidate_key=CHALLENGER_KEY,
+    )
+    replay = _replay_evidence(
+        fold_id=fold_id, station_id=STATION, target_date=target_date, challenger_key=CHALLENGER_KEY,
+        baseline_cases={source_hash: baseline_case_payload}, challenger_cases={source_hash: challenger_case_payload},
+        baseline_stamp=stamp, challenger_stamp=stamp,
+    )
+    baseline_score = _score_payload(crps=2.0, bracket_brier=0.3, pit=0.5, candidate_key=IDENTITY_CANDIDATE_KEY)
+    challenger_score = _score_payload(crps=1.0, bracket_brier=0.1, pit=0.5, candidate_key=CHALLENGER_KEY)
+    candidate = _candidate_evidence(
+        fold_id=fold_id, station_id=STATION, target_date=target_date, challenger_key=CHALLENGER_KEY,
+        baseline_cases={source_hash: baseline_score}, challenger_cases={source_hash: challenger_score},
+    )
+    return fold, replay, candidate
+
+
+def test_zero_filled_challenger_positions_blocks_even_with_positive_roi_delta() -> None:
+    # Challenger never fills a single position (purely flat); baseline
+    # loses money every day, so the challenger arm's P&L delta is still
+    # cleanly positive. Zero real trading evidence must still block.
+    folds, replays, candidates = [], [], []
+    for i in range(30):
+        fold, replay, candidate = _zero_fill_cluster(i)
+        folds.append(fold); replays.append(replay); candidates.append(candidate)
+
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert REASON_ROI_LOWER_BOUND not in decision.block_reasons
+    assert REASON_INSUFFICIENT_FILLED_POSITIONS in decision.block_reasons
+    assert decision.eligible_for_target_paper is False
+
+
+def test_at_least_one_filled_position_does_not_trigger_zero_fill_reason() -> None:
+    folds, replays, candidates = _experiment(30, baseline_pnl=10.0, challenger_pnl=15.0)
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+    assert REASON_INSUFFICIENT_FILLED_POSITIONS not in decision.block_reasons
+
+
+# ---------------------------------------------------------------------------
+# LOW-c: parity test pinning the hardcoded "yes_only"/"taker_only_no_tape"
+# strings in _instrument_scope_matches to research_replay's own constants.
+# ---------------------------------------------------------------------------
+
+
+def test_instrument_scope_matches_hardcoded_strings_match_research_replay_constants() -> None:
+    assert REPLAY_SIDE_SCOPE == "yes_only"
+    assert REPLAY_FILL_SCOPE == "taker_only_no_tape"
+    assert _instrument_scope_matches(PREDICTED_EDGE_SCOPE_YES_SIDE_TAKER, REPLAY_SIDE_SCOPE, REPLAY_FILL_SCOPE) is True
+    assert _instrument_scope_matches(PREDICTED_EDGE_SCOPE_NO_SIDE_OR_MAKER, REPLAY_SIDE_SCOPE, REPLAY_FILL_SCOPE) is False
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-1: defense-in-depth. reconcile_fold_inventory also reports a
+# fabricated/duplicate records or exclusions row whose (fold_id, hash)
+# appears in no fold at all.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_fold_inventory_catches_a_fabricated_record_not_in_any_fold() -> None:
+    case1 = _research_case(target_date=BASE_DATE, settled_at=datetime(2026, 1, 1, 23, tzinfo=timezone.utc), source_context_hash="h1")
+    fold = _fold("KSFO:2026-01-01", (case1,))
+
+    record_h1 = _record_for(fold_id=fold.fold_id, source_context_hash="h1")
+    # A fabricated/duplicate record whose (fold_id, hash) matches no real
+    # fold or case at all.
+    fabricated_record = _record_for(fold_id="KSFO:2026-01-01", source_context_hash="h-fabricated")
+
+    mismatches = reconcile_fold_inventory([fold], (record_h1, fabricated_record), ())
+
+    assert FoldInventoryMismatch(
+        fold_id="KSFO:2026-01-01", source_context_hash="h-fabricated", reason="fabricated_record_not_in_any_fold"
+    ) in mismatches
+
+
+def test_reconcile_fold_inventory_catches_a_fabricated_exclusion_not_in_any_fold() -> None:
+    case1 = _research_case(target_date=BASE_DATE, settled_at=datetime(2026, 1, 1, 23, tzinfo=timezone.utc), source_context_hash="h1")
+    fold = _fold("KSFO:2026-01-01", (case1,))
+
+    record_h1 = _record_for(fold_id=fold.fold_id, source_context_hash="h1")
+    fabricated_exclusion = _exclusion_for(fold_id="KSFO:2026-01-01", source_context_hash="h-fabricated")
+
+    mismatches = reconcile_fold_inventory([fold], (record_h1,), (fabricated_exclusion,))
+
+    assert FoldInventoryMismatch(
+        fold_id="KSFO:2026-01-01", source_context_hash="h-fabricated", reason="fabricated_exclusion_not_in_any_fold"
+    ) in mismatches

@@ -395,6 +395,72 @@ git add trading/sfo_kalshi_quant/research_promotion.py trading/tests/test_resear
 git commit -m "feat: gate research paper promotions"
 ```
 
+**Decision note (2026-07-19, repair of review findings HIGH-1 through HIGH-4 plus three
+cheap items):** a live probe-construction review of `research_promotion.py` (commit `56a6f1f6`)
+found four HIGH-severity promotion-gate holes, all repaired the same day (same commit range,
+`trading/sfo_kalshi_quant/research_promotion.py` and `trading/tests/test_research_promotion.py`
+only -- no other task's files touched):
+
+- **HIGH-1** (scope-mismatch confirmation hole): `_effect_classification` only checked G6
+  instrument-scope coverage when ROI/log-growth had FAILED, so a positive-evidence run declared
+  against `PREDICTED_EDGE_SCOPE_NO_SIDE_OR_MAKER` -- a hypothesis this pipeline's yes-side/
+  taker-only evidence can never confirm OR falsify -- classified as `effect_found` and promoted.
+  Fixed by moving the scope-coverage check first and unconditional, before ROI/log-growth are
+  ever consulted.
+- **HIGH-2** (partial score evidence fails open): the CRPS/Brier/calibration-gap checks only
+  failed closed when evidence was TOTALLY missing (`point_estimate is None` / `gap is None`). A
+  challenger with 29 of 30 folds' score payloads `available=False` and one clean fold passed
+  every one of those gates on that single fold's value. Fixed by comparing each check's actual
+  coverage against the full evaluated denominator (`bootstrap_results[...].n_clusters` against
+  `len(fold_paired_aggregates(records))` for CRPS/Brier; pooled available-PIT count against
+  `report.paired_case_count` for the calibration gap) and blocking on a new, distinct
+  "incomplete coverage" reason when they disagree. The coverage counts themselves are now
+  surfaced on `PromotionDecision`.
+- **HIGH-3** (calibration gate contaminable): both `candidate_calibration_gap` calls received
+  the raw, caller-supplied `candidate_evidence` sequence unfiltered. An alien row -- a different
+  challenger's row, or a row from an unrelated evaluation window (the natural accident once
+  Task 7 persists evidence history and a caller loads a whole family's table) -- could dilute
+  either arm's pooled PIT gap enough to unblock a genuine regression. Fixed by filtering both
+  calls' input to rows whose `challenger_candidate_key` matches the declaration's `candidate_key`
+  AND whose `fold_id` is one of the current call's own `folds`, before either gap is computed.
+- **HIGH-4** (day unit): `MIN_INDEPENDENT_CONFIRMATORY_DAYS = 30` counts station-day FOLDS
+  (spec Sec 8's own primary unit: "Split by complete city-target settlement days; all correlated
+  brackets for the same city and target stay in one fold"). 15 stations settling on the same 2
+  calendar days produces 30 station-day folds while observing only 2 genuinely independent days
+  of weather -- same-city-same-day weather is correlated, so this is not 30 independent looks at
+  the world. **Orchestrator-imposed decision**: keep the 30 station-day-fold floor as the spec's
+  primary unit (spec Sec 8 names no other unit, and the fold-splitting rule itself is unambiguous
+  about what a "fold" is), and ADD a second, independent floor requiring
+  `MIN_DISTINCT_CALENDAR_TARGET_DAYS = 10` distinct `target_date` values among the paired
+  evidence. This is a conservative addition, not a spec change: it can only make promotion
+  stricter, never looser, and blocks the 2-calendar-day degenerate case while leaving every
+  legitimate multi-week run (which naturally spans well over 10 distinct days) unaffected.
+  Boundary-tested at 9/10/11 distinct days. Task 7 may strengthen this further (e.g. an explicit
+  cross-city correlation adjustment to the bootstrap itself) once it has more evidence-window
+  history to reason about; this repair does not attempt that.
+- **"Enough filled logical positions"** (spec Sec 8: "Promotion into `research-target` requires
+  at least 30 independent complete days, enough filled logical positions, ..." -- no exact count
+  given anywhere in the spec). Without this check, a challenger that never fills a single position
+  (staying flat every day) could still clear the ROI/log-growth gates purely by comparison against
+  a losing baseline, despite carrying zero real trading evidence. Repaired by blocking when
+  `report.challenger_kpis.fills < 1` (a floor of 1, since the spec names no number). Task 7 may
+  raise this floor once real fill-rate evidence across live promotion candidates exists.
+- **LOW-c**: added a parity test pinning the hardcoded `"yes_only"`/`"taker_only_no_tape"`
+  strings in `_instrument_scope_matches` to `research_replay.py`'s own `_SIDE_SCOPE`/
+  `_FILL_SCOPE` constants, so the two can never silently drift apart (same convention as the
+  existing `_FILLED_STATUS`/`TickerReplayStatus` parity test in `test_research_evidence.py`).
+- **MEDIUM-1** (defense-in-depth): `reconcile_fold_inventory` previously only checked the
+  folds-to-records/exclusions direction (every settled case accounted for exactly once). It now
+  also reports a `records`/`exclusions` row whose `(fold_id, source_context_hash)` key matches no
+  real fold/case at all -- a fabricated or duplicate row -- under new
+  `fabricated_record_not_in_any_fold`/`fabricated_exclusion_not_in_any_fold` reasons.
+
+None of the Holm/bootstrap math, any plan-named threshold, or `live_activation_allowed` (still
+never assigned anywhere in the module) changed. Full trading suite: 1866 baseline + 15 new
+`test_research_promotion.py` cases = 1881 tests, all green except one pre-existing,
+unrelated failure in `test_research_goals.py` (a date-dependent fixture that already failed on
+unmodified HEAD, confirmed via `git stash`; flagged separately, not part of this repair).
+
 ### Task 7: Publish and operate the evidence loop
 
 **Files:**
