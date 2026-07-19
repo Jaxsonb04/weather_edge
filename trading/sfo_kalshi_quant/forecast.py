@@ -78,7 +78,6 @@ class SfoForecasterAdapter:
         self.station_id = self.city.nws_station_id
         self.weather_db = self.root / "weather.db"
         self.ab_test_path = self.root / "ab_test_results.json"
-        self.google_cache_path = self.root / "google_weather_cache.json"
 
     def latest_blend(self, target: date) -> ForecastSnapshot:
         if not self.city.has_full_blend:
@@ -93,24 +92,19 @@ class SfoForecasterAdapter:
             row = self._latest_blend_row(target)
             if row is not None:
                 return row
-        if self.google_cache_path.exists():
-            cache = json.loads(self.google_cache_path.read_text())
-            cache_row = _cache_daily_high(cache, target)
-            if cache_row is not None and cache_row.get("highF") is not None:
-                return ForecastSnapshot(
-                    target_date=target,
-                    predicted_high_f=float(cache_row["highF"]),
-                    fetched_at=cache_row.get("fetched_at") or cache.get("fetched_at"),
-                    lead_hours=_maybe_float(cache_row.get("lead_hours")),
-                    method=cache_row.get("method") or cache.get("method", "google_weather_cache"),
-                    google_high_f=float(cache_row["highF"]),
-                    source_count=1,
-                    max_calls_per_day=_maybe_int(cache_row.get("max_calls_per_day") or cache.get("max_calls_per_day")),
-                    calls_used_today=_maybe_int(cache_row.get("calls_used_today") or cache.get("calls_used_today")),
-                    raw={"source": "google_weather_cache", "cache": cache, "daily_high": cache_row},
-                )
+        # T7-1: the legacy raw-JSON google_weather_cache.json fallback that
+        # used to live here was removed (2026-07-17 plan, Task 7 binding
+        # condition T7-1). No consumer may read Google content from that
+        # file any more -- raw Google fields belong ONLY in the TTL-enforced
+        # runtime store (spec section 7.2). A missing weather.db or a
+        # weather.db with no matching forecast_blend_daily_high row is now
+        # an explicit, hard failure instead of a silent degrade to legacy
+        # cache content: callers must treat this as a real outage, not a
+        # softer "no live data yet" state.
         raise ForecastDataError(
-            f"No forecast found for {target.isoformat()} in {self.weather_db} or {self.google_cache_path}"
+            f"No forecast found for {target.isoformat()} in {self.weather_db} "
+            "(the legacy google_weather_cache.json fallback was removed; "
+            "see docs/superpowers/plans/2026-07-17-multicity-google-runtime-weather.md Task 7, T7-1)"
         )
 
     def intraday_snapshot(self, target: date) -> IntradaySnapshot | None:
@@ -332,6 +326,46 @@ class SfoForecasterAdapter:
                 "google_warning": google_source.get("warning") if isinstance(google_source, dict) else None,
             },
         )
+
+    _GOOGLE_CHALLENGER_BASELINE_COLUMNS = (
+        "station_id", "target_date", "issued_at", "policy_version",
+        "baseline_mu", "baseline_sigma", "challenger_mu", "challenger_sigma", "action",
+    )
+
+    def latest_google_challenger_baseline(self, target: date) -> dict | None:
+        """Read one durable paired baseline/Google-challenger evidence row.
+
+        Task 7: a plain SQL read of the forecaster-owned, non-Google-raw
+        ``google_challenger_research_baseline`` table -- mirrors
+        ``_latest_blend_row``/``_latest_emos_snapshot``'s existing pattern of
+        reading forecaster's weather.db directly rather than importing
+        forecaster's Python modules (the two projects deliberately do not
+        import each other; see ``cities.py``). Returns ``None`` when
+        weather.db, the table, or a matching row does not exist yet -- this
+        is research-only shadow evidence and is never required for the live
+        forecast path.
+        """
+
+        if not self.weather_db.exists():
+            return None
+        columns_sql = ", ".join(self._GOOGLE_CHALLENGER_BASELINE_COLUMNS)
+        query = f"""
+            SELECT {columns_sql}
+            FROM google_challenger_research_baseline
+            WHERE station_id = ? AND target_date = ?
+            ORDER BY issued_at DESC
+            LIMIT 1
+        """
+        try:
+            with sqlite3.connect(self.weather_db) as conn:
+                if not _table_exists(conn, "google_challenger_research_baseline"):
+                    return None
+                row = conn.execute(query, (self.station_id, target.isoformat())).fetchone()
+        except sqlite3.Error as exc:
+            raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
+        if row is None:
+            return None
+        return dict(zip(self._GOOGLE_CHALLENGER_BASELINE_COLUMNS, row))
 
     def _latest_emos_snapshot(self, target: date) -> ForecastSnapshot | None:
         """Build a ForecastSnapshot from the freshest live EMOS row for a city.
@@ -750,16 +784,6 @@ def _is_clean_next_day_blend(target_iso: object, fetched_at: object, details_jso
     decision = details.get("observed_high_decision") if isinstance(details, dict) else None
     mode = decision.get("mode") if isinstance(decision, dict) else None
     return str(mode).lower() not in {"floor", "lock"}
-
-
-def _cache_daily_high(cache: dict, target: date) -> dict | None:
-    target_iso = target.isoformat()
-    for row in cache.get("daily_highs") or []:
-        if isinstance(row, dict) and row.get("target_date") == target_iso:
-            return row
-    if cache.get("target_date") == target_iso:
-        return cache
-    return None
 
 
 def _intraday_weight(

@@ -16,6 +16,29 @@ class BuyLimitQuote:
     edge: float
     edge_lcb: float
     would_cross: bool
+    contracts: float
+
+
+def initial_queue_ahead(
+    limit_price: float,
+    visible_bid: float | None,
+    displayed_bid_size: float | None,
+) -> float:
+    """Return known queue ahead when posting a buy limit.
+
+    Improving the visible bid creates a new best price with no displayed queue
+    known ahead of it. At the visible bid, its displayed size is ahead. A limit
+    below the visible bid conservatively retains that size as known liquidity
+    at a better price. Missing bid evidence preserves the displayed-depth
+    estimate rather than inventing priority.
+    """
+
+    depth = max(0.0, float(displayed_bid_size or 0.0))
+    if visible_bid is None:
+        return depth
+    if _round_price(float(limit_price)) > _round_price(float(visible_bid)):
+        return 0.0
+    return depth
 
 
 def buy_limit_for_decision(
@@ -64,6 +87,85 @@ def buy_limit_for_decision(
         edge=edge,
         edge_lcb=edge_lcb,
         would_cross=crosses,
+        contracts=float(decision.recommended_contracts),
+    )
+
+
+def target_research_quote(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> BuyLimitQuote | None:
+    """Canonical target-sleeve quote with a zero LCB-edge floor.
+
+    Prefer a one-tick improving maker quote when the spread permits it.  When
+    that price would cross, take only whole contracts at the visible ask,
+    downsized to displayed depth before fees are recomputed.  Unlike the legacy
+    generic limit policy, the target research floor is exactly non-negative
+    after-fee LCB edge, not the 2-point buffer.
+    """
+
+    if not decision.approved or decision.recommended_contracts <= 0:
+        return None
+    try:
+        contracts = float(decision.recommended_contracts)
+        visible_ask = float(decision.ask)
+        visible_bid = max(0.0, float(decision.bid))
+        tick = float(config.limit_price_tick)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not math.isfinite(contracts)
+        or not math.isfinite(visible_ask)
+        or not math.isfinite(visible_bid)
+        or not math.isfinite(tick)
+        or not 0.0 < visible_ask < 1.0
+        or contracts <= 0
+        or tick <= 0
+    ):
+        return None
+    point_probability = (
+        float(decision.model_probability)
+        if config.edge_gate_uses_model_probability
+        and decision.model_probability is not None
+        else float(decision.probability)
+    )
+    inside_price = _floor_to_tick(visible_bid + tick, tick)
+    crosses = inside_price >= visible_ask - 1e-12
+    if crosses:
+        try:
+            ask_size = float(decision.ask_size)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(ask_size):
+            return None
+        contracts = float(math.floor(min(contracts, ask_size)))
+        if contracts < 1.0:
+            return None
+        price = _floor_to_tick(visible_ask, tick)
+    else:
+        price = inside_price
+    fee = quadratic_fee_average_per_contract(
+        price,
+        contracts,
+        maker=not crosses,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=decision.ticker,
+    )
+    cost = price + fee
+    edge = point_probability - cost
+    edge_lcb = float(decision.probability_lcb) - cost
+    if edge < -1e-12 or edge_lcb < -1e-12:
+        return None
+    return BuyLimitQuote(
+        price=_round_price(price),
+        fee_per_contract=fee,
+        cost_per_contract=cost,
+        edge=edge,
+        edge_lcb=edge_lcb,
+        would_cross=crosses,
+        contracts=contracts,
     )
 
 

@@ -49,6 +49,8 @@ _COMMAND_NAMES = (
     "cmd_paper_settle",
     "cmd_paper_summary",
     "cmd_portfolio_scan",
+    "cmd_research_evaluate",
+    "cmd_research_propose_target",
     "cmd_strategy_research",
     "cmd_synthetic_blend_calibration",
     "cmd_tail_basket",
@@ -76,15 +78,16 @@ def _env_float_default(name: str, default: float) -> float:
         return default
 
 
-def _bind_commands(command_module=None) -> None:
+def _bind_commands(command_module=None):
     if command_module is None:
         command_module = importlib.import_module("sfo_kalshi_quant.cli")
     for name in _COMMAND_NAMES:
         globals()[name] = getattr(command_module, name)
+    return command_module
 
 
 def build_parser(command_module=None) -> argparse.ArgumentParser:
-    _bind_commands(command_module)
+    command_module = _bind_commands(command_module)
     parser = argparse.ArgumentParser(prog="sfo-kalshi", description="SFO Kalshi weather paper trader")
     parser.add_argument("--forecaster-root", type=Path, default=DEFAULT_FORECASTER_ROOT)
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
@@ -114,6 +117,9 @@ def build_parser(command_module=None) -> argparse.ArgumentParser:
     register_scan_commands(sub)
     register_data_commands(sub)
     register_research_commands(sub)
+    from . import research as _cli_research
+
+    _cli_research.register_research_evaluation_commands(sub, command_module=command_module)
     register_paper_commands(sub)
     register_backtest_commands(sub)
     return parser
@@ -360,6 +366,22 @@ def register_scan_commands(sub) -> None:
         help="Override today's observed high-so-far in F.",
     )
     portfolio.add_argument("--place-paper", action="store_true", help="Record approved paper portfolio orders")
+    portfolio.add_argument(
+        "--place-research-target",
+        action="store_true",
+        help=(
+            "Admit approved target-sleeve paper orders only. This flag has no "
+            "effect on the live profile or the research motion sleeve."
+        ),
+    )
+    portfolio.add_argument(
+        "--place-research-motion",
+        action="store_true",
+        help=(
+            "Admit approved motion-sleeve paper orders only. This flag has no "
+            "effect on the live profile or the research target sleeve."
+        ),
+    )
     portfolio.add_argument(
         "--paper-entry-mode",
         choices=("market", "limit"),

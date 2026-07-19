@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from .arbitrage import ArbitrageOpportunity
 from .config import normalize_risk_profile_name
@@ -26,6 +26,25 @@ class PortfolioLeg:
     spend: float
     expected_profit: float
     growth_score: float
+    target_date: str | None = None
+    account_id: str | None = None
+    region: str | None = None
+    pending: bool = False
+    logical_position_id: str | int | None = None
+    is_partial_child: bool = False
+
+
+@dataclass(frozen=True)
+class PortfolioDisposition:
+    """Auditable outcome for every candidate evaluated by an allocator."""
+
+    ticker: str
+    target_date: str
+    side: str
+    sleeve: str
+    status: str
+    reason: str | None
+    contracts: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -40,6 +59,7 @@ class PortfolioPlan:
     expected_profit: float
     reasons: list[str]
     limits: PortfolioLimits
+    dispositions: list[PortfolioDisposition] = field(default_factory=list)
 
     @property
     def decisions(self) -> list[TradeDecision]:
@@ -353,6 +373,15 @@ def _decision_pnl_at_settlement(decision: TradeDecision, settlement_high_f: floa
     if side_wins:
         return decision.recommended_contracts * (1.0 - decision.cost_per_contract)
     return -_spend(decision)
+
+
+def decision_pnl_at_settlement(
+    decision: TradeDecision,
+    settlement_high_f: float,
+) -> float:
+    """Public settlement-payoff helper shared by replayable allocators."""
+
+    return _decision_pnl_at_settlement(decision, settlement_high_f)
 
 
 def _market_from_decision(decision: TradeDecision) -> MarketBin:

@@ -1,19 +1,21 @@
 import { useState } from "react";
 import { Segment } from "@heroui-pro/react/segment";
 import { Icon } from "@iconify/react/offline";
-import { type StrategyLab } from "../../lib/strategy";
+import { activeProfiles, type StrategyLab } from "../../lib/strategy";
 import { ProfileDashboard } from "./ProfileDashboard";
 
 const ICONS: Record<string, string> = {
   live: "solar:shield-check-bold",
   research: "solar:test-tube-bold",
+  "research-target": "solar:target-bold",
+  "research-motion": "solar:chart-2-bold",
 };
 
 /** Segmented profile selector → the full per-book dashboard. One book at a
     time, cleanly (the side-by-side comparison lives in the Book Overview
     above; this is where each book gets its complete diagnostics). */
 export function ProfileExplorer({ s }: { s: StrategyLab }) {
-  const profiles = s.profiles ?? [];
+  const profiles = activeProfiles(s);
   const [selected, setSelected] = useState<string>(s.default_profile ?? profiles[0]?.risk_profile ?? "live");
   if (!profiles.length) return null;
   const active = profiles.find((x) => x.risk_profile === selected) ?? profiles[0];

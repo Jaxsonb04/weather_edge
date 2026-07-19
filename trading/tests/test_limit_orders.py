@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -6,7 +7,11 @@ from unittest.mock import patch
 from sfo_kalshi_quant.cli import build_parser
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
-from sfo_kalshi_quant.execution import buy_limit_for_decision, with_buy_limit
+from sfo_kalshi_quant.execution import (
+    buy_limit_for_decision,
+    initial_queue_ahead,
+    with_buy_limit,
+)
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.paper import PaperTrader
 
@@ -51,6 +56,59 @@ def test_buy_limit_uses_probability_lcb_reservation_price_before_ask():
     assert quote.price == 0.74
     assert quote.would_cross is False
     assert quote.edge_lcb >= 0.02
+
+
+def test_initial_queue_ahead_distinguishes_improvement_touch_and_below_bid():
+    assert initial_queue_ahead(0.73, 0.72, 100) == 0
+    assert initial_queue_ahead(0.72, 0.72, 100) == 100
+    assert initial_queue_ahead(0.7200004, 0.72, 100) == 100
+    # A below-bid quote conservatively retains the known better-price depth.
+    assert initial_queue_ahead(0.71, 0.72, 100) == 100
+
+
+def test_inside_spread_limit_fills_without_phantom_visible_bid_queue():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(
+            store,
+            StrategyConfig(limit_price_edge_lcb_buffer=0.02),
+            entry_mode="limit",
+        )
+        decision = _decision(
+            probability_lcb=0.81,
+            entry_bid=0.72,
+            entry_ask=0.75,
+            entry_bid_size=100.0,
+            recommended_contracts=5.0,
+        )
+
+        order_ids = trader.place_approved("2026-07-18", [decision])
+
+        assert len(order_ids) == 1
+        order_id = order_ids[0]
+        resting = store.paper_order(order_id)
+        assert resting is not None
+        assert resting["limit_price"] == 0.73
+        assert resting["queue_remaining"] == 0
+        placed_at = datetime.fromisoformat(resting["created_at"])
+        store.apply_maker_trade_batch(
+            decision.ticker,
+            [
+                {
+                    "trade_id": "inside-spread-five-lot",
+                    "created_time": (placed_at + timedelta(seconds=1)).isoformat(),
+                    "taker_book_side": "bid",
+                    "yes_price_dollars": "0.27",
+                    "no_price_dollars": "0.73",
+                    "count_fp": "5.00",
+                }
+            ],
+        )
+
+        filled = store.paper_order(order_id)
+        assert filled is not None
+        assert filled["status"] == "PAPER_FILLED"
+        assert filled["filled_contracts"] == 5
 
 
 def test_buy_limit_rejects_trade_when_no_price_preserves_lcb_edge():

@@ -9,6 +9,9 @@ Type=oneshot
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
+# The retired aggregate switch must not leak into the scheduled scanner. Each
+# live/target/motion paper account is controlled by its own default-off flag.
+UnsetEnvironment=SFO_PAPER_PLACE_ORDERS
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_paper_scan_profiles.sh
 Nice=5
 # Contain a runaway process to this unit instead of letting the kernel

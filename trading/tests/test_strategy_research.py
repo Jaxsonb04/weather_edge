@@ -17,7 +17,7 @@ from sfo_kalshi_quant.cities import CITIES
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
-from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
+from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.exits import convergence_take_profit_net, exit_bid_for_net, net_exit_per_contract
 from sfo_kalshi_quant.strategy_research import (
     _dataset_research_summary,
@@ -34,9 +34,11 @@ from sfo_kalshi_quant.strategy_lab import (
     build as strategy_build_module,
     calibration as strategy_calibration_module,
     forecast_health as strategy_forecast_health_module,
+    paper_card as strategy_paper_card_module,
 )
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.paper import PaperTrader
+from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
 
 from support import pre_resolution_event
 
@@ -554,6 +556,392 @@ def test_strategy_research_summary_win_loss_counts_use_full_book():
         assert diagnostics["by_side"]["YES"]["resolved"] == 35
         assert diagnostics["by_exit_reason"]["held_to_settlement"]["losses"] == 5
         assert diagnostics["worst_segments"][0]["exit_reason"] == "held_to_settlement"
+
+
+def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        db_path = Path(tmp) / "trading" / "paper.db"
+        _write_lstm_fixture(root)
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            ticker="KXHIGHTPHX-TEST-B110.5",
+            label="110 to 111",
+            floor_strike=110.0,
+            cap_strike=111.0,
+        )
+        today = datetime.now(UTC).astimezone(SFO_TZ).date().isoformat()
+        root_id = store.record_paper_order(today, decision, risk_profile="live")
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        store.close_paper_order(root_id, 0.70, max_quantity=3.0)
+        store.close_paper_order(root_id, 0.70)
+
+        with store.connect() as conn:
+            raw_lots = conn.execute(
+                "SELECT contracts, cost_per_contract, exit_fee_per_contract, realized_pnl "
+                "FROM paper_orders WHERE id=? OR parent_order_id=?",
+                (root_id, root_id),
+            ).fetchall()
+        expected_pnl = round(sum(float(row[3]) for row in raw_lots), 2)
+        expected_capital = round(
+            sum(float(row[0]) * float(row[1]) for row in raw_lots),
+            2,
+        )
+        expected_exit_fees = sum(
+            float(row[0]) * float(row[2] or 0.0) for row in raw_lots
+        )
+
+        payload = build_strategy_research(
+            forecaster_root=root,
+            db_path=db_path,
+            calibration_min_train=40,
+        )
+
+        paper = payload["paper_trading"]
+        paper_summary = paper["summary"]
+        assert paper_summary["closed_positions"] == 1
+        assert paper_summary["win_count"] + paper_summary["loss_count"] == 1
+        assert paper_summary["realized_pnl"] == expected_pnl
+        assert paper_summary["capital_at_risk"] == expected_capital
+
+        assert len(paper["closed_positions"]) == 1
+        closed = paper["closed_positions"][0]
+        assert closed["id"] == root_id
+        assert closed["ticker"].startswith("KXHIGHTPHX-")
+        assert closed["contracts"] == 10.0
+        assert closed["exit_fill_count"] == 3
+        assert closed["realized_pnl"] == expected_pnl
+        assert closed["initial_cost"] == expected_capital
+        assert closed["contracts"] * closed["exit_fee_per_contract"] == pytest.approx(
+            expected_exit_fees
+        )
+
+        diagnostics = paper["diagnostics"]
+        assert diagnostics["resolved_positions"] == 1
+        assert diagnostics["by_profile"]["live"]["resolved"] == 1
+        assert diagnostics["by_side"]["YES"]["resolved"] == 1
+        assert diagnostics["by_exit_reason"]["take_profit"]["resolved"] == 1
+        assert diagnostics["worst_segments"][0]["resolved"] == 1
+
+        daily = payload["daily_summary"]
+        assert daily["totals"]["trades_closed"] == 1
+        assert daily["totals"]["wins"] + daily["totals"]["losses"] == 1
+        assert daily["totals"]["realized_pnl"] == expected_pnl
+        assert daily["totals"]["capital_resolved"] == expected_capital
+        assert daily["side_performance"]["YES"]["trades"] == 1
+        assert daily["exit_reasons"]["closed_take_profit"] == 1
+        assert len(daily["biggest_winners"]) == 1
+        assert daily["biggest_winners"][0]["id"] == root_id
+        assert daily["biggest_losers"] == []
+
+        live = next(row for row in payload["profiles"] if row["risk_profile"] == "live")
+        live_paper = live["paper_trading"]
+        assert live_paper["summary"]["closed_positions"] == 1
+        assert (
+            live_paper["summary"]["win_count"]
+            + live_paper["summary"]["loss_count"]
+            == 1
+        )
+        assert live_paper["summary"]["realized_pnl"] == expected_pnl
+        assert live_paper["summary"]["capital_at_risk"] == expected_capital
+        # The UI's city chips are derived from this profile-scoped ledger.
+        assert len(live_paper["closed_positions"]) == 1
+        assert live_paper["closed_positions"][0]["ticker"].startswith(
+            "KXHIGHTPHX-"
+        )
+        assert live["daily_summary"]["side_performance"]["YES"]["trades"] == 1
+        assert live["daily_summary"]["exit_reasons"]["closed_take_profit"] == 1
+        assert len(live["daily_summary"]["biggest_winners"]) == 1
+
+
+def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path):
+    db_path = tmp_path / "paper.db"
+    forecaster_root = tmp_path / "forecaster"
+    _write_lstm_fixture(forecaster_root)
+    store = PaperStore(
+        db_path,
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    legacy_id = store.record_paper_order(
+        "2026-07-18", _approved_decision(), risk_profile="research"
+    )
+    assert legacy_id is not None
+    store.close_paper_order(legacy_id, 0.70)
+    store.research_daily_goal_state(objective_day=date(2026, 7, 18))
+
+    paper = strategy_research_module._paper_payload(db_path)
+
+    target = paper["research_daily_target"]
+    assert target["account_id"] == "paper-research-target-v1"
+    assert target["days"][-1]["target_pnl"] == 50.0
+    assert target["days"][-1]["realized_pnl"] == 0.0
+    profiles = {row["risk_profile"]: row for row in paper["profiles"]}
+    assert set(profiles) == {"live", "research-target", "research-motion"}
+    assert profiles["research-target"]["daily_target"] == target
+    assert profiles["research-motion"]["excluded_from"] == [
+        "daily_target",
+        "live_readiness",
+    ]
+    assert paper["legacy_research"]["available"] is True
+    assert paper["legacy_research"]["profile"]["risk_profile"] == "research"
+    assert "active_books" in paper["legacy_research"]["excluded_from"]
+    assert "guaranteed" in target["disclaimer"]
+
+    payload = build_strategy_research(
+        forecaster_root=forecaster_root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 50.0
+    profile_views = {row["risk_profile"]: row for row in payload["profiles"]}
+    assert set(profile_views) == {"live", "research-target", "research-motion"}
+    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 50.0
+    assert profile_views["research-motion"]["excluded_from"] == [
+        "daily_target",
+        "live_readiness",
+    ]
+    assert payload["real_money_readiness"]["profile"] == "live"
+    assert set(payload["accounting"]["accounts"]) >= {
+        "live",
+        "research_target",
+        "research_motion",
+    }
+
+
+def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_path):
+    db_path = tmp_path / "paper.db"
+    forecaster_root = tmp_path / "forecaster"
+    _write_lstm_fixture(forecaster_root)
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        db_path,
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    target_decision = replace(
+        _approved_decision(), ticker="KXHIGHTSFO-TARGET-B66.5"
+    )
+    motion_decision = replace(
+        _no_favorite_decision(), ticker="KXHIGHTSFO-MOTION-B71.5"
+    )
+    target_order = store.record_paper_order(
+        "2026-07-19", target_decision, risk_profile="research"
+    )
+    motion_order = store.record_paper_order(
+        "2026-07-20", motion_decision, risk_profile="research"
+    )
+    crossed_order = store.record_paper_order(
+        "2026-07-20",
+        replace(target_decision, ticker="KXHIGHTSFO-CROSSED-B72.5"),
+        risk_profile="research",
+    )
+    assert target_order is not None and motion_order is not None
+    assert crossed_order is not None
+    target_snapshot, motion_snapshot = store.record_decisions(
+        "2026-07-19",
+        [
+            target_decision,
+            replace(
+                motion_decision,
+                approved=False,
+                signal_approved=True,
+                entry_block_reason="motion audit block",
+                recommended_contracts=0.0,
+                expected_profit=0.0,
+                reasons=["motion audit block"],
+            ),
+        ],
+        risk_profile="research",
+    )
+    with store.connect() as conn:
+        for order_id, account_id, sleeve, policy, fingerprint, pnl in (
+            (
+                target_order,
+                TARGET_POLICY.account_id,
+                "target",
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                2.0,
+            ),
+            (
+                motion_order,
+                MOTION_POLICY.account_id,
+                "motion",
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                -2.0,
+            ),
+            (
+                crossed_order,
+                TARGET_POLICY.account_id,
+                "motion",
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                500.0,
+            ),
+        ):
+            conn.execute(
+                "UPDATE paper_orders SET account_id=?, research_sleeve=?, "
+                "research_policy_version=?, policy_fingerprint=?, objective_day=?, "
+                "status='PAPER_CLOSED', "
+                "realized_pnl=?, closed_at=? WHERE id=?",
+                (
+                    account_id,
+                    sleeve,
+                    policy,
+                    fingerprint,
+                    objective_day.isoformat(),
+                    pnl,
+                    datetime(2026, 7, 18, 20, 0, tzinfo=UTC).isoformat(),
+                    order_id,
+                ),
+            )
+        conn.execute(
+            "UPDATE decision_snapshots SET account_id=?, research_sleeve='target', "
+            "research_policy_version=?, policy_fingerprint=?, objective_day=? "
+            "WHERE id=?",
+            (
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                objective_day.isoformat(),
+                target_snapshot,
+            ),
+        )
+        conn.execute(
+            "UPDATE decision_snapshots SET account_id=?, research_sleeve='motion', "
+            "research_policy_version=?, policy_fingerprint=?, objective_day=? "
+            "WHERE id=?",
+            (
+                MOTION_POLICY.account_id,
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                objective_day.isoformat(),
+                motion_snapshot,
+            ),
+        )
+    store.research_daily_goal_state(objective_day=objective_day)
+
+    payload = build_strategy_research(
+        forecaster_root=forecaster_root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    profiles = {row["risk_profile"]: row for row in payload["profiles"]}
+    assert set(profiles) == {"live", "research-target", "research-motion"}
+    target = profiles["research-target"]
+    motion = profiles["research-motion"]
+    assert target["daily_summary"]["side_performance"]["YES"]["trades"] == 1
+    assert target["daily_summary"]["side_performance"]["NO"]["trades"] == 0
+    assert motion["daily_summary"]["side_performance"]["NO"]["trades"] == 1
+    assert motion["daily_summary"]["side_performance"]["YES"]["trades"] == 0
+    assert target["daily_summary"]["exit_reasons"]["closed_take_profit"] == 1
+    assert motion["daily_summary"]["exit_reasons"]["closed_stop_loss"] == 1
+    assert [
+        row["ticker"] for row in target["signal_quality"]["latest_candidates"]
+    ] == [target_decision.ticker]
+    assert [
+        row["ticker"] for row in motion["signal_quality"]["latest_candidates"]
+    ] == [motion_decision.ticker]
+    assert motion["daily_summary"]["gate_behavior"]["entry_block_reasons"] == [
+        {"reason": "motion audit block", "count": 1}
+    ]
+    assert payload["paper_trading"]["summary"]["closed_positions"] == 2
+    assert "unknown" not in payload["paper_trading"]["diagnostics"]["by_profile"]
+    assert payload["paper_trading"]["legacy_research"]["available"] is False
+
+
+def test_strategy_research_card_keeps_partially_realized_root_open_and_undecided():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            ticker="KXHIGHTPHX-TEST-B111.5",
+            label="111 to 112",
+            floor_strike=111.0,
+            cap_strike=112.0,
+        )
+        today = datetime.now(UTC).astimezone(SFO_TZ).date().isoformat()
+        root_id = store.record_paper_order(today, decision, risk_profile="live")
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        with store.connect() as conn:
+            realized_pnl, realized_capital = conn.execute(
+                "SELECT SUM(realized_pnl), SUM(contracts * cost_per_contract) "
+                "FROM paper_orders WHERE parent_order_id=?",
+                (root_id,),
+            ).fetchone()
+
+        paper = strategy_research_module._paper_payload(db_path)
+
+        assert paper["available"] is True
+        assert paper["summary"]["open_positions"] == 1
+        assert paper["summary"]["closed_positions"] == 0
+        assert paper["summary"]["win_count"] == 0
+        assert paper["summary"]["loss_count"] == 0
+        assert paper["summary"]["realized_pnl"] == round(realized_pnl, 2)
+        assert paper["summary"]["capital_at_risk"] == round(realized_capital, 2)
+        assert len(paper["open_positions"]) == 1
+        assert paper["open_positions"][0]["id"] == root_id
+        assert paper["open_positions"][0]["contracts"] == 8.0
+        assert paper["closed_positions"] == []
+        assert paper["diagnostics"]["resolved_positions"] == 0
+        assert paper["diagnostics"]["by_profile"] == {}
+
+        live = next(row for row in paper["profiles"] if row["risk_profile"] == "live")
+        assert live["orders"] == 0
+        assert live["resolved"] == 0
+        assert live["wins"] == 0
+        assert live["losses"] == 0
+        assert live["realized_pnl"] == round(realized_pnl, 2)
+        assert live["capital_resolved"] == round(realized_capital, 2)
+        assert live["open_positions"] == 1
+
+
+def test_strategy_research_card_fails_closed_on_inconsistent_logical_group():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = replace(
+            _approved_decision(),
+            ticker="KXHIGHTPHX-TEST-B112.5",
+            label="112 to 113",
+            floor_strike=112.0,
+            cap_strike=113.0,
+        )
+        today = datetime.now(UTC).astimezone(SFO_TZ).date().isoformat()
+        root_id = store.record_paper_order(today, decision, risk_profile="live")
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        store.close_paper_order(root_id, 0.70)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET market_ticker='KXHIGHTPHX-BROKEN' "
+                "WHERE parent_order_id=?",
+                (root_id,),
+            )
+
+        paper = strategy_research_module._paper_payload(db_path)
+
+        assert paper["available"] is True
+        assert paper["summary"]["open_positions"] == 0
+        assert paper["summary"]["closed_positions"] == 0
+        assert paper["summary"]["win_count"] == 0
+        assert paper["summary"]["loss_count"] == 0
+        assert paper["summary"]["realized_pnl"] == 0.0
+        assert paper["summary"]["capital_at_risk"] == 0.0
+        assert paper["open_positions"] == []
+        assert paper["pending_limit_orders"] == []
+        assert paper["closed_positions"] == []
+        assert paper["recent_monitor_actions"] == []
+        assert paper["diagnostics"] == {
+            "resolved_positions": 0,
+            "by_profile": {},
+            "by_side": {},
+            "by_exit_reason": {},
+            "worst_segments": [],
+        }
+        assert paper["profiles"] == []
 
 
 # 2026-06-27 16:00 UTC: every traded station (fixed standard offsets -5..-8)
@@ -1527,7 +1915,11 @@ def test_strategy_research_includes_config_rescore():
 
         rescore = payload["config_rescore"]
         assert rescore["available"] is True, rescore.get("reason")
-        assert set(rescore["by_profile"]) == {"live", "research"}
+        assert set(rescore["by_profile"]) == {
+            "live",
+            "research-target",
+            "research-motion",
+        }
         for result in rescore["by_profile"].values():
             assert {"counts", "candidate", "recorded_config_own_book"} <= set(result)
             # per_day is trimmed from the published artifact to keep it lean.
@@ -1550,6 +1942,156 @@ def test_strategy_research_includes_config_rescore():
         assert 0.0 <= readiness["readiness_pct"] <= 100.0
         assert readiness["ready"] is False  # a one-day fixture cannot be ready
         assert readiness["checks"] and all("progress" in c for c in readiness["checks"])
+
+
+@pytest.mark.parametrize(
+    "sampled_rows",
+    [
+        [
+            {"risk_profile": "live", "probability": 0.91},
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": TARGET_POLICY.sleeve.value,
+                "research_policy_version": TARGET_POLICY.policy_version,
+                "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+                "probability": 0.71,
+            },
+            {
+                "risk_profile": "research",
+                "account_id": MOTION_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.61,
+            },
+            {"risk_profile": "research", "probability": 0.55},
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.51,
+            },
+        ],
+        [
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.51,
+            },
+            {"risk_profile": "research", "probability": 0.55},
+            {
+                "risk_profile": "research",
+                "account_id": MOTION_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.61,
+            },
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": TARGET_POLICY.sleeve.value,
+                "research_policy_version": TARGET_POLICY.policy_version,
+                "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+                "probability": 0.71,
+            },
+            {"risk_profile": "live", "probability": 0.91},
+        ],
+    ],
+)
+def test_config_rescore_replays_only_each_profiles_matching_snapshots(
+    tmp_path, monkeypatch, sampled_rows
+):
+    db_path = tmp_path / "paper.db"
+    PaperStore(db_path)
+
+    calls = []
+
+    def capture_rescore(rows, settlements, config, **kwargs):
+        calls.append((config, [float(row["probability"]) for row in rows]))
+        return {"evidence_kind": "snapshot_rescore", "per_day": []}
+
+    monkeypatch.setattr(strategy_calibration_module, "run_rescore", capture_rescore)
+    payload = strategy_calibration_module._config_rescore_payload(
+        SfoForecasterAdapter(tmp_path),
+        db_path,
+        settlements={"2026-06-03": 67.0},
+        sampled_rows=sampled_rows,
+    )
+
+    assert calls == [
+        (strategy_config_for_profile("live"), [0.91]),
+        (strategy_config_for_profile("research"), [0.71]),
+        (strategy_config_for_profile("research"), [0.61]),
+    ]
+    assert set(payload["by_profile"]) == {
+        "live",
+        "research-target",
+        "research-motion",
+    }
+    assert payload["excluded_snapshots"] == 2
+    assert payload["evidence_kind"] == "profile_specific_snapshot_replay"
+    assert all(
+        result["evidence_kind"] == "profile_specific_snapshot_replay"
+        for result in payload["by_profile"].values()
+    )
+    assert "source_neutral" not in payload
+    assert "counterfactual" not in payload
+
+
+def test_paper_card_audits_all_five_exit_categories_including_unfilled_expiry(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    now = datetime.now(UTC).isoformat()
+    outcomes = [
+        ("PAPER_CLOSED", 2.0, now, None),
+        ("PAPER_CLOSED", -2.0, now, None),
+        ("PAPER_CLOSED", 0.0, now, None),
+        ("PAPER_SETTLED", 2.0, None, now),
+        ("PAPER_EXPIRED", 0.0, None, None),
+    ]
+    order_ids = []
+    for index in range(len(outcomes)):
+        order_id = store.record_paper_order(
+            "2026-07-19",
+            replace(
+                _approved_decision(),
+                ticker=f"KXHIGHTPHX-CARD-EXIT-{index}-B110.5",
+            ),
+            risk_profile="live",
+        )
+        assert order_id is not None
+        order_ids.append(order_id)
+    with store.connect() as conn:
+        for order_id, (status, pnl, closed_at, settled_at) in zip(
+            order_ids, outcomes, strict=True
+        ):
+            conn.execute(
+                "UPDATE paper_orders SET status=?, realized_pnl=?, closed_at=?, "
+                "settled_at=? WHERE id=?",
+                (status, pnl, closed_at, settled_at, order_id),
+            )
+
+    diagnostics = strategy_paper_card_module._paper_diagnostics(db_path)
+
+    assert set(diagnostics["by_exit_reason"]) == {
+        "take_profit",
+        "stop_loss",
+        "break_even",
+        "held_to_settlement",
+        "expired_unfilled",
+    }
+    assert diagnostics["resolved_positions"] == 4
+    assert diagnostics["by_exit_reason"]["expired_unfilled"]["resolved"] == 0
+    assert diagnostics["by_exit_reason"]["expired_unfilled"]["positions"] == 1
 
 
 def test_strategy_research_includes_research_shadow_comparison():
@@ -1877,6 +2419,192 @@ def test_settlement_alert_escalates_to_critical_when_two_days_stale():
     assert "settlement-pending" not in by_code
     assert by_code["settlement-backlog"]["level"] == "critical"
     assert "3 days" in by_code["settlement-backlog"]["detail"]
+
+
+def _all_strings(value):
+    """Recursively collect every string leaf from a nested dict/list payload —
+    used to sweep a whole published artifact section for banned copy without
+    hand-enumerating every field name."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _all_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _all_strings(item)
+
+
+def test_status_alerts_never_names_the_exchange_in_any_producible_alert():
+    """Public copy says 'prediction market', never the exchange name. The
+    monitor-stale alert's action string reaches the public artifact verbatim
+    (OpsHealth renders {a.action} as-is), so a >45min-stale monitor with open
+    positions used to leak the paper-monitor systemd timer's name. Several
+    alert codes are mutually exclusive branches of the same if/elif chain, so
+    this combines multiple representative calls to exercise every code the
+    module can produce, then sweeps every string in the result."""
+    stale_at = datetime(2026, 6, 10, 9, 0, tzinfo=UTC)
+    opened_at = datetime(2026, 6, 10, 9, 36, tzinfo=UTC)
+
+    combined = _strategy_alerts(
+        paper={
+            "available": True,
+            "summary": {
+                "open_positions": 2,
+                "unresolved_past_targets": [{"target_date": "2026-06-08", "open_orders": 1}],
+                "latest_monitor_action_at": stale_at.isoformat(),
+                "marked_open_positions": 0,
+                "hidden_open_positions": 3,
+                "open_risk": 500,
+            },
+            "duplicate_open_groups": [{"open_orders": 2, "ticker": "TEST", "side": "YES"}],
+        },
+        entry_block_reason="same-day entry disabled: test reason",
+        daily_budget=100,
+        now=stale_at + timedelta(minutes=46),
+    )
+    unavailable = _strategy_alerts(
+        paper={"available": False, "reason": "paper db missing"},
+        entry_block_reason=None,
+    )
+    pending = _settlement_alerts("2026-06-11", now=datetime(2026, 6, 12, 12, 0, tzinfo=UTC))
+    monitor_pending = _strategy_alerts(
+        paper={
+            "available": True,
+            "summary": {
+                "open_positions": 1,
+                "latest_opened_at": opened_at.isoformat(),
+                "latest_monitor_action_at": None,
+                "marked_open_positions": 0,
+                "hidden_open_positions": 0,
+            },
+            "duplicate_open_groups": [],
+        },
+        entry_block_reason=None,
+        now=opened_at + timedelta(minutes=2),
+    )
+    monitor_not_recording = _strategy_alerts(
+        paper={
+            "available": True,
+            "summary": {
+                "open_positions": 1,
+                "latest_opened_at": None,
+                "latest_monitor_action_at": None,
+                "marked_open_positions": 0,
+                "hidden_open_positions": 0,
+            },
+            "duplicate_open_groups": [],
+        },
+        entry_block_reason=None,
+        now=opened_at,
+    )
+    healthy = _strategy_alerts(
+        paper={"available": True, "summary": {}, "duplicate_open_groups": []},
+        entry_block_reason=None,
+    )
+    forecast_default = _strategy_alerts(
+        paper={"available": True, "summary": {}, "duplicate_open_groups": []},
+        entry_block_reason=None,
+        forecast_health={"warnings": [{}]},
+    )
+
+    every_alert = (
+        combined
+        + unavailable
+        + pending
+        + monitor_pending
+        + monitor_not_recording
+        + healthy
+        + forecast_default
+    )
+    codes = {alert["code"] for alert in every_alert}
+    assert codes == {
+        "settlement-backlog",
+        "duplicate-open-markets",
+        "monitor-stale",
+        "open-positions-unmarked",
+        "open-positions-hidden",
+        "open-risk-over-budget",
+        "same-day-entry-blocked",
+        "paper-db-unavailable",
+        "settlement-pending",
+        "monitor-pending",
+        "monitor-not-recording",
+        "strategy-lab-healthy",
+        "forecast-health-warning",
+    }
+
+    leaked = [text for text in _all_strings(every_alert) if "kalshi" in text.lower()]
+    assert leaked == []
+
+
+def test_dataset_research_summary_public_notes_never_name_the_exchange():
+    """Public copy says 'prediction market', never the exchange name. The
+    market-gate action item used to say 'enable Kalshi trade history'; sweep
+    every string the summary can publish across the collect-only, blocked, and
+    accuracy-candidate verdict shapes."""
+    blocked = _dataset_research_summary(
+        {
+            "generated_at": "2026-06-11T09:25:08+00:00",
+            "status": "collect_only",
+            "baseline": {"source": "lstm", "outcome_count": 475},
+            "promotion_rule": "rule text",
+            "accuracy_gate": {
+                "available": True,
+                "candidate_count": 9,
+                "accuracy_candidate_count": 0,
+                "candidates": [
+                    {
+                        "dataset_key": "open-meteo/best_match/temperature_2m_max/none",
+                        "decision": "collect_only",
+                        "matched_rows": 0,
+                        "reason": "needs at least 30 matched settlement rows; has 0",
+                    }
+                ],
+            },
+            "profitability_gate": {
+                "decision": "collect_only",
+                "market_history": {"markets": 180, "candles": 365, "trades": 0},
+                "minimum_after_cost_trades": 30,
+            },
+        }
+    )
+    no_candidates = _dataset_research_summary(
+        {"generated_at": "2026-06-01T00:00:00+00:00", "status": "collect_only"}
+    )
+    accuracy_candidate = _dataset_research_summary(
+        {
+            "generated_at": "2026-06-11T09:25:08+00:00",
+            "status": "collect_only",
+            "accuracy_gate": {
+                "available": True,
+                "candidate_count": 1,
+                "accuracy_candidate_count": 1,
+                "candidates": [
+                    {
+                        "dataset_key": "open-meteo/gfs/temperature_2m_max/24h",
+                        "decision": "accuracy_candidate",
+                        "matched_rows": 41,
+                        "holdout": {"dataset_mae_f": 1.7, "baseline_mae_f": 2.1, "mae_delta_vs_baseline_f": -0.4},
+                    }
+                ],
+            },
+            "profitability_gate": {
+                "decision": "collect_only",
+                "market_history": {"markets": 180, "candles": 365, "trades": 0},
+                "minimum_after_cost_trades": 30,
+            },
+        }
+    )
+    unavailable = _dataset_research_summary(None)
+
+    leaked = [
+        text
+        for summary in (blocked, no_candidates, accuracy_candidate, unavailable)
+        for text in _all_strings(summary)
+        if "kalshi" in text.lower()
+    ]
+    assert leaked == []
 
 
 def _kalshi_ladder_event(event_ticker: str = "KXHIGHTSFO-26JUN03") -> EventSnapshot:

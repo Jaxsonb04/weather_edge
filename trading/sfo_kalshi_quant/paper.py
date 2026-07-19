@@ -1,23 +1,190 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import NoReturn
 
 from .arbitrage import ArbitrageOpportunity
 from .config import StrategyConfig
-from .db import PaperStore
+from .consensus import MarketConsensus
+from .db import (
+    PaperStore,
+    ResearchDecisionEvidence,
+    ResearchDecisionIdentity,
+)
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
 )
-from .execution import buy_limit_for_decision, with_buy_limit
-from .models import TradeDecision
+from .execution import buy_limit_for_decision, target_research_quote, with_buy_limit
+from .models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
+from .research_portfolio import ResearchPlans
 
 
 class ArbitrageContainmentError(RuntimeError):
     """A partial arbitrage group still has active financial exposure."""
+
+
+def with_motion_taker_execution(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> TradeDecision | None:
+    """Reprice one motion entry at the contemporaneous visible ask.
+
+    Motion is evidence-seeking but never invents liquidity: exactly one whole
+    contract must be displayed, point edge must remain positive after the exact
+    taker fee, and the fixed research lower-bound floor still applies.
+    """
+
+    if not decision.approved:
+        return None
+    try:
+        ask = float(decision.ask)
+        ask_size = float(decision.ask_size)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 0.0 < ask < 1.0 or ask_size + 1e-9 < 1.0:
+        return None
+    fee = quadratic_fee_average_per_contract(
+        ask,
+        1.0,
+        maker=False,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=decision.ticker,
+    )
+    cost = ask + fee
+    point_probability = (
+        float(decision.model_probability)
+        if config.edge_gate_uses_model_probability
+        and decision.model_probability is not None
+        else float(decision.probability)
+    )
+    edge = point_probability - cost
+    edge_lcb = float(decision.probability_lcb) - cost
+    if edge <= 0.0 or edge_lcb + 1e-12 < config.min_edge_lcb:
+        return None
+    return replace(
+        decision,
+        fee_per_contract=fee,
+        cost_per_contract=cost,
+        edge=edge,
+        edge_lcb=edge_lcb,
+        recommended_contracts=1.0,
+        expected_profit=edge,
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+
+
+def with_target_research_execution(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> TradeDecision | None:
+    quote = target_research_quote(decision, config)
+    if quote is None:
+        return None
+    return replace(
+        decision,
+        fee_per_contract=quote.fee_per_contract,
+        cost_per_contract=quote.cost_per_contract,
+        edge=quote.edge,
+        edge_lcb=quote.edge_lcb,
+        recommended_contracts=quote.contracts,
+        expected_profit=quote.edge * quote.contracts,
+        limit_price=quote.price,
+        limit_fee_per_contract=quote.fee_per_contract,
+        limit_cost_per_contract=quote.cost_per_contract,
+        limit_edge=quote.edge,
+        limit_edge_lcb=quote.edge_lcb,
+    )
+
+
+def prepare_research_sleeve_decisions(
+    structural_decisions: list[TradeDecision],
+    config: StrategyConfig,
+) -> tuple[list[TradeDecision], list[TradeDecision]]:
+    """Apply exact target/motion edge and quote policy to structural signals."""
+
+    target: list[TradeDecision] = []
+    motion: list[TradeDecision] = []
+    for decision in structural_decisions:
+        if not decision.approved:
+            structural_reason = (
+                decision.entry_block_reason
+                or (decision.reasons[0] if decision.reasons else None)
+                or "research structural gate rejected candidate"
+            )
+            blocked = replace(
+                decision,
+                approved=False,
+                signal_approved=False,
+                entry_block_reason=structural_reason,
+                recommended_contracts=0.0,
+                expected_profit=0.0,
+            )
+            target.append(blocked)
+            motion.append(blocked)
+            continue
+        target_quote = with_target_research_execution(decision, config)
+        if target_quote is None:
+            target.append(
+                replace(
+                    decision,
+                    approved=False,
+                    signal_approved=True,
+                    entry_block_reason=(
+                        "target requires non-negative point and after-fee LCB edge"
+                    ),
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                )
+            )
+        else:
+            target.append(target_quote)
+        motion_quote = with_motion_taker_execution(decision, config)
+        if motion_quote is None:
+            motion.append(
+                replace(
+                    decision,
+                    approved=False,
+                    signal_approved=True,
+                    entry_block_reason=(
+                        "motion requires point-positive visible-ask taker edge "
+                        "and lower-bound edge >= -0.07"
+                    ),
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                )
+            )
+        else:
+            motion.append(motion_quote)
+    return target, motion
+
+
+@dataclass(frozen=True)
+class ResearchExecutionResult:
+    """Exact evidence and filled/reserved order ids for both research books."""
+
+    target_decision_ids: tuple[int, ...]
+    motion_decision_ids: tuple[int, ...]
+    target_order_ids: tuple[int, ...]
+    motion_order_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _ResearchAttempt:
+    policy: ResearchSleevePolicy
+    decision: TradeDecision
+    identity: ResearchDecisionIdentity
+    admission_pending: bool
 
 
 class PaperTrader:
@@ -154,6 +321,249 @@ class PaperTrader:
             else decision
             for decision in decisions
         ]
+
+    def execute_research_plans(
+        self,
+        target_date: str,
+        plans: ResearchPlans,
+        *,
+        source_decisions: list[TradeDecision],
+        motion_source_decisions: list[TradeDecision] | None = None,
+        objective_day: str,
+        lead_bucket: str,
+        scan_run_id: str,
+        observed_high_state: str,
+        forecast: ForecastSnapshot | None = None,
+        intraday: IntradaySnapshot | None = None,
+        event: EventSnapshot | None = None,
+        market_consensus: MarketConsensus | None = None,
+        forecast_snapshot_id: int | None = None,
+        market_snapshot_id: int | None = None,
+        admit_orders: bool = True,
+        admit_target_orders: bool | None = None,
+        admit_motion_orders: bool | None = None,
+    ) -> ResearchExecutionResult:
+        """Persist and independently admit target and motion plans.
+
+        The caller supplies one already-built scan context.  This method only
+        clones those immutable inputs into per-sleeve audit rows; it never
+        fetches forecasts, markets, or probabilities and never touches the
+        legacy research-shadow placement path.
+        """
+
+        if self.risk_profile != "research":
+            raise ValueError("research plans require the research profile")
+        canonical = StrategyConfig()
+        # Equality against the actual profile is performed by the evidence and
+        # admission APIs.  This local type check keeps malformed callers from
+        # reaching either journal path.
+        if not isinstance(self.config, type(canonical)):
+            raise ValueError("research plans require a strategy configuration")
+        self.store.record_research_plan_snapshot(
+            plans,
+            objective_day=objective_day,
+            scan_run_id=scan_run_id,
+        )
+        source_by_key = {
+            _decision_key(decision): decision for decision in source_decisions
+        }
+        motion_source_by_key = {
+            _decision_key(decision): decision
+            for decision in (
+                source_decisions
+                if motion_source_decisions is None
+                else motion_source_decisions
+            )
+        }
+        target_admission_enabled = (
+            admit_orders if admit_target_orders is None else admit_target_orders
+        )
+        motion_admission_enabled = (
+            admit_orders if admit_motion_orders is None else admit_motion_orders
+        )
+        target_attempts = self._prepare_research_plan(
+            target_date,
+            plans.target,
+            policy=TARGET_POLICY,
+            source_by_key=source_by_key,
+            objective_day=objective_day,
+            lead_bucket=lead_bucket,
+            scan_run_id=scan_run_id,
+            observed_high_state=observed_high_state,
+            intraday=intraday,
+            admit_orders=target_admission_enabled,
+        )
+        motion_attempts = self._prepare_research_plan(
+            target_date,
+            plans.motion,
+            policy=MOTION_POLICY,
+            source_by_key=motion_source_by_key,
+            objective_day=objective_day,
+            lead_bucket=lead_bucket,
+            scan_run_id=scan_run_id,
+            observed_high_state=observed_high_state,
+            intraday=intraday,
+            admit_orders=motion_admission_enabled,
+        )
+        attempts = [*target_attempts, *motion_attempts]
+        decision_ids = self.store.record_research_decision_batch(
+            target_date,
+            [
+                ResearchDecisionEvidence(
+                    decision=attempt.decision,
+                    identity=attempt.identity,
+                    admission_pending=attempt.admission_pending,
+                )
+                for attempt in attempts
+            ],
+            forecast=forecast,
+            intraday=intraday,
+            event=event,
+            market_consensus=market_consensus,
+            strategy_config=self.config,
+            forecast_snapshot_id=forecast_snapshot_id,
+            market_snapshot_id=market_snapshot_id,
+        )
+        target_decision_ids: list[int] = []
+        motion_decision_ids: list[int] = []
+        target_order_ids: list[int] = []
+        motion_order_ids: list[int] = []
+        for attempt, decision_id in zip(attempts, decision_ids, strict=True):
+            sleeve_decision_ids = (
+                target_decision_ids
+                if attempt.policy is TARGET_POLICY
+                else motion_decision_ids
+            )
+            sleeve_order_ids = (
+                target_order_ids
+                if attempt.policy is TARGET_POLICY
+                else motion_order_ids
+            )
+            sleeve_decision_ids.append(decision_id)
+            if not attempt.admission_pending:
+                continue
+            order_id = self.store.record_research_order_atomic(
+                target_date,
+                attempt.decision,
+                admission=attempt.identity.admission(decision_id),
+                strategy_config=self.config,
+            )
+            if order_id is not None:
+                sleeve_order_ids.append(order_id)
+            else:
+                self.store.mark_research_decision_admission_blocked(
+                    decision_id,
+                    "atomic research admission rejected",
+                )
+        return ResearchExecutionResult(
+            target_decision_ids=tuple(target_decision_ids),
+            motion_decision_ids=tuple(motion_decision_ids),
+            target_order_ids=tuple(target_order_ids),
+            motion_order_ids=tuple(motion_order_ids),
+        )
+
+    def _prepare_research_plan(
+        self,
+        target_date: str,
+        plan,
+        *,
+        policy: ResearchSleevePolicy,
+        source_by_key: dict[tuple[str, str], TradeDecision],
+        objective_day: str,
+        lead_bucket: str,
+        scan_run_id: str,
+        observed_high_state: str,
+        intraday: IntradaySnapshot | None,
+        admit_orders: bool,
+    ) -> list[_ResearchAttempt]:
+        selected_by_key = {
+            _decision_key(leg.decision): leg.decision for leg in plan.legs
+        }
+        attempts: list[_ResearchAttempt] = []
+        for disposition in plan.dispositions:
+            key = (str(disposition.ticker), str(disposition.side).upper())
+            base = selected_by_key.get(key) or source_by_key.get(key)
+            if base is None:
+                continue
+            selected = disposition.status == "selected" and key in selected_by_key
+            prepared = _prepare_research_disposition(
+                base,
+                policy=policy,
+                selected=selected,
+                reason=disposition.reason,
+                config=self.config,
+            )
+            if policy is MOTION_POLICY and selected and prepared.approved:
+                reentry_reason = self.store.motion_reentry_block_reason(
+                    target_date=target_date,
+                    market_ticker=prepared.ticker,
+                    side=prepared.side,
+                    scan_run_id=scan_run_id,
+                    executable_price=float(prepared.ask),
+                    probability=float(prepared.probability),
+                    intraday_observed_high_f=(
+                        intraday.observed_high_f if intraday is not None else None
+                    ),
+                    intraday_is_complete=(
+                        bool(intraday.is_complete) if intraday is not None else False
+                    ),
+                )
+                if reentry_reason is not None:
+                    prepared = replace(
+                        prepared,
+                        approved=False,
+                        signal_approved=True,
+                        entry_block_reason=reentry_reason,
+                        recommended_contracts=0.0,
+                        expected_profit=0.0,
+                        reasons=[*prepared.reasons, reentry_reason],
+                    )
+                    selected = False
+            if selected and prepared.approved and not admit_orders:
+                block_reason = "research order admission disabled"
+                prepared = replace(
+                    prepared,
+                    approved=False,
+                    signal_approved=True,
+                    entry_block_reason=block_reason,
+                    recommended_contracts=0.0,
+                    expected_profit=0.0,
+                    reasons=[*prepared.reasons, block_reason],
+                )
+                selected = False
+            executable_price = (
+                float(prepared.limit_price)
+                if prepared.limit_price is not None
+                else float(prepared.ask)
+            )
+            reentry_fingerprint = research_reentry_fingerprint(
+                account_id=policy.account_id,
+                sleeve=policy.sleeve.value,
+                scan_run_id=scan_run_id,
+                ticker=prepared.ticker,
+                side=prepared.side,
+                executable_price=executable_price,
+                probability=prepared.probability,
+                observed_high_state=observed_high_state,
+            )
+            identity = ResearchDecisionIdentity.for_policy(
+                policy,
+                objective_day=objective_day,
+                lead_bucket=lead_bucket,
+                scan_run_id=scan_run_id,
+                reentry_fingerprint=reentry_fingerprint,
+            )
+            attempts.append(
+                _ResearchAttempt(
+                    policy=policy,
+                    decision=prepared,
+                    identity=identity,
+                    admission_pending=bool(
+                        admit_orders and selected and prepared.approved
+                    ),
+                )
+            )
+        return attempts
 
     def place_approved(
         self,
@@ -698,6 +1108,82 @@ class PaperTrader:
         if not adjusted.approved or adjusted.total_spend > exposure_remaining + 1e-9:
             return None
         return adjusted
+
+
+def _prepare_research_disposition(
+    decision: TradeDecision,
+    *,
+    policy: ResearchSleevePolicy,
+    selected: bool,
+    reason: str | None,
+    config: StrategyConfig,
+) -> TradeDecision:
+    if not selected:
+        block_reason = (
+            decision.entry_block_reason
+            or reason
+            or f"{policy.sleeve.value} research not selected"
+        )
+        return replace(
+            decision,
+            approved=False,
+            signal_approved=(
+                decision.signal_approved
+                if decision.signal_approved is not None
+                else decision.approved
+            ),
+            entry_block_reason=block_reason,
+            recommended_contracts=0.0,
+            expected_profit=0.0,
+            reasons=[*decision.reasons, block_reason],
+        )
+    if policy is MOTION_POLICY:
+        prepared = with_motion_taker_execution(decision, config)
+        if prepared is not None:
+            return prepared
+        block_reason = "motion visible-ask taker quote is not executable"
+    else:
+        prepared = with_target_research_execution(decision, config)
+        if prepared is not None and prepared.recommended_contracts > 0:
+            return prepared
+        block_reason = "target canonical maker-or-taker quote is not executable"
+    return replace(
+        decision,
+        approved=False,
+        signal_approved=True,
+        entry_block_reason=block_reason,
+        recommended_contracts=0.0,
+        expected_profit=0.0,
+        reasons=[*decision.reasons, block_reason],
+    )
+
+
+def research_reentry_fingerprint(
+    *,
+    account_id: str,
+    sleeve: str,
+    scan_run_id: str,
+    ticker: str,
+    side: str,
+    executable_price: float,
+    probability: float,
+    observed_high_state: str,
+) -> str:
+    """Hash the exact versioned opportunity identity from the design."""
+
+    payload = {
+        "account_id": account_id,
+        "sleeve": sleeve,
+        "scan_run_id": scan_run_id,
+        "ticker": ticker,
+        "side": side.upper(),
+        "executable_price_cents": round(executable_price * 100),
+        "probability_bucket": round(probability * 50),
+        "observed_high_state": observed_high_state,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _normalize_entry_mode(entry_mode: str) -> str:

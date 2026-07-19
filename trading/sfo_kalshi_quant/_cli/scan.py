@@ -46,10 +46,20 @@ from ..models import (
     TradeDecision,
     format_event_date_token,
 )
-from ..paper import ArbitrageContainmentError, PaperTrader
+from ..paper import (
+    ArbitrageContainmentError,
+    PaperTrader,
+    prepare_research_sleeve_decisions,
+)
 from ..portfolio import PortfolioPlan, allocate_portfolio
 from ..posterior_kelly import load_posterior_kelly_model
 from ..probability import ResidualCalibrator
+from ..research_policy import (
+    MOTION_POLICY,
+    TARGET_POLICY,
+    canonical_research_lead_bucket,
+)
+from ..research_portfolio import ResearchOpportunity, ResearchPlans, allocate_research_plans
 from ..risk import TradeEvaluator
 from ..settlement_day import settlement_clock, settlement_today
 from ..standard_bins import fallback_bins
@@ -71,6 +81,29 @@ _UNSET = object()
 def _risk_profile_name(args: argparse.Namespace) -> str:
     explicit = getattr(args, "risk_profile", None)
     return normalize_risk_profile_name(str(explicit) if explicit else None)
+
+
+def _research_placement_flags(args: argparse.Namespace) -> tuple[bool, bool]:
+    """Return target/motion admission intent only for the research profile.
+
+    ``--place-paper`` remains the backwards-compatible manual research switch
+    for both sleeves. The explicit AWS switches are narrower and are ignored
+    for every other profile, so a research flag cannot enable live placement.
+    """
+
+    if _risk_profile_name(args) != "research":
+        return False, False
+    place_all = bool(getattr(args, "place_paper", False))
+    return (
+        place_all or bool(getattr(args, "place_research_target", False)),
+        place_all or bool(getattr(args, "place_research_motion", False)),
+    )
+
+
+def _paper_placement_requested(args: argparse.Namespace) -> bool:
+    if bool(getattr(args, "place_paper", False)):
+        return True
+    return any(_research_placement_flags(args))
 
 
 def _analysis_sides(side_arg: str) -> tuple[str, ...]:
@@ -115,7 +148,7 @@ def _resolve_analysis_targets(
             with_nested_markets=True,
         )
     except (URLError, OSError) as exc:
-        if args.place_paper:
+        if _paper_placement_requested(args):
             print(
                 color.yellow(
                     f"warning: live Kalshi rolling target lookup failed ({exc}); "
@@ -137,7 +170,7 @@ def _resolve_analysis_targets(
     if targets:
         return targets, events_by_target
 
-    if args.place_paper:
+    if _paper_placement_requested(args):
         print(
             color.yellow(
                 f"warning: no active Kalshi {series_ticker} events found; skipping paper "
@@ -355,16 +388,23 @@ def build_scan_context(
             _build_sizing_model(config, store) if sizing_model is _UNSET else sizing_model
         ),
     )
-    decisions = evaluator.rank(
-        markets,
-        probabilities,
-        bankroll=paper_bankroll,
-        sides=_analysis_sides(args.side),
-        source_spread_f=forecast.source_spread_f,
-        forecast_high_f=forecast.predicted_high_f,
-        forecast_sigma_f=forecast.source_spread_f,
-        market_consensus=consensus,
-    )
+    rank_kwargs = {
+        "bankroll": paper_bankroll,
+        "sides": _analysis_sides(args.side),
+        "source_spread_f": forecast.source_spread_f,
+        "forecast_high_f": forecast.predicted_high_f,
+        "forecast_sigma_f": forecast.source_spread_f,
+        "market_consensus": consensus,
+    }
+    if risk_profile == "research":
+        decisions = evaluator.rank(
+            markets,
+            probabilities,
+            **rank_kwargs,
+            candidate_only=True,
+        )
+    else:
+        decisions = evaluator.rank(markets, probabilities, **rank_kwargs)
     return ScanContext(
         city=city,
         series_ticker=series_ticker,
@@ -522,6 +562,173 @@ def _analyze_one_target(
     )
 
 
+def _research_observed_high_state(intraday: IntradaySnapshot | None) -> str:
+    if intraday is None or intraday.observed_high_f is None:
+        high = "unavailable"
+    else:
+        high = f"{float(intraday.observed_high_f):.3f}"
+    return f"complete={int(bool(intraday and intraday.is_complete))};high={high}"
+
+
+def _execute_research_scan_context(
+    context: ScanContext,
+    *,
+    target: date,
+    store: PaperStore,
+    config: StrategyConfig,
+    entry_allowed: bool,
+    entry_block_reason: str | None,
+    place_paper: bool,
+    forecast_snapshot_id: int | None,
+    market_snapshot_id: int | None,
+    place_research_target: bool | None = None,
+    place_research_motion: bool | None = None,
+    scan_run_id: str | None = None,
+):
+    """Evaluate two books from one immutable in-memory research context."""
+
+    objective_day = store.research_objective_day()
+    lead_days = (target - objective_day).days
+    lead_bucket = canonical_research_lead_bucket(lead_days)
+    run_id = scan_run_id or f"research-{uuid.uuid4().hex[:16]}"
+    decisions = list(context.decisions)
+    if not entry_allowed and entry_block_reason:
+        decisions = _block_entry_decisions(decisions, entry_block_reason)
+    target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
+    motion_state = store.research_account_state(account_id=MOTION_POLICY.account_id)
+    target_cash = float(target_state["available_cash"]) if target_state else 0.0
+    motion_cash = float(motion_state["available_cash"]) if motion_state else 0.0
+    target_realized = store.research_realized_pnl_for_day(
+        account_id=TARGET_POLICY.account_id,
+        objective_day=objective_day,
+    )
+    motion_realized = store.research_realized_pnl_for_day(
+        account_id=MOTION_POLICY.account_id,
+        objective_day=objective_day,
+    )
+    execution_config = strategy_config_for_profile("research")
+    target_decisions, motion_decisions = prepare_research_sleeve_decisions(
+        decisions,
+        execution_config,
+    )
+    target_opportunities = [
+        ResearchOpportunity(decision, target.isoformat(), lead_days)
+        for decision in target_decisions
+    ]
+    motion_opportunities = [
+        ResearchOpportunity(decision, target.isoformat(), lead_days)
+        for decision in motion_decisions
+    ]
+    plans = allocate_research_plans(
+        target_opportunities,
+        motion_opportunities=motion_opportunities,
+        target_available_cash=target_cash,
+        motion_available_cash=motion_cash,
+        realized_today=target_realized,
+        motion_realized_today=motion_realized,
+        run_id=run_id,
+    )
+    admit_target_orders = (
+        place_paper if place_research_target is None else place_research_target
+    )
+    admit_motion_orders = (
+        place_paper if place_research_motion is None else place_research_motion
+    )
+    execution = PaperTrader(
+        store,
+        execution_config,
+        risk_profile="research",
+        entry_mode="limit",
+        series_ticker=context.series_ticker,
+    ).execute_research_plans(
+        target.isoformat(),
+        plans,
+        source_decisions=target_decisions,
+        motion_source_decisions=motion_decisions,
+        objective_day=objective_day.isoformat(),
+        lead_bucket=lead_bucket,
+        scan_run_id=run_id,
+        observed_high_state=_research_observed_high_state(context.intraday),
+        forecast=context.forecast,
+        intraday=context.intraday,
+        event=context.event,
+        market_consensus=context.consensus,
+        forecast_snapshot_id=forecast_snapshot_id,
+        market_snapshot_id=market_snapshot_id,
+        admit_orders=place_paper and entry_allowed,
+        admit_target_orders=admit_target_orders and entry_allowed,
+        admit_motion_orders=admit_motion_orders and entry_allowed,
+    )
+    return plans, execution, decisions
+
+
+def _research_portfolio_scan_from_context(
+    args: argparse.Namespace,
+    target: date,
+    context: ScanContext,
+    config: StrategyConfig,
+    store: PaperStore,
+    color: Color,
+) -> None:
+    place_research_target, place_research_motion = _research_placement_flags(args)
+    placement_requested = place_research_target or place_research_motion
+    entry_allowed = True
+    entry_block_reason = None
+    if placement_requested:
+        if context.event is None:
+            entry_allowed = False
+            entry_block_reason = (
+                "paper portfolio disabled: target date is not listed as a live event yet"
+            )
+        elif not context.event.active_markets:
+            entry_allowed = False
+            entry_block_reason = "paper portfolio disabled: event has no active markets"
+        else:
+            entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
+                target,
+                context.forecast,
+                context.intraday,
+                city=context.city,
+                risk_profile="research",
+            )
+
+    forecast_snapshot_id = None
+    market_snapshot_id = None
+    if not getattr(args, "skip_context_snapshots", False):
+        forecast_snapshot_id = store.record_forecast(context.forecast)
+        if context.event:
+            market_snapshot_id = store.record_market(context.event)
+        store.record_probabilities(target.isoformat(), context.probabilities.values())
+
+    plans, execution, recorded_decisions = _execute_research_scan_context(
+        context,
+        target=target,
+        store=store,
+        config=config,
+        entry_allowed=entry_allowed,
+        entry_block_reason=entry_block_reason,
+        place_paper=bool(args.place_paper),
+        place_research_target=place_research_target,
+        place_research_motion=place_research_motion,
+        forecast_snapshot_id=forecast_snapshot_id,
+        market_snapshot_id=market_snapshot_id,
+    )
+    placed_ids = [*execution.target_order_ids, *execution.motion_order_ids]
+    _print_portfolio_scan(
+        context.event_title,
+        context.forecast,
+        plans.target,
+        recorded_decisions,
+        placed_ids=placed_ids,
+        market_available=context.market_available,
+        color=color,
+        intraday=context.intraday,
+        ensemble=context.ensemble,
+        entry_block_reason=entry_block_reason,
+        consensus=context.consensus,
+    )
+
+
 def _portfolio_scan_one_target(
     args: argparse.Namespace,
     target,
@@ -569,6 +776,16 @@ def _portfolio_scan_one_target(
     risk_profile = context.risk_profile
     paper_bankroll = context.paper_bankroll
     decisions = context.decisions
+    if risk_profile == "research":
+        _research_portfolio_scan_from_context(
+            args,
+            target,
+            context,
+            config,
+            store,
+            color,
+        )
+        return
     opportunities = build_arbitrage_opportunities(
         markets,
         config=config,

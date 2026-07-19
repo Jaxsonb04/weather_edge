@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
+
+from ..research_policy import MOTION_POLICY, TARGET_POLICY
 
 try:
     import fcntl
@@ -111,7 +114,14 @@ CREATE TABLE IF NOT EXISTS scan_context_snapshots (
     market_consensus_json TEXT,
     prediction_features_json TEXT NOT NULL,
     strategy_config_json TEXT,
-    schema_version INTEGER NOT NULL DEFAULT 1
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    -- Content identity of the point-in-time observation, deliberately
+    -- excluding risk profile/bankroll/sleeve/account identity so the exact
+    -- same observation can feed live, target, and motion decisions without
+    -- a duplicated, insertion-order-biased context row (chronological
+    -- research tuning Task 1).
+    source_context_hash TEXT,
+    source_scan_run_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS decision_snapshots (
@@ -167,7 +177,11 @@ CREATE TABLE IF NOT EXISTS decision_snapshots (
     scan_context_id INTEGER REFERENCES scan_context_snapshots(id),
     prediction_features_json TEXT,
     diagnostics_json TEXT,
-    reasons_json TEXT NOT NULL
+    reasons_json TEXT NOT NULL,
+    -- Identity of the policy that produced this specific decision row.
+    -- Profile/sleeve/bankroll identity belongs to decision rows, never to
+    -- the shared source-neutral scan context above.
+    decision_policy_fingerprint TEXT
 );
 
 CREATE TABLE IF NOT EXISTS paper_orders (
@@ -377,6 +391,85 @@ CREATE TABLE IF NOT EXISTS research_shadow_monitor_snapshots (
     unrealized_roi REAL,
     diagnostics_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS research_daily_goals (
+    objective_day TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    policy_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reference_equity REAL NOT NULL CHECK(reference_equity > 0),
+    target_return REAL NOT NULL CHECK(target_return > 0),
+    target_pnl REAL NOT NULL CHECK(target_pnl > 0),
+    PRIMARY KEY(objective_day, account_id, policy_version)
+);
+
+CREATE TABLE IF NOT EXISTS research_plan_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    objective_day TEXT NOT NULL,
+    scan_run_id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    policy_fingerprint TEXT NOT NULL,
+    target_pnl REAL NOT NULL,
+    realized_today REAL NOT NULL,
+    remaining_target REAL NOT NULL CHECK(remaining_target >= 0),
+    available_conservative_expected_profit REAL NOT NULL
+        CHECK(available_conservative_expected_profit >= 0),
+    target_feasible INTEGER NOT NULL CHECK(target_feasible IN (0, 1))
+);
+
+-- Immutable declaration of one predeclared research candidate. Declared
+-- before any evaluation window (enforced by a trigger on research_evidence
+-- below), and never editable or deletable once written, so a challenger's
+-- parameters are always fixed before the test fold that scores it exists.
+CREATE TABLE IF NOT EXISTS research_experiments (
+    experiment_id TEXT PRIMARY KEY,
+    declared_at TEXT NOT NULL,
+    hypothesis_family TEXT NOT NULL,
+    candidate_key TEXT NOT NULL,
+    candidate_version TEXT NOT NULL,
+    parameter_json TEXT NOT NULL,
+    evidence_role TEXT NOT NULL CHECK(evidence_role IN ('exploratory','confirmatory')),
+    UNIQUE(hypothesis_family, candidate_key, candidate_version)
+);
+
+-- Immutable paired baseline/challenger fold score. Only normalized
+-- market/forecast input and derived challenger evidence belong here --
+-- never raw, expiring third-party content.
+CREATE TABLE IF NOT EXISTS research_evidence (
+    experiment_id TEXT NOT NULL REFERENCES research_experiments(experiment_id),
+    fold_id TEXT NOT NULL,
+    station_id TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    baseline_json TEXT NOT NULL,
+    challenger_json TEXT NOT NULL,
+    PRIMARY KEY(experiment_id, fold_id, station_id, target_date)
+);
+
+-- Task 7: one immutable paired baseline/Google-challenger fold record, so
+-- the fixed research challenger can be scored after settlement even though
+-- the raw Google runtime evidence it was derived from has already expired.
+-- Only derived mean/sigma/bracket-probability/action values belong here --
+-- never a raw Google high, gap, response body, conditions text, URL, key,
+-- or token (spec section 7.2/7.3); PaperStore.record_google_challenger_snapshot
+-- enforces that on write.
+CREATE TABLE IF NOT EXISTS google_challenger_snapshots (
+  station_id TEXT NOT NULL,
+  target_date TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  baseline_mu REAL NOT NULL,
+  baseline_sigma REAL NOT NULL,
+  challenger_mu REAL,
+  challenger_sigma REAL NOT NULL,
+  baseline_probabilities_json TEXT NOT NULL,
+  challenger_probabilities_json TEXT,
+  action TEXT NOT NULL,
+  PRIMARY KEY(station_id, target_date, issued_at, policy_version)
+);
 """
 
 # Created after column migrations in init() so they can reference late-added
@@ -388,6 +481,21 @@ CREATE INDEX IF NOT EXISTS idx_paper_orders_lifecycle
     ON paper_orders (status, settled_at, closed_at);
 CREATE INDEX IF NOT EXISTS idx_paper_orders_group
     ON paper_orders (group_id);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_parent
+    ON paper_orders (parent_order_id, id)
+    WHERE parent_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account_closed
+    ON paper_orders (account_id, closed_at, id)
+    WHERE status != 'REJECTED' AND closed_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account_settled
+    ON paper_orders (account_id, settled_at, id)
+    WHERE status != 'REJECTED' AND settled_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account_expires
+    ON paper_orders (account_id, expires_at, id)
+    WHERE status != 'REJECTED' AND expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_expired_created
+    ON paper_orders (account_id, created_at, id)
+    WHERE status = 'PAPER_EXPIRED' AND expires_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market
     ON decision_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_target
@@ -395,10 +503,17 @@ CREATE INDEX IF NOT EXISTS idx_market_snapshots_target
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_scan_context
     ON decision_snapshots (scan_context_id)
     WHERE scan_context_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_context_snapshots_source_hash
+    ON scan_context_snapshots (source_context_hash)
+    WHERE source_context_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
     ON probability_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
     ON paper_monitor_snapshots (order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_research_plan_snapshots_current
+    ON research_plan_snapshots (
+        objective_day, account_id, policy_version, created_at, id
+    );
 CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_target
     ON research_shadow_orders (target_date, market_ticker, side, created_at);
 CREATE INDEX IF NOT EXISTS idx_research_shadow_orders_link
@@ -427,24 +542,19 @@ CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pre_entry
       AND created_at < market_close_time
 """
 
-# DB-level backstop for the application's concurrent-open guard
-# (has_active_paper_entry). The app guard is a check-then-insert across separate
-# connections, so a transient profile-normalization gap during a deploy (the
-# 2026-06-18 duplicate-open incident) or a check-then-insert race can still leave
-# two OPEN orders on the same market/side/profile. This partial UNIQUE index makes
-# that physically impossible. It is SIDE-INCLUSIVE on purpose: a deliberate
-# arbitrage YES+NO box on one market (opposite sides) stays legal, while a second
-# OPEN order on the *identical* market/side/profile is rejected. Partial on the
-# open lifecycle so re-entry after a close/settlement is unaffected. Created
-# best-effort in init() because a book that still holds legacy duplicates cannot
-# build it until they are closed.
+# DB-level backstop for the application's concurrent-open guard. Account is the
+# isolation boundary: target and motion may independently hold the same side of
+# one market, while duplicate active exposure inside either account is forbidden.
+# Keep the historical object name so operational scripts that temporarily drop
+# the guard continue to work; the indexed identity is deliberately account-, not
+# profile-, scoped. NULL pre-account rows retain shared-book semantics.
 OPEN_POSITION_GUARD_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_orders_open_market_side_profile
     ON paper_orders (
+        COALESCE(account_id, 'paper-shared'),
         target_date,
         market_ticker,
-        UPPER(COALESCE(side, 'YES')),
-        COALESCE(risk_profile, 'live')
+        UPPER(COALESCE(side, 'YES'))
     )
     WHERE status IN (
         'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
@@ -453,6 +563,78 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_orders_open_market_side_profile
       AND settled_at IS NULL
       AND closed_at IS NULL
 """
+
+_OPEN_POSITION_GUARD_NAME = "ux_paper_orders_open_market_side_profile"
+
+
+def _normalized_sql_tokens(sql: str) -> tuple[str, ...]:
+    """Return a whitespace-insensitive, literal-preserving SQL token stream."""
+
+    tokens = re.findall(
+        r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|"
+        r"<>|!=|<=|>=|==|[(),.;=<>+*/%.-]",
+        sql,
+    )
+    normalized = [token if token.startswith("'") else token.upper() for token in tokens]
+    for index in range(len(normalized) - 2):
+        if normalized[index : index + 3] == ["IF", "NOT", "EXISTS"]:
+            del normalized[index : index + 3]
+            break
+    return tuple(normalized)
+
+
+_CANONICAL_OPEN_POSITION_GUARD_TOKENS = _normalized_sql_tokens(
+    OPEN_POSITION_GUARD_INDEX
+)
+
+
+def _open_position_guard_is_canonical(
+    conn: sqlite3.Connection,
+    stored_sql: str,
+) -> bool:
+    """Verify the complete guard definition and SQLite's realized metadata."""
+
+    if _normalized_sql_tokens(stored_sql) != _CANONICAL_OPEN_POSITION_GUARD_TOKENS:
+        return False
+    index_row = next(
+        (
+            row
+            for row in conn.execute("PRAGMA index_list(paper_orders)").fetchall()
+            if str(row[1]) == _OPEN_POSITION_GUARD_NAME
+        ),
+        None,
+    )
+    if index_row is None:
+        return False
+    # seq, name, unique, origin, partial
+    if int(index_row[2]) != 1 or str(index_row[3]) != "c" or int(index_row[4]) != 1:
+        return False
+    xinfo = conn.execute(
+        f"PRAGMA index_xinfo({_OPEN_POSITION_GUARD_NAME})"
+    ).fetchall()
+    # Two expressions surround the exact target/ticker columns; the final row
+    # is SQLite's non-key rowid payload.
+    return (
+        [int(row[1]) for row in xinfo] == [-2, 2, 3, -2, -1]
+        and [row[2] for row in xinfo]
+        == [None, "target_date", "market_ticker", None, None]
+        and [int(row[5]) for row in xinfo] == [1, 1, 1, 1, 0]
+    )
+
+RESEARCH_IDENTITY_COLUMNS = {
+    "account_id": "TEXT",
+    "research_sleeve": "TEXT",
+    "research_policy_version": "TEXT",
+    "policy_fingerprint": "TEXT",
+    "objective_day": "TEXT",
+    "lead_bucket": "TEXT",
+    "scan_run_id": "TEXT",
+    "reentry_fingerprint": "TEXT",
+}
+
+RESEARCH_DAILY_GOAL_AUDIT_COLUMNS = {
+    "policy_fingerprint": "TEXT",
+}
 
 PAPER_ORDER_AUDIT_COLUMNS = {
     "settled_at": "TEXT",
@@ -500,6 +682,7 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     # Depth-aware partial closes (audit EX-02): the executed slice of a partial
     # close becomes its own PAPER_CLOSED row linked back to the original order.
     "parent_order_id": "INTEGER",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
 
 PROBABILITY_AUDIT_COLUMNS = {
@@ -541,6 +724,8 @@ DECISION_AUDIT_COLUMNS = {
     "diagnostics_json": "TEXT",
     "signal_approved": "INTEGER",
     "entry_block_reason": "TEXT",
+    "decision_policy_fingerprint": "TEXT",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
 
 RESEARCH_SHADOW_AUDIT_COLUMNS = {
@@ -551,6 +736,7 @@ RESEARCH_SHADOW_AUDIT_COLUMNS = {
 
 MONITOR_AUDIT_COLUMNS = {
     "diagnostics_json": "TEXT",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
 
 SCAN_CONTEXT_AUDIT_COLUMNS = {
@@ -569,7 +755,343 @@ SCAN_CONTEXT_AUDIT_COLUMNS = {
     "prediction_features_json": "TEXT",
     "strategy_config_json": "TEXT",
     "schema_version": "INTEGER",
+    "source_context_hash": "TEXT",
+    "source_scan_run_id": "TEXT",
+    **RESEARCH_IDENTITY_COLUMNS,
 }
+
+
+_RESEARCH_IDENTITY_TABLES = (
+    "paper_orders",
+    "decision_snapshots",
+    "scan_context_snapshots",
+    "paper_monitor_snapshots",
+    "research_shadow_monitor_snapshots",
+)
+
+
+def _research_identity_trigger_sql(table: str, operation: str) -> tuple[str, str]:
+    """Generate one canonical research-identity trigger definition."""
+
+    if table not in _RESEARCH_IDENTITY_TABLES:
+        raise ValueError(f"unsupported research identity table: {table}")
+    if operation not in {"INSERT", "UPDATE"}:
+        raise ValueError(f"unsupported research identity operation: {operation}")
+    identity_markers = tuple(
+        column for column in RESEARCH_IDENTITY_COLUMNS if column != "account_id"
+    )
+    new_identity = " OR ".join(
+        f"NEW.{column} IS NOT NULL" for column in identity_markers
+    )
+    old_identity = " OR ".join(
+        f"OLD.{column} IS NOT NULL" for column in identity_markers
+    )
+    missing_core = " OR ".join(
+        f"NULLIF(TRIM(NEW.{column}), '') IS NULL"
+        for column in (
+            "account_id",
+            "research_sleeve",
+            "research_policy_version",
+            "policy_fingerprint",
+        )
+    )
+    new_research_account = (
+        f"NEW.account_id IN ('{TARGET_POLICY.account_id}', "
+        f"'{MOTION_POLICY.account_id}')"
+    )
+    old_research_account = (
+        f"OLD.account_id IN ('{TARGET_POLICY.account_id}', "
+        f"'{MOTION_POLICY.account_id}')"
+    )
+    trigger = f"trg_{table}_research_identity_{operation.lower()}"
+    if operation == "INSERT":
+        account_condition = (
+            f"{new_research_account} OR " if table == "paper_orders" else ""
+        )
+        established_identity = f"{account_condition}{new_identity}"
+    else:
+        account_condition = (
+            f"{old_research_account} OR {new_research_account} OR "
+            if table == "paper_orders"
+            else ""
+        )
+        established_identity = f"{account_condition}{old_identity} OR {new_identity}"
+    condition = f"({established_identity}) AND ({missing_core})"
+    sql = f"""
+        CREATE TRIGGER {trigger}
+        BEFORE {operation} ON {table}
+        WHEN {condition}
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'research identity requires sleeve, policy version, and fingerprint'
+            );
+        END
+    """
+    return trigger, sql
+
+
+def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
+    """Require complete identity on new sleeve evidence, never legacy rows."""
+
+    for table in _RESEARCH_IDENTITY_TABLES:
+        for operation in ("INSERT", "UPDATE"):
+            trigger, expected_sql = _research_identity_trigger_sql(table, operation)
+            stored = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                (trigger,),
+            ).fetchone()
+            if (
+                stored is not None
+                and _normalized_sql_tokens(str(stored[0] or ""))
+                == _normalized_sql_tokens(expected_sql)
+            ):
+                continue
+            # Trigger names are schema API. Replace only stale definitions;
+            # clean init stays read-only while mismatches rebuild transactionally.
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute(expected_sql)
+
+
+def _ensure_research_daily_goal_triggers(conn: sqlite3.Connection) -> None:
+    """Make frozen objective evidence append-only, including old databases."""
+
+    definitions = {
+        "trg_research_daily_goals_immutable_update": """
+            CREATE TRIGGER trg_research_daily_goals_immutable_update
+            BEFORE UPDATE ON research_daily_goals
+            BEGIN
+                SELECT RAISE(ABORT, 'research daily goals are immutable');
+            END
+        """,
+        "trg_research_daily_goals_immutable_delete": """
+            CREATE TRIGGER trg_research_daily_goals_immutable_delete
+            BEFORE DELETE ON research_daily_goals
+            BEGIN
+                SELECT RAISE(ABORT, 'research daily goals are immutable');
+            END
+        """,
+        "trg_research_plan_snapshots_immutable_update": """
+            CREATE TRIGGER trg_research_plan_snapshots_immutable_update
+            BEFORE UPDATE ON research_plan_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'research plan snapshots are immutable');
+            END
+        """,
+        "trg_research_plan_snapshots_immutable_delete": """
+            CREATE TRIGGER trg_research_plan_snapshots_immutable_delete
+            BEFORE DELETE ON research_plan_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'research plan snapshots are immutable');
+            END
+        """,
+    }
+    for trigger, expected_sql in definitions.items():
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger,),
+        ).fetchone()
+        if (
+            stored is not None
+            and _normalized_sql_tokens(str(stored[0] or ""))
+            == _normalized_sql_tokens(expected_sql)
+        ):
+            continue
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute(expected_sql)
+
+
+def _ensure_research_experiment_triggers(conn: sqlite3.Connection) -> None:
+    """Freeze declared research experiments and their paired evidence.
+
+    A challenger's parameters must be fixed before any test-fold outcome can
+    be scored against it, so both tables are append-only from the moment a
+    row lands, and evidence can only reference an experiment declared before
+    the day it evaluates -- a challenger can never be tuned to, or selected
+    by, the days it is later scored on.
+
+    ``INSERT OR REPLACE`` (and ``INSERT ... ON CONFLICT DO UPDATE`` routed
+    through REPLACE conflict resolution) deletes the conflicting row
+    internally before reinserting it. With ``PRAGMA recursive_triggers`` off
+    (the SQLite default, unchanged here), that internal delete does not fire
+    the BEFORE DELETE/UPDATE triggers above, so a REPLACE could silently
+    rewrite an "immutable" row without ever tripping them. The two
+    immutable-insert triggers below close that gap: a BEFORE INSERT trigger
+    runs before REPLACE's conflict resolution removes the existing row, so
+    the conflicting row is still visible to ``WHEN EXISTS`` and the whole
+    statement aborts instead of the trigger-less internal delete silently
+    succeeding.
+    """
+
+    definitions = {
+        "trg_research_experiments_immutable_update": """
+            CREATE TRIGGER trg_research_experiments_immutable_update
+            BEFORE UPDATE ON research_experiments
+            BEGIN
+                SELECT RAISE(ABORT, 'research experiments are immutable');
+            END
+        """,
+        "trg_research_experiments_immutable_delete": """
+            CREATE TRIGGER trg_research_experiments_immutable_delete
+            BEFORE DELETE ON research_experiments
+            BEGIN
+                SELECT RAISE(ABORT, 'research experiments are immutable');
+            END
+        """,
+        "trg_research_experiments_immutable_insert": """
+            CREATE TRIGGER trg_research_experiments_immutable_insert
+            BEFORE INSERT ON research_experiments
+            WHEN EXISTS (
+                SELECT 1 FROM research_experiments
+                WHERE experiment_id = NEW.experiment_id
+                   OR (
+                       hypothesis_family = NEW.hypothesis_family
+                       AND candidate_key = NEW.candidate_key
+                       AND candidate_version = NEW.candidate_version
+                   )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'research experiments are immutable');
+            END
+        """,
+        "trg_research_evidence_immutable_update": """
+            CREATE TRIGGER trg_research_evidence_immutable_update
+            BEFORE UPDATE ON research_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'research evidence is immutable');
+            END
+        """,
+        "trg_research_evidence_immutable_delete": """
+            CREATE TRIGGER trg_research_evidence_immutable_delete
+            BEFORE DELETE ON research_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'research evidence is immutable');
+            END
+        """,
+        "trg_research_evidence_immutable_insert": """
+            CREATE TRIGGER trg_research_evidence_immutable_insert
+            BEFORE INSERT ON research_evidence
+            WHEN EXISTS (
+                SELECT 1 FROM research_evidence
+                WHERE experiment_id = NEW.experiment_id
+                  AND fold_id = NEW.fold_id
+                  AND station_id = NEW.station_id
+                  AND target_date = NEW.target_date
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'research evidence is immutable');
+            END
+        """,
+        "trg_research_evidence_declared_before_window": """
+            CREATE TRIGGER trg_research_evidence_declared_before_window
+            BEFORE INSERT ON research_evidence
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'research evidence must be declared before its evaluation window'
+                )
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM research_experiments
+                    WHERE experiment_id = NEW.experiment_id
+                      AND datetime(declared_at) <= datetime(NEW.evaluated_at)
+                      AND date(declared_at) <= date(NEW.target_date)
+                );
+            END
+        """,
+    }
+    for trigger, expected_sql in definitions.items():
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger,),
+        ).fetchone()
+        if (
+            stored is not None
+            and _normalized_sql_tokens(str(stored[0] or ""))
+            == _normalized_sql_tokens(expected_sql)
+        ):
+            continue
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute(expected_sql)
+
+
+def _backfill_legacy_research_daily_goal_fingerprints(
+    conn: sqlite3.Connection,
+) -> None:
+    """Stamp only legacy rows that exactly prove the active frozen policy."""
+
+    eligible = conn.execute(
+        "SELECT 1 FROM research_daily_goals "
+        "WHERE (policy_fingerprint IS NULL OR TRIM(policy_fingerprint)='') "
+        "AND account_id=? AND policy_version=? "
+        "AND typeof(reference_equity) IN ('integer', 'real') "
+        "AND typeof(target_return) IN ('integer', 'real') "
+        "AND typeof(target_pnl) IN ('integer', 'real') "
+        "AND reference_equity=? AND target_return=? AND target_pnl=? LIMIT 1",
+        (
+            TARGET_POLICY.account_id,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.reference_equity,
+            TARGET_POLICY.target_return,
+            TARGET_POLICY.target_pnl,
+        ),
+    ).fetchone()
+    if eligible is None:
+        return
+    # An intermediate schema may already have installed the append-only
+    # trigger before it learned how to stamp legacy rows. Initialization is one
+    # transaction, so dropping and canonical recreation are rollback-safe.
+    conn.execute(
+        "DROP TRIGGER IF EXISTS trg_research_daily_goals_immutable_update"
+    )
+    conn.execute(
+        "UPDATE research_daily_goals SET policy_fingerprint=? "
+        "WHERE (policy_fingerprint IS NULL OR TRIM(policy_fingerprint)='') "
+        "AND account_id=? AND policy_version=? "
+        "AND typeof(reference_equity) IN ('integer', 'real') "
+        "AND typeof(target_return) IN ('integer', 'real') "
+        "AND typeof(target_pnl) IN ('integer', 'real') "
+        "AND reference_equity=? AND target_return=? AND target_pnl=?",
+        (
+            TARGET_POLICY.policy_fingerprint,
+            TARGET_POLICY.account_id,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.reference_equity,
+            TARGET_POLICY.target_return,
+            TARGET_POLICY.target_pnl,
+        ),
+    )
+
+
+def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
+    """Bootstrap isolated $1,000 ledgers without touching legacy accounts."""
+
+    for policy in (TARGET_POLICY, MOTION_POLICY):
+        created_at = _now()
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_accounts "
+            "(account_id, created_at, initial_capital, opening_cash, "
+            "high_water_equity, status, cutover_note) "
+            "VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)",
+            (
+                policy.account_id,
+                created_at,
+                policy.reference_equity,
+                policy.reference_equity,
+                policy.reference_equity,
+                f"isolated {policy.sleeve.value} research ledger ({policy.policy_version})",
+            ),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_account_ledger "
+            "(created_at, account_id, order_id, event_type, amount, "
+            "idempotency_key, details_json) VALUES (?, ?, NULL, 'OPENING_CASH', ?, ?, NULL)",
+            (
+                created_at,
+                policy.account_id,
+                policy.reference_equity,
+                f"{policy.account_id}:opening",
+            ),
+        )
 
 
 def _add_missing_columns(
@@ -641,7 +1163,7 @@ def _init_store_locked(self) -> None:
         }
         _add_missing_columns(conn, "paper_orders", existing, PAPER_ORDER_AUDIT_COLUMNS)
         # Legacy rows have no trustworthy partial queue state. Preserve their
-        # booked quantity and mark the evidence generation explicitly; new v3
+        # booked quantity and mark the evidence generation explicitly; current
         # orders write all progress fields at insertion time.
         conn.execute(
             """
@@ -705,6 +1227,17 @@ def _init_store_locked(self) -> None:
         _add_missing_columns(
             conn, "decision_snapshots", existing_decision, DECISION_AUDIT_COLUMNS
         )
+        existing_daily_goals = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(research_daily_goals)").fetchall()
+        }
+        _add_missing_columns(
+            conn,
+            "research_daily_goals",
+            existing_daily_goals,
+            RESEARCH_DAILY_GOAL_AUDIT_COLUMNS,
+        )
+        _backfill_legacy_research_daily_goal_fingerprints(conn)
         existing_context = {
             row[1]
             for row in conn.execute("PRAGMA table_info(scan_context_snapshots)").fetchall()
@@ -728,6 +1261,9 @@ def _init_store_locked(self) -> None:
                 for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
             }
             _add_missing_columns(conn, table, existing_monitor, MONITOR_AUDIT_COLUMNS)
+        _ensure_research_identity_triggers(conn)
+        _ensure_research_daily_goal_triggers(conn)
+        _ensure_research_experiment_triggers(conn)
         existing_forecast = {
             row[1]
             for row in conn.execute("PRAGMA table_info(forecast_snapshots)").fetchall()
@@ -768,51 +1304,66 @@ def _init_store_locked(self) -> None:
                 "idx_decision_snapshots_created_market is missing; pause paper "
                 "scan/monitor and run deploy/aws/create_decision_snapshot_index.sh"
             )
-        self._expire_pre_v3_resting_orders(conn)
+        self._expire_pre_current_execution_orders(conn)
         self._ensure_shared_paper_account(conn)
         self._ensure_open_position_guard_index(conn)
+        _ensure_research_sleeve_accounts(conn)
 
 def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
-    """Build the unique open-position backstop index, tolerating a dirty book.
+    """Migrate the active-order guard to account scope, or fail closed.
 
-    A database that still holds pre-existing duplicate OPEN orders (a book
-    from before this guard, e.g. the 2026-06-18 incident) cannot build the
-    unique index. Rather than brick every init()/scan, log which groups block
-    it so an operator can close the surplus with `paper-close`; the index then
-    builds automatically on the next run.
+    Duplicate validation happens before the prior profile-scoped index is
+    dropped. A dirty legacy book therefore keeps its existing protection and
+    cannot enable target/motion writes without the required account boundary.
     """
     existing = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='index' "
-        "AND name='ux_paper_orders_open_market_side_profile'"
+        f"AND name='{_OPEN_POSITION_GUARD_NAME}'"
     ).fetchone()
-    if existing and "PAPER_PARTIALLY_FILLED" not in str(existing[0] or ""):
-        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
+    existing_sql = str(existing[0] or "") if existing else ""
+    is_current = bool(
+        existing
+        and _open_position_guard_is_canonical(conn, existing_sql)
+    )
+    if is_current:
+        return
+
+    offending = conn.execute(
+        """
+        SELECT COALESCE(account_id, 'paper-shared') AS account_id,
+               target_date,
+               market_ticker,
+               UPPER(COALESCE(side, 'YES')) AS side,
+               COUNT(*) AS open_orders
+        FROM paper_orders
+        WHERE status IN (
+            'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
+            'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+        )
+          AND settled_at IS NULL
+          AND closed_at IS NULL
+        GROUP BY 1, 2, 3, 4
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    if offending:
+        groups = "; ".join(
+            f"{row[4]}x {row[2]} {row[3]} [{row[0]}] on {row[1]}"
+            for row in offending
+        )
+        raise sqlite3.IntegrityError(
+            "account-scoped open-position guard migration blocked by "
+            f"{len(offending)} duplicate active group(s): {groups}"
+        )
+
+    if existing:
+        conn.execute(f"DROP INDEX {_OPEN_POSITION_GUARD_NAME}")
     try:
         conn.execute(OPEN_POSITION_GUARD_INDEX)
-    except sqlite3.IntegrityError:
-        offending = conn.execute(
-            """
-            SELECT market_ticker,
-                   UPPER(COALESCE(side, 'YES')) AS side,
-                   COALESCE(risk_profile, 'live') AS risk_profile,
-                   COUNT(*) AS open_orders
-            FROM paper_orders
-            WHERE status IN (
-                'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
-                'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
-            )
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            GROUP BY 1, 2, 3
-            HAVING COUNT(*) > 1
-            """
-        ).fetchall()
-        logger.warning(
-            "open-position guard index not built: %d duplicate open group(s) "
-            "must be closed first (e.g. via `paper-close`): %s",
-            len(offending),
-            "; ".join(f"{row[3]}x {row[0]} {row[1]} [{row[2]}]" for row in offending),
-        )
+    except sqlite3.IntegrityError as exc:  # concurrent writes outside init lock
+        raise sqlite3.IntegrityError(
+            "account-scoped open-position guard could not be built"
+        ) from exc
 
 # One-time rename of stored risk_profile strings written before the 4->2 profile
 # collapse, so raw-SQL filters (which compare against the literal new names)
