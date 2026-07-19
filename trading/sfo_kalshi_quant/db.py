@@ -50,7 +50,14 @@ from .maker_fills import (
     normalize_public_trade,
 )
 from .profile_identity import row_published_profile_key
-from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
+from .models import (
+    BucketProbability,
+    EventSnapshot,
+    ForecastSnapshot,
+    GoogleChallengerSnapshot,
+    IntradaySnapshot,
+    TradeDecision,
+)
 from .research_policy import (
     MOTION_POLICY,
     RESEARCH_OBJECTIVE_TZ,
@@ -364,6 +371,57 @@ def source_neutral_context_from_scan_context_row(
 
 
 _EVIDENCE_ROLES = frozenset({"exploratory", "confirmatory"})
+
+# Task 7: the google_challenger_snapshots writer's own belt-and-suspenders
+# guard against a raw Google field ever being smuggled in as a probability
+# "bracket key" -- on top of the schema's own column set (which has no
+# column for a raw value at all) and the frozen research-challenger formula
+# upstream (which never returns one). Substring-matched, case-insensitive,
+# against each key.
+_FORBIDDEN_GOOGLE_RAW_KEY_SUBSTRINGS = (
+    "google_high", "highf", "high_f", "gap", "raw", "response", "condition",
+    "url", "key", "token", "body", "secret",
+)
+_GOOGLE_CHALLENGER_ACTIONS = frozenset(
+    {"forecast", "external_runtime_corroboration_block"}
+)
+
+
+def _finite_probability_input(value: object, name: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be convertible to a finite float") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def _validated_bracket_probabilities(name: str, payload: object) -> dict[str, float]:
+    """Validate a Task 7 probability payload: bracket key -> probability only.
+
+    Rejects a non-mapping/empty payload, a key containing a raw Google field
+    name, or a value outside ``[0, 1]``. Returns a NEW dict (never mutates
+    the caller's mapping).
+    """
+
+    if not isinstance(payload, Mapping) or not payload:
+        raise ValueError(f"{name} must be a non-empty mapping of bracket key to probability")
+    validated: dict[str, float] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"{name} keys must be non-empty bracket labels")
+        lowered = key.strip().lower()
+        for forbidden in _FORBIDDEN_GOOGLE_RAW_KEY_SUBSTRINGS:
+            if forbidden in lowered:
+                raise ValueError(
+                    f"{name} may not contain a raw Google field name ({key!r})"
+                )
+        number = _finite_probability_input(value, f"{name}[{key}]")
+        if not 0.0 <= number <= 1.0:
+            raise ValueError(f"{name}[{key}] must be a probability in [0, 1]")
+        validated[key] = number
+    return validated
 
 
 @dataclass(frozen=True)
@@ -1288,6 +1346,76 @@ class PaperStore:
             )
             conn.commit()
         return experiment
+
+    def record_google_challenger_snapshot(
+        self, snapshot: GoogleChallengerSnapshot
+    ) -> None:
+        """Persist one immutable paired baseline/Google-challenger evidence row.
+
+        Only derived mean/sigma/bracket-probability/action values are stored
+        -- never a raw Google high, gap, response body, conditions text,
+        URL, key, or token (Task 7 requirement 1). Fails closed on an
+        incomplete identity, an unrecognized action, or a probability
+        payload containing anything but bracket-key -> finite
+        numeric-probability-in-[0,1] pairs; no partial row is ever written.
+        """
+
+        station_id = str(snapshot.station_id or "").strip()
+        target_date = (
+            snapshot.target_date.isoformat()
+            if isinstance(snapshot.target_date, date)
+            else str(snapshot.target_date or "").strip()
+        )
+        issued_at = str(snapshot.issued_at or "").strip()
+        policy_version = str(snapshot.policy_version or "").strip()
+        if not station_id or not target_date or not issued_at or not policy_version:
+            raise ValueError("google challenger snapshot requires a complete identity")
+        if snapshot.action not in _GOOGLE_CHALLENGER_ACTIONS:
+            raise ValueError("google challenger snapshot action is not a recognized value")
+        baseline_probabilities = _validated_bracket_probabilities(
+            "baseline_probabilities", snapshot.baseline_probabilities
+        )
+        challenger_probabilities = (
+            _validated_bracket_probabilities(
+                "challenger_probabilities", snapshot.challenger_probabilities
+            )
+            if snapshot.challenger_probabilities is not None
+            else None
+        )
+        baseline_mu = _finite_probability_input(snapshot.baseline_mu, "baseline_mu")
+        baseline_sigma = _finite_probability_input(snapshot.baseline_sigma, "baseline_sigma")
+        challenger_sigma = _finite_probability_input(snapshot.challenger_sigma, "challenger_sigma")
+        challenger_mu = (
+            _finite_probability_input(snapshot.challenger_mu, "challenger_mu")
+            if snapshot.challenger_mu is not None
+            else None
+        )
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO google_challenger_snapshots ("
+                "station_id, target_date, issued_at, policy_version, "
+                "baseline_mu, baseline_sigma, challenger_mu, challenger_sigma, "
+                "baseline_probabilities_json, challenger_probabilities_json, action"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    station_id,
+                    target_date,
+                    issued_at,
+                    policy_version,
+                    baseline_mu,
+                    baseline_sigma,
+                    challenger_mu,
+                    challenger_sigma,
+                    json.dumps(baseline_probabilities, sort_keys=True, allow_nan=False),
+                    (
+                        json.dumps(challenger_probabilities, sort_keys=True, allow_nan=False)
+                        if challenger_probabilities is not None
+                        else None
+                    ),
+                    snapshot.action,
+                ),
+            )
+            conn.commit()
 
     def record_research_evidence(
         self,

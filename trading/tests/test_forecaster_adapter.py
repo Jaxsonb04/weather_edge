@@ -240,3 +240,172 @@ def test_apply_intraday_update_uses_adapter_city_fixed_standard_time():
     assert nyc.predicted_high_f == 72.7
     assert sfo.raw["intraday_update"]["intraday_weight"] == 0.5
     assert sfo.predicted_high_f == 73.0
+
+
+# ---------------------------------------------------------------------------
+# T7-1: the legacy raw-JSON google_weather_cache.json fallback is removed.
+#
+# Before Task 7, a missing/row-less weather.db silently degraded to reading
+# highF/method from the legacy raw Google JSON cache. That fallback is
+# removed: no consumer may read Google content from google_weather_cache.json
+# any more, and a weather.db gap is now an explicit ForecastDataError rather
+# than a silent degrade.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_weather_db_raises_instead_of_reading_the_legacy_json_cache(tmp_path):
+    (tmp_path / "google_weather_cache.json").write_text(
+        json.dumps({"target_date": "2026-06-04", "highF": 66.45, "method": "legacy_cache"})
+    )
+
+    try:
+        SfoForecasterAdapter(tmp_path).latest_blend(date(2026, 6, 4))
+    except ForecastDataError as exc:
+        assert "google_weather_cache.json" not in str(exc) or "removed" in str(exc)
+    else:
+        raise AssertionError(
+            "latest_blend must fail closed, not silently serve the legacy JSON cache"
+        )
+
+
+def test_weather_db_without_a_matching_row_raises_instead_of_reading_the_legacy_json_cache(
+    tmp_path,
+):
+    # A real, fully-shaped (but empty) forecast_blend_daily_high table -- so
+    # this genuinely exercises the "table exists, no matching row" path
+    # rather than an unrelated malformed-schema SQL error.
+    db_path = tmp_path / "weather.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE forecast_blend_daily_high (
+                fetched_at TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                lead_hours REAL,
+                method TEXT NOT NULL,
+                predicted_high_f REAL NOT NULL,
+                google_high_f REAL,
+                nws_high_f REAL,
+                open_meteo_high_f REAL,
+                history_high_f REAL,
+                google_weight REAL,
+                nws_weight REAL,
+                open_meteo_weight REAL,
+                history_weight REAL,
+                station_adjustment_f REAL,
+                fresh_station_count INTEGER,
+                source_count INTEGER,
+                time_zone TEXT,
+                max_calls_per_day INTEGER,
+                calls_used_today INTEGER,
+                details_json TEXT,
+                actual_high_f REAL,
+                abs_error_f REAL,
+                scored_at TEXT,
+                PRIMARY KEY (fetched_at, target_date)
+            )
+            """
+        )
+    (tmp_path / "google_weather_cache.json").write_text(
+        json.dumps({"target_date": "2026-06-04", "highF": 66.45, "method": "legacy_cache"})
+    )
+
+    try:
+        SfoForecasterAdapter(tmp_path).latest_blend(date(2026, 6, 4))
+    except ForecastDataError as exc:
+        assert "google_weather_cache.json" not in str(exc) or "removed" in str(exc)
+    else:
+        raise AssertionError(
+            "latest_blend must fail closed, not silently serve the legacy JSON cache"
+        )
+
+
+def test_adapter_no_longer_exposes_a_google_cache_path_attribute(tmp_path):
+    adapter = SfoForecasterAdapter(tmp_path)
+
+    assert not hasattr(adapter, "google_cache_path")
+
+
+# ---------------------------------------------------------------------------
+# Task 7: reading the forecaster-owned durable paired-evidence table.
+#
+# Pure SQL read (mirrors _latest_blend_row/_latest_emos_snapshot) -- never a
+# Python import of forecaster's google_runtime_blend/google_paired_evidence
+# modules (the two projects deliberately do not import each other).
+# ---------------------------------------------------------------------------
+
+
+def _write_paired_evidence_row(db_path, **overrides):
+    row = {
+        "station_id": "KSFO",
+        "target_date": "2026-07-19",
+        "issued_at": "2026-07-18T19:00:00+00:00",
+        "policy_version": "google-runtime-fixed-v1",
+        "baseline_mu": 80.0,
+        "baseline_sigma": 3.0,
+        "challenger_mu": 80.45,
+        "challenger_sigma": 3.0,
+        "action": "forecast",
+    }
+    row.update(overrides)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS google_challenger_research_baseline (
+                station_id TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                baseline_mu REAL NOT NULL,
+                baseline_sigma REAL NOT NULL,
+                challenger_mu REAL,
+                challenger_sigma REAL NOT NULL,
+                action TEXT NOT NULL,
+                PRIMARY KEY(station_id, target_date, issued_at, policy_version)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO google_challenger_research_baseline (
+                station_id, target_date, issued_at, policy_version,
+                baseline_mu, baseline_sigma, challenger_mu, challenger_sigma, action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["station_id"], row["target_date"], row["issued_at"],
+                row["policy_version"], row["baseline_mu"], row["baseline_sigma"],
+                row["challenger_mu"], row["challenger_sigma"], row["action"],
+            ),
+        )
+    return row
+
+
+def test_latest_google_challenger_baseline_returns_none_without_weather_db(tmp_path):
+    adapter = SfoForecasterAdapter(tmp_path)
+
+    assert adapter.latest_google_challenger_baseline(date(2026, 7, 19)) is None
+
+
+def test_latest_google_challenger_baseline_returns_none_without_the_table(tmp_path):
+    db_path = tmp_path / "weather.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER)")
+    adapter = SfoForecasterAdapter(tmp_path)
+
+    assert adapter.latest_google_challenger_baseline(date(2026, 7, 19)) is None
+
+
+def test_latest_google_challenger_baseline_reads_the_freshest_matching_row(tmp_path):
+    db_path = tmp_path / "weather.db"
+    _write_paired_evidence_row(db_path, issued_at="2026-07-18T19:00:00+00:00")
+    _write_paired_evidence_row(db_path, issued_at="2026-07-18T20:00:00+00:00", baseline_mu=81.0)
+    adapter = SfoForecasterAdapter(tmp_path)
+
+    row = adapter.latest_google_challenger_baseline(date(2026, 7, 19))
+
+    assert row is not None
+    assert row["issued_at"] == "2026-07-18T20:00:00+00:00"
+    assert row["baseline_mu"] == 81.0
+    assert row["station_id"] == "KSFO"
+    assert row["action"] == "forecast"

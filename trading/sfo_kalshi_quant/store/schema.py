@@ -448,6 +448,28 @@ CREATE TABLE IF NOT EXISTS research_evidence (
     challenger_json TEXT NOT NULL,
     PRIMARY KEY(experiment_id, fold_id, station_id, target_date)
 );
+
+-- Task 7: one immutable paired baseline/Google-challenger fold record, so
+-- the fixed research challenger can be scored after settlement even though
+-- the raw Google runtime evidence it was derived from has already expired.
+-- Only derived mean/sigma/bracket-probability/action values belong here --
+-- never a raw Google high, gap, response body, conditions text, URL, key,
+-- or token (spec section 7.2/7.3); PaperStore.record_google_challenger_snapshot
+-- enforces that on write.
+CREATE TABLE IF NOT EXISTS google_challenger_snapshots (
+  station_id TEXT NOT NULL,
+  target_date TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  baseline_mu REAL NOT NULL,
+  baseline_sigma REAL NOT NULL,
+  challenger_mu REAL,
+  challenger_sigma REAL NOT NULL,
+  baseline_probabilities_json TEXT NOT NULL,
+  challenger_probabilities_json TEXT,
+  action TEXT NOT NULL,
+  PRIMARY KEY(station_id, target_date, issued_at, policy_version)
+);
 """
 
 # Created after column migrations in init() so they can reference late-added
