@@ -190,9 +190,29 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
   );
 }
 
+/** Shown in place of the live equity curve when the per-book series is missing
+    and a research book is present in the artifact: the combined (all-account)
+    series would plot research activity under the "Live candidate" label, so
+    this reports the gap honestly instead of showing a mislabeled number. */
+function LiveCurveUnavailable() {
+  return (
+    <div
+      role="status"
+      className="flex h-[288px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 text-center ring-1 ring-accent/30"
+    >
+      <Icon icon="solar:clock-circle-bold" className="size-5 text-warning" aria-hidden="true" />
+      <p className="text-sm font-medium text-foreground">Live candidate equity curve unavailable.</p>
+      <p className="max-w-sm text-xs text-muted">
+        Per-book accounting isn't published for this artifact, and a research book is present, so the combined total
+        isn't shown under the live label.
+      </p>
+    </div>
+  );
+}
+
 /** Overview equity block: LIVE leads (hero stats + its own curve), RESEARCH follows on
     a separate, visually secondary curve. The two books' P&L never share a line. */
-function OverviewEquity({ s }: { s: StrategyLab }) {
+export function OverviewEquity({ s }: { s: StrategyLab }) {
   const profiles = activeProfiles(s);
   const live = profiles.find((profile) => profile.risk_profile === "live");
   const target = profiles.find((profile) => profile.risk_profile === "research-target");
@@ -202,8 +222,14 @@ function OverviewEquity({ s }: { s: StrategyLab }) {
   const researchDays = research?.daily_summary?.days;
   const liveSum = live?.paper_trading?.summary;
   const readinessAvailable = !!s.real_money_readiness?.available;
+  // The combined (all-account) series only stands in for the live book when no
+  // research book is published — otherwise it would plot research activity
+  // under the "Live candidate" label.
+  const hasResearchBook = profiles.some((profile) => profile.risk_profile !== "live");
 
-  // Fall back to the combined curve only if the per-book series is missing.
+  // Fall back to the combined curve only if the per-book series is missing AND
+  // no research book exists to contaminate it. Otherwise show an explicit
+  // unavailable state rather than mislabeled all-account numbers.
   const liveCurve =
     live && liveDays?.length ? (
       <EquityCurve
@@ -217,6 +243,8 @@ function OverviewEquity({ s }: { s: StrategyLab }) {
         title="Live candidate — cumulative P&L"
         description={`Realized P&L attributed to the live book · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
       />
+    ) : hasResearchBook ? (
+      <LiveCurveUnavailable />
     ) : (
       <EquityCurve s={s} emphasis="headline" eyebrow="Live candidate · real-money profile" title="Live candidate — cumulative P&L" />
     );
