@@ -36,6 +36,35 @@ _IMPLEMENTATION_ONLY_NAMES = {
     "compute_rolling_blend_residual_bias",
     "compute_source_mos_corrections",
     "_compute_source_mos_corrections_from_rows",
+    # Task 4 city-aware fetch surface (forecaster/google_api.py): not yet
+    # wired into this compatibility facade or its frozen callable inventory
+    # (forecaster/tests/google_weather_cache_signatures.json). The multi-city
+    # refresh orchestrator (Task 6) imports these from google_api directly.
+    "CityConfig",
+    "GoogleRuntimeStore",
+    "GoogleUsageLedger",
+    "HTTPError",
+    "URLError",
+    "dataclass",
+    "date",
+    "GoogleCityFetchError",
+    "GoogleHourlyRow",
+    "GoogleDailyRow",
+    "GoogleCurrentRow",
+    "GoogleFetchResult",
+    "fetch_city_hourly",
+    "fetch_city_daily",
+    "fetch_city_current",
+    "fetch_city_weather",
+    "_resolve_instant",
+    "_open_google_request",
+    "_decode_google_json",
+    "_dispatch_google_request",
+    "_city_hour_datetime",
+    "_parse_hourly_page_rows",
+    "_google_civil_display_date",
+    "_parse_daily_rows",
+    "_parse_current_row",
 }
 
 for _module in _IMPLEMENTATION_MODULES:
