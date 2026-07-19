@@ -20,6 +20,7 @@ runtime-store contracts:
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import traceback
 from datetime import date, datetime, timedelta, timezone
@@ -1146,6 +1147,37 @@ def test_google_challenger_is_pure_and_deterministic():
     second = google_challenger(80.3, 2.7, 83.1)
 
     assert first == second
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_google_challenger_rejects_non_finite_baseline_mu(bad):
+    with pytest.raises(ValueError, match="finite"):
+        google_challenger(bad, 3.0, 84.0)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_google_challenger_rejects_non_finite_baseline_sigma(bad):
+    with pytest.raises(ValueError, match="finite"):
+        google_challenger(80.0, bad, 84.0)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_google_challenger_rejects_non_finite_google_high(bad):
+    with pytest.raises(ValueError, match="finite"):
+        google_challenger(80.0, 3.0, bad)
+
+
+def test_google_challenger_rejects_non_finite_inputs_before_computing_gap():
+    """A NaN high must never bypass the 7F block or fabricate an adjustment.
+
+    Before validation, ``nan >= 7.0`` is False (NaN block comparisons are
+    always False), so a NaN google_high fell through to the forecast branch
+    and ``min(1.5, nan)``-style clamps silently produced a confident-looking
+    +1.5F adjustment from garbage input. Validation must reject it outright.
+    """
+
+    with pytest.raises(ValueError, match="finite"):
+        google_challenger(80.0, 3.0, float("nan"))
 
 
 def test_challenger_from_runtime_high_returns_none_without_google_evidence():

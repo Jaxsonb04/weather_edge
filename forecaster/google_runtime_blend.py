@@ -29,6 +29,7 @@ yields no adjusted output, and the baseline is never mutated.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -78,6 +79,22 @@ def _capped_google_adjustment(gap_f: float) -> float:
     )
 
 
+def _finite_float(name: str, value: object) -> float:
+    """Reject non-finite/non-numeric input before it reaches the formula.
+
+    Mirrors ``google_weather_store._finite_float``. Without this, a NaN
+    ``google_high`` bypasses the 7F corroboration block (``nan >= 7.0`` is
+    always False) and ``_capped_google_adjustment`` on a NaN gap fabricates
+    a confident +/-1.5F adjustment via ``min``/``max`` against NaN; a NaN
+    ``baseline_mu``/``baseline_sigma`` would silently poison the persisted
+    challenger the same way. Fail closed instead.
+    """
+
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    return float(value)
+
+
 def google_challenger(
     baseline_mu: float, baseline_sigma: float, google_high: float
 ) -> GoogleChallenger:
@@ -90,6 +107,10 @@ def google_challenger(
     yields the ``external_runtime_corroboration_block`` action with no mean
     rather than a tradeable probability (spec section 7.3).
     """
+
+    baseline_mu = _finite_float("baseline_mu", baseline_mu)
+    baseline_sigma = _finite_float("baseline_sigma", baseline_sigma)
+    google_high = _finite_float("google_high", google_high)
 
     gap = google_high - baseline_mu
     if abs(gap) >= GOOGLE_CHALLENGER_CORROBORATION_BLOCK_GAP_F:
