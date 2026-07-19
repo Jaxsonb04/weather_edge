@@ -724,7 +724,12 @@ def test_report_exit_breakdown_uses_exact_audited_terminal_categories(tmp_path) 
                 "research_policy_version=?, policy_fingerprint=?, "
                 "objective_day=?, lead_bucket='day-ahead', "
                 "scan_run_id=?, reentry_fingerprint=?, status=?, "
-                "realized_pnl=?, closed_at=?, settled_at=? WHERE id=?",
+                # created_at is pinned to the objective day so the report's
+                # lifecycle-activity window sees the expired-unfilled row (its
+                # only in-window timestamp) regardless of the wall-clock date
+                # the test happens to run on.
+                "realized_pnl=?, closed_at=?, settled_at=?, created_at=? "
+                "WHERE id=?",
                 (
                     TARGET_POLICY.account_id,
                     TARGET_POLICY.policy_version,
@@ -736,6 +741,7 @@ def test_report_exit_breakdown_uses_exact_audited_terminal_categories(tmp_path) 
                     pnl,
                     closed_at,
                     settled_at,
+                    _pacific_noon(objective_day),
                     order_id,
                 ),
             )
