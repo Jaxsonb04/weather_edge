@@ -231,7 +231,7 @@ def _dataset_action_items(
         _to_float(profitability_gate.get("minimum_after_cost_trades"), DEFAULT_MIN_AFTER_COST_TRADES)
     )
     if trade_rows < minimum_trades:
-        items.append("Backfill or enable Kalshi trade history before using datasets for trading weight.")
+        items.append("Backfill or enable prediction-market trade history before using datasets for trading weight.")
     items.append("Keep LSTM as the live model until both accuracy and market gates pass.")
     return items
 

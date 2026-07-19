@@ -2421,6 +2421,192 @@ def test_settlement_alert_escalates_to_critical_when_two_days_stale():
     assert "3 days" in by_code["settlement-backlog"]["detail"]
 
 
+def _all_strings(value):
+    """Recursively collect every string leaf from a nested dict/list payload —
+    used to sweep a whole published artifact section for banned copy without
+    hand-enumerating every field name."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _all_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _all_strings(item)
+
+
+def test_status_alerts_never_names_the_exchange_in_any_producible_alert():
+    """Public copy says 'prediction market', never the exchange name. The
+    monitor-stale alert's action string reaches the public artifact verbatim
+    (OpsHealth renders {a.action} as-is), so a >45min-stale monitor with open
+    positions used to leak the paper-monitor systemd timer's name. Several
+    alert codes are mutually exclusive branches of the same if/elif chain, so
+    this combines multiple representative calls to exercise every code the
+    module can produce, then sweeps every string in the result."""
+    stale_at = datetime(2026, 6, 10, 9, 0, tzinfo=UTC)
+    opened_at = datetime(2026, 6, 10, 9, 36, tzinfo=UTC)
+
+    combined = _strategy_alerts(
+        paper={
+            "available": True,
+            "summary": {
+                "open_positions": 2,
+                "unresolved_past_targets": [{"target_date": "2026-06-08", "open_orders": 1}],
+                "latest_monitor_action_at": stale_at.isoformat(),
+                "marked_open_positions": 0,
+                "hidden_open_positions": 3,
+                "open_risk": 500,
+            },
+            "duplicate_open_groups": [{"open_orders": 2, "ticker": "TEST", "side": "YES"}],
+        },
+        entry_block_reason="same-day entry disabled: test reason",
+        daily_budget=100,
+        now=stale_at + timedelta(minutes=46),
+    )
+    unavailable = _strategy_alerts(
+        paper={"available": False, "reason": "paper db missing"},
+        entry_block_reason=None,
+    )
+    pending = _settlement_alerts("2026-06-11", now=datetime(2026, 6, 12, 12, 0, tzinfo=UTC))
+    monitor_pending = _strategy_alerts(
+        paper={
+            "available": True,
+            "summary": {
+                "open_positions": 1,
+                "latest_opened_at": opened_at.isoformat(),
+                "latest_monitor_action_at": None,
+                "marked_open_positions": 0,
+                "hidden_open_positions": 0,
+            },
+            "duplicate_open_groups": [],
+        },
+        entry_block_reason=None,
+        now=opened_at + timedelta(minutes=2),
+    )
+    monitor_not_recording = _strategy_alerts(
+        paper={
+            "available": True,
+            "summary": {
+                "open_positions": 1,
+                "latest_opened_at": None,
+                "latest_monitor_action_at": None,
+                "marked_open_positions": 0,
+                "hidden_open_positions": 0,
+            },
+            "duplicate_open_groups": [],
+        },
+        entry_block_reason=None,
+        now=opened_at,
+    )
+    healthy = _strategy_alerts(
+        paper={"available": True, "summary": {}, "duplicate_open_groups": []},
+        entry_block_reason=None,
+    )
+    forecast_default = _strategy_alerts(
+        paper={"available": True, "summary": {}, "duplicate_open_groups": []},
+        entry_block_reason=None,
+        forecast_health={"warnings": [{}]},
+    )
+
+    every_alert = (
+        combined
+        + unavailable
+        + pending
+        + monitor_pending
+        + monitor_not_recording
+        + healthy
+        + forecast_default
+    )
+    codes = {alert["code"] for alert in every_alert}
+    assert codes == {
+        "settlement-backlog",
+        "duplicate-open-markets",
+        "monitor-stale",
+        "open-positions-unmarked",
+        "open-positions-hidden",
+        "open-risk-over-budget",
+        "same-day-entry-blocked",
+        "paper-db-unavailable",
+        "settlement-pending",
+        "monitor-pending",
+        "monitor-not-recording",
+        "strategy-lab-healthy",
+        "forecast-health-warning",
+    }
+
+    leaked = [text for text in _all_strings(every_alert) if "kalshi" in text.lower()]
+    assert leaked == []
+
+
+def test_dataset_research_summary_public_notes_never_name_the_exchange():
+    """Public copy says 'prediction market', never the exchange name. The
+    market-gate action item used to say 'enable Kalshi trade history'; sweep
+    every string the summary can publish across the collect-only, blocked, and
+    accuracy-candidate verdict shapes."""
+    blocked = _dataset_research_summary(
+        {
+            "generated_at": "2026-06-11T09:25:08+00:00",
+            "status": "collect_only",
+            "baseline": {"source": "lstm", "outcome_count": 475},
+            "promotion_rule": "rule text",
+            "accuracy_gate": {
+                "available": True,
+                "candidate_count": 9,
+                "accuracy_candidate_count": 0,
+                "candidates": [
+                    {
+                        "dataset_key": "open-meteo/best_match/temperature_2m_max/none",
+                        "decision": "collect_only",
+                        "matched_rows": 0,
+                        "reason": "needs at least 30 matched settlement rows; has 0",
+                    }
+                ],
+            },
+            "profitability_gate": {
+                "decision": "collect_only",
+                "market_history": {"markets": 180, "candles": 365, "trades": 0},
+                "minimum_after_cost_trades": 30,
+            },
+        }
+    )
+    no_candidates = _dataset_research_summary(
+        {"generated_at": "2026-06-01T00:00:00+00:00", "status": "collect_only"}
+    )
+    accuracy_candidate = _dataset_research_summary(
+        {
+            "generated_at": "2026-06-11T09:25:08+00:00",
+            "status": "collect_only",
+            "accuracy_gate": {
+                "available": True,
+                "candidate_count": 1,
+                "accuracy_candidate_count": 1,
+                "candidates": [
+                    {
+                        "dataset_key": "open-meteo/gfs/temperature_2m_max/24h",
+                        "decision": "accuracy_candidate",
+                        "matched_rows": 41,
+                        "holdout": {"dataset_mae_f": 1.7, "baseline_mae_f": 2.1, "mae_delta_vs_baseline_f": -0.4},
+                    }
+                ],
+            },
+            "profitability_gate": {
+                "decision": "collect_only",
+                "market_history": {"markets": 180, "candles": 365, "trades": 0},
+                "minimum_after_cost_trades": 30,
+            },
+        }
+    )
+    unavailable = _dataset_research_summary(None)
+
+    leaked = [
+        text
+        for summary in (blocked, no_candidates, accuracy_candidate, unavailable)
+        for text in _all_strings(summary)
+        if "kalshi" in text.lower()
+    ]
+    assert leaked == []
+
+
 def _kalshi_ladder_event(event_ticker: str = "KXHIGHTSFO-26JUN03") -> EventSnapshot:
     """A realistic two-sided Kalshi event payload peaking on the 66-67 bin.
 
