@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -867,3 +868,391 @@ def test_http_error_with_key_bearing_message_is_sanitized(tmp_path):
     assert key not in rendered
     assert raised.value.__cause__ is None
     assert raised.value.__context__ is None
+
+
+# ---------------------------------------------------------------------------
+# Task 5: complete station-day highs and the fixed research challenger.
+# ---------------------------------------------------------------------------
+
+
+import google_runtime_blend
+from google_runtime_blend import (
+    challenger_from_runtime_high,
+    derive_station_day_high,
+    google_challenger,
+)
+from google_weather_store import GoogleHourlyRuntime, GoogleRuntimeHigh
+
+
+def _write_full_station_day(runtime, *, city, issued_at, target_date, base_temp=60.0):
+    """Write 24 consecutive fixed-standard hourly rows covering target_date."""
+
+    tz = city.fixed_standard_timezone()
+    start_local = datetime.combine(
+        date.fromisoformat(target_date), datetime.min.time(), tzinfo=tz
+    )
+    temperatures_by_valid_at = {
+        (start_local + timedelta(hours=hour)).astimezone(timezone.utc): base_temp + hour
+        for hour in range(24)
+    }
+    runtime.replace_hourly_generation(
+        city_slug=city.slug,
+        station_id=city.nws_station_id,
+        issued_at=issued_at,
+        temperatures_by_valid_at=temperatures_by_valid_at,
+        stored_at=issued_at,
+    )
+    return temperatures_by_valid_at
+
+
+def test_complete_high_requires_all_24_fixed_standard_hours(tmp_path):
+    city = get_city("nyc")
+    runtime = _runtime_store(tmp_path)
+    issued_at = TEST_NOW
+    target_date = "2026-07-19"
+    temperatures = _write_full_station_day(
+        runtime, city=city, issued_at=issued_at, target_date=target_date
+    )
+
+    result = derive_station_day_high(
+        runtime, city=city, target_date=target_date, now=issued_at
+    )
+
+    assert result is not None
+    assert result.complete is True
+    assert result.covered_hours == 24
+    assert result.high_f == max(temperatures.values())
+    assert result.target_date == target_date
+
+    stored = runtime.active_runtime_high(
+        city_slug=city.slug,
+        station_id=city.nws_station_id,
+        target_date=target_date,
+        now=issued_at,
+    )
+    assert stored == result
+
+
+def test_partial_same_day_is_remaining_heat_not_complete_high(tmp_path):
+    city = get_city("nyc")
+    runtime = _runtime_store(tmp_path)
+    issued_at = TEST_NOW
+    target_date = "2026-07-19"
+    tz = city.fixed_standard_timezone()
+    start_local = datetime.combine(
+        date.fromisoformat(target_date), datetime.min.time(), tzinfo=tz
+    )
+    temperatures_by_valid_at = {
+        (start_local + timedelta(hours=hour)).astimezone(timezone.utc): 60.0 + hour
+        for hour in range(23)  # hour 23 is missing
+    }
+    runtime.replace_hourly_generation(
+        city_slug=city.slug,
+        station_id=city.nws_station_id,
+        issued_at=issued_at,
+        temperatures_by_valid_at=temperatures_by_valid_at,
+        stored_at=issued_at,
+    )
+
+    result = derive_station_day_high(
+        runtime, city=city, target_date=target_date, now=issued_at
+    )
+
+    assert result is not None
+    assert result.covered_hours == 23
+    assert result.complete is False
+    # Partial coverage is "remaining heat," never a usable final high: the
+    # challenger must fail closed rather than adjust off an incomplete day.
+    assert (
+        challenger_from_runtime_high(result, baseline_mu=80.0, baseline_sigma=3.0)
+        is None
+    )
+
+
+def test_derive_station_day_high_returns_none_and_writes_nothing_without_hourly_data(
+    tmp_path,
+):
+    city = get_city("nyc")
+    runtime = _runtime_store(tmp_path)
+    target_date = "2026-07-19"
+
+    result = derive_station_day_high(
+        runtime, city=city, target_date=target_date, now=TEST_NOW
+    )
+
+    assert result is None
+    assert (
+        runtime.active_runtime_high(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            target_date=target_date,
+            now=TEST_NOW,
+        )
+        is None
+    )
+
+
+def test_hourly_rows_bucket_a_complete_station_day_across_a_dst_boundary(tmp_path):
+    # 2026-03-08 is when America/New_York civil time jumps from 2am EST
+    # straight to 3am EDT -- the fixed-standard station day must still be
+    # exactly 24 hours.
+    city = get_city("nyc")
+    runtime = _runtime_store(tmp_path)
+    issued_at = datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc)
+    target_date = "2026-03-08"
+
+    temperatures = _write_full_station_day(
+        runtime, city=city, issued_at=issued_at, target_date=target_date
+    )
+
+    result = derive_station_day_high(
+        runtime, city=city, target_date=target_date, now=issued_at
+    )
+
+    assert result is not None
+    assert result.complete is True
+    assert result.covered_hours == 24
+    assert result.high_f == max(temperatures.values())
+
+
+def test_group_station_day_hours_fails_closed_on_a_colliding_hour():
+    # The public store API cannot organically produce this (a unique
+    # valid_at primary key plus generation-scoped MAX(issued_at) reads
+    # structurally prevent it) -- this directly exercises the
+    # integrity-layer guard contract A calls for, against a hand-built
+    # anomaly the store itself does not defend against.
+    city = get_city("nyc")
+    tz = city.fixed_standard_timezone()
+    target = date.fromisoformat("2026-07-19")
+    issued_at = TEST_NOW
+    start_local = datetime.combine(target, datetime.min.time(), tzinfo=tz)
+    rows = [
+        GoogleHourlyRuntime(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            issued_at=issued_at,
+            valid_at=(start_local + timedelta(hours=hour)).astimezone(timezone.utc),
+            temperature_f=60.0 + hour,
+            expires_at=issued_at + timedelta(hours=1),
+        )
+        for hour in range(24)
+    ]
+    # A 25th row colliding on hour 5.
+    colliding = GoogleHourlyRuntime(
+        city_slug=city.slug,
+        station_id=city.nws_station_id,
+        issued_at=issued_at,
+        valid_at=rows[5].valid_at,
+        temperature_f=999.0,
+        expires_at=issued_at + timedelta(hours=1),
+    )
+
+    result = google_runtime_blend._group_station_day_hours(
+        rows + [colliding], target=target, standard_tz=tz
+    )
+
+    assert result is None
+
+
+def test_group_station_day_hours_fails_closed_on_mixed_issue_generations():
+    city = get_city("nyc")
+    tz = city.fixed_standard_timezone()
+    target = date.fromisoformat("2026-07-19")
+    issued_at = TEST_NOW
+    other_issued_at = TEST_NOW + timedelta(hours=1)
+    start_local = datetime.combine(target, datetime.min.time(), tzinfo=tz)
+    rows = [
+        GoogleHourlyRuntime(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            issued_at=issued_at if hour < 23 else other_issued_at,
+            valid_at=(start_local + timedelta(hours=hour)).astimezone(timezone.utc),
+            temperature_f=60.0 + hour,
+            expires_at=issued_at + timedelta(hours=1),
+        )
+        for hour in range(24)
+    ]
+
+    result = google_runtime_blend._group_station_day_hours(
+        rows, target=target, standard_tz=tz
+    )
+
+    assert result is None
+
+
+def test_challenger_uses_fifteen_percent_share_capped_at_one_point_five():
+    """Mirrors the plan's Task 5 Step 1 example, corrected for the 7F block.
+
+    The plan's own gap=15 example (``google_challenger(80, 3, 95).mu ==
+    pytest.approx(81.5)``) contradicts both the spec's explicit "abs(gap) >=
+    7F blocks" rule (design doc section 7.3) and the plan's OWN Step 3
+    sample implementation, which blocks before the cap can ever bind. The
+    spec is authoritative here (reinforced by this task's binding contract
+    on fail-closed corroboration blocks), so this test keeps the plan's
+    first (unblocked) assertion and replaces the second with an in-band
+    value that actually exercises the 15% share/cap math without silently
+    contradicting the block rule. True cap saturation is verified directly
+    in test_capped_google_adjustment_saturates_at_one_point_five_both_directions,
+    and the block itself in test_seven_degree_gap_emits_block_not_probability.
+    """
+
+    unblocked = google_challenger(80.0, 3.0, 84.0)
+    assert unblocked.mu == pytest.approx(80.6)
+    assert unblocked.sigma == 3.0
+    assert unblocked.action == "forecast"
+
+    near_boundary = google_challenger(80.0, 3.0, 86.99)  # gap=6.99, still unblocked
+    assert near_boundary.mu == pytest.approx(80.0 + 0.15 * 6.99)
+    assert near_boundary.action == "forecast"
+
+
+def test_challenger_applies_the_fixed_share_in_both_directions():
+    warmer = google_challenger(80.0, 3.0, 84.0)
+    cooler = google_challenger(80.0, 3.0, 76.0)
+
+    assert warmer.mu == pytest.approx(80.6)
+    assert cooler.mu == pytest.approx(79.4)
+    assert warmer.sigma == cooler.sigma == 3.0
+    assert warmer.action == cooler.action == "forecast"
+
+
+def test_capped_google_adjustment_saturates_at_one_point_five_both_directions():
+    # Unreachable through google_challenger itself under the frozen 7F block
+    # gate (see google_runtime_blend._capped_google_adjustment) -- tested
+    # directly as an independent safety bound.
+    assert google_runtime_blend._capped_google_adjustment(10.0) == pytest.approx(1.5)
+    assert google_runtime_blend._capped_google_adjustment(100.0) == pytest.approx(1.5)
+    assert google_runtime_blend._capped_google_adjustment(-10.0) == pytest.approx(-1.5)
+    assert google_runtime_blend._capped_google_adjustment(-100.0) == pytest.approx(-1.5)
+
+
+def test_seven_degree_gap_emits_block_not_probability():
+    blocked_high = google_challenger(80.0, 3.0, 87.0)  # gap=+7 exactly
+    blocked_low = google_challenger(80.0, 3.0, 73.0)  # gap=-7 exactly
+    far_blocked = google_challenger(80.0, 3.0, 95.0)  # gap=+15
+    just_under = google_challenger(80.0, 3.0, 86.99)  # gap=6.99
+
+    for blocked in (blocked_high, blocked_low, far_blocked):
+        assert blocked.mu is None
+        assert blocked.action == "external_runtime_corroboration_block"
+        assert blocked.sigma == 3.0
+
+    assert just_under.mu is not None
+    assert just_under.action == "forecast"
+
+
+def test_google_challenger_is_pure_and_deterministic():
+    first = google_challenger(80.3, 2.7, 83.1)
+    second = google_challenger(80.3, 2.7, 83.1)
+
+    assert first == second
+
+
+def test_challenger_from_runtime_high_returns_none_without_google_evidence():
+    assert (
+        challenger_from_runtime_high(None, baseline_mu=80.0, baseline_sigma=3.0)
+        is None
+    )
+
+
+def test_challenger_from_runtime_high_fails_closed_on_incomplete_coverage():
+    incomplete = GoogleRuntimeHigh(
+        city_slug="nyc",
+        station_id="KNYC",
+        issued_at=TEST_NOW,
+        target_date="2026-07-19",
+        high_f=84.0,
+        covered_hours=23,
+        complete=False,
+        expires_at=TEST_NOW + timedelta(hours=1),
+    )
+
+    assert (
+        challenger_from_runtime_high(incomplete, baseline_mu=80.0, baseline_sigma=3.0)
+        is None
+    )
+
+
+def test_challenger_from_runtime_high_forwards_the_fixed_formula():
+    complete = GoogleRuntimeHigh(
+        city_slug="nyc",
+        station_id="KNYC",
+        issued_at=TEST_NOW,
+        target_date="2026-07-19",
+        high_f=84.0,
+        covered_hours=24,
+        complete=True,
+        expires_at=TEST_NOW + timedelta(hours=1),
+    )
+
+    result = challenger_from_runtime_high(
+        complete, baseline_mu=80.0, baseline_sigma=3.0
+    )
+
+    assert result == google_challenger(80.0, 3.0, 84.0)
+
+
+# ---------------------------------------------------------------------------
+# Live-path isolation (requirement 4: research-only evidence).
+#
+# The challenger is research-only: nothing it computes may reach the live
+# SFO forecast path, LSTM/EMOS training, adaptive weights, MOS, residual
+# de-bias, or historical baseline scorecards. Today (Task 5) nothing wires
+# google_runtime_blend into any of those modules yet -- that wiring, if it
+# ever happens, is scoped to Task 7/8 under the plan's own explicit
+# research-shadow-only policy. This guard exists so that wiring cannot
+# happen silently/accidentally in some other change.
+# ---------------------------------------------------------------------------
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_LIVE_AND_TRAINING_MODULES = tuple(
+    _REPO_ROOT / relative
+    for relative in (
+        "forecaster/blend_sources.py",
+        "forecaster/blend_archive.py",
+        "forecaster/blend_learners.py",
+        "forecaster/emos_forecast.py",
+        "forecaster/emos_recalibration.py",
+        "forecaster/postproc_recalibration.py",
+        "forecaster/postproc_models.py",
+        "forecaster/recalibration_replay.py",
+        "forecaster/forecast_backtest.py",
+        "forecaster/forecast_postproc_backtest.py",
+        "forecaster/forecast_scoring.py",
+        "forecaster/scores.py",
+        "trading/sfo_kalshi_quant/forecast.py",
+        "trading/sfo_kalshi_quant/db.py",
+        "trading/sfo_kalshi_quant/models.py",
+        "trading/sfo_kalshi_quant/prediction_features.py",
+        "trading/sfo_kalshi_quant/report.py",
+        "trading/sfo_kalshi_quant/publication.py",
+        "trading/sfo_kalshi_quant/store/diagnostics.py",
+        "trading/sfo_kalshi_quant/store/schema.py",
+    )
+)
+
+
+def test_google_runtime_blend_never_imports_the_live_or_training_path():
+    source = Path(google_runtime_blend.__file__).read_text()
+    for forbidden in (
+        "blend_sources",
+        "blend_archive",
+        "blend_learners",
+        "emos_forecast",
+        "emos_recalibration",
+        "postproc_recalibration",
+        "postproc_models",
+        "recalibration_replay",
+        "forecast_backtest",
+        "forecast_postproc_backtest",
+        "forecast_scoring",
+        "sfo_kalshi_quant",
+    ):
+        assert forbidden not in source
+
+
+def test_no_live_or_training_module_imports_the_google_challenger():
+    for path in _LIVE_AND_TRAINING_MODULES:
+        assert path.is_file(), path
+        assert "google_runtime_blend" not in path.read_text()
