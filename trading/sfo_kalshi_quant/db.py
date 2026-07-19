@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -9,7 +10,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from ._util import (
     _row_value as _shared_row_value,
@@ -149,6 +150,85 @@ PAUSE_THRESHOLDS = {
     "live": (10, -0.35, 0.010),
     "research": (5, -0.25, 0.005),
 }
+
+
+def source_context_hash(
+    *,
+    target_date: str,
+    station_id: str,
+    forecast: Mapping[str, object],
+    intraday: Mapping[str, object],
+    market: Mapping[str, object],
+    features: Mapping[str, object],
+) -> str:
+    """Return the canonical content identity of one point-in-time scan.
+
+    Deliberately excludes risk profile, bankroll, sleeve, and account
+    identity -- those belong to decision rows, not the shared source
+    context, so the exact same market observation can be evaluated by live,
+    target, and motion policies without a duplicated, insertion-order-biased
+    context row (chronological research tuning Task 1).
+    """
+
+    payload = {
+        "target_date": target_date,
+        "station_id": station_id,
+        "forecast": forecast,
+        "intraday": intraday,
+        "market": market,
+        "features": features,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_mapping(value: object, *, label: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"source-neutral scan context {label} payload must be a mapping")
+    return dict(value)
+
+
+def _require_complete_mapping(
+    value: object, *, required: tuple[str, ...], label: str
+) -> dict[str, object]:
+    """Fail closed on an empty or under-specified point-in-time payload."""
+
+    payload = _require_mapping(value, label=label)
+    if not payload:
+        raise ValueError(f"source-neutral scan context {label} payload is incomplete")
+    for key in required:
+        entry = payload.get(key)
+        if entry is None or (isinstance(entry, float) and not math.isfinite(entry)):
+            raise ValueError(
+                f"source-neutral scan context {label} payload is missing {key}"
+            )
+    return payload
+
+
+_REQUIRED_MARKET_ENTRY_KEYS = ("ticker", "yes_bid", "yes_ask")
+
+
+def _require_complete_market_mapping(value: object) -> dict[str, object]:
+    """Fail closed unless every quoted market carries a tradeable quote."""
+
+    payload = _require_mapping(value, label="market")
+    if not payload:
+        raise ValueError("source-neutral scan context market payload is incomplete")
+    for ticker, entry in payload.items():
+        if not isinstance(entry, Mapping):
+            raise ValueError(
+                "source-neutral scan context market payload entries must be mappings"
+            )
+        for key in _REQUIRED_MARKET_ENTRY_KEYS:
+            if entry.get(key) is None:
+                raise ValueError(
+                    f"source-neutral scan context market payload for {ticker!r} "
+                    f"is missing {key}"
+                )
+    return payload
+
+
+_EVIDENCE_ROLES = frozenset({"exploratory", "confirmatory"})
 
 
 @dataclass(frozen=True)
@@ -935,6 +1015,195 @@ class PaperStore:
                 raise ValueError("research plan snapshot conflicts with persisted scan")
             conn.commit()
         return int(row[0])
+
+    def record_source_neutral_scan_context(
+        self,
+        *,
+        target_date: str,
+        station_id: str,
+        scan_run_id: str,
+        forecast: Mapping[str, object],
+        intraday: Mapping[str, object],
+        market: Mapping[str, object],
+        features: Mapping[str, object],
+    ) -> int:
+        """Persist, or reuse, one canonical profile-neutral scan observation.
+
+        The canonical ``source_context_hash`` unique index makes this
+        idempotent: an identical forecast/intraday/market/feature
+        observation always resolves to the same row regardless of which
+        risk profile (live, target, or motion) is the caller, and
+        regardless of call order -- there is no insertion-order winner.
+        Incomplete forecast, market, or feature payloads fail closed rather
+        than silently biasing later paired research evaluation.
+        """
+
+        civil_day = str(target_date or "").strip()
+        if not civil_day:
+            raise ValueError("source-neutral scan context requires a target date")
+        try:
+            date.fromisoformat(civil_day)
+        except ValueError as exc:
+            raise ValueError(
+                "source-neutral scan context target date is malformed"
+            ) from exc
+        station = str(station_id or "").strip()
+        if not station:
+            raise ValueError("source-neutral scan context requires a station id")
+        run_id = str(scan_run_id or "").strip()
+        if not run_id:
+            raise ValueError("source-neutral scan context requires a scan run id")
+
+        forecast_payload = _require_complete_mapping(
+            forecast, required=("predicted_high_f",), label="forecast"
+        )
+        market_payload = _require_complete_market_mapping(market)
+        features_payload = _require_complete_mapping(
+            features, required=(), label="features"
+        )
+        intraday_payload = _require_mapping(intraday, label="intraday")
+
+        context_hash = source_context_hash(
+            target_date=civil_day,
+            station_id=station,
+            forecast=forecast_payload,
+            intraday=intraday_payload,
+            market=market_payload,
+            features=features_payload,
+        )
+        created_at = _now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO scan_context_snapshots ("
+                "created_at, target_date, station_id, forecast_json, "
+                "intraday_json, market_json, prediction_features_json, "
+                "schema_version, source_context_hash, source_scan_run_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (
+                    created_at,
+                    civil_day,
+                    station,
+                    json.dumps(forecast_payload, sort_keys=True),
+                    json.dumps(intraday_payload, sort_keys=True),
+                    json.dumps(market_payload, sort_keys=True),
+                    json.dumps(features_payload, sort_keys=True),
+                    context_hash,
+                    run_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM scan_context_snapshots WHERE source_context_hash=?",
+                (context_hash,),
+            ).fetchone()
+            conn.commit()
+        if row is None:
+            raise RuntimeError("source-neutral scan context disappeared after insert")
+        return int(row[0])
+
+    def record_research_experiment(
+        self,
+        *,
+        experiment_id: str,
+        hypothesis_family: str,
+        candidate_key: str,
+        candidate_version: str,
+        parameter_json: Mapping[str, object],
+        evidence_role: str,
+    ) -> str:
+        """Declare one immutable research candidate before any evaluation.
+
+        ``research_experiments`` rows can never be edited or deleted once
+        written (BEFORE UPDATE/DELETE triggers), and ``research_evidence``
+        rows may only reference an experiment whose ``declared_at`` predates
+        their evaluation window (BEFORE INSERT trigger) -- a challenger's
+        parameters are therefore always fixed before the test fold that
+        scores it exists, and can never be retuned after the fact.
+        """
+
+        experiment = str(experiment_id or "").strip()
+        family = str(hypothesis_family or "").strip()
+        key = str(candidate_key or "").strip()
+        version = str(candidate_version or "").strip()
+        role = str(evidence_role or "").strip()
+        if not experiment or not family or not key or not version:
+            raise ValueError("research experiment declaration requires a full identity")
+        if role not in _EVIDENCE_ROLES:
+            raise ValueError(
+                "research experiment evidence_role must be exploratory or confirmatory"
+            )
+        if not isinstance(parameter_json, Mapping):
+            raise ValueError("research experiment parameters must be a mapping")
+        created_at = _now()
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO research_experiments ("
+                "experiment_id, declared_at, hypothesis_family, candidate_key, "
+                "candidate_version, parameter_json, evidence_role"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    experiment,
+                    created_at,
+                    family,
+                    key,
+                    version,
+                    json.dumps(dict(parameter_json), sort_keys=True),
+                    role,
+                ),
+            )
+            conn.commit()
+        return experiment
+
+    def record_research_evidence(
+        self,
+        *,
+        experiment_id: str,
+        fold_id: str,
+        station_id: str,
+        target_date: str,
+        evaluated_at: str,
+        baseline: Mapping[str, object],
+        challenger: Mapping[str, object],
+    ) -> None:
+        """Persist one immutable paired baseline/challenger fold score.
+
+        Fails closed on an ambiguous fold identity or an empty baseline or
+        challenger payload; the database enforces immutability and the
+        declared-before-evaluated no-leakage invariant beneath this method.
+        """
+
+        experiment = str(experiment_id or "").strip()
+        fold = str(fold_id or "").strip()
+        station = str(station_id or "").strip()
+        civil_day = str(target_date or "").strip()
+        evaluated = str(evaluated_at or "").strip()
+        if not experiment or not fold or not station or not civil_day or not evaluated:
+            raise ValueError("research evidence requires a complete fold identity")
+        try:
+            date.fromisoformat(civil_day)
+        except ValueError as exc:
+            raise ValueError("research evidence target date is malformed") from exc
+        if not isinstance(baseline, Mapping) or not baseline:
+            raise ValueError("research evidence baseline payload is incomplete")
+        if not isinstance(challenger, Mapping) or not challenger:
+            raise ValueError("research evidence challenger payload is incomplete")
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO research_evidence ("
+                "experiment_id, fold_id, station_id, target_date, evaluated_at, "
+                "baseline_json, challenger_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    experiment,
+                    fold,
+                    station,
+                    civil_day,
+                    evaluated,
+                    json.dumps(dict(baseline), sort_keys=True),
+                    json.dumps(dict(challenger), sort_keys=True),
+                ),
+            )
+            conn.commit()
 
     def research_realized_pnl_for_day(
         self,

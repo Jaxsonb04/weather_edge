@@ -114,7 +114,14 @@ CREATE TABLE IF NOT EXISTS scan_context_snapshots (
     market_consensus_json TEXT,
     prediction_features_json TEXT NOT NULL,
     strategy_config_json TEXT,
-    schema_version INTEGER NOT NULL DEFAULT 1
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    -- Content identity of the point-in-time observation, deliberately
+    -- excluding risk profile/bankroll/sleeve/account identity so the exact
+    -- same observation can feed live, target, and motion decisions without
+    -- a duplicated, insertion-order-biased context row (chronological
+    -- research tuning Task 1).
+    source_context_hash TEXT,
+    source_scan_run_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS decision_snapshots (
@@ -170,7 +177,11 @@ CREATE TABLE IF NOT EXISTS decision_snapshots (
     scan_context_id INTEGER REFERENCES scan_context_snapshots(id),
     prediction_features_json TEXT,
     diagnostics_json TEXT,
-    reasons_json TEXT NOT NULL
+    reasons_json TEXT NOT NULL,
+    -- Identity of the policy that produced this specific decision row.
+    -- Profile/sleeve/bankroll identity belongs to decision rows, never to
+    -- the shared source-neutral scan context above.
+    decision_policy_fingerprint TEXT
 );
 
 CREATE TABLE IF NOT EXISTS paper_orders (
@@ -408,6 +419,35 @@ CREATE TABLE IF NOT EXISTS research_plan_snapshots (
         CHECK(available_conservative_expected_profit >= 0),
     target_feasible INTEGER NOT NULL CHECK(target_feasible IN (0, 1))
 );
+
+-- Immutable declaration of one predeclared research candidate. Declared
+-- before any evaluation window (enforced by a trigger on research_evidence
+-- below), and never editable or deletable once written, so a challenger's
+-- parameters are always fixed before the test fold that scores it exists.
+CREATE TABLE IF NOT EXISTS research_experiments (
+    experiment_id TEXT PRIMARY KEY,
+    declared_at TEXT NOT NULL,
+    hypothesis_family TEXT NOT NULL,
+    candidate_key TEXT NOT NULL,
+    candidate_version TEXT NOT NULL,
+    parameter_json TEXT NOT NULL,
+    evidence_role TEXT NOT NULL CHECK(evidence_role IN ('exploratory','confirmatory')),
+    UNIQUE(hypothesis_family, candidate_key, candidate_version)
+);
+
+-- Immutable paired baseline/challenger fold score. Only normalized
+-- market/forecast input and derived challenger evidence belong here --
+-- never raw, expiring third-party content.
+CREATE TABLE IF NOT EXISTS research_evidence (
+    experiment_id TEXT NOT NULL REFERENCES research_experiments(experiment_id),
+    fold_id TEXT NOT NULL,
+    station_id TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    baseline_json TEXT NOT NULL,
+    challenger_json TEXT NOT NULL,
+    PRIMARY KEY(experiment_id, fold_id, station_id, target_date)
+);
 """
 
 # Created after column migrations in init() so they can reference late-added
@@ -441,6 +481,9 @@ CREATE INDEX IF NOT EXISTS idx_market_snapshots_target
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_scan_context
     ON decision_snapshots (scan_context_id)
     WHERE scan_context_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_context_snapshots_source_hash
+    ON scan_context_snapshots (source_context_hash)
+    WHERE source_context_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_probability_snapshots_market
     ON probability_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_order
@@ -659,6 +702,7 @@ DECISION_AUDIT_COLUMNS = {
     "diagnostics_json": "TEXT",
     "signal_approved": "INTEGER",
     "entry_block_reason": "TEXT",
+    "decision_policy_fingerprint": "TEXT",
     **RESEARCH_IDENTITY_COLUMNS,
 }
 
@@ -689,6 +733,8 @@ SCAN_CONTEXT_AUDIT_COLUMNS = {
     "prediction_features_json": "TEXT",
     "strategy_config_json": "TEXT",
     "schema_version": "INTEGER",
+    "source_context_hash": "TEXT",
+    "source_scan_run_id": "TEXT",
     **RESEARCH_IDENTITY_COLUMNS,
 }
 
@@ -815,6 +861,77 @@ def _ensure_research_daily_goal_triggers(conn: sqlite3.Connection) -> None:
             BEFORE DELETE ON research_plan_snapshots
             BEGIN
                 SELECT RAISE(ABORT, 'research plan snapshots are immutable');
+            END
+        """,
+    }
+    for trigger, expected_sql in definitions.items():
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger,),
+        ).fetchone()
+        if (
+            stored is not None
+            and _normalized_sql_tokens(str(stored[0] or ""))
+            == _normalized_sql_tokens(expected_sql)
+        ):
+            continue
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute(expected_sql)
+
+
+def _ensure_research_experiment_triggers(conn: sqlite3.Connection) -> None:
+    """Freeze declared research experiments and their paired evidence.
+
+    A challenger's parameters must be fixed before any test-fold outcome can
+    be scored against it, so both tables are append-only from the moment a
+    row lands, and evidence can only reference an experiment declared before
+    the day it evaluates -- a challenger can never be tuned to, or selected
+    by, the days it is later scored on.
+    """
+
+    definitions = {
+        "trg_research_experiments_immutable_update": """
+            CREATE TRIGGER trg_research_experiments_immutable_update
+            BEFORE UPDATE ON research_experiments
+            BEGIN
+                SELECT RAISE(ABORT, 'research experiments are immutable');
+            END
+        """,
+        "trg_research_experiments_immutable_delete": """
+            CREATE TRIGGER trg_research_experiments_immutable_delete
+            BEFORE DELETE ON research_experiments
+            BEGIN
+                SELECT RAISE(ABORT, 'research experiments are immutable');
+            END
+        """,
+        "trg_research_evidence_immutable_update": """
+            CREATE TRIGGER trg_research_evidence_immutable_update
+            BEFORE UPDATE ON research_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'research evidence is immutable');
+            END
+        """,
+        "trg_research_evidence_immutable_delete": """
+            CREATE TRIGGER trg_research_evidence_immutable_delete
+            BEFORE DELETE ON research_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'research evidence is immutable');
+            END
+        """,
+        "trg_research_evidence_declared_before_window": """
+            CREATE TRIGGER trg_research_evidence_declared_before_window
+            BEFORE INSERT ON research_evidence
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'research evidence must be declared before its evaluation window'
+                )
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM research_experiments
+                    WHERE experiment_id = NEW.experiment_id
+                      AND datetime(declared_at) <= datetime(NEW.evaluated_at)
+                      AND date(declared_at) <= date(NEW.target_date)
+                );
             END
         """,
     }
@@ -1082,6 +1199,7 @@ def _init_store_locked(self) -> None:
             _add_missing_columns(conn, table, existing_monitor, MONITOR_AUDIT_COLUMNS)
         _ensure_research_identity_triggers(conn)
         _ensure_research_daily_goal_triggers(conn)
+        _ensure_research_experiment_triggers(conn)
         existing_forecast = {
             row[1]
             for row in conn.execute("PRAGMA table_info(forecast_snapshots)").fetchall()
