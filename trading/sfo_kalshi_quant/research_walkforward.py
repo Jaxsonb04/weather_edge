@@ -138,6 +138,19 @@ class ResearchCase:
     baseline_sigma: float
     actual_high_f: float
     google_evidence: GoogleChallengerEvidence | None = None
+    # The same scan-time market payload (ticker -> {yes_bid, yes_ask,
+    # yes_bid_size, yes_ask_size, strike_type, floor_strike, cap_strike, ...},
+    # the `_market_diagnostics_payload` shape) that already contributes to
+    # this case's own `source_context_hash` -- attached here (Task 4) so an
+    # execution replay can price/size/gate a candidate's decision against the
+    # exact quote observed at decision time, instead of a synthetic mid-price.
+    # Optional/defaulted so every existing direct-construction call site
+    # (Task 2/3 tests) that predates Task 4 keeps constructing valid cases
+    # unchanged. ``None`` means "no market snapshot available for this case"
+    # (fails closed downstream -- never a fabricated quote), which is the
+    # normal state for a case built without going through
+    # ``load_research_cases``.
+    market_snapshot: Mapping[str, Mapping[str, object]] | None = None
 
     def __post_init__(self) -> None:
         if self.decision_at.tzinfo is None:
@@ -360,6 +373,10 @@ def _build_case(
             baseline_sigma=baseline_sigma,
             actual_high_f=actual_high_f,
             google_evidence=google_evidence,
+            # Same payload the hash was already derived from (Task 1); never
+            # re-fetched or re-derived independently, so it can never drift
+            # from the identity this case is keyed by.
+            market_snapshot=context.get("market"),
         )
     except ValueError as exc:
         skips.append(CaseSkip(index, "invalid_case", str(exc)))

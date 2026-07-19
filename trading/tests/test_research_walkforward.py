@@ -2413,3 +2413,60 @@ def test_google_runtime_challenger_constants_match_forecaster() -> None:
     assert GOOGLE_CHALLENGER_FORECAST_ACTION == google_runtime_blend.GOOGLE_CHALLENGER_FORECAST_ACTION
     assert GOOGLE_CHALLENGER_BLOCK_ACTION == google_runtime_blend.GOOGLE_CHALLENGER_BLOCK_ACTION
     assert GOOGLE_RUNTIME_CANDIDATE_KEY == google_runtime_blend.GOOGLE_CHALLENGER_POLICY_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Task 4: the loader attaches each case's own scan-time market snapshot, so
+# an execution replay can price/size/gate a candidate's decision against the
+# exact quote observed at decision time (research_replay.py) instead of a
+# synthetic mid-price.
+# ---------------------------------------------------------------------------
+
+
+def test_load_research_cases_attaches_the_market_snapshot_from_its_own_context() -> None:
+    row = _case_row()
+    result = load_research_cases([row])
+
+    assert len(result.cases) == 1
+    assert result.cases[0].market_snapshot == _market_payload()
+
+
+def test_research_case_market_snapshot_defaults_to_none_for_direct_construction() -> None:
+    """Every Task 2/3 direct-construction call site that predates Task 4
+    (this file's own earlier tests, test_research_candidates.py,
+    test_research_scoring.py) omits ``market_snapshot`` entirely -- it must
+    keep constructing a valid case with no market evidence attached, never
+    a required argument or a fabricated default quote."""
+
+    case = ResearchCase(
+        station_id="KSFO",
+        target_date=date(2026, 6, 20),
+        decision_at=datetime(2026, 6, 19, 20, 0, tzinfo=timezone.utc),
+        settled_at=datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc),
+        lead_days=1,
+        source_context_hash="direct-construction-hash",
+        baseline_mu=66.0,
+        baseline_sigma=3.0,
+        actual_high_f=67.0,
+    )
+    assert case.market_snapshot is None
+
+
+def test_load_research_cases_reports_no_market_snapshot_leakage_between_cases() -> None:
+    """Two distinct scans (different tickers/quotes) must each carry only
+    their own market snapshot -- never another row's."""
+
+    row_a = _case_row(
+        target_date="2026-06-25", ticker="KXHIGHTSFO-A", yes_bid=0.10, yes_ask=0.12,
+        decision_at="2026-06-25T15:00:00+00:00", settled_at="2026-06-26T04:00:00+00:00",
+    )
+    row_b = _case_row(
+        target_date="2026-06-26", ticker="KXHIGHTSFO-B", yes_bid=0.60, yes_ask=0.62,
+        decision_at="2026-06-26T15:00:00+00:00", settled_at="2026-06-27T04:00:00+00:00",
+    )
+    result = load_research_cases([row_a, row_b])
+
+    assert len(result.cases) == 2
+    by_target_date = {case.target_date.isoformat(): case for case in result.cases}
+    assert set(by_target_date["2026-06-25"].market_snapshot) == {"KXHIGHTSFO-A"}
+    assert set(by_target_date["2026-06-26"].market_snapshot) == {"KXHIGHTSFO-B"}

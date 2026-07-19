@@ -17,7 +17,7 @@ from dataclasses import asdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 from ._util import _json_object, _row_value, _table_exists
 from .account import ACCOUNTING_POLICY_VERSION, SHARED_ACCOUNT_ID
@@ -27,6 +27,7 @@ from .execution import initial_queue_ahead
 from .logical_positions import LogicalPaperPosition, group_logical_positions
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
+    PublicAggressorTrade,
     maker_trade_reaches_price,
     normalize_public_trade,
     uses_current_maker_semantics,
@@ -151,6 +152,72 @@ class ReplayResult:
     realized_pnl: float
     daily_log_growth: float | None
     events: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True)
+class SettlementFact:
+    """One market's authoritative settlement outcome, ready for replay."""
+
+    ticker: str
+    target_date: str
+    settled_at: datetime
+    resolved_yes: bool
+
+
+def build_exec_v3_events(
+    *,
+    orders: Sequence[ReplayOrder] = (),
+    trades: Sequence[tuple[str, PublicAggressorTrade]] = (),
+    settlements: Sequence[SettlementFact] = (),
+) -> tuple[ReplayEvent, ...]:
+    """Assemble the ordered exec-v3 ``ReplayEvent`` stream from typed, already
+    -normalized evidence.
+
+    A pure function with no database or clock access: every input is either
+    an already-constructed ``ReplayOrder``, a public trade already reduced to
+    ``maker_fills.normalize_public_trade``'s single-aggressor
+    ``PublicAggressorTrade`` shape (paired with the ticker it was observed
+    on, since that type itself carries no ticker), or an already-resolved
+    ``SettlementFact``. This is the one shared assembly point for the exact
+    exec-v3/v4 fill, fee, partial-fill, and exit engine (``run_replay``):
+    every caller -- chronological production replay
+    (``replay_from_database``) and the chronological research replay
+    (``research_replay.py``) alike -- feeds it evidence already reduced to
+    these three normalized shapes rather than hand-building ``ReplayEvent``
+    tuples at each call site, so event kind/field conventions can never drift
+    between callers. ``run_replay`` itself re-sorts its input
+    chronologically, so this function's own output order is for readability,
+    not a correctness requirement.
+    """
+
+    events: list[ReplayEvent] = [
+        ReplayEvent(order.placed_at, "order", order.ticker, order=order)
+        for order in orders
+    ]
+    for ticker, trade in trades:
+        taker_book_side = "bid" if trade.maker_side == "NO" else "ask"
+        events.append(
+            ReplayEvent(
+                trade.created_at,
+                "trade",
+                ticker,
+                side=trade.maker_side,
+                price=float(trade.side_price(trade.maker_side)),
+                quantity=float(trade.quantity),
+                taker_book_side=taker_book_side,
+            )
+        )
+    for settlement in settlements:
+        events.append(
+            ReplayEvent(
+                settlement.settled_at,
+                "settlement",
+                settlement.ticker,
+                target_date=settlement.target_date,
+                resolved_yes=settlement.resolved_yes,
+            )
+        )
+    return tuple(events)
 
 
 def run_replay(

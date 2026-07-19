@@ -4,10 +4,13 @@ from tempfile import TemporaryDirectory
 
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.maker_fills import normalize_public_trade
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.replay import (
     ReplayEvent,
     ReplayOrder,
+    SettlementFact,
+    build_exec_v3_events,
     replay_from_database,
     run_replay,
 )
@@ -237,6 +240,141 @@ def test_replay_matches_runtime_when_queue_is_above_order_limit() -> None:
         replay = replay_from_database(db_path, {})
         assert replay["filled"] == 1
         assert [event["event"] for event in replay["events"]].count("FILL_MAKER") == 1
+
+
+def test_build_exec_v3_events_orders_trades_and_settlements_map_to_typed_events() -> None:
+    order = ReplayOrder(
+        order_id="o1", placed_at=_at(0), target_date="2026-07-02",
+        ticker="KXHIGHTSFO-X", side="YES", limit_price=0.30,
+        contracts=5, fee_per_contract=0, queue_ahead=10,
+    )
+    trade = normalize_public_trade(
+        {
+            "trade_id": "t1",
+            "created_time": _at(1).isoformat(),
+            "taker_book_side": "ask",
+            "yes_price": 0.30,
+            "count": 9,
+        }
+    )
+    assert trade is not None
+    settlement = SettlementFact(
+        ticker="KXHIGHTSFO-X",
+        target_date="2026-07-02",
+        settled_at=_at(10),
+        resolved_yes=True,
+    )
+
+    events = build_exec_v3_events(
+        orders=[order],
+        trades=[("KXHIGHTSFO-X", trade)],
+        settlements=[settlement],
+    )
+
+    kinds = [event.kind for event in events]
+    assert kinds == ["order", "trade", "settlement"]
+    order_event, trade_event, settlement_event = events
+    assert order_event.order is order
+    assert order_event.occurred_at == order.placed_at
+    assert trade_event.ticker == "KXHIGHTSFO-X"
+    assert trade_event.side == "YES"
+    assert trade_event.taker_book_side == "ask"
+    assert trade_event.price == 0.30
+    assert trade_event.quantity == 9
+    assert settlement_event.ticker == "KXHIGHTSFO-X"
+    assert settlement_event.target_date == "2026-07-02"
+    assert settlement_event.resolved_yes is True
+
+
+def test_build_exec_v3_events_is_pure_and_deterministic() -> None:
+    order = ReplayOrder(
+        order_id="o1", placed_at=_at(0), target_date="2026-07-02",
+        ticker="KXHIGHTSFO-X", side="YES", limit_price=0.30,
+        contracts=5, fee_per_contract=0,
+    )
+    settlement = SettlementFact("KXHIGHTSFO-X", "2026-07-02", _at(10), True)
+
+    first = build_exec_v3_events(orders=[order], settlements=[settlement])
+    second = build_exec_v3_events(orders=[order], settlements=[settlement])
+
+    assert first == second
+
+
+def test_build_exec_v3_events_immediate_order_matches_hand_built_replay() -> None:
+    """Parity: an immediate/crossing order plus settlement, assembled through
+    build_exec_v3_events, must replay to the exact same money outcome as the
+    same events hand-built directly (the pattern every other test in this
+    file uses) -- pinning the new constructor to the existing engine's own
+    fill/fee/settlement math rather than a second, drifting implementation.
+    """
+
+    order = ReplayOrder(
+        order_id="cross-1", placed_at=_at(0), target_date="2026-07-02",
+        ticker="KXHIGHTSFO-CROSS", side="YES", limit_price=0.40,
+        contracts=3, fee_per_contract=0.01, immediate=True,
+    )
+    settlement = SettlementFact("KXHIGHTSFO-CROSS", "2026-07-02", _at(5), True)
+
+    hand_built = [
+        ReplayEvent(_at(0), "order", order.ticker, order=order),
+        ReplayEvent(
+            _at(5), "settlement", order.ticker,
+            target_date="2026-07-02", resolved_yes=True,
+        ),
+    ]
+    constructed = build_exec_v3_events(orders=[order], settlements=[settlement])
+
+    hand_result = run_replay(list(hand_built))
+    constructed_result = run_replay(list(constructed))
+
+    assert constructed_result.realized_pnl == hand_result.realized_pnl
+    assert constructed_result.filled == hand_result.filled == 1
+    assert constructed_result.settled == hand_result.settled == 1
+    assert constructed_result.ending_cash == hand_result.ending_cash
+
+
+def test_build_exec_v3_events_maker_fill_matches_hand_built_replay() -> None:
+    """Parity for the resting-maker/queue-ahead path (audit EX-01 semantics):
+    a normalized public trade routed through build_exec_v3_events must
+    produce the identical FILL_MAKER outcome as the same trade hand-built
+    directly into a ReplayEvent."""
+
+    order = ReplayOrder(
+        order_id="maker-1", placed_at=_at(0), target_date="2026-07-02",
+        ticker="KXHIGHTSFO-MAKER", side="YES", limit_price=0.30,
+        contracts=5, fee_per_contract=0, queue_ahead=0,
+    )
+    raw_trade = {
+        "trade_id": "maker-fill-1",
+        "created_time": _at(1).isoformat(),
+        "taker_book_side": "ask",
+        "yes_price": 0.30,
+        "count": 5,
+    }
+    normalized = normalize_public_trade(raw_trade)
+    assert normalized is not None
+
+    hand_built = [
+        ReplayEvent(_at(0), "order", order.ticker, order=order),
+        ReplayEvent(
+            _at(1), "trade", order.ticker, side="YES", price=0.30,
+            quantity=5, taker_book_side="ask",
+        ),
+    ]
+    constructed = build_exec_v3_events(
+        orders=[order], trades=[(order.ticker, normalized)]
+    )
+
+    hand_result = run_replay(list(hand_built))
+    constructed_result = run_replay(list(constructed))
+
+    assert constructed_result.filled == hand_result.filled == 1
+    assert (
+        [row["event"] for row in constructed_result.events].count("FILL_MAKER")
+        == [row["event"] for row in hand_result.events].count("FILL_MAKER")
+        == 1
+    )
+    assert constructed_result.ending_cash == hand_result.ending_cash
 
 
 def test_replay_log_growth_uses_each_days_opening_equity() -> None:
