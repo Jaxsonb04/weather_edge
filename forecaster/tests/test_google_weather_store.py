@@ -1947,3 +1947,295 @@ def test_usage_daily_and_monthly_counts_share_one_database_snapshot(tmp_path):
     counts = ledger.usage(now=TEST_NOW)
 
     assert counts.daily_events == counts.monthly_events
+
+
+# ---------------------------------------------------------------------------
+# Task 8 items 2 and 3: runtime endpoint attribution adjacent to any
+# Google-derived data surface, and a response cache lifetime that can never
+# outlive the underlying row's remaining TTL.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_endpoint_response_uses_direct_attribution_text_for_raw_values():
+    from google_weather_store import GOOGLE_ATTRIBUTION_DIRECT, build_runtime_endpoint_response
+
+    response = build_runtime_endpoint_response(
+        {"temperature_f": 68.0},
+        expires_at=TEST_NOW + timedelta(minutes=30),
+        transformed=False,
+        now=TEST_NOW,
+    )
+
+    assert response.attribution == GOOGLE_ATTRIBUTION_DIRECT
+    assert response.attribution == "Source: Includes weather data from Google"
+
+
+def test_runtime_endpoint_response_uses_transformed_attribution_text_for_derived_content():
+    from google_weather_store import (
+        GOOGLE_ATTRIBUTION_TRANSFORMED,
+        build_runtime_endpoint_response,
+    )
+
+    response = build_runtime_endpoint_response(
+        {"challenger_mu": 80.45},
+        expires_at=TEST_NOW + timedelta(minutes=30),
+        transformed=True,
+        now=TEST_NOW,
+    )
+
+    assert response.attribution == GOOGLE_ATTRIBUTION_TRANSFORMED
+    assert response.attribution == "Includes data from Google Maps."
+
+
+def test_runtime_endpoint_response_caps_cache_lifetime_at_remaining_row_ttl():
+    from google_weather_store import build_runtime_endpoint_response
+
+    response = build_runtime_endpoint_response(
+        {"temperature_f": 68.0},
+        expires_at=TEST_NOW + timedelta(seconds=90),
+        transformed=False,
+        now=TEST_NOW,
+        requested_max_age_seconds=300,
+    )
+
+    # The caller asked for a 300s cache lifetime, but only 90s of TTL remain
+    # on the underlying row -- the response can never outlive its source.
+    assert response.max_age_seconds == 90
+
+
+def test_runtime_endpoint_response_never_extends_a_smaller_requested_max_age():
+    from google_weather_store import build_runtime_endpoint_response
+
+    response = build_runtime_endpoint_response(
+        {"temperature_f": 68.0},
+        expires_at=TEST_NOW + timedelta(seconds=300),
+        transformed=False,
+        now=TEST_NOW,
+        requested_max_age_seconds=30,
+    )
+
+    assert response.max_age_seconds == 30
+
+
+def test_runtime_endpoint_response_treats_an_already_expired_row_as_zero_max_age():
+    from google_weather_store import build_runtime_endpoint_response
+
+    response = build_runtime_endpoint_response(
+        {"temperature_f": 68.0},
+        expires_at=TEST_NOW - timedelta(seconds=1),
+        transformed=False,
+        now=TEST_NOW,
+        requested_max_age_seconds=300,
+    )
+
+    assert response.max_age_seconds == 0
+
+
+def test_runtime_endpoint_response_defaults_the_requested_max_age_to_the_full_remaining_ttl():
+    from google_weather_store import build_runtime_endpoint_response
+
+    response = build_runtime_endpoint_response(
+        {"temperature_f": 68.0},
+        expires_at=TEST_NOW + timedelta(seconds=45),
+        transformed=False,
+        now=TEST_NOW,
+    )
+
+    assert response.max_age_seconds == 45
+
+
+def test_runtime_endpoint_response_rejects_naive_datetimes():
+    from google_weather_store import build_runtime_endpoint_response
+
+    with pytest.raises(ValueError):
+        build_runtime_endpoint_response(
+            {"temperature_f": 68.0},
+            expires_at=datetime(2026, 7, 18, 19, 30),
+            transformed=False,
+            now=TEST_NOW,
+        )
+
+    with pytest.raises(ValueError):
+        build_runtime_endpoint_response(
+            {"temperature_f": 68.0},
+            expires_at=TEST_NOW + timedelta(minutes=30),
+            transformed=False,
+            now=datetime(2026, 7, 18, 19, 0),
+        )
+
+
+# ---------------------------------------------------------------------------
+# T8-4 (Task 6 review): month-of-cutover ledger seeding. The permanent
+# ledger starts empty while the legacy .google_weather_usage.json usage file
+# holds the real count for the Pacific month the systemd cutover to
+# --cities sfo / --cities <non-sfo list> happens in -- combined real usage
+# must never exceed 8,000 for that month, and re-running the seed must be
+# safe (idempotent).
+# ---------------------------------------------------------------------------
+
+
+def test_seed_legacy_month_carryover_adds_the_requested_event_count(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    inserted = ledger.seed_legacy_month_carryover(
+        billing_month="2026-07", event_count=611, now=TEST_NOW
+    )
+
+    assert inserted == 611
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 611
+
+
+def test_seed_legacy_month_carryover_is_idempotent_when_run_twice_unchanged(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    first = ledger.seed_legacy_month_carryover(
+        billing_month="2026-07", event_count=611, now=TEST_NOW
+    )
+    second = ledger.seed_legacy_month_carryover(
+        billing_month="2026-07", event_count=611, now=TEST_NOW
+    )
+
+    assert first == 611
+    assert second == 0
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 611
+
+
+def test_seed_legacy_month_carryover_does_not_inflate_todays_daily_budget(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    ledger.seed_legacy_month_carryover(billing_month="2026-07", event_count=611, now=TEST_NOW)
+
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 611
+    assert counts.daily_events == 0
+
+
+def test_seed_legacy_month_carryover_combines_with_real_admissions_under_the_cap(tmp_path):
+    from google_weather_store import GoogleWeatherBudgetExceeded
+
+    ledger = _usage_ledger(tmp_path, monthly_budget=700, soft_monthly_ceiling=650)
+
+    # Seed exactly at the soft ceiling: any further reservation this month
+    # (real or legacy-carried-over) must be denied, proving the seeded count
+    # is not just recorded but actually enforced by reserve_event's own
+    # unconditional monthly/soft-ceiling checks.
+    ledger.seed_legacy_month_carryover(billing_month="2026-07", event_count=650, now=TEST_NOW)
+
+    with pytest.raises(GoogleWeatherBudgetExceeded):
+        ledger.reserve_event(
+            city_slug="sfo",
+            station_id="KSFO",
+            endpoint="hourly",
+            page_number=0,
+            now=TEST_NOW,
+        )
+
+
+def test_seed_legacy_month_carryover_raises_on_a_negative_event_count(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    with pytest.raises(ValueError):
+        ledger.seed_legacy_month_carryover(billing_month="2026-07", event_count=-1, now=TEST_NOW)
+
+
+def test_seed_legacy_month_carryover_raises_on_an_empty_billing_month(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    with pytest.raises(ValueError):
+        ledger.seed_legacy_month_carryover(billing_month="", event_count=5, now=TEST_NOW)
+
+
+def test_seed_legacy_month_carryover_tops_up_when_run_again_with_a_larger_count(tmp_path):
+    ledger = _usage_ledger(tmp_path)
+
+    ledger.seed_legacy_month_carryover(billing_month="2026-07", event_count=100, now=TEST_NOW)
+    inserted_more = ledger.seed_legacy_month_carryover(
+        billing_month="2026-07", event_count=150, now=TEST_NOW
+    )
+
+    assert inserted_more == 50
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 150
+
+
+def test_seed_legacy_month_carryover_never_shrinks_when_run_again_with_a_smaller_count(
+    tmp_path,
+):
+    ledger = _usage_ledger(tmp_path)
+
+    ledger.seed_legacy_month_carryover(billing_month="2026-07", event_count=150, now=TEST_NOW)
+    inserted_again = ledger.seed_legacy_month_carryover(
+        billing_month="2026-07", event_count=100, now=TEST_NOW
+    )
+
+    assert inserted_again == 0
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 150
+
+
+# ---------------------------------------------------------------------------
+# T8-4: the seed_google_usage_ledger.py CLI wrapper operators actually run
+# once, right after the systemd cutover.
+# ---------------------------------------------------------------------------
+
+
+def test_seed_google_usage_ledger_cli_imports_legacy_month_and_count(
+    tmp_path, monkeypatch, capsys
+):
+    import json as _json
+
+    import seed_google_usage_ledger as seeder
+    from google_weather_store import GoogleUsageLedger
+
+    usage_path = tmp_path / ".google_weather_usage.json"
+    usage_path.write_text(_json.dumps({"month": "2026-07", "monthly_events": 611}))
+    db_path = tmp_path / "weather.db"
+    monkeypatch.setattr(seeder, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(seeder, "DB_PATH", db_path)
+
+    result = seeder.main()
+
+    assert result == 0
+    ledger = GoogleUsageLedger(db_path)
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 611
+    assert "seeded 611" in capsys.readouterr().out
+
+
+def test_seed_google_usage_ledger_cli_is_a_no_op_without_a_legacy_file(
+    tmp_path, monkeypatch, capsys
+):
+    import seed_google_usage_ledger as seeder
+
+    usage_path = tmp_path / ".google_weather_usage.json"
+    db_path = tmp_path / "weather.db"
+    monkeypatch.setattr(seeder, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(seeder, "DB_PATH", db_path)
+
+    result = seeder.main()
+
+    assert result == 0
+    assert not db_path.exists()
+    assert "nothing to seed" in capsys.readouterr().out
+
+
+def test_seed_google_usage_ledger_cli_is_safe_to_run_twice(tmp_path, monkeypatch):
+    import json as _json
+
+    import seed_google_usage_ledger as seeder
+    from google_weather_store import GoogleUsageLedger
+
+    usage_path = tmp_path / ".google_weather_usage.json"
+    usage_path.write_text(_json.dumps({"month": "2026-07", "monthly_events": 611}))
+    db_path = tmp_path / "weather.db"
+    monkeypatch.setattr(seeder, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(seeder, "DB_PATH", db_path)
+
+    seeder.main()
+    seeder.main()
+
+    ledger = GoogleUsageLedger(db_path)
+    counts = ledger.usage(now=TEST_NOW)
+    assert counts.monthly_events == 611

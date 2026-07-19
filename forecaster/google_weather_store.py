@@ -121,6 +121,71 @@ class GoogleRuntimeHigh:
     expires_at: datetime
 
 
+# Task 8 items 2 and 3: Google requires attribution adjacent to any surface
+# that displays Weather API data, and (spec section 7.5) exact wording
+# differs by whether the displayed content is a direct value or something
+# transformed/derived from Google data. Static methodology attribution
+# elsewhere in the product does not substitute for this adjacent,
+# per-response attribution.
+GOOGLE_ATTRIBUTION_DIRECT = "Source: Includes weather data from Google"
+GOOGLE_ATTRIBUTION_TRANSFORMED = "Includes data from Google Maps."
+
+
+@dataclass(frozen=True)
+class GoogleRuntimeEndpointResponse:
+    """A TTL-capped, attributed response for a runtime endpoint that
+    displays Google-derived content.
+
+    Nothing in this project currently wires this into a live HTTP surface --
+    Google runtime content stays research-shadow only (spec section 7.3) --
+    but this is the contract any future runtime-facing consumer of
+    ``GoogleRuntimeStore``/derived-challenger content MUST use rather than
+    serving a row (or its derived evidence) directly: the attribution is
+    mandatory, and the response's own cache lifetime can never exceed the
+    remaining TTL of the row(s) it was built from.
+    """
+
+    payload: Mapping[str, object]
+    attribution: str
+    max_age_seconds: int
+
+
+def build_runtime_endpoint_response(
+    payload: Mapping[str, object],
+    *,
+    expires_at: datetime,
+    transformed: bool,
+    now: datetime | None = None,
+    requested_max_age_seconds: int | None = None,
+) -> GoogleRuntimeEndpointResponse:
+    """Attribute Google-derived content and cap its cache lifetime.
+
+    ``transformed=False`` selects the direct-values attribution text;
+    ``transformed=True`` selects the transformed-content text -- spec
+    section 7.5's exact wording for each case. ``max_age_seconds`` is
+    ``min(requested_max_age_seconds, remaining TTL)``, floored at zero for
+    an already-expired row; ``requested_max_age_seconds`` defaults to the
+    full remaining TTL when omitted, never to some longer caller default.
+    """
+
+    instant = now if now is not None else datetime.now(timezone.utc)
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise ValueError("expires_at must be timezone-aware")
+    remaining_seconds = max(0, int((expires_at - instant).total_seconds()))
+    requested = (
+        remaining_seconds
+        if requested_max_age_seconds is None
+        else max(0, int(requested_max_age_seconds))
+    )
+    max_age_seconds = min(requested, remaining_seconds)
+    attribution = GOOGLE_ATTRIBUTION_TRANSFORMED if transformed else GOOGLE_ATTRIBUTION_DIRECT
+    return GoogleRuntimeEndpointResponse(
+        payload=payload, attribution=attribution, max_age_seconds=max_age_seconds
+    )
+
+
 def assert_runtime_path(path: Path, *, production: bool) -> None:
     """Keep TTL-bound content in an app-owned, non-symlinked tmpfs tree."""
 
@@ -1462,6 +1527,78 @@ class GoogleUsageLedger:
         if row is None:
             raise KeyError("unknown Google Weather usage event")
         return GoogleUsageEventState(**dict(row))
+
+    def seed_legacy_month_carryover(
+        self, *, billing_month: str, event_count: int, now: datetime | None = None
+    ) -> int:
+        """Idempotently import a legacy monthly event count as historical usage.
+
+        T8-4 (Task 6 review): one-time cutover helper. The pre-Task-6
+        SFO-only refresh tracked its own monthly count in the legacy
+        ``.google_weather_usage.json`` file using an entirely separate
+        accounting mechanism from this permanent ledger. The moment systemd
+        stops invoking that legacy code path, its count freezes at whatever
+        it last recorded for the current Pacific month -- but this ledger
+        starts that same month at zero. Without this, combined real Google
+        Weather usage for the cutover month could exceed the account's
+        actual 8,000-event monthly cap even though this ledger's own
+        counters look well within budget.
+
+        Inserts up to ``event_count`` synthetic rows carrying no real
+        city/endpoint identity (a historical stamp, not a real dispatch)
+        under one deterministic reservation id keyed by ``billing_month``,
+        with ``billing_date_pacific`` pinned to the 1st of that month so the
+        seed can never inflate any single day's daily budget check -- only
+        the monthly total, which is what the legacy count actually measured.
+        Running this twice (or after a partial failure, or with a larger
+        ``event_count`` on a later run because more usage accrued before the
+        cutover completed) can only ever reach exactly ``event_count``
+        seeded rows for that month -- never fewer than a prior run, and
+        never applied twice.
+        """
+
+        if type(event_count) is not int or event_count < 0:
+            raise ValueError("event_count must be a non-negative integer")
+        month = str(billing_month or "").strip()
+        if not month:
+            raise ValueError("billing_month must be a non-empty Pacific YYYY-MM string")
+        instant = _aware_utc(now)
+        reserved_at = instant.isoformat(timespec="microseconds")
+        billing_date = f"{month}-01"
+        reservation_id = f"legacy-cutover-seed-{month}"
+        inserted = 0
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            for page_number in range(event_count):
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO google_weather_usage_events (
+                        reservation_id, billing_month, billing_date_pacific,
+                        city_slug, station_id, endpoint, page_number,
+                        reserved_at, dispatched_at, completed_at, status,
+                        billable_events
+                    ) VALUES (?, ?, ?, 'legacy_cutover', 'legacy_cutover',
+                              'legacy_seed', ?, ?, ?, ?, 'success', 1)
+                    """,
+                    (
+                        reservation_id,
+                        month,
+                        billing_date,
+                        page_number,
+                        reserved_at,
+                        reserved_at,
+                        reserved_at,
+                    ),
+                )
+                inserted += cursor.rowcount
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return inserted
 
     def usage(self, *, now: datetime | None = None) -> GoogleUsageCounts:
         instant = _aware_utc(now)
