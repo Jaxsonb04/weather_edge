@@ -4,7 +4,19 @@ Builds on Task 1's immutable ``research_experiments``/``research_evidence``
 tables and the load-time ``source_neutral_context_from_scan_context_row``
 helper (``trading/sfo_kalshi_quant/db.py``) to turn historical, per-profile
 ``scan_context_snapshots`` rows into deduplicated, chronologically ordered
-``WalkForwardFold`` objects that Task 3 can fit and score candidates against.
+``WalkForwardFold`` objects.
+
+Task 3 (predeclared candidate fitting -- pooling, the three challenger
+arms, and per-case scoring) builds on top of this module's
+``ResearchCase``/``WalkForwardFold`` types from two siblings kept separate
+for file-size cohesion (coding-style guidance: many small files over one
+large one):
+
+- ``research_candidates.py`` -- pooling machinery, the three predeclared
+  candidate identities, and fold/case fitting + evidence bundling.
+- ``research_scoring.py`` -- pure Gaussian distributional scoring math
+  (CRPS, log score, PIT, bracket Brier, calibration gap, etc.), with zero
+  dependency on any type in this module.
 
 Five load-bearing leakage-resistance guarantees, enforced structurally
 (not by caller convention) in this module:
@@ -13,9 +25,11 @@ Five load-bearing leakage-resistance guarantees, enforced structurally
    ``target_date`` is at-or-after the test fold's ``target_date``
    (``_case_eligible_for_training``'s day-order check), *and* never
    contains a case that settled at or after the earliest test decision in
-   the fold (settlement-before-decision). Both checks are independent of
-   each other by design -- the day-order check holds even if a row's
-   ``settled_at`` were wrong or adversarially early.
+   the fold (settlement-before-decision, strict ``<`` -- a case that
+   settles at the exact same instant as the earliest test decision is
+   excluded, not just one that settles later). Both checks are
+   independent of each other by design -- the day-order check holds even
+   if a row's ``settled_at`` were wrong or adversarially early.
 2. **Embargo.** A configurable number of days (default
    ``DEFAULT_EMBARGO_DAYS``) immediately preceding the test day is purged
    from that *same station's* training pool, to bound weather
@@ -28,13 +42,35 @@ Five load-bearing leakage-resistance guarantees, enforced structurally
    with a sibling row sharing their hash, are skipped with a recorded
    reason rather than guessed at.
 4. **Fail closed.** Malformed contexts, timezone-naive or unparseable
-   timestamps, non-finite outcome values, and cases whose own
-   ``settled_at`` precedes their own ``decision_at`` are all excluded
-   loudly (a ``CaseSkip`` reason), never silently dropped or coerced.
+   timestamps, non-finite outcome values, cases whose own ``settled_at``
+   precedes their own ``decision_at``, and a ``lead_days`` value that is
+   inconsistent with the case's own ``decision_at``/``target_date`` (a
+   corrupt lead value can never silently mispool a candidate into the
+   wrong cohort -- see ``_expected_lead_days``) are all excluded loudly (a
+   ``CaseSkip`` reason), never silently dropped or coerced.
 5. **Determinism.** ``load_research_cases``/``build_walk_forward_folds``
    take no clock or randomness inputs; every output collection is sorted
    by content (never by input/row order), so the same input rows -- in any
-   order -- always produce byte-identical folds.
+   order -- always produce byte-identical folds. ``research_candidates.py``'s
+   ``fit_fold_candidates`` extends this: it is a pure function of a fold's
+   ``train`` tuple alone -- it never reads ``test`` -- so mutating a test
+   case's outcome can never change the parameters used to score that same
+   case.
+
+``research_candidates.py`` adds one more guarantee on top of these:
+
+6. **Predeclaration linkage.** Every challenger candidate it fits
+   (``GAUSSIAN_PIT_CANDIDATE_KEY``, ``GOOGLE_RUNTIME_CANDIDATE_KEY``) has a
+   frozen ``candidate_key``/``candidate_version``/``hypothesis_family``
+   identity (``declared_research_candidates()``) that must be registered
+   via ``PaperStore.record_research_experiment`` *before*
+   ``PaperStore.record_research_evidence`` can persist any score for it --
+   the database enforces this with a foreign key plus a BEFORE INSERT
+   trigger (Task 1), so writing evidence for an undeclared candidate is a
+   ``sqlite3.IntegrityError``, not a silent acceptance. Neither this module
+   nor ``research_candidates.py`` talks to the database itself; they only
+   guarantee that what gets fit and scored carries exactly the identity a
+   caller must declare first.
 """
 
 from __future__ import annotations
@@ -45,12 +81,47 @@ from datetime import date, datetime
 from typing import Mapping, Sequence
 
 from .db import source_neutral_context_from_scan_context_row
+from .research_policy import RESEARCH_OBJECTIVE_TZ
 
 # Number of days immediately preceding a test day, for the same station,
 # whose training candidates are purged even though they technically settled
 # before the test decision -- bounds weather autocorrelation leakage at the
 # fold boundary (plan Task 2 Step 3: "the configurable one-day embargo").
 DEFAULT_EMBARGO_DAYS = 1
+
+# Mirrors forecaster/google_runtime_blend.py's frozen policy identity and
+# action vocabulary -- duplicated rather than imported, on purpose. Unlike
+# ``.cities``/``.account`` (same ``sfo_kalshi_quant`` package, always on a
+# production sys.path), ``forecaster`` is a separate top-level package that
+# is NOT part of this project's installed package
+# (``[tool.setuptools.packages.find]`` only includes ``sfo_kalshi_quant*``);
+# it is importable only under pytest's dev-only ``pythonpath``. This is the
+# same duplicate-plus-parity-test convention ``cities.py`` documents and
+# ``test_cities_parity.py`` enforces --
+# ``test_google_runtime_challenger_constants_match_forecaster`` in
+# ``test_research_walkforward.py`` is this module's parity lock.
+GOOGLE_CHALLENGER_POLICY_VERSION = "google-runtime-fixed-v1"
+GOOGLE_CHALLENGER_FORECAST_ACTION = "forecast"
+GOOGLE_CHALLENGER_BLOCK_ACTION = "external_runtime_corroboration_block"
+
+
+@dataclass(frozen=True)
+class GoogleChallengerEvidence:
+    """One case's already-derived Google-conditioned challenger evidence.
+
+    Shape mirrors the durable, TTL-free evidence spec section 7.2 allows to
+    persist past the raw Google runtime TTL -- mean, sigma, action, and
+    policy version only. It never carries a raw Google high, response, or
+    disagreement gap; this module only ever *consumes* an already-computed
+    challenger (never recomputes one from a raw Google value), so a
+    historical row with no such evidence attached is simply unavailable,
+    never backfilled or guessed at.
+    """
+
+    mu: float | None
+    sigma: float
+    action: str
+    policy_version: str = GOOGLE_CHALLENGER_POLICY_VERSION
 
 
 @dataclass(frozen=True)
@@ -66,6 +137,7 @@ class ResearchCase:
     baseline_mu: float
     baseline_sigma: float
     actual_high_f: float
+    google_evidence: GoogleChallengerEvidence | None = None
 
     def __post_init__(self) -> None:
         if self.decision_at.tzinfo is None:
@@ -87,6 +159,31 @@ class ResearchCase:
                 raise ValueError(f"ResearchCase.{label} must be finite")
         if self.baseline_sigma <= 0:
             raise ValueError("ResearchCase.baseline_sigma must be positive")
+        # Binding condition C2 (Task 2 review finding L5): lead_days must be
+        # consistent with the case's own decision_at/target_date, checked
+        # last so every other direct-construction regression above keeps
+        # raising for its own originally-intended reason first. A corrupt
+        # lead_days must be a loud rejection here (and, via the loader's
+        # own explicit pre-check in ``_build_case``, a recorded skip) --
+        # never a silent mispool into the wrong station/lead cohort.
+        if self.lead_days != _expected_lead_days(self.decision_at, self.target_date):
+            raise ValueError(
+                "ResearchCase.lead_days is inconsistent with its own "
+                "decision_at/target_date"
+            )
+
+
+def _expected_lead_days(decision_at: datetime, target_date: date) -> int:
+    """Canonical lead-days formula: whole Pacific civil days to target.
+
+    Mirrors ``PaperStore``'s own ``lead_days = (target_day - civil_day).days``
+    (``trading/sfo_kalshi_quant/db.py``, research admission), anchored to
+    ``RESEARCH_OBJECTIVE_TZ`` (America/Los_Angeles) -- the one civil clock
+    every research lead/embargo/promotion computation in this project uses,
+    never a per-station local time.
+    """
+
+    return (target_date - decision_at.astimezone(RESEARCH_OBJECTIVE_TZ).date()).days
 
 
 @dataclass(frozen=True)
@@ -230,10 +327,31 @@ def _build_case(
         )
         return None
 
+    target_date_value = date.fromisoformat(str(context["target_date"]))
+    expected_lead_days = _expected_lead_days(decision_at, target_date_value)
+    if lead_days != expected_lead_days:
+        # C2 (Task 2 review finding L5): never pool a case under a
+        # lead_days value its own decision_at/target_date does not imply --
+        # a corrupt lead_days is a recorded skip, not a silent mispool.
+        skips.append(
+            CaseSkip(
+                index,
+                "lead_days_inconsistent_with_decision_and_target",
+                f"declared lead_days={lead_days} but decision_at/target_date "
+                f"implies {expected_lead_days}",
+            )
+        )
+        return None
+
+    google_evidence, google_skip = _build_google_evidence(row)
+    if google_skip is not None:
+        skips.append(CaseSkip(index, "invalid_google_evidence", google_skip))
+        return None
+
     try:
         return ResearchCase(
             station_id=str(context["station_id"]),
-            target_date=date.fromisoformat(str(context["target_date"])),
+            target_date=target_date_value,
             decision_at=decision_at,
             settled_at=settled_at,
             lead_days=lead_days,
@@ -241,10 +359,66 @@ def _build_case(
             baseline_mu=baseline_mu,
             baseline_sigma=baseline_sigma,
             actual_high_f=actual_high_f,
+            google_evidence=google_evidence,
         )
     except ValueError as exc:
         skips.append(CaseSkip(index, "invalid_case", str(exc)))
         return None
+
+
+def _build_google_evidence(
+    row: Mapping[str, object],
+) -> tuple[GoogleChallengerEvidence | None, str | None]:
+    """Parse a row's optional, already-derived Google challenger evidence.
+
+    Returns ``(evidence, skip_reason)``: at most one is non-``None``. A row
+    that carries none of the four optional ``google_challenger_*`` fields
+    has no Google evidence at all -- the ordinary, expected case today,
+    since nothing yet writes them (Google Task 7's durable
+    ``google_challenger_snapshots`` has not landed) -- and returns
+    ``(None, None)``: not an error, just "no evidence for this case" (fails
+    neutral downstream, per spec section 7.3). A row that carries a partial
+    or self-inconsistent set of these fields is a data-integrity problem,
+    not silently-missing evidence, so it is reported as a skip reason
+    instead: never backfilled or guessed at.
+    """
+
+    action = row.get("google_challenger_action")
+    mu = row.get("google_challenger_mu")
+    sigma = row.get("google_challenger_sigma")
+    policy_version = row.get("google_challenger_policy_version")
+
+    if action is None and mu is None and sigma is None and policy_version is None:
+        return None, None
+
+    if policy_version != GOOGLE_CHALLENGER_POLICY_VERSION:
+        return None, f"unsupported google_challenger_policy_version={policy_version!r}"
+    if action not in (GOOGLE_CHALLENGER_FORECAST_ACTION, GOOGLE_CHALLENGER_BLOCK_ACTION):
+        return None, f"unrecognized google_challenger_action={action!r}"
+
+    sigma_value = _finite_float(sigma)
+    if sigma_value is None or sigma_value <= 0:
+        return None, "google_challenger_sigma missing, non-finite, or non-positive"
+
+    if action == GOOGLE_CHALLENGER_BLOCK_ACTION:
+        if mu is not None:
+            return None, "google_challenger_mu must be absent for a blocked action"
+        return (
+            GoogleChallengerEvidence(
+                mu=None, sigma=sigma_value, action=action, policy_version=policy_version
+            ),
+            None,
+        )
+
+    mu_value = _finite_float(mu)
+    if mu_value is None:
+        return None, "google_challenger_mu missing or non-finite for a forecast action"
+    return (
+        GoogleChallengerEvidence(
+            mu=mu_value, sigma=sigma_value, action=action, policy_version=policy_version
+        ),
+        None,
+    )
 
 
 def _reconcile_duplicates(
@@ -275,6 +449,7 @@ def _reconcile_duplicates(
             or case.baseline_mu != reference.baseline_mu
             or case.baseline_sigma != reference.baseline_sigma
             or case.lead_days != reference.lead_days
+            or case.google_evidence != reference.google_evidence
         ):
             for skip_index, _ in built:
                 skips.append(

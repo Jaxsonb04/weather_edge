@@ -20,6 +20,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -29,8 +30,12 @@ from sfo_kalshi_quant.db import (
     source_neutral_context_from_scan_context_row,
 )
 from sfo_kalshi_quant.research_walkforward import (
+    GOOGLE_CHALLENGER_BLOCK_ACTION,
+    GOOGLE_CHALLENGER_FORECAST_ACTION,
+    GOOGLE_CHALLENGER_POLICY_VERSION,
     CaseSkip,
     DEFAULT_EMBARGO_DAYS,
+    GoogleChallengerEvidence,
     ResearchCase,
     UnavailableFold,
     WalkForwardEvidence,
@@ -38,6 +43,48 @@ from sfo_kalshi_quant.research_walkforward import (
     build_walk_forward_evidence,
     build_walk_forward_folds,
     load_research_cases,
+)
+from sfo_kalshi_quant.research_candidates import (
+    CLIMATE_REGION_LEAD_COHORT,
+    DEFAULT_SHRINKAGE_K,
+    GAUSSIAN_PIT_CANDIDATE_KEY,
+    GAUSSIAN_PIT_CANDIDATE_VERSION,
+    GAUSSIAN_PIT_HYPOTHESIS_FAMILY,
+    GLOBAL_LEAD_COHORT,
+    GOOGLE_RUNTIME_CANDIDATE_KEY,
+    GOOGLE_RUNTIME_CANDIDATE_VERSION,
+    GOOGLE_RUNTIME_HYPOTHESIS_FAMILY,
+    IDENTITY_CANDIDATE_KEY,
+    IDENTITY_CANDIDATE_VERSION,
+    IDENTITY_HYPOTHESIS_FAMILY,
+    POOLING_ORDER,
+    STATION_ALL_LEADS_COHORT,
+    STATION_LEAD_COHORT,
+    CandidateDistribution,
+    FoldCandidateEvidence,
+    PoolingDecision,
+    PoolingUnavailable,
+    candidate_calibration_gap,
+    case_score_payload,
+    declared_research_candidates,
+    fit_case_candidates,
+    fit_fold_candidates,
+    gaussian_pit_candidate,
+    google_runtime_candidate,
+    identity_candidate,
+    pool_training_cohort,
+    score_candidate_for_case,
+    score_fold_candidates,
+)
+from sfo_kalshi_quant.research_scoring import (
+    bracket_brier,
+    gaussian_crps,
+    gaussian_log_score,
+    interval_covered,
+    max_calibration_gap,
+    pit_value,
+    point_error,
+    ranked_probability_score,
 )
 
 # Evidence windows chronologically safe on any real test-run date: far enough
@@ -100,6 +147,30 @@ def _declare(
     )
 
 
+_PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+
+# Sentinel distinguishing "not passed" from an explicit ``None`` for the four
+# optional google_challenger_* fields below -- ``_case_row`` must be able to
+# emit a row that omits these keys entirely (the ordinary, no-Google-evidence
+# case) as well as a row that carries an explicit ``None`` for one of them
+# (a deliberately malformed/partial-evidence regression).
+_OMIT = object()
+
+
+def _implied_lead_days(decision_at: str, target_date: str) -> int:
+    """Test-only reimplementation of the production lead_days formula
+    (independent of ``research_walkforward._expected_lead_days``, on
+    purpose -- a test fixture should not depend on the private helper it
+    is exercising), so ``_case_row``'s default rows are always
+    self-consistent for whatever decision_at/target_date a test picks,
+    without hardcoding one lead_days number that only matches some
+    combinations (binding condition C2)."""
+
+    decision = datetime.fromisoformat(decision_at)
+    target = date.fromisoformat(target_date)
+    return (target - decision.astimezone(_PACIFIC_TZ).date()).days
+
+
 def _case_row(
     *,
     target_date: str = "2026-06-25",
@@ -113,10 +184,26 @@ def _case_row(
     actual_high_f: float = 67.0,
     baseline_mu: float = 66.0,
     baseline_sigma: float = 3.0,
-    lead_days: int = 1,
+    lead_days: int | None = None,
+    google_challenger_mu: object = _OMIT,
+    google_challenger_sigma: object = _OMIT,
+    google_challenger_action: object = _OMIT,
+    google_challenger_policy_version: object = _OMIT,
 ) -> dict[str, object]:
     """One historical row: scan_context_snapshots payload columns plus the
-    settled-outcome fields Task 2's loader needs to build a ResearchCase."""
+    settled-outcome fields Task 2's loader needs to build a ResearchCase.
+
+    ``lead_days`` defaults to the value implied by this row's own
+    ``decision_at``/``target_date`` (never a fixed number), so every
+    default-built row is automatically consistent under C2's
+    lead_days-vs-decision_at/target_date check. Pass an explicit
+    ``lead_days`` to deliberately construct an inconsistent row for a
+    regression test.
+
+    The four ``google_challenger_*`` keys are omitted entirely unless
+    explicitly passed -- the loader treats "all four absent" as "no Google
+    evidence for this case" (never an error).
+    """
 
     market = {
         ticker: {
@@ -127,7 +214,10 @@ def _case_row(
             "cap_strike": 66.0,
         }
     }
-    return {
+    resolved_lead_days = (
+        lead_days if lead_days is not None else _implied_lead_days(decision_at, target_date)
+    )
+    row: dict[str, object] = {
         "target_date": target_date,
         "station_id": station_id,
         "forecast_json": json.dumps(_forecast_payload(predicted_high_f), sort_keys=True),
@@ -139,8 +229,17 @@ def _case_row(
         "actual_high_f": actual_high_f,
         "baseline_mu": baseline_mu,
         "baseline_sigma": baseline_sigma,
-        "lead_days": lead_days,
+        "lead_days": resolved_lead_days,
     }
+    if google_challenger_mu is not _OMIT:
+        row["google_challenger_mu"] = google_challenger_mu
+    if google_challenger_sigma is not _OMIT:
+        row["google_challenger_sigma"] = google_challenger_sigma
+    if google_challenger_action is not _OMIT:
+        row["google_challenger_action"] = google_challenger_action
+    if google_challenger_policy_version is not _OMIT:
+        row["google_challenger_policy_version"] = google_challenger_policy_version
+    return row
 
 
 # A training row far enough in the past (relative to every Task 2 test's
@@ -165,7 +264,6 @@ def _anchor_training_row(
         actual_high_f=55.0,
         baseline_mu=54.0,
         baseline_sigma=3.0,
-        lead_days=1,
     )
 
 
@@ -1838,8 +1936,11 @@ def test_dst_spring_forward_seam_preserves_settlement_before_decision_ordering()
     spanning_row = _case_row(
         target_date="2026-03-07",
         ticker="KXHIGHTSFO-TEST-DST-SPRING",
-        decision_at="2026-03-08T01:30:00-08:00",  # pre-transition (PST)
-        settled_at="2026-03-08T03:30:00-07:00",  # post-transition (PDT), 1h later
+        # Pacific civil date 2026-03-07 (lead_days=0, C2-consistent with its
+        # own target_date) -- decision made the evening before the
+        # transition; settled_at still crosses it.
+        decision_at="2026-03-07T20:00:00-08:00",  # pre-transition (PST)
+        settled_at="2026-03-08T03:30:00-07:00",  # post-transition (PDT)
     )
 
     evidence = build_walk_forward_evidence([_anchor_training_row(), test_row, spanning_row])
@@ -1985,3 +2086,330 @@ def test_default_embargo_days_constant_is_one() -> None:
     configurable default must actually be one day."""
 
     assert DEFAULT_EMBARGO_DAYS == 1
+
+
+# ---------------------------------------------------------------------------
+# Binding condition C3 (Task 2 review finding L4): the settled_at ==
+# min(test decision_at) boundary must be EXCLUDED (strict <), not just the
+# "settles strictly after" case already covered above.
+# ---------------------------------------------------------------------------
+
+
+def test_settlement_exactly_at_min_test_decision_at_is_excluded() -> None:
+    """A training case that settles at the EXACT SAME instant as the
+    fold's earliest test decision must still be excluded -- the
+    eligibility check (``_case_eligible_for_training``) is strict ``<``,
+    not ``<=``. Only "settles strictly after" had a pinned regression
+    before this; this pins the exact-equality boundary too."""
+
+    boundary_instant = "2026-06-25T15:00:00+00:00"
+    test_row = _case_row(target_date="2026-06-25", decision_at=boundary_instant)
+    exact_boundary_row = _case_row(
+        target_date="2026-06-20",
+        ticker="KXHIGHTSFO-TEST-BOUNDARY",
+        decision_at="2026-06-20T10:00:00+00:00",
+        settled_at=boundary_instant,  # settles at the EXACT test decision instant
+    )
+
+    evidence = build_walk_forward_evidence(
+        [_anchor_training_row(), test_row, exact_boundary_row]
+    )
+
+    fold = _fold_by_id(evidence, "KSFO:2026-06-25")
+    assert fold is not None
+    assert all(c.target_date.isoformat() != "2026-06-20" for c in fold.train)
+
+
+# ---------------------------------------------------------------------------
+# Binding condition C2 (Task 2 review finding L5): lead_days must be
+# consistent with the case's own decision_at/target_date before it can be
+# used for pooling cohorts -- a corrupt lead_days is a recorded skip, never
+# a silent mispool.
+# ---------------------------------------------------------------------------
+
+
+def test_lead_days_consistent_with_decision_and_target_is_accepted() -> None:
+    """Positive case: a row whose declared lead_days matches what its own
+    decision_at/target_date (Pacific civil days) imply loads normally."""
+
+    row = _case_row(
+        target_date="2026-06-25",
+        decision_at="2026-06-24T15:00:00+00:00",  # Pacific civil date 2026-06-24
+        lead_days=1,
+    )
+    result = load_research_cases([row])
+    assert len(result.cases) == 1
+    assert result.cases[0].lead_days == 1
+    assert result.skips == ()
+
+
+def test_lead_days_inconsistent_with_decision_and_target_is_skipped_with_a_recorded_reason() -> (
+    None
+):
+    """C2: a declared lead_days that does not match what decision_at/
+    target_date imply must be a recorded skip, not a silent mispool into
+    the wrong station/lead pooling cohort."""
+
+    row = _case_row(
+        target_date="2026-06-25",
+        decision_at="2026-06-24T15:00:00+00:00",  # implies lead_days=1
+        lead_days=3,  # declared inconsistently
+    )
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert len(result.skips) == 1
+    assert result.skips[0].reason == "lead_days_inconsistent_with_decision_and_target"
+
+
+def test_research_case_rejects_lead_days_inconsistent_with_decision_and_target_on_direct_construction() -> (
+    None
+):
+    """Defense in depth: ``ResearchCase`` itself refuses an internally
+    inconsistent lead_days even on direct construction, not just via the
+    loader (C2)."""
+
+    with pytest.raises(ValueError):
+        ResearchCase(
+            station_id="KSFO",
+            target_date=date(2026, 6, 25),
+            # Pacific civil date 2026-06-24 -- implies lead_days=1, not 3.
+            decision_at=datetime(2026, 6, 24, 15, 0, 0, tzinfo=timezone.utc),
+            settled_at=datetime(2026, 6, 26, 4, 0, 0, tzinfo=timezone.utc),
+            lead_days=3,
+            source_context_hash="abc",
+            baseline_mu=66.0,
+            baseline_sigma=3.0,
+            actual_high_f=67.0,
+        )
+
+
+def test_negative_computed_lead_days_is_still_rejected_as_invalid_lead_days() -> None:
+    """A row whose decision_at civil date is AFTER its own target_date (an
+    inherently anomalous case: deciding on a market after its own target
+    day) implies a negative lead_days via ``_case_row``'s own
+    auto-derivation -- still caught by the pre-existing non-negative
+    guard, before C2's consistency check is ever reached."""
+
+    row = _case_row(
+        target_date="2026-06-20",
+        decision_at="2026-06-22T15:00:00+00:00",  # Pacific civil date 2026-06-22 (after target)
+    )  # lead_days left at its auto-derived (here, negative) default
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert len(result.skips) == 1
+    assert result.skips[0].reason == "invalid_lead_days"
+
+
+# ---------------------------------------------------------------------------
+# Optional Google-conditioned challenger evidence loading (research-only
+# consumption of already-derived evidence; never backfilled from a raw
+# Google value -- see GoogleChallengerEvidence's docstring).
+# ---------------------------------------------------------------------------
+
+
+def test_row_with_no_google_fields_loads_with_no_google_evidence() -> None:
+    """The ordinary, expected state today: nothing yet writes durable
+    Google challenger evidence (Google Task 7's google_challenger_snapshots
+    has not landed), so a case has none -- not an error."""
+
+    result = load_research_cases([_case_row()])
+    assert len(result.cases) == 1
+    assert result.cases[0].google_evidence is None
+    assert result.skips == ()
+
+
+def test_row_with_valid_forecast_google_evidence_loads_it() -> None:
+    row = _case_row(
+        google_challenger_mu=67.2,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row])
+    assert len(result.cases) == 1
+    assert result.cases[0].google_evidence == GoogleChallengerEvidence(
+        mu=67.2, sigma=3.0, action=GOOGLE_CHALLENGER_FORECAST_ACTION
+    )
+
+
+def test_row_with_valid_block_google_evidence_loads_it_with_no_mu() -> None:
+    row = _case_row(
+        google_challenger_mu=None,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_BLOCK_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row])
+    assert len(result.cases) == 1
+    assert result.cases[0].google_evidence == GoogleChallengerEvidence(
+        mu=None, sigma=3.0, action=GOOGLE_CHALLENGER_BLOCK_ACTION
+    )
+
+
+def test_block_action_with_a_mu_present_is_rejected_as_invalid_google_evidence() -> None:
+    """A blocked action must never carry a tradeable mean -- present
+    together, that is a data-integrity problem, not usable evidence."""
+
+    row = _case_row(
+        google_challenger_mu=67.2,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_BLOCK_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert result.skips[0].reason == "invalid_google_evidence"
+
+
+def test_forecast_action_missing_mu_is_rejected_as_invalid_google_evidence() -> None:
+    row = _case_row(
+        google_challenger_mu=None,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert result.skips[0].reason == "invalid_google_evidence"
+
+
+def test_unrecognized_google_action_is_rejected() -> None:
+    row = _case_row(
+        google_challenger_mu=67.2,
+        google_challenger_sigma=3.0,
+        google_challenger_action="made_up_action",
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert result.skips[0].reason == "invalid_google_evidence"
+
+
+def test_unsupported_google_policy_version_is_rejected() -> None:
+    row = _case_row(
+        google_challenger_mu=67.2,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version="google-runtime-fixed-v2-not-yet-declared",
+    )
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert result.skips[0].reason == "invalid_google_evidence"
+
+
+def test_non_positive_google_sigma_is_rejected() -> None:
+    row = _case_row(
+        google_challenger_mu=67.2,
+        google_challenger_sigma=0.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row])
+    assert result.cases == ()
+    assert result.skips[0].reason == "invalid_google_evidence"
+
+
+def test_duplicate_rows_with_matching_google_evidence_collapse_normally() -> None:
+    """Two profile-duplicated rows sharing the same source content AND the
+    same Google evidence still collapse into one case, as Task 2 already
+    guarantees for every other field."""
+
+    shared = dict(
+        google_challenger_mu=67.2,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    row_a = _case_row(decision_at="2026-06-25T15:00:00+00:00", **shared)
+    row_b = _case_row(decision_at="2026-06-25T15:00:05+00:00", **shared)
+    result = load_research_cases([row_a, row_b])
+    assert len(result.cases) == 1
+    assert result.cases[0].google_evidence == GoogleChallengerEvidence(
+        mu=67.2, sigma=3.0, action=GOOGLE_CHALLENGER_FORECAST_ACTION
+    )
+
+
+def test_duplicate_rows_with_conflicting_google_evidence_is_skipped_with_a_recorded_reason() -> (
+    None
+):
+    """Two rows sharing one source_context_hash but disagreeing on Google
+    evidence is a data-integrity problem (same real-world scan, two
+    different derived challengers) -- skipped, never guessed at, matching
+    ``_reconcile_duplicates``'s existing treatment of every other field."""
+
+    row_a = _case_row(
+        decision_at="2026-06-25T15:00:00+00:00",
+        google_challenger_mu=67.2,
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    row_b = _case_row(
+        decision_at="2026-06-25T15:00:05+00:00",
+        google_challenger_mu=64.0,  # disagrees
+        google_challenger_sigma=3.0,
+        google_challenger_action=GOOGLE_CHALLENGER_FORECAST_ACTION,
+        google_challenger_policy_version=GOOGLE_CHALLENGER_POLICY_VERSION,
+    )
+    result = load_research_cases([row_a, row_b])
+    assert result.cases == ()
+    assert all(s.reason == "inconsistent_duplicate" for s in result.skips)
+    assert len(result.skips) == 2
+
+
+def test_google_evidence_row_matches_real_challenger_formula_output() -> None:
+    """Builds Google evidence from forecaster's actual frozen formula
+    (``google_runtime_blend.google_challenger``) instead of made-up
+    numbers, keeping the fixture honest. Calling it requires coercing
+    inputs to Python float -- its own ``_finite_float`` rejects anything
+    whose ``type(value) not in (int, float)``, including e.g. a
+    ``numpy.float64`` or a bare ``Decimal``."""
+
+    import sys
+
+    forecaster_root = str(Path(__file__).resolve().parents[2] / "forecaster")
+    sys.path.insert(0, forecaster_root)
+    try:
+        from google_runtime_blend import google_challenger
+    finally:
+        sys.path.remove(forecaster_root)
+
+    baseline_mu, baseline_sigma, google_high = 66.0, 3.0, 69.0  # gap=3F, under the 7F block
+    challenger = google_challenger(float(baseline_mu), float(baseline_sigma), float(google_high))
+    assert challenger.action == GOOGLE_CHALLENGER_FORECAST_ACTION
+
+    row = _case_row(
+        baseline_mu=baseline_mu,
+        baseline_sigma=baseline_sigma,
+        google_challenger_mu=challenger.mu,
+        google_challenger_sigma=challenger.sigma,
+        google_challenger_action=challenger.action,
+        google_challenger_policy_version=challenger.policy_version,
+    )
+    result = load_research_cases([row])
+    assert len(result.cases) == 1
+    assert result.cases[0].google_evidence == GoogleChallengerEvidence(
+        mu=challenger.mu, sigma=challenger.sigma, action=challenger.action
+    )
+
+
+def test_google_runtime_challenger_constants_match_forecaster() -> None:
+    """Parity lock for the constants ``research_walkforward.py`` duplicates
+    from ``forecaster/google_runtime_blend.py`` (see that module's own
+    docstring note on why it is a duplicate, not an import) -- same
+    convention ``test_cities_parity.py`` already established for
+    ``cities.py``."""
+
+    import sys
+
+    forecaster_root = str(Path(__file__).resolve().parents[2] / "forecaster")
+    sys.path.insert(0, forecaster_root)
+    try:
+        import google_runtime_blend
+    finally:
+        sys.path.remove(forecaster_root)
+
+    assert GOOGLE_CHALLENGER_POLICY_VERSION == google_runtime_blend.GOOGLE_CHALLENGER_POLICY_VERSION
+    assert GOOGLE_CHALLENGER_FORECAST_ACTION == google_runtime_blend.GOOGLE_CHALLENGER_FORECAST_ACTION
+    assert GOOGLE_CHALLENGER_BLOCK_ACTION == google_runtime_blend.GOOGLE_CHALLENGER_BLOCK_ACTION
+    assert GOOGLE_RUNTIME_CANDIDATE_KEY == google_runtime_blend.GOOGLE_CHALLENGER_POLICY_VERSION
