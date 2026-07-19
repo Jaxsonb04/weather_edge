@@ -208,10 +208,18 @@ def _budget_skip_reason(
 
     Never uses ``fetch_city_weather``'s ``dispatched_events`` -- reads the
     permanent ledger's reserve/complete counts directly. The hard daily and
-    monthly caps apply to every city, including SFO; only the soft ceiling
-    exempts SFO ("SFO capacity is reserved first" -- spec section 7.4), which
-    is how SFO keeps priority once completed+reserved events cross 7,800
-    while non-essential (non-SFO) refreshes stop.
+    monthly caps apply to every city, including SFO. The soft ceiling check
+    here exempts SFO from being pre-emptively SKIPPED, but this is not the
+    same as SFO keeping priority past it: ``GoogleUsageLedger.reserve_event``
+    unconditionally denies every reservation, SFO included, once
+    completed+reserved monthly events reach 7,800 -- there is no per-city
+    exemption at the ledger level. The practical effect of the exemption here
+    is bounded and small: SFO still attempts its bundle at the exact refresh
+    cycle where the ceiling is crossed, and the ledger denies each of those
+    reservations pre-dispatch (``reserve_event`` checks the ceiling before
+    any transport call), so at most one refresh cycle's worth of already-free
+    attempts is spent before the hard monthly/daily caps take over -- never a
+    paid Google API call.
     """
 
     if counts.daily_events + max_cost > usage.daily_budget:

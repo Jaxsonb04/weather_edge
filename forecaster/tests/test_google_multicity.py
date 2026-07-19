@@ -876,6 +876,7 @@ def test_http_error_with_key_bearing_message_is_sanitized(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+import google_paired_evidence
 import google_runtime_blend
 from google_runtime_blend import (
     challenger_from_runtime_high,
@@ -1229,11 +1230,22 @@ def test_challenger_from_runtime_high_forwards_the_fixed_formula():
 #
 # The challenger is research-only: nothing it computes may reach the live
 # SFO forecast path, LSTM/EMOS training, adaptive weights, MOS, residual
-# de-bias, or historical baseline scorecards. Today (Task 5) nothing wires
-# google_runtime_blend into any of those modules yet -- that wiring, if it
-# ever happens, is scoped to Task 7/8 under the plan's own explicit
-# research-shadow-only policy. This guard exists so that wiring cannot
-# happen silently/accidentally in some other change.
+# de-bias, or historical baseline scorecards. As of Task 7,
+# ``google_paired_evidence.py`` is the ONE forecaster-side module allowed to
+# import ``google_runtime_blend`` -- it composes the caller-supplied
+# permanent EMOS baseline with the ephemeral Google runtime store and
+# persists only derived mu/sigma/action evidence (never a raw Google
+# high/gap/response) into a small durable table; nothing in
+# ``_LIVE_AND_TRAINING_MODULES`` below may import EITHER module, and
+# ``google_paired_evidence.py`` itself must never import back into the live
+# or training path (mirrored by
+# ``test_google_paired_evidence_never_imports_the_live_or_training_path``
+# below). Trading-side code never imports either module directly -- it
+# reads the durable table ``google_paired_evidence.py`` writes via plain SQL,
+# the same way ``SfoForecasterAdapter`` reads every other forecaster-owned
+# table (the two projects deliberately do not import each other). This guard
+# exists so that wiring cannot happen silently/accidentally in some other
+# change.
 # ---------------------------------------------------------------------------
 
 
@@ -1284,10 +1296,39 @@ def test_google_runtime_blend_never_imports_the_live_or_training_path():
         assert forbidden not in source
 
 
+def test_google_paired_evidence_never_imports_the_live_or_training_path():
+    """Task 7's one legitimate ``google_runtime_blend`` consumer stays a leaf.
+
+    Mirrors ``test_google_runtime_blend_never_imports_the_live_or_training_path``:
+    ``google_paired_evidence.py`` composes the challenger with a
+    caller-supplied baseline and persists derived evidence, but it must never
+    itself reach into the live/training path it must stay isolated from.
+    """
+
+    source = Path(google_paired_evidence.__file__).read_text()
+    for forbidden in (
+        "blend_sources",
+        "blend_archive",
+        "blend_learners",
+        "emos_forecast",
+        "emos_recalibration",
+        "postproc_recalibration",
+        "postproc_models",
+        "recalibration_replay",
+        "forecast_backtest",
+        "forecast_postproc_backtest",
+        "forecast_scoring",
+        "sfo_kalshi_quant",
+    ):
+        assert forbidden not in source
+
+
 def test_no_live_or_training_module_imports_the_google_challenger():
     for path in _LIVE_AND_TRAINING_MODULES:
         assert path.is_file(), path
-        assert "google_runtime_blend" not in path.read_text()
+        source = path.read_text()
+        assert "google_runtime_blend" not in source
+        assert "google_paired_evidence" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -1559,11 +1600,14 @@ def test_hard_monthly_budget_stop_is_honored(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Soft-ceiling priority behavior: SFO keeps priority, non-SFO stops.
+# Soft-ceiling behavior: non-SFO is pre-skipped, SFO attempts and is then
+# denied by the shared ledger once the true ceiling is reached (T7-3: SFO
+# does NOT keep priority past 7,800 -- the ledger denies every reservation,
+# SFO included, at that point; see _budget_skip_reason's docstring).
 # ---------------------------------------------------------------------------
 
 
-def test_soft_ceiling_stops_non_sfo_but_sfo_keeps_priority(tmp_path):
+def test_soft_ceiling_stops_non_sfo_but_sfo_attempts_and_is_then_ledger_denied(tmp_path):
     usage = _usage_ledger(tmp_path, daily_budget=1000, monthly_budget=1000, soft_monthly_ceiling=3)
     runtime = _runtime_store(tmp_path)
     transport = _full_bundle_transport()
@@ -1580,9 +1624,12 @@ def test_soft_ceiling_stops_non_sfo_but_sfo_keeps_priority(tmp_path):
     )
 
     by_slug = {status.city_slug: status for status in report.cities}
-    # SFO is exempt from the orchestrator's soft-ceiling pre-check and is
-    # always attempted; the shared ledger still enforces the true ceiling
-    # once SFO's own bundle reaches it (a secondary safety net).
+    # SFO is exempt from the orchestrator's soft-ceiling PRE-CHECK (it is not
+    # pre-emptively skipped) and is always attempted; but that is not
+    # priority past the ceiling -- the shared ledger denies every
+    # reservation, SFO included, once the true ceiling is reached (here,
+    # mid-bundle: hourly still fits, daily does not), at zero API cost since
+    # GoogleUsageLedger.reserve_event denies before any transport call.
     assert by_slug["sfo"].attempted is True
     assert by_slug["sfo"].endpoints["hourly"] == "success"
     assert by_slug["sfo"].endpoints["daily"] == "budget_exceeded"
