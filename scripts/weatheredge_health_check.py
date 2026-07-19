@@ -90,6 +90,48 @@ LOCAL_RUNTIME_PLACEHOLDERS = {
     "forecaster/strategy_research.json",
 }
 
+# Task 8 item 4 (defense in depth): the authoritative gate is
+# sfo_kalshi_quant.publication's publish-time scan (which this script
+# cannot import -- it is deliberately zero-dependency, loaded standalone via
+# importlib.util in trading/tests/test_weatheredge_health_check.py), but a
+# local operator should see the same class of leak before ever running a
+# publish cycle. Kept in sync by hand with
+# trading/sfo_kalshi_quant/publication.py's _RAW_GOOGLE_FIELD_KEYS /
+# _RAW_GOOGLE_VALUE_PATTERNS -- deliberately excludes google_high_f/
+# sources.google.*, the pre-existing legacy SFO live blend's own derived
+# field (spec section 7.5: a known, accepted exception, not a new leak).
+RAW_GOOGLE_ARTIFACTS = (
+    "forecaster/trading_signal.json",
+    "forecaster/cities_data.json",
+    "forecaster/strategy_research.json",
+    "forecaster/forecast_data.json",
+    "forecaster/weather_story_data.json",
+    "forecaster/google_weather_cache.json",
+)
+
+RAW_GOOGLE_FIELD_KEYS = frozenset(
+    (
+        "highF",
+        "weatherCondition",
+        "maxTemperature",
+        "minTemperature",
+        "feelsLikeTemperature",
+        "temperatureChange",
+        "displayDateTime",
+        "forecastDays",
+        "forecastHours",
+        "currentConditionsHistory",
+        "iconBaseUri",
+        "nextPageToken",
+        "google_current_conditions",
+        "google_daily_forecast_highs",
+    )
+)
+RAW_GOOGLE_VALUE_PATTERNS = (
+    re.compile(r"weather\.googleapis\.com"),
+    re.compile(r"AIza[0-9A-Za-z_-]{35}"),
+)
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -226,6 +268,50 @@ def check_local_runtime_artifacts(root: Path) -> CheckResult:
     )
 
 
+def _raw_google_markers(value: object, *, path: str = "") -> list[str]:
+    hits: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            if key in RAW_GOOGLE_FIELD_KEYS:
+                hits.append(key_path)
+            hits.extend(_raw_google_markers(nested, path=key_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            hits.extend(_raw_google_markers(item, path=f"{path}[{index}]"))
+    elif isinstance(value, str):
+        for pattern in RAW_GOOGLE_VALUE_PATTERNS:
+            if pattern.search(value):
+                hits.append(path)
+                break
+    return hits
+
+
+def check_no_raw_google_content_in_public_artifacts(root: Path) -> CheckResult:
+    hits = []
+    for relative in RAW_GOOGLE_ARTIFACTS:
+        path = root / relative
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for marker in _raw_google_markers(payload):
+            hits.append(f"{relative} ({marker})")
+    if hits:
+        return CheckResult(
+            "raw Google content scan",
+            "FAIL",
+            "raw Google field(s) found in public artifacts: " + ", ".join(sorted(hits)),
+        )
+    return CheckResult(
+        "raw Google content scan",
+        "PASS",
+        "no raw Google API field markers found in tracked public artifacts",
+    )
+
+
 def check_git_state(root: Path) -> CheckResult:
     if (root / ".git").exists():
         return CheckResult("git repository state", "PASS", "local Git repository is initialized")
@@ -261,6 +347,7 @@ def run_checks(root: Path = PROJECT_ROOT) -> list[CheckResult]:
         check_local_secret_files(root),
         check_secret_patterns(root),
         check_local_runtime_artifacts(root),
+        check_no_raw_google_content_in_public_artifacts(root),
         check_git_state(root),
         check_optional_tools(root),
     ]
