@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
+
+from cities import CITIES, DEFAULT_CITY_SLUG
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,26 +74,49 @@ def test_forecaster_refresh_only_refreshes_forecast_state():
     assert "sync_forecaster_source.sh" in text
     assert "nws_ground_truth.py" in text
     assert "google_weather_cache.py" in text
-    assert "emos_forecast.py" in text
     assert "build_public_trading_signal.sh" not in text
     assert "build_strategy_research.sh" not in text
     assert "publish_forecaster_pages.sh" not in text
 
 
-def test_forecaster_refresh_updates_generic_truth_fail_soft_before_emos_serve():
+def test_sfo_refresh_unit_uses_the_cities_sfo_orchestrator_not_legacy_flags():
+    """T8-2 (Task 6 review): the legacy raw-writing `--refresh` SFO-only
+    fetch and the separate legacy no-flag compatibility-JSON rebuild must
+    never run alongside the new city-aware orchestrator -- exactly one
+    `google_weather_cache.py` invocation remains, using `--cities sfo`.
+    """
+    text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
+
+    assert "google_weather_cache.py --cities sfo" in text
+    assert "google_weather_cache.py --refresh" not in text
+    assert text.count("google_weather_cache.py") == 1
+
+
+def test_sfo_refresh_unit_does_not_duplicate_the_emos_baseline_serve():
+    """T8-3 (Task 6 review): `google_multicity_refresh._archive_baseline_first`
+    already runs `emos_forecast.py --serve-rolling --cities all` as a
+    subprocess BEFORE any Google fetch is attempted, every time
+    `google_weather_cache.py --cities ...` runs. A standalone
+    `emos_forecast.py` ExecStart in this same unit would call the identical
+    Open-Meteo serve-rolling pipeline a second time every cycle.
+    """
+    text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
+    exec_lines = [line for line in text.splitlines() if line.startswith("ExecStart=")]
+
+    assert not any("emos_forecast.py" in line for line in exec_lines)
+
+
+def test_forecaster_refresh_updates_generic_truth_before_the_cities_orchestrator():
     text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
     truth_refresh = (
         "ExecStart=-__FORECASTER_DIR__/.venv/bin/python "
         "__FORECASTER_DIR__/city_truth.py --db __FORECASTER_DIR__/weather.db "
         "--refresh --cities all"
     )
-    emos_serve = (
-        "ExecStart=-__FORECASTER_DIR__/.venv/bin/python "
-        "emos_forecast.py --serve-rolling --cities all"
-    )
+    orchestrator_call = "google_weather_cache.py --cities sfo"
 
     assert truth_refresh in text
-    assert text.index(truth_refresh) < text.index(emos_serve)
+    assert text.index(truth_refresh) < text.index(orchestrator_call)
 
 
 def test_operational_publish_service_runs_fast_builder_then_publisher():
@@ -609,3 +635,154 @@ def test_retired_forecaster_refresh_gate_is_absent():
     )
 
     assert result.returncode == 1, result.stdout
+
+
+# ---------------------------------------------------------------------------
+# T8-1 (Task 6 review, HIGH): a naive flip of the existing 38x/day
+# sfo-forecaster-refresh unit to `--cities all` would spend 61 events/cycle
+# and exhaust the 260/day hard cap by the 5th cycle, starving SFO for the
+# rest of the day. Resolution: SFO stays on the frequent unit (see the
+# sfo_refresh_unit tests above); the 14 non-SFO cities get their own
+# once-daily unit here.
+# ---------------------------------------------------------------------------
+
+
+def _non_sfo_slugs() -> list[str]:
+    return [city.slug for city in CITIES if city.slug != DEFAULT_CITY_SLUG]
+
+
+def test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily():
+    service = _read(AWS_DIR / "systemd" / "weatheredge-google-nonsfo-refresh.service.in")
+    timer = _read(AWS_DIR / "systemd" / "weatheredge-google-nonsfo-refresh.timer")
+
+    match = re.search(r"google_weather_cache\.py --cities (\S+)", service)
+    assert match is not None, service
+    configured = match.group(1).split(",")
+
+    # Drift guard: this list is a static ExecStart argument (systemd units
+    # cannot import cities.py), so if a city is ever added to or removed
+    # from CITIES this test fails until the unit is updated to match.
+    assert configured == _non_sfo_slugs()
+    assert "sfo" not in configured
+    assert len(configured) == 14
+
+    assert "OnCalendar=" in timer
+    # Exactly one calendar fire per day -- not the 38x/day SFO cadence.
+    assert timer.count("OnCalendar=") == 1
+    assert "Unit=weatheredge-google-nonsfo-refresh.service" in timer
+
+
+def test_google_nonsfo_refresh_budget_arithmetic_matches_the_documented_schedule():
+    service = _read(AWS_DIR / "systemd" / "weatheredge-google-nonsfo-refresh.service.in")
+    sfo_service = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
+
+    # The documented arithmetic (spec section 7.4) must be spelled out where
+    # an operator reading the unit will see it: SFO 38x/day x 5 events = 190,
+    # non-SFO 14 cities x 1x/day x 4 events = 56, total 246/day (7,626/31-day
+    # month) -- comfortably under the 260/day hard cap and 7,800/month soft
+    # ceiling.
+    assert "190" in sfo_service
+    assert "246" in service
+    assert "56" in service
+    assert "7,626" in service or "7626" in service
+
+
+def test_google_nonsfo_refresh_unit_is_installed_alongside_sfo_refresh():
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+
+    for script in (installer, notimers):
+        assert "weatheredge-google-nonsfo-refresh.service.in" in script
+        assert "weatheredge-google-nonsfo-refresh.timer" in script
+
+    assert "weatheredge-google-nonsfo-refresh.timer" in installer[installer.index("systemctl enable --now"):]
+
+
+# ---------------------------------------------------------------------------
+# Item 1 (Task 8 plan step 2): /run/weatheredge creation, ownership, and
+# cleanup via systemd tmpfiles.
+# ---------------------------------------------------------------------------
+
+
+def test_weatheredge_runtime_tmpfiles_entry_is_application_owned_and_protected():
+    tmpfiles = _read(AWS_DIR / "systemd" / "weatheredge-tmpfiles.conf")
+    lines = [line for line in tmpfiles.splitlines() if line.strip() and not line.startswith("#")]
+    assert len(lines) == 1
+    entry_type, path_field, mode, user, group, age = lines[0].split()
+    assert entry_type == "d"
+    assert path_field == "/run/weatheredge"
+    # Not group- or world-writable (google_weather_store.assert_runtime_path's
+    # documented requirement): the low two mode digits' write bits must be 0.
+    assert mode[-2] in "0145"  # group: no write bit (0,1,4,5 have bit2 unset)
+    assert mode[-1] in "0145"  # other: no write bit
+    assert user == "__APP_USER__"
+    assert group == "__APP_GROUP__"
+
+
+def test_weatheredge_runtime_tmpfiles_entry_is_installed():
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+
+    for script in (installer, notimers):
+        assert "weatheredge-tmpfiles.conf" in script
+        assert "/etc/tmpfiles.d/weatheredge.conf" in script
+        assert "systemd-tmpfiles --create" in script
+
+
+def test_weatheredge_tmpfiles_reset_behavior_is_documented_where_operators_will_see_it():
+    """tmpfs is recreated empty on every reboot, so /run/weatheredge and its
+    generation watermarks reset along with it -- expected, not a bug, but an
+    operator reading the purge unit or the tmpfiles entry needs to see this
+    stated plainly.
+    """
+    tmpfiles = _read(AWS_DIR / "systemd" / "weatheredge-tmpfiles.conf")
+    purge_service = _read(AWS_DIR / "systemd" / "weatheredge-google-runtime-purge.service.in")
+
+    assert "reboot" in tmpfiles.lower() or "reboot" in purge_service.lower()
+    assert "watermark" in tmpfiles.lower() or "watermark" in purge_service.lower()
+
+
+# ---------------------------------------------------------------------------
+# Plan Task 8 step 2: the startup purge/expiry service.
+# ---------------------------------------------------------------------------
+
+
+def test_google_runtime_purge_unit_is_installed_and_scheduled():
+    service = _read(AWS_DIR / "systemd" / "weatheredge-google-runtime-purge.service.in")
+    timer = _read(AWS_DIR / "systemd" / "weatheredge-google-runtime-purge.timer")
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+
+    assert "google_runtime_purge.py" in service
+    assert "Unit=weatheredge-google-runtime-purge.service" in timer
+    assert "OnCalendar=" in timer
+    for script in (installer, notimers):
+        assert "weatheredge-google-runtime-purge.service.in" in script
+        assert "weatheredge-google-runtime-purge.timer" in script
+    assert "weatheredge-google-runtime-purge.timer" in installer[installer.index("systemctl enable --now"):]
+
+
+def test_google_runtime_purge_service_does_not_sync_or_back_up_the_runtime_db():
+    """Plan Task 8 step 2: 'the runtime DB stays under /run with no
+    backup/sync unit'.
+    """
+    service = _read(AWS_DIR / "systemd" / "weatheredge-google-runtime-purge.service.in")
+
+    assert "backup" not in service.lower()
+    assert "sync" not in service.lower()
+    assert "s3" not in service.lower()
+
+
+# ---------------------------------------------------------------------------
+# Hard constraint: preserve the authoritative backup/restore gate. New
+# timers must be known to the quiesce/capture/restore contract, or a full
+# quiesce+restore cycle around a backup would silently leave them disabled.
+# ---------------------------------------------------------------------------
+
+
+def test_disable_systemd_timers_knows_about_every_installed_timer():
+    disable_script = _read(AWS_DIR / "disable_systemd_timers.sh")
+    installed_timers = sorted(path.name for path in (AWS_DIR / "systemd").glob("*.timer"))
+
+    for timer in installed_timers:
+        assert timer in disable_script, timer

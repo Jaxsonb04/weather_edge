@@ -1879,3 +1879,55 @@ def test_multicity_refresh_never_uses_fetch_city_weather():
     """
 
     assert "fetch_city_weather" not in _imported_names_from(gmr, source_module="google_api")
+
+
+# ---------------------------------------------------------------------------
+# T8-5 (Task 6 review): the on-disk compatibility JSON stays raw-free across
+# a full ``--cities all`` cycle, not just the two-city in-memory sample
+# above.
+# ---------------------------------------------------------------------------
+
+
+def test_google_weather_cache_json_is_raw_free_after_a_full_city_cycle(tmp_path):
+    """After a full 15-city refresh cycle, the on-disk compatibility JSON
+    that ``run_cli`` writes (``google_weather_cache.json`` in production)
+    must never carry a temperature/highF/condition value for ANY configured
+    city -- exercising every city, not only the two-city sample already
+    covered by ``test_compatibility_status_never_contains_raw_google_content``.
+    """
+
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    report = gmr.refresh_all_cities(
+        cities=CITIES,
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=_full_bundle_transport(),
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+    assert {status.city_slug for status in report.cities} == {city.slug for city in CITIES}
+    assert all(status.available for status in report.cities)
+
+    cache_path = tmp_path / "google_weather_cache.json"
+    google_api.write_json(cache_path, gmr.build_compatibility_status(report))
+    serialized = cache_path.read_text(encoding="utf-8")
+
+    for forbidden in (
+        "temperature",
+        "high_f",
+        "highF",
+        "condition",
+        "degrees",
+        "maxTemperature",
+        "minTemperature",
+        "feelsLikeTemperature",
+        "weatherCondition",
+        "forecastHours",
+        "forecastDays",
+        "currentConditionsHistory",
+        "displayDateTime",
+        TEST_KEY,
+    ):
+        assert forbidden not in serialized, forbidden
