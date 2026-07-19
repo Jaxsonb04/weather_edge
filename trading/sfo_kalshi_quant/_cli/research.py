@@ -93,6 +93,7 @@ def _print_report(report: dict, *, color: Color) -> None:
     coverage = report["fold_coverage"]
     replay = report["replay_completeness"]
     google_join = report["google_evidence_join"]
+    persistence = report["persistence"]
 
     print(
         color.cyan(
@@ -109,7 +110,8 @@ def _print_report(report: dict, *, color: Color) -> None:
     print(
         f"fold_coverage: folds={coverage['folds']} "
         f"unavailable={coverage['unavailable_folds']} "
-        f"skipped_rows={coverage['skipped_historical_rows']}"
+        f"skipped_rows={coverage['skipped_historical_rows']} "
+        f"skipped_row_loads={coverage['skipped_historical_row_load_count']}"
     )
     print(
         f"replay_completeness: paired_cases={replay['paired_case_count']} "
@@ -118,6 +120,11 @@ def _print_report(report: dict, *, color: Color) -> None:
     print(
         f"google_evidence_join: matched_rows={google_join['matched_row_count']} "
         f"vintage_mismatches={google_join['vintage_mismatch_count']}"
+    )
+    print(
+        f"persistence: persisted={persistence['persisted_fold_count']} "
+        f"pre_declaration_folds={persistence['pre_declaration_fold_count']} "
+        f"stale_evidence_folds={persistence['stale_evidence_fold_count']}"
     )
     print("")
     print(color.gray(kpi["label"]))
@@ -156,19 +163,22 @@ def cmd_research_evaluate(args: argparse.Namespace) -> int:
         return 2
 
     with store.connect() as conn:
-        rows = historical_rows_from_paper_store(conn, settlements=settlements)
+        load_result = historical_rows_from_paper_store(conn, settlements=settlements)
 
     run = run_research_evaluation(
         store,
         declaration=declaration,
-        historical_rows=rows,
+        historical_rows=load_result.rows,
         embargo_days=args.embargo_days,
         persist=True,
+        historical_row_skips=load_result.skips,
     )
     report = build_research_evaluation_report(run)
 
     if args.output:
-        Path(args.output).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
     _print_report(report, color=Color.from_no_color(args.no_color))
     return 0
@@ -190,17 +200,18 @@ def cmd_research_propose_target(args: argparse.Namespace) -> int:
         return 2
 
     with store.connect() as conn:
-        rows = historical_rows_from_paper_store(conn, settlements=settlements)
+        load_result = historical_rows_from_paper_store(conn, settlements=settlements)
 
     run = run_research_evaluation(
         store,
         declaration=declaration,
-        historical_rows=rows,
+        historical_rows=load_result.rows,
         embargo_days=args.embargo_days,
         # paper-only proposal authority never itself records new evidence
         # -- research-evaluate is exclusively responsible for "operating"
         # the evidence loop.
         persist=False,
+        historical_row_skips=load_result.skips,
     )
     report = build_research_evaluation_report(run)
     color = Color.from_no_color(args.no_color)

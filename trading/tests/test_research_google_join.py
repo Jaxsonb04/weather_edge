@@ -356,3 +356,16 @@ def test_a_row_that_cannot_be_canonicalized_is_passed_through_unchanged(store: P
 
     assert result.matched_row_count == 0
     assert result.rows == (malformed_row,)
+
+
+def test_join_restores_the_callers_row_factory(store: PaperStore) -> None:
+    # Cheap item: attach_google_challenger_evidence's own
+    # _best_snapshot_at_or_before must never leave a caller-supplied
+    # connection's own row_factory mutated for whatever the caller does
+    # with it afterward.
+    store.record_google_challenger_snapshot(_snapshot())
+    row = _row()
+    with store.connect() as conn:
+        assert conn.row_factory is None
+        attach_google_challenger_evidence([row], conn)
+        assert conn.row_factory is None

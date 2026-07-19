@@ -460,6 +460,11 @@ def build_research_evaluation_report(run: EvaluationRun) -> dict[str, Any]:
             "folds": len(run.walk_forward.folds),
             "unavailable_folds": len(run.walk_forward.unavailable),
             "skipped_historical_rows": len(run.walk_forward.skips),
+            # M-1: a sibling count -- rows a historical-row source (e.g.
+            # historical_rows_from_paper_store) itself dropped BEFORE they
+            # ever reached fold construction, never the same layer as
+            # skipped_historical_rows above (walk_forward.skips).
+            "skipped_historical_row_load_count": run.historical_row_skip_count,
         },
         "replay_completeness": {
             "paired_case_count": decision.paired_case_count,
@@ -511,5 +516,14 @@ def build_research_evaluation_report(run: EvaluationRun) -> dict[str, Any]:
         "persistence": {
             "persisted_fold_count": run.persisted_fold_count,
             "skipped_fold_persist_reasons": list(run.skipped_fold_persist_reasons),
+            # CRITICAL-1: folds excluded from this run's own verdict
+            # because their target day is at or before declaration's own
+            # Pacific declaration day.
+            "pre_declaration_fold_count": run.pre_declaration_fold_count,
+            "pre_declaration_fold_ids": list(run.pre_declaration_fold_ids),
+            # M-2: an already-recorded, immutable fold whose freshly
+            # recomputed payload no longer matches its stored row.
+            "stale_evidence_fold_count": run.stale_evidence_fold_count,
+            "stale_evidence_fold_ids": list(run.stale_evidence_fold_ids),
         },
     }

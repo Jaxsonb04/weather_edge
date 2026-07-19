@@ -151,6 +151,27 @@ def test_research_evaluate_declares_and_persists_evidence(db_paths, tmp_path, ca
     assert count >= 1
 
 
+def test_research_evaluate_creates_parent_directories_for_output(db_paths, tmp_path) -> None:
+    # Cheap item: research-propose-target already does this
+    # (output_path.parent.mkdir(parents=True, exist_ok=True)) --
+    # research-evaluate must too, rather than crashing on a nonexistent
+    # output directory.
+    db_path, forecaster_root = db_paths
+    output_path = tmp_path / "nested" / "report-dir" / "report.json"
+    assert not output_path.parent.exists()
+    argv = _base_argv(db_path, forecaster_root) + [
+        "research-evaluate",
+        "--hypothesis-family", "gaussian-pit-station-lead",
+        "--candidate-key", "gaussian-pit-station-lead-v1",
+        "--candidate-version", "v1",
+        "--declare",
+        "--output", str(output_path),
+    ]
+    exit_code = cli.main(argv)
+    assert exit_code == 0
+    assert output_path.exists()
+
+
 def test_research_evaluate_second_declare_with_different_tolerance_is_rejected(
     db_paths, capsys
 ) -> None:

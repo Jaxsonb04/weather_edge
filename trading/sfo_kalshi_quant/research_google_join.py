@@ -60,6 +60,12 @@ takes a caller-supplied ``sqlite3.Connection`` (J1) and is otherwise a
 pure function of ``rows``/query results: the same set of rows, in any
 order, against the same snapshot table content, always produces the same
 joined output.
+
+Cheap repairs (2026-07-19): ``_best_snapshot_at_or_before`` now saves and
+restores the caller-supplied connection's own ``row_factory`` instead of
+leaving it mutated; an unused, never-read ``snapshot_cache`` dict in
+``attach_google_challenger_evidence`` (populated but never consulted) has
+been removed.
 """
 
 from __future__ import annotations
@@ -178,13 +184,20 @@ def _best_snapshot_at_or_before(
     but still valid, ISO8601 timestamp formats can never silently
     misorder."""
 
-    conn.row_factory = sqlite3.Row
-    candidates = conn.execute(
-        "SELECT issued_at, baseline_mu, baseline_sigma, challenger_mu, "
-        "challenger_sigma, action FROM google_challenger_snapshots "
-        "WHERE station_id = ? AND target_date = ? AND policy_version = ?",
-        (station_id, target_date, policy_version),
-    ).fetchall()
+    # conn is caller-supplied -- save and restore its own row_factory
+    # rather than leaving it mutated for whatever the caller does with the
+    # connection afterward.
+    previous_row_factory = conn.row_factory
+    try:
+        conn.row_factory = sqlite3.Row
+        candidates = conn.execute(
+            "SELECT issued_at, baseline_mu, baseline_sigma, challenger_mu, "
+            "challenger_sigma, action FROM google_challenger_snapshots "
+            "WHERE station_id = ? AND target_date = ? AND policy_version = ?",
+            (station_id, target_date, policy_version),
+        ).fetchall()
+    finally:
+        conn.row_factory = previous_row_factory
 
     best_row: sqlite3.Row | None = None
     best_issued_at: datetime | None = None
@@ -217,7 +230,6 @@ def attach_google_challenger_evidence(
 
     attachments: dict[str, dict[str, object]] = {}
     skips: list[GoogleJoinSkip] = []
-    snapshot_cache: dict[tuple[str, str], sqlite3.Row | None] = {}
 
     for source_hash, indices in groups.items():
         context = contexts[source_hash]
@@ -232,9 +244,6 @@ def attach_google_challenger_evidence(
             # to join against here, so this group is left untouched.
             continue
 
-        cache_key = (station_id, target_date)
-        if cache_key not in snapshot_cache:
-            snapshot_cache[cache_key] = None
         best = _best_snapshot_at_or_before(
             conn,
             station_id=station_id,

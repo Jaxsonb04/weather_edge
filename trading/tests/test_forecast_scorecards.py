@@ -314,8 +314,34 @@ def test_report_publishes_fold_coverage_and_replay_completeness() -> None:
     report = build_research_evaluation_report(_evaluation_run())
     assert report["fold_coverage"] == {
         "folds": 0, "unavailable_folds": 0, "skipped_historical_rows": 0,
+        "skipped_historical_row_load_count": 0,
     }
     assert report["replay_completeness"]["paired_case_count"] == 0
+
+
+def test_report_publishes_the_historical_row_load_skip_count() -> None:
+    # M-1: a sibling count alongside skipped_historical_rows (a DIFFERENT,
+    # later skip layer) -- rows a historical-row source dropped before
+    # they ever reached fold construction.
+    run = _evaluation_run(historical_row_skip_count=3)
+    report = build_research_evaluation_report(run)
+    assert report["fold_coverage"]["skipped_historical_row_load_count"] == 3
+
+
+def test_report_publishes_pre_declaration_and_stale_evidence_persistence_diagnostics() -> None:
+    run = _evaluation_run(
+        pre_declaration_fold_count=2,
+        pre_declaration_fold_ids=("KSFO:2026-01-01", "KSFO:2026-01-02"),
+        stale_evidence_fold_count=1,
+        stale_evidence_fold_ids=("KSFO:2026-01-03",),
+    )
+    report = build_research_evaluation_report(run)
+    assert report["persistence"]["pre_declaration_fold_count"] == 2
+    assert report["persistence"]["pre_declaration_fold_ids"] == [
+        "KSFO:2026-01-01", "KSFO:2026-01-02",
+    ]
+    assert report["persistence"]["stale_evidence_fold_count"] == 1
+    assert report["persistence"]["stale_evidence_fold_ids"] == ["KSFO:2026-01-03"]
 
 
 def test_report_publishes_adjusted_promotion_gate_verdict() -> None:
