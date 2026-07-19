@@ -79,6 +79,51 @@ def test_all_and_only_operational_services_alert_without_recursion() -> None:
         assert "/etc/systemd/system/sfo-alert@.service" in installer
 
 
+def test_dataset_lock_retry_budget_is_coupled_to_service_deadline_and_documented() -> None:
+    service = (SYSTEMD_DIR / "sfo-dataset-backfill.service.in").read_text()
+    script = (AWS_DIR / "run_dataset_backfill.sh").read_text()
+    datasets = (ROOT / "trading" / "sfo_kalshi_quant" / "datasets.py").read_text()
+    env_example = (AWS_DIR / "sfo-weather.env.example").read_text()
+
+    service_timeout = int(
+        next(line.split("=", 1)[1] for line in service.splitlines() if line.startswith("TimeoutStartSec="))
+    )
+    script_timeout = int(
+        next(
+            line.split("=", 1)[1]
+            for line in script.splitlines()
+            if line.startswith("DATASET_SERVICE_TIMEOUT_SECONDS=")
+        )
+    )
+    service_headroom = int(
+        next(
+            line.split("=", 1)[1]
+            for line in script.splitlines()
+            if line.startswith("DATASET_SERVICE_HEADROOM_SECONDS=")
+        )
+    )
+    shell_busy_timeout_ms = int(
+        next(
+            line.split("=", 1)[1]
+            for line in script.splitlines()
+            if line.startswith("SQLITE_BUSY_TIMEOUT_MILLISECONDS=")
+        )
+    )
+    store_busy_timeout_ms = int(
+        next(
+            line.split("=", 1)[1].replace("_", "")
+            for line in datasets.splitlines()
+            if line.startswith("DATASET_SQLITE_BUSY_TIMEOUT_MILLISECONDS =")
+        )
+    )
+
+    assert script_timeout == service_timeout == 1800
+    assert service_headroom == 1200
+    assert shell_busy_timeout_ms == store_busy_timeout_ms == 30000
+    assert "MAX_LOCK_RETRY_BUDGET_SECONDS=$((DATASET_SERVICE_TIMEOUT_SECONDS - DATASET_SERVICE_HEADROOM_SECONDS))" in script
+    assert "SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS=600" in env_example
+
+
 def test_alert_script_posts_json_without_url_in_arguments(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -224,8 +269,34 @@ def _fake_backfill_python(path: Path) -> None:
 import os, sys
 args = sys.argv[1:]
 with open(os.environ['CALL_LOG'], 'a') as stream: stream.write(' '.join(args) + '\\n')
+def advance_fake_monotonic(milliseconds):
+    state_path = os.environ.get('FAKE_MONOTONIC_STATE')
+    if not state_path: return
+    try: current = int(open(state_path).read())
+    except (FileNotFoundError, ValueError): current = 0
+    with open(state_path, 'w') as stream: stream.write(str(current + milliseconds))
+if args[:1] == ['-c']:
+    if 'time.monotonic_ns' in args[1]:
+        state_path = os.environ.get('FAKE_MONOTONIC_STATE')
+        if state_path:
+            try: print(int(open(state_path).read()))
+            except (FileNotFoundError, ValueError): print(0)
+        else:
+            import time
+            print(time.monotonic_ns() // 1_000_000)
+    else:
+        print(os.environ.get('FAKE_DATE', '2026-07-11'))
+    raise SystemExit(0)
 if 'dataset-backfill' in args:
     source = args[args.index('--source') + 1]
+    deadline_log = os.environ.get('FAKE_RETRY_DEADLINE_LOG')
+    if deadline_log:
+        deadline = os.environ.get('SFO_DATASET_LOCK_RETRY_DEADLINE_MILLISECONDS', '<unset>')
+        with open(deadline_log, 'a') as stream: stream.write(source + ':' + deadline + '\\n')
+    if source in os.environ.get('LOCK_ALWAYS_SOURCES', '').split(','):
+        advance_fake_monotonic(int(os.environ.get('FAKE_LOCK_ELAPSED_MILLISECONDS', '0')))
+        print('sqlite3.OperationalError: database is locked', file=sys.stderr)
+        raise SystemExit(75)
     if source in os.environ.get('LOCK_ONCE_SOURCES', '').split(','):
         marker = os.environ['LOCK_ONCE_MARKER'] + '-' + source
         if not os.path.exists(marker):
@@ -234,8 +305,6 @@ if 'dataset-backfill' in args:
             raise SystemExit(75)
     if source in os.environ.get('FAIL_SOURCES', '').split(','): raise SystemExit(11)
 if 'dataset-research' in args and os.environ.get('FAIL_RESEARCH') == '1': raise SystemExit(12)
-if args[:1] == ['-c']:
-    print(os.environ.get('FAKE_DATE', '2026-07-11'))
 """,
     )
 
@@ -315,6 +384,24 @@ def test_backfill_rejects_unsafe_retry_delay_before_work(
     assert not (tmp_path / "calls").exists()
 
 
+@pytest.mark.parametrize(
+    "retry_budget",
+    ["00", "060", "601", "999999999999999999999999999999999999", "-1", "1.0", "infinity"],
+)
+def test_backfill_rejects_unsafe_retry_budget_before_work(
+    tmp_path: Path, retry_budget: str
+) -> None:
+    result = _backfill_result(
+        tmp_path,
+        "good",
+        SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS=retry_budget,
+    )
+
+    assert result.returncode == 2
+    assert "SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS" in result.stderr
+    assert not (tmp_path / "calls").exists()
+
+
 def test_backfill_retries_a_transient_sqlite_lock_without_partial_failure(tmp_path: Path) -> None:
     marker = tmp_path / "lock-once"
     result = _backfill_result(
@@ -329,6 +416,69 @@ def test_backfill_retries_a_transient_sqlite_lock_without_partial_failure(tmp_pa
     calls = (tmp_path / "calls").read_text()
     assert calls.count("dataset-backfill") == 2
     assert calls.count("dataset-research") == 1
+
+
+def test_backfill_zero_lock_retry_budget_fails_without_retrying(tmp_path: Path) -> None:
+    source = "open-meteo-previous-runs"
+    result = _backfill_result(
+        tmp_path,
+        source,
+        LOCK_ALWAYS_SOURCES=source,
+        SFO_DATASET_LOCK_RETRY_ATTEMPTS="10",
+        SFO_DATASET_LOCK_RETRY_DELAY_SECONDS="0",
+        SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS="0",
+    )
+
+    assert result.returncode == 1
+    calls = (tmp_path / "calls").read_text()
+    assert calls.count("dataset-backfill") == 1
+    assert calls.count("dataset-research") == 1
+    assert "global SQLite lock retry budget exhausted" in result.stderr
+
+
+def test_backfill_lock_retry_budget_is_shared_across_all_sources(tmp_path: Path) -> None:
+    sources = ",".join(f"locked-{index}" for index in range(8))
+    monotonic_state = tmp_path / "monotonic-milliseconds"
+    monotonic_state.write_text("0")
+    sleep_log = tmp_path / "sleeps"
+    deadline_log = tmp_path / "retry-deadlines"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(
+        bin_dir / "sleep",
+        f"""#!{sys.executable}
+import os, sys
+state_path = os.environ['FAKE_MONOTONIC_STATE']
+current = int(open(state_path).read())
+delay_ms = round(float(sys.argv[1]) * 1000)
+with open(state_path, 'w') as stream: stream.write(str(current + delay_ms))
+with open(os.environ['FAKE_SLEEP_LOG'], 'a') as stream: stream.write(sys.argv[1] + '\\n')
+""",
+    )
+
+    result = _backfill_result(
+        tmp_path,
+        sources,
+        LOCK_ALWAYS_SOURCES=sources,
+        FAKE_LOCK_ELAPSED_MILLISECONDS="30000",
+        FAKE_MONOTONIC_STATE=str(monotonic_state),
+        FAKE_RETRY_DEADLINE_LOG=str(deadline_log),
+        FAKE_SLEEP_LOG=str(sleep_log),
+        PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        SFO_DATASET_LOCK_RETRY_ATTEMPTS="10",
+        SFO_DATASET_LOCK_RETRY_DELAY_SECONDS="300",
+        SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS="600",
+    )
+
+    assert result.returncode == 1
+    calls = (tmp_path / "calls").read_text()
+    assert calls.count("dataset-backfill") == 9
+    assert calls.count("dataset-research") == 1
+    assert sleep_log.read_text().splitlines() == ["300"]
+    deadlines = deadline_log.read_text().splitlines()
+    assert deadlines[:2] == ["locked-0:<unset>", "locked-0:600000"]
+    assert all(deadline.endswith(":<unset>") for deadline in deadlines[2:])
+    assert "global SQLite lock retry budget exhausted" in result.stderr
 
 
 def test_backfill_all_fail_and_research_failure_exit_nonzero(tmp_path: Path) -> None:

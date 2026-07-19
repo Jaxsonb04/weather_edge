@@ -22,6 +22,28 @@ def test_cli_reports_sqlite_lock_as_retryable_tempfail(monkeypatch, capsys) -> N
     assert "temporary sqlite lock: database is locked" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "database table is locked: dataset_runs",
+        "database schema is locked: main",
+    ],
+)
+def test_cli_retries_suffixed_legacy_sqlite_lock_messages(
+    monkeypatch, capsys, message: str
+) -> None:
+    from sfo_kalshi_quant import cli
+
+    def locked(_args) -> int:
+        raise sqlite3.OperationalError(message)
+
+    parser = SimpleNamespace(parse_args=lambda _argv: SimpleNamespace(func=locked))
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+
+    assert cli.main([]) == 75
+    assert f"temporary sqlite lock: {message}" in capsys.readouterr().err
+
+
 def test_cli_does_not_retry_deceptive_non_lock_operational_error(
     monkeypatch, capsys
 ) -> None:

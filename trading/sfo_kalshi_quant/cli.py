@@ -351,11 +351,16 @@ def _is_retryable_sqlite_lock(exc: sqlite3.OperationalError) -> bool:
     # Older Python/SQLite combinations may not expose sqlite_errorcode. Keep
     # that compatibility path deliberately narrow so unrelated SQL mentioning
     # a column or table named "locked" remains fail-fast.
-    return str(exc).strip().casefold() in {
+    message = str(exc).strip().casefold()
+    legacy_lock_messages = {
         "database is locked",
         "database table is locked",
         "database schema is locked",
     }
+    return any(
+        message == lock_message or message.startswith(f"{lock_message}: ")
+        for lock_message in legacy_lock_messages
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -49,6 +49,19 @@ def test_dataset_store_releases_each_write_connection_without_gc(tmp_path, monke
             conn.execute("SELECT 1")
 
 
+def test_dataset_store_clamps_busy_wait_to_expired_retry_deadline(tmp_path, monkeypatch):
+    store = DatasetStore(tmp_path / "dataset.db")
+    monkeypatch.setenv("SFO_DATASET_LOCK_RETRY_DEADLINE_MILLISECONDS", "0")
+
+    conn = store.connect()
+    try:
+        busy_timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert busy_timeout_ms == 0
+
+
 def test_parse_noaa_isd_row_converts_encoded_units():
     row = {
         "STATION": "72494023234",

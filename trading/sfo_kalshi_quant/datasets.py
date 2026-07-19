@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -24,6 +26,7 @@ KSFO_ISD_STATION = "72494023234"
 KSFO_ASOS_STATION = "SFO"
 KSFO_LATITUDE = 37.62
 KSFO_LONGITUDE = -122.38
+DATASET_SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 OPEN_METEO_HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
@@ -195,9 +198,15 @@ class DatasetStore:
         # source or, worse, dropping a monitor/scan tick. Mirror PaperStore.connect
         # so every writer shares the same WAL + busy_timeout regime and waits
         # instead of failing.
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        busy_timeout_ms = DATASET_SQLITE_BUSY_TIMEOUT_MILLISECONDS
+        retry_deadline_ms = os.getenv("SFO_DATASET_LOCK_RETRY_DEADLINE_MILLISECONDS", "")
+        if retry_deadline_ms.isascii() and retry_deadline_ms.isdigit():
+            remaining_ms = int(retry_deadline_ms) - time.monotonic_ns() // 1_000_000
+            busy_timeout_ms = max(0, min(busy_timeout_ms, remaining_ms))
+
+        conn = sqlite3.connect(self.db_path, timeout=busy_timeout_ms / 1000)
         try:
-            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
         except sqlite3.DatabaseError:
