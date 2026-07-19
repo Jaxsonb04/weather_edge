@@ -1288,3 +1288,547 @@ def test_no_live_or_training_module_imports_the_google_challenger():
     for path in _LIVE_AND_TRAINING_MODULES:
         assert path.is_file(), path
         assert "google_runtime_blend" not in path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Task 6: budget-safe 15-city refresh orchestration.
+# ---------------------------------------------------------------------------
+
+import ast
+
+import google_multicity_refresh as gmr
+from weather_cache_config import (
+    CURRENT_API_URL,
+    DAILY_API_URL,
+    GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
+    GOOGLE_WEATHER_SOFT_MONTHLY_CEILING,
+    HOURLY_API_URL,
+)
+
+
+def _noop_baseline():
+    return None
+
+
+def _hourly_page_response(url, *, temp_f=65.0):
+    """Deterministically serve exactly 3 hourly pages per city."""
+
+    if "pageToken=p2" in url:
+        return _Response(
+            _hourly_payload([_hour(TEST_NOW + timedelta(hours=2), temp_f)], next_token="p3")
+        )
+    if "pageToken=p3" in url:
+        return _Response(_hourly_payload([_hour(TEST_NOW + timedelta(hours=3), temp_f)]))
+    return _Response(
+        _hourly_payload([_hour(TEST_NOW + timedelta(hours=1), temp_f)], next_token="p2")
+    )
+
+
+def _full_bundle_transport(*, fail=None):
+    """A transport fake that serves hourly/daily/current for every city.
+
+    ``fail`` is an optional ``(city_slug, endpoint)`` pair whose request
+    raises a transport error -- every other city/endpoint still succeeds,
+    exercising per-city and per-endpoint isolation.
+    """
+
+    calls = []
+
+    def transport(url, timeout=20):
+        calls.append(url)
+        if fail is not None:
+            city_slug, endpoint = fail
+            failing_city = get_city(city_slug)
+            endpoint_url = {
+                "hourly": HOURLY_API_URL,
+                "daily": DAILY_API_URL,
+                "current": CURRENT_API_URL,
+            }[endpoint]
+            if url.startswith(endpoint_url) and (
+                f"location.latitude={failing_city.latitude:.4f}" in url
+            ):
+                raise URLError("simulated transport failure")
+        if url.startswith(HOURLY_API_URL):
+            return _hourly_page_response(url)
+        if url.startswith(DAILY_API_URL):
+            return _Response(_daily_payload([("2026-07-19", 70.0)]))
+        if url.startswith(CURRENT_API_URL):
+            return _Response(_current_payload(65.0))
+        raise AssertionError(f"unexpected Google Weather URL: {url}")
+
+    transport.calls = calls
+    return transport
+
+
+# ---------------------------------------------------------------------------
+# Plan Step 1: budget arithmetic.
+# ---------------------------------------------------------------------------
+
+
+def test_sfo_bundle_cost_matches_documented_190_per_day():
+    assert gmr.SFO_BUNDLE_MAX_EVENTS == 5
+    assert 38 * gmr.SFO_BUNDLE_MAX_EVENTS == 190
+    assert 190 * 31 == 5890
+
+
+def test_non_sfo_bundle_cost_matches_documented_56_per_day():
+    assert gmr.NON_SFO_BUNDLE_MAX_EVENTS == 4
+    assert 14 * gmr.NON_SFO_BUNDLE_MAX_EVENTS == 56
+    assert 56 * 31 == 1736
+
+
+def test_total_daily_and_monthly_budget_matches_documented_schedule():
+    assert 190 + 56 == 246
+    assert 5890 + 1736 == 7626
+
+
+def test_soft_ceiling_reserves_two_hundred_events_under_the_hard_monthly_cap():
+    assert GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET == 8000
+    assert GOOGLE_WEATHER_SOFT_MONTHLY_CEILING == 7800
+    assert GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET - GOOGLE_WEATHER_SOFT_MONTHLY_CEILING == 200
+
+
+# ---------------------------------------------------------------------------
+# SFO priority ordering.
+# ---------------------------------------------------------------------------
+
+
+def test_sfo_is_always_first_regardless_of_input_order():
+    ordered = gmr._priority_order(tuple(reversed(CITIES)), priority_hints=None)
+    assert ordered[0].slug == "sfo"
+    assert {city.slug for city in ordered} == {city.slug for city in CITIES}
+
+
+def test_default_priority_order_falls_back_to_configured_market_volume_order():
+    ordered = gmr._priority_order(CITIES, priority_hints=None)
+    non_sfo_order = [city.slug for city in ordered if city.slug != "sfo"]
+    expected_order = [city.slug for city in CITIES if city.slug != "sfo"]
+    assert non_sfo_order == expected_order
+
+
+def test_active_exposure_hint_overrides_market_volume_order():
+    # Denver is last by configured market volume; a strong exposure hint
+    # must still promote it ahead of every other non-SFO city.
+    hints = {"den": gmr.CityPriorityHint(active_exposure=1000.0)}
+    ordered = gmr._priority_order(CITIES, priority_hints=hints)
+    non_sfo_order = [city.slug for city in ordered if city.slug != "sfo"]
+    assert non_sfo_order[0] == "den"
+
+
+def test_soonest_close_breaks_ties_before_market_volume_order():
+    hints = {
+        "den": gmr.CityPriorityHint(soonest_close_at=TEST_NOW + timedelta(hours=1)),
+        "mia": gmr.CityPriorityHint(soonest_close_at=TEST_NOW + timedelta(hours=5)),
+    }
+    ordered = gmr._priority_order(CITIES, priority_hints=hints)
+    non_sfo_order = [city.slug for city in ordered if city.slug != "sfo"]
+    assert non_sfo_order.index("den") < non_sfo_order.index("mia")
+
+
+def test_oldest_corroboration_breaks_ties_before_market_volume_order():
+    hints = {
+        "den": gmr.CityPriorityHint(corroboration_age_seconds=10_000.0),
+        "mia": gmr.CityPriorityHint(corroboration_age_seconds=10.0),
+    }
+    ordered = gmr._priority_order(CITIES, priority_hints=hints)
+    non_sfo_order = [city.slug for city in ordered if city.slug != "sfo"]
+    assert non_sfo_order.index("den") < non_sfo_order.index("mia")
+
+
+# ---------------------------------------------------------------------------
+# Per-city and per-endpoint failure isolation.
+# ---------------------------------------------------------------------------
+
+
+def test_one_city_failure_leaves_the_other_fourteen_intact(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport(fail=("lax", "hourly"))
+
+    report = gmr.refresh_all_cities(
+        cities=CITIES,
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    assert len(report.cities) == len(CITIES)
+    by_slug = {status.city_slug: status for status in report.cities}
+
+    failing = by_slug["lax"]
+    assert failing.attempted is True
+    assert failing.endpoints["hourly"] == "failed"
+    assert failing.error_kind == "hourly"
+    # lax's daily fetch is independently isolated from its hourly failure.
+    assert failing.endpoints["daily"] == "success"
+
+    for city in CITIES:
+        if city.slug == "lax":
+            continue
+        status = by_slug[city.slug]
+        assert status.attempted is True, city.slug
+        assert status.skipped_reason is None, city.slug
+        assert status.available is True, city.slug
+        assert all(outcome == "success" for outcome in status.endpoints.values()), city.slug
+
+
+def test_google_weather_budget_exceeded_during_a_bundle_is_recorded_not_raised(tmp_path):
+    usage = _usage_ledger(tmp_path, daily_budget=1000, monthly_budget=1000, soft_monthly_ceiling=3)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport()
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"),),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    status = report.cities[0]
+    assert status.endpoints["hourly"] == "success"
+    # SFO's own bundle exceeds a 2-event soft ceiling mid-flight; the ledger
+    # itself blocks the remaining reservations and the orchestrator records
+    # (never raises) the outcome.
+    assert status.endpoints["daily"] == "budget_exceeded"
+    assert status.error_kind == "budget"
+
+
+# ---------------------------------------------------------------------------
+# Hard budget stop: honored, with clean partial completion.
+# ---------------------------------------------------------------------------
+
+
+def test_hard_daily_budget_stop_leaves_partial_cities_completed_cleanly(tmp_path):
+    usage = _usage_ledger(tmp_path, daily_budget=13, monthly_budget=1000, soft_monthly_ceiling=900)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport()
+    # Market-volume order among these three (excluding sfo) is mia, lax, chi.
+    cities = (get_city("sfo"), get_city("chi"), get_city("lax"), get_city("mia"))
+
+    report = gmr.refresh_all_cities(
+        cities=cities,
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    by_slug = {status.city_slug: status for status in report.cities}
+    # sfo (5) + mia (4) + lax (4) = 13 == the daily budget: both fit.
+    for slug in ("sfo", "mia", "lax"):
+        assert by_slug[slug].attempted is True, slug
+        assert by_slug[slug].available is True, slug
+        assert by_slug[slug].skipped_reason is None, slug
+    # chi: 13 + 4 = 17 > 13 -> the hard daily stop is honored; chi is never
+    # attempted (no partial reservation, no wasted budget).
+    assert by_slug["chi"].attempted is False
+    assert by_slug["chi"].skipped_reason == "daily_budget"
+    assert by_slug["chi"].endpoints == {}
+    assert report.daily_events == 13
+
+
+def test_hard_monthly_budget_stop_is_honored(tmp_path):
+    usage = _usage_ledger(tmp_path, daily_budget=1000, monthly_budget=8, soft_monthly_ceiling=8)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport()
+    cities = (get_city("sfo"), get_city("mia"))
+
+    report = gmr.refresh_all_cities(
+        cities=cities,
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    by_slug = {status.city_slug: status for status in report.cities}
+    assert by_slug["sfo"].attempted is True
+    # sfo (5) + mia (4) = 9 > monthly_budget (8): mia never attempted.
+    assert by_slug["mia"].attempted is False
+    assert by_slug["mia"].skipped_reason == "monthly_budget"
+
+
+# ---------------------------------------------------------------------------
+# Soft-ceiling priority behavior: SFO keeps priority, non-SFO stops.
+# ---------------------------------------------------------------------------
+
+
+def test_soft_ceiling_stops_non_sfo_but_sfo_keeps_priority(tmp_path):
+    usage = _usage_ledger(tmp_path, daily_budget=1000, monthly_budget=1000, soft_monthly_ceiling=3)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport()
+    cities = (get_city("sfo"), get_city("mia"))
+
+    report = gmr.refresh_all_cities(
+        cities=cities,
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    by_slug = {status.city_slug: status for status in report.cities}
+    # SFO is exempt from the orchestrator's soft-ceiling pre-check and is
+    # always attempted; the shared ledger still enforces the true ceiling
+    # once SFO's own bundle reaches it (a secondary safety net).
+    assert by_slug["sfo"].attempted is True
+    assert by_slug["sfo"].endpoints["hourly"] == "success"
+    assert by_slug["sfo"].endpoints["daily"] == "budget_exceeded"
+    # Non-SFO is subject to the soft ceiling and is skipped before it ever
+    # attempts a reservation -- the "non-essential refreshes stop" behavior.
+    assert by_slug["mia"].attempted is False
+    assert by_slug["mia"].skipped_reason == "soft_ceiling"
+
+
+# ---------------------------------------------------------------------------
+# Baseline-first ordering and bidirectional failure isolation.
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_archiver_runs_before_any_google_fetch_is_attempted(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    events = []
+
+    def baseline():
+        events.append("baseline")
+
+    inner_transport = _full_bundle_transport()
+
+    def transport(url, timeout=20):
+        events.append("google")
+        return inner_transport(url, timeout=timeout)
+
+    gmr.refresh_all_cities(
+        cities=(get_city("sfo"),),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=baseline,
+    )
+
+    assert events[0] == "baseline"
+    assert "google" in events
+    assert events.index("baseline") < events.index("google")
+
+
+def test_baseline_failure_does_not_block_google_fetching(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport()
+
+    def failing_baseline():
+        raise RuntimeError("simulated EMOS outage")
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"),),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=failing_baseline,
+    )
+
+    assert report.baseline.attempted is True
+    assert report.baseline.succeeded is False
+    assert report.baseline.error_kind == "RuntimeError"
+    assert report.cities[0].attempted is True
+    assert report.cities[0].available is True
+
+
+def test_google_fetch_failure_cannot_retroactively_affect_the_already_archived_baseline(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    transport = _full_bundle_transport(fail=("sfo", "hourly"))
+    baseline_calls = []
+
+    def baseline():
+        baseline_calls.append(1)
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"),),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=transport,
+        now=TEST_NOW,
+        archive_baseline=baseline,
+    )
+
+    assert baseline_calls == [1]
+    assert report.baseline.succeeded is True
+    assert report.cities[0].endpoints["hourly"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Runtime purge each cycle.
+# ---------------------------------------------------------------------------
+
+
+def test_purge_expired_runs_once_per_cycle(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    runtime.replace_hourly_generation(
+        city_slug="sfo",
+        station_id=get_city("sfo").nws_station_id,
+        issued_at=TEST_NOW - timedelta(hours=5),
+        temperatures_by_valid_at={TEST_NOW - timedelta(hours=4): 60.0},
+        stored_at=TEST_NOW - timedelta(hours=5),
+    )
+    assert runtime.next_expiry(now=TEST_NOW - timedelta(hours=6)) is not None
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"),),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=_full_bundle_transport(),
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    assert report.purged_rows >= 1
+    # The seeded expired row is gone; only the fresh row this cycle wrote survives.
+    active = runtime.active_hourly(
+        city_slug="sfo", station_id=get_city("sfo").nws_station_id, now=TEST_NOW
+    )
+    assert all(row.temperature_f != 60.0 for row in active)
+
+
+# ---------------------------------------------------------------------------
+# Missing API key: fails neutral, still archives baseline and purges.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_api_key_skips_every_city_but_still_archives_baseline_and_purges(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    baseline_calls = []
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"), get_city("mia")),
+        key=None,
+        usage=usage,
+        runtime=runtime,
+        transport=_full_bundle_transport(),
+        now=TEST_NOW,
+        archive_baseline=lambda: baseline_calls.append(1),
+    )
+
+    assert baseline_calls == [1]
+    assert report.baseline.succeeded is True
+    for status in report.cities:
+        assert status.attempted is False
+        assert status.skipped_reason == "missing_api_key"
+    assert report.daily_events == 0
+    assert report.monthly_events == 0
+
+
+# ---------------------------------------------------------------------------
+# Raw-free compatibility status (plan Task 6 Step 4).
+# ---------------------------------------------------------------------------
+
+
+def test_compatibility_status_never_contains_raw_google_content(tmp_path):
+    usage = _usage_ledger(tmp_path)
+    runtime = _runtime_store(tmp_path)
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"), get_city("mia")),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=_full_bundle_transport(),
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    payload = gmr.build_compatibility_status(report)
+    serialized = json.dumps(payload)
+
+    for forbidden in (
+        "temperature",
+        "high_f",
+        "highF",
+        "condition",
+        "degrees",
+        "maxTemperature",
+        "forecastHours",
+        "forecastDays",
+        TEST_KEY,
+    ):
+        assert forbidden not in serialized, forbidden
+
+    assert payload["cities"]["sfo"]["endpoints"]["hourly"] == "success"
+    assert set(payload.keys()) == {
+        "source",
+        "mode",
+        "generated_at",
+        "budget",
+        "purged_runtime_rows",
+        "baseline",
+        "cities",
+    }
+    assert set(payload["budget"].keys()) == {
+        "daily_events",
+        "daily_event_budget",
+        "monthly_events",
+        "monthly_event_budget",
+        "soft_monthly_ceiling",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Research-only / structural isolation.
+# ---------------------------------------------------------------------------
+
+
+def _imported_module_names(module):
+    """Actual import statements only -- not docstring prose mentioning a name."""
+
+    tree = ast.parse(Path(module.__file__).read_text())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+    return names
+
+
+def _imported_names_from(module, *, source_module):
+    """Names imported via ``from source_module import ...`` in ``module``."""
+
+    tree = ast.parse(Path(module.__file__).read_text())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == source_module:
+            names.update(alias.name for alias in node.names)
+    return names
+
+
+def test_google_multicity_refresh_never_imports_the_google_challenger():
+    assert "google_runtime_blend" not in _imported_module_names(gmr)
+
+
+def test_multicity_refresh_never_uses_fetch_city_weather():
+    """Contract A: budget decisions come from the ledger, never
+    ``fetch_city_weather``'s global monthly-delta ``dispatched_events``
+    field. This module composes the per-endpoint fetchers directly instead.
+    """
+
+    assert "fetch_city_weather" not in _imported_names_from(gmr, source_module="google_api")

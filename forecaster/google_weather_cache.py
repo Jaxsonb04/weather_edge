@@ -18,6 +18,7 @@ import blend_archive as _blend_archive
 import blend_learners as _blend_learners
 import blend_sources as _blend_sources
 import google_api as _google_api
+import google_multicity_refresh as _multicity_refresh
 import weather_cache_config as _config
 
 
@@ -95,7 +96,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--refresh", action="store_true", help="fetch a fresh Google forecast")
     parser.add_argument("--force", action="store_true", help="ignore a valid cache")
+    parser.add_argument(
+        "--cities",
+        default=None,
+        help="'all' or comma slugs (e.g. sfo,nyc); omit for the legacy SFO-only refresh",
+    )
     args = parser.parse_args()
+
+    if args.cities is not None:
+        _multicity_refresh.run_cli(args.cities)
+        return
 
     target_iso = target_date()
     cache = read_json(CACHE_PATH, {})

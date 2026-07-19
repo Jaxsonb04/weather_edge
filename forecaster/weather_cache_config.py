@@ -51,8 +51,13 @@ DB_PATH = Path("weather.db")
 GOOGLE_RUNTIME_DB_PATH = Path(
     os.getenv("GOOGLE_RUNTIME_DB_PATH", "/run/weatheredge/google_runtime.db")
 )
+# Shared by GoogleRuntimeStore callers (e.g. the Task 6 multi-city
+# orchestrator) to decide whether to enforce the /run/weatheredge tmpfs
+# path and 0600 permissions -- same KALSHI_ENV=prod switch as the path
+# guard immediately below, kept as one source of truth.
+GOOGLE_RUNTIME_PRODUCTION = os.getenv("KALSHI_ENV", "").strip().lower() == "prod"
 if (
-    os.getenv("KALSHI_ENV", "").strip().lower() == "prod"
+    GOOGLE_RUNTIME_PRODUCTION
     and not GOOGLE_RUNTIME_DB_PATH.resolve().is_relative_to(
         Path("/run/weatheredge").resolve()
     )

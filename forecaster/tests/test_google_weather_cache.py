@@ -218,6 +218,14 @@ def test_disabled_rolling_bias_does_not_acquire_archive_rows(monkeypatch):
 
 
 def test_cache_cli_help_is_byte_compatible():
+    """Task 6 added --cities; every prior flag/line stays unchanged.
+
+    The pinned text below is the ONLY thing this test allows to change
+    about the CLI surface across a commit, and it changed by exactly one
+    documented addition: the new opt-in --cities flag. --refresh/--force
+    and their help text are byte-identical to before.
+    """
+
     completed = subprocess.run(
         [sys.executable, gwc.__file__, "--help"],
         check=True,
@@ -226,12 +234,14 @@ def test_cache_cli_help_is_byte_compatible():
     )
     assert completed.stderr == ""
     assert completed.stdout == (
-        "usage: google_weather_cache.py [-h] [--refresh] [--force]\n"
+        "usage: google_weather_cache.py [-h] [--refresh] [--force] [--cities CITIES]\n"
         "\n"
         "options:\n"
-        "  -h, --help  show this help message and exit\n"
-        "  --refresh   fetch a fresh Google forecast\n"
-        "  --force     ignore a valid cache\n"
+        "  -h, --help       show this help message and exit\n"
+        "  --refresh        fetch a fresh Google forecast\n"
+        "  --force          ignore a valid cache\n"
+        "  --cities CITIES  'all' or comma slugs (e.g. sfo,nyc); omit for the legacy\n"
+        "                   SFO-only refresh\n"
     )
 
 
@@ -778,3 +788,91 @@ def test_adaptive_training_does_not_fallback_to_embedded_actual_for_preliminary_
             assert rows[0]["actual_high_f"] == 71.0
         finally:
             os.chdir(prev_cwd)
+
+
+# ---------------------------------------------------------------------------
+# Task 6: --cities CLI dispatch and SFO compatibility.
+# ---------------------------------------------------------------------------
+
+
+def test_default_invocation_does_not_engage_multicity_orchestrator(
+    tmp_path, monkeypatch, capsys
+):
+    """SFO compatibility bitwise fixture.
+
+    Byte-for-byte identical to ``test_missing_key_cache_artifact_and_output_are_deterministic``
+    above: the legacy no-``--cities`` CLI surface must be completely
+    unaffected by Task 6. The multicity orchestrator is monkeypatched to
+    raise if it is ever called, proving the default invocation never
+    reaches it.
+    """
+
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage = {
+        "daily_event_budget": 260,
+        "daily_events": 17,
+        "monthly_event_budget": 8000,
+        "monthly_events": 611,
+    }
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-11")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(usage))
+    monkeypatch.setattr(gwc, "api_key", lambda: None)
+    monkeypatch.setattr(
+        gwc,
+        "score_archive",
+        lambda: {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0},
+    )
+
+    def _must_not_run(cities_arg):
+        raise AssertionError("multicity orchestrator must not run without --cities")
+
+    monkeypatch.setattr(gwc._multicity_refresh, "run_cli", _must_not_run)
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py"])
+
+    gwc.main()
+
+    expected = {
+        "available": False,
+        "reason": "Google Weather cache unavailable.",
+        "target_date": "2026-07-11",
+        "max_calls_per_day": 260,
+        "calls_used_today": 17,
+        "max_google_events_per_month": 8000,
+        "google_events_used_month": 611,
+        "fetched_at": None,
+    }
+    assert cache_path.read_text(encoding="utf-8") == json.dumps(expected, indent=2) + "\n"
+    assert capsys.readouterr().out == (
+        "missing GOOGLE_WEATHER_API_KEY; Google cache not refreshed; scored 0\n"
+    )
+
+
+def test_cities_flag_dispatches_before_any_legacy_body_runs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        gwc._multicity_refresh, "run_cli", lambda cities_arg: calls.append(cities_arg)
+    )
+
+    def _must_not_run():
+        raise AssertionError("legacy body must not run when --cities is passed")
+
+    monkeypatch.setattr(gwc, "target_date", _must_not_run)
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--cities", "all"])
+
+    gwc.main()
+
+    assert calls == ["all"]
+
+
+def test_cities_flag_accepts_a_comma_slug_list(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        gwc._multicity_refresh, "run_cli", lambda cities_arg: calls.append(cities_arg)
+    )
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--cities", "sfo,nyc"])
+
+    gwc.main()
+
+    assert calls == ["sfo,nyc"]
