@@ -358,8 +358,12 @@ def google_runtime_candidate(case: ResearchCase) -> CandidateDistribution:
 
     Fails closed -- ``available=False``, never a fabricated or backfilled
     value -- whenever this case carries no Google evidence at all (the
-    ordinary state today, since nothing yet writes the durable
-    ``google_challenger_snapshots`` evidence Google Task 7 will add), or its
+    ``google_challenger_snapshots`` table now exists and is populated by
+    ``PaperStore.record_google_challenger_snapshot``, and
+    ``research_google_join.attach_google_challenger_evidence`` -- chrono
+    Task 7 -- joins it onto historical rows before they reach
+    ``load_research_cases``, but a case's own source-context group may
+    still carry no vintage-coherent, point-in-time-eligible match), or its
     evidence recorded the fixed formula's own 7F corroboration block (no
     tradeable probability, per ``forecaster/google_runtime_blend.py``).
     """

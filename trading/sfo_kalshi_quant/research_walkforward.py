@@ -398,14 +398,19 @@ def _build_google_evidence(
 
     Returns ``(evidence, skip_reason)``: at most one is non-``None``. A row
     that carries none of the four optional ``google_challenger_*`` fields
-    has no Google evidence at all -- the ordinary, expected case today,
-    since nothing yet writes them (Google Task 7's durable
-    ``google_challenger_snapshots`` has not landed) -- and returns
-    ``(None, None)``: not an error, just "no evidence for this case" (fails
-    neutral downstream, per spec section 7.3). A row that carries a partial
-    or self-inconsistent set of these fields is a data-integrity problem,
-    not silently-missing evidence, so it is reported as a skip reason
-    instead: never backfilled or guessed at.
+    has no Google evidence at all -- either because the historical row
+    predates that evidence, or because
+    ``research_google_join.attach_google_challenger_evidence`` (chrono
+    Task 7) found no vintage-coherent, point-in-time-eligible match in the
+    now-landed ``google_challenger_snapshots`` table for this case's own
+    source-context group -- and returns ``(None, None)``: not an error,
+    just "no evidence for this case" (fails neutral downstream, per spec
+    section 7.3). A row that carries a partial or self-inconsistent set of
+    these fields is a data-integrity problem, not silently-missing
+    evidence, so it is reported as a skip reason instead: never backfilled
+    or guessed at. (``attach_google_challenger_evidence`` itself never
+    produces a partial set -- see that module's J4 -- so reaching this
+    branch means a row was hand-built or came from some other caller.)
     """
 
     action = row.get("google_challenger_action")
