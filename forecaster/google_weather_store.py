@@ -13,9 +13,11 @@ import os
 import sqlite3
 import stat
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 from zoneinfo import ZoneInfo
 
 from cities import CITY_BY_SLUG
@@ -346,7 +348,7 @@ class GoogleRuntimeStore:
             raise ValueError("timeout_seconds must be positive")
         if not production:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(_RUNTIME_SCHEMA)
         if production:
             os.chmod(self.db_path, 0o600, follow_symlinks=False)
@@ -387,6 +389,16 @@ class GoogleRuntimeStore:
                 connection.close()
                 raise
         return connection
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Open one runtime connection and deterministically release its handle."""
+
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def _write_latest_generation(
         self,
@@ -476,7 +488,7 @@ class GoogleRuntimeStore:
         now: datetime | None = None,
     ) -> tuple[GoogleHourlyRuntime, ...]:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT city_slug, station_id, issued_at, valid_at,
@@ -565,7 +577,7 @@ class GoogleRuntimeStore:
         now: datetime | None = None,
     ) -> tuple[GoogleDailyRuntime, ...]:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT city_slug, station_id, issued_at, target_date,
@@ -647,7 +659,7 @@ class GoogleRuntimeStore:
         now: datetime | None = None,
     ) -> GoogleCurrentRuntime | None:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT city_slug, station_id, issued_at, observed_at,
@@ -772,7 +784,7 @@ class GoogleRuntimeStore:
     ) -> GoogleRuntimeHigh | None:
         city_slug, station_id = _canonical_city_station(city_slug, station_id)
         target = _date_text("target_date", target_date)
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT city_slug, station_id, issued_at, target_date, high_f,
@@ -812,7 +824,7 @@ class GoogleRuntimeStore:
 
     def next_expiry(self, *, now: datetime | None = None) -> datetime | None:
         cutoff = _utc_text(now)
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT MIN(expires_at) AS expires_at
@@ -884,7 +896,7 @@ class GoogleUsageLedger:
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(_USAGE_SCHEMA)
 
     @staticmethod
@@ -904,6 +916,16 @@ class GoogleUsageLedger:
             f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
         )
         return connection
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Open one ledger connection and deterministically release its handle."""
+
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def reserve_event(
         self,
@@ -998,7 +1020,7 @@ class GoogleUsageLedger:
         self, event: GoogleUsageEvent, *, now: datetime | None = None
     ) -> bool:
         completed_at = _utc_text(now)
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 """
                 UPDATE google_weather_usage_events
@@ -1120,7 +1142,7 @@ class GoogleUsageLedger:
             status = "consumed"
 
         completed_at = _utc_text(now)
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 """
                 UPDATE google_weather_usage_events
@@ -1163,7 +1185,7 @@ class GoogleUsageLedger:
         return self.event(event)
 
     def event(self, event: GoogleUsageEvent) -> GoogleUsageEventState:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT reservation_id, endpoint, page_number, status,
@@ -1181,7 +1203,7 @@ class GoogleUsageLedger:
     def usage(self, *, now: datetime | None = None) -> GoogleUsageCounts:
         instant = _aware_utc(now)
         pacific = instant.astimezone(PACIFIC)
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT

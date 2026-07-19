@@ -30,6 +30,77 @@ def _runtime_store(tmp_path):
     return GoogleRuntimeStore(tmp_path / "google_runtime.db", production=False)
 
 
+def _assert_connections_closed(connections: list[sqlite3.Connection]) -> None:
+    assert connections
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+
+def test_runtime_store_releases_initialization_and_read_connections_without_gc(
+    tmp_path, monkeypatch
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleRuntimeStore
+
+    opened: list[sqlite3.Connection] = []
+    original_connect = sqlite3.connect
+
+    def tracked_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", tracked_connect)
+    store = GoogleRuntimeStore(tmp_path / "google_runtime.db", production=False)
+
+    assert store.next_expiry(now=TEST_NOW) is None
+    _assert_connections_closed(opened)
+
+
+def test_usage_ledger_releases_initialization_and_lifecycle_connections_without_gc(
+    tmp_path, monkeypatch
+):
+    import google_weather_store as store_module
+    from google_weather_store import GoogleUsageLedger
+
+    opened: list[sqlite3.Connection] = []
+    original_connect = sqlite3.connect
+
+    def tracked_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", tracked_connect)
+    ledger = GoogleUsageLedger(tmp_path / "weather.db")
+    assert ledger.usage(now=TEST_NOW).daily_events == 0
+
+    cancelled = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="current",
+        page_number=0,
+        now=TEST_NOW,
+    )
+    assert ledger.cancel_before_dispatch(cancelled, now=TEST_NOW) is True
+
+    completed = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="daily",
+        page_number=0,
+        now=TEST_NOW,
+    )
+    ledger.mark_dispatched(completed, now=TEST_NOW)
+    assert ledger.complete_event(completed, success=True, now=TEST_NOW).status == (
+        "success"
+    )
+    assert ledger.event(completed).status == "success"
+
+    _assert_connections_closed(opened)
+
+
 def _runtime_hourly_constituents(
     *,
     city_slug: str,
