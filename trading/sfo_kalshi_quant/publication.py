@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -38,6 +39,67 @@ _TIMESTAMP_KEYS = (
 
 class PublicationError(ValueError):
     """Raised when an artifact snapshot cannot be safely published."""
+
+
+# Task 8 item 4: fail publication if a Git-published artifact carries a raw
+# Google Weather API field. Scoped to the literal raw API response shapes
+# forecaster/google_api.py parses (forecastHours/forecastDays/
+# weatherCondition/maxTemperature/minTemperature/feelsLikeTemperature/
+# temperatureChange/displayDateTime/currentConditionsHistory/iconBaseUri/
+# nextPageToken) plus the two ad hoc raw-content keys the legacy compat JSON
+# used to carry (google_current_conditions/google_daily_forecast_highs), the
+# Google Weather API host, and the API key pattern.
+#
+# Deliberately NOT scoped to `google_high_f`/`sources.google.*`: that is
+# WeatherEdge's OWN derived "source contribution" reporting field name (a
+# sibling of nws_high_f/open_meteo_high_f), reported by the pre-existing,
+# byte-compatible-by-design legacy SFO live blend (trading_signal.json
+# already publishes it in production today). Spec section 7.5 explicitly
+# calls this out: "Legacy Google-bearing rows and artifacts are not deleted
+# automatically... any material historical deletion remains a separate
+# approved action." Removing it is Task 9+ live-promotion-gated work, not a
+# Task 8 publication-gate change -- blocking it here would silently break
+# the live site's existing publication cadence.
+_RAW_GOOGLE_FIELD_KEYS = frozenset(
+    (
+        "highF",
+        "weatherCondition",
+        "maxTemperature",
+        "minTemperature",
+        "feelsLikeTemperature",
+        "temperatureChange",
+        "displayDateTime",
+        "forecastDays",
+        "forecastHours",
+        "currentConditionsHistory",
+        "iconBaseUri",
+        "nextPageToken",
+        "google_current_conditions",
+        "google_daily_forecast_highs",
+    )
+)
+_RAW_GOOGLE_VALUE_PATTERNS = (
+    re.compile(r"weather\.googleapis\.com"),
+    re.compile(r"AIza[0-9A-Za-z_-]{35}"),
+)
+
+
+def _scan_for_raw_google_content(value: object, *, name: str, path: str = "") -> None:
+    """Recursively raise on a raw Google field name/value (Task 8 item 4)."""
+
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            if key in _RAW_GOOGLE_FIELD_KEYS:
+                raise PublicationError(f"raw Google field in {name}: {key_path}")
+            _scan_for_raw_google_content(nested, name=name, path=key_path)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _scan_for_raw_google_content(item, name=name, path=f"{path}[{index}]")
+    elif isinstance(value, str):
+        for pattern in _RAW_GOOGLE_VALUE_PATTERNS:
+            if pattern.search(value):
+                raise PublicationError(f"raw Google value pattern in {name}: {path}")
 
 
 def _utc_now(now: datetime | None) -> datetime:
@@ -175,6 +237,7 @@ def build_manifest(
         if not path.is_file():
             raise PublicationError(f"required artifact missing: {name}")
         payload = _load_json_object(path, display_name=name)
+        _scan_for_raw_google_content(payload, name=name)
         digest = _sha256(path)
         artifacts[name] = {
             "generated_at": _artifact_generated_at(
@@ -193,6 +256,7 @@ def build_manifest(
             strategy_path,
             display_name=STRATEGY_ARTIFACT,
         )
+        _scan_for_raw_google_content(strategy_payload, name=STRATEGY_ARTIFACT)
         strategy_hash = _sha256(strategy_path)
         prior_strategy = previous_artifacts.get(STRATEGY_ARTIFACT)
         preserved = (
@@ -268,7 +332,8 @@ def _validate_artifact(root: Path, manifest: dict, name: str) -> None:
     path = root / name
     if not path.is_file():
         raise PublicationError(f"configured artifact missing: {name}")
-    _load_json_object(path, display_name=name)
+    payload = _load_json_object(path, display_name=name)
+    _scan_for_raw_google_content(payload, name=name)
     expected = entry.get("sha256")
     if not isinstance(expected, str) or len(expected) != 64:
         raise PublicationError(f"invalid manifest checksum: {name}")
