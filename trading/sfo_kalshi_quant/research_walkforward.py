@@ -150,6 +150,14 @@ class ResearchCase:
     # (fails closed downstream -- never a fabricated quote), which is the
     # normal state for a case built without going through
     # ``load_research_cases``.
+    #
+    # NOTE: this field is typically a plain ``dict`` alias of whatever the
+    # loader produced (never copied), so it is mutable even though
+    # ``ResearchCase`` itself is a frozen dataclass, and it makes the
+    # dataclass's auto-generated ``__hash__`` raise ``TypeError`` the moment
+    # anything actually calls it (dicts aren't hashable). Treat every
+    # ``ResearchCase`` carrying a non-``None`` ``market_snapshot`` as
+    # read-only and non-hashable; never mutate this mapping in place.
     market_snapshot: Mapping[str, Mapping[str, object]] | None = None
 
     def __post_init__(self) -> None:

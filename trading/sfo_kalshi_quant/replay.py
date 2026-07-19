@@ -188,6 +188,14 @@ def build_exec_v3_events(
     between callers. ``run_replay`` itself re-sorts its input
     chronologically, so this function's own output order is for readability,
     not a correctness requirement.
+
+    RULING-A: the walk-forward plan (Task 4) names this shared assembly
+    point "exec-v3" as of plan-writing. The engine has since been
+    re-versioned in place to ``exec-v4-2026-07-17``
+    (``maker_fills.EXECUTION_MODEL_VERSION``) by the maker-queue fix, and
+    ``research_replay.py`` deliberately runs that current, corrected engine
+    rather than pinning to the older exec-v3 identity the plan named (spec
+    Sec 8.5, Sec 9 P1-3).
     """
 
     events: list[ReplayEvent] = [

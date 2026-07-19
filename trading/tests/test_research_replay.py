@@ -168,7 +168,11 @@ def test_market_entry_missing_bracket_bounds_is_invalid_market_entry() -> None:
 
 
 def test_market_entry_with_out_of_range_ask_is_invalid_market_entry() -> None:
-    snapshot = _market_snapshot(yes_ask=1.0)
+    # Genuinely out-of-[0,1] (not merely *at* a bound -- see the taxonomy
+    # split covered by test_boundary_yes_ask_on_well_formed_bracket_is_no_
+    # trade_not_invalid below) is real corruption: no order book can quote
+    # an ask above $1.
+    snapshot = _market_snapshot(yes_ask=1.5)
     case = _case(market_snapshot=snapshot)
     evidence = replay_case_candidate(case, _identity())
 
@@ -510,3 +514,181 @@ def test_replay_fold_candidates_is_promotion_eligible_when_every_case_replays_cl
         "no_google_evidence_for_case" in reason
         for reason in google_row.promotion_block_reasons
     )
+
+
+# ---------------------------------------------------------------------------
+# F1: per-ticker invalid_market_entry outcomes must block promotion.
+# ---------------------------------------------------------------------------
+
+
+def test_market_entry_with_missing_ask_and_no_strikes_is_invalid_market_entry() -> None:
+    # Reviewer probe construction: a bare ticker entry with only a bid --
+    # no ask, no strikes -- can never be parsed into a tradeable, bounded
+    # quote.
+    snapshot = _market_snapshot()
+    snapshot["KX-BAD"] = {"ticker": "KX-BAD", "yes_bid": 0.10}
+    case = _case(market_snapshot=snapshot)
+    evidence = replay_case_candidate(case, _identity())
+
+    bad = next(t for t in evidence.tickers if t.ticker == "KX-BAD")
+    assert bad.status == "invalid_market_entry"
+
+
+def test_replay_fold_candidates_blocks_promotion_on_invalid_market_entry() -> None:
+    """Reviewer probe: a fold whose test case carries one valid entry plus
+    one malformed entry (a ticker with no ask and no strikes) must not be
+    promotion eligible. Before the fix, per-ticker invalid_market_entry
+    outcomes were silently dropped -- only whole-case unavailability ever
+    produced a block reason -- so this fold wrongly reported
+    promotion_eligible=True."""
+
+    train = (
+        _case(
+            station_id="KSFO", target_date=date(2026, 6, 10), lead_days=1,
+            actual_high_f=68.0, source_context_hash="train-1",
+        ),
+    )
+    snapshot = _market_snapshot()
+    snapshot["KX-BAD"] = {"ticker": "KX-BAD", "yes_bid": 0.10}
+    test_case = _case(
+        station_id="KSFO", target_date=date(2026, 6, 20), lead_days=1,
+        actual_high_f=75.0, source_context_hash="test-1", market_snapshot=snapshot,
+    )
+    fold = _fold(train, (test_case,))
+
+    evidence_rows = replay_fold_candidates(fold)
+
+    for row in evidence_rows:
+        assert row.promotion_eligible is False
+        assert any(
+            "test-1" in reason and "KX-BAD" in reason and "invalid_market_entry" in reason
+            for reason in row.promotion_block_reasons
+        )
+
+
+# ---------------------------------------------------------------------------
+# F1 taxonomy split: a well-formed, boundary-ask bracket is no_trade, not
+# invalid_market_entry -- only genuine corruption blocks.
+# ---------------------------------------------------------------------------
+
+
+def test_boundary_yes_ask_on_well_formed_bracket_is_no_trade_not_invalid() -> None:
+    # yes_ask sits exactly at the 1.0 bound -- an ordinary empty-ask,
+    # one-sided book. Every other field is well-formed (matching ticker,
+    # finite bid, real strikes). This is a legitimate no-trade outcome
+    # (live target_research_quote/_reference_sized_decision would also
+    # decline it), not corrupted data, and must not block promotion.
+    snapshot = _market_snapshot(yes_bid=0.0, yes_ask=1.0)
+    case = _case(market_snapshot=snapshot, actual_high_f=75.0)
+    evidence = replay_case_candidate(case, _identity(mu=70.0, sigma=3.0))
+
+    assert evidence.tickers[0].status == "no_trade"
+
+
+def test_boundary_yes_ask_does_not_block_fold_promotion() -> None:
+    train = (
+        _case(
+            station_id="KSFO", target_date=date(2026, 6, 10), lead_days=1,
+            actual_high_f=68.0, source_context_hash="train-1",
+        ),
+    )
+    snapshot = _market_snapshot(yes_bid=0.0, yes_ask=1.0)
+    test_case = _case(
+        station_id="KSFO", target_date=date(2026, 6, 20), lead_days=1,
+        actual_high_f=75.0, source_context_hash="test-1", market_snapshot=snapshot,
+    )
+    fold = _fold(train, (test_case,))
+
+    evidence_rows = replay_fold_candidates(fold)
+    gaussian_row = next(
+        row for row in evidence_rows if row.challenger_candidate_key == GAUSSIAN_PIT_CANDIDATE_KEY
+    )
+    assert gaussian_row.promotion_eligible is True
+    assert not any("invalid_market_entry" in r for r in gaussian_row.promotion_block_reasons)
+
+
+# ---------------------------------------------------------------------------
+# F2: a crossed book is corrupted data, never a fabricated cheap fill.
+# ---------------------------------------------------------------------------
+
+
+def test_crossed_book_is_invalid_market_entry_not_a_cheap_fill() -> None:
+    snapshot = _market_snapshot(yes_bid=0.50, yes_ask=0.40)
+    case = _case(market_snapshot=snapshot, actual_high_f=75.0)
+    evidence = replay_case_candidate(case, _identity(mu=70.0, sigma=3.0))
+
+    assert evidence.tickers[0].status == "invalid_market_entry"
+    assert evidence.tickers[0].realized_pnl == 0.0
+
+
+def test_crossed_book_blocks_fold_promotion() -> None:
+    train = (
+        _case(
+            station_id="KSFO", target_date=date(2026, 6, 10), lead_days=1,
+            actual_high_f=68.0, source_context_hash="train-1",
+        ),
+    )
+    snapshot = _market_snapshot(yes_bid=0.50, yes_ask=0.40)
+    test_case = _case(
+        station_id="KSFO", target_date=date(2026, 6, 20), lead_days=1,
+        actual_high_f=75.0, source_context_hash="test-1", market_snapshot=snapshot,
+    )
+    fold = _fold(train, (test_case,))
+
+    evidence_rows = replay_fold_candidates(fold)
+    for row in evidence_rows:
+        assert row.promotion_eligible is False
+        assert any("invalid_market_entry" in r for r in row.promotion_block_reasons)
+
+
+# ---------------------------------------------------------------------------
+# F4: persisted payloads are self-describing (execution/sizing identity).
+# ---------------------------------------------------------------------------
+
+
+def test_case_replay_payload_stamps_execution_and_sizing_identity() -> None:
+    from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION
+
+    case = _case(actual_high_f=75.0)
+    evidence = replay_case_candidate(case, _identity(mu=70.0, sigma=3.0))
+    payload = case_replay_payload(evidence)
+
+    stamp = payload["stamp"]
+    assert stamp["execution_model_version"] == EXECUTION_MODEL_VERSION
+    assert stamp["reference_equity"] == TARGET_POLICY.reference_equity
+    assert stamp["max_position_risk_pct"] == TARGET_POLICY.max_position_risk_pct
+    assert stamp["policy_fingerprint"] == TARGET_POLICY.policy_fingerprint
+    assert stamp["order_ttl_minutes"] == 15
+    assert stamp["side_scope"] == "yes_only"
+    assert stamp["fill_scope"] == "taker_only_no_tape"
+
+    import json
+
+    json.dumps(payload, allow_nan=False)
+
+
+def test_fold_replay_evidence_stamps_execution_and_sizing_identity() -> None:
+    from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION
+
+    train = (
+        _case(
+            station_id="KSFO", target_date=date(2026, 6, 10), lead_days=1,
+            actual_high_f=68.0, source_context_hash="train-1",
+        ),
+    )
+    test_case = _case(
+        station_id="KSFO", target_date=date(2026, 6, 20), lead_days=1,
+        actual_high_f=75.0, source_context_hash="test-1",
+    )
+    fold = _fold(train, (test_case,))
+
+    evidence_rows = replay_fold_candidates(fold)
+
+    for row in evidence_rows:
+        for payload in (row.baseline, row.challenger):
+            stamp = payload["stamp"]
+            assert stamp["execution_model_version"] == EXECUTION_MODEL_VERSION
+            assert stamp["policy_fingerprint"] == TARGET_POLICY.policy_fingerprint
+            assert stamp["side_scope"] == "yes_only"
+            assert stamp["fill_scope"] == "taker_only_no_tape"
+            assert stamp["order_ttl_minutes"] == 15

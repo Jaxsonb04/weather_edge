@@ -31,6 +31,14 @@ non-fabricated-ly resolves it to zero filled contracts.
 
 This module never talks to the database, the clock, or any random state:
 every function here is a pure function of its own arguments.
+
+RULING-A: the walk-forward plan (Task 4) names this replay's target engine
+"exec-v3" as of plan-writing. The production engine has since been
+re-versioned in place to ``exec-v4-2026-07-17``
+(``maker_fills.EXECUTION_MODEL_VERSION``) by the maker-queue fix; this
+module deliberately replays through that current, corrected engine rather
+than pinning to the older exec-v3 identity the plan named (spec Sec 8.5,
+Sec 9 P1-3).
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from typing import Literal, Mapping
 
 from .config import StrategyConfig
 from .execution import initial_queue_ahead, target_research_quote
+from .maker_fills import EXECUTION_MODEL_VERSION
 from .models import MarketBin, TradeDecision
 from .probability import interval_probability_normal
 from .replay import ReplayOrder, SettlementFact, build_exec_v3_events, run_replay
@@ -70,6 +79,15 @@ _SIDE = "YES"
 # minute TTL, matching every other ReplayOrder in this codebase
 # (replay.py's own default and replay_from_database's construction).
 _TTL_MINUTES = 15
+
+# Scope labels stamped onto every persisted payload (F4): this module only
+# ever prices/sizes the YES side (see ``_SIDE`` above) and only ever fills
+# via an immediate/crossing taker match or a TTL expiry -- never a maker
+# fill inferred from a later public trade tape, which this module has none
+# of (see module docstring). Naming these explicitly keeps a downstream
+# reader from assuming a persisted row covers more than it does.
+_SIDE_SCOPE = "yes_only"
+_FILL_SCOPE = "taker_only_no_tape"
 
 
 def _finite_float(value: object) -> float | None:
@@ -163,15 +181,28 @@ def _market_bin_from_snapshot_entry(
 ) -> MarketBin | None:
     """Parse one scan-time market snapshot entry into a ``MarketBin``.
 
-    Fails closed (returns ``None``) on anything that would let
+    Fails closed (returns ``None``, which ``_replay_ticker`` reports as the
+    blocking ``invalid_market_entry`` status) on anything that would let
     ``execution.target_research_quote`` or bracket-probability scoring
     silently misprice or mis-gate a decision: a missing/mismatched ticker, a
-    non-finite or out-of-(0,1) quote, or a bracket with no usable bound at
-    all. Never guesses a missing field -- an omitted depth size becomes a
-    known-zero displayed size (the same conservative default
+    non-finite or out-of-[0,1] quote, a crossed book (``yes_bid >=
+    yes_ask`` -- never a real order book state, and never replayed as a
+    fabricated cheap fill), or a bracket with no usable bound at all. Never
+    guesses a missing field -- an omitted depth size becomes a known-zero
+    displayed size (the same conservative default
     ``execution.initial_queue_ahead`` documents), not a skip, since a
     downstream zero-depth quote naturally fails ``target_research_quote``'s
     own liquidity checks rather than fabricating tradeable size.
+
+    A *well-formed* bracket whose ``yes_ask`` sits exactly at a bound (0.0
+    or 1.0 -- an ordinary empty-ask, one-sided book) is deliberately still
+    parsed into a ``MarketBin`` here rather than rejected: this is
+    legitimate, non-corrupted market data, and ``_reference_sized_decision``
+    already carries the identical ``0.0 < yes_ask < 1.0`` gate that live
+    ``target_research_quote`` sizing applies, which naturally resolves it to
+    the non-blocking ``no_trade`` status downstream. Rejecting it here would
+    conflate "no market" with "corrupted market" and wrongly block
+    promotion on an everyday, honest no-trade outcome.
     """
 
     if not isinstance(entry, Mapping):
@@ -181,7 +212,12 @@ def _market_bin_from_snapshot_entry(
         return None
     yes_bid = _finite_float(entry.get("yes_bid"))
     yes_ask = _finite_float(entry.get("yes_ask"))
-    if yes_bid is None or yes_ask is None or yes_bid < 0.0 or not (0.0 < yes_ask < 1.0):
+    if yes_bid is None or yes_ask is None or yes_bid < 0.0 or not (0.0 <= yes_ask <= 1.0):
+        return None
+    if yes_bid >= yes_ask:
+        # Crossed (or locked) book: never a real, tradeable order book
+        # state. Fail closed rather than let a downstream taker-fill path
+        # replay it as an implausibly cheap, fabricated-price fill.
         return None
     strike_type = entry.get("strike_type")
     strike_type = str(strike_type) if isinstance(strike_type, str) else ""
@@ -245,9 +281,15 @@ def _reference_sized_decision(
     ``probability_lcb`` is deliberately set equal to ``probability``: a
     ``ResearchCase`` carries a single fitted Gaussian per candidate, not a
     separate downside estimate, so there is no independent lower-confidence
-    figure to plug in without inventing one. This keeps the reused edge gate
-    exactly as conservative as its point-edge form (``edge >= 0`` after
-    fees), never more permissive than a decision with a genuine LCB would be.
+    figure to plug in without inventing one. This makes the reused edge gate
+    strictly MORE permissive than a decision with a genuine LCB would be --
+    a real lower-confidence bound tightens the probability an edge is
+    computed from, so skipping that tightening can only let through trades
+    a live LCB gate would have blocked, never the reverse. Every candidate
+    replayed through this module (baseline and challenger arms alike) gets
+    this identical treatment, so the extra permissiveness is a shared,
+    symmetric bias across both arms of the paired comparison, not a
+    per-candidate advantage.
     """
 
     if not (0.0 < market_bin.yes_ask < 1.0):
@@ -427,10 +469,40 @@ def replay_case_candidate(
     )
 
 
-def case_replay_payload(evidence: CaseReplayEvidence) -> dict[str, object]:
+def _replay_stamp(
+    *, reference_equity: float, max_position_risk_pct: float
+) -> dict[str, object]:
+    """Self-describing execution/sizing identity (F4) stamped onto every
+    persisted replay payload, so a downstream reader never has to assume
+    which engine version, sizing policy, order TTL, or side/fill scope
+    produced a given row -- see the module docstring's RULING-A note for why
+    ``EXECUTION_MODEL_VERSION`` is the current, re-versioned engine rather
+    than the plan's original "exec-v3" name."""
+
+    return {
+        "execution_model_version": EXECUTION_MODEL_VERSION,
+        "reference_equity": reference_equity,
+        "max_position_risk_pct": max_position_risk_pct,
+        "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+        "order_ttl_minutes": _TTL_MINUTES,
+        "side_scope": _SIDE_SCOPE,
+        "fill_scope": _FILL_SCOPE,
+    }
+
+
+def case_replay_payload(
+    evidence: CaseReplayEvidence,
+    *,
+    reference_equity: float = TARGET_POLICY.reference_equity,
+    max_position_risk_pct: float = TARGET_POLICY.max_position_risk_pct,
+) -> dict[str, object]:
     """Serialize one candidate's case replay for persistence alongside
     ``research_candidates.case_score_payload``. Every value is a JSON-safe
-    primitive."""
+    primitive. ``reference_equity``/``max_position_risk_pct`` default to
+    ``TARGET_POLICY``'s own values so an existing no-kwargs call site keeps
+    stamping an accurate sizing identity unchanged; a caller that replayed
+    with different sizing (e.g. ``replay_fold_candidates`` called with
+    overrides) should pass the same values through here too."""
 
     return {
         "candidate_key": evidence.candidate_key,
@@ -438,6 +510,10 @@ def case_replay_payload(evidence: CaseReplayEvidence) -> dict[str, object]:
         "skip_reason": evidence.skip_reason,
         "realized_pnl": round(evidence.realized_pnl, 6),
         "filled_count": evidence.filled_count,
+        "stamp": _replay_stamp(
+            reference_equity=reference_equity,
+            max_position_risk_pct=max_position_risk_pct,
+        ),
         "tickers": [
             {
                 "ticker": ticker.ticker,
@@ -498,7 +574,11 @@ def replay_fold_candidates(
             reference_equity=reference_equity,
             max_position_risk_pct=max_position_risk_pct,
         )
-        baseline_payload = case_replay_payload(baseline_evidence)
+        baseline_payload = case_replay_payload(
+            baseline_evidence,
+            reference_equity=reference_equity,
+            max_position_risk_pct=max_position_risk_pct,
+        )
         for challenger_candidate in (gaussian, google):
             key = challenger_candidate.candidate_key
             challenger_evidence = replay_case_candidate(
@@ -510,7 +590,9 @@ def replay_fold_candidates(
             )
             baseline_cases[key][case.source_context_hash] = baseline_payload
             challenger_cases[key][case.source_context_hash] = case_replay_payload(
-                challenger_evidence
+                challenger_evidence,
+                reference_equity=reference_equity,
+                max_position_risk_pct=max_position_risk_pct,
             )
             if not baseline_evidence.available:
                 block_reasons[key].add(
@@ -522,15 +604,34 @@ def replay_fold_candidates(
                     f"challenger replay unavailable for case "
                     f"{case.source_context_hash}: {challenger_evidence.skip_reason}"
                 )
+            # F1: a per-ticker invalid_market_entry outcome is corrupted
+            # market data, not a legitimate no-trade result -- it must block
+            # promotion exactly like a missing snapshot does, never pass
+            # through silently just because *some other* ticker in the same
+            # snapshot happened to parse cleanly.
+            for role, replay_evidence in (
+                ("baseline", baseline_evidence),
+                ("challenger", challenger_evidence),
+            ):
+                for outcome in replay_evidence.tickers:
+                    if outcome.status == "invalid_market_entry":
+                        block_reasons[key].add(
+                            f"{role} replay invalid_market_entry for case "
+                            f"{case.source_context_hash} ticker {outcome.ticker}: "
+                            f"{outcome.detail}"
+                        )
 
+    stamp = _replay_stamp(
+        reference_equity=reference_equity, max_position_risk_pct=max_position_risk_pct
+    )
     return tuple(
         FoldReplayEvidence(
             fold_id=fold.fold_id,
             station_id=station_id,
             target_date=target_date,
             challenger_candidate_key=key,
-            baseline={"cases": baseline_cases[key]},
-            challenger={"cases": challenger_cases[key]},
+            baseline={"cases": baseline_cases[key], "stamp": stamp},
+            challenger={"cases": challenger_cases[key], "stamp": stamp},
             promotion_eligible=not block_reasons[key],
             promotion_block_reasons=tuple(sorted(block_reasons[key])),
         )
