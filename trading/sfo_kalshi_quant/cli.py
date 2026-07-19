@@ -342,6 +342,22 @@ def build_parser() -> argparse.ArgumentParser:
     return _parser.build_parser(command_module=sys.modules[__name__])
 
 
+def _is_retryable_sqlite_lock(exc: sqlite3.OperationalError) -> bool:
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        base_error_code = error_code & 0xFF
+        return base_error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+
+    # Older Python/SQLite combinations may not expose sqlite_errorcode. Keep
+    # that compatibility path deliberately narrow so unrelated SQL mentioning
+    # a column or table named "locked" remains fail-fast.
+    return str(exc).strip().casefold() in {
+        "database is locked",
+        "database table is locked",
+        "database schema is locked",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -351,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"forecast data error: {exc}", file=sys.stderr)
         return 2
     except sqlite3.OperationalError as exc:
-        if "locked" in str(exc).lower():
+        if _is_retryable_sqlite_lock(exc):
             print(f"temporary sqlite lock: {exc}", file=sys.stderr)
             return 75
         print(f"error: {exc}", file=sys.stderr)

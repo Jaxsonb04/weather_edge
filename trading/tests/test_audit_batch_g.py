@@ -279,6 +279,42 @@ def test_backfill_success_exits_zero(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize(
+    "retry_attempts",
+    ["08", "11", "99999999999999999999999999999999999999999999999999"],
+)
+def test_backfill_rejects_unsafe_retry_attempts_before_work(
+    tmp_path: Path, retry_attempts: str
+) -> None:
+    result = _backfill_result(
+        tmp_path,
+        "good",
+        SFO_DATASET_LOCK_RETRY_ATTEMPTS=retry_attempts,
+    )
+
+    assert result.returncode == 2
+    assert "SFO_DATASET_LOCK_RETRY_ATTEMPTS" in result.stderr
+    assert not (tmp_path / "calls").exists()
+
+
+@pytest.mark.parametrize(
+    "retry_delay",
+    ["not-a-duration", "-1", "infinity", "301", "300.001"],
+)
+def test_backfill_rejects_unsafe_retry_delay_before_work(
+    tmp_path: Path, retry_delay: str
+) -> None:
+    result = _backfill_result(
+        tmp_path,
+        "good",
+        SFO_DATASET_LOCK_RETRY_DELAY_SECONDS=retry_delay,
+    )
+
+    assert result.returncode == 2
+    assert "SFO_DATASET_LOCK_RETRY_DELAY_SECONDS" in result.stderr
+    assert not (tmp_path / "calls").exists()
+
+
 def test_backfill_retries_a_transient_sqlite_lock_without_partial_failure(tmp_path: Path) -> None:
     marker = tmp_path / "lock-once"
     result = _backfill_result(

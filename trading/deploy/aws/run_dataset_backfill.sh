@@ -15,13 +15,32 @@ KALSHI_MAX_PAGES="${SFO_DATASET_KALSHI_MAX_PAGES:-20}"
 KALSHI_MAX_TRADE_PAGES="${SFO_DATASET_KALSHI_MAX_TRADE_PAGES:-1}"
 LOCK_RETRY_ATTEMPTS="${SFO_DATASET_LOCK_RETRY_ATTEMPTS:-3}"
 LOCK_RETRY_DELAY_SECONDS="${SFO_DATASET_LOCK_RETRY_DELAY_SECONDS:-5}"
+MAX_LOCK_RETRY_ATTEMPTS=10
+MAX_LOCK_RETRY_DELAY_SECONDS=300
 
-case "$LOCK_RETRY_ATTEMPTS" in
-  '' | *[!0-9]* | 0)
-    echo "SFO_DATASET_LOCK_RETRY_ATTEMPTS must be a positive integer" >&2
-    exit 2
-    ;;
-esac
+if [[ ! "$LOCK_RETRY_ATTEMPTS" =~ ^[1-9][0-9]?$ ]] ||
+  (( 10#$LOCK_RETRY_ATTEMPTS > MAX_LOCK_RETRY_ATTEMPTS )); then
+  echo "SFO_DATASET_LOCK_RETRY_ATTEMPTS must be a canonical integer from 1 to $MAX_LOCK_RETRY_ATTEMPTS" >&2
+  exit 2
+fi
+LOCK_RETRY_ATTEMPTS=$((10#$LOCK_RETRY_ATTEMPTS))
+
+invalid_retry_delay=0
+if [[ "$LOCK_RETRY_DELAY_SECONDS" =~ ^([0-9]|[1-9][0-9]{1,2})([.][0-9]{1,3})?$ ]]; then
+  retry_delay_whole_seconds="${BASH_REMATCH[1]}"
+  retry_delay_fraction="${BASH_REMATCH[2]:-}"
+  if (( 10#$retry_delay_whole_seconds > MAX_LOCK_RETRY_DELAY_SECONDS )) ||
+    { (( 10#$retry_delay_whole_seconds == MAX_LOCK_RETRY_DELAY_SECONDS )) &&
+      [[ "$retry_delay_fraction" =~ [1-9] ]]; }; then
+    invalid_retry_delay=1
+  fi
+else
+  invalid_retry_delay=1
+fi
+if (( invalid_retry_delay )); then
+  echo "SFO_DATASET_LOCK_RETRY_DELAY_SECONDS must be a finite number from 0 to $MAX_LOCK_RETRY_DELAY_SECONDS" >&2
+  exit 2
+fi
 
 if [[ "$PYTHON_BIN" != */* ]]; then
   if ! PYTHON_BIN="$(command -v "$PYTHON_BIN")"; then
