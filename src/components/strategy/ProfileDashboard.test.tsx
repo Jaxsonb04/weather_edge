@@ -23,6 +23,32 @@ const profile = {
   status: { latest_signal_count: 2, paper_trading_status: "running" },
 } as ProfileEntry;
 
+const targetProfile = {
+  ...profile,
+  label: "Research target",
+  risk_profile: "research-target",
+  profile_type: "experimental",
+  daily_target: {
+    available: true,
+    account_id: "paper-research-target-v1",
+    target_pnl: 50,
+    realized_pnl: 20,
+    remaining_pnl: 30,
+    achieved: false,
+    locked: false,
+    status: "miss",
+    observed_days: 6,
+    hit_count: 2,
+    attainment_rate: 1 / 3,
+    mean_daily_pnl: 8,
+    median_daily_pnl: 5,
+    independent_city_target_days: 11,
+    resolution_days: 4,
+    target_feasible: true,
+    disclaimer: "Hard paper-research objective; not a guaranteed return.",
+  },
+} as ProfileEntry;
+
 const strategy = {
   available: true,
   mode: "paper_research_only",
@@ -66,12 +92,12 @@ describe("ProfileDashboard publication truthfulness", () => {
     fetchMock.mockReset();
   });
 
-  async function renderDashboard(generatedAt: string) {
+  async function renderDashboard(generatedAt: string, value = profile) {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
         <PublicationLoaded artifacts={["strategy_research.json"]} />
-        <ProfileDashboard s={strategy} p={profile} />
+        <ProfileDashboard s={strategy} p={value} />
       </PublicationProvider>,
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
@@ -91,5 +117,30 @@ describe("ProfileDashboard publication truthfulness", () => {
     expect(screen.getByText("running")).toBeInTheDocument();
     expect(screen.getByText("Candidates now").parentElement).toHaveTextContent("2");
     expect(screen.getByText("Alpha position")).toBeInTheDocument();
+  });
+
+  it("shows the target account's fixed objective, evidence breadth, and non-guarantee", async () => {
+    await renderDashboard("2026-07-09T11:59:00Z", targetProfile);
+
+    expect(screen.getByText("Daily research objective")).toBeInTheDocument();
+    expect(screen.getByText("$20.00 of $50.00")).toBeInTheDocument();
+    expect(screen.getByText("Remaining").parentElement).toHaveTextContent("$30.00");
+    expect(screen.getByText("Mean / median").parentElement).toHaveTextContent("+$8.00 / +$5.00");
+    expect(screen.getByText("Observed / hit days").parentElement).toHaveTextContent("6 / 2");
+    expect(screen.getByText("Independent city-target days").parentElement).toHaveTextContent("11");
+    expect(screen.getByText("Feasible from current opportunities")).toBeInTheDocument();
+    expect(screen.getByText("Target lock open")).toBeInTheDocument();
+    expect(screen.getByText(/not a guaranteed return/i)).toBeInTheDocument();
+  });
+
+  it("distinguishes unknown feasibility from an infeasible target", async () => {
+    const unknown = {
+      ...targetProfile,
+      daily_target: { ...targetProfile.daily_target, target_feasible: null },
+    } as ProfileEntry;
+    await renderDashboard("2026-07-09T11:59:00Z", unknown);
+
+    expect(screen.getByText("Feasibility unknown")).toBeInTheDocument();
+    expect(screen.queryByText("Not feasible from current opportunities")).not.toBeInTheDocument();
   });
 });

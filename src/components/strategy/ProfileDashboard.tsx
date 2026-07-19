@@ -10,7 +10,9 @@ import {
   monitorForProfile,
   profileGate,
   profileGateCounts,
+  researchDailyTarget,
   type ProfileEntry,
+  type ResearchDailyTarget,
   type StrategyLab,
 } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
@@ -32,7 +34,24 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
     blurb:
       "The experimental book. Runs the loosest filters at the smallest stakes so it records the full range of opportunities quickly. Its P&L is kept separate from the live candidate's record.",
   },
+  "research-target": {
+    icon: "solar:target-bold",
+    blurb:
+      "The fixed-objective research account. It pursues $50 of daily realized paper P&L without relaxing risk or edge gates, and remains separate from the live candidate's record and readiness.",
+  },
+  "research-motion": {
+    icon: "solar:chart-2-bold",
+    blurb:
+      "The experimental high-activity account. It records realistic execution opportunities for learning, but its results are excluded from the daily target and every live-readiness decision.",
+  },
 };
+
+function profileBadge(p: ProfileEntry) {
+  if (p.risk_profile === "live") return "Primary";
+  if (p.risk_profile === "research-target") return "Daily target";
+  if (p.risk_profile === "research-motion") return "Experimental · high activity";
+  return p.profile_type === "primary" ? "Primary" : "Experimental";
+}
 
 /** Small labelled divider for sub-sections inside a single book's dashboard. */
 function SubHead({ icon, title, note }: { icon: string; title: string; note?: string }) {
@@ -42,6 +61,104 @@ function SubHead({ icon, title, note }: { icon: string; title: string; note?: st
       <h4 className="font-display text-sm font-semibold text-foreground">{title}</h4>
       {note && <span className="ml-auto text-[11px] text-muted">{note}</span>}
     </div>
+  );
+}
+
+function targetFeasibility(value: boolean | null | undefined) {
+  if (value === true) return { label: "Feasible from current opportunities", color: "success" as const };
+  if (value === false) return { label: "Not feasible from current opportunities", color: "warning" as const };
+  return { label: "Feasibility unknown", color: "default" as const };
+}
+
+function objectiveDay(value: string | null | undefined) {
+  if (!value) return null;
+  const date = new Date(`${value}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "America/Los_Angeles",
+  }).format(date);
+}
+
+/** Fixed-objective evidence panel shared by the overview and target-account
+    dashboard. It intentionally reports feasibility, not a promise of return. */
+export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget }) {
+  const targetPnl = target.target_pnl ?? 50;
+  const progressMaximum = targetPnl > 0 ? targetPnl : 50;
+  const realized = target.realized_pnl ?? 0;
+  const remaining = target.remaining_pnl ?? Math.max(targetPnl - realized, 0);
+  const progressValue = Math.min(progressMaximum, Math.max(0, realized));
+  const progress = progressValue / progressMaximum;
+  const feasibility = targetFeasibility(target.target_feasible);
+  const formattedDay = objectiveDay(target.objective_day);
+  const disclaimer = /not a guaranteed return/i.test(target.disclaimer ?? "")
+    ? target.disclaimer
+    : "Hard paper-research objective; not a guaranteed return. Risk and edge gates remain binding.";
+
+  return (
+    <Card className="rounded-2xl ring-1 ring-accent/30">
+      <Card.Header className="flex flex-row flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+            <Icon icon="solar:target-bold" className="size-3.5" aria-hidden="true" />
+            Daily research objective
+          </p>
+          <Card.Title className="mt-1 text-lg">
+            {money(realized, { sign: "negative-only" })} of {money(targetPnl, { sign: "negative-only" })}
+          </Card.Title>
+          <p className="mt-1 break-words text-xs text-muted">
+            Separate paper account
+            {target.account_id && <span translate="no"> · {target.account_id}</span>}
+            {formattedDay ? ` · ${formattedDay}` : ""}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Chip size="sm" variant="soft" color={target.achieved ? "success" : "default"}>
+            <Chip.Label>{target.achieved ? "Hit" : "Miss"}</Chip.Label>
+          </Chip>
+          <Chip size="sm" variant="soft" color={target.locked ? "warning" : "default"}>
+            <Chip.Label>{target.locked ? "Target lock active" : "Target lock open"}</Chip.Label>
+          </Chip>
+          <Chip size="sm" variant="soft" color={feasibility.color}>
+            <Chip.Label>{feasibility.label}</Chip.Label>
+          </Chip>
+        </div>
+      </Card.Header>
+      <Card.Content className="space-y-4 pt-0">
+        <div>
+          <div
+            className="h-2 overflow-hidden rounded-full bg-foreground/10"
+            role="progressbar"
+            aria-label="Daily research objective progress"
+            aria-valuemin={0}
+            aria-valuemax={progressMaximum}
+            aria-valuenow={progressValue}
+          >
+            <div className="h-full rounded-full bg-accent" style={{ width: `${progress * 100}%` }} />
+          </div>
+          <p className="mt-1.5 text-right text-[11px] text-muted">{pct(progress, 0)} of today's fixed objective</p>
+        </div>
+
+        <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <Stat label="Remaining" value={money(remaining, { sign: "negative-only" })} />
+          <Stat
+            label="Mean / median"
+            value={`${money(target.mean_daily_pnl)} / ${money(target.median_daily_pnl)}`}
+          />
+          <Stat label="Observed / hit days" value={`${target.observed_days ?? 0} / ${target.hit_count ?? 0}`} />
+          <Stat label="Attainment rate" value={target.attainment_rate == null ? "—" : pct(target.attainment_rate, 1)} />
+          <Stat label="Independent city-target days" value={`${target.independent_city_target_days ?? 0}`} />
+          <Stat label="Resolution days" value={`${target.resolution_days ?? 0}`} />
+        </dl>
+
+        <p className="flex items-start gap-2 rounded-lg bg-surface-secondary px-3 py-2 text-xs leading-relaxed text-muted ring-1 ring-border/50">
+          <Icon icon="solar:info-circle-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
+          <span>{disclaimer}</span>
+        </p>
+      </Card.Content>
+    </Card>
   );
 }
 
@@ -56,6 +173,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const gate = profileGate(s, rp);
   const gateCount = profileGateCounts(gate);
   const copy = PROFILE_COPY[rp];
+  const target = researchDailyTarget(s, p);
   const primary = p.profile_type === "primary";
   const pnl = sum?.realized_pnl ?? 0;
   const charts = p.signal_quality?.charts;
@@ -90,7 +208,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             </div>
           </div>
           <Chip size="sm" variant="soft" color={primary ? "warning" : "default"}>
-            <Chip.Label>{primary ? "Primary" : "Experimental"}</Chip.Label>
+            <Chip.Label>{profileBadge(p)}</Chip.Label>
           </Chip>
         </Card.Header>
         <Card.Content className="space-y-4 pt-0">
@@ -105,6 +223,18 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           </div>
         </Card.Content>
       </Card>
+
+      {rp === "research-target" && target && <DailyTargetEvidence target={target} />}
+
+      {rp === "research-motion" && (
+        <div className="flex items-start gap-2 rounded-xl bg-surface-secondary px-4 py-3 text-xs leading-relaxed text-muted ring-1 ring-border/60">
+          <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+          <p>
+            <strong className="text-foreground">Experimental · high activity.</strong>{" "}
+            This separate paper account is excluded from the daily target and live readiness; its positions and ledger remain motion-only evidence.
+          </p>
+        </div>
+      )}
 
       {/* per-book equity curve */}
       {!!days?.length && (
