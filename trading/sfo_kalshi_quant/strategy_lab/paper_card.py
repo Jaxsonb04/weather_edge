@@ -33,6 +33,7 @@ from ..exits import (
     exit_bid_for_net,
 )
 from ..fees import quadratic_fee_average_per_contract
+from ..exit_audit import audited_exit_reason
 from ..logical_positions import (
     LogicalPaperPosition,
     OPEN_STATUSES,
@@ -52,13 +53,19 @@ class _PaperJournalProjection:
     all_positions: tuple[LogicalPaperPosition, ...]
     terminal_rows: tuple[dict[str, Any], ...]
     terminal_lots: tuple[dict[str, Any], ...]
+    expired_root_rows: tuple[dict[str, Any], ...]
     open_root_rows: tuple[dict[str, Any], ...]
     pending_root_rows: tuple[dict[str, Any], ...]
 
 
 def _project_paper_journal(rows: list[sqlite3.Row]) -> _PaperJournalProjection:
     positions = tuple(group_logical_positions(rows))
-    valid_positions = tuple(position for position in positions if position.valid)
+    valid_positions = tuple(
+        position
+        for position in positions
+        if position.valid
+        and row_published_profile_key(position.root) != "unknown"
+    )
     terminal_positions = tuple(
         position for position in valid_positions if position.terminal
     )
@@ -67,6 +74,11 @@ def _project_paper_journal(rows: list[sqlite3.Row]) -> _PaperJournalProjection:
         lot
         for position in valid_positions
         for lot in position.resolved_lots
+    )
+    expired_root_rows = tuple(
+        position.root
+        for position in valid_positions
+        if not position.terminal and position.root.get("status") == "PAPER_EXPIRED"
     )
     open_root_rows = tuple(
         position.root
@@ -89,6 +101,7 @@ def _project_paper_journal(rows: list[sqlite3.Row]) -> _PaperJournalProjection:
         all_positions=positions,
         terminal_rows=terminal_rows,
         terminal_lots=terminal_lots,
+        expired_root_rows=expired_root_rows,
         open_root_rows=open_root_rows,
         pending_root_rows=pending_root_rows,
     )
@@ -608,11 +621,12 @@ def _paper_diagnostics(
         journal = _project_paper_journal(rows)
 
     resolved = list(journal.terminal_rows)
+    exit_evidence = [*resolved, *journal.expired_root_rows]
     return {
         "resolved_positions": len(resolved),
         "by_profile": _paper_group_diagnostics(resolved, lambda row: _row_risk_profile(row) or "unknown"),
         "by_side": _paper_group_diagnostics(resolved, _side_from_row),
-        "by_exit_reason": _paper_group_diagnostics(resolved, _paper_exit_reason),
+        "by_exit_reason": _paper_group_diagnostics(exit_evidence, _paper_exit_reason),
         "worst_segments": _worst_paper_segments(resolved),
     }
 
@@ -638,17 +652,28 @@ def _paper_group_diagnostics(
 
 
 def _paper_group_summary(rows: list[Any]) -> dict[str, Any]:
-    wins = sum(1 for row in rows if _paper_order_won(row))
-    losses = sum(1 for row in rows if _paper_order_decided(row) and not _paper_order_won(row))
-    pnl = sum(_to_float(row["realized_pnl"]) for row in rows)
+    resolved_rows = [
+        row
+        for row in rows
+        if str(_sqlite_row_value(row, "status") or "").upper()
+        in {"PAPER_CLOSED", "PAPER_SETTLED"}
+    ]
+    wins = sum(1 for row in resolved_rows if _paper_order_won(row))
+    losses = sum(
+        1
+        for row in resolved_rows
+        if _paper_order_decided(row) and not _paper_order_won(row)
+    )
+    pnl = sum(_to_float(row["realized_pnl"]) for row in resolved_rows)
     capital = sum(
         _to_float(_sqlite_row_value(row, "capital_resolved"))
         if _sqlite_row_value(row, "capital_resolved") is not None
         else _to_float(row["contracts"]) * _to_float(row["cost_per_contract"])
-        for row in rows
+        for row in resolved_rows
     )
     return {
-        "resolved": len(rows),
+        "positions": len(rows),
+        "resolved": len(resolved_rows),
         "wins": wins,
         "losses": losses,
         "realized_pnl": _round(pnl, 2),
@@ -679,13 +704,7 @@ def _worst_paper_segments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _paper_exit_reason(row: dict[str, Any]) -> str:
-    if row["status"] == "PAPER_EXPIRED":
-        return "limit_expired"
-    if row["closed_at"]:
-        return "monitor_exit"
-    if row["settled_at"]:
-        return "held_to_settlement"
-    return "unresolved"
+    return audited_exit_reason(row)
 
 
 def _paper_order_won(row: Any) -> bool:

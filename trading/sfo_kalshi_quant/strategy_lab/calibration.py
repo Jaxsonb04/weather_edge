@@ -20,7 +20,6 @@ from ..backtest import run_walk_forward_calibration_backtest
 from ..backtest_rescore import run_rescore
 from ..config import (
     StrategyConfig,
-    normalize_risk_profile_name,
     strategy_config_for_profile,
 )
 from ..db import PaperStore
@@ -252,18 +251,17 @@ def _config_rescore_payload(
             if sampled_rows is not None
             else store.sampled_decision_rows(sample_mode="entry-per-market-side")
         )
-        rows_by_profile: dict[str, list[sqlite3.Row]] = {"live": [], "research": []}
+        profile_names = ("live", "research-target", "research-motion")
+        rows_by_profile: dict[str, list[sqlite3.Row]] = {
+            name: [] for name in profile_names
+        }
         for row in rows:
             published = row_published_profile_key(row)
-            profile = normalize_risk_profile_name(
-                execution_profile_key(
-                    "live" if published == "unknown" else published
-                )
-            )
-            rows_by_profile[profile].append(row)
+            if published in rows_by_profile:
+                rows_by_profile[published].append(row)
         by_profile: dict[str, Any] = {}
-        for name in ("live", "research"):
-            cfg = strategy_config_for_profile(name)
+        for name in profile_names:
+            cfg = strategy_config_for_profile(execution_profile_key(name))
             result = run_rescore(
                 rows_by_profile[name],
                 settlements,
@@ -282,6 +280,8 @@ def _config_rescore_payload(
             "evidence_kind": evidence_kind,
             "settlement_days": len(settlements),
             "sampled_snapshots": len(rows),
+            "excluded_snapshots": len(rows)
+            - sum(len(bucket) for bucket in rows_by_profile.values()),
             "by_profile": by_profile,
         }
     except Exception as exc:  # diagnostics artifact must not fail the refresh
@@ -633,7 +633,8 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
                      d.trade_quality_score DESC, d.edge_lcb DESC, d.edge DESC
             """
         ).fetchall()
-    return [_decision_row(row) for row in rows]
+    decisions = [_decision_row(row) for row in rows]
+    return [row for row in decisions if row["risk_profile"] != "unknown"]
 
 
 def _decision_row(row: sqlite3.Row) -> dict[str, Any]:

@@ -13,6 +13,8 @@ def published_profile_key(
     *,
     research_sleeve: object = None,
     account_id: object = None,
+    research_policy_version: object = None,
+    policy_fingerprint: object = None,
 ) -> str:
     """Return the one profile key used by every public report.
 
@@ -23,12 +25,35 @@ def published_profile_key(
     raw = str(risk_profile or "unknown").strip().lower() or "unknown"
     sleeve = str(research_sleeve or "").strip().lower()
     account = str(account_id or "").strip()
-    if raw in {"research-target", "research-motion"}:
-        return raw
-    if sleeve == "target" or account == TARGET_POLICY.account_id:
-        return "research-target"
-    if sleeve == "motion" or account == MOTION_POLICY.account_id:
-        return "research-motion"
+    version = str(research_policy_version or "").strip()
+    fingerprint = str(policy_fingerprint or "").strip()
+    for policy, published in (
+        (TARGET_POLICY, "research-target"),
+        (MOTION_POLICY, "research-motion"),
+    ):
+        if (
+            raw in {"unknown", "research", published}
+            and account == policy.account_id
+            and sleeve == policy.sleeve.value
+            and version == policy.policy_version
+            and fingerprint == policy.policy_fingerprint
+        ):
+            return published
+
+    # Canonical sleeve evidence is all-or-nothing. A partial, crossed, stale,
+    # or forged tuple must not inherit a public profile from any one marker.
+    if (
+        raw in {"research-target", "research-motion"}
+        or account in {TARGET_POLICY.account_id, MOTION_POLICY.account_id}
+        or bool(sleeve or version or fingerprint)
+    ):
+        return "unknown"
+
+    # Historical research rows predate isolated sleeve identity and historical
+    # paper rows predate an explicit live label. Neither fallback can become a
+    # canonical research sleeve.
+    if raw == "unknown":
+        return "live"
     return raw
 
 
@@ -48,6 +73,8 @@ def row_published_profile_key(row: Any) -> str:
         _row_value(row, "risk_profile"),
         research_sleeve=_row_value(row, "research_sleeve"),
         account_id=_row_value(row, "account_id"),
+        research_policy_version=_row_value(row, "research_policy_version"),
+        policy_fingerprint=_row_value(row, "policy_fingerprint"),
     )
 
 

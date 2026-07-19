@@ -419,6 +419,21 @@ CREATE INDEX IF NOT EXISTS idx_paper_orders_lifecycle
     ON paper_orders (status, settled_at, closed_at);
 CREATE INDEX IF NOT EXISTS idx_paper_orders_group
     ON paper_orders (group_id);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_parent
+    ON paper_orders (parent_order_id, id)
+    WHERE parent_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account_closed
+    ON paper_orders (account_id, closed_at, id)
+    WHERE status != 'REJECTED' AND closed_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account_settled
+    ON paper_orders (account_id, settled_at, id)
+    WHERE status != 'REJECTED' AND settled_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account_expires
+    ON paper_orders (account_id, expires_at, id)
+    WHERE status != 'REJECTED' AND expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paper_orders_expired_created
+    ON paper_orders (account_id, created_at, id)
+    WHERE status = 'PAPER_EXPIRED' AND expires_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market
     ON decision_snapshots (target_date, market_ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_target
@@ -542,6 +557,7 @@ def _open_position_guard_is_canonical(
     )
 
 RESEARCH_IDENTITY_COLUMNS = {
+    "account_id": "TEXT",
     "research_sleeve": "TEXT",
     "research_policy_version": "TEXT",
     "policy_fingerprint": "TEXT",
@@ -693,15 +709,19 @@ def _research_identity_trigger_sql(table: str, operation: str) -> tuple[str, str
         raise ValueError(f"unsupported research identity table: {table}")
     if operation not in {"INSERT", "UPDATE"}:
         raise ValueError(f"unsupported research identity operation: {operation}")
+    identity_markers = tuple(
+        column for column in RESEARCH_IDENTITY_COLUMNS if column != "account_id"
+    )
     new_identity = " OR ".join(
-        f"NEW.{column} IS NOT NULL" for column in RESEARCH_IDENTITY_COLUMNS
+        f"NEW.{column} IS NOT NULL" for column in identity_markers
     )
     old_identity = " OR ".join(
-        f"OLD.{column} IS NOT NULL" for column in RESEARCH_IDENTITY_COLUMNS
+        f"OLD.{column} IS NOT NULL" for column in identity_markers
     )
     missing_core = " OR ".join(
         f"NULLIF(TRIM(NEW.{column}), '') IS NULL"
         for column in (
+            "account_id",
             "research_sleeve",
             "research_policy_version",
             "policy_fingerprint",
@@ -766,7 +786,7 @@ def _ensure_research_identity_triggers(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_research_daily_goal_triggers(conn: sqlite3.Connection) -> None:
-    """Make frozen daily objective rows append-only, including old databases."""
+    """Make frozen objective evidence append-only, including old databases."""
 
     definitions = {
         "trg_research_daily_goals_immutable_update": """
@@ -783,6 +803,20 @@ def _ensure_research_daily_goal_triggers(conn: sqlite3.Connection) -> None:
                 SELECT RAISE(ABORT, 'research daily goals are immutable');
             END
         """,
+        "trg_research_plan_snapshots_immutable_update": """
+            CREATE TRIGGER trg_research_plan_snapshots_immutable_update
+            BEFORE UPDATE ON research_plan_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'research plan snapshots are immutable');
+            END
+        """,
+        "trg_research_plan_snapshots_immutable_delete": """
+            CREATE TRIGGER trg_research_plan_snapshots_immutable_delete
+            BEFORE DELETE ON research_plan_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'research plan snapshots are immutable');
+            END
+        """,
     }
     for trigger, expected_sql in definitions.items():
         stored = conn.execute(
@@ -797,6 +831,54 @@ def _ensure_research_daily_goal_triggers(conn: sqlite3.Connection) -> None:
             continue
         conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         conn.execute(expected_sql)
+
+
+def _backfill_legacy_research_daily_goal_fingerprints(
+    conn: sqlite3.Connection,
+) -> None:
+    """Stamp only legacy rows that exactly prove the active frozen policy."""
+
+    eligible = conn.execute(
+        "SELECT 1 FROM research_daily_goals "
+        "WHERE (policy_fingerprint IS NULL OR TRIM(policy_fingerprint)='') "
+        "AND account_id=? AND policy_version=? "
+        "AND typeof(reference_equity) IN ('integer', 'real') "
+        "AND typeof(target_return) IN ('integer', 'real') "
+        "AND typeof(target_pnl) IN ('integer', 'real') "
+        "AND reference_equity=? AND target_return=? AND target_pnl=? LIMIT 1",
+        (
+            TARGET_POLICY.account_id,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.reference_equity,
+            TARGET_POLICY.target_return,
+            TARGET_POLICY.target_pnl,
+        ),
+    ).fetchone()
+    if eligible is None:
+        return
+    # An intermediate schema may already have installed the append-only
+    # trigger before it learned how to stamp legacy rows. Initialization is one
+    # transaction, so dropping and canonical recreation are rollback-safe.
+    conn.execute(
+        "DROP TRIGGER IF EXISTS trg_research_daily_goals_immutable_update"
+    )
+    conn.execute(
+        "UPDATE research_daily_goals SET policy_fingerprint=? "
+        "WHERE (policy_fingerprint IS NULL OR TRIM(policy_fingerprint)='') "
+        "AND account_id=? AND policy_version=? "
+        "AND typeof(reference_equity) IN ('integer', 'real') "
+        "AND typeof(target_return) IN ('integer', 'real') "
+        "AND typeof(target_pnl) IN ('integer', 'real') "
+        "AND reference_equity=? AND target_return=? AND target_pnl=?",
+        (
+            TARGET_POLICY.policy_fingerprint,
+            TARGET_POLICY.account_id,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.reference_equity,
+            TARGET_POLICY.target_return,
+            TARGET_POLICY.target_pnl,
+        ),
+    )
 
 
 def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
@@ -974,6 +1056,7 @@ def _init_store_locked(self) -> None:
             existing_daily_goals,
             RESEARCH_DAILY_GOAL_AUDIT_COLUMNS,
         )
+        _backfill_legacy_research_daily_goal_fingerprints(conn)
         existing_context = {
             row[1]
             for row in conn.execute("PRAGMA table_info(scan_context_snapshots)").fetchall()

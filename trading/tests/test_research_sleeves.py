@@ -29,6 +29,7 @@ from sfo_kalshi_quant.store.diagnostics import _strategy_config_snapshot
 
 
 _RESEARCH_IDENTITY_COLUMNS = {
+    "account_id",
     "research_sleeve",
     "research_policy_version",
     "policy_fingerprint",
@@ -93,12 +94,13 @@ def _insert_identity_row(
 ) -> int:
     identity = (
         (
+            TARGET_POLICY.account_id,
             TARGET_POLICY.sleeve.value,
             TARGET_POLICY.policy_version,
             TARGET_POLICY.policy_fingerprint,
         )
         if established
-        else (None, None, None)
+        else (None, None, None, None)
     )
     if table == "paper_orders":
         return _insert_research_order(
@@ -108,10 +110,10 @@ def _insert_identity_row(
                 if established
                 else "KXHIGHTSFO-IDENTITY-LEGACY"
             ),
-            account_id=TARGET_POLICY.account_id if established else "paper-shared",
-            sleeve=identity[0],
-            policy_version=identity[1],
-            policy_fingerprint=identity[2],
+            account_id=identity[0] if established else "paper-shared",
+            sleeve=identity[1],
+            policy_version=identity[2],
+            policy_fingerprint=identity[3],
             risk_profile="research" if established else "live",
         )
     if table == "decision_snapshots":
@@ -123,12 +125,13 @@ def _insert_identity_row(
                 spread, fee_per_contract, cost_per_contract, edge, edge_lcb,
                 kelly_fraction, recommended_contracts, recommended_spend,
                 expected_profit, trade_quality_score, reasons_json,
-                research_sleeve, research_policy_version, policy_fingerprint
+                account_id, research_sleeve, research_policy_version,
+                policy_fingerprint
             ) VALUES (
                 '2026-07-18T12:00:00+00:00', '2026-07-19',
                 'KXHIGHTSFO-IDENTITY', '80 to 81', 'BUY_NO', 'NO', 1,
                 0.70, 0.65, 0.20, 0.21, 0.01, 0.01, 0.81, 0.10, 0.05,
-                0.01, 1, 0.81, 0.10, 50, '[]', ?, ?, ?
+                0.01, 1, 0.81, 0.10, 50, '[]', ?, ?, ?, ?
             )
             """,
             identity,
@@ -139,10 +142,10 @@ def _insert_identity_row(
             """
             INSERT INTO scan_context_snapshots (
                 created_at, target_date, prediction_features_json,
-                schema_version, research_sleeve, research_policy_version,
+                schema_version, account_id, research_sleeve, research_policy_version,
                 policy_fingerprint
             ) VALUES (
-                '2026-07-18T12:00:00+00:00', '2026-07-19', '{}', 1, ?, ?, ?
+                '2026-07-18T12:00:00+00:00', '2026-07-19', '{}', 1, ?, ?, ?, ?
             )
             """,
             identity,
@@ -153,10 +156,11 @@ def _insert_identity_row(
             """
             INSERT INTO paper_monitor_snapshots (
                 created_at, order_id, target_date, market_ticker, side, action,
-                research_sleeve, research_policy_version, policy_fingerprint
+                account_id, research_sleeve, research_policy_version,
+                policy_fingerprint
             ) VALUES (
                 '2026-07-18T12:00:00+00:00', 999, '2026-07-19',
-                'KXHIGHTSFO-IDENTITY', 'NO', 'HOLD', ?, ?, ?
+                'KXHIGHTSFO-IDENTITY', 'NO', 'HOLD', ?, ?, ?, ?
             )
             """,
             identity,
@@ -167,11 +171,11 @@ def _insert_identity_row(
             """
             INSERT INTO research_shadow_monitor_snapshots (
                 created_at, shadow_order_id, target_date, market_ticker, side,
-                action, research_sleeve, research_policy_version,
+                action, account_id, research_sleeve, research_policy_version,
                 policy_fingerprint
             ) VALUES (
                 '2026-07-18T12:00:00+00:00', 999, '2026-07-19',
-                'KXHIGHTSFO-IDENTITY', 'NO', 'HOLD', ?, ?, ?
+                'KXHIGHTSFO-IDENTITY', 'NO', 'HOLD', ?, ?, ?, ?
             )
             """,
             identity,
@@ -685,6 +689,7 @@ def _insert_research_decision_evidence(
     context_overrides: dict[str, object] | None = None,
 ) -> int:
     identity = {
+        "account_id": policy.account_id,
         "research_sleeve": policy.sleeve.value,
         "research_policy_version": policy.policy_version,
         "policy_fingerprint": policy.policy_fingerprint,
@@ -718,17 +723,18 @@ def _insert_research_decision_evidence(
             """
             INSERT INTO scan_context_snapshots (
                 created_at, target_date, risk_profile,
-                prediction_features_json, schema_version, research_sleeve,
+                prediction_features_json, schema_version, account_id, research_sleeve,
                 research_policy_version, policy_fingerprint, objective_day,
                 lead_bucket, scan_run_id, reentry_fingerprint,
                 strategy_config_json
             ) VALUES (
                 '2026-07-18T12:00:00+00:00', ?, 'research', '{}', 1,
-                ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
                 context["target_date"],
+                context["account_id"],
                 context["research_sleeve"],
                 context["research_policy_version"],
                 context["policy_fingerprint"],
@@ -749,13 +755,13 @@ def _insert_research_decision_evidence(
                 spread, fee_per_contract, cost_per_contract, edge, edge_lcb,
                 kelly_fraction, recommended_contracts, recommended_spend,
                 expected_profit, trade_quality_score, reasons_json, risk_profile,
-                research_sleeve, research_policy_version, policy_fingerprint,
+                account_id, research_sleeve, research_policy_version, policy_fingerprint,
                 objective_day, lead_bucket, scan_run_id, reentry_fingerprint
             ) VALUES (
                 ?, '2026-07-18T12:00:01+00:00', ?, ?, ?, ?, ?, 0, 1,
                 'research admission pending',
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]',
-                'research', ?, ?, ?, ?, ?, ?, ?
+                'research', ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -783,6 +789,7 @@ def _insert_research_decision_evidence(
                 decision.recommended_contracts * decision.cost_per_contract,
                 decision.expected_profit,
                 decision.trade_quality_score,
+                snapshot["account_id"],
                 snapshot["research_sleeve"],
                 snapshot["research_policy_version"],
                 snapshot["policy_fingerprint"],

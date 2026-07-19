@@ -34,6 +34,7 @@ from sfo_kalshi_quant.strategy_lab import (
     build as strategy_build_module,
     calibration as strategy_calibration_module,
     forecast_health as strategy_forecast_health_module,
+    paper_card as strategy_paper_card_module,
 )
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.paper import PaperTrader
@@ -620,7 +621,7 @@ def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position()
         assert diagnostics["resolved_positions"] == 1
         assert diagnostics["by_profile"]["live"]["resolved"] == 1
         assert diagnostics["by_side"]["YES"]["resolved"] == 1
-        assert diagnostics["by_exit_reason"]["monitor_exit"]["resolved"] == 1
+        assert diagnostics["by_exit_reason"]["take_profit"]["resolved"] == 1
         assert diagnostics["worst_segments"][0]["resolved"] == 1
 
         daily = payload["daily_summary"]
@@ -729,7 +730,13 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
     motion_order = store.record_paper_order(
         "2026-07-20", motion_decision, risk_profile="research"
     )
+    crossed_order = store.record_paper_order(
+        "2026-07-20",
+        replace(target_decision, ticker="KXHIGHTSFO-CROSSED-B72.5"),
+        risk_profile="research",
+    )
     assert target_order is not None and motion_order is not None
+    assert crossed_order is not None
     target_snapshot, motion_snapshot = store.record_decisions(
         "2026-07-19",
         [
@@ -764,6 +771,14 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
                 MOTION_POLICY.policy_fingerprint,
                 -2.0,
             ),
+            (
+                crossed_order,
+                TARGET_POLICY.account_id,
+                "motion",
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                500.0,
+            ),
         ):
             conn.execute(
                 "UPDATE paper_orders SET account_id=?, research_sleeve=?, "
@@ -782,10 +797,11 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
                 ),
             )
         conn.execute(
-            "UPDATE decision_snapshots SET research_sleeve='target', "
+            "UPDATE decision_snapshots SET account_id=?, research_sleeve='target', "
             "research_policy_version=?, policy_fingerprint=?, objective_day=? "
             "WHERE id=?",
             (
+                TARGET_POLICY.account_id,
                 TARGET_POLICY.policy_version,
                 TARGET_POLICY.policy_fingerprint,
                 objective_day.isoformat(),
@@ -793,10 +809,11 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
             ),
         )
         conn.execute(
-            "UPDATE decision_snapshots SET research_sleeve='motion', "
+            "UPDATE decision_snapshots SET account_id=?, research_sleeve='motion', "
             "research_policy_version=?, policy_fingerprint=?, objective_day=? "
             "WHERE id=?",
             (
+                MOTION_POLICY.account_id,
                 MOTION_POLICY.policy_version,
                 MOTION_POLICY.policy_fingerprint,
                 objective_day.isoformat(),
@@ -830,6 +847,8 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
     assert motion["daily_summary"]["gate_behavior"]["entry_block_reasons"] == [
         {"reason": "motion audit block", "count": 1}
     ]
+    assert payload["paper_trading"]["summary"]["closed_positions"] == 2
+    assert "unknown" not in payload["paper_trading"]["diagnostics"]["by_profile"]
     assert payload["paper_trading"]["legacy_research"]["available"] is False
 
 
@@ -1896,7 +1915,11 @@ def test_strategy_research_includes_config_rescore():
 
         rescore = payload["config_rescore"]
         assert rescore["available"] is True, rescore.get("reason")
-        assert set(rescore["by_profile"]) == {"live", "research"}
+        assert set(rescore["by_profile"]) == {
+            "live",
+            "research-target",
+            "research-motion",
+        }
         for result in rescore["by_profile"].values():
             assert {"counts", "candidate", "recorded_config_own_book"} <= set(result)
             # per_day is trimmed from the published artifact to keep it lean.
@@ -1922,36 +1945,71 @@ def test_strategy_research_includes_config_rescore():
 
 
 @pytest.mark.parametrize(
-    "profile_probabilities",
+    "sampled_rows",
     [
         [
-            (None, 0.91),
-            ("balanced", 0.91),
-            ("fast-feedback", 0.71),
-            ("research", 0.71),
+            {"risk_profile": "live", "probability": 0.91},
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": TARGET_POLICY.sleeve.value,
+                "research_policy_version": TARGET_POLICY.policy_version,
+                "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+                "probability": 0.71,
+            },
+            {
+                "risk_profile": "research",
+                "account_id": MOTION_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.61,
+            },
+            {"risk_profile": "research", "probability": 0.55},
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.51,
+            },
         ],
         [
-            ("fast_feedback", 0.71),
-            ("research", 0.71),
-            ("balanced", 0.91),
-            (None, 0.91),
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.51,
+            },
+            {"risk_profile": "research", "probability": 0.55},
+            {
+                "risk_profile": "research",
+                "account_id": MOTION_POLICY.account_id,
+                "research_sleeve": MOTION_POLICY.sleeve.value,
+                "research_policy_version": MOTION_POLICY.policy_version,
+                "policy_fingerprint": MOTION_POLICY.policy_fingerprint,
+                "probability": 0.61,
+            },
+            {
+                "risk_profile": "research",
+                "account_id": TARGET_POLICY.account_id,
+                "research_sleeve": TARGET_POLICY.sleeve.value,
+                "research_policy_version": TARGET_POLICY.policy_version,
+                "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+                "probability": 0.71,
+            },
+            {"risk_profile": "live", "probability": 0.91},
         ],
     ],
 )
 def test_config_rescore_replays_only_each_profiles_matching_snapshots(
-    tmp_path, monkeypatch, profile_probabilities
+    tmp_path, monkeypatch, sampled_rows
 ):
     db_path = tmp_path / "paper.db"
-    store = PaperStore(db_path)
-    base = _approved_decision()
-    for profile, probability in profile_probabilities:
-        decision = replace(base, probability=probability)
-        store.record_decisions(
-            "2026-06-03",
-            [decision],
-            event=pre_resolution_event([decision]),
-            risk_profile=profile,
-        )
+    PaperStore(db_path)
 
     calls = []
 
@@ -1964,12 +2022,20 @@ def test_config_rescore_replays_only_each_profiles_matching_snapshots(
         SfoForecasterAdapter(tmp_path),
         db_path,
         settlements={"2026-06-03": 67.0},
+        sampled_rows=sampled_rows,
     )
 
     assert calls == [
         (strategy_config_for_profile("live"), [0.91]),
         (strategy_config_for_profile("research"), [0.71]),
+        (strategy_config_for_profile("research"), [0.61]),
     ]
+    assert set(payload["by_profile"]) == {
+        "live",
+        "research-target",
+        "research-motion",
+    }
+    assert payload["excluded_snapshots"] == 2
     assert payload["evidence_kind"] == "profile_specific_snapshot_replay"
     assert all(
         result["evidence_kind"] == "profile_specific_snapshot_replay"
@@ -1977,6 +2043,55 @@ def test_config_rescore_replays_only_each_profiles_matching_snapshots(
     )
     assert "source_neutral" not in payload
     assert "counterfactual" not in payload
+
+
+def test_paper_card_audits_all_five_exit_categories_including_unfilled_expiry(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    now = datetime.now(UTC).isoformat()
+    outcomes = [
+        ("PAPER_CLOSED", 2.0, now, None),
+        ("PAPER_CLOSED", -2.0, now, None),
+        ("PAPER_CLOSED", 0.0, now, None),
+        ("PAPER_SETTLED", 2.0, None, now),
+        ("PAPER_EXPIRED", 0.0, None, None),
+    ]
+    order_ids = []
+    for index in range(len(outcomes)):
+        order_id = store.record_paper_order(
+            "2026-07-19",
+            replace(
+                _approved_decision(),
+                ticker=f"KXHIGHTPHX-CARD-EXIT-{index}-B110.5",
+            ),
+            risk_profile="live",
+        )
+        assert order_id is not None
+        order_ids.append(order_id)
+    with store.connect() as conn:
+        for order_id, (status, pnl, closed_at, settled_at) in zip(
+            order_ids, outcomes, strict=True
+        ):
+            conn.execute(
+                "UPDATE paper_orders SET status=?, realized_pnl=?, closed_at=?, "
+                "settled_at=? WHERE id=?",
+                (status, pnl, closed_at, settled_at, order_id),
+            )
+
+    diagnostics = strategy_paper_card_module._paper_diagnostics(db_path)
+
+    assert set(diagnostics["by_exit_reason"]) == {
+        "take_profit",
+        "stop_loss",
+        "break_even",
+        "held_to_settlement",
+        "expired_unfilled",
+    }
+    assert diagnostics["resolved_positions"] == 4
+    assert diagnostics["by_exit_reason"]["expired_unfilled"]["resolved"] == 0
+    assert diagnostics["by_exit_reason"]["expired_unfilled"]["positions"] == 1
 
 
 def test_strategy_research_includes_research_shadow_comparison():

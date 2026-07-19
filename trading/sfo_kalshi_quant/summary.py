@@ -532,7 +532,7 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at"
         ).fetchall()
-    return [
+    orders = [
         {
             "id": int(row["id"]),
             "parent_order_id": _row_value(row, "parent_order_id"),
@@ -547,6 +547,14 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
             "risk_profile": row_published_profile_key(row),
             "research_sleeve": _row_value(row, "research_sleeve"),
             "account_id": _row_value(row, "account_id"),
+            "research_policy_version": _row_value(
+                row, "research_policy_version"
+            ),
+            "policy_fingerprint": _row_value(row, "policy_fingerprint"),
+            "strategy_fingerprint": _row_value(row, "strategy_fingerprint"),
+            "execution_model_version": _row_value(
+                row, "execution_model_version"
+            ),
             "contracts": float(row["contracts"] or 0.0),
             "entry_price": float(row["entry_price"] if row["entry_price"] is not None else row["yes_ask"]),
             "cost_per_contract": float(row["cost_per_contract"] or 0.0),
@@ -565,6 +573,7 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+    return [order for order in orders if order["risk_profile"] != "unknown"]
 
 
 def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
@@ -600,12 +609,26 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
             if "research_sleeve" in columns
             else "NULL AS research_sleeve"
         )
+        account_id_expr = (
+            "account_id" if "account_id" in columns else "NULL AS account_id"
+        )
+        policy_version_expr = (
+            "research_policy_version"
+            if "research_policy_version" in columns
+            else "NULL AS research_policy_version"
+        )
+        policy_fingerprint_expr = (
+            "policy_fingerprint"
+            if "policy_fingerprint" in columns
+            else "NULL AS policy_fingerprint"
+        )
         rows = conn.execute(
             f"""
             SELECT created_at, approved, {signal_approved_expr},
                    {entry_block_expr}, model_probability, market_probability,
                    reasons_json, COALESCE(risk_profile, 'unknown') AS risk_profile,
-                   {research_sleeve_expr}
+                   {account_id_expr}, {research_sleeve_expr},
+                   {policy_version_expr}, {policy_fingerprint_expr}
             FROM decision_snapshots
             WHERE created_at >= ?
             """,
@@ -621,6 +644,8 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
     by_profile: dict[str, dict[str, Any]] = {}
     for row in rows:
         profile = row_published_profile_key(row)
+        if profile == "unknown":
+            continue
         profile_stats = by_profile.setdefault(
             profile,
             {

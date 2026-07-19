@@ -48,6 +48,7 @@ from .maker_fills import (
     depth_observation_is_contemporaneous,
     normalize_public_trade,
 )
+from .profile_identity import row_published_profile_key
 from .models import BucketProbability, EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .research_policy import (
     MOTION_POLICY,
@@ -226,6 +227,41 @@ _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
+
+_RESEARCH_WINDOW_ROWS_SQL = """
+    WITH relevant(logical_id) AS (
+        SELECT COALESCE(parent_order_id, id)
+        FROM paper_orders
+        WHERE account_id=? AND status!='REJECTED'
+          AND closed_at>=? AND closed_at<?
+        UNION
+        SELECT COALESCE(parent_order_id, id)
+        FROM paper_orders
+        WHERE account_id=? AND status!='REJECTED'
+          AND settled_at>=? AND settled_at<?
+        UNION
+        SELECT COALESCE(parent_order_id, id)
+        FROM paper_orders
+        WHERE account_id=? AND status!='REJECTED'
+          AND expires_at>=? AND expires_at<?
+        UNION
+        SELECT COALESCE(parent_order_id, id)
+        FROM paper_orders
+        WHERE account_id=? AND status='PAPER_EXPIRED' AND expires_at IS NULL
+          AND created_at>=? AND created_at<?
+    ), window_rows AS (
+        SELECT root.*
+        FROM relevant
+        JOIN paper_orders AS root ON root.id=relevant.logical_id
+        WHERE root.account_id=? AND root.status!='REJECTED'
+        UNION ALL
+        SELECT child.*
+        FROM relevant
+        JOIN paper_orders AS child ON child.parent_order_id=relevant.logical_id
+        WHERE child.account_id=? AND child.status!='REJECTED'
+    )
+    SELECT * FROM window_rows ORDER BY id
+"""
 
 
 def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
@@ -706,12 +742,12 @@ class PaperStore:
                     )
                 )
                 cursor += timedelta(days=1)
-            rows = conn.execute(
-                "SELECT * FROM paper_orders WHERE account_id=? "
-                "AND status!='REJECTED' ORDER BY id",
-                (TARGET_POLICY.account_id,),
-            ).fetchall()
-            positions = group_logical_positions(rows)
+            positions = self._research_positions_for_window_on_connection(
+                conn,
+                account_id=TARGET_POLICY.account_id,
+                first_day=window_first_day,
+                last_day=last_day,
+            )
             pnl_by_day = self._research_realized_pnl_by_day(positions)
             if pnl_by_day is None:
                 conn.rollback()
@@ -931,17 +967,56 @@ class PaperStore:
         account_id: str,
         objective_day: date,
     ) -> float | None:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM paper_orders WHERE account_id=? "
-            "AND status!='REJECTED' ORDER BY id",
-            (account_id,),
-        ).fetchall()
-        positions = group_logical_positions(rows)
+        positions = PaperStore._research_positions_for_window_on_connection(
+            conn,
+            account_id=account_id,
+            first_day=objective_day,
+            last_day=objective_day,
+        )
         pnl_by_day = PaperStore._research_realized_pnl_by_day(positions)
         if pnl_by_day is None:
             return None
         return pnl_by_day.get(objective_day, 0.0)
+
+    @staticmethod
+    def _research_positions_for_window_on_connection(
+        conn: sqlite3.Connection,
+        *,
+        account_id: str,
+        first_day: date,
+        last_day: date,
+    ) -> list[object]:
+        """Load only logical positions with lifecycle activity in one window."""
+
+        if first_day > last_day:
+            return []
+        lower = datetime.combine(
+            first_day,
+            time.min,
+            tzinfo=RESEARCH_OBJECTIVE_TZ,
+        ).astimezone(UTC).isoformat()
+        upper = datetime.combine(
+            last_day + timedelta(days=1),
+            time.min,
+            tzinfo=RESEARCH_OBJECTIVE_TZ,
+        ).astimezone(UTC).isoformat()
+        params: list[object] = []
+        for _ in range(4):
+            params.extend((account_id, lower, upper))
+        params.extend((account_id, account_id))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(_RESEARCH_WINDOW_ROWS_SQL, params).fetchall()
+        expected_profile = (
+            "research-target"
+            if account_id == TARGET_POLICY.account_id
+            else "research-motion"
+        )
+        return [
+            position
+            for position in group_logical_positions(rows)
+            if position.valid
+            and row_published_profile_key(position.root) == expected_profile
+        ]
 
     @staticmethod
     def _research_realized_pnl_by_day(
@@ -1659,6 +1734,7 @@ class PaperStore:
         )
         research_identity_values = (
             (
+                _research_identity.account_id,
                 _research_identity.sleeve.value,
                 _research_identity.policy_version,
                 _research_identity.policy_fingerprint,
@@ -1668,12 +1744,13 @@ class PaperStore:
                 _research_identity.reentry_fingerprint,
             )
             if _research_identity is not None
-            else (None, None, None, None, None, None, None)
+            else (None, None, None, None, None, None, None, None)
         )
         for index, decision in enumerate(decision_list):
             evidence = evidence_batch[index] if evidence_batch is not None else None
             decision_identity_values = (
                 (
+                    evidence.identity.account_id,
                     evidence.identity.sleeve.value,
                     evidence.identity.policy_version,
                     evidence.identity.policy_fingerprint,
@@ -1793,9 +1870,9 @@ class PaperStore:
                     intraday_json, market_json, market_consensus_json,
                     prediction_features_json,
                     strategy_config_json, schema_version,
-                    research_sleeve, research_policy_version, policy_fingerprint,
+                    account_id, research_sleeve, research_policy_version, policy_fingerprint,
                     objective_day, lead_bucket, scan_run_id, reentry_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -1840,11 +1917,11 @@ class PaperStore:
                     forecast_lead_hours, risk_profile, bankroll,
                     forecast_snapshot_id, market_snapshot_id,
                     prediction_features_json, diagnostics_json, reasons_json,
-                    research_sleeve, research_policy_version, policy_fingerprint,
+                    account_id, research_sleeve, research_policy_version, policy_fingerprint,
                     objective_day, lead_bucket, scan_run_id, reentry_fingerprint
                 )
                 VALUES ({})
-                """.format(", ".join("?" for _ in range(1 + 56 + 7)))
+                """.format(", ".join("?" for _ in range(1 + 56 + 8)))
             decision_ids: list[int] = []
             for row, decision_identity_values in rows:
                 cursor = conn.execute(
@@ -2295,6 +2372,7 @@ class PaperStore:
             raise ValueError("research entry decision evidence is missing")
 
         expected_identity = {
+            "account_id": admission.account_id,
             "research_sleeve": admission.sleeve.value,
             "research_policy_version": admission.policy_version,
             "policy_fingerprint": admission.policy_fingerprint,
@@ -4165,9 +4243,12 @@ class PaperStore:
                     created_at, order_id, target_date, market_ticker, side,
                     action, reason, market_status, live_bid,
                     exit_fee_per_contract, net_exit_per_contract,
-                    unrealized_pnl, unrealized_roi, diagnostics_json
+                    unrealized_pnl, unrealized_roi, diagnostics_json,
+                    account_id, research_sleeve, research_policy_version,
+                    policy_fingerprint, objective_day, lead_bucket, scan_run_id,
+                    reentry_fingerprint
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -4184,6 +4265,14 @@ class PaperStore:
                     unrealized_pnl,
                     unrealized_roi,
                     diagnostics_json,
+                    _shared_row_value(order, "account_id"),
+                    _shared_row_value(order, "research_sleeve"),
+                    _shared_row_value(order, "research_policy_version"),
+                    _shared_row_value(order, "policy_fingerprint"),
+                    _shared_row_value(order, "objective_day"),
+                    _shared_row_value(order, "lead_bucket"),
+                    _shared_row_value(order, "scan_run_id"),
+                    _shared_row_value(order, "reentry_fingerprint"),
                 ),
             )
             return int(cursor.lastrowid)
