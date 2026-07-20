@@ -1,9 +1,13 @@
 # WeatherEdge Codebase Audit — 2026-06-15
 
-> **Historical audit snapshot.** Findings and production metrics below are
-> dated 2026-06-15. For current remediation scope, use the
-> [current codebase-audit brief](prompts/codebase-audit-fable5.md),
-> `docs/MULTICITY-2026-07.md`, and [AWS Deployment](aws_deployment.md).
+> **Audit snapshot from 2026-06-15, re-verified against the codebase on 2026-07-20.**
+> Every finding below has been re-checked against current `main` and carries a
+> status. **43 are fixed, 17 partially fixed, 25 remain open, 3 were superseded
+> by later rewrites, 1 needs a data rerun to settle.** Of the 17 critical- and
+> high-severity findings — the ones gating real money — **13 are fixed and most
+> carry a named regression test.** See [Remediation status](#remediation-status)
+> for the per-finding ledger. The prose in sections 1-4 is the original 2026-06-15
+> text, left unedited so the record stays honest; the status tags are additions.
 
 A full-repository review covering correctness/bugs, trade-engine scoring, and
 dashboard design, with the explicit goal of (a) being safe enough to one day back
@@ -14,6 +18,150 @@ re-checked by a separate adversarial verifier that re-opened the cited code.
 **106 findings were confirmed (1 critical, 16 high, 34 medium, 46 low, 9 nit);
 9 candidate findings were rejected as false positives.** The review was
 cross-referenced against the live published dashboard data (see below).
+
+---
+
+## Remediation status
+
+Re-verified 2026-07-20 by re-opening every cited file on current `main`. A
+finding is marked **FIXED** only on positive evidence in current source — a
+guard that now exists, a corrected condition, a test that now covers it — not
+on adjacency. The 106 original findings resolve into 89 independently
+checkable claims (several bullets bundle multiple sub-issues).
+
+| Section | Scope | Fixed | Partial | Open | Superseded | Needs rerun |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | Critical + high — must-fix before real money | **13** | 2 | 2 | 0 | 0 |
+| 2 | Trade-engine scoring | 10 | 7 | 2 | 0 | 1 |
+| 3 | Dashboard / website | 9 | 5 | 3 | 3 | 0 |
+| 4 | Condensed medium/low index | 11 | 3 | 18 | 0 | 0 |
+| **Total** | | **43** | **17** | **25** | **3** | **1** |
+
+The distribution is deliberate: the critical and high findings were worked
+down first, and the open items cluster in the medium/low tail. Nothing here is
+load-bearing for a real-money decision, because the system does not place
+real-money orders — `live_execution.py` has no authenticated client and raises
+`LiveTradingDisabled` on every non-dry-run call.
+
+### Section 1 — Critical and high (13 fixed / 2 partial / 2 open)
+
+| Finding | Status | Evidence |
+|---|---|---|
+| 1.1 **CRITICAL** — arbitrage legs dismantled at runtime | **FIXED** | `paper.py:880` tags legs with a shared `group_id`; `monitor.py:328,338-352` holds grouped legs to settlement. Test: `test_audit_fixes.py::test_monitor_holds_guaranteed_group_legs_to_settlement` |
+| Kelly sized against frozen $1000, not live equity | **FIXED** | `_cli/scan.py:198-209` sizes off `store.paper_equity()`; `db.py:5648-5678`. Test: `test_dynamic_bankroll.py` |
+| Zero displayed ask size leaves size uncapped | **FIXED** | `risk.py:107,114-118` rejects `ask_size < min_ask_size`; `config.py:81`. Test: `test_sizing_throttle.py`, `test_limit_orders.py` |
+| Binding caps ambiguous; cheap legs under-sized | **PARTIAL** | `risk.py:279-284` now reports an explicit `binding_constraint`, but `config.py:113` still uses a raw contract cap (25, up from 10) rather than the per-leg notional cap the fix asked for |
+| Settlement overwrites an already-closed order's PnL | **FIXED** | `db.py:4920` `BEGIN IMMEDIATE`; conditional `UPDATE` at `db.py:5038-5054`. Test: `test_audit_fixes.py::test_settlement_does_not_overwrite_a_closed_orders_pnl` |
+| Take-profit exits mislabeled `CLOSE_STOP_LOSS` | **FIXED** | `monitor.py:521,569` classifies on a structured `exit_kind`, not string prefix. Test: `test_audit_fixes.py::test_take_profit_exit_is_labeled_take_profit` |
+| Headline ROI/hit-rate use look-ahead sampling | **FIXED** | `strategy_lab/calibration.py:354-359` pins `sample_mode="entry-per-market-side"`. Test: `test_dashboard_backtest.py` |
+| YES/NO snapshots double-count every market | **OPEN** | `store/scoring.py:144-156` still partitions dedup by `side`, so a YES leg and its complemented NO leg both survive into `brier_score`/`win_rate`. No canonical-side collapse anywhere. No test. |
+| Closed W/L capped at 30 while other stats all-time | **FIXED** | `strategy_lab/paper_card.py:110-132` computes all metrics from the full terminal set; the `[:30]` slices apply only to display lists |
+| "After-cost market backtest" gate unimplemented | **OPEN** | `dataset_research.py:785-793` still counts raw rows; no fee-adjusted matched-trade simulation exists. Mitigated — status is hardcoded `collect_only` (`:82,142,542`) so nothing is falsely promoted — but the naming still implies backtest rigor it does not have. |
+| Lower-confidence bound ~3x too confident | **FIXED** | `probability.py:238-246,274` caps the SE sample at conditional support (`se_sample_n`) |
+| Single-source Google fallback reports zero spread | **FIXED** | `_cli/scan.py:1282,1295-1299` refuses entry when `source_count < 2`. Test: `test_entry_target_gate.py` |
+| Forecaster files under wrong settlement day in DST | **FIXED** | `google_api.py:107-114` routes through fixed-PST `local_standard_date()`. Test: `test_forecaster_dst.py` |
+| Scoring truth ≠ settlement truth | **FIXED** | `blend_archive.py:546-554` prefers the archived CLISFO maximum, with provenance tracking and re-scoring on late arrival |
+| Kalshi lookups catch only `URLError` | **FIXED** | `kalshi.py:24-28` adds `KalshiUnavailable(OSError)`; retry/backoff with 429 `Retry-After` at `:84-100`; all call sites updated |
+| A/B test treats hourly rows as independent days | **PARTIAL** | Daily-high branch now collapses by calendar date (`forecast_validation.py:22-25`) and gained a Diebold–Mariano test. The `target_temp_next_24h` branch (`:26-27`) still returns hourly timestamps and is still published to `ab_test_results.json`. |
+| Unfilled resting orders leak exposure forever | **FIXED** | `db.py:4778-4794` 15-minute maker TTL; settlement backstop at `:4935-4979`; `PAPER_EXPIRED` excluded from spend. Test: `test_audit_fixes.py`, `test_expired_requote.py` |
+
+### Section 2 — Trade-engine scoring (10 fixed / 7 partial / 2 open / 1 needs rerun)
+
+Fixed: primary-reason-only rejection counting (`summary.py:704-718` now tallies
+every gate tripped); balanced silently inheriting conservative's floors (profile
+taxonomy collapsed to `live`/`research`, `config.py:305-350`); posterior
+pre-blended before edge measurement (`risk.py:164-179`, opt-in per profile);
+ensemble uncertainty discarded (`probability.py:129-143` implements the proposed
+`sigma_eff`); intraday upward mean bias (`probability.py:440-450`); 1-contract
+fee rounding mismatch (`fees.py:39-41` rounds to a centicent); basket re-gating
+reusing a negative floor (`tail_basket.py:284-292`); kill-switch scope
+(`db.py:146-159` adds a 21-day rolling window and covers both profiles).
+
+Still open:
+
+- **Per-event spend cap bypassed on the tail-basket auto-trade path** — `risk.py:460`
+  applies `_apply_event_risk_cap` only inside `rank()`, but `_cli/scan.py:1138-1218`
+  reaches `place_approved()` directly, and `paper.py:568-653` has no event-level cap.
+- **Intraday weight cap still exceedable** — `probability.py:467-477` caps the base at
+  `intraday_probability_weight` (0.65) but then adds `intraday_boundary_weight_boost`
+  (0.15) and clamps to 1.0, so effective weight still reaches 0.80.
+
+Needs a data rerun: whether the forecast-sharpness EV ceiling has actually moved
+is a property of the archive, not of code. The two mechanisms that would relieve
+it are now built; the measurement has not been redone.
+
+### Section 3 — Dashboard / website (9 fixed / 5 partial / 3 open / 3 superseded)
+
+The entire legacy generated-HTML dashboard this section audits no longer exists;
+it was replaced by the React SPA in `src/`. Findings were re-checked against the
+new surface rather than waved off as superseded.
+
+Notably fixed: the **"Restricted diagnostics / decrypted locally" copy that
+overstated protection is gone, and the underlying data is now genuinely gated
+server-side** — `strategy_lab/build.py:178-181,226-238` strips `_private_` keys
+into a separate file and `publish_forecaster_pages.sh:33-37,122` publishes from
+an allow-list that excludes it. Also fixed: browser-time `generated_at` on fetch
+failure (`data.ts:193-198` sets only an error; `publication.tsx:71-109` is a real
+staleness state machine), unlabeled timestamps (now explicit UTC), and divergent
+headline highs between views (single `predictedHigh()` helper).
+
+Still open: posterior decomposition is computed but never threaded to the
+frontend (`grep` for `ensemble_probability`/`intraday_probability` in `src/`
+returns nothing), so the per-candidate expander and the outcome-side
+`quality_buckets` bar have no data to render; and the locked-"today" case
+(`observed_high_is_final`) is not special-cased in any component.
+
+### Section 4 — Condensed medium/low index (11 fixed / 3 partial / 18 open)
+
+Fixed: missing DB indexes and unbounded `decision_snapshots` (now indexed at
+`store/schema.py:499-536` and pruned on a timer); no WAL and default busy timeout
+(`db.py:579-580`); migrations re-running every start (`store/schema.py:24-53`
+flock + completed-check); daily-report calibration crashing the public artifact
+below `min_train` (`report.py:207-234`); locale-dependent `%b` ticker parsing
+(`models.py:398-431` uses explicit month tables); missing 429/`Retry-After`
+handling; unguarded monitor close path; CLISFO parser returning the first
+`MAXIMUM` in the document (`clisfo.py:118-135` now anchors on the
+`TEMPERATURE (F)` header); asymmetric one-sided market-implied value; and the
+model-veto reading a market-blended posterior (`db.py:2204` `COALESCE`).
+
+This is where the open items cluster — 18 of them. The substantive ones:
+
+- **LSTM residual sigma is computed over ~24 autocorrelated hourly rows per day**
+  (`research/forecast_tomorrow.py:48-52`) and feeds the published
+  `forecast_data.json.lstm_sigma` shown on the site.
+- **Per-day average model/market probability is biased toward 0.5** by summing
+  across both YES and NO rows without side normalization (`summary.py:625-732`).
+  The fix pattern (`_to_yes_frame`) exists in `backtest_rescore.py:176-183` but
+  is not applied here.
+- **Accuracy candidates can be promoted on as few as 8 holdout days with no
+  significance test** (`dataset_research.py:17,19,498,532`); `research_significance.py`
+  exists but is wired only into the separate `research_promotion.py` path.
+- **Same-day reanalysis rows can masquerade as forecast edge** — `datasets.py:895,898`
+  stamps `lead_hours=None` on reanalysis and candidate scoring applies no lead filter.
+- **LSTM sequences are spliced by array position across data gaps**
+  (`research/lstm_model.py:78-82`) with no timestamp-contiguity check.
+- **`load_to_db` drops and rebuilds tables in place** with no atomic swap
+  (`research/load_to_db.py:28,31`).
+
+### Two systemic themes still open
+
+Grouping the open findings surfaces two root causes that each account for
+multiple entries above, and each is a single well-scoped fix:
+
+1. **YES/NO double-counting.** The same complemented contract is counted as two
+   independent observations in dedup (`store/scoring.py:144-156`) and in per-day
+   probability averaging (`summary.py:625-732`). This biases published Brier
+   score, win rate, and average probability toward 0.5. A canonical-side collapse
+   before scoring closes both.
+2. **Autocorrelated hourly rows treated as independent samples.** Present in the
+   `target_temp_next_24h` A/B branch (`forecast_validation.py:26-27`) and in the
+   LSTM residual sigma (`research/forecast_tomorrow.py:48-52`). The daily-high
+   path already does this correctly — collapsing to one observation per calendar
+   date — so the fix is to apply the same collapse in the two remaining places.
+
+Until (1) lands, the published Brier and hit-rate figures should be read as
+approximate. The headline daily-high accuracy numbers are unaffected: that path
+collapses by day and is Diebold–Mariano tested.
 
 ---
 

@@ -111,6 +111,9 @@ Things a reviewer might want to look at directly:
   redesign, with the required sample size derived from published variance.
 - **[trading/docs/strategy.md](trading/docs/strategy.md)** — posterior
   construction, gate structure, and the two risk profiles.
+- **[docs/ai-assisted-development.md](docs/ai-assisted-development.md)** — how
+  this project uses AI coding agents, the verification harness that gates them,
+  and three cases where that harness failed.
 - **[.github/workflows/verify.yml](.github/workflows/verify.yml)** — CI across
   two Python versions with a semgrep pass, a bytecode gate, and an enforced
   SPA bundle budget.
