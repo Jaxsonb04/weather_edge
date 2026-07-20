@@ -205,6 +205,167 @@ def test_live_forecast_freshness_rejects_stale_snapshot():
         raise AssertionError("stale live forecasts must be rejected")
 
 
+def _write_sfo_live_forecast_sources(
+    root: Path,
+    target: date,
+    *,
+    blend_fetched_at: str,
+    emos_fetched_at: str,
+) -> None:
+    with sqlite3.connect(root / "weather.db") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE forecast_blend_daily_high (
+                fetched_at TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                lead_hours REAL,
+                method TEXT NOT NULL,
+                predicted_high_f REAL NOT NULL,
+                google_high_f REAL,
+                nws_high_f REAL,
+                open_meteo_high_f REAL,
+                history_high_f REAL,
+                google_weight REAL,
+                nws_weight REAL,
+                open_meteo_weight REAL,
+                history_weight REAL,
+                station_adjustment_f REAL,
+                fresh_station_count INTEGER,
+                source_count INTEGER,
+                time_zone TEXT,
+                max_calls_per_day INTEGER,
+                calls_used_today INTEGER,
+                details_json TEXT,
+                PRIMARY KEY (fetched_at, target_date)
+            );
+            CREATE TABLE forecast_emos_daily_high (
+                station_id TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                lead_days INTEGER NOT NULL,
+                predicted_high_f REAL NOT NULL,
+                sigma_f REAL NOT NULL,
+                n_models INTEGER NOT NULL,
+                model_spread_f REAL,
+                fetched_at TEXT NOT NULL,
+                method TEXT,
+                source TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO forecast_blend_daily_high (
+                fetched_at, target_date, lead_hours, method, predicted_high_f,
+                google_high_f, nws_high_f, open_meteo_high_f, history_high_f,
+                google_weight, nws_weight, open_meteo_weight, history_weight,
+                station_adjustment_f, fresh_station_count, source_count,
+                time_zone, max_calls_per_day, calls_used_today, details_json
+            ) VALUES (?, ?, 24, 'legacy SFO blend', 68.0, 68.0, 69.0, 67.0,
+                66.0, 0.4, 0.3, 0.2, 0.1, 0, 4, 4, 'Etc/GMT+8', 260, 5, '{}')
+            """,
+            (blend_fetched_at, target.isoformat()),
+        )
+        conn.execute(
+            """
+            INSERT INTO forecast_emos_daily_high (
+                station_id, target_date, lead_days, predicted_high_f, sigma_f,
+                n_models, model_spread_f, fetched_at, method, source
+            ) VALUES ('KSFO', ?, 1, 71.5, 2.4, 8, 3.2, ?, 'emos-wmean', 'live')
+            """,
+            (target.isoformat(), emos_fetched_at),
+        )
+
+
+def test_sfo_live_forecast_falls_back_to_fresh_emos_when_legacy_blend_is_stale(
+    tmp_path,
+):
+    now = datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
+    target = date(2026, 7, 20)
+    _write_sfo_live_forecast_sources(
+        tmp_path,
+        target,
+        blend_fetched_at="2026-07-19T09:44:30+00:00",
+        emos_fetched_at="2026-07-20T05:41:48+00:00",
+    )
+
+    forecast = SfoForecasterAdapter(tmp_path).latest_live_forecast(
+        target,
+        max_age_hours=12.0,
+        now=now,
+    )
+
+    assert forecast.predicted_high_f == 71.5
+    assert forecast.fetched_at == "2026-07-20T05:41:48+00:00"
+    assert forecast.raw["source"] == "forecast_emos_daily_high"
+    assert forecast.raw["operational_fallback"] == {
+        "reason": "legacy_sfo_blend_stale",
+        "legacy_blend_fetched_at": "2026-07-19T09:44:30+00:00",
+        "max_age_hours": 12.0,
+    }
+
+
+def test_sfo_live_forecast_keeps_fresh_legacy_blend_bitwise_unchanged(tmp_path):
+    now = datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
+    target = date(2026, 7, 20)
+    _write_sfo_live_forecast_sources(
+        tmp_path,
+        target,
+        blend_fetched_at="2026-07-20T05:30:00+00:00",
+        emos_fetched_at="2026-07-20T05:41:48+00:00",
+    )
+    adapter = SfoForecasterAdapter(tmp_path)
+
+    forecast = adapter.latest_live_forecast(target, max_age_hours=12.0, now=now)
+
+    assert forecast == adapter.latest_blend(target)
+    assert forecast.predicted_high_f == 68.0
+    assert "operational_fallback" not in forecast.raw
+
+
+def test_sfo_live_forecast_uses_fresh_emos_when_legacy_blend_row_is_missing(tmp_path):
+    now = datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
+    target = date(2026, 7, 21)
+    _write_sfo_live_forecast_sources(
+        tmp_path,
+        target,
+        blend_fetched_at="2026-07-20T05:30:00+00:00",
+        emos_fetched_at="2026-07-20T05:41:48+00:00",
+    )
+    with sqlite3.connect(tmp_path / "weather.db") as conn:
+        conn.execute("DELETE FROM forecast_blend_daily_high")
+
+    forecast = SfoForecasterAdapter(tmp_path).latest_live_forecast(
+        target,
+        max_age_hours=12.0,
+        now=now,
+    )
+
+    assert forecast.predicted_high_f == 71.5
+    assert forecast.raw["operational_fallback"]["reason"] == "legacy_sfo_blend_missing"
+    assert forecast.raw["operational_fallback"]["legacy_blend_fetched_at"] is None
+
+
+def test_sfo_live_forecast_remains_fail_closed_when_blend_and_emos_are_stale(tmp_path):
+    now = datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
+    target = date(2026, 7, 20)
+    _write_sfo_live_forecast_sources(
+        tmp_path,
+        target,
+        blend_fetched_at="2026-07-19T09:44:30+00:00",
+        emos_fetched_at="2026-07-19T10:00:00+00:00",
+    )
+    config = StrategyConfig(max_forecast_age_hours=12.0)
+
+    forecast = SfoForecasterAdapter(tmp_path).latest_live_forecast(
+        target,
+        max_age_hours=config.max_forecast_age_hours,
+        now=now,
+    )
+
+    assert forecast.method == "legacy SFO blend"
+    assert forecast.age_hours(now) > config.max_forecast_age_hours
+
+
 def test_observed_high_lock_is_detected_before_second_intraday_adjustment():
     forecast = ForecastSnapshot(
         target_date=date(2026, 6, 4),

@@ -359,7 +359,7 @@ def test_build_scan_context_preserves_event_fallback_and_injected_sizing_model()
         markets=[market],
     )
     adapter = Mock()
-    adapter.latest_blend.return_value = forecast
+    adapter.latest_live_forecast.return_value = forecast
     adapter.load_emos_mu_sigma.return_value = {target: (82.0, 3.0)}
     calibrator = Mock()
     probabilities = {market.ticker: object()}

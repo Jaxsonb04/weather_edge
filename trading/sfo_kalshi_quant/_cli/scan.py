@@ -322,7 +322,10 @@ def build_scan_context(
 
     city = city or get_city("sfo")
     series_ticker = city.series_ticker
-    forecast = adapter.latest_blend(target)
+    forecast = adapter.latest_live_forecast(
+        target,
+        max_age_hours=config.max_forecast_age_hours,
+    )
     _enforce_live_forecast_freshness(forecast, config)
     intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
@@ -1063,7 +1066,10 @@ def _tail_basket_one_target(
 ) -> None:
     city = city or get_city("sfo")
     series_ticker = city.series_ticker
-    forecast = adapter.latest_blend(target)
+    forecast = adapter.latest_live_forecast(
+        target,
+        max_age_hours=config.max_forecast_age_hours,
+    )
     _enforce_live_forecast_freshness(forecast, config)
     intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None

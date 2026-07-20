@@ -107,6 +107,88 @@ class SfoForecasterAdapter:
             "see docs/superpowers/plans/2026-07-17-multicity-google-runtime-weather.md Task 7, T7-1)"
         )
 
+    def latest_live_forecast(
+        self,
+        target: date,
+        *,
+        max_age_hours: float,
+        now: datetime | None = None,
+    ) -> ForecastSnapshot:
+        """Return the preferred fresh forecast without weakening freshness gates.
+
+        The Google runtime-store migration stopped regenerating the legacy SFO
+        ``forecast_blend_daily_high`` rows while keeping the permanent EMOS
+        baseline current. Preserve the legacy SFO blend exactly while it is
+        fresh. If it is stale, missing, or unreadable, use a fresh live EMOS row
+        for the same station and target. If neither source is fresh, return the
+        best primary candidate so the caller's existing freshness gate still
+        fails closed with its normal diagnostic.
+
+        Non-SFO cities already use EMOS through ``latest_blend`` and are left
+        unchanged. ``latest_blend`` itself also remains unchanged for historical
+        calibration and the byte-stable Google challenger shadow comparison.
+        """
+
+        if max_age_hours < 0:
+            raise ValueError("max_age_hours must be non-negative")
+        if not self.city.has_full_blend:
+            return self.latest_blend(target)
+
+        primary: ForecastSnapshot | None = None
+        primary_error: ForecastDataError | None = None
+        if self.weather_db.exists():
+            try:
+                primary = self._latest_blend_row(target)
+            except ForecastDataError as exc:
+                primary_error = exc
+
+        primary_age = primary.age_hours(now) if primary is not None else None
+        if primary is not None and primary_age is not None and primary_age <= max_age_hours:
+            return primary
+
+        fallback: ForecastSnapshot | None = None
+        fallback_error: ForecastDataError | None = None
+        try:
+            fallback = self._latest_emos_snapshot(target)
+        except ForecastDataError as exc:
+            fallback_error = exc
+        fallback_age = fallback.age_hours(now) if fallback is not None else None
+        if fallback is not None and fallback_age is not None and fallback_age <= max_age_hours:
+            if primary is None:
+                reason = (
+                    "legacy_sfo_blend_unreadable"
+                    if primary_error is not None
+                    else "legacy_sfo_blend_missing"
+                )
+            elif primary_age is None:
+                reason = "legacy_sfo_blend_timestamp_invalid"
+            else:
+                reason = "legacy_sfo_blend_stale"
+            return replace(
+                fallback,
+                method=f"{fallback.method} [SFO operational fallback]",
+                raw={
+                    **fallback.raw,
+                    "operational_fallback": {
+                        "reason": reason,
+                        "legacy_blend_fetched_at": (
+                            primary.fetched_at if primary is not None else None
+                        ),
+                        "max_age_hours": float(max_age_hours),
+                    },
+                },
+            )
+
+        if primary is not None:
+            return primary
+        if fallback is not None:
+            return fallback
+        if primary_error is not None:
+            raise primary_error
+        if fallback_error is not None:
+            raise fallback_error
+        return self.latest_blend(target)
+
     def intraday_snapshot(self, target: date) -> IntradaySnapshot | None:
         if not self.weather_db.exists():
             return None
