@@ -46,7 +46,7 @@ function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
       variant="ghost"
       onPress={onSelect}
       aria-pressed={active}
-      className={`group h-auto min-h-36 min-w-[16rem] flex-1 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] sm:min-w-0 ${
+      className={`group h-auto min-h-44 min-w-[16rem] flex-1 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] sm:min-w-0 ${
         active
           ? "bg-surface shadow-md ring-1 ring-accent/45"
           : "bg-surface-secondary/70 ring-1 ring-border/55 hover:bg-surface-secondary"
@@ -60,7 +60,7 @@ function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
           <span className="font-mono text-[10px] tracking-[0.16em] text-muted">0{index + 1}</span>
         </span>
         <span className="min-w-0">
-          <span className="block truncate font-display text-sm font-semibold text-foreground">{profile.label}</span>
+          <span className="block min-h-10 text-balance font-display text-sm font-semibold leading-snug text-foreground">{profile.label}</span>
           <span className="mt-1 block text-xs text-muted">{ROLES[profile.risk_profile] ?? "Research profile"}</span>
         </span>
         <span className="flex items-end justify-between gap-3">

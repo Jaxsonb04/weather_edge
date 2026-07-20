@@ -330,24 +330,29 @@ export default function StrategyLabView() {
                 title="What the system learned"
                 sub="The cross-profile conclusions, readiness verdict, and supporting evidence. High-value outcomes stay visible; deeper trading, model, and operations diagnostics unfold on demand."
               />
-              <TrackRecordFinding s={s} />
-              <SelectivityFinding s={s} />
-              <ReadinessFinding s={s} />
-              <Reveal>
+              <div className="mt-10">
+                <TrackRecordFinding s={s} />
+                <SelectivityFinding s={s} />
+                <ReadinessFinding s={s} />
+              </div>
+              <Reveal className="mt-8">
                 <ReadinessPanel s={s} />
+              </Reveal>
+              <Reveal className="mt-8 space-y-5">
+                <CalibrationCompare s={s} />
+                <GateFunnel s={s} />
+                <OpsHealth s={s} />
               </Reveal>
               <Reveal className="mt-6">
                 <Accordion variant="surface" hideSeparator className="overflow-hidden rounded-2xl ring-1 ring-border/70">
                   <Accordion.Item id="model-evidence">
                     <DisclosureHeading
                       icon="solar:chart-square-bold"
-                      title="Model & trading evidence"
-                      note="Calibration, gate selectivity, movers, and backtest coverage"
+                      title="Supporting model detail"
+                      note="Secondary movers and backtest coverage"
                     />
                     <Accordion.Panel>
                       <Accordion.Body className="space-y-5 px-4 pb-5 pt-2">
-                        <CalibrationCompare s={s} />
-                        <GateFunnel s={s} />
                         <MoversCard s={s} />
                         <BacktestStats s={s} />
                       </Accordion.Body>
@@ -356,12 +361,11 @@ export default function StrategyLabView() {
                   <Accordion.Item id="runtime-controls">
                     <DisclosureHeading
                       icon="solar:settings-minimalistic-bold"
-                      title="Runtime & risk controls"
-                      note="Feed health, exit policy, and daily paper activity"
+                      title="Execution policy detail"
+                      note="Exit rules and daily activity history"
                     />
                     <Accordion.Panel>
                       <Accordion.Body className="space-y-5 px-4 pb-5 pt-2">
-                        <OpsHealth s={s} />
                         <ExitPolicyCard s={s} />
                         <DailyActivity s={s} />
                       </Accordion.Body>

@@ -3,6 +3,7 @@ import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
 import { money, type ReadinessCheck, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 
 function CheckRow({ c }: { c: ReadinessCheck }) {
   const progress = Math.max(0, Math.min(1, c.progress ?? 0));
@@ -81,9 +82,8 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
   const ready = r.ready === true;
   const policy = r.live_policy;
 
-  return (
-    <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-      <Card className="h-full rounded-2xl ring-1 ring-border/70">
+  const verdictCard = (
+    <Card className="h-full rounded-2xl ring-1 ring-border/70">
         <Card.Header>
           <Card.Title className="text-base">Verdict</Card.Title>
           <Card.Description className="text-sm text-muted">Recomputed on every AWS refresh</Card.Description>
@@ -118,9 +118,11 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
             </div>
           )}
         </Card.Content>
-      </Card>
+    </Card>
+  );
 
-      <Card className="h-full rounded-2xl ring-1 ring-border/70">
+  const checklistCard = (
+    <Card className="h-full rounded-2xl ring-1 ring-border/70">
         <Card.Header>
           <Card.Title className="text-base">Go-live checklist</Card.Title>
           <Card.Description className="text-sm text-muted">
@@ -134,7 +136,24 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
             ))}
           </ul>
         </Card.Content>
-      </Card>
-    </div>
+    </Card>
   );
+
+  if (checks.length > 5) {
+    return (
+      <div className="space-y-5">
+        {verdictCard}
+        <DetailDisclosure
+          id="go-live-checklist"
+          icon="solar:clipboard-list-bold"
+          title="Go-live checklist"
+          note={`${passed}/${total} checks passed · ${checks.length} technical rows`}
+        >
+          {checklistCard}
+        </DetailDisclosure>
+      </div>
+    );
+  }
+
+  return <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">{verdictCard}{checklistCard}</div>;
 }

@@ -119,6 +119,25 @@ describe("ProfileDashboard publication truthfulness", () => {
     expect(screen.getByText("Alpha position")).toBeInTheDocument();
   });
 
+  it("orders profile history before the visible positions and execution log", async () => {
+    const withHistory = {
+      ...profile,
+      daily_summary: {
+        window_days: 2,
+        days: [
+          { date: "2026-07-08", cumulative_realized: 2, realized_pnl: 2 },
+          { date: "2026-07-09", cumulative_realized: 5, realized_pnl: 3 },
+        ],
+      },
+    } as ProfileEntry;
+
+    await renderDashboard("2026-07-09T11:59:00Z", withHistory);
+
+    const history = screen.getByText("Candidate — P&L contribution");
+    const positions = screen.getByRole("heading", { name: "Positions & execution log" });
+    expect(history.compareDocumentPosition(positions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("shows the target account's fixed objective, evidence breadth, and non-guarantee", async () => {
     await renderDashboard("2026-07-09T11:59:00Z", targetProfile);
 

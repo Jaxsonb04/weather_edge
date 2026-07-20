@@ -1,4 +1,5 @@
 import { Card } from "@heroui/react/card";
+import { Accordion } from "@heroui/react/accordion";
 import { Icon } from "@iconify/react/offline";
 import { cityForTicker } from "../../lib/data";
 import { cents, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
@@ -30,8 +31,39 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
       </div>
     );
   }
+  const visible = rows.slice(0, 5);
+  const overflow = rows.slice(5);
   return (
-    <ul className="divide-y divide-border/50">
+    <>
+      <ul className="divide-y divide-border/50">
+        <PositionRows rows={visible} kind={kind} />
+      </ul>
+      {overflow.length > 0 && (
+        <Accordion variant="surface" hideSeparator className="mt-2 overflow-hidden rounded-xl ring-1 ring-border/50">
+          <Accordion.Item id={`${kind}-overflow`}>
+            <Accordion.Heading>
+              <Accordion.Trigger className="group flex min-h-11 w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-medium text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]">
+                <span>Show {overflow.length} more {kind === "open" ? "open positions" : "pending limits"}</span>
+                <Accordion.Indicator aria-hidden="true" />
+              </Accordion.Trigger>
+            </Accordion.Heading>
+            <Accordion.Panel>
+              <Accordion.Body className="px-3 pb-2 pt-0">
+                <ul className="divide-y divide-border/50 border-t border-border/50">
+                  <PositionRows rows={overflow} kind={kind} />
+                </ul>
+              </Accordion.Body>
+            </Accordion.Panel>
+          </Accordion.Item>
+        </Accordion>
+      )}
+    </>
+  );
+}
+
+function PositionRows({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pending" }) {
+  return (
+    <>
       {rows.map((r) => {
         const city = cityForTicker(r.ticker ?? "");
         return (
@@ -73,7 +105,7 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
         </li>
         );
       })}
-    </ul>
+    </>
   );
 }
 

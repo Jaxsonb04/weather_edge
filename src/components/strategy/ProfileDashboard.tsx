@@ -237,8 +237,8 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         </div>
       )}
 
-      {/* per-book equity curve */}
-      {rp !== "live" && !!days?.length && (
+      {/* Every selected book gets its own attributed history, including live. */}
+      {days?.length ? (
         <EquityCurve
           s={s}
           days={days}
@@ -248,15 +248,99 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           description={`Cumulative realized P&L attributed to this book within the shared account · ${p.daily_summary?.window_days ?? days.length}-day view`}
           contributionMode
         />
+      ) : (
+        <div role="status" className="grid min-h-48 place-items-center rounded-2xl border border-dashed border-border/70 bg-surface-secondary/50 px-4 text-center">
+          <div>
+            <Icon icon="solar:chart-2-bold" className="mx-auto mb-2 size-5 text-warning" aria-hidden="true" />
+            <p className="text-sm font-medium text-foreground">Profile P&amp;L history unavailable.</p>
+            <p className="mt-1 text-xs text-muted">The chart returns when this profile publishes its daily attribution series.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Positions and executions are primary profile evidence, so the first
+          five rows stay visible. Only overflow and monitor internals fold. */}
+      <section className="space-y-5" aria-labelledby={`positions-title-${rp}`}>
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-xl bg-surface-secondary/60 px-4 py-3 ring-1 ring-border/50">
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
+            <Icon icon="solar:folder-open-bold" className="size-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h4 id={`positions-title-${rp}`} className="font-display text-sm font-semibold text-foreground">Positions &amp; execution log</h4>
+            <p className="mt-0.5 text-xs text-muted">
+              {currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · showing {Math.min(ledger.length, 5)} recent of {allTimeClosed} resolved
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <SubHead
+            icon="solar:folder-open-bold"
+            title="Current book state"
+            note={currentStateAvailable ? "open positions + pending limits, scoped to this profile" : "unavailable until publication recovers"}
+          />
+          <OpenBook s={s} profile={rp} />
+        </div>
+
+        <div>
+          <SubHead
+            icon="solar:clipboard-list-bold"
+            title="Recent closed positions"
+            note={`latest ${Math.min(ledger.length, 5)} published rows`}
+          />
+          {byCity.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                <Icon icon="solar:map-point-bold" className="size-3.5 text-accent" aria-hidden="true" />
+                By settlement city
+              </p>
+              <div className="flex flex-wrap gap-2" aria-label="Closed positions grouped by settlement city">
+                {byCity.map((c) => (
+                  <span key={c.slug} className="flex items-center gap-1.5 rounded-full bg-surface-secondary px-2.5 py-1 text-xs ring-1 ring-border/50">
+                    <span className="font-medium text-foreground">{c.name}</span>
+                    <span className="tnum text-muted">{c.trades} trade{c.trades === 1 ? "" : "s"} · {c.wins}W</span>
+                    <span className={`tnum font-medium ${c.pnl > 0 ? "text-success" : c.pnl < 0 ? "text-danger" : "text-muted"}`}>{money(c.pnl)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <LedgerTable
+            s={s}
+            rows={ledger}
+            limit={5}
+            detailed
+            hideProfile
+            emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
+          />
+        </div>
+      </section>
+
+      {(ledger.length > 5 || monitorRows.length > 0) && (
+        <DetailDisclosure
+          id={`execution-detail-${rp}`}
+          icon="solar:history-bold"
+          title="Full execution detail"
+          note={`${Math.max(ledger.length - 5, 0)} older ledger rows · monitor decisions and rule-level marks`}
+        >
+          {ledger.length > 5 && (
+            <div>
+              <SubHead icon="solar:clipboard-list-bold" title="Complete published ledger" note={`${ledger.length} rows`} />
+              <LedgerTable s={s} rows={ledger} detailed hideProfile />
+            </div>
+          )}
+          {monitorRows.length > 0 && (
+            <div>
+              <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
+              <MonitorLog s={s} rows={monitorRows} hideProfile />
+            </div>
+          )}
+        </DetailDisclosure>
       )}
 
       {(gate && gateCount.signals > 0) || charts?.probability_vs_market?.length ? (
-        <DetailDisclosure
-          id={`signal-evidence-${rp}`}
-          icon="solar:chart-square-bold"
-          title="Signal & entry evidence"
-          note="Gate approvals, rejection reasons, model-vs-market candidates, and edge by price"
-        >
+        <section className="space-y-5">
+          <SubHead icon="solar:chart-square-bold" title="Signal & entry evidence" note="gates, candidates, and edge by price" />
           {gate && gateCount.signals > 0 && (
             <Card className="rounded-2xl ring-1 ring-border/70">
               <Card.Content className="grid gap-4 p-4 md:grid-cols-2">
@@ -295,16 +379,12 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               {charts.edge_by_market_bucket?.length ? <EdgeByPriceChart buckets={charts.edge_by_market_bucket} /> : null}
             </div>
           ) : null}
-        </DetailDisclosure>
+        </section>
       ) : null}
 
       {/* exits + side + lessons */}
-      <DetailDisclosure
-        id={`outcomes-${rp}`}
-        icon="solar:lightbulb-bolt-bold"
-        title="Outcomes & profile learnings"
-        note="Exit reasons, side performance, lessons, and recommended changes"
-      >
+      <section className="space-y-5">
+        <SubHead icon="solar:lightbulb-bolt-bold" title="Outcomes & profile learnings" note="exits, side performance, and recommended changes" />
         <div className="grid gap-5 lg:grid-cols-2">
           <Card className="h-full rounded-2xl ring-1 ring-border/70">
           <Card.Header className="flex flex-row items-center gap-2">
@@ -350,67 +430,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           </Card.Content>
           </Card>
         </div>
-      </DetailDisclosure>
-
-      <DetailDisclosure
-        id={`positions-${rp}`}
-        icon="solar:folder-open-bold"
-        title="Positions & execution log"
-        note={`${currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · ${Math.min(ledger.length, allTimeClosed || ledger.length)} recent of ${allTimeClosed} resolved`}
-      >
-        <div>
-          <SubHead
-            icon="solar:folder-open-bold"
-            title="Current book state"
-            note={currentStateAvailable ? "open positions + pending limits, scoped to this profile" : "unavailable until publication recovers"}
-          />
-          <OpenBook s={s} profile={rp} />
-        </div>
-
-        <div>
-          <SubHead
-            icon="solar:clipboard-list-bold"
-            title="Recent closed positions"
-            note={`showing ${Math.min(ledger.length, allTimeClosed || ledger.length)} of ${allTimeClosed} resolved all-time`}
-          />
-          {byCity.length > 0 && (
-            <div className="mb-3">
-            <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
-              <Icon icon="solar:map-point-bold" className="size-3.5 text-accent" aria-hidden="true" />
-              By settlement city
-            </p>
-            <div className="flex flex-wrap gap-2" aria-label="Closed positions grouped by settlement city">
-              {byCity.map((c) => (
-                <span key={c.slug} className="flex items-center gap-1.5 rounded-full bg-surface-secondary px-2.5 py-1 text-xs ring-1 ring-border/50">
-                  <span className="font-medium text-foreground">{c.name}</span>
-                  <span className="tnum text-muted">
-                    {c.trades} trade{c.trades === 1 ? "" : "s"} · {c.wins}W
-                  </span>
-                  <span className={`tnum font-medium ${c.pnl > 0 ? "text-success" : c.pnl < 0 ? "text-danger" : "text-muted"}`}>{money(c.pnl)}</span>
-                </span>
-              ))}
-              {byCity.length === 1 && (
-                <span className="self-center text-[11px] text-muted">— other cities populate here as their markets settle</span>
-              )}
-            </div>
-            </div>
-          )}
-          <LedgerTable
-            s={s}
-            rows={ledger}
-            detailed
-            hideProfile
-            emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
-          />
-        </div>
-
-        {monitorRows.length > 0 && (
-          <div>
-            <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
-            <MonitorLog s={s} rows={monitorRows} hideProfile />
-          </div>
-        )}
-      </DetailDisclosure>
+      </section>
     </div>
   );
 }
