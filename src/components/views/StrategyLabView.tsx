@@ -317,7 +317,7 @@ export default function StrategyLabView() {
                 title="Choose a strategy profile"
                 sub="Each preset opens one isolated book with its own performance, signal quality, exposure, trade ledger, and learnings. Nothing is blended across profiles."
               />
-              <Reveal>
+              <Reveal className="pt-3 sm:pt-4">
                 <ProfileExplorer s={s} />
               </Reveal>
             </section>
