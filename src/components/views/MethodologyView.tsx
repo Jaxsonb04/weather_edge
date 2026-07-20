@@ -15,6 +15,7 @@ import { ClimatologyChart } from "../charts/ClimatologyChart";
 import { HistogramChart } from "../charts/HistogramChart";
 import { CalibrationChart } from "../charts/CalibrationChart";
 import { CohortChart } from "../charts/CohortChart";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 
 function ModelProofFinding({ diag }: { diag: Diagnostics }) {
   const { models, ab } = diag;
@@ -104,23 +105,24 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
           />
           {diag ? (
             <div className="space-y-5">
-              <div className="grid gap-5 lg:grid-cols-2">
-                <Reveal delay={0.04}>
-                  <ModelCompareChart diag={diag} />
-                </Reveal>
-                <Reveal delay={0.08}>
-                  <FeatureImportanceChart diag={diag} />
-                </Reveal>
-              </div>
-              <div className="grid gap-5 lg:grid-cols-2">
-                <Reveal delay={0.04}>
-                  <ABSignificance diag={diag} />
-                </Reveal>
-                <Reveal delay={0.08}>
-                  <HeldOutScatter diag={diag} />
-                </Reveal>
-              </div>
               <ModelProofFinding diag={diag} />
+              <Reveal>
+                <DetailDisclosure
+                  id="held-out-model-evidence"
+                  icon="solar:chart-square-bold"
+                  title="Held-out model evidence"
+                  note="MAE comparison, feature importance, significance test, and observed-vs-predicted scatter"
+                >
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    <ModelCompareChart diag={diag} />
+                    <FeatureImportanceChart diag={diag} />
+                  </div>
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    <ABSignificance diag={diag} />
+                    <HeldOutScatter diag={diag} />
+                  </div>
+                </DetailDisclosure>
+              </Reveal>
             </div>
           ) : diagError ? (
             <div role="alert" className="flex h-48 items-center justify-center text-sm text-muted">
@@ -141,21 +143,22 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             title="Ten years of San Francisco accuracy"
             sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor San Francisco's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station, just without a decade of scored outcomes behind it yet.`}
           />
-          <Reveal className="mb-5">
-            <ClimatologyChart forecast={forecast} />
-          </Reveal>
-          <div className="grid gap-5 lg:grid-cols-2">
-            <Reveal delay={0.05}>
-              <HistogramChart story={story} forecast={forecast} />
-            </Reveal>
-            <Reveal delay={0.1}>
-              <CalibrationChart signal={signal} />
-            </Reveal>
-          </div>
-          <Reveal className="mt-5">
-            <CohortChart signal={signal} />
-          </Reveal>
           <AccuracyFinding data={data} />
+          <Reveal className="mt-5">
+            <DetailDisclosure
+              id="accuracy-evidence"
+              icon="solar:graph-up-bold"
+              title="Ten-year accuracy evidence"
+              note="Climatology, observed distribution, calibration curve, and performance by temperature regime"
+            >
+              <ClimatologyChart forecast={forecast} />
+              <div className="grid gap-5 lg:grid-cols-2">
+                <HistogramChart story={story} forecast={forecast} />
+                <CalibrationChart signal={signal} />
+              </div>
+              <CohortChart signal={signal} />
+            </DetailDisclosure>
+          </Reveal>
         </section>
       </div>
     </>
