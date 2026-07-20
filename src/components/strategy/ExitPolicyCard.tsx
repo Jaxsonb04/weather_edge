@@ -1,5 +1,3 @@
-import { Card } from "@heroui/react/card";
-import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import { money, type SideStats, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
@@ -67,42 +65,39 @@ export function SidePerformanceList({ side, emptyNote }: { side?: Record<string,
 export function ExitPolicyCard({ s }: { s: StrategyLab }) {
   const m = s.paper_trading?.monitor;
   return (
-    <Card className="rounded-2xl ring-1 ring-border/70">
-      <Card.Header className="flex flex-row items-center gap-2">
-        <Icon icon="solar:route-bold" className="size-4 text-accent" aria-hidden="true" />
+    <section aria-labelledby="exit-discipline-title" className="space-y-6">
+      <div>
+        <h4 id="exit-discipline-title" className="font-display text-sm font-semibold text-foreground">
+          Exit discipline
+        </h4>
+        <p className="mt-2 text-sm text-muted">
+          A monitor re-marks every open position each cycle and closes it by rule
+        </p>
+      </div>
+      {m && (
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+          <Stat label="YES take-profit" value={m.yes_take_profit_pct != null ? `+${m.yes_take_profit_pct}%` : "—"} tone="pos" />
+          <Stat label="YES stop-loss" value={m.yes_stop_loss_pct != null ? `−${m.yes_stop_loss_pct}%` : "—"} tone="neg" />
+          <Stat label="NO take-profit" value={m.no_take_profit_pct != null ? `+${m.no_take_profit_pct}%` : "—"} tone="pos" />
+          <Stat label="NO stop-loss" value={m.no_stop_loss_pct != null ? `−${m.no_stop_loss_pct}%` : "—"} tone="neg" />
+        </div>
+      )}
+      {m?.model_veto_buffer != null && (
+        <p className="text-xs leading-relaxed text-muted">
+          Model veto: if the live model moves {Math.round(m.model_veto_buffer * 100)}pp+ against a position, the monitor can
+          cut it early, capped at a {m.model_veto_max_loss_pct ?? "—"}% loss of cost.
+        </p>
+      )}
+      <div className="grid gap-6 border-t border-border/50 pt-4 md:grid-cols-2">
         <div>
-          <Card.Title className="text-base">Exit discipline</Card.Title>
-          <Card.Description className="text-sm text-muted">
-            A monitor re-marks every open position each cycle and closes it by rule
-          </Card.Description>
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">How the window's positions exited</p>
+          <ExitReasonBars reasons={s.daily_summary?.exit_reasons} />
         </div>
-      </Card.Header>
-      <Card.Content className="space-y-5 pt-0">
-        {m && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat label="YES take-profit" value={m.yes_take_profit_pct != null ? `+${m.yes_take_profit_pct}%` : "—"} tone="pos" />
-            <Stat label="YES stop-loss" value={m.yes_stop_loss_pct != null ? `−${m.yes_stop_loss_pct}%` : "—"} tone="neg" />
-            <Stat label="NO take-profit" value={m.no_take_profit_pct != null ? `+${m.no_take_profit_pct}%` : "—"} tone="pos" />
-            <Stat label="NO stop-loss" value={m.no_stop_loss_pct != null ? `−${m.no_stop_loss_pct}%` : "—"} tone="neg" />
-          </div>
-        )}
-        {m?.model_veto_buffer != null && (
-          <p className="text-xs leading-relaxed text-muted">
-            Model veto: if the live model moves {Math.round(m.model_veto_buffer * 100)}pp+ against a position, the monitor can
-            cut it early, capped at a {m.model_veto_max_loss_pct ?? "—"}% loss of cost.
-          </p>
-        )}
-        <div className="grid gap-6 border-t border-border/50 pt-4 md:grid-cols-2">
-          <div>
-            <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">How the window's positions exited</p>
-            <ExitReasonBars reasons={s.daily_summary?.exit_reasons} />
-          </div>
-          <div>
-            <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>
-            <SidePerformanceList side={s.daily_summary?.side_performance} />
-          </div>
+        <div>
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>
+          <SidePerformanceList side={s.daily_summary?.side_performance} />
         </div>
-      </Card.Content>
-    </Card>
+      </div>
+    </section>
   );
 }

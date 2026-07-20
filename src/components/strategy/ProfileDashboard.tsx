@@ -57,7 +57,7 @@ function profileBadge(p: ProfileEntry) {
 /** Small labelled divider for sub-sections inside a single book's dashboard. */
 function SubHead({ icon, title, note }: { icon: string; title: string; note?: string }) {
   return (
-    <div className="mb-3 flex items-center gap-2">
+    <div className="mb-2 flex items-center gap-2">
       <Icon icon={icon} className="size-4 shrink-0 text-accent" aria-hidden="true" />
       <h4 className="font-display text-sm font-semibold text-foreground">{title}</h4>
       {note && <span className="ml-auto text-[11px] text-muted">{note}</span>}
@@ -99,7 +99,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
     : "Hard paper-research objective; not a guaranteed return. Risk and edge gates remain binding.";
 
   return (
-    <Card className="rounded-2xl ring-1 ring-accent/30">
+    <Card className="rounded-2xl">
       <Card.Header className="flex flex-row flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
@@ -142,7 +142,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
           <p className="mt-1.5 text-right text-[11px] text-muted">{pct(progress, 0)} of today's fixed objective</p>
         </div>
 
-        <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-3 xl:grid-cols-6">
           <Stat label="Remaining" value={money(remaining, { sign: "negative-only" })} />
           <Stat
             label="Mean / median"
@@ -152,9 +152,9 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
           <Stat label="Attainment rate" value={target.attainment_rate == null ? "—" : pct(target.attainment_rate, 1)} />
           <Stat label="Independent city-target days" value={`${target.independent_city_target_days ?? 0}`} />
           <Stat label="Resolution days" value={`${target.resolution_days ?? 0}`} />
-        </dl>
+        </div>
 
-        <p className="flex items-start gap-2 rounded-lg bg-surface-secondary px-3 py-2 text-xs leading-relaxed text-muted ring-1 ring-border/50">
+        <p className="flex items-start gap-2 text-xs leading-relaxed text-muted">
           <Icon icon="solar:info-circle-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
           <span>{disclaimer}</span>
         </p>
@@ -189,9 +189,9 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const monitorRows = monitorForProfile(s, rp);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* identity + KPIs */}
-      <Card className="rounded-2xl ring-1 ring-border/70">
+      <Card className="rounded-2xl">
         <Card.Header className="flex flex-row items-start justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span
@@ -208,13 +208,13 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               </p>
             </div>
           </div>
-          <Chip size="sm" variant="soft" color={primary ? "warning" : "default"}>
+          <Chip size="sm" variant="soft" color={primary ? "accent" : "default"}>
             <Chip.Label>{profileBadge(p)}</Chip.Label>
           </Chip>
         </Card.Header>
         <Card.Content className="space-y-4 pt-0">
           {copy && <p className="max-w-3xl text-sm leading-relaxed text-muted">{copy.blurb}</p>}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
             <Stat label="Resolved trades" value={`${allTimeClosed}`} />
             <Stat label="Hit rate" value={sum?.hit_rate == null ? "—" : `${pct(sum.hit_rate, 1)} · ${sum.win_count}–${sum.loss_count}`} />
             <Stat label="Realized P&L" value={money(pnl)} tone={pnl > 0 ? "pos" : pnl < 0 ? "neg" : "default"} />
@@ -228,7 +228,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
       {rp === "research-target" && target && <DailyTargetEvidence target={target} />}
 
       {rp === "research-motion" && (
-        <div className="flex items-start gap-2 rounded-xl bg-surface-secondary px-4 py-3 text-xs leading-relaxed text-muted ring-1 ring-border/60">
+        <div className="flex items-start gap-2 rounded-xl bg-surface-secondary px-4 py-3 text-xs leading-relaxed text-muted">
           <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
           <p>
             <strong className="text-foreground">Experimental · high activity.</strong>{" "}
@@ -260,17 +260,12 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
 
       {/* Positions and executions are primary profile evidence, so the first
           five rows stay visible. Only overflow and monitor internals fold. */}
-      <section className="space-y-5" aria-labelledby={`positions-title-${rp}`}>
-        <div className="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-xl bg-surface-secondary/60 px-4 py-3 ring-1 ring-border/50">
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
-            <Icon icon="solar:folder-open-bold" className="size-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h4 id={`positions-title-${rp}`} className="font-display text-sm font-semibold text-foreground">Positions &amp; execution log</h4>
-            <p className="mt-0.5 text-xs text-muted">
-              {currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · showing {Math.min(ledger.length, 5)} recent of {allTimeClosed} resolved
-            </p>
-          </div>
+      <section className="space-y-6" aria-labelledby={`positions-title-${rp}`}>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h4 id={`positions-title-${rp}`} className="font-display text-sm font-semibold text-foreground">Positions &amp; execution log</h4>
+          <p className="text-xs text-muted">
+            {currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · showing {Math.min(ledger.length, 5)} recent of {allTimeClosed} resolved
+          </p>
         </div>
 
         <div>
@@ -289,20 +284,20 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             note={`latest ${Math.min(ledger.length, 5)} published rows`}
           />
           {byCity.length > 0 && (
-            <div className="mb-3">
+            <div className="mb-4">
               <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
                 <Icon icon="solar:map-point-bold" className="size-3.5 text-accent" aria-hidden="true" />
                 By settlement city
               </p>
-              <div className="flex flex-wrap gap-2" aria-label="Closed positions grouped by settlement city">
+              <ul className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs" aria-label="Closed positions grouped by settlement city">
                 {byCity.map((c) => (
-                  <span key={c.slug} className="flex items-center gap-1.5 rounded-full bg-surface-secondary px-2.5 py-1 text-xs ring-1 ring-border/50">
+                  <li key={c.slug} className="flex items-center gap-1.5">
                     <span className="font-medium text-foreground">{c.name}</span>
                     <span className="tnum text-muted">{c.trades} trade{c.trades === 1 ? "" : "s"} · {c.wins}W</span>
                     <span className={`tnum font-medium ${c.pnl > 0 ? "text-success" : c.pnl < 0 ? "text-danger" : "text-muted"}`}>{money(c.pnl)}</span>
-                  </span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           )}
           <LedgerTable
@@ -339,42 +334,40 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
       )}
 
       {(gate && gateCount.signals > 0) || charts?.probability_vs_market?.length ? (
-        <section className="space-y-5">
+        <section className="space-y-6">
           <SubHead icon="solar:chart-square-bold" title="Signal & entry evidence" note="gates, candidates, and edge by price" />
           {gate && gateCount.signals > 0 && (
-            <Card className="rounded-2xl ring-1 ring-border/70">
-              <Card.Content className="grid gap-4 p-4 md:grid-cols-2">
-            <div className="rounded-xl bg-surface-secondary p-3 ring-1 ring-border/50">
-              <div className="flex items-baseline justify-between gap-2">
-                <p className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</p>
-                <p className="tnum text-sm font-semibold">
-                  {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} scans</span>
-                </p>
+            <div className="grid gap-x-8 gap-y-6 md:grid-cols-2">
+              <div>
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</p>
+                  <p className="tnum text-sm font-semibold">
+                    {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} scans</span>
+                  </p>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
+                  <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
+                </div>
+                <p className="mt-2 text-[11px] text-muted">{pct(gateCount.approved / gateCount.signals, 2)} approval rate — the gates do the heavy lifting.</p>
               </div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
-                <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
+              <div>
+                <p className="mb-2 text-xs font-medium text-muted">Why this book says no</p>
+                <ul className="space-y-2">
+                  {rejections.map((r) => (
+                    <li key={r.reason} className="flex items-center gap-2.5">
+                      <span className="w-32 shrink-0 truncate text-xs text-muted" title={r.reason}>{r.reason}</span>
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-foreground/8">
+                        <div className={`h-full rounded-full ${barColor} opacity-70`} style={{ width: `${Math.max((r.count / maxRejection) * 100, 2)}%` }} />
+                      </div>
+                      <span className="tnum shrink-0 font-mono text-[10px] text-muted">{r.count.toLocaleString()}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <p className="mt-1.5 text-[11px] text-muted">{pct(gateCount.approved / gateCount.signals, 2)} approval rate — the gates do the heavy lifting.</p>
             </div>
-            <div className="rounded-xl bg-surface-secondary p-3 ring-1 ring-border/50">
-              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Why this book says no</p>
-              <ul className="space-y-1.5">
-                {rejections.map((r) => (
-                  <li key={r.reason} className="flex items-center gap-2.5">
-                    <span className="w-32 shrink-0 truncate text-xs text-muted" title={r.reason}>{r.reason}</span>
-                    <div className="h-1 flex-1 overflow-hidden rounded-full bg-foreground/8">
-                      <div className={`h-full rounded-full ${barColor} opacity-70`} style={{ width: `${Math.max((r.count / maxRejection) * 100, 2)}%` }} />
-                    </div>
-                    <span className="tnum shrink-0 font-mono text-[10px] text-muted">{r.count.toLocaleString()}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-              </Card.Content>
-            </Card>
           )}
           {charts?.probability_vs_market?.length ? (
-            <div className="grid gap-5 lg:grid-cols-2">
+            <div className="grid gap-6 lg:grid-cols-2">
               <CandidateScatter points={charts.probability_vs_market} targetDate={p.signal_quality?.latest_target_date} />
               {charts.edge_by_market_bucket?.length ? <EdgeByPriceChart buckets={charts.edge_by_market_bucket} /> : null}
             </div>
@@ -383,52 +376,46 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
       ) : null}
 
       {/* exits + side + lessons */}
-      <section className="space-y-5">
+      <section className="space-y-6">
         <SubHead icon="solar:lightbulb-bolt-bold" title="Outcomes & profile learnings" note="exits, side performance, and recommended changes" />
-        <div className="grid gap-5 lg:grid-cols-2">
-          <Card className="h-full rounded-2xl ring-1 ring-border/70">
-          <Card.Header className="flex flex-row items-center gap-2">
-            <Icon icon="solar:route-bold" className="size-4 text-accent" aria-hidden="true" />
-            <Card.Title className="text-base">How this book's positions resolved</Card.Title>
-          </Card.Header>
-          <Card.Content className="space-y-5 pt-0">
-            <div>
-              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Exit reasons</p>
-              <ExitReasonBars reasons={p.daily_summary?.exit_reasons} emptyNote={`${p.label} recorded no monitored exits this window — the book has not been trading.`} />
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div>
+            <SubHead icon="solar:route-bold" title="How this book's positions resolved" />
+            <div className="space-y-6">
+              <div>
+                <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Exit reasons</p>
+                <ExitReasonBars reasons={p.daily_summary?.exit_reasons} emptyNote={`${p.label} recorded no monitored exits this window — the book has not been trading.`} />
+              </div>
+              <div>
+                <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>
+                <SidePerformanceList side={p.daily_summary?.side_performance} emptyNote={`No resolved ${rp} trades to split by side this window.`} />
+              </div>
             </div>
-            <div>
-              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>
-              <SidePerformanceList side={p.daily_summary?.side_performance} emptyNote={`No resolved ${rp} trades to split by side this window.`} />
-            </div>
-          </Card.Content>
-          </Card>
+          </div>
 
-          <Card className="h-full rounded-2xl ring-1 ring-border/70">
-          <Card.Header className="flex flex-row items-center gap-2">
-            <Icon icon="solar:lightbulb-bolt-bold" className="size-4 text-accent" aria-hidden="true" />
-            <Card.Title className="text-base">What this book learned</Card.Title>
-          </Card.Header>
-          <Card.Content className="space-y-4 pt-0">
-            <ul className="space-y-2.5">
-              {(p.learnings ?? []).map((l) => (
-                <li key={l} className="flex gap-2.5 text-sm text-muted">
-                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-accent" />
-                  <span>{l}</span>
-                </li>
-              ))}
-            </ul>
-            {!!p.recommended_changes?.length && (
+          <div>
+            <SubHead icon="solar:lightbulb-bolt-bold" title="What this book learned" />
+            <div className="space-y-4">
               <ul className="space-y-2">
-                {p.recommended_changes.map((r) => (
-                  <li key={r} className="flex gap-2.5 rounded-lg bg-surface-secondary p-3 text-sm text-muted ring-1 ring-border/40">
-                    <Icon icon="solar:tuning-square-2-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
-                    <span>{r}</span>
+                {(p.learnings ?? []).map((l) => (
+                  <li key={l} className="flex gap-2.5 text-sm text-muted">
+                    <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-accent" />
+                    <span>{l}</span>
                   </li>
                 ))}
               </ul>
-            )}
-          </Card.Content>
-          </Card>
+              {!!p.recommended_changes?.length && (
+                <ul className="space-y-2">
+                  {p.recommended_changes.map((r) => (
+                    <li key={r} className="flex gap-2.5 border-l-2 border-warning/50 py-1 pl-3 text-sm text-muted">
+                      <Icon icon="solar:tuning-square-2-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+                      <span>{r}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
         </div>
       </section>
     </div>

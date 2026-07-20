@@ -45,7 +45,7 @@ function CityForecastDial({ city }: { city: City }) {
   const freshnessColor = freshness.tone === "danger" ? "danger" : freshness.tone === "warning" ? "warning" : "success";
 
   return (
-    <Card className="overflow-hidden rounded-3xl ring-1 ring-border/70">
+    <Card className="overflow-hidden rounded-2xl">
       <Card.Content className="p-6">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -67,7 +67,7 @@ function CityForecastDial({ city }: { city: City }) {
             size="sm"
             selectedKey={String(Math.min(idx, forecasts.length - 1))}
             onSelectionChange={(key) => setIdx(Number(key))}
-            className="mb-5"
+            className="mb-6"
           >
             {forecasts.map((entry, index) => (
               <Segment.Item key={entry.target_date} id={String(index)}>
@@ -86,7 +86,7 @@ function CityForecastDial({ city }: { city: City }) {
                 animate={{ opacity: 1, y: 0 }}
                 exit={reduce ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-                className="flex flex-wrap items-end justify-between gap-5"
+                className="flex flex-wrap items-end justify-between gap-6"
               >
                 <div>
                   <p className="text-xs text-muted">Predicted high · {shortDateUTC(forecast.target_date)}</p>
@@ -125,7 +125,7 @@ function CityForecastDial({ city }: { city: City }) {
               </motion.div>
             </AnimatePresence>
 
-            <Separator className="my-5" />
+            <Separator className="my-6" />
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
               <span>{methodLabel(forecast.method)} · station-aligned settlement</span>
               <span>
@@ -155,7 +155,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
 
   if (!target) {
     return (
-      <Card className="rounded-3xl ring-1 ring-danger/30">
+      <Card className="rounded-2xl ring-1 ring-danger/30">
         <Card.Content className="flex items-start gap-3 p-6" role="alert">
           <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
           <p className="text-sm text-muted">No settlement-day or upcoming prediction-market target is published.</p>
@@ -169,7 +169,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
   const delta = mc?.model_minus_market_f ?? null;
 
   return (
-    <Card className="overflow-hidden rounded-3xl ring-1 ring-border/70">
+    <Card className="overflow-hidden rounded-2xl">
       <Card.Content className="p-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
@@ -192,7 +192,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
             size="sm"
             selectedKey={String(idx)}
             onSelectionChange={(k) => setIdx(Number(k))}
-            className="mb-5"
+            className="mb-6"
           >
             {displayTargets.map((t, i) => (
               <Segment.Item key={i} id={String(i)}>
@@ -233,7 +233,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
         </div>
 
         {currentStateAvailable && intraday && !intraday.is_complete && (
-          <div className="mt-5 rounded-2xl bg-surface-secondary px-4 py-3 ring-1 ring-border/50">
+          <div className="mt-6 rounded-2xl bg-surface-secondary px-4 py-3">
             <div className="flex items-center justify-between text-xs">
               <span className="flex items-center gap-2 text-muted">
                 <span className="relative inline-flex size-2 text-success">
@@ -252,7 +252,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
           </div>
         )}
 
-        <Separator className="my-5" />
+        <Separator className="my-6" />
         <p className="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
           Source blend · {targetLabel(target.target_date).toLowerCase()}
         </p>

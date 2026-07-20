@@ -1,5 +1,4 @@
-import { Card } from "@heroui/react/card";
-import { Accordion } from "@heroui/react/accordion";
+import { useState } from "react";
 import { Icon } from "@iconify/react/offline";
 import { cityForTicker } from "../../lib/data";
 import { cents, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
@@ -18,10 +17,12 @@ function relTime(iso?: string | null): string {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
-function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pending" }) {
+function PositionList({ rows, kind, scope }: { rows: OpenPosition[]; kind: "open" | "pending"; scope: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const listId = `${kind}-list-${scope}`;
   if (!rows.length) {
     return (
-      <div className="flex flex-col items-center gap-2 py-8 text-center">
+      <div className="flex flex-col items-center gap-2 py-6 text-center">
         <Icon icon="solar:moon-sleep-bold" className="size-6 text-muted/70" aria-hidden="true" />
         <p className="max-w-sm text-sm text-muted">
           {kind === "open"
@@ -31,31 +32,29 @@ function PositionList({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
       </div>
     );
   }
-  const visible = rows.slice(0, 5);
   const overflow = rows.slice(5);
+  const shown = expanded ? rows : rows.slice(0, 5);
+  const noun = kind === "open" ? "open positions" : "pending limits";
   return (
     <>
-      <ul className="divide-y divide-border/50">
-        <PositionRows rows={visible} kind={kind} />
+      <ul id={listId} className="divide-y divide-border/50">
+        <PositionRows rows={shown} kind={kind} />
       </ul>
       {overflow.length > 0 && (
-        <Accordion variant="surface" hideSeparator className="mt-2 overflow-hidden rounded-xl ring-1 ring-border/50">
-          <Accordion.Item id={`${kind}-overflow`}>
-            <Accordion.Heading>
-              <Accordion.Trigger className="group flex min-h-11 w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-medium text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]">
-                <span>Show {overflow.length} more {kind === "open" ? "open positions" : "pending limits"}</span>
-                <Accordion.Indicator aria-hidden="true" />
-              </Accordion.Trigger>
-            </Accordion.Heading>
-            <Accordion.Panel>
-              <Accordion.Body className="px-3 pb-2 pt-0">
-                <ul className="divide-y divide-border/50 border-t border-border/50">
-                  <PositionRows rows={overflow} kind={kind} />
-                </ul>
-              </Accordion.Body>
-            </Accordion.Panel>
-          </Accordion.Item>
-        </Accordion>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-h-11 w-full items-center justify-center gap-1.5 border-t border-border/50 text-xs font-medium text-muted transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)] motion-reduce:transition-none"
+        >
+          {expanded ? `Show fewer ${noun}` : `Show ${overflow.length} more ${noun}`}
+          <Icon
+            icon="solar:alt-arrow-down-linear"
+            className={`size-3.5 transition-transform ${expanded ? "rotate-180" : ""} motion-reduce:transition-none`}
+            aria-hidden="true"
+          />
+        </button>
       )}
     </>
   );
@@ -67,7 +66,7 @@ function PositionRows({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
       {rows.map((r) => {
         const city = cityForTicker(r.ticker ?? "");
         return (
-        <li key={r.id} className="flex items-center justify-between gap-3 py-2.5">
+        <li key={r.id} className="flex items-center justify-between gap-3 py-2">
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium text-foreground">
               <span className="truncate">{r.label ?? r.ticker ?? `#${r.id}`}</span>
@@ -119,18 +118,19 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
   const sum = s.paper_trading?.summary;
   const open = profile ? openForProfile(s, profile) : s.paper_trading?.open_positions ?? [];
   const pending = profile ? pendingForProfile(s, profile) : s.paper_trading?.pending_limit_orders ?? [];
+  const scope = profile ?? "all";
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {profile ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-xl bg-surface-secondary px-4 py-3 sm:grid-cols-4">
           <Stat label="Open positions" value={currentStateAvailable ? `${open.length}` : "Unavailable"} />
           <Stat label="Open risk" value={currentStateAvailable ? money(sumRisk(open), { sign: "negative-only" }) : "Unavailable"} />
           <Stat label="Pending limits" value={currentStateAvailable ? `${pending.length}` : "Unavailable"} />
           <Stat label="Pending risk" value={currentStateAvailable ? money(sumRisk(pending), { sign: "negative-only" }) : "Unavailable"} />
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-xl bg-surface-secondary px-4 py-3 sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Open positions" value={currentStateAvailable ? `${sum?.open_positions ?? open.length}` : "Unavailable"} />
           <Stat label="Open risk" value={currentStateAvailable ? money(sum?.open_risk ?? 0, { sign: "negative-only" }) : "Unavailable"} />
           <Stat label="Pending limits" value={currentStateAvailable ? `${sum?.pending_limit_orders ?? pending.length}` : "Unavailable"} />
@@ -141,28 +141,22 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
       )}
 
       {currentStateAvailable ? (
-        <div className="grid gap-5 lg:grid-cols-2">
-          <Card className="h-full rounded-2xl ring-1 ring-border/70">
-            <Card.Header className="flex flex-row items-center gap-2">
-              <Icon icon="solar:folder-open-bold" className="size-4 text-accent" aria-hidden="true" />
-              <Card.Title className="text-base">Open positions</Card.Title>
-            </Card.Header>
-            <Card.Content className="pt-0">
-              <PositionList rows={open} kind="open" />
-            </Card.Content>
-          </Card>
-          <Card className="h-full rounded-2xl ring-1 ring-border/70">
-            <Card.Header className="flex flex-row items-center gap-2">
-              <Icon icon="solar:hourglass-line-bold" className="size-4 text-accent" aria-hidden="true" />
-              <Card.Title className="text-base">Pending limit orders</Card.Title>
-            </Card.Header>
-            <Card.Content className="pt-0">
-              <PositionList rows={pending} kind="pending" />
-            </Card.Content>
-          </Card>
+        <div className="grid gap-x-8 gap-y-6 lg:grid-cols-2 lg:divide-x lg:divide-border/50">
+          <section aria-labelledby={`open-${scope}`} className="min-w-0">
+            <h5 id={`open-${scope}`} className="mb-2 font-display text-sm font-semibold text-foreground">
+              Open positions
+            </h5>
+            <PositionList rows={open} kind="open" scope={scope} />
+          </section>
+          <section aria-labelledby={`pending-${scope}`} className="min-w-0 lg:pl-8">
+            <h5 id={`pending-${scope}`} className="mb-2 font-display text-sm font-semibold text-foreground">
+              Pending limit orders
+            </h5>
+            <PositionList rows={pending} kind="pending" scope={scope} />
+          </section>
         </div>
       ) : (
-        <div role="status" className="rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 py-8 text-center">
+        <div role="status" className="rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 py-6 text-center">
           <Icon icon="solar:clock-circle-bold" className="mx-auto mb-2 size-5 text-warning" aria-hidden="true" />
           <p className="text-sm font-medium text-foreground">Current open and pending book state is unavailable.</p>
           <p className="mt-1 text-xs text-muted">Counts and position lists will return when Strategy Lab publication recovers.</p>

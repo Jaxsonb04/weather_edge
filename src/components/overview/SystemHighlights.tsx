@@ -44,7 +44,7 @@ export function SystemHighlights() {
     <>
       <div className="grid gap-5 lg:grid-cols-3">
         {PILLARS.map((p) => (
-          <Card key={p.title} className="h-full rounded-2xl ring-1 ring-border/70">
+          <Card key={p.title} className="h-full rounded-2xl">
             <Card.Header className="flex flex-row items-center gap-2.5">
               <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
                 <Icon icon={p.icon} className="size-4" aria-hidden="true" />
@@ -52,7 +52,7 @@ export function SystemHighlights() {
               <Card.Title className="text-base">{p.title}</Card.Title>
             </Card.Header>
             <Card.Content className="pt-0">
-              <ul className="space-y-2.5">
+              <ul className="space-y-3">
                 {p.points.map((pt) => (
                   <li key={pt} className="flex gap-2.5 text-sm leading-relaxed text-muted">
                     <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-accent" />

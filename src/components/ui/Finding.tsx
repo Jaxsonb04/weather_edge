@@ -14,8 +14,8 @@ interface FindingProps {
     promoted to foreground so the load-bearing figures pop. */
 export function Finding({ children, label = "Finding", icon = "solar:document-text-bold", className }: FindingProps) {
   return (
-    <aside className={`mt-5 flex gap-3 rounded-xl bg-surface-secondary/70 p-4 ring-1 ring-border/50 ${className ?? ""}`}>
-      <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent ring-1 ring-accent/20">
+    <aside className={`flex gap-3 border-l-2 border-accent/40 py-1 pl-4 ${className ?? ""}`}>
+      <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent">
         <Icon icon={icon} className="size-3.5" aria-hidden="true" />
       </span>
       <div className="min-w-0">

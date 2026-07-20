@@ -10,7 +10,7 @@ interface SectionHeadingProps {
 /** Editorial section header: monospace index + eyebrow, display title, sub. */
 export function SectionHeading({ eyebrow, title, sub, index }: SectionHeadingProps) {
   return (
-    <Reveal className="mb-7 mt-20">
+    <Reveal className="mb-8">
       <div className="mb-2 flex items-center gap-2.5">
         {index && <span className="font-mono text-xs font-medium text-[color:var(--accent-text)]">{index}</span>}
         <span className="h-px w-6 bg-accent/50" />

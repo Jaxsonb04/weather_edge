@@ -27,7 +27,7 @@ export function DetailDisclosure({
       variant="surface"
       hideSeparator
       {...(defaultExpanded ? { defaultExpandedKeys: [id] } : {})}
-      className={`overflow-hidden rounded-2xl ring-1 ring-border/70 ${className}`.trim()}
+      className={`overflow-hidden rounded-2xl ${className}`.trim()}
     >
       <Accordion.Item id={id}>
         <Accordion.Heading>
@@ -43,7 +43,7 @@ export function DetailDisclosure({
           </Accordion.Trigger>
         </Accordion.Heading>
         <Accordion.Panel>
-          <Accordion.Body className="space-y-5 px-4 pb-5 pt-2 sm:px-5">{children}</Accordion.Body>
+          <Accordion.Body className="space-y-6 px-4 pb-4 pt-3 sm:px-5">{children}</Accordion.Body>
         </Accordion.Panel>
       </Accordion.Item>
     </Accordion>
