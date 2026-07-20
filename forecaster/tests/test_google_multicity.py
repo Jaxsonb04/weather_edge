@@ -1226,20 +1226,18 @@ def test_challenger_from_runtime_high_forwards_the_fixed_formula():
 
 
 # ---------------------------------------------------------------------------
-# Live-path isolation (requirement 4: research-only evidence).
+# Module-boundary checks.
 #
-# The challenger is research-only: nothing it computes may reach the live
-# SFO forecast path, LSTM/EMOS training, adaptive weights, MOS, residual
-# de-bias, or historical baseline scorecards. As of Task 7,
+# As of Task 7,
 # ``google_paired_evidence.py`` is the ONE forecaster-side module allowed to
 # import ``google_runtime_blend`` -- it composes the caller-supplied
 # permanent EMOS baseline with the ephemeral Google runtime store and
 # persists only derived mu/sigma/action evidence (never a raw Google
 # high/gap/response) into a small durable table; nothing in
-# ``_LIVE_AND_TRAINING_MODULES`` below may import EITHER module, and
-# ``google_paired_evidence.py`` itself must never import back into the live
-# or training path (mirrored by
-# ``test_google_paired_evidence_never_imports_the_live_or_training_path``
+# ``_ISOLATED_MODULES`` below may import EITHER module, and
+# ``google_paired_evidence.py`` itself must never import back into those
+# modules (mirrored by
+# ``test_google_paired_evidence_does_not_import_isolated_modules``
 # below). Trading-side code never imports either module directly -- it
 # reads the durable table ``google_paired_evidence.py`` writes via plain SQL,
 # the same way ``SfoForecasterAdapter`` reads every other forecaster-owned
@@ -1250,7 +1248,7 @@ def test_challenger_from_runtime_high_forwards_the_fixed_formula():
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_LIVE_AND_TRAINING_MODULES = tuple(
+_ISOLATED_MODULES = tuple(
     _REPO_ROOT / relative
     for relative in (
         "forecaster/blend_sources.py",
@@ -1277,7 +1275,7 @@ _LIVE_AND_TRAINING_MODULES = tuple(
 )
 
 
-def test_google_runtime_blend_never_imports_the_live_or_training_path():
+def test_google_runtime_blend_does_not_import_isolated_modules():
     source = Path(google_runtime_blend.__file__).read_text()
     for forbidden in (
         "blend_sources",
@@ -1296,13 +1294,13 @@ def test_google_runtime_blend_never_imports_the_live_or_training_path():
         assert forbidden not in source
 
 
-def test_google_paired_evidence_never_imports_the_live_or_training_path():
+def test_google_paired_evidence_does_not_import_isolated_modules():
     """Task 7's one legitimate ``google_runtime_blend`` consumer stays a leaf.
 
-    Mirrors ``test_google_runtime_blend_never_imports_the_live_or_training_path``:
+    Mirrors ``test_google_runtime_blend_does_not_import_isolated_modules``:
     ``google_paired_evidence.py`` composes the challenger with a
-    caller-supplied baseline and persists derived evidence, but it must never
-    itself reach into the live/training path it must stay isolated from.
+    caller-supplied baseline and persists derived evidence, but it remains
+    isolated from those modules.
     """
 
     source = Path(google_paired_evidence.__file__).read_text()
@@ -1323,8 +1321,8 @@ def test_google_paired_evidence_never_imports_the_live_or_training_path():
         assert forbidden not in source
 
 
-def test_no_live_or_training_module_imports_the_google_challenger():
-    for path in _LIVE_AND_TRAINING_MODULES:
+def test_isolated_modules_do_not_import_the_google_challenger():
+    for path in _ISOLATED_MODULES:
         assert path.is_file(), path
         source = path.read_text()
         assert "google_runtime_blend" not in source

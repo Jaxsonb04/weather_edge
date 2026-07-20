@@ -2,13 +2,8 @@
 
 Derives a station-day high ONLY from a complete fixed-standard 24-hour
 station day, and computes a fixed, versioned research challenger against
-the permanent (Google-free) EMOS baseline. This module is research-only
-evidence: nothing here reads from or writes to the live SFO forecast path,
-LSTM/EMOS training, adaptive weights, MOS, residual de-bias, or historical
-baseline scorecards, and the challenger constants below are predeclared
-rather than fitted -- see
-docs/superpowers/specs/2026-07-17-daily-research-google-runtime-and-reliability-design.md
-section 7.3.
+the permanent EMOS baseline. The challenger constants below are predeclared
+rather than fitted.
 
 ``GoogleRuntimeStore.write_runtime_high`` validates the *shape* of the
 constituents it is given (identity, exact hour boundaries, uniqueness) but

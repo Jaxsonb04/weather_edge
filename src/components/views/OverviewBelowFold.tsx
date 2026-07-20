@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Skeleton } from "@heroui/react/skeleton";
-import { selectCurrentTargets, useCitiesData, type City, type DashboardData } from "../../lib/data";
+import { selectCurrentTargets, type CitiesData, type City, type DashboardData } from "../../lib/data";
 import { SkillStrip } from "../kpi/SkillStrip";
 import { SystemHighlights } from "../overview/SystemHighlights";
 import { CityGrid } from "../overview/CityGrid";
@@ -63,10 +63,16 @@ function resolveCity(cities: City[], selected: string): City | null {
   );
 }
 
-export function OverviewBelowFold({ data }: { data: DashboardData }) {
+interface OverviewBelowFoldProps {
+  data: DashboardData;
+  citiesData: CitiesData | null;
+  citiesError: string | null;
+  selected: string;
+  onSelect: (slug: string) => void;
+}
+
+export function OverviewBelowFold({ data, citiesData, citiesError, selected, onSelect }: OverviewBelowFoldProps) {
   const { forecast, signal } = data;
-  const { data: citiesData, error: citiesError } = useCitiesData();
-  const [selected, setSelected] = useState(DEFAULT_CITY);
 
   const cities = useMemo(() => citiesData?.cities ?? [], [citiesData]);
   const activeCity = useMemo(() => resolveCity(cities, selected), [cities, selected]);
@@ -96,7 +102,7 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
             sub="Every market settles on its own official NWS climate report and runs the same NWP/EMOS forecast. Select any city to drill into its call — San Francisco is the flagship, with the full market microstructure."
           />
           <Reveal>
-            <CityGrid data={citiesData} error={citiesError} selected={selected} onSelect={setSelected} />
+            <CityGrid data={citiesData} error={citiesError} selected={selected} onSelect={onSelect} />
           </Reveal>
         </section>
 
@@ -110,7 +116,7 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
           {cities.length > 1 && (
             <Reveal className="mb-5 flex flex-wrap items-center gap-3">
               <span className="text-xs uppercase tracking-wide text-muted">Active city</span>
-              <CitySelect cities={cities} selected={selected} onSelect={setSelected} />
+              <CitySelect cities={cities} selected={selected} onSelect={onSelect} />
             </Reveal>
           )}
           {activeCity ? (

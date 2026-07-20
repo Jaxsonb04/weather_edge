@@ -16,8 +16,8 @@ export function CitySelect({ cities, selected, onSelect }: CitySelectProps) {
     <Select
       variant="secondary"
       className="w-full sm:w-[13.5rem]"
-      value={selected}
-      onChange={(v) => v != null && onSelect(String(v))}
+      selectedKey={selected}
+      onSelectionChange={(key) => key != null && onSelect(String(key))}
       placeholder="Jump to a city"
     >
       <Label className="sr-only">Active city</Label>

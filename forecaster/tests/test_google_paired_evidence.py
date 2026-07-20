@@ -1,4 +1,4 @@
-"""Durable, non-Google-free-training paired baseline/challenger evidence (Task 7).
+"""Durable paired baseline/challenger evidence (Task 7).
 
 Covers: deriving and persisting ONLY derived mu/sigma/action evidence (never
 a raw Google high, gap, response, or conditions field -- spec section

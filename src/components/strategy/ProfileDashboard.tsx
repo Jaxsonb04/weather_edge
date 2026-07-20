@@ -237,7 +237,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
       )}
 
       {/* per-book equity curve */}
-      {!!days?.length && (
+      {rp !== "live" && !!days?.length && (
         <EquityCurve
           s={s}
           days={days}

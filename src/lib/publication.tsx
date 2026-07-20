@@ -35,6 +35,9 @@ export interface PublicationContextValue {
   snapshotVersion: string | null;
   artifactHashes: Record<string, string>;
   operational: PublicationFreshness;
+  /** Freshness of the loaded SFO trading signal alone. Above-fold signal
+      surfaces must not wait for the independently loaded city artifact. */
+  signal: PublicationFreshness;
   /** Manifest-only operational freshness for the route-independent global banner. */
   operationalPipeline: PublicationFreshness;
   strategy: PublicationFreshness;
@@ -224,6 +227,13 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
       operational: freshnessFor(
         manifest,
         ["trading_signal.json", "cities_data.json"],
+        loadedArtifactVersions,
+        OPERATIONAL_MAX_AGE_MINUTES,
+        freshnessNow,
+      ),
+      signal: freshnessFor(
+        manifest,
+        ["trading_signal.json"],
         loadedArtifactVersions,
         OPERATIONAL_MAX_AGE_MINUTES,
         freshnessNow,

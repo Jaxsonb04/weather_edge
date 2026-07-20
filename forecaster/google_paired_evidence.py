@@ -1,8 +1,8 @@
-"""Durable, non-Google-free-training paired baseline/challenger evidence (Task 7).
+"""Durable paired baseline/challenger evidence (Task 7).
 
 This module is the ONLY forecaster-side consumer of ``google_runtime_blend``
-outside its own module and tests. It composes the permanent (Google-free)
-EMOS baseline the caller supplies with the ephemeral Google runtime store to
+outside its own module and tests. It composes the permanent EMOS baseline the
+caller supplies with the ephemeral Google runtime store to
 compute the fixed, versioned research challenger, and persists ONLY the
 derived evidence -- station/target/issue identity, policy version, baseline
 mu/sigma, challenger mu/sigma, and the fixed action -- into a small durable
@@ -10,12 +10,6 @@ table in the caller's own (permanent) database connection. It never writes a
 raw Google high, gap, response body, conditions text, URL, key, or token
 (spec section 7.2/7.3): the table's own column set is the enforcement
 boundary, not just application-level filtering.
-
-Nothing here reads from or writes to the live SFO forecast path, LSTM/EMOS
-training, adaptive weights, MOS, or residual de-bias -- this module has no
-knowledge of any of those and is never imported by them (see
-``forecaster/tests/test_google_multicity.py``'s isolation tests, extended by
-Task 7 to also guard this module).
 
 Trading-side code never imports this module or ``google_runtime_blend``
 directly -- the two projects deliberately do not import each other (same

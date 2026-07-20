@@ -1,5 +1,6 @@
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-strategy.css";
+import { Accordion } from "@heroui/react/accordion";
 import { Chip } from "@heroui/react/chip";
 import { pct } from "../../lib/data";
 import {
@@ -9,7 +10,6 @@ import {
   money,
   openForProfile,
   pendingForProfile,
-  researchDailyTarget,
   useStrategyLab,
   type ProfileEntry,
   type ProfilePaperSummary,
@@ -19,12 +19,9 @@ import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
 import { Finding } from "../ui/Finding";
-import { PnlHeader } from "../strategy/PnlHeader";
 import { EquityCurve } from "../strategy/EquityCurve";
-import { ReadinessVerdict, ReadinessPanel } from "../strategy/ReadinessPanel";
-import { ProfileComparison } from "../strategy/ProfileComparison";
+import { ReadinessPanel } from "../strategy/ReadinessPanel";
 import { ProfileExplorer } from "../strategy/ProfileExplorer";
-import { DailyTargetEvidence } from "../strategy/ProfileDashboard";
 import { GateFunnel } from "../strategy/GateFunnel";
 import { MoversCard } from "../strategy/MoversCard";
 import { CalibrationCompare } from "../strategy/CalibrationCompare";
@@ -215,13 +212,8 @@ function LiveCurveUnavailable() {
 export function OverviewEquity({ s }: { s: StrategyLab }) {
   const profiles = activeProfiles(s);
   const live = profiles.find((profile) => profile.risk_profile === "live");
-  const target = profiles.find((profile) => profile.risk_profile === "research-target");
-  const research = target ?? profiles.find((profile) => profile.risk_profile === "research");
-  const targetEvidence = target ? researchDailyTarget(s, target) : undefined;
   const liveDays = live?.daily_summary?.days;
-  const researchDays = research?.daily_summary?.days;
   const liveSum = live?.paper_trading?.summary;
-  const readinessAvailable = !!s.real_money_readiness?.available;
   // The combined (all-account) series only stands in for the live book when no
   // research book is published — otherwise it would plot research activity
   // under the "Live candidate" label.
@@ -251,30 +243,26 @@ export function OverviewEquity({ s }: { s: StrategyLab }) {
 
   return (
     <div className="space-y-4">
+      {liveCurve}
       {live && liveSum && <LiveHero p={live} sum={liveSum} />}
-      {readinessAvailable ? (
-        <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-          {liveCurve}
-          <ReadinessVerdict s={s} />
-        </div>
-      ) : (
-        liveCurve
-      )}
-      {targetEvidence && <DailyTargetEvidence target={targetEvidence} />}
-      {research && !!researchDays?.length && (
-        <EquityCurve
-          s={s}
-          days={researchDays}
-          startingBankroll={0}
-          contributionMode
-          windowDays={research.daily_summary?.window_days}
-          emphasis="secondary"
-          eyebrow={target ? "Research target account · fixed $50 daily objective" : "Legacy experimental book · compatibility view"}
-          title={target ? "Research target — cumulative P&L" : "Research — cumulative P&L"}
-          description={`Realized P&L attributed only to the ${target ? "target research account" : "legacy experimental book"} · ${research.daily_summary?.window_days ?? researchDays.length}-day view`}
-        />
-      )}
     </div>
+  );
+}
+
+function DisclosureHeading({ icon, title, note }: { icon: string; title: string; note: string }) {
+  return (
+    <Accordion.Heading>
+      <Accordion.Trigger className="group flex min-h-16 w-full touch-manipulation items-center gap-3 px-4 py-3 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-secondary text-accent">
+          <Icon icon={icon} className="size-4.5" aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-display text-sm font-semibold text-foreground">{title}</span>
+          <span className="mt-0.5 block text-xs text-muted">{note}</span>
+        </span>
+        <Accordion.Indicator aria-hidden="true" />
+      </Accordion.Trigger>
+    </Accordion.Heading>
   );
 }
 
@@ -308,81 +296,90 @@ export default function StrategyLabView() {
               <LiveStatusStrip s={s} />
             </Reveal>
 
-            {/* ---- Book overview: live candidate leads, research separate, combined for context ---- */}
+            {/* ---- Live money candidate: one chart and one compact result strip. ---- */}
             <section className="scroll-mt-24">
               <SectionHeading
                 index="01"
-                eyebrow="Book overview"
-                title="Live candidate performance"
-                sub={canonicalTargetPublished
-                  ? "The live account is shown first and is the only account evaluated for live readiness. Research target follows with its fixed $50 daily objective; the high-activity motion account remains separate from both objectives."
-                  : "The live account is shown first and is the only account evaluated for readiness. Older research evidence appears only as a compatibility fallback until canonical target and motion accounts are published."}
+                eyebrow="Live money candidate"
+                title="Live P&L first"
+                sub="The real-money candidate's own cumulative paper P&L leads the lab. Research sleeves are excluded from this chart and from every number directly beneath it."
               />
               <Reveal>
                 <OverviewEquity s={s} />
               </Reveal>
-              <div className="mt-7">
-                <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
-                  <Icon icon="solar:wallet-money-bold" className="size-3.5 text-accent" aria-hidden="true" />
-                  Live evidence account · all research accounts excluded
-                </p>
-                <PnlHeader s={s} />
-              </div>
-              <Reveal className="mt-5">
-                <ProfileComparison s={s} />
-              </Reveal>
-              <TrackRecordFinding s={s} />
-              <Reveal className="mt-5">
-                <GateFunnel s={s} />
-              </Reveal>
-              <SelectivityFinding s={s} />
-              <Reveal className="mt-5">
-                <MoversCard s={s} />
-              </Reveal>
             </section>
 
-            {/* ---- Per-book diagnostics: one book at a time, in full ---- */}
+            {/* ---- One profile at a time, with scoped data and progressive detail. ---- */}
             <section className="scroll-mt-24">
               <SectionHeading
                 index="02"
-                eyebrow="Per-book diagnostics"
-                title="Each book in detail"
-                sub="Switch among the live candidate, research target, and high-activity motion accounts when published. Each keeps its own equity, filtering, exposure, and closed-trade evidence."
+                eyebrow="Profile workbench"
+                title="Choose a strategy profile"
+                sub="Each preset opens one isolated book with its own performance, signal quality, exposure, trade ledger, and learnings. Nothing is blended across profiles."
               />
               <Reveal>
                 <ProfileExplorer s={s} />
               </Reveal>
             </section>
 
-            {/* ---- System-level governance & operations (combined-fidelity) ---- */}
+            {/* ---- System-wide results and conclusions after profile inspection. ---- */}
             <section className="scroll-mt-24">
               <SectionHeading
                 index="03"
-                eyebrow="Governance & operations"
-                title="System-level checks"
-                sub="Diagnostics that cover the whole system: the full go-live checklist, the active-vs-challenger calibration comparison, the unattended runtime and feed health, and the backtest coverage behind the metrics."
+                eyebrow="Overall outcomes"
+                title="What the system learned"
+                sub="The cross-profile conclusions, readiness verdict, and supporting evidence. High-value outcomes stay visible; deeper trading, model, and operations diagnostics unfold on demand."
               />
+              <TrackRecordFinding s={s} />
+              <SelectivityFinding s={s} />
+              <ReadinessFinding s={s} />
               <Reveal>
                 <ReadinessPanel s={s} />
               </Reveal>
-              <ReadinessFinding s={s} />
-              <Reveal className="mt-5">
-                <CalibrationCompare s={s} />
-              </Reveal>
-              <Reveal className="mt-5">
-                <OpsHealth s={s} />
-              </Reveal>
-              <Reveal className="mt-5">
-                <ExitPolicyCard s={s} />
-              </Reveal>
-              <Reveal className="mt-5">
-                <BacktestStats s={s} />
-              </Reveal>
-              <Reveal className="mt-5">
-                <DailyActivity s={s} />
-              </Reveal>
-              <Reveal className="mt-5">
-                <ResearchNotes s={s} />
+              <Reveal className="mt-6">
+                <Accordion variant="surface" hideSeparator defaultExpandedKeys={["model-evidence"]} className="overflow-hidden rounded-2xl ring-1 ring-border/70">
+                  <Accordion.Item id="model-evidence">
+                    <DisclosureHeading
+                      icon="solar:chart-square-bold"
+                      title="Model & trading evidence"
+                      note="Calibration, gate selectivity, movers, and backtest coverage"
+                    />
+                    <Accordion.Panel>
+                      <Accordion.Body className="space-y-5 px-4 pb-5 pt-2">
+                        <CalibrationCompare s={s} />
+                        <GateFunnel s={s} />
+                        <MoversCard s={s} />
+                        <BacktestStats s={s} />
+                      </Accordion.Body>
+                    </Accordion.Panel>
+                  </Accordion.Item>
+                  <Accordion.Item id="runtime-controls">
+                    <DisclosureHeading
+                      icon="solar:settings-minimalistic-bold"
+                      title="Runtime & risk controls"
+                      note="Feed health, exit policy, and daily paper activity"
+                    />
+                    <Accordion.Panel>
+                      <Accordion.Body className="space-y-5 px-4 pb-5 pt-2">
+                        <OpsHealth s={s} />
+                        <ExitPolicyCard s={s} />
+                        <DailyActivity s={s} />
+                      </Accordion.Body>
+                    </Accordion.Panel>
+                  </Accordion.Item>
+                  <Accordion.Item id="glossary">
+                    <DisclosureHeading
+                      icon="solar:notebook-bold"
+                      title="Research glossary"
+                      note="Definitions and caveats for interpreting the published numbers"
+                    />
+                    <Accordion.Panel>
+                      <Accordion.Body className="px-4 pb-5 pt-2">
+                        <ResearchNotes s={s} />
+                      </Accordion.Body>
+                    </Accordion.Panel>
+                  </Accordion.Item>
+                </Accordion>
               </Reveal>
             </section>
           </>

@@ -86,7 +86,6 @@ The following constraints are mandatory:
   readiness shortcut.
 - Research evidence must never contribute to live P&L, live readiness, or
   live calibration.
-- Google Weather is runtime forecast corroboration, not model training.
 - Raw Google content is TTL-bound under `/run/weatheredge`; permanent storage
   may contain request accounting and derived/versioned challenger evidence,
   not raw responses, URLs, API keys, conditions, or raw Google gaps.
@@ -648,8 +647,6 @@ Task 7, paired evidence:
 - Never persist raw Google high, gap, body, URL, key, token, or conditions.
 - Prove the served live SFO forecast and live strategy fingerprint are bitwise
   unchanged in shadow mode.
-- Keep Google out of LSTM/EMOS training, adaptive weights, MOS, residual
-  de-bias, and historical baseline scorecards.
 
 Task 8, runtime operations and attribution:
 
