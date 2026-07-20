@@ -34,17 +34,31 @@ export function BelowFoldBoundary({
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    let revealTimer: number | undefined;
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
           setReady(true);
+          if (revealTimer !== undefined) window.clearTimeout(revealTimer);
           observer.disconnect();
         }
       },
       { rootMargin: "0px", threshold: 0 },
     );
     observer.observe(element);
-    return () => observer.disconnect();
+
+    // A scrollbar drag, Page End, or restored scroll position can jump past a
+    // one-pixel observer target without ever intersecting it. Keep the chunk
+    // split, but guarantee the public content mounts shortly after first paint.
+    revealTimer = window.setTimeout(() => {
+      setReady(true);
+      observer.disconnect();
+    }, 500);
+
+    return () => {
+      if (revealTimer !== undefined) window.clearTimeout(revealTimer);
+      observer.disconnect();
+    };
   }, []);
 
   return (
