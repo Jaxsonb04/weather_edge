@@ -48,8 +48,8 @@ function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
       aria-pressed={active}
       className={`group h-auto min-h-44 min-w-[16rem] flex-1 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] sm:min-w-0 ${
         active
-          ? "bg-surface shadow-md ring-1 ring-accent/45"
-          : "bg-surface-secondary/70 ring-1 ring-border/55 hover:bg-surface-secondary"
+          ? "border border-accent/45 bg-surface shadow-md"
+          : "border border-border/55 bg-surface-secondary/70 hover:bg-surface-secondary"
       }`}
     >
       <span className="flex w-full flex-col gap-4 p-4">
@@ -91,9 +91,9 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
   const active = profiles.find((profile) => profile.risk_profile === selected) ?? profiles[0];
 
   return (
-    <div>
-      <div className="profile-rail -mx-1 overflow-x-auto px-1 pb-3" aria-label="Strategy profile selector">
-        <div className="flex min-w-max gap-3 sm:min-w-0" role="group" aria-label="Choose a strategy profile">
+    <div className="mx-auto w-full">
+      <div className="profile-rail -mx-2 overflow-x-auto px-2 pb-3 pt-2" aria-label="Strategy profile selector">
+        <div className="mx-auto flex w-max min-w-full gap-3 sm:w-full sm:min-w-0" role="group" aria-label="Choose a strategy profile">
           {profiles.map((profile, index) => (
             <ProfileOption
               key={profile.risk_profile}
