@@ -25,6 +25,7 @@ import { ForecastInputs } from "../market/ForecastInputs";
 import { DecisionCard } from "../market/DecisionCard";
 import { EdgeChart } from "../market/EdgeChart";
 import { MarketBook } from "../market/MarketBook";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 import "../../styles/pro-city-detail.css";
 
 const FRESH_TONE: Record<string, { dot: string; text: string }> = {
@@ -258,52 +259,49 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
           </div>
         </Reveal>
       ) : showBrackets && flagshipTarget ? (
-        <>
-          <Reveal>
-            <div className="flex items-center gap-2 pt-2 text-sm text-muted">
-              <Icon icon="solar:star-bold" className="size-4 text-accent" aria-hidden="true" />
+        <Reveal>
+          <DetailDisclosure
+            id="flagship-market-detail"
+            icon="solar:chart-square-bold"
+            title="Flagship market detail"
+            note="Source inputs, pricing pipeline, bracket edge chart, market comparison, and full order book"
+          >
+            <div className="flex items-center gap-2 text-sm text-muted">
+              <Icon icon="solar:star-bold" className="size-4 shrink-0 text-accent" aria-hidden="true" />
               <span>
-                {city.name} is the flagship — one of fifteen — so it publishes the full bracket-level
-                market microstructure below, on top of the calibrated forecast every city carries.
+                {city.name} is the flagship, so it publishes bracket-level prediction-market microstructure
+                on top of the calibrated forecast every city carries.
               </span>
             </div>
-          </Reveal>
 
-          <PipelineStepper />
+            <PipelineStepper />
 
-          <div className="grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
-            <Reveal delay={0.05}>
+            <div className="grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
               <ForecastInputs target={flagshipTarget} />
-            </Reveal>
-            <Reveal delay={0.1}>
               <DecisionCard target={flagshipTarget} approvedCount={approvedCount} />
-            </Reveal>
-          </div>
+            </div>
 
-          <Reveal>
             <EdgeChart target={flagshipTarget} />
-          </Reveal>
-          {mc?.available && (
-            <Finding>
-              The model reads the {targetLabel(flagshipTarget.target_date).toLowerCase()} high at{" "}
-              <strong>{f1(mc.model_high_f)}</strong> while the market implies{" "}
-              <strong>{f1(mc.implied_high_f)}</strong> — a{" "}
-              <strong>
-                {mc.model_minus_market_f > 0 ? "+" : ""}
-                {round1(mc.model_minus_market_f)}°F
-              </strong>{" "}
-              disagreement. The market's most-likely bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
-              {pct(mc.modal_probability, 0)}, and the book carries a {pct(mc.overround, 1)} overround —
-              the cost any edge has to beat. The engine approved{" "}
-              <strong>{approvedCount}</strong> signal{approvedCount === 1 ? "" : "s"} on the latest
-              scan; when the gap doesn't clear fees and filters, not trading is the correct choice.
-            </Finding>
-          )}
+            {mc?.available && (
+              <Finding>
+                The model reads the {targetLabel(flagshipTarget.target_date).toLowerCase()} high at{" "}
+                <strong>{f1(mc.model_high_f)}</strong> while the market implies{" "}
+                <strong>{f1(mc.implied_high_f)}</strong> — a{" "}
+                <strong>
+                  {mc.model_minus_market_f > 0 ? "+" : ""}
+                  {round1(mc.model_minus_market_f)}°F
+                </strong>{" "}
+                disagreement. The market's most-likely bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
+                {pct(mc.modal_probability, 0)}, and the book carries a {pct(mc.overround, 1)} overround —
+                the cost any edge has to beat. The engine approved{" "}
+                <strong>{approvedCount}</strong> signal{approvedCount === 1 ? "" : "s"} on the latest
+                scan; when the gap doesn't clear fees and filters, not trading is the correct choice.
+              </Finding>
+            )}
 
-          <Reveal>
             <MarketBook target={flagshipTarget} />
-          </Reveal>
-        </>
+          </DetailDisclosure>
+        </Reveal>
       ) : (
         <Reveal>
           <p className="rounded-2xl bg-surface-secondary/70 px-4 py-4 text-sm leading-relaxed text-muted ring-1 ring-border/50">

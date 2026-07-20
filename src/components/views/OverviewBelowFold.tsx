@@ -4,7 +4,6 @@ import { selectCurrentTargets, type CitiesData, type City, type DashboardData } 
 import { SkillStrip } from "../kpi/SkillStrip";
 import { SystemHighlights } from "../overview/SystemHighlights";
 import { CityGrid } from "../overview/CityGrid";
-import { CitySelect } from "../overview/CitySelect";
 import { TargetStatusWarning } from "../overview/TargetStatusWarning";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
@@ -113,12 +112,6 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
             title={activeCity ? `${activeCity.name} — today's forecast and market` : "Today's forecast"}
             sub="The selected city's next high, its official settlement, and recent paper-trading activity. San Francisco also shows bracket-level model-vs-market detail when the current data is verified."
           />
-          {cities.length > 1 && (
-            <Reveal className="mb-5 flex flex-wrap items-center gap-3">
-              <span className="text-xs uppercase tracking-wide text-muted">Active city</span>
-              <CitySelect cities={cities} selected={selected} onSelect={onSelect} />
-            </Reveal>
-          )}
           {activeCity ? (
             <DeferredOverviewSlab>
               <Suspense fallback={<DetailSkeleton />}>
