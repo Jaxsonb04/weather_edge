@@ -48,8 +48,8 @@ function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
       aria-pressed={active}
       className={`group h-auto min-h-44 min-w-[16rem] flex-1 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] sm:min-w-0 ${
         active
-          ? "bg-surface shadow-md ring-1 ring-accent/45"
-          : "bg-surface-secondary/70 ring-1 ring-border/55 hover:bg-surface-secondary"
+          ? "border border-accent/45 bg-surface shadow-md"
+          : "border border-border/55 bg-surface-secondary/70 hover:bg-surface-secondary"
       }`}
     >
       <span className="flex w-full flex-col gap-4 p-4">
@@ -68,7 +68,7 @@ function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
             <span className="block text-[10px] uppercase tracking-wide text-muted">Realized P&amp;L</span>
             <span className={`tnum mt-0.5 block font-display text-lg font-semibold ${pnlTone}`}>{money(pnl)}</span>
           </span>
-          <Chip size="sm" variant="soft" color={active ? "warning" : "default"}>
+          <Chip size="sm" variant="soft" color={active ? "accent" : "default"}>
             <Chip.Label>{closed} resolved</Chip.Label>
           </Chip>
         </span>
@@ -91,9 +91,13 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
   const active = profiles.find((profile) => profile.risk_profile === selected) ?? profiles[0];
 
   return (
-    <div>
-      <div className="profile-rail -mx-1 overflow-x-auto px-1 pb-3" aria-label="Strategy profile selector">
-        <div className="flex min-w-max gap-3 sm:min-w-0" role="group" aria-label="Choose a strategy profile">
+    <div className="mx-auto w-full">
+      {/* The rail is a plain scroll wrapper: ARIA drops accessible names on
+          generic elements, and the inner role="group" already names the control
+          set. Its buttons are focusable, so keyboard users scroll it by tabbing
+          — no separate focusable scroll region is needed. */}
+      <div className="profile-rail -mx-2 overflow-x-auto px-2 pb-3 pt-2">
+        <div className="mx-auto flex w-max min-w-full gap-3 sm:w-full sm:min-w-0" role="group" aria-label="Choose a strategy profile">
           {profiles.map((profile, index) => (
             <ProfileOption
               key={profile.risk_profile}
@@ -105,16 +109,6 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
             />
           ))}
         </div>
-      </div>
-
-      <div className="mt-5 flex items-center gap-3 rounded-xl bg-surface-secondary/60 px-4 py-3 ring-1 ring-border/50">
-        <span className="relative flex size-2" aria-hidden="true">
-          <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-50 motion-reduce:animate-none" />
-          <span className="relative inline-flex size-2 rounded-full bg-accent" />
-        </span>
-        <p className="text-xs text-muted">
-          Inspecting <strong className="text-foreground">{active.label}</strong> · equity, filtering, exposure, trades, and learnings stay scoped to this profile.
-        </p>
       </div>
 
       <AnimatePresence mode="wait" initial={false}>

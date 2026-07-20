@@ -175,7 +175,7 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
         </span>
       </Card.Header>
       <Card.Content className="space-y-4 pt-0">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <Stat
             label={`Last settlement · ${shortDateUTC(settled?.local_date)}`}
             value={settled ? `${round1(settled.high_f)}°` : "—"}
@@ -240,9 +240,9 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
   const mc = flagshipTarget?.market_consensus;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <Reveal>
-        <div className="grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
+        <div className="grid gap-6 lg:grid-cols-[1.02fr_0.98fr]">
           <ForecastPanel city={city} />
           <BookPanel city={city} currentStateAvailable={currentStateAvailable} />
         </div>
@@ -250,7 +250,7 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
 
       {isFlagship && !currentStateAvailable ? (
         <Reveal>
-          <div role="status" className="flex items-start gap-3 rounded-2xl bg-surface-secondary px-4 py-4 ring-1 ring-border/60">
+          <div role="status" className="flex items-start gap-3 rounded-2xl bg-surface-secondary px-4 py-4">
             <Icon icon="solar:clock-circle-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
             <p className="text-sm leading-relaxed text-muted">
               Current bracket prices, gate decisions, and prediction-market microstructure are unavailable until publication recovers.
@@ -276,7 +276,7 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
 
             <PipelineStepper />
 
-            <div className="grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
+            <div className="grid gap-6 lg:grid-cols-[1.02fr_0.98fr]">
               <ForecastInputs target={flagshipTarget} />
               <DecisionCard target={flagshipTarget} approvedCount={approvedCount} />
             </div>
@@ -304,7 +304,7 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
         </Reveal>
       ) : (
         <Reveal>
-          <p className="rounded-2xl bg-surface-secondary/70 px-4 py-4 text-sm leading-relaxed text-muted ring-1 ring-border/50">
+          <p className="rounded-2xl bg-surface-secondary/70 px-4 py-4 text-sm leading-relaxed text-muted">
             {city.name} publishes its calibrated forecast, official settlement and paper-book activity
             here. Bracket-level market microstructure — the model-vs-market bin overlay and the full
             gate trace — is published for the San Francisco flagship.
