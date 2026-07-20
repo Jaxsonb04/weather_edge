@@ -19,6 +19,7 @@ from .forecast_challengers import (
     evaluate_matched_lead_emos,
     evaluate_partial_pooled_intraday,
 )
+from .research_operate import EvaluationRun
 
 
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
@@ -358,3 +359,171 @@ def _load_intraday_cases(
             actual=float(actual),
         )
     return list(latest.values())
+
+
+# ---------------------------------------------------------------------------
+# Task 7: publish the chronological research evidence loop.
+#
+# Plan Task 7 Step 3, verbatim: "Publish fold coverage, replay completeness,
+# paired statistics, adjusted promotion gates, candidate version, and
+# immutable experiment identity. Clearly label $50/day as a hard research
+# KPI and show observed hit rate/shortfall." ``build_research_evaluation_report``
+# is the one publication surface for that requirement: a PURE formatting
+# function over ``research_operate.EvaluationRun`` (Task 7's own end-to-end
+# orchestration result) -- it never touches the database, the clock, or
+# config, and never mutates its input. The CLI layer
+# (``_cli/research.py``'s ``cmd_research_evaluate``/
+# ``cmd_research_propose_target``) is the only caller today.
+#
+# "$50/day is a hard research KPI, not a guarantee" (spec Sec 1/6): the
+# label below is deliberately verbose about this, and the payload reports
+# the OBSERVED hit rate/shortfall -- never a claim that the target was
+# achieved or guaranteed when it was not.
+# ---------------------------------------------------------------------------
+
+RESEARCH_TARGET_KPI_LABEL = (
+    "$50/day is a hard research KPI for research-target -- it is OBSERVED, "
+    "never guaranteed. A missed day is recorded as a miss, not papered over."
+)
+
+
+def _research_kpi_payload(kpis: Any) -> dict[str, Any]:
+    return {
+        "observed_days": kpis.observed_days,
+        "zero_activity_days": kpis.zero_activity_days,
+        "realized_pnl_total": kpis.realized_pnl_total,
+        "mean_daily_pnl": kpis.mean_daily_pnl,
+        "median_daily_pnl": kpis.median_daily_pnl,
+        "stdev_daily_pnl": kpis.stdev_daily_pnl,
+        "positive_day_rate": kpis.positive_day_rate,
+        "target_hit_rate": kpis.target_hit_rate,
+        "after_fee_roi": kpis.after_fee_roi,
+        "log_growth_per_day": kpis.log_growth_per_day,
+        "maximum_drawdown_pct": kpis.maximum_drawdown_pct,
+        "turnover_ratio": kpis.turnover_ratio,
+        "fills": kpis.fills,
+        "contracts": kpis.contracts,
+        "dollars_at_risk": kpis.dollars_at_risk,
+    }
+
+
+def _research_kpi_delta_payload(delta: Any) -> dict[str, Any]:
+    return {
+        "mean_daily_pnl": delta.mean_daily_pnl,
+        "positive_day_rate": delta.positive_day_rate,
+        "target_hit_rate": delta.target_hit_rate,
+        "after_fee_roi": delta.after_fee_roi,
+        "log_growth_per_day": delta.log_growth_per_day,
+        "maximum_drawdown_dollars": delta.maximum_drawdown_dollars,
+    }
+
+
+def _research_capacity_payload(capacity: Any) -> dict[str, Any] | None:
+    if capacity is None:
+        return None
+    return {
+        "policy_version": capacity.policy_version,
+        "max_daily_utilization_pct": capacity.max_daily_utilization_pct,
+        "window_total_utilization_pct": capacity.window_total_utilization_pct,
+    }
+
+
+def build_research_evaluation_report(run: EvaluationRun) -> dict[str, Any]:
+    """Publish one Task 7 ``research-evaluate``/``research-propose-target``
+    run: fold coverage, replay completeness, paired statistics, adjusted
+    promotion gates, candidate version, and immutable experiment identity
+    (plan Task 7 Step 3). Pure formatting over ``run``'s own fields.
+    """
+
+    declaration = run.declaration
+    decision = run.decision
+    report = run.report
+    challenger_kpis = report.challenger_kpis
+
+    observed_days = challenger_kpis.observed_days
+    hit_rate = challenger_kpis.target_hit_rate
+    mean_daily_pnl = challenger_kpis.mean_daily_pnl
+    shortfall = (
+        max(0.0, report.target_pnl - mean_daily_pnl) if mean_daily_pnl is not None else None
+    )
+
+    return {
+        "experiment_identity": {
+            "experiment_id": declaration.experiment_id,
+            "hypothesis_family": declaration.hypothesis_family,
+            "candidate_key": declaration.candidate_key,
+            "candidate_version": declaration.candidate_version,
+            "evidence_role": declaration.evidence_role,
+            "predicted_edge_scope": declaration.predicted_edge_scope,
+        },
+        "fold_coverage": {
+            "folds": len(run.walk_forward.folds),
+            "unavailable_folds": len(run.walk_forward.unavailable),
+            "skipped_historical_rows": len(run.walk_forward.skips),
+            # M-1: a sibling count -- rows a historical-row source (e.g.
+            # historical_rows_from_paper_store) itself dropped BEFORE they
+            # ever reached fold construction, never the same layer as
+            # skipped_historical_rows above (walk_forward.skips).
+            "skipped_historical_row_load_count": run.historical_row_skip_count,
+        },
+        "replay_completeness": {
+            "paired_case_count": decision.paired_case_count,
+            "coverage_exclusion_count": decision.coverage_exclusion_count,
+            "fold_unavailable_count": decision.fold_unavailable_count,
+            "crps_score_coverage_folds": decision.crps_score_coverage_folds,
+            "brier_score_coverage_folds": decision.brier_score_coverage_folds,
+            "calibration_pit_coverage_count": decision.calibration_pit_coverage_count,
+        },
+        "google_evidence_join": {
+            "matched_row_count": run.google_join_matched_row_count,
+            "vintage_mismatch_count": len(run.google_join_skips),
+        },
+        "paired_statistics": {
+            "baseline_kpis": _research_kpi_payload(report.baseline_kpis),
+            "challenger_kpis": _research_kpi_payload(challenger_kpis),
+            "kpi_delta": _research_kpi_delta_payload(report.kpi_delta),
+            "target_capacity": _research_capacity_payload(report.challenger_capacity.get("target")),
+            "motion_capacity": _research_capacity_payload(report.challenger_capacity.get("motion")),
+            "execution_model_versions": list(report.execution_model_versions),
+            "side_scopes": list(report.side_scopes),
+            "fill_scopes": list(report.fill_scopes),
+        },
+        "promotion_gate": {
+            "eligible_for_target_paper": decision.eligible_for_target_paper,
+            "effect_classification": decision.effect_classification,
+            "instrument_scope_statement": decision.instrument_scope_statement,
+            "block_reasons": list(decision.block_reasons),
+            "independent_confirmatory_days": decision.independent_confirmatory_days,
+            "distinct_calendar_target_days": decision.distinct_calendar_target_days,
+            "holm_p_value": decision.holm_p_value,
+            "holm_adjusted_significant": decision.holm_adjusted_significant,
+            "prior_family_attempts": len(run.prior_family_attempts),
+            # Always False: research_promotion.evaluate_promotion never
+            # sets it, and this report never overrides it.
+            "live_activation_allowed": decision.live_activation_allowed,
+        },
+        "daily_target_kpi": {
+            "label": RESEARCH_TARGET_KPI_LABEL,
+            "target_pnl": report.target_pnl,
+            "observed_days": observed_days,
+            "observed_hit_rate": hit_rate,
+            "observed_hit_days": (
+                round(hit_rate * observed_days) if hit_rate is not None else None
+            ),
+            "observed_mean_daily_pnl": mean_daily_pnl,
+            "observed_shortfall_vs_target": shortfall,
+        },
+        "persistence": {
+            "persisted_fold_count": run.persisted_fold_count,
+            "skipped_fold_persist_reasons": list(run.skipped_fold_persist_reasons),
+            # CRITICAL-1: folds excluded from this run's own verdict
+            # because their target day is at or before declaration's own
+            # Pacific declaration day.
+            "pre_declaration_fold_count": run.pre_declaration_fold_count,
+            "pre_declaration_fold_ids": list(run.pre_declaration_fold_ids),
+            # M-2: an already-recorded, immutable fold whose freshly
+            # recomputed payload no longer matches its stored row.
+            "stale_evidence_fold_count": run.stale_evidence_fold_count,
+            "stale_evidence_fold_ids": list(run.stale_evidence_fold_ids),
+        },
+    }

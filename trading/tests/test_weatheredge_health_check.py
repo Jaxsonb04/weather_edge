@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -182,3 +183,79 @@ def test_city_and_manifest_runtime_artifacts_are_ignored_cleared_and_health_chec
     assert runtime.status == "WARN"
     assert "cities_data.json" in runtime.details
     assert "publication_manifest.json" in runtime.details
+
+
+# ---------------------------------------------------------------------------
+# Task 8 item 4 (defense in depth): the authoritative gate is
+# sfo_kalshi_quant.publication's publish-time scan, but the local health
+# check should catch the same class of leak before an operator even runs a
+# publish cycle.
+# ---------------------------------------------------------------------------
+
+
+def test_raw_google_content_in_a_public_artifact_is_a_failure():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        _write(
+            root,
+            "forecaster/trading_signal.json",
+            json.dumps({"leak": {"weatherCondition": {"description": {"text": "Sunny"}}}}),
+        )
+
+        results = health.run_checks(root)
+
+        assert any(
+            result.name == "raw Google content scan" and result.status == "FAIL"
+            for result in results
+        )
+
+
+def test_raw_google_api_key_pattern_in_a_public_artifact_is_a_failure():
+    synthetic_google_key = "AI" + "zaSyD-abcdefghijklmnopqrstuvwxyz012345"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        _write(
+            root,
+            "forecaster/cities_data.json",
+            json.dumps({"leaked_key": synthetic_google_key}),
+        )
+
+        results = health.run_checks(root)
+
+        assert any(
+            result.name == "raw Google content scan" and result.status == "FAIL"
+            for result in results
+        )
+
+
+def test_legacy_google_high_f_field_does_not_fail_the_raw_content_scan():
+    """The pre-existing legacy SFO live blend already reports
+    `sources.google_high_f` in production trading_signal.json (spec section
+    7.5 -- a known, accepted exception, not a new leak).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        _write(
+            root,
+            "forecaster/trading_signal.json",
+            json.dumps({"targets": [{"forecast": {"sources": {"google_high_f": 71.69}}}]}),
+        )
+
+        results = health.run_checks(root)
+
+        assert any(
+            result.name == "raw Google content scan" and result.status == "PASS"
+            for result in results
+        )
+
+
+def test_raw_content_scan_passes_when_no_public_artifacts_exist():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+
+        results = health.run_checks(root)
+
+        assert any(
+            result.name == "raw Google content scan" and result.status == "PASS"
+            for result in results
+        )

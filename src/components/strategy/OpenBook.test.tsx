@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
 import { PublicationLoaded } from "../../test/PublicationLoaded";
@@ -63,12 +63,12 @@ describe("OpenBook publication truthfulness", () => {
     fetchMock.mockReset();
   });
 
-  async function renderBook(generatedAt: string) {
+  async function renderBook(generatedAt: string, value = strategy) {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
         <PublicationLoaded artifacts={["strategy_research.json"]} />
-        <OpenBook s={strategy} />
+        <OpenBook s={value} />
       </PublicationProvider>,
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
@@ -88,5 +88,28 @@ describe("OpenBook publication truthfulness", () => {
 
     expect(screen.getByText("Alpha position")).toBeInTheDocument();
     expect(screen.getByText("Beta limit")).toBeInTheDocument();
+  });
+
+  it("keeps five position rows visible and folds longer books", async () => {
+    const longBook = {
+      ...strategy,
+      paper_trading: {
+        ...strategy.paper_trading,
+        open_positions: Array.from({ length: 7 }, (_, index) => ({
+          id: index + 10,
+          label: `Position ${index + 1}`,
+          ticker: "KXHIGHTSFO-26JUL09-B68",
+          risk_profile: "live",
+          risk: 1,
+        })),
+      },
+    } as StrategyLab;
+
+    await renderBook("2026-07-09T11:59:00Z", longBook);
+
+    const trigger = screen.getByRole("button", { name: "Show 2 more open positions" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
   });
 });

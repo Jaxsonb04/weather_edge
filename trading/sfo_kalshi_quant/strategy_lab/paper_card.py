@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -32,9 +33,194 @@ from ..exits import (
     exit_bid_for_net,
 )
 from ..fees import quadratic_fee_average_per_contract
+from ..exit_audit import audited_exit_reason
+from ..logical_positions import (
+    LogicalPaperPosition,
+    OPEN_STATUSES,
+    group_logical_positions,
+)
+from ..profile_identity import row_published_profile_key
+from ..research_policy import TARGET_POLICY
 from ..settlement_day import settlement_today
 from . import DEFAULT_MODEL_VETO_BUFFER, DEFAULT_MODEL_VETO_MAX_LOSS_PCT
 from .status_alerts import _why_trade_good
+
+
+@dataclass(frozen=True)
+class _PaperJournalProjection:
+    """Validated decision and execution-lot views of one paper journal read."""
+
+    all_positions: tuple[LogicalPaperPosition, ...]
+    terminal_rows: tuple[dict[str, Any], ...]
+    terminal_lots: tuple[dict[str, Any], ...]
+    expired_root_rows: tuple[dict[str, Any], ...]
+    open_root_rows: tuple[dict[str, Any], ...]
+    pending_root_rows: tuple[dict[str, Any], ...]
+
+
+def _project_paper_journal(rows: list[sqlite3.Row]) -> _PaperJournalProjection:
+    positions = tuple(group_logical_positions(rows))
+    valid_positions = tuple(
+        position
+        for position in positions
+        if position.valid
+        and row_published_profile_key(position.root) != "unknown"
+    )
+    terminal_positions = tuple(
+        position for position in valid_positions if position.terminal
+    )
+    terminal_rows = tuple(position.as_row() for position in terminal_positions)
+    terminal_lots = tuple(
+        lot
+        for position in valid_positions
+        for lot in position.resolved_lots
+    )
+    expired_root_rows = tuple(
+        position.root
+        for position in valid_positions
+        if not position.terminal and position.root.get("status") == "PAPER_EXPIRED"
+    )
+    open_root_rows = tuple(
+        position.root
+        for position in valid_positions
+        if not position.terminal
+        and position.root.get("status") in OPEN_STATUSES
+        and position.root.get("settled_at") is None
+        and position.root.get("closed_at") is None
+    )
+    pending_root_rows = tuple(
+        position.root
+        for position in valid_positions
+        if not position.terminal
+        and position.root.get("status")
+        in {"PAPER_LIMIT_RESTING", "PAPER_PARTIALLY_FILLED"}
+        and position.root.get("settled_at") is None
+        and position.root.get("closed_at") is None
+    )
+    return _PaperJournalProjection(
+        all_positions=positions,
+        terminal_rows=terminal_rows,
+        terminal_lots=terminal_lots,
+        expired_root_rows=expired_root_rows,
+        open_root_rows=open_root_rows,
+        pending_root_rows=pending_root_rows,
+    )
+
+
+def _paper_book_summary(journal: _PaperJournalProjection) -> dict[str, float]:
+    pnl = sum(_to_float(row.get("realized_pnl")) for row in journal.terminal_lots)
+    capital = sum(
+        _to_float(row.get("contracts")) * _to_float(row.get("cost_per_contract"))
+        for row in journal.terminal_lots
+    )
+    wins = sum(row.get("logical_outcome") == "win" for row in journal.terminal_rows)
+    losses = sum(row.get("logical_outcome") == "loss" for row in journal.terminal_rows)
+    open_capital = sum(
+        _to_float(row.get("contracts")) * _to_float(row.get("cost_per_contract"))
+        for row in journal.open_root_rows
+    )
+    return {
+        "orders": float(len(journal.terminal_rows)),
+        "capital_at_risk": capital,
+        "realized_pnl": pnl,
+        "roi": pnl / capital if capital else 0.0,
+        "hit_rate": wins / (wins + losses) if wins + losses else 0.0,
+        "wins": float(wins),
+        "losses": float(losses),
+        "open_orders": float(len(journal.open_root_rows)),
+        "open_capital_at_risk": open_capital,
+    }
+
+
+def _paper_profile_rows(journal: _PaperJournalProjection) -> list[dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = {}
+
+    def profile_for(row: dict[str, Any]) -> dict[str, Any]:
+        name = _row_risk_profile(row) or "unknown"
+        return profiles.setdefault(
+            name,
+            {
+                "risk_profile": name,
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            },
+        )
+
+    for row in journal.terminal_rows:
+        profile = profile_for(row)
+        profile["orders"] += 1
+        profile["resolved"] += 1
+        if row.get("logical_outcome") == "win":
+            profile["wins"] += 1
+        elif row.get("logical_outcome") == "loss":
+            profile["losses"] += 1
+    for lot in journal.terminal_lots:
+        profile = profile_for(lot)
+        profile["realized_pnl"] += _to_float(lot.get("realized_pnl"))
+        profile["capital_resolved"] += _to_float(
+            lot.get("contracts")
+        ) * _to_float(lot.get("cost_per_contract"))
+    for row in journal.open_root_rows:
+        profile = profile_for(row)
+        profile["open_positions"] += 1
+        profile["open_risk"] += _to_float(row.get("contracts")) * _to_float(
+            row.get("cost_per_contract")
+        )
+    for row in journal.pending_root_rows:
+        profile = profile_for(row)
+        profile["pending_limit_orders"] += 1
+        profile["pending_limit_risk"] += _to_float(row.get("reserved_cost"))
+    return [_profile_summary_row(profiles[name]) for name in sorted(profiles)]
+
+
+def _paper_row_time(row: dict[str, Any]) -> str:
+    return str(
+        row.get("latest_resolved_at")
+        or row.get("closed_at")
+        or row.get("settled_at")
+        or row.get("created_at")
+        or ""
+    )
+
+
+def _duplicate_open_rows(rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+    counts: dict[tuple[str, str, str, str], int] = {}
+    for row in rows:
+        key = (
+            str(row.get("target_date") or ""),
+            _row_risk_profile(row) or "live",
+            str(row.get("market_ticker") or ""),
+            _side_from_row(row),
+        )
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = [
+        {
+            "target_date": target_date,
+            "risk_profile": risk_profile,
+            "market_ticker": ticker,
+            "side": side,
+            "open_orders": count,
+        }
+        for (target_date, risk_profile, ticker, side), count in counts.items()
+        if count > 1
+    ]
+    duplicates.sort(
+        key=lambda row: (
+            -int(row["open_orders"]),
+            str(row["target_date"]),
+            str(row["risk_profile"]),
+            str(row["market_ticker"]),
+        )
+    )
+    return duplicates[:5]
 
 
 def _paper_payload(db_path: Path) -> dict[str, Any]:
@@ -69,72 +255,62 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "recent_monitor_actions": [],
         "diagnostics": _empty_paper_diagnostics(),
         "profiles": [],
+        "research_daily_target": {
+            "available": False,
+            "reason": "target research has not activated yet",
+        },
+        "legacy_research": {
+            "available": False,
+            "label": "Legacy research history",
+            "profile": None,
+            "excluded_from": [
+                "active_books",
+                "daily_target",
+                "live_readiness",
+            ],
+        },
     }
     if not db_path.exists():
         return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
     if not _db_table_exists(db_path, "paper_orders"):
         return {**empty, "reason": "paper_orders table is not available yet."}
 
-    store = PaperStore(db_path, init=False)
-    summary = store.market_backtest_summary()
     monitor_marks = _latest_monitor_marks(db_path)
     decision_marks = _latest_position_marks(db_path)
     has_monitor_snapshots = _db_table_exists(db_path, "paper_monitor_snapshots")
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        open_rows = conn.execute(
-            """
-            SELECT *
-            FROM paper_orders
-            WHERE status IN (
-                'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
-            )
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            ORDER BY created_at DESC
-            LIMIT 30
-            """
+        journal_rows = conn.execute(
+            "SELECT * FROM paper_orders "
+            "WHERE status != 'REJECTED' ORDER BY id"
         ).fetchall()
-        pending_limit_rows = conn.execute(
-            """
-            SELECT *
-            FROM paper_orders
-            WHERE status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            ORDER BY created_at DESC
-            LIMIT 30
-            """
-        ).fetchall()
-        pending_limit_summary = conn.execute(
-            """
-            SELECT COUNT(*) AS pending_orders,
-                   COALESCE(SUM(reserved_cost), 0.0) AS pending_risk
-            FROM paper_orders
-            WHERE status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            """
-        ).fetchone()
-        closed_rows = conn.execute(
-            """
-            SELECT *
-            FROM paper_orders
-            WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-              AND realized_pnl IS NOT NULL
-            ORDER BY COALESCE(closed_at, settled_at, created_at) DESC
-            LIMIT 30
-            """
-        ).fetchall()
-        closed_action_rows = conn.execute(
-            """
-            SELECT *
-            FROM paper_orders
-            WHERE closed_at IS NOT NULL OR settled_at IS NOT NULL
-            ORDER BY COALESCE(closed_at, settled_at, created_at) DESC
-            LIMIT 12
-            """
-        ).fetchall()
+        journal = _project_paper_journal(journal_rows)
+        summary = _paper_book_summary(journal)
+        open_rows = sorted(
+            journal.open_root_rows,
+            key=lambda row: str(row.get("created_at") or ""),
+            reverse=True,
+        )[:30]
+        pending_limit_rows = sorted(
+            journal.pending_root_rows,
+            key=lambda row: str(row.get("created_at") or ""),
+            reverse=True,
+        )[:30]
+        closed_rows = sorted(
+            journal.terminal_rows,
+            key=_paper_row_time,
+            reverse=True,
+        )[:30]
+        closed_action_rows = sorted(
+            journal.terminal_rows,
+            key=_paper_row_time,
+            reverse=True,
+        )[:12]
+        valid_roots = {
+            int(position.root["id"]): position.root
+            for position in journal.all_positions
+            if position.valid and position.root.get("id") is not None
+        }
         monitor_rows = []
         if has_monitor_snapshots:
             # Keep only the LATEST snapshot per order. The monitor writes one row
@@ -145,7 +321,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             # order. See docs/trading_engine_diagnosis_2026-06-16.md (Finding 5).
             monitor_rows = conn.execute(
                 """
-                SELECT m.*, p.label, p.risk_profile
+                SELECT m.*
                 FROM (
                     SELECT *,
                            ROW_NUMBER() OVER (
@@ -154,104 +330,52 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                            ) AS rn
                     FROM paper_monitor_snapshots
                 ) m
-                LEFT JOIN paper_orders p ON p.id = m.order_id
                 WHERE m.rn = 1
                 ORDER BY m.created_at DESC, m.id DESC
-                LIMIT 12
+                LIMIT 5000
                 """
             ).fetchall()
-        duplicate_rows = conn.execute(
-            """
-            SELECT target_date,
-                   COALESCE(risk_profile, 'live') AS risk_profile,
-                   market_ticker,
-                   UPPER(COALESCE(side, 'YES')) AS side,
-                   COUNT(*) AS open_orders
-            FROM paper_orders
-            WHERE status IN (
-                'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
-            )
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            GROUP BY target_date,
-                     COALESCE(risk_profile, 'live'),
-                     market_ticker,
-                     UPPER(COALESCE(side, 'YES'))
-            HAVING COUNT(*) > 1
-            ORDER BY open_orders DESC, target_date, risk_profile, market_ticker
-            LIMIT 5
-            """
-        ).fetchall()
-        target_rows = conn.execute(
-            """
-            SELECT target_date, COUNT(*) AS open_orders
-            FROM paper_orders
-            WHERE status IN (
-                'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
-            )
-              AND settled_at IS NULL
-              AND closed_at IS NULL
-            GROUP BY target_date
-            ORDER BY target_date
-            """
-        ).fetchall()
+            monitor_rows = [
+                {
+                    **dict(row),
+                    "label": valid_roots[int(row["order_id"])].get("label"),
+                    "risk_profile": _row_risk_profile(
+                        valid_roots[int(row["order_id"])]
+                    ),
+                }
+                for row in monitor_rows
+                if int(row["order_id"]) in valid_roots
+            ][:12]
         scanning_profiles = []
         if _db_table_exists(db_path, "decision_snapshots"):
             scanning_profiles = [
-                str(row[0])
+                _row_risk_profile(row) or "unknown"
                 for row in conn.execute(
                     """
-                    SELECT DISTINCT COALESCE(risk_profile, 'unknown')
+                    SELECT DISTINCT COALESCE(risk_profile, 'unknown') AS risk_profile,
+                                    research_sleeve
                     FROM decision_snapshots
                     WHERE created_at >= datetime('now', '-7 days')
-                    ORDER BY 1
+                    ORDER BY 1, 2
                     """
                 ).fetchall()
             ]
-        profile_rows = conn.execute(
-            """
-            SELECT COALESCE(risk_profile, 'unknown') AS risk_profile,
-                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-                            THEN 1 ELSE 0 END) AS orders,
-                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-                            AND realized_pnl IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-                            AND realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-                            AND realized_pnl < 0 THEN 1 ELSE 0 END) AS losses,
-                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-                            THEN COALESCE(realized_pnl, 0.0) ELSE 0.0 END) AS realized_pnl,
-                   SUM(CASE WHEN status IN (
-                                  'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED',
-                                  'PAPER_PARTIAL_EXPIRED'
-                            )
-                             AND settled_at IS NULL
-                             AND closed_at IS NULL
-                            THEN 1 ELSE 0 END) AS open_positions,
-                   SUM(CASE WHEN status IN (
-                                  'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED',
-                                  'PAPER_PARTIAL_EXPIRED'
-                            )
-                             AND settled_at IS NULL
-                             AND closed_at IS NULL
-                            THEN contracts * cost_per_contract ELSE 0.0 END) AS open_risk,
-                   SUM(CASE WHEN status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
-                             AND settled_at IS NULL
-                             AND closed_at IS NULL
-                            THEN 1 ELSE 0 END) AS pending_limit_orders,
-                   SUM(CASE WHEN status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED')
-                             AND settled_at IS NULL
-                             AND closed_at IS NULL
-                            THEN reserved_cost ELSE 0.0 END) AS pending_limit_risk,
-                   SUM(CASE WHEN status IN ('PAPER_SETTLED', 'PAPER_CLOSED')
-                             AND realized_pnl IS NOT NULL
-                            THEN contracts * cost_per_contract ELSE 0.0 END) AS capital_resolved
-            FROM paper_orders
-            WHERE status != 'REJECTED'
-            GROUP BY COALESCE(risk_profile, 'unknown')
-            ORDER BY risk_profile
-            """
-        ).fetchall()
+        profile_rows = _paper_profile_rows(journal)
+
+    research_daily_target = _research_daily_target_payload(db_path)
+    all_profile_rows = _profiles_with_scanners(profile_rows, scanning_profiles)
+    legacy_research_row = next(
+        (
+            dict(row)
+            for row in all_profile_rows
+            if row.get("risk_profile") == "research"
+        ),
+        None,
+    )
+    profile_rows = _research_book_profiles(
+        all_profile_rows,
+        research_daily_target,
+    )
 
     open_positions = [
         _paper_row(row, _position_mark_for(row, monitor_marks, decision_marks), monitor)
@@ -286,17 +410,28 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         + pending_action_rows[:open_reserve]
         + open_action_rows[: max(0, open_reserve - len(pending_action_rows))]
     )
-    action_rows = sorted(action_rows, key=lambda row: str(row.get("time") or ""), reverse=True)[:12]
-    duplicate_groups = [_duplicate_group_row(row) for row in duplicate_rows]
+    action_rows = sorted(
+        action_rows,
+        key=lambda row: str(row.get("time") or ""),
+        reverse=True,
+    )[:12]
+    duplicate_groups = [
+        _duplicate_group_row(row)
+        for row in _duplicate_open_rows(journal.open_root_rows)
+    ]
+    target_counts: dict[str, int] = {}
+    for row in journal.open_root_rows:
+        target = str(row.get("target_date") or "")
+        target_counts[target] = target_counts.get(target, 0) + 1
     today = settlement_today()
     unresolved_past_targets = [
         {
-            "target_date": str(row["target_date"]),
-            "open_orders": int(row["open_orders"]),
+            "target_date": target,
+            "open_orders": open_orders,
         }
-        for row in target_rows
-        if _date_from_string(row["target_date"]) is not None
-        and _date_from_string(row["target_date"]) < today
+        for target, open_orders in sorted(target_counts.items())
+        if _date_from_string(target) is not None
+        and _date_from_string(target) < today
     ]
     marked_open_positions = [
         row for row in open_positions if row.get("unrealized_pnl") is not None
@@ -313,8 +448,11 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
     )
     win_count = int(_to_float(summary.get("wins"), default=0.0))
     loss_count = int(_to_float(summary.get("losses"), default=0.0))
-    pending_limit_count = int(pending_limit_summary["pending_orders"] or 0) if pending_limit_summary else 0
-    pending_limit_risk = _to_float(pending_limit_summary["pending_risk"]) if pending_limit_summary else 0.0
+    pending_limit_count = len(journal.pending_root_rows)
+    pending_limit_risk = sum(
+        _to_float(row.get("reserved_cost"))
+        for row in journal.pending_root_rows
+    )
     return {
         "available": True,
         "monitor": monitor,
@@ -353,37 +491,142 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "closed_positions": closed_positions,
         "recent_monitor_actions": action_rows,
         "duplicate_open_groups": duplicate_groups,
-        "diagnostics": _paper_diagnostics(db_path),
-        "profiles": _profiles_with_scanners(
-            [_profile_summary_row(row) for row in profile_rows],
-            scanning_profiles,
-        ),
+        "diagnostics": _paper_diagnostics(journal),
+        "profiles": profile_rows,
+        "research_daily_target": research_daily_target,
+        "legacy_research": {
+            "available": legacy_research_row is not None,
+            "label": "Legacy research history",
+            "profile": legacy_research_row,
+            "excluded_from": [
+                "active_books",
+                "daily_target",
+                "live_readiness",
+            ],
+        },
     }
 
 
-def _paper_diagnostics(db_path: Path) -> dict[str, Any]:
-    if not db_path.exists() or not _db_table_exists(db_path, "paper_orders"):
-        return _empty_paper_diagnostics()
+def _research_daily_target_payload(db_path: Path) -> dict[str, Any]:
+    if not _db_table_exists(db_path, "research_daily_goals"):
+        return {
+            "available": False,
+            "reason": "target research has not activated yet",
+        }
     with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM paper_orders
-            WHERE status != 'REJECTED'
-            """
-        ).fetchall()
+        row = conn.execute(
+            "SELECT 1 FROM research_daily_goals WHERE account_id=? "
+            "AND policy_version=? LIMIT 1",
+            (TARGET_POLICY.account_id, TARGET_POLICY.policy_version),
+        ).fetchone()
+    if row is None:
+        return {
+            "available": False,
+            "reason": "target research has not activated yet",
+        }
+    try:
+        return {
+            "available": True,
+            **PaperStore(db_path, init=False).research_daily_goal_report(),
+        }
+    except (RuntimeError, ValueError, sqlite3.Error) as exc:
+        return {
+            "available": False,
+            "reason": f"target research goal unavailable: {type(exc).__name__}: {exc}",
+        }
 
-    resolved = [
-        row
-        for row in rows
-        if row["realized_pnl"] is not None and row["status"] != "PAPER_EXPIRED"
-    ]
+
+def _research_book_profiles(
+    profiles: list[dict[str, Any]],
+    target: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not target.get("available"):
+        return profiles
+    by_name = {str(row["risk_profile"]): row for row in profiles}
+    by_name.pop("research", None)
+    by_name.setdefault(
+        "live",
+        _profile_summary_row(
+            {
+                "risk_profile": "live",
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            }
+        ),
+    )
+    target_row = by_name.setdefault(
+        "research-target",
+        _profile_summary_row(
+            {
+                "risk_profile": "research-target",
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            }
+        ),
+    )
+    target_row["daily_target"] = target
+    motion_row = by_name.setdefault(
+        "research-motion",
+        _profile_summary_row(
+            {
+                "risk_profile": "research-motion",
+                "orders": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "realized_pnl": 0.0,
+                "capital_resolved": 0.0,
+                "open_positions": 0,
+                "open_risk": 0.0,
+                "pending_limit_orders": 0,
+                "pending_limit_risk": 0.0,
+            }
+        ),
+    )
+    motion_row["excluded_from"] = ["daily_target", "live_readiness"]
+    return sorted(by_name.values(), key=lambda row: str(row["risk_profile"]))
+
+
+def _paper_diagnostics(
+    source: Path | _PaperJournalProjection,
+) -> dict[str, Any]:
+    if isinstance(source, _PaperJournalProjection):
+        journal = source
+    else:
+        db_path = Path(source)
+        if not db_path.exists() or not _db_table_exists(db_path, "paper_orders"):
+            return _empty_paper_diagnostics()
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM paper_orders "
+                "WHERE status != 'REJECTED' ORDER BY id"
+            ).fetchall()
+        journal = _project_paper_journal(rows)
+
+    resolved = list(journal.terminal_rows)
+    exit_evidence = [*resolved, *journal.expired_root_rows]
     return {
         "resolved_positions": len(resolved),
         "by_profile": _paper_group_diagnostics(resolved, lambda row: _row_risk_profile(row) or "unknown"),
         "by_side": _paper_group_diagnostics(resolved, _side_from_row),
-        "by_exit_reason": _paper_group_diagnostics(resolved, _paper_exit_reason),
+        "by_exit_reason": _paper_group_diagnostics(exit_evidence, _paper_exit_reason),
         "worst_segments": _worst_paper_segments(resolved),
     }
 
@@ -399,22 +642,38 @@ def _empty_paper_diagnostics() -> dict[str, Any]:
 
 
 def _paper_group_diagnostics(
-    rows: list[sqlite3.Row],
+    rows: list[Any],
     key_fn,
 ) -> dict[str, dict[str, Any]]:
-    groups: dict[str, list[sqlite3.Row]] = {}
+    groups: dict[str, list[Any]] = {}
     for row in rows:
         groups.setdefault(str(key_fn(row)), []).append(row)
     return {key: _paper_group_summary(group) for key, group in sorted(groups.items())}
 
 
-def _paper_group_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
-    wins = sum(1 for row in rows if _paper_order_won(row))
-    losses = sum(1 for row in rows if _paper_order_decided(row) and not _paper_order_won(row))
-    pnl = sum(_to_float(row["realized_pnl"]) for row in rows)
-    capital = sum(_to_float(row["contracts"]) * _to_float(row["cost_per_contract"]) for row in rows)
+def _paper_group_summary(rows: list[Any]) -> dict[str, Any]:
+    resolved_rows = [
+        row
+        for row in rows
+        if str(_sqlite_row_value(row, "status") or "").upper()
+        in {"PAPER_CLOSED", "PAPER_SETTLED"}
+    ]
+    wins = sum(1 for row in resolved_rows if _paper_order_won(row))
+    losses = sum(
+        1
+        for row in resolved_rows
+        if _paper_order_decided(row) and not _paper_order_won(row)
+    )
+    pnl = sum(_to_float(row["realized_pnl"]) for row in resolved_rows)
+    capital = sum(
+        _to_float(_sqlite_row_value(row, "capital_resolved"))
+        if _sqlite_row_value(row, "capital_resolved") is not None
+        else _to_float(row["contracts"]) * _to_float(row["cost_per_contract"])
+        for row in resolved_rows
+    )
     return {
-        "resolved": len(rows),
+        "positions": len(rows),
+        "resolved": len(resolved_rows),
         "wins": wins,
         "losses": losses,
         "realized_pnl": _round(pnl, 2),
@@ -424,8 +683,8 @@ def _paper_group_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
     }
 
 
-def _worst_paper_segments(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+def _worst_paper_segments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for row in rows:
         key = (_row_risk_profile(row) or "unknown", _side_from_row(row), _paper_exit_reason(row))
         grouped.setdefault(key, []).append(row)
@@ -444,17 +703,14 @@ def _worst_paper_segments(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
     return segments[:6]
 
 
-def _paper_exit_reason(row: sqlite3.Row) -> str:
-    if row["status"] == "PAPER_EXPIRED":
-        return "limit_expired"
-    if row["closed_at"]:
-        return "monitor_exit"
-    if row["settled_at"]:
-        return "held_to_settlement"
-    return "unresolved"
+def _paper_exit_reason(row: dict[str, Any]) -> str:
+    return audited_exit_reason(row)
 
 
-def _paper_order_won(row: sqlite3.Row) -> bool:
+def _paper_order_won(row: Any) -> bool:
+    logical_outcome = _sqlite_row_value(row, "logical_outcome")
+    if logical_outcome in {"win", "loss"}:
+        return logical_outcome == "win"
     try:
         resolved_yes = row["resolved_yes"]
     except (IndexError, KeyError):
@@ -465,7 +721,9 @@ def _paper_order_won(row: sqlite3.Row) -> bool:
     return bool(resolved_yes) if side == "YES" else not bool(resolved_yes)
 
 
-def _paper_order_decided(row: sqlite3.Row) -> bool:
+def _paper_order_decided(row: Any) -> bool:
+    if _sqlite_row_value(row, "logical_outcome") in {"win", "loss"}:
+        return True
     try:
         resolved_yes = row["resolved_yes"]
     except (IndexError, KeyError):
@@ -506,7 +764,7 @@ def _profiles_with_scanners(
     return profiles
 
 
-def _profile_summary_row(row: sqlite3.Row) -> dict[str, Any]:
+def _profile_summary_row(row: Any) -> dict[str, Any]:
     resolved = int(row["resolved"] or 0)
     wins = int(row["wins"] or 0)
     losses = int(row["losses"] or 0)
@@ -520,6 +778,7 @@ def _profile_summary_row(row: sqlite3.Row) -> dict[str, Any]:
         "losses": losses,
         "hit_rate": _round(wins / (wins + losses), 4) if (wins + losses) else None,
         "realized_pnl": _round(pnl, 2),
+        "capital_resolved": _round(capital, 2),
         "roi": _round(pnl / capital, 4) if capital > 0 else None,
         "open_positions": int(row["open_positions"] or 0),
         "open_risk": _round(_to_float(row["open_risk"]), 2),
@@ -529,11 +788,8 @@ def _profile_summary_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _row_risk_profile(row: sqlite3.Row) -> str | None:
-    try:
-        value = row["risk_profile"]
-    except (IndexError, KeyError):
-        return None
-    return str(value) if value else None
+    profile = row_published_profile_key(row)
+    return None if profile == "unknown" else profile
 
 
 def _latest_monitor_marks(db_path: Path) -> dict[int, dict[str, Any]]:
@@ -708,7 +964,10 @@ def _monitor_thresholds_for_side(monitor: dict[str, Any], side: str) -> tuple[fl
 
 def _settlement_first_no_min_cost_for_row(row: sqlite3.Row) -> float | None:
     profile = _row_risk_profile(row)
-    if profile is not None and normalize_risk_profile_name(profile) == "research":
+    if profile is not None and (
+        profile.startswith("research-")
+        or normalize_risk_profile_name(profile) == "research"
+    ):
         return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
     return None
 
@@ -951,6 +1210,7 @@ def _paper_row(
         "resolved_yes": row["resolved_yes"],
         "exit_price": _round(row["exit_price"], 4),
         "exit_fee_per_contract": _round(row["exit_fee_per_contract"], 4),
+        "exit_fill_count": _sqlite_row_value(row, "exit_fill_count"),
         "realized_pnl": _round(row["realized_pnl"], 2),
         "realized_roi": (
             _round(_to_float(row["realized_pnl"]) / risk, 4)

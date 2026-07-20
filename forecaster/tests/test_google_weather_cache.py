@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 import google_weather_cache as gwc
 
 
@@ -216,6 +218,14 @@ def test_disabled_rolling_bias_does_not_acquire_archive_rows(monkeypatch):
 
 
 def test_cache_cli_help_is_byte_compatible():
+    """Task 6 added --cities; every prior flag/line stays unchanged.
+
+    The pinned text below is the ONLY thing this test allows to change
+    about the CLI surface across a commit, and it changed by exactly one
+    documented addition: the new opt-in --cities flag. --refresh/--force
+    and their help text are byte-identical to before.
+    """
+
     completed = subprocess.run(
         [sys.executable, gwc.__file__, "--help"],
         check=True,
@@ -224,12 +234,14 @@ def test_cache_cli_help_is_byte_compatible():
     )
     assert completed.stderr == ""
     assert completed.stdout == (
-        "usage: google_weather_cache.py [-h] [--refresh] [--force]\n"
+        "usage: google_weather_cache.py [-h] [--refresh] [--force] [--cities CITIES]\n"
         "\n"
         "options:\n"
-        "  -h, --help  show this help message and exit\n"
-        "  --refresh   fetch a fresh Google forecast\n"
-        "  --force     ignore a valid cache\n"
+        "  -h, --help       show this help message and exit\n"
+        "  --refresh        fetch a fresh Google forecast\n"
+        "  --force          ignore a valid cache\n"
+        "  --cities CITIES  'all' or comma slugs (e.g. sfo,nyc); omit for the legacy\n"
+        "                   SFO-only refresh\n"
     )
 
 
@@ -292,6 +304,204 @@ def test_google_event_reservation_adjustment_is_exact(tmp_path, monkeypatch):
     assert adjusted["monthly_events"] == 614
     assert adjusted["calls"] == 20
     assert adjusted["limit"] == 260
+
+
+def test_negative_actual_adjustment_cannot_refund_pre_refresh_usage():
+    usage = {
+        "daily_events": 17,
+        "monthly_events": 611,
+    }
+
+    reserved = gwc.reserve_google_weather_events(dict(usage), 5)
+    adjusted = gwc.adjust_reserved_google_weather_events(reserved, 5, -3)
+
+    assert adjusted["daily_events"] == 17
+    assert adjusted["monthly_events"] == 611
+    assert adjusted["last_refresh_events"] == 0
+
+
+class _DispatchedFetchFailure(RuntimeError):
+    def __init__(self, dispatched_events):
+        super().__init__("safe synthetic Google fetch failure")
+        self.dispatched_events = dispatched_events
+
+
+def _run_failed_refresh(tmp_path, monkeypatch, dispatched_events):
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage_path = tmp_path / "usage.json"
+    starting_usage = {
+        "date": "2026-07-11",
+        "month": "2026-07",
+        "daily_events": 17,
+        "monthly_events": 611,
+        "daily_event_budget": 260,
+        "monthly_event_budget": 8000,
+        "refreshes": 4,
+        "calls": 17,
+    }
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-12")
+    monkeypatch.setattr(gwc, "api_key", lambda: "test-secret-key")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(starting_usage))
+    monkeypatch.setattr(gwc, "estimated_google_weather_events_per_refresh", lambda: 5)
+    monkeypatch.setattr(gwc, "usage_has_budget", lambda _usage, _events: True)
+    monkeypatch.setattr(
+        gwc,
+        "fetch_google_forecast",
+        lambda _key: (_ for _ in ()).throw(
+            _DispatchedFetchFailure(dispatched_events)
+        ),
+    )
+    monkeypatch.setattr(
+        gwc,
+        "score_archive",
+        lambda: {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0},
+    )
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--refresh"])
+
+    gwc.main()
+
+    return json.loads(usage_path.read_text(encoding="utf-8"))
+
+
+def test_predispatch_failure_releases_estimated_event_reservation(
+    tmp_path, monkeypatch
+):
+    usage = _run_failed_refresh(tmp_path, monkeypatch, dispatched_events=0)
+
+    assert usage["daily_events"] == 17
+    assert usage["monthly_events"] == 611
+    assert usage["last_refresh_events"] == 0
+
+
+def test_postdispatch_failure_keeps_ambiguous_events_consumed(tmp_path, monkeypatch):
+    usage = _run_failed_refresh(tmp_path, monkeypatch, dispatched_events=2)
+
+    assert usage["daily_events"] == 19
+    assert usage["monthly_events"] == 613
+    assert usage["last_refresh_events"] == 2
+
+
+def _run_successful_refresh(
+    tmp_path, monkeypatch, reported_events=None, fetch_result=None
+):
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage_path = tmp_path / "usage.json"
+    starting_usage = {
+        "date": "2026-07-11",
+        "month": "2026-07",
+        "daily_events": 17,
+        "monthly_events": 611,
+        "daily_event_budget": 260,
+        "monthly_event_budget": 8000,
+        "refreshes": 4,
+        "calls": 17,
+    }
+    summarized_usage = {}
+    stats = {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0}
+
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "USAGE_PATH", usage_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-12")
+    monkeypatch.setattr(gwc, "api_key", lambda: "test-key")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(starting_usage))
+    monkeypatch.setattr(gwc, "estimated_google_weather_events_per_refresh", lambda: 5)
+    monkeypatch.setattr(gwc, "HOURLY_LOOKAHEAD_HOURS", 72)
+    monkeypatch.setattr(gwc, "ENABLE_GOOGLE_DAILY_FORECAST", True)
+    monkeypatch.setattr(gwc, "ENABLE_GOOGLE_CURRENT_CONDITIONS", True)
+    monkeypatch.setattr(gwc, "usage_has_budget", lambda _usage, _events: True)
+    monkeypatch.setattr(
+        gwc,
+        "fetch_google_forecast",
+        lambda _key: (
+            fetch_result
+            if fetch_result is not None
+            else {"google_weather_events_used": reported_events}
+        ),
+    )
+
+    def summarize(_raw, target_iso, usage):
+        summarized_usage.update(usage)
+        return {"available": True, "target_date": target_iso}
+
+    monkeypatch.setattr(gwc, "summarize_forecast", summarize)
+    monkeypatch.setattr(gwc, "score_archive", lambda: dict(stats))
+    monkeypatch.setattr(gwc, "archive_forecast", lambda *_args: dict(stats))
+    monkeypatch.setattr(gwc, "blend_targets", lambda *_args: [])
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--refresh"])
+
+    gwc.main()
+
+    usage = json.loads(usage_path.read_text(encoding="utf-8"))
+    return usage, summarized_usage
+
+
+def test_success_reconciles_actual_events_before_summarizing(tmp_path, monkeypatch):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        reported_events=3,
+    )
+
+    assert usage["daily_events"] == 20
+    assert usage["monthly_events"] == 614
+    assert usage["last_refresh_events"] == 3
+    assert summarized_usage["daily_events"] == 20
+    assert summarized_usage["monthly_events"] == 614
+
+
+@pytest.mark.parametrize("reported_events", [-3, "not-an-integer", 3.5, True])
+def test_invalid_success_count_keeps_conservative_reservation(
+    reported_events, tmp_path, monkeypatch
+):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        reported_events=reported_events,
+    )
+
+    assert usage["daily_events"] == 22
+    assert usage["monthly_events"] == 616
+    assert usage["daily_events"] >= 17
+    assert usage["monthly_events"] >= 611
+    assert summarized_usage["daily_events"] == 22
+    assert summarized_usage["monthly_events"] == 616
+
+
+def test_excessive_success_count_is_capped_at_known_fetch_maximum(
+    tmp_path, monkeypatch
+):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        reported_events=999,
+    )
+
+    assert usage["daily_events"] == 24
+    assert usage["monthly_events"] == 618
+    assert usage["daily_events"] >= 17
+    assert usage["monthly_events"] >= 611
+    assert summarized_usage["daily_events"] == 24
+    assert summarized_usage["monthly_events"] == 618
+
+
+def test_malformed_success_result_keeps_conservative_reservation(
+    tmp_path, monkeypatch
+):
+    usage, summarized_usage = _run_successful_refresh(
+        tmp_path,
+        monkeypatch,
+        fetch_result=[],
+    )
+
+    assert usage["daily_events"] == 22
+    assert usage["monthly_events"] == 616
+    assert usage["daily_events"] >= 17
+    assert usage["monthly_events"] >= 611
+    assert summarized_usage == {}
 
 
 def _learner_row(target_date, actual, google, nws, open_meteo=80.0, history=80.0):
@@ -578,3 +788,91 @@ def test_adaptive_training_does_not_fallback_to_embedded_actual_for_preliminary_
             assert rows[0]["actual_high_f"] == 71.0
         finally:
             os.chdir(prev_cwd)
+
+
+# ---------------------------------------------------------------------------
+# Task 6: --cities CLI dispatch and SFO compatibility.
+# ---------------------------------------------------------------------------
+
+
+def test_default_invocation_does_not_engage_multicity_orchestrator(
+    tmp_path, monkeypatch, capsys
+):
+    """SFO compatibility bitwise fixture.
+
+    Byte-for-byte identical to ``test_missing_key_cache_artifact_and_output_are_deterministic``
+    above: the legacy no-``--cities`` CLI surface must be completely
+    unaffected by Task 6. The multicity orchestrator is monkeypatched to
+    raise if it is ever called, proving the default invocation never
+    reaches it.
+    """
+
+    cache_path = tmp_path / "google_weather_cache.json"
+    usage = {
+        "daily_event_budget": 260,
+        "daily_events": 17,
+        "monthly_event_budget": 8000,
+        "monthly_events": 611,
+    }
+    monkeypatch.setattr(gwc, "CACHE_PATH", cache_path)
+    monkeypatch.setattr(gwc, "DB_PATH", tmp_path / "weather.db")
+    monkeypatch.setattr(gwc, "target_date", lambda: "2026-07-11")
+    monkeypatch.setattr(gwc, "load_usage", lambda: dict(usage))
+    monkeypatch.setattr(gwc, "api_key", lambda: None)
+    monkeypatch.setattr(
+        gwc,
+        "score_archive",
+        lambda: {"daily_rows": 0, "blend_rows": 0, "hourly_rows": 0, "scored": 0},
+    )
+
+    def _must_not_run(cities_arg):
+        raise AssertionError("multicity orchestrator must not run without --cities")
+
+    monkeypatch.setattr(gwc._multicity_refresh, "run_cli", _must_not_run)
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py"])
+
+    gwc.main()
+
+    expected = {
+        "available": False,
+        "reason": "Google Weather cache unavailable.",
+        "target_date": "2026-07-11",
+        "max_calls_per_day": 260,
+        "calls_used_today": 17,
+        "max_google_events_per_month": 8000,
+        "google_events_used_month": 611,
+        "fetched_at": None,
+    }
+    assert cache_path.read_text(encoding="utf-8") == json.dumps(expected, indent=2) + "\n"
+    assert capsys.readouterr().out == (
+        "missing GOOGLE_WEATHER_API_KEY; Google cache not refreshed; scored 0\n"
+    )
+
+
+def test_cities_flag_dispatches_before_any_legacy_body_runs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        gwc._multicity_refresh, "run_cli", lambda cities_arg: calls.append(cities_arg)
+    )
+
+    def _must_not_run():
+        raise AssertionError("legacy body must not run when --cities is passed")
+
+    monkeypatch.setattr(gwc, "target_date", _must_not_run)
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--cities", "all"])
+
+    gwc.main()
+
+    assert calls == ["all"]
+
+
+def test_cities_flag_accepts_a_comma_slug_list(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        gwc._multicity_refresh, "run_cli", lambda cities_arg: calls.append(cities_arg)
+    )
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--cities", "sfo,nyc"])
+
+    gwc.main()
+
+    assert calls == ["sfo,nyc"]

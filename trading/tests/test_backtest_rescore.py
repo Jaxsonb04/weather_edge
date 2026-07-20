@@ -14,13 +14,15 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from sfo_kalshi_quant.backtest_rescore import (
     reconstruct_market,
     reconstruct_probability,
     run_rescore,
 )
 from sfo_kalshi_quant.cli import main
-from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.config import StrategyConfig, normalize_risk_profile_name
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import BucketProbability, MarketBin
 from sfo_kalshi_quant.risk import TradeEvaluator
@@ -75,6 +77,77 @@ def _record_and_read(store: PaperStore, target_date: str, decision):
     rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
     assert len(rows) == 1
     return rows[0]
+
+
+@pytest.mark.parametrize(
+    "profile_probabilities, expected_by_mode",
+    [
+        (
+            [
+                ("live", 0.91),
+                ("balanced", 0.81),
+                (None, 0.82),
+                ("research", 0.71),
+                ("fast_feedback", 0.61),
+                ("fast-feedback", 0.62),
+            ],
+            {
+                "entry-per-market-side": {"live": 0.91, "research": 0.71},
+                "latest-per-market-side": {"live": 0.82, "research": 0.62},
+            },
+        ),
+        (
+            [
+                ("fast-feedback", 0.62),
+                ("fast_feedback", 0.61),
+                ("research", 0.71),
+                (None, 0.82),
+                ("balanced", 0.81),
+                ("live", 0.91),
+            ],
+            {
+                "entry-per-market-side": {"live": 0.82, "research": 0.62},
+                "latest-per-market-side": {"live": 0.91, "research": 0.71},
+            },
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "sample_mode", ["entry-per-market-side", "latest-per-market-side"]
+)
+def test_sql_sampling_keeps_one_snapshot_per_profile_regardless_of_insertion_order(
+    profile_probabilities, expected_by_mode, sample_mode
+):
+    config = StrategyConfig()
+    base = TradeEvaluator(config).evaluate_market(
+        _no_favorite_market(), _no_favorite_probability(), bankroll=1000.0, side="NO"
+    )
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        for profile, probability in profile_probabilities:
+            decision = replace(base, probability=probability)
+            store.record_decisions(
+                "2026-06-03",
+                [decision],
+                event=pre_resolution_event([decision]),
+                risk_profile=profile,
+            )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE decision_snapshots SET created_at='2026-06-03T12:00:00+00:00'"
+            )
+
+        rows = store.sampled_decision_rows(sample_mode=sample_mode)
+
+    actual_by_profile = {
+        normalize_risk_profile_name(
+            str(row["risk_profile"]) if row["risk_profile"] else "live"
+        ): float(row["probability"])
+        for row in rows
+    }
+    assert actual_by_profile == expected_by_mode[sample_mode]
+    assert len(rows) == 2
 
 
 def test_rescore_roundtrip_reproduces_no_side_decision():

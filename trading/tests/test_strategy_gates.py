@@ -719,6 +719,76 @@ def test_research_allows_reentry_while_live_is_one_and_done():
     assert strategy_config_for_profile("research").max_entries_per_market_side == 3
 
 
+def test_research_candidate_mode_skips_only_edge_and_sizing_gates() -> None:
+    market = _bin(
+        "72° to 73°",
+        yes_bid=0.79,
+        yes_ask=0.80,
+        yes_bid_size=40.0,
+        yes_ask_size=40.0,
+    )
+    probability = BucketProbability(
+        ticker=market.ticker,
+        label=market.yes_sub_title,
+        probability=0.81,
+        lower_confidence=0.70,
+        empirical_probability=0.81,
+        normal_probability=0.81,
+        effective_n=250,
+        model_probability=0.813,
+        market_probability=0.80,
+    )
+    evaluator = TradeEvaluator(strategy_config_for_profile("research"))
+
+    legacy = evaluator.evaluate_market(market, probability, bankroll=1000.0)
+    candidate = evaluator.evaluate_market(
+        market,
+        probability,
+        bankroll=1000.0,
+        candidate_only=True,
+    )
+    closed = evaluator.evaluate_market(
+        replace(market, status="closed"),
+        probability,
+        bankroll=1000.0,
+        candidate_only=True,
+    )
+
+    assert legacy.approved is False
+    assert candidate.approved is True
+    assert candidate.recommended_contracts == 25.0
+    assert closed.approved is False
+    assert any("market status" in reason for reason in closed.reasons)
+
+
+def test_default_false_candidate_mode_is_live_byte_for_byte_noop() -> None:
+    market = _bin(
+        "72° to 73°",
+        yes_bid=0.79,
+        yes_ask=0.80,
+        yes_bid_size=40.0,
+        yes_ask_size=40.0,
+    )
+    probability = BucketProbability(
+        ticker=market.ticker,
+        label=market.yes_sub_title,
+        probability=0.90,
+        lower_confidence=0.86,
+        empirical_probability=0.90,
+        normal_probability=0.90,
+        effective_n=250,
+        model_probability=0.91,
+        market_probability=0.80,
+    )
+    evaluator = TradeEvaluator(strategy_config_for_profile("live"))
+
+    assert evaluator.evaluate_market(
+        market, probability, bankroll=1000.0
+    ) == evaluator.evaluate_market(
+        market, probability, bankroll=1000.0, candidate_only=False
+    )
+
+
 def test_live_regime_gate_and_strict_floors_unchanged_by_frequency_retune():
     # The frequency work must not touch the real-money-intent profile.
     balanced = strategy_config_for_profile("live")
