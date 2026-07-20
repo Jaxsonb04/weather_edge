@@ -22,6 +22,7 @@ import { ExitReasonBars, SidePerformanceList } from "./ExitPolicyCard";
 import { OpenBook } from "./OpenBook";
 import { MonitorLog } from "./MonitorLog";
 import { LedgerTable } from "./LedgerTable";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 
 const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
   live: {
@@ -249,10 +250,16 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         />
       )}
 
-      {/* this book's gate */}
-      {gate && gateCount.signals > 0 && (
-        <Card className="rounded-2xl ring-1 ring-border/70">
-          <Card.Content className="grid gap-4 p-4 md:grid-cols-2">
+      {(gate && gateCount.signals > 0) || charts?.probability_vs_market?.length ? (
+        <DetailDisclosure
+          id={`signal-evidence-${rp}`}
+          icon="solar:chart-square-bold"
+          title="Signal & entry evidence"
+          note="Gate approvals, rejection reasons, model-vs-market candidates, and edge by price"
+        >
+          {gate && gateCount.signals > 0 && (
+            <Card className="rounded-2xl ring-1 ring-border/70">
+              <Card.Content className="grid gap-4 p-4 md:grid-cols-2">
             <div className="rounded-xl bg-surface-secondary p-3 ring-1 ring-border/50">
               <div className="flex items-baseline justify-between gap-2">
                 <p className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</p>
@@ -279,21 +286,27 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 ))}
               </ul>
             </div>
-          </Card.Content>
-        </Card>
-      )}
-
-      {/* this book's signal quality */}
-      {charts?.probability_vs_market?.length ? (
-        <div className="grid gap-5 lg:grid-cols-2">
-          <CandidateScatter points={charts.probability_vs_market} targetDate={p.signal_quality?.latest_target_date} />
-          {charts.edge_by_market_bucket?.length ? <EdgeByPriceChart buckets={charts.edge_by_market_bucket} /> : null}
-        </div>
+              </Card.Content>
+            </Card>
+          )}
+          {charts?.probability_vs_market?.length ? (
+            <div className="grid gap-5 lg:grid-cols-2">
+              <CandidateScatter points={charts.probability_vs_market} targetDate={p.signal_quality?.latest_target_date} />
+              {charts.edge_by_market_bucket?.length ? <EdgeByPriceChart buckets={charts.edge_by_market_bucket} /> : null}
+            </div>
+          ) : null}
+        </DetailDisclosure>
       ) : null}
 
       {/* exits + side + lessons */}
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="h-full rounded-2xl ring-1 ring-border/70">
+      <DetailDisclosure
+        id={`outcomes-${rp}`}
+        icon="solar:lightbulb-bolt-bold"
+        title="Outcomes & profile learnings"
+        note="Exit reasons, side performance, lessons, and recommended changes"
+      >
+        <div className="grid gap-5 lg:grid-cols-2">
+          <Card className="h-full rounded-2xl ring-1 ring-border/70">
           <Card.Header className="flex flex-row items-center gap-2">
             <Icon icon="solar:route-bold" className="size-4 text-accent" aria-hidden="true" />
             <Card.Title className="text-base">How this book's positions resolved</Card.Title>
@@ -308,9 +321,9 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               <SidePerformanceList side={p.daily_summary?.side_performance} emptyNote={`No resolved ${rp} trades to split by side this window.`} />
             </div>
           </Card.Content>
-        </Card>
+          </Card>
 
-        <Card className="h-full rounded-2xl ring-1 ring-border/70">
+          <Card className="h-full rounded-2xl ring-1 ring-border/70">
           <Card.Header className="flex flex-row items-center gap-2">
             <Icon icon="solar:lightbulb-bolt-bold" className="size-4 text-accent" aria-hidden="true" />
             <Card.Title className="text-base">What this book learned</Card.Title>
@@ -335,28 +348,33 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               </ul>
             )}
           </Card.Content>
-        </Card>
-      </div>
+          </Card>
+        </div>
+      </DetailDisclosure>
 
-      {/* this book's current exposure */}
-      <div>
-        <SubHead
-          icon="solar:folder-open-bold"
-          title="Current book state"
-          note={currentStateAvailable ? "open positions + pending limits, scoped to this profile" : "unavailable until publication recovers"}
-        />
-        <OpenBook s={s} profile={rp} />
-      </div>
+      <DetailDisclosure
+        id={`positions-${rp}`}
+        icon="solar:folder-open-bold"
+        title="Positions & execution log"
+        note={`${currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · ${Math.min(ledger.length, allTimeClosed || ledger.length)} recent of ${allTimeClosed} resolved`}
+      >
+        <div>
+          <SubHead
+            icon="solar:folder-open-bold"
+            title="Current book state"
+            note={currentStateAvailable ? "open positions + pending limits, scoped to this profile" : "unavailable until publication recovers"}
+          />
+          <OpenBook s={s} profile={rp} />
+        </div>
 
-      {/* this book's ledger + city lens */}
-      <div>
-        <SubHead
-          icon="solar:clipboard-list-bold"
-          title="Recent closed positions"
-          note={`showing ${Math.min(ledger.length, allTimeClosed || ledger.length)} of ${allTimeClosed} resolved all-time`}
-        />
-        {byCity.length > 0 && (
-          <div className="mb-3">
+        <div>
+          <SubHead
+            icon="solar:clipboard-list-bold"
+            title="Recent closed positions"
+            note={`showing ${Math.min(ledger.length, allTimeClosed || ledger.length)} of ${allTimeClosed} resolved all-time`}
+          />
+          {byCity.length > 0 && (
+            <div className="mb-3">
             <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
               <Icon icon="solar:map-point-bold" className="size-3.5 text-accent" aria-hidden="true" />
               By settlement city
@@ -375,24 +393,24 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 <span className="self-center text-[11px] text-muted">— other cities populate here as their markets settle</span>
               )}
             </div>
+            </div>
+          )}
+          <LedgerTable
+            s={s}
+            rows={ledger}
+            detailed
+            hideProfile
+            emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
+          />
+        </div>
+
+        {monitorRows.length > 0 && (
+          <div>
+            <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
+            <MonitorLog s={s} rows={monitorRows} hideProfile />
           </div>
         )}
-        <LedgerTable
-          s={s}
-          rows={ledger}
-          detailed
-          hideProfile
-          emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
-        />
-      </div>
-
-      {/* this book's monitor decisions and executed exits */}
-      {monitorRows.length > 0 && (
-        <div>
-          <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
-          <MonitorLog s={s} rows={monitorRows} hideProfile />
-        </div>
-      )}
+      </DetailDisclosure>
     </div>
   );
 }

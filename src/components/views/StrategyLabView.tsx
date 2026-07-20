@@ -337,7 +337,7 @@ export default function StrategyLabView() {
                 <ReadinessPanel s={s} />
               </Reveal>
               <Reveal className="mt-6">
-                <Accordion variant="surface" hideSeparator defaultExpandedKeys={["model-evidence"]} className="overflow-hidden rounded-2xl ring-1 ring-border/70">
+                <Accordion variant="surface" hideSeparator className="overflow-hidden rounded-2xl ring-1 ring-border/70">
                   <Accordion.Item id="model-evidence">
                     <DisclosureHeading
                       icon="solar:chart-square-bold"
