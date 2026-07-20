@@ -43,7 +43,7 @@ function DeferredOverviewSlab({ children }: { children: ReactNode }) {
 
 function DetailSkeleton() {
   return (
-    <div role="status" aria-label="Loading city forecast detail" className="grid gap-5 lg:grid-cols-2">
+    <div role="status" aria-label="Loading city forecast detail" className="grid gap-6 lg:grid-cols-2">
       <Skeleton className="h-[23rem] rounded-2xl" />
       <Skeleton className="h-[23rem] rounded-2xl" />
       <Skeleton className="h-64 rounded-2xl lg:col-span-2" />
@@ -85,15 +85,15 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
   const flagshipTarget = currentTargets[0];
 
   return (
-      <div className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-20 sm:px-8">
         {hasPastDueTargets && (
-          <div className="pt-5">
+          <div className="pt-6">
             <TargetStatusWarning targets={signal.targets ?? []} />
           </div>
         )}
         <SkillStrip forecast={forecast} signal={signal} />
 
-        <section id="cities" className="scroll-mt-24">
+        <section id="cities" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="01"
             eyebrow="Coverage"
@@ -105,7 +105,7 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
           </Reveal>
         </section>
 
-        <section id="today" className="scroll-mt-24">
+        <section id="today" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="02"
             eyebrow="Today's forecast"
@@ -124,14 +124,14 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
             </DeferredOverviewSlab>
           ) : (
             <Reveal>
-              <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
+              <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">
                 Per-city detail will appear once the fifteen-city coverage artifact is published.
               </p>
             </Reveal>
           )}
         </section>
 
-        <section id="system" className="scroll-mt-24">
+        <section id="system" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="03"
             eyebrow="Engineering"

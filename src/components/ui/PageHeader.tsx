@@ -16,7 +16,7 @@ export function PageHeader({ eyebrow, title, sub, icon, headingId }: PageHeaderP
       <div className="grid-lines pointer-events-none absolute inset-0 opacity-40" />
       <div className="relative mx-auto w-full max-w-6xl px-5 py-14 sm:px-8 lg:py-16">
         <Reveal immediate>
-          <div className="mb-3 flex items-center gap-2.5">
+          <div className="mb-2 flex items-center gap-2.5">
             <span className="grid size-7 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
               <Icon icon={icon} className="size-4" aria-hidden="true" />
             </span>

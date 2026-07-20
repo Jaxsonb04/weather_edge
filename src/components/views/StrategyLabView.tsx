@@ -1,7 +1,6 @@
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-strategy.css";
 import { Accordion } from "@heroui/react/accordion";
-import { Chip } from "@heroui/react/chip";
 import { pct } from "../../lib/data";
 import {
   activeProfiles,
@@ -112,15 +111,24 @@ function BookState({ s, rp, label }: { s: StrategyLab; rp: string; label: string
   const open = sum?.open_positions ?? openForProfile(s, rp).length;
   const pending = sum?.pending_limit_orders ?? pendingForProfile(s, rp).length;
   return (
-    <span className="flex items-center gap-2" title={paused ? reason : undefined}>
-      <span className="text-xs font-medium text-foreground">{label}</span>
-      <Chip size="sm" variant="soft" color={paused ? "default" : "success"}>
-        <Chip.Label>{paused ? "Entry paused" : "Scanning"}</Chip.Label>
-      </Chip>
-      <span className="tnum text-xs text-muted">
+    <div className="min-w-0">
+      <dt className="flex items-center gap-1.5">
+        <span
+          className={`size-1.5 shrink-0 rounded-full ${paused ? "bg-warning" : "bg-success"}`}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 truncate text-xs font-semibold text-foreground" title={label}>
+          {label}
+        </span>
+        <span className={`shrink-0 text-[11px] ${paused ? "text-warning" : "text-muted"}`}>
+          {paused ? "Entry paused" : "Scanning"}
+        </span>
+      </dt>
+      <dd className="tnum mt-1 text-[11px] text-muted">
         {open} open · {pending} resting
-      </span>
-    </span>
+      </dd>
+      {paused && reason && <dd className="mt-1 text-[11px] leading-relaxed text-warning/90">{reason}</dd>}
+    </div>
   );
 }
 
@@ -133,8 +141,12 @@ function LiveStatusStrip({ s }: { s: StrategyLab }) {
     s.disclaimer ?? "Paper-trading research only — no real-money orders are ever placed.";
   const profiles = activeProfiles(s);
   return (
-    <div className="mb-6 rounded-xl bg-surface-secondary px-4 py-3 ring-1 ring-border/60">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+    <div
+      role="status"
+      aria-label="Paper trading engine status"
+      className="rounded-xl bg-surface-secondary px-4 py-3"
+    >
+      <div className="grid gap-x-4 gap-y-1 sm:grid-cols-[1fr_auto] sm:items-baseline">
         <span className="flex items-center gap-2">
           <span className="relative flex size-2" aria-hidden="true">
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
@@ -142,13 +154,17 @@ function LiveStatusStrip({ s }: { s: StrategyLab }) {
           </span>
           <span className="text-xs font-semibold text-foreground">Paper engine live</span>
         </span>
+        {fresh && (
+          <span className="tnum font-mono text-[11px] text-muted sm:justify-self-end">updated {fresh}</span>
+        )}
+      </div>
+      <dl className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(11.5rem,1fr))] gap-x-6 gap-y-4">
         {profiles.map((profile) => (
           <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profile.label} />
         ))}
-        {fresh && <span className="ml-auto font-mono text-[11px] text-muted">updated {fresh}</span>}
-      </div>
-      <p className="mt-2 flex items-center gap-1.5 text-[11px] leading-relaxed text-muted">
-        <Icon icon="solar:shield-keyhole-bold" className="size-3.5 shrink-0" aria-hidden="true" />
+      </dl>
+      <p className="mt-4 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+        <Icon icon="solar:shield-keyhole-bold" className="mt-px size-3.5 shrink-0" aria-hidden="true" />
         {disclaimer}
       </p>
     </div>
@@ -163,10 +179,10 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
   const up = pnl >= 0;
   const win = p.daily_summary?.window_days ?? 7;
   return (
-    <div className="rounded-2xl bg-accent-soft p-4 ring-1 ring-accent/30 sm:p-5">
+    <div>
       <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+          <p className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
             <Icon icon="solar:shield-check-bold" className="size-3.5 shrink-0" aria-hidden="true" />
             Live candidate · real-money profile
           </p>
@@ -177,7 +193,7 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
             <span className="text-xs text-muted">attributed realized P&amp;L · {win}-day window</span>
           </div>
         </div>
-        <dl className="flex flex-wrap gap-x-7 gap-y-3">
+        <dl className="flex flex-wrap gap-x-6 gap-y-4">
           <HeroStat label="ROI · resolved" value={sum.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum.roi ?? 0) > 0 ? "pos" : (sum.roi ?? 0) < 0 ? "neg" : undefined} />
           <HeroStat label="Hit rate" value={sum.hit_rate == null ? "—" : pct(sum.hit_rate, 1)} />
           <HeroStat label="Resolved" value={`${sum.closed_positions ?? 0} · ${sum.win_count ?? 0}–${sum.loss_count ?? 0}`} />
@@ -195,7 +211,7 @@ function LiveCurveUnavailable() {
   return (
     <div
       role="status"
-      className="flex h-[288px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 text-center ring-1 ring-accent/30"
+      className="flex h-[288px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 text-center"
     >
       <Icon icon="solar:clock-circle-bold" className="size-5 text-warning" aria-hidden="true" />
       <p className="text-sm font-medium text-foreground">Live candidate equity curve unavailable.</p>
@@ -281,7 +297,7 @@ export default function StrategyLabView() {
           ? "The strict live candidate and isolated research accounts keep equity, positions, and evidence separate. The fixed daily research objective belongs only to the target account; high-activity motion evidence and legacy executions never count toward it or live readiness. Generated directly by the AWS runtime."
           : "The live candidate and any published legacy research evidence remain separate. Canonical target and motion accounts appear only when the AWS runtime publishes them; no empty research book is inferred."}
       />
-      <div className="mx-auto w-full max-w-6xl px-5 pb-28 pt-10 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
         {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Couldn't load the Strategy Lab — {error}</div>}
         {!error && !s && (
@@ -292,7 +308,7 @@ export default function StrategyLabView() {
         )}
         {s && (
           <>
-            <Reveal immediate>
+            <Reveal immediate className="mb-8">
               <LiveStatusStrip s={s} />
             </Reveal>
 
@@ -310,41 +326,41 @@ export default function StrategyLabView() {
             </section>
 
             {/* ---- One profile at a time, with scoped data and progressive detail. ---- */}
-            <section className="scroll-mt-24">
+            <section className="mt-14 scroll-mt-24">
               <SectionHeading
                 index="02"
                 eyebrow="Profile workbench"
                 title="Choose a strategy profile"
                 sub="Each preset opens one isolated book with its own performance, signal quality, exposure, trade ledger, and learnings. Nothing is blended across profiles."
               />
-              <Reveal className="pt-3 sm:pt-4">
+              <Reveal>
                 <ProfileExplorer s={s} />
               </Reveal>
             </section>
 
             {/* ---- System-wide results and conclusions after profile inspection. ---- */}
-            <section className="scroll-mt-24">
+            <section className="mt-14 scroll-mt-24">
               <SectionHeading
                 index="03"
                 eyebrow="Overall outcomes"
                 title="What the system learned"
                 sub="The cross-profile conclusions, readiness verdict, and supporting evidence. High-value outcomes stay visible; deeper trading, model, and operations diagnostics unfold on demand."
               />
-              <div className="mt-10">
+              <div className="space-y-6">
                 <TrackRecordFinding s={s} />
                 <SelectivityFinding s={s} />
                 <ReadinessFinding s={s} />
               </div>
-              <Reveal className="mt-8">
+              <Reveal className="mt-6">
                 <ReadinessPanel s={s} />
               </Reveal>
-              <Reveal className="mt-8 space-y-5">
+              <Reveal className="mt-6 space-y-6">
                 <CalibrationCompare s={s} />
                 <GateFunnel s={s} />
                 <OpsHealth s={s} />
               </Reveal>
               <Reveal className="mt-6">
-                <Accordion variant="surface" hideSeparator className="overflow-hidden rounded-2xl ring-1 ring-border/70">
+                <Accordion variant="surface" hideSeparator className="overflow-hidden rounded-2xl">
                   <Accordion.Item id="model-evidence">
                     <DisclosureHeading
                       icon="solar:chart-square-bold"
@@ -352,7 +368,7 @@ export default function StrategyLabView() {
                       note="Secondary movers and backtest coverage"
                     />
                     <Accordion.Panel>
-                      <Accordion.Body className="space-y-5 px-4 pb-5 pt-2">
+                      <Accordion.Body className="space-y-6 px-4 pb-4 pt-3">
                         <MoversCard s={s} />
                         <BacktestStats s={s} />
                       </Accordion.Body>
@@ -365,7 +381,7 @@ export default function StrategyLabView() {
                       note="Exit rules and daily activity history"
                     />
                     <Accordion.Panel>
-                      <Accordion.Body className="space-y-5 px-4 pb-5 pt-2">
+                      <Accordion.Body className="space-y-6 px-4 pb-4 pt-3">
                         <ExitPolicyCard s={s} />
                         <DailyActivity s={s} />
                       </Accordion.Body>
@@ -378,7 +394,7 @@ export default function StrategyLabView() {
                       note="Definitions and caveats for interpreting the published numbers"
                     />
                     <Accordion.Panel>
-                      <Accordion.Body className="px-4 pb-5 pt-2">
+                      <Accordion.Body className="px-4 pb-4 pt-3">
                         <ResearchNotes s={s} />
                       </Accordion.Body>
                     </Accordion.Panel>

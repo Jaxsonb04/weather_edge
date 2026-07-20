@@ -85,7 +85,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
         title="How the forecast is built and tested"
         sub="The production method is one pipeline in every city: a leakage-free nine-model NWP ensemble, EMOS-calibrated per station, settled on each city's own NWS Climatological Report. San Francisco layers flagship extras — an LSTM, a Google blend, and marine-layer features — on top of that shared base."
       />
-      <div className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <section className="scroll-mt-24">
           <SectionHeading
             index="01"
@@ -96,7 +96,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
           <ForecastPipeline />
         </section>
 
-        <section className="scroll-mt-24">
+        <section className="mt-14 scroll-mt-24">
           <SectionHeading
             index="02"
             eyebrow="Model proof"
@@ -104,7 +104,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             sub="A San Francisco flagship extra — not the shared method — compared against an XGBoost challenger and a naive persistence baseline on days neither model trained on. The other fourteen cities trade on the Tier 1 EMOS pipeline alone."
           />
           {diag ? (
-            <div className="space-y-5">
+            <div className="space-y-6">
               <ModelProofFinding diag={diag} />
               <Reveal>
                 <DetailDisclosure
@@ -113,11 +113,11 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
                   title="Held-out model evidence"
                   note="MAE comparison, feature importance, significance test, and observed-vs-predicted scatter"
                 >
-                  <div className="grid gap-5 lg:grid-cols-2">
+                  <div className="grid gap-6 lg:grid-cols-2">
                     <ModelCompareChart diag={diag} />
                     <FeatureImportanceChart diag={diag} />
                   </div>
-                  <div className="grid gap-5 lg:grid-cols-2">
+                  <div className="grid gap-6 lg:grid-cols-2">
                     <ABSignificance diag={diag} />
                     <HeldOutScatter diag={diag} />
                   </div>
@@ -136,29 +136,31 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
           )}
         </section>
 
-        <section className="scroll-mt-24">
+        <section className="mt-14 scroll-mt-24">
           <SectionHeading
             index="03"
             eyebrow="Forecast accuracy"
             title="Ten years of San Francisco accuracy"
             sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor San Francisco's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station, just without a decade of scored outcomes behind it yet.`}
           />
-          <AccuracyFinding data={data} />
-          <Reveal className="mt-5">
-            <DetailDisclosure
-              id="accuracy-evidence"
-              icon="solar:graph-up-bold"
-              title="Ten-year accuracy evidence"
-              note="Climatology, observed distribution, calibration curve, and performance by temperature regime"
-            >
-              <ClimatologyChart forecast={forecast} />
-              <div className="grid gap-5 lg:grid-cols-2">
-                <HistogramChart story={story} forecast={forecast} />
-                <CalibrationChart signal={signal} />
-              </div>
-              <CohortChart signal={signal} />
-            </DetailDisclosure>
-          </Reveal>
+          <div className="space-y-6">
+            <AccuracyFinding data={data} />
+            <Reveal>
+              <DetailDisclosure
+                id="accuracy-evidence"
+                icon="solar:graph-up-bold"
+                title="Ten-year accuracy evidence"
+                note="Climatology, observed distribution, calibration curve, and performance by temperature regime"
+              >
+                <ClimatologyChart forecast={forecast} />
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <HistogramChart story={story} forecast={forecast} />
+                  <CalibrationChart signal={signal} />
+                </div>
+                <CohortChart signal={signal} />
+              </DetailDisclosure>
+            </Reveal>
+          </div>
         </section>
       </div>
     </>
