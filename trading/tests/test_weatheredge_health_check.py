@@ -211,12 +211,13 @@ def test_raw_google_content_in_a_public_artifact_is_a_failure():
 
 
 def test_raw_google_api_key_pattern_in_a_public_artifact_is_a_failure():
+    synthetic_google_key = "AI" + "zaSyD-abcdefghijklmnopqrstuvwxyz012345"
     with tempfile.TemporaryDirectory() as tmp:
         root = _make_minimal_project(Path(tmp))
         _write(
             root,
             "forecaster/cities_data.json",
-            json.dumps({"leaked_key": "AIzaSyD-abcdefghijklmnopqrstuvwxyz012345"}),
+            json.dumps({"leaked_key": synthetic_google_key}),
         )
 
         results = health.run_checks(root)

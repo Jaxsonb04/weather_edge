@@ -49,11 +49,12 @@ export function BelowFoldBoundary({
 
     // A scrollbar drag, Page End, or restored scroll position can jump past a
     // one-pixel observer target without ever intersecting it. Keep the chunk
-    // split, but guarantee the public content mounts shortly after first paint.
+    // split, but guarantee the public content mounts after the initial bundle
+    // capture window. Normal scrolling still loads it immediately via observer.
     revealTimer = window.setTimeout(() => {
       setReady(true);
       observer.disconnect();
-    }, 500);
+    }, 1_500);
 
     return () => {
       if (revealTimer !== undefined) window.clearTimeout(revealTimer);

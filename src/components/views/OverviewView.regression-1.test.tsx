@@ -38,7 +38,7 @@ describe("overview below-fold fallback", () => {
     expect(screen.getByRole("status", { name: "Loading overview instruments" })).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1_500);
       await Promise.resolve();
     });
 

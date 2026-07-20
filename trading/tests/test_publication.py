@@ -353,12 +353,13 @@ def test_validate_manifest_rejects_a_google_weather_api_url():
 
 def test_validate_manifest_rejects_a_google_api_key_pattern():
     module = _publication()
+    synthetic_google_key = "AI" + "zaSyD-abcdefghijklmnopqrstuvwxyz012345"
     with tempfile.TemporaryDirectory() as tmp:
         root = _artifact_root(Path(tmp))
         module.build_manifest(root, now=NOW)
         _write_json(
             root / "forecast_data.json",
-            {"table": [], "leaked_key": "AIzaSyD-abcdefghijklmnopqrstuvwxyz012345"},
+            {"table": [], "leaked_key": synthetic_google_key},
         )
 
         _assert_publication_error(
