@@ -3,13 +3,18 @@ import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "../ui/LinkButton";
 import { Reveal } from "../ui/Reveal";
 import { ForecastDial } from "./ForecastDial";
-import type { Target } from "../../lib/data";
+import { CitySelect } from "../overview/CitySelect";
+import type { City, Target } from "../../lib/data";
 
 interface HeroProps {
   targets: Target[];
+  cities: City[];
+  selectedCity: string;
+  activeCity: City | null;
+  onSelectCity: (slug: string) => void;
 }
 
-export function Hero({ targets }: HeroProps) {
+export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }: HeroProps) {
   return (
     <header className="hero-glow relative overflow-hidden border-b border-border/60">
       <div className="grid-lines pointer-events-none absolute inset-0 opacity-50" />
@@ -54,7 +59,16 @@ export function Hero({ targets }: HeroProps) {
 
         <Reveal immediate delay={0.18} className="flex items-center">
           <div className="w-full">
-            <ForecastDial targets={targets} />
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1">
+              <div>
+                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-muted">Forecast desk</p>
+                <p className="mt-0.5 text-xs text-muted">Choose any of the 15 station-aligned city markets.</p>
+              </div>
+              {cities.length > 0 && (
+                <CitySelect cities={cities} selected={selectedCity} onSelect={onSelectCity} />
+              )}
+            </div>
+            <ForecastDial key={activeCity?.slug ?? "sfo"} targets={targets} city={activeCity} />
           </div>
         </Reveal>
       </div>

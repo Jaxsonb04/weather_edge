@@ -251,7 +251,7 @@ def _strategy_alerts(
                     "monitor-stale",
                     "Monitor stale",
                     f"Latest paper monitor action is {_age_label(monitor_age)} old.",
-                    "Check sfo-kalshi-paper-monitor.timer and service logs.",
+                    "Check the paper monitor timer and service logs.",
                 )
             )
 

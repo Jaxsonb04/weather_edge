@@ -44,6 +44,7 @@ describe("application landmarks and route focus", () => {
     const skip = screen.getByRole("link", { name: "Skip to main content" });
     expect(skip).toHaveAttribute("href", "#main-content");
     const main = await screen.findByRole("main", { name: "Overview heading" });
+    expect(main).toHaveClass("min-h-screen");
     fireEvent.click(skip);
     expect(main).toHaveFocus();
     expect(window.location.hash).toBe("#/overview");

@@ -81,10 +81,9 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
   const mvm = s.daily_summary?.model_vs_market;
 
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
-      <Card className="h-full rounded-2xl ring-1 ring-border/70">
-        <Card.Header className="flex flex-row items-center gap-2">
-          <Icon icon="solar:server-square-bold" className="size-4 text-accent" aria-hidden="true" />
+    <div className="grid gap-6 lg:grid-cols-2">
+      <Card className="h-full rounded-2xl">
+        <Card.Header>
           <Card.Title className="text-base">Autonomous runtime</Card.Title>
         </Card.Header>
         <Card.Content className="space-y-4 pt-0">
@@ -94,7 +93,7 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
             Everything on this page is that machine's own output — {(s.source_of_truth ?? "AWS runtime artifacts").toLowerCase()}.
           </p>
           {collected && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
               {COLLECTED_LABELS.filter(([k]) => collected[k] != null).map(([k, label]) => (
                 <Stat key={k} label={label} value={collected[k].toLocaleString()} />
               ))}
@@ -109,15 +108,14 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
         </Card.Content>
       </Card>
 
-      <Card className="h-full rounded-2xl ring-1 ring-border/70">
-        <Card.Header className="flex flex-row items-center gap-2">
-          <Icon icon="solar:heart-pulse-bold" className="size-4 text-accent" aria-hidden="true" />
+      <Card className="h-full rounded-2xl">
+        <Card.Header>
           <Card.Title className="text-base">Pipeline health</Card.Title>
         </Card.Header>
         <Card.Content className="pt-0">
           <ul className="divide-y divide-border/50">
             {rows.map((r) => (
-              <li key={r.name} className="flex items-center justify-between gap-3 py-2.5">
+              <li key={r.name} className="flex items-center justify-between gap-4 py-2">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-foreground">{r.name}</p>
                   <p className="text-xs text-muted">{r.detail}</p>
@@ -132,12 +130,9 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
             ))}
           </ul>
           {!!alerts.length && (
-            <ul className="mt-3 space-y-2">
+            <ul className="mt-4 space-y-2">
               {alerts.map((a) => (
-                <li
-                  key={a.code ?? a.title}
-                  className="flex gap-2.5 rounded-lg bg-warning-soft p-3 text-xs text-foreground ring-1 ring-warning/25"
-                >
+                <li key={a.code ?? a.title} className="flex gap-2 rounded-lg bg-warning-soft p-3 text-xs text-foreground">
                   <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
                   <span>
                     <span className="font-semibold">{a.title}.</span> {a.detail} {a.action}

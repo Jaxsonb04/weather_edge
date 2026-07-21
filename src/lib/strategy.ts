@@ -189,6 +189,66 @@ export interface ProfileDailySummary {
   starting_bankroll?: number;
   bankroll?: number;
 }
+
+/** Optional research-target evidence published by the AWS paper runtime. Every
+    field is optional so an older or partially refreshed artifact remains safe
+    to render while the three-account schema rolls forward. */
+export interface ResearchDailyTarget {
+  available?: boolean;
+  reason?: string;
+  account_id?: string;
+  sleeve?: string;
+  policy_version?: string;
+  timezone?: string;
+  metric?: string;
+  objective_day?: string | null;
+  realized_pnl?: number | null;
+  target_pnl?: number | null;
+  remaining_pnl?: number | null;
+  achieved?: boolean;
+  locked?: boolean;
+  status?: string;
+  observed_days?: number;
+  zero_activity_days?: number;
+  zero_pnl_days?: number;
+  hit_count?: number;
+  attainment_rate?: number | null;
+  mean_daily_pnl?: number | null;
+  median_daily_pnl?: number | null;
+  p25_daily_pnl?: number | null;
+  p75_daily_pnl?: number | null;
+  daily_pnl_stddev?: number | null;
+  day_cluster_bootstrap_95_ci?: {
+    lower?: number | null;
+    upper?: number | null;
+    method?: string;
+    samples?: number;
+  } | null;
+  maximum_drawdown_dollars?: number | null;
+  maximum_drawdown_pct?: number | null;
+  log_growth?: number | null;
+  log_growth_per_day?: number | null;
+  logical_decisions?: number;
+  resolved_lots?: number;
+  resolution_days?: number;
+  independent_city_target_days?: number;
+  lead_split?: Record<string, unknown>;
+  execution?: Record<string, unknown>;
+  exit_breakdown?: Record<string, unknown>;
+  target_feasible?: boolean | null;
+  feasibility_evidence?: string | null;
+  available_conservative_expected_profit?: number | null;
+  days?: Array<{
+    objective_day?: string;
+    realized_pnl?: number;
+    target_pnl?: number;
+    remaining_pnl?: number;
+    achieved?: boolean;
+    locked?: boolean;
+  }>;
+  disclaimer?: string;
+}
+
 export interface ProfileEntry {
   label: string;
   risk_profile: string;
@@ -197,6 +257,8 @@ export interface ProfileEntry {
   recommended_changes?: string[];
   paper_trading?: { available?: boolean; summary?: ProfilePaperSummary };
   daily_summary?: ProfileDailySummary;
+  daily_target?: ResearchDailyTarget | null;
+  excluded_from?: string[];
   signal_quality?: SignalQuality;
   status?: ProfileStatus;
 }
@@ -459,6 +521,7 @@ export interface StrategyLab {
     dedupe_explanation?: string;
   };
   research_notes: { term: string; note: string }[];
+  research_daily_target?: ResearchDailyTarget;
   profiles?: ProfileEntry[];
   real_money_readiness?: RealMoneyReadiness;
   signal_quality?: SignalQuality;
@@ -476,6 +539,41 @@ export interface StrategyLab {
 }
 
 export const useStrategyLab = () => useResource<StrategyLab>("strategy_research.json");
+
+const ACTIVE_PROFILE_ORDER = ["live", "research-target", "research-motion"] as const;
+
+/** Canonical account projection for every public Strategy Lab surface. Legacy
+    research is a fallback only when neither of the new research sleeves is in
+    the artifact; this deliberately never invents an empty research book. */
+export function activeProfiles(s: StrategyLab): ProfileEntry[] {
+  const unique = new Map<string, ProfileEntry>();
+  for (const profile of s.profiles ?? []) {
+    if (profile?.risk_profile && !unique.has(profile.risk_profile)) {
+      unique.set(profile.risk_profile, profile);
+    }
+  }
+
+  const canonicalResearchPresent = unique.has("research-target") || unique.has("research-motion");
+  const ordered = ACTIVE_PROFILE_ORDER.flatMap((name) => {
+    const profile = unique.get(name);
+    return profile ? [profile] : [];
+  });
+  if (!canonicalResearchPresent) {
+    const legacy = unique.get("research");
+    if (legacy) ordered.push(legacy);
+  }
+  return ordered;
+}
+
+/** Resolve the target evidence from the profile first, then the top-level
+    compatibility field. An explicit unavailable marker behaves like absence. */
+export function researchDailyTarget(
+  s: StrategyLab,
+  profile?: ProfileEntry,
+): ResearchDailyTarget | undefined {
+  const artifact = profile?.daily_target ?? s.research_daily_target;
+  return artifact?.available === false ? undefined : artifact ?? undefined;
+}
 
 /** Equity curve from any day series + starting bankroll (combined book OR a
     single profile). Tolerant of missing dates / cumulative values. */

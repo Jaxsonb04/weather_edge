@@ -110,7 +110,7 @@ export default function App() {
         tabIndex={-1}
         aria-label={`${ROUTES.find((item) => item.id === route)?.label ?? "WeatherEdge"} content`}
         aria-labelledby={`${route}-page-title`}
-        className="flex-1"
+        className="min-h-screen flex-1"
       >
         {route === "lab" ? (
           <ErrorBoundary key={route}>

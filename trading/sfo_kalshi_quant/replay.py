@@ -17,12 +17,21 @@ from dataclasses import asdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 from ._util import _json_object, _row_value, _table_exists
 from .account import ACCOUNTING_POLICY_VERSION, SHARED_ACCOUNT_ID
 from .backtest_rescore import _day_clustered_roi_ci
-from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
+from .config import normalize_risk_profile_name
+from .execution import initial_queue_ahead
+from .logical_positions import LogicalPaperPosition, group_logical_positions
+from .maker_fills import (
+    EXECUTION_MODEL_VERSION,
+    PublicAggressorTrade,
+    maker_trade_reaches_price,
+    normalize_public_trade,
+    uses_current_maker_semantics,
+)
 from .restatement import VERIFIED, restate
 from .settlement_truth import (
     normalize_settlement_truth,
@@ -34,6 +43,30 @@ from .settlement_truth import (
 # (docs.kalshi.com/getting_started/order_direction): a bid-side taker bought
 # YES and fills resting NO bids; an ask-side taker fills resting YES bids.
 _MAKER_SIDE_BY_TAKER_BOOK_SIDE = {"bid": "NO", "ask": "YES"}
+
+
+def _positive_integral_id(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return (
+        int(parsed)
+        if math.isfinite(parsed) and parsed >= 1 and parsed.is_integer()
+        else None
+    )
+
+
+def _finite_probability(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) and 0 <= parsed <= 1 else None
 
 
 @dataclass(frozen=True)
@@ -49,6 +82,7 @@ class ReplayOrder:
     queue_ahead: float = 0.0
     ttl_minutes: int = 15
     immediate: bool = False
+    queue_price: float | None = None
 
     @property
     def cost(self) -> float:
@@ -120,6 +154,80 @@ class ReplayResult:
     events: tuple[dict[str, object], ...]
 
 
+@dataclass(frozen=True)
+class SettlementFact:
+    """One market's authoritative settlement outcome, ready for replay."""
+
+    ticker: str
+    target_date: str
+    settled_at: datetime
+    resolved_yes: bool
+
+
+def build_exec_v3_events(
+    *,
+    orders: Sequence[ReplayOrder] = (),
+    trades: Sequence[tuple[str, PublicAggressorTrade]] = (),
+    settlements: Sequence[SettlementFact] = (),
+) -> tuple[ReplayEvent, ...]:
+    """Assemble the ordered exec-v3 ``ReplayEvent`` stream from typed, already
+    -normalized evidence.
+
+    A pure function with no database or clock access: every input is either
+    an already-constructed ``ReplayOrder``, a public trade already reduced to
+    ``maker_fills.normalize_public_trade``'s single-aggressor
+    ``PublicAggressorTrade`` shape (paired with the ticker it was observed
+    on, since that type itself carries no ticker), or an already-resolved
+    ``SettlementFact``. This is the one shared assembly point for the exact
+    exec-v3/v4 fill, fee, partial-fill, and exit engine (``run_replay``):
+    every caller -- chronological production replay
+    (``replay_from_database``) and the chronological research replay
+    (``research_replay.py``) alike -- feeds it evidence already reduced to
+    these three normalized shapes rather than hand-building ``ReplayEvent``
+    tuples at each call site, so event kind/field conventions can never drift
+    between callers. ``run_replay`` itself re-sorts its input
+    chronologically, so this function's own output order is for readability,
+    not a correctness requirement.
+
+    RULING-A: the walk-forward plan (Task 4) names this shared assembly
+    point "exec-v3" as of plan-writing. The engine has since been
+    re-versioned in place to ``exec-v4-2026-07-17``
+    (``maker_fills.EXECUTION_MODEL_VERSION``) by the maker-queue fix, and
+    ``research_replay.py`` deliberately runs that current, corrected engine
+    rather than pinning to the older exec-v3 identity the plan named (spec
+    Sec 8.5, Sec 9 P1-3).
+    """
+
+    events: list[ReplayEvent] = [
+        ReplayEvent(order.placed_at, "order", order.ticker, order=order)
+        for order in orders
+    ]
+    for ticker, trade in trades:
+        taker_book_side = "bid" if trade.maker_side == "NO" else "ask"
+        events.append(
+            ReplayEvent(
+                trade.created_at,
+                "trade",
+                ticker,
+                side=trade.maker_side,
+                price=float(trade.side_price(trade.maker_side)),
+                quantity=float(trade.quantity),
+                taker_book_side=taker_book_side,
+            )
+        )
+    for settlement in settlements:
+        events.append(
+            ReplayEvent(
+                settlement.settled_at,
+                "settlement",
+                settlement.ticker,
+                target_date=settlement.target_date,
+                resolved_yes=settlement.resolved_yes,
+            )
+        )
+    return tuple(events)
+
+
 def run_replay(
     events: list[ReplayEvent],
     *,
@@ -188,12 +296,26 @@ def run_replay(
                     break
                 if model.require_bid_taker and maker_side != order.side:
                     continue
-                if event.side != order.side or event.price is None or event.price > order.limit_price + 1e-12:
+                if event.side != order.side or event.price is None:
                     continue
-                queue_take = min(queue_remaining.get(order_id, 0.0), residual)
-                queue_remaining[order_id] = queue_remaining.get(order_id, 0.0) - queue_take
-                residual -= queue_take
-                if residual <= 0 or queue_remaining[order_id] > 0:
+                fills_order = maker_trade_reaches_price(
+                    event.price, order.limit_price
+                )
+                current_queue = queue_remaining.get(order_id, 0.0)
+                if current_queue > 0:
+                    queue_price = (
+                        order.queue_price
+                        if order.queue_price is not None
+                        else order.limit_price
+                    )
+                    if not maker_trade_reaches_price(event.price, queue_price):
+                        continue
+                    queue_take = min(current_queue, residual)
+                    queue_remaining[order_id] = current_queue - queue_take
+                    residual -= queue_take
+                    if residual <= 0 or queue_remaining[order_id] > 0:
+                        continue
+                if not fills_order:
                     continue
                 fill_take = min(order.contracts - allocated.get(order_id, 0.0), residual)
                 allocated[order_id] = allocated.get(order_id, 0.0) + fill_take
@@ -319,8 +441,59 @@ def replay_from_database(
             if not _table_exists(conn, "paper_orders"):
                 return {"available": False, "reason": "paper_orders table missing"}
             all_orders = conn.execute(
-                "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
+                "SELECT * FROM paper_orders ORDER BY created_at, id"
             ).fetchall()
+            v4_allocation_owner_ids = {
+                order_id
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM paper_maker_allocations "
+                    "WHERE execution_model_version=?",
+                    (EXECUTION_MODEL_VERSION,),
+                ).fetchall()
+                if (order_id := _positive_integral_id(row[0])) is not None
+            } if _table_exists(conn, "paper_maker_allocations") else set()
+            claim_owner_ids = {
+                order_id
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM maker_volume_claims"
+                ).fetchall()
+                if (order_id := _positive_integral_id(row[0])) is not None
+            } if _table_exists(conn, "maker_volume_claims") else set()
+            entry_fill_rows = (
+                conn.execute(
+                    "SELECT order_id, details_json, idempotency_key "
+                    "FROM paper_account_ledger WHERE event_type='ENTRY_FILL'"
+                ).fetchall()
+                if _table_exists(conn, "paper_account_ledger")
+                else []
+            )
+            current_entry_fill_owner_ids = {
+                order_id
+                for row in entry_fill_rows
+                if (order_id := _positive_integral_id(row["order_id"]))
+                is not None
+                and (
+                    _json_object(row["details_json"]).get(
+                        "execution_model_version"
+                    )
+                    == EXECUTION_MODEL_VERSION
+                    or EXECUTION_MODEL_VERSION
+                    in str(row["idempotency_key"] or "")
+                )
+            }
+            plausible_current_maker_ids = {
+                order_id
+                for row in all_orders
+                if str(row["status"] or "") != "REJECTED"
+                and (
+                    order_id := _positive_integral_id(row["id"])
+                )
+                is not None
+                and str(_row_value(row, "entry_mode") or "") == "limit"
+                and _finite_probability(_row_value(row, "limit_price"))
+                is not None
+                and order_id in current_entry_fill_owner_ids
+            }
             trades = (
                 conn.execute(
                     "SELECT * FROM dataset_kalshi_trades ORDER BY created_time, trade_id"
@@ -329,7 +502,8 @@ def replay_from_database(
                 else []
             )
             # The explicit execution transition marks when this database first
-            # ran exec-v3/account-v4. Only live rows written after it can count;
+            # ran the current execution/accounting semantics. Only live rows
+            # written after it can count;
             # only trading days entirely after it count toward the promotion
             # clock (audit Batch D: reset at the version boundary).
             semantics_boundary = None
@@ -341,10 +515,11 @@ def replay_from_database(
                     (f"execution:{EXECUTION_MODEL_VERSION}",),
                 ).fetchone()
                 semantics_boundary = boundary_row[0] if boundary_row else None
-            orders = [
+            event_orders = [
                 row
                 for row in all_orders
-                if semantics_boundary
+                if str(row["status"]) != "REJECTED"
+                and semantics_boundary
                 and str(_row_value(row, "account_id") or "") == SHARED_ACCOUNT_ID
                 and str(_row_value(row, "execution_model_version") or "")
                 == EXECUTION_MODEL_VERSION
@@ -352,6 +527,60 @@ def replay_from_database(
             ]
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        restated_orders = restate(Path(db_path)).get("orders", [])
+        verified_order_ids = {
+            int(row["order_id"])
+            for row in restated_orders
+            if row.get("verification") == VERIFIED
+        }
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        verified_order_ids = set()
+    # Every current-generation event consumes only evidence that survived
+    # immutable entry, lifecycle, settlement, and accounting restatement.
+    event_orders = [
+        row
+        for row in event_orders
+        if int(row["id"]) in verified_order_ids
+    ]
+    # A partial-close child is one lot of its root decision, not an independent
+    # replay candidate. If any lot fails immutable restatement, exclude the
+    # complete current-generation decision so its siblings cannot contribute
+    # money or event counts on their own.
+    invalid_logical_lot_ids: set[int] = set()
+    for group in group_logical_positions(all_orders):
+        root_id = _positive_integral_id(group.root.get("id"))
+        row_generation_is_current = (
+            str(group.root.get("execution_model_version") or "")
+            == EXECUTION_MODEL_VERSION
+        )
+        has_current_execution_authority = (
+            row_generation_is_current
+            or uses_current_maker_semantics(
+                group.root.get("execution_model_version"),
+                group.root.get("entry_mode"),
+                group.root.get("fill_model"),
+            )
+            or root_id in v4_allocation_owner_ids
+            or (row_generation_is_current and root_id in claim_owner_ids)
+            or root_id in plausible_current_maker_ids
+        )
+        if not has_current_execution_authority:
+            continue
+        lot_ids = {
+            int(lot["id"])
+            for lot in group.lots
+            if isinstance(lot.get("id"), int)
+            or str(lot.get("id") or "").isdigit()
+        }
+        if not group.valid or not lot_ids or not lot_ids.issubset(
+            verified_order_ids
+        ):
+            invalid_logical_lot_ids.update(lot_ids)
+    event_orders = [
+        row for row in event_orders if int(row["id"]) not in invalid_logical_lot_ids
+    ]
 
     truth = normalize_settlement_truth(settlements)
     events: list[ReplayEvent] = []
@@ -361,14 +590,14 @@ def replay_from_database(
     # independent orders: replay the parent at its ORIGINAL size and reduce it
     # with a targeted exit event per executed lot.
     child_quantity_by_parent: dict[str, float] = {}
-    for row in orders:
+    for row in event_orders:
         parent_id = _row_value(row, "parent_order_id")
         if parent_id:
             key = str(int(parent_id))
             child_quantity_by_parent[key] = (
                 child_quantity_by_parent.get(key, 0.0) + float(row["contracts"] or 0.0)
             )
-    for row in orders:
+    for row in event_orders:
         parent_id = _row_value(row, "parent_order_id")
         if parent_id:
             closed_at = _parse_time(row["closed_at"])
@@ -398,18 +627,34 @@ def replay_from_database(
         original_contracts = remaining_contracts + child_quantity_by_parent.get(
             str(row["id"]), 0.0
         )
+        limit_price = float(
+            _row_value(row, "limit_price") or row["entry_price"] or row["yes_ask"]
+        )
         order = ReplayOrder(
             order_id=str(row["id"]),
             placed_at=placed,
             target_date=str(row["target_date"]),
             ticker=str(row["market_ticker"]),
             side=str(row["side"] or "YES").upper(),
-            limit_price=float(_row_value(row, "limit_price") or row["entry_price"] or row["yes_ask"]),
+            limit_price=limit_price,
             contracts=original_contracts,
             fee_per_contract=float(row["fee_per_contract"] or 0.0),
-            queue_ahead=float(row["entry_bid_size"] or 0.0),
+            queue_ahead=initial_queue_ahead(
+                limit_price,
+                (
+                    float(row["entry_bid"])
+                    if row["entry_bid"] is not None
+                    else None
+                ),
+                float(row["entry_bid_size"] or 0.0),
+            ),
             ttl_minutes=15,
             immediate=immediate,
+            queue_price=(
+                float(row["entry_bid"])
+                if row["entry_bid"] is not None
+                else limit_price
+            ),
         )
         events.append(ReplayEvent(placed, "order", order.ticker, order=order))
         closed_at = _parse_time(row["closed_at"])
@@ -430,7 +675,11 @@ def replay_from_database(
 
     for index, row in enumerate(trades):
         occurred = _parse_time(row["created_time"])
-        if occurred is None or int(row["is_block_trade"] or 0):
+        try:
+            is_block_trade = int(row["is_block_trade"] or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if occurred is None or is_block_trade not in {0, 1} or is_block_trade:
             continue
         raw = _json_object(row["raw_json"])
         normalized = normalize_public_trade(
@@ -478,14 +727,9 @@ def replay_from_database(
         )
 
     result = asdict(run_replay(events, initial_capital=initial_capital))
-    try:
-        verified_order_ids = {
-            int(row["order_id"])
-            for row in restate(Path(db_path)).get("orders", [])
-            if row.get("verification") == VERIFIED
-        }
-    except (OSError, sqlite3.Error, TypeError, ValueError):
-        verified_order_ids = set()
+    eligible_root_ids = _eligible_readiness_root_ids(
+        all_orders, semantics_boundary
+    )
     reasons = set(result["promotion_block_reasons"])
     if legacy_orders:
         reasons.add(f"{legacy_orders} legacy orders lack a current strategy fingerprint")
@@ -493,17 +737,53 @@ def replay_from_database(
         reasons.add("no persisted public trade events for maker fill validation")
     # Promotion-clock reset at the semantics boundary: resolved trading days
     # count only when every order of that day was placed under the corrected
-    # execution/accounting semantics.
+    # execution/accounting semantics and its execution evidence restates as
+    # verified under those semantics.
     resolved_days: dict[str, bool] = {}
-    for row in orders:
-        if str(row["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
+    unverified_live_decisions: set[int] = set()
+    for group in group_logical_positions(all_orders):
+        root = group.root
+        profile_class = _readiness_root_profile_class(root)
+        if (
+            profile_class == "research"
+            and group.valid
+            and _readiness_group_has_consistent_scope(
+                group, semantics_boundary
+            )
+        ):
             continue
-        day = str(row["target_date"])
-        post_boundary = bool(
-            semantics_boundary and str(row["created_at"] or "") >= str(semantics_boundary)
+        if str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
+            continue
+        execution_verified = bool(group.resolved_lots) and all(
+            int(row["id"]) in verified_order_ids for row in group.resolved_lots
         )
-        resolved_days[day] = resolved_days.get(day, True) and post_boundary
+        if (
+            profile_class == "live"
+            and semantics_boundary
+            and (
+                _parse_time(root["created_at"]) is None
+                or str(root["created_at"] or "") >= semantics_boundary
+            )
+            and not execution_verified
+        ):
+            unverified_live_decisions.add(group.logical_order_id)
+        day = str(root["target_date"])
+        qualified = (
+            profile_class == "live"
+            and group.logical_order_id in eligible_root_ids
+            and group.terminal
+            and _readiness_group_has_consistent_scope(
+                group, semantics_boundary
+            )
+            and execution_verified
+        )
+        resolved_days[day] = resolved_days.get(day, True) and qualified
     post_boundary_days = sum(1 for qualified in resolved_days.values() if qualified)
+    if unverified_live_decisions:
+        reasons.add(
+            f"{len(unverified_live_decisions)} resolved live decision(s) have "
+            "unverified execution evidence"
+        )
     if post_boundary_days < 30:
         reasons.add(
             f"only {post_boundary_days} independent trading days under "
@@ -513,14 +793,19 @@ def replay_from_database(
     result["promotion_block_reasons"] = sorted(reasons)
     result["promotion_eligible"] = not reasons
     result["available"] = True
-    result["source_orders"] = len(orders)
+    result["source_orders"] = len(event_orders)
     result["source_trades"] = len(trades)
     result["execution_model_version"] = EXECUTION_MODEL_VERSION
     result["accounting_policy_version"] = ACCOUNTING_POLICY_VERSION
     result["semantics_boundary"] = semantics_boundary
     result["post_boundary_days"] = post_boundary_days
     result["verified_decisions"] = len(
-        _verified_resolved_decision_groups(orders, verified_order_ids)
+        _verified_resolved_decision_groups(
+            all_orders,
+            verified_order_ids,
+            eligible_root_ids=eligible_root_ids,
+            semantics_boundary=semantics_boundary,
+        )
     )
     result["evidence_scope"] = {
         "account_id": SHARED_ACCOUNT_ID,
@@ -530,11 +815,12 @@ def replay_from_database(
         "research_excluded": True,
     }
     result["readiness_metrics"] = _post_boundary_readiness_metrics(
-        orders,
+        all_orders,
         promotion_eligible=bool(result["promotion_eligible"]),
         semantics_boundary=semantics_boundary,
         initial_capital=initial_capital,
         verified_order_ids=verified_order_ids,
+        eligible_root_ids=eligible_root_ids,
     )
     return result
 
@@ -546,10 +832,16 @@ def _post_boundary_readiness_metrics(
     semantics_boundary: str | None,
     initial_capital: float,
     verified_order_ids: set[int],
+    eligible_root_ids: set[int],
 ) -> dict[str, object]:
     """Economic readiness inputs from chronological post-boundary live rows."""
 
-    groups = _verified_resolved_decision_groups(orders, verified_order_ids)
+    groups = _verified_resolved_decision_groups(
+        orders,
+        verified_order_ids,
+        eligible_root_ids=eligible_root_ids,
+        semantics_boundary=semantics_boundary,
+    )
     resolved: list[dict[str, object]] = []
     for root_id, lots in groups.items():
         root = next(row for row in lots if int(row["id"]) == root_id)
@@ -600,13 +892,13 @@ def _post_boundary_readiness_metrics(
         }
 
     cohort = side_bucket(resolved)
-    cohort["source"] = "post-boundary exec-v3 paper-shared chronological outcomes"
+    cohort["source"] = "post-boundary exec-v4 paper-shared chronological outcomes"
     return {
         "evidence_kind": "chronological_account_replay",
         "promotion_eligible": promotion_eligible,
-        "config_basis": "post-boundary exec-v3 live evidence only",
+        "config_basis": "post-boundary exec-v4 live evidence only",
         "semantics_boundary": semantics_boundary,
-        "source_cohort": "post_exec_v3_live",
+        "source_cohort": "post_exec_v4_live",
         "counts": {
             "settled_decisions": len(resolved),
             "independent_days": len(per_day),
@@ -623,44 +915,105 @@ def _post_boundary_readiness_metrics(
             ),
             "max_drawdown_pct": round(max_drawdown, 6),
         },
-        "by_forecast_cohort": {"post_exec_v3_live": cohort} if resolved else {},
-        "by_cohort": {"post_exec_v3_live": cohort} if resolved else {},
+        "by_forecast_cohort": {"post_exec_v4_live": cohort} if resolved else {},
+        "by_cohort": {"post_exec_v4_live": cohort} if resolved else {},
         "by_side": {
             side: side_bucket(rows) for side, rows in sorted(by_side_rows.items())
         },
     }
 
 
+def _eligible_readiness_root_ids(
+    orders: list[sqlite3.Row],
+    semantics_boundary: str | None,
+) -> set[int]:
+    """Select the logical roots eligible for post-boundary live evidence."""
+
+    if not semantics_boundary:
+        return set()
+    eligible: set[int] = set()
+    for group in group_logical_positions(orders):
+        root = group.root
+        if (
+            str(_row_value(root, "account_id") or "") == SHARED_ACCOUNT_ID
+            and str(_row_value(root, "execution_model_version") or "")
+            == EXECUTION_MODEL_VERSION
+            and str(root["created_at"] or "") >= semantics_boundary
+            and _readiness_root_profile_class(root) == "live"
+        ):
+            eligible.add(group.logical_order_id)
+    return eligible
+
+
+def _readiness_root_profile_class(
+    root: dict[str, object],
+) -> Literal["live", "research", "invalid"]:
+    """Classify root policy identity without consulting ambient defaults."""
+
+    raw_profile = _row_value(root, "risk_profile")
+    profile = (
+        "live"
+        if raw_profile is None or not str(raw_profile).strip()
+        else str(raw_profile)
+    )
+    try:
+        normalized = normalize_risk_profile_name(profile)
+    except (AttributeError, TypeError, ValueError):
+        return "invalid"
+    return "research" if normalized == "research" else "live"
+
+
+def _readiness_group_has_consistent_scope(
+    group: LogicalPaperPosition,
+    semantics_boundary: str | None,
+) -> bool:
+    """Require every lot to preserve its eligible root's evidence scope."""
+
+    if not semantics_boundary:
+        return False
+    root_account = str(_row_value(group.root, "account_id") or "")
+    root_version = str(
+        _row_value(group.root, "execution_model_version") or ""
+    )
+    return all(
+        str(_row_value(lot, "account_id") or "") == root_account
+        and str(_row_value(lot, "execution_model_version") or "")
+        == root_version
+        and str(lot["created_at"] or "") >= semantics_boundary
+        for lot in group.lots
+    )
+
+
 def _verified_resolved_decision_groups(
     orders: list[sqlite3.Row],
     verified_order_ids: set[int],
-) -> dict[int, list[sqlite3.Row]]:
+    *,
+    eligible_root_ids: set[int] | None = None,
+    semantics_boundary: str | None = None,
+) -> dict[int, list[dict[str, object]]]:
     """Group immutable partial-close lots into their originating decision."""
 
-    resolved_statuses = {"PAPER_SETTLED", "PAPER_CLOSED"}
-    roots = {
-        int(row["id"]): row
-        for row in orders
-        if not _row_value(row, "parent_order_id")
-    }
-    groups: dict[int, list[sqlite3.Row]] = {}
-    for row in orders:
+    verified: dict[int, list[dict[str, object]]] = {}
+    for group in group_logical_positions(orders):
         if (
-            str(row["status"]) not in resolved_statuses
-            or row["realized_pnl"] is None
+            eligible_root_ids is not None
+            and group.logical_order_id not in eligible_root_ids
         ):
             continue
-        parent_id = _row_value(row, "parent_order_id")
-        root_id = int(parent_id) if parent_id else int(row["id"])
-        groups.setdefault(root_id, []).append(row)
-
-    verified: dict[int, list[sqlite3.Row]] = {}
-    for root_id, lots in groups.items():
-        root = roots.get(root_id)
-        if root is None or str(root["status"]) not in resolved_statuses:
+        if (
+            eligible_root_ids is not None
+            and not _readiness_group_has_consistent_scope(
+                group, semantics_boundary
+            )
+        ):
+            continue
+        if not group.terminal:
+            continue
+        lots = list(group.resolved_lots)
+        if not lots:
             continue
         if all(int(row["id"]) in verified_order_ids for row in lots):
-            verified[root_id] = lots
+            verified[group.logical_order_id] = lots
     return verified
 
 

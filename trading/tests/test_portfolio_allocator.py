@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
+from datetime import date, timedelta
+from decimal import Decimal
+
+import pytest
 
 from sfo_kalshi_quant.arbitrage import build_arbitrage_opportunities
 from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
 from sfo_kalshi_quant.portfolio import allocate_portfolio, portfolio_limits_for_profile
+from sfo_kalshi_quant.portfolio import PortfolioLeg, decision_pnl_at_settlement
+from sfo_kalshi_quant.research_portfolio import (
+    ResearchOpportunity,
+    allocate_research_plans,
+    city_target_worst_case_loss,
+)
+from sfo_kalshi_quant.research_policy import TARGET_POLICY
 
 
 def _market(
@@ -244,3 +256,1363 @@ def test_joint_kelly_is_noop_without_a_ladder() -> None:
     assert [leg.decision.recommended_contracts for leg in off.legs] == [
         leg.decision.recommended_contracts for leg in on_no_ladder.legs
     ]
+
+
+def test_target_allocates_every_positive_lcb_day_ahead_candidate_until_cap() -> None:
+    opportunities = [
+        ResearchOpportunity(
+            decision=_decision(
+                _market(
+                    f"{70 + idx}° to {71 + idx}°",
+                    ticker=f"KXHIGHTSFO-26JUL20-B{70.5 + idx}",
+                    floor=70 + idx,
+                    cap=71 + idx,
+                    yes_ask=0.20,
+                ),
+                side="YES",
+                spend=20.0,
+                probability=0.45,
+                edge=0.25,
+                edge_lcb=0.05,
+            ),
+            target_date="2026-07-20",
+            lead_days=2,
+        )
+        for idx in range(3)
+    ]
+
+    plans = allocate_research_plans(opportunities)
+
+    assert [leg.decision.ticker for leg in plans.target.legs] == [
+        opportunity.decision.ticker for opportunity in opportunities
+    ]
+    assert plans.target.total_spend == 60.0
+
+
+def test_target_rejects_same_day_and_negative_lcb_without_loosening_gates() -> None:
+    market = _market(
+        "70° to 71°",
+        ticker="KXHIGHTSFO-26JUL20-B70.5",
+        floor=70,
+        cap=71,
+        yes_ask=0.20,
+    )
+    accepted = ResearchOpportunity(
+        _decision(
+            replace(market, ticker=f"{market.ticker}-OK"),
+            side="YES",
+            spend=20.0,
+            probability=0.45,
+            edge=0.25,
+            edge_lcb=0.05,
+        ),
+        "2026-07-20",
+        1,
+    )
+    same_day = replace(accepted, decision=replace(accepted.decision, ticker=f"{market.ticker}-SAME"), lead_days=0)
+    negative_lcb = replace(
+        accepted,
+        decision=replace(accepted.decision, ticker=f"{market.ticker}-NEG", edge_lcb=-0.001),
+    )
+
+    plans = allocate_research_plans([same_day, negative_lcb, accepted], realized_today=-49.0)
+
+    assert [leg.decision.ticker for leg in plans.target.legs] == [accepted.decision.ticker]
+    assert {row.ticker: row.status for row in plans.target.dispositions} == {
+        accepted.decision.ticker: "selected",
+        negative_lcb.decision.ticker: "rejected",
+        same_day.decision.ticker: "rejected",
+    }
+
+
+def test_motion_places_one_contract_for_every_eligible_candidate_deterministically() -> None:
+    opportunities = []
+    for idx, (edge, edge_lcb) in enumerate(((0.04, -0.06), (0.03, 0.01), (-0.01, 0.01), (0.02, -0.08))):
+        market = _market(
+            f"{70 + idx}° to {71 + idx}°",
+            ticker=f"KXHIGHTSFO-26JUL18-B{70.5 + idx}",
+            floor=70 + idx,
+            cap=71 + idx,
+            yes_ask=0.20,
+        )
+        opportunities.append(
+            ResearchOpportunity(
+                _decision(
+                    market,
+                    side="YES",
+                    spend=10.0,
+                    probability=0.40,
+                    edge=edge,
+                    edge_lcb=edge_lcb,
+                ),
+                "2026-07-18",
+                0,
+            )
+        )
+
+    forward = allocate_research_plans(opportunities, run_id="stable")
+    reverse = allocate_research_plans(list(reversed(opportunities)), run_id="stable")
+
+    expected = sorted([opportunities[0].decision.ticker, opportunities[1].decision.ticker])
+    assert [leg.decision.ticker for leg in forward.motion.legs] == expected
+    assert [leg.decision.ticker for leg in reverse.motion.legs] == expected
+    assert all(leg.decision.recommended_contracts == 1 for leg in forward.motion.legs)
+    assert len(forward.motion.dispositions) == len(opportunities)
+
+
+def test_city_target_loss_models_mutually_exclusive_integer_settlement_bins() -> None:
+    decisions = [
+        _decision(
+            _market(
+                f"{floor}° to {floor + 1}°",
+                ticker=f"KXHIGHTSFO-26JUL20-B{floor + 0.5}",
+                floor=floor,
+                cap=floor + 1,
+                no_ask=0.80,
+            ),
+            side="NO",
+            spend=20.0,
+            probability=0.10,
+            edge=0.10,
+            edge_lcb=0.02,
+        )
+        for floor in (70, 72)
+    ]
+    legs = [
+        PortfolioLeg("target", decision, 20.0, decision.expected_profit, 0.0)
+        for decision in decisions
+    ]
+
+    # At most one bounded YES bracket can settle.  The losing NO leg's $20
+    # loss is offset by the other NO leg's $5 settlement profit.
+    assert city_target_worst_case_loss(legs, range(68, 76)) == 15.0
+
+
+def test_pending_orders_reserve_their_full_possible_loss() -> None:
+    decisions = [
+        _decision(
+            _market(
+                f"{floor}° to {floor + 1}°",
+                ticker=f"KXHIGHTSFO-26JUL20-B{floor + 0.5}",
+                floor=floor,
+                cap=floor + 1,
+                no_ask=0.80,
+            ),
+            side="NO",
+            spend=20.0,
+            probability=0.10,
+            edge=0.10,
+            edge_lcb=0.02,
+        )
+        for floor in (70, 72)
+    ]
+    pending = [
+        PortfolioLeg("target", decision, 20.0, decision.expected_profit, 0.0, pending=True)
+        for decision in decisions
+    ]
+
+    assert city_target_worst_case_loss(pending, range(68, 76)) == 40.0
+
+
+def test_typed_yes_bounded_bracket_uses_integer_settlement_payoff() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHTSFO-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.25,
+        ),
+        side="YES",
+        spend=10.0,
+        probability=0.50,
+        edge=0.25,
+        edge_lcb=0.10,
+    )
+
+    assert decision_pnl_at_settlement(decision, 70) == 30.0
+    assert decision_pnl_at_settlement(decision, 71) == 30.0
+    assert decision_pnl_at_settlement(decision, 72) == -10.0
+
+
+def test_typed_less_and_greater_brackets_include_both_tail_losses() -> None:
+    below = _decision(
+        _market(
+            "69° or below",
+            ticker="KXHIGHTSFO-26JUL20-T70",
+            strike_type="less",
+            floor=None,
+            cap=70,
+            yes_ask=0.25,
+        ),
+        side="YES",
+        spend=10.0,
+        probability=0.50,
+        edge=0.25,
+        edge_lcb=0.10,
+    )
+    above = _decision(
+        _market(
+            "71° or above",
+            ticker="KXHIGHTSFO-26JUL20-T71",
+            strike_type="greater",
+            floor=70,
+            cap=None,
+            yes_ask=0.25,
+        ),
+        side="YES",
+        spend=10.0,
+        probability=0.50,
+        edge=0.25,
+        edge_lcb=0.10,
+    )
+
+    assert decision_pnl_at_settlement(below, 69) == 30.0
+    assert decision_pnl_at_settlement(below, 70) == -10.0
+    assert decision_pnl_at_settlement(above, 70) == -10.0
+    assert decision_pnl_at_settlement(above, 71) == 30.0
+
+
+def test_target_clips_to_correlated_region_scenario_room() -> None:
+    def pending_leg(series: str, target: str, spend: float) -> PortfolioLeg:
+        decision = _decision(
+            _market(
+                "70° to 71°",
+                ticker=f"{series}-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.50,
+            ),
+            side="YES",
+            spend=spend,
+            probability=0.70,
+            edge=0.20,
+            edge_lcb=0.10,
+        )
+        return PortfolioLeg(
+            "target",
+            decision,
+            spend,
+            decision.expected_profit,
+            0.0,
+            target_date=target,
+            account_id=TARGET_POLICY.account_id,
+            pending=True,
+        )
+
+    active = [
+        pending_leg("KXHIGHTSEA", "2026-07-20", 50.0),
+        pending_leg("KXHIGHLAX", "2026-07-20", 50.0),
+    ]
+    candidates = [
+        ResearchOpportunity(
+            _decision(
+                _market(
+                    "72° to 73°",
+                    ticker=f"{series}-26JUL20-B72.5",
+                    floor=72,
+                    cap=73,
+                    yes_ask=0.50,
+                ),
+                side="YES",
+                spend=30.0,
+                probability=0.75,
+                edge=0.25,
+                edge_lcb=0.10,
+            ),
+            "2026-07-20",
+            2,
+        )
+        for series in ("KXHIGHTSFO", "KXHIGHDEN")
+    ]
+
+    plans = allocate_research_plans(candidates, target_active_legs=active)
+
+    assert [leg.decision.ticker for leg in plans.target.legs] == [
+        candidates[1].decision.ticker,
+        candidates[0].decision.ticker,
+    ]
+    assert plans.target.legs[1].decision.recommended_contracts == 40.0
+    assert plans.target.legs[1].spend == 20.0
+    dispositions = {row.ticker: row for row in plans.target.dispositions}
+    assert dispositions[candidates[0].decision.ticker].status == "selected"
+
+
+def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
+    market = _market(
+        "70° to 71°",
+        ticker="KXHIGHTSFO-26JUL20-B70.5",
+        floor=70,
+        cap=71,
+        yes_ask=0.50,
+    )
+    active_decision = _decision(
+        market,
+        side="YES",
+        spend=60.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    active = PortfolioLeg(
+        "target",
+        active_decision,
+        60.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+        pending=True,
+    )
+    candidate = ResearchOpportunity(
+        _decision(
+            replace(market, ticker="KXHIGHTSFO-26JUL20-B72.5", floor_strike=72, cap_strike=73),
+            side="YES",
+            spend=20.0,
+            probability=0.70,
+            edge=0.20,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[active])
+
+    assert plans.target.legs == []
+    assert plans.target.dispositions[0].status == "capacity_blocked"
+    assert "city-target" in (plans.target.dispositions[0].reason or "")
+
+
+def test_partial_children_are_not_counted_as_separate_exposure_legs() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHTSFO-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+    root = PortfolioLeg(
+        "target",
+        decision,
+        20.0,
+        decision.expected_profit,
+        0.0,
+        pending=True,
+        logical_position_id=42,
+    )
+    child = replace(root, is_partial_child=True)
+
+    assert city_target_worst_case_loss([root, child], range(68, 74)) == 20.0
+
+
+def test_target_position_risk_is_hard_capped_at_three_percent() -> None:
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHTSFO-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=80.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate])
+
+    assert plans.target.legs[0].spend == 30.0
+    assert plans.target.legs[0].decision.recommended_contracts == 150.0
+
+
+def test_infeasible_fifty_dollar_report_never_loosens_target_gates_or_count() -> None:
+    valid = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHTSFO-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.30,
+            edge=0.10,
+            edge_lcb=0.01,
+        ),
+        "2026-07-20",
+        2,
+    )
+    same_day = replace(valid, decision=replace(valid.decision, ticker=f"{valid.decision.ticker}-SAME"), lead_days=0)
+    negative_lcb = replace(
+        valid,
+        decision=replace(valid.decision, ticker=f"{valid.decision.ticker}-NEG", edge_lcb=-0.001),
+    )
+
+    plans = allocate_research_plans([negative_lcb, same_day, valid], realized_today=-49.0)
+
+    assert plans.target_pnl == 50.0
+    assert plans.remaining_target == 99.0
+    assert plans.available_conservative_expected_profit == 1.0
+    assert plans.target_feasible_from_current_opportunity_set is False
+    assert [leg.decision.ticker for leg in plans.target.legs] == [valid.decision.ticker]
+
+
+def test_target_allocation_is_input_order_invariant_and_uses_conservative_priority() -> None:
+    opportunities = [
+        ResearchOpportunity(
+            _decision(
+                _market(
+                    f"{70 + idx}° to {71 + idx}°",
+                    ticker=f"KXHIGHDEN-26JUL2{idx}-B{70.5 + idx}",
+                    floor=70 + idx,
+                    cap=71 + idx,
+                    yes_ask=cost,
+                ),
+                side="YES",
+                spend=20.0,
+                probability=0.50,
+                edge=0.20,
+                edge_lcb=lcb,
+            ),
+            f"2026-07-2{idx}",
+            idx + 1,
+        )
+        for idx, (cost, lcb) in enumerate(((0.50, 0.05), (0.20, 0.04), (0.40, 0.06)))
+    ]
+
+    forward = allocate_research_plans(opportunities, run_id="invariant")
+    reverse = allocate_research_plans(list(reversed(opportunities)), run_id="invariant")
+
+    expected = [opportunities[1].decision.ticker, opportunities[2].decision.ticker, opportunities[0].decision.ticker]
+    assert [leg.decision.ticker for leg in forward.target.legs] == expected
+    assert [leg.decision.ticker for leg in reverse.target.legs] == expected
+
+
+def test_target_priority_uses_position_capped_quantity_before_log_growth() -> None:
+    oversized = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHDEN-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=1200.0,
+            probability=0.90,
+            edge=0.20,
+            edge_lcb=0.04,
+        ),
+        "2026-07-20",
+        2,
+    )
+    ordinary = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.50,
+            edge=0.20,
+            edge_lcb=0.04,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([ordinary, oversized])
+
+    assert [leg.decision.ticker for leg in plans.target.legs] == [
+        oversized.decision.ticker,
+        ordinary.decision.ticker,
+    ]
+    assert plans.target.legs[0].decision.recommended_contracts == 150.0
+
+
+def test_target_clips_to_remaining_cash_in_integer_contracts() -> None:
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHDEN-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=80.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_available_cash=10.0)
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.legs[0].decision.recommended_contracts == 50.0
+    assert plans.target.legs[0].spend == 10.0
+
+
+def test_target_clips_to_remaining_city_scenario_room() -> None:
+    active_decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.50,
+        ),
+        side="YES",
+        spend=50.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    active = PortfolioLeg(
+        "target",
+        active_decision,
+        50.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+        pending=True,
+    )
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=80.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+        pending=True,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[active])
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.legs[0].decision.recommended_contracts == 50.0
+    assert plans.target.legs[0].spend == 10.0
+
+
+def test_malformed_active_exposure_fails_closed_instead_of_omitting_risk() -> None:
+    active_decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.50,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    malformed = PortfolioLeg(
+        "target",
+        replace(active_decision, cost_per_contract=float("nan")),
+        20.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+    )
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[malformed])
+
+    assert plans.target.legs == []
+    assert plans.target.dispositions[0].status == "capacity_blocked"
+    assert "active exposure is invalid" in (plans.target.dispositions[0].reason or "")
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "edge",
+        "edge_lcb",
+        "probability",
+        "probability_lcb",
+        "yes_bid",
+        "yes_ask",
+        "entry_bid",
+        "entry_ask",
+        "limit_price",
+        "fee_per_contract",
+        "cost_per_contract",
+        "limit_fee_per_contract",
+        "limit_cost_per_contract",
+        "recommended_contracts",
+        "floor_strike",
+        "cap_strike",
+    ),
+)
+@pytest.mark.parametrize(
+    "bad_value",
+    ("0.2", Decimal("0.2"), True, float("nan"), float("inf")),
+    ids=("string", "decimal", "bool", "nan", "inf"),
+)
+def test_candidate_numeric_evidence_is_normalized_once_or_rejected(
+    field: str,
+    bad_value: object,
+) -> None:
+    decision = _decision(
+        _market(
+            "72° to 73°",
+            ticker="KXHIGHDEN-26JUL20-B72.5",
+            floor=72,
+            cap=73,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, **{field: bad_value}),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([opportunity])
+
+    assert plans.target.legs == []
+    assert plans.motion.legs == []
+    assert plans.target.dispositions[0].status == "rejected"
+    assert plans.motion.dispositions[0].status == "rejected"
+
+
+@pytest.mark.parametrize("bad_side", (None, True, 7, "MAYBE"))
+def test_malformed_candidate_side_is_rejected_without_disposition_crash(
+    bad_side: object,
+) -> None:
+    decision = _decision(
+        _market(
+            "72° to 73°",
+            ticker="KXHIGHDEN-26JUL20-B72.5",
+            floor=72,
+            cap=73,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(replace(decision, side=bad_side), "2026-07-20", 2)]
+    )
+
+    assert plans.target.dispositions[0].status == "rejected"
+    assert plans.target.dispositions[0].side == "<INVALID>"
+
+
+def test_unknown_strike_type_is_rejected_instead_of_treated_as_between() -> None:
+    decision = _decision(
+        _market(
+            "72° to 73°",
+            ticker="KXHIGHDEN-26JUL20-B72.5",
+            floor=72,
+            cap=73,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, strike_type="mystery"),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert plans.target.legs == []
+    assert "strike type" in (plans.target.dispositions[0].reason or "")
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "account",
+        "sleeve",
+        "date",
+        "side",
+        "strike",
+        "contracts",
+        "cost",
+        "spend",
+        "spend_mismatch",
+        "pending_flag",
+        "child_flag",
+        "child_identity",
+    ),
+)
+def test_each_malformed_active_leg_field_fails_only_that_sleeve_closed(
+    corruption: str,
+) -> None:
+    active_decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.50,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.70,
+        edge=0.20,
+        edge_lcb=0.10,
+    )
+    active = PortfolioLeg(
+        "target",
+        active_decision,
+        20.0,
+        active_decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+    )
+    if corruption == "account":
+        active = replace(active, account_id="wrong")
+    elif corruption == "sleeve":
+        active = replace(active, sleeve="motion")
+    elif corruption == "date":
+        active = replace(active, target_date="not-a-date")
+    elif corruption == "side":
+        active = replace(active, decision=replace(active.decision, side="MAYBE"))
+    elif corruption == "strike":
+        active = replace(active, decision=replace(active.decision, strike_type="unknown"))
+    elif corruption == "contracts":
+        active = replace(
+            active,
+            decision=replace(active.decision, recommended_contracts=float("nan")),
+        )
+    elif corruption == "cost":
+        active = replace(
+            active,
+            decision=replace(active.decision, cost_per_contract=float("nan")),
+        )
+    elif corruption == "spend":
+        active = replace(active, spend=float("nan"))
+    elif corruption == "spend_mismatch":
+        active = replace(active, spend=19.0)
+    elif corruption == "pending_flag":
+        active = replace(active, pending=1)
+    elif corruption == "child_flag":
+        active = replace(active, is_partial_child=1)
+    elif corruption == "child_identity":
+        active = replace(active, is_partial_child=True, logical_position_id=None)
+
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL20-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.50,
+            edge=0.30,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[active])
+
+    assert plans.target.legs == []
+    assert plans.target.worst_case_loss == TARGET_POLICY.reference_equity
+    assert "active exposure is invalid" in plans.target.reasons[0]
+    assert len(plans.motion.legs) == 1
+
+
+def test_huge_typed_strike_range_uses_transition_scenarios_without_expansion() -> None:
+    decision = _decision(
+        _market(
+            "extreme bounded range",
+            ticker="KXHIGHDEN-26JUL20-B0",
+            floor=-1e300,
+            cap=1e300,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.50,
+        edge=0.30,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-20", 2)]
+    )
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.worst_case_loss == 20.0
+
+
+@pytest.mark.parametrize(
+    "argument",
+    (
+        "target_available_cash",
+        "motion_available_cash",
+        "realized_today",
+        "motion_realized_today",
+    ),
+)
+@pytest.mark.parametrize(
+    "bad_value",
+    ("10", Decimal("10"), True, float("nan"), float("inf")),
+    ids=("string", "decimal", "bool", "nan", "inf"),
+)
+def test_account_level_numeric_inputs_reject_coercible_or_nonfinite_values(
+    argument: str,
+    bad_value: object,
+) -> None:
+    with pytest.raises(ValueError, match=argument):
+        allocate_research_plans([], **{argument: bad_value})
+
+
+def test_orphan_partial_child_blocks_new_sleeve_risk() -> None:
+    decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+    orphan = PortfolioLeg(
+        "target",
+        decision,
+        20.0,
+        decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+        logical_position_id=42,
+        is_partial_child=True,
+    )
+    candidate = ResearchOpportunity(
+        replace(
+            ResearchOpportunity(decision, "2026-07-20", 2),
+            decision=replace(decision, ticker="KXHIGHDEN-26JUL20-B72.5"),
+        ).decision,
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=[orphan])
+
+    assert plans.target.legs == []
+    assert "orphan partial child" in plans.target.reasons[0]
+
+
+def test_valid_root_and_partial_child_counts_only_the_root_exposure() -> None:
+    decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+    root = PortfolioLeg(
+        "target",
+        decision,
+        20.0,
+        decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+        pending=True,
+        logical_position_id=42,
+    )
+    child = replace(root, pending=False, is_partial_child=True)
+    candidate_decision = replace(
+        decision,
+        ticker="KXHIGHDEN-26JUL20-B72.5",
+        floor_strike=72,
+        cap_strike=73,
+    )
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(candidate_decision, "2026-07-20", 2)],
+        target_active_legs=[root, child],
+    )
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.worst_case_loss == 40.0
+
+
+def test_partial_child_identity_mismatch_blocks_sleeve() -> None:
+    decision = _decision(
+        _market(
+            "68° to 69°",
+            ticker="KXHIGHDEN-26JUL20-B68.5",
+            floor=68,
+            cap=69,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+    root = PortfolioLeg(
+        "target",
+        decision,
+        20.0,
+        decision.expected_profit,
+        0.0,
+        target_date="2026-07-20",
+        account_id=TARGET_POLICY.account_id,
+        logical_position_id=42,
+    )
+    mismatched = replace(
+        root,
+        target_date="2026-07-21",
+        is_partial_child=True,
+    )
+
+    plans = allocate_research_plans(
+        [ResearchOpportunity(decision, "2026-07-20", 2)],
+        target_active_legs=[root, mismatched],
+    )
+
+    assert plans.target.legs == []
+    assert "partial child identity" in plans.target.reasons[0]
+
+
+def test_sub_cent_cost_is_rejected_without_a_minimum_notional_rule() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, cost_per_contract=1e-12),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([opportunity], target_available_cash=0.0)
+
+    assert plans.target.dispositions[0].status == "rejected"
+    assert plans.motion.dispositions[0].status == "rejected"
+
+
+def test_one_cent_contract_is_valid_and_huge_quantity_caps_at_three_thousand() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.01,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, recommended_contracts=1e308),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans(
+        [opportunity],
+        target_available_cash=1e308,
+    )
+
+    assert plans.target.legs[0].decision.recommended_contracts == 3000.0
+    assert plans.target.legs[0].spend == 30.0
+    assert plans.motion.legs[0].decision.recommended_contracts == 1.0
+
+
+def test_overflowing_integer_quantity_is_rejected_without_crashing() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.01,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, recommended_contracts=10**10000),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([opportunity])
+
+    assert plans.target.legs == []
+    assert plans.target.dispositions[0].status == "rejected"
+
+
+def test_ninety_nine_cent_quote_with_sub_dollar_all_in_cost_is_valid() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.99,
+        ),
+        side="YES",
+        spend=9.90,
+        probability=0.995,
+        edge=0.005,
+        edge_lcb=0.001,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, cost_per_contract=0.9907),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert len(plans.target.legs) == 1
+    assert len(plans.motion.legs) == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_opportunity",
+    (None, 7, object()),
+    ids=("none", "integer", "object"),
+)
+@pytest.mark.parametrize("mixed_with_valid", (False, True), ids=("only", "mixed"))
+def test_invalid_outer_opportunity_is_safely_rejected_by_both_sleeves(
+    invalid_opportunity: object,
+    mixed_with_valid: bool,
+) -> None:
+    valid = ResearchOpportunity(
+        _decision(
+            _market(
+                "70° to 71°",
+                ticker="KXHIGHDEN-26JUL20-B70.5",
+                floor=70,
+                cap=71,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.60,
+            edge=0.40,
+            edge_lcb=0.10,
+        ),
+        "2026-07-20",
+        2,
+    )
+    opportunities: list[object] = [invalid_opportunity]
+    if mixed_with_valid:
+        opportunities.insert(0, valid)
+
+    plans = allocate_research_plans(opportunities)  # type: ignore[arg-type]
+
+    for plan in (plans.target, plans.motion):
+        rejected = [row for row in plan.dispositions if row.status == "rejected"]
+        assert len(rejected) == 1
+        assert rejected[0].reason == "candidate opportunity type is invalid"
+        assert rejected[0].ticker == "<invalid>"
+        assert rejected[0].target_date == "<invalid>"
+        assert rejected[0].side == "<INVALID>"
+        assert len(plan.legs) == int(mixed_with_valid)
+
+
+@pytest.mark.parametrize("bad_cost", (1.0, 1.0001, 1e308))
+def test_all_in_contract_cost_at_or_above_one_dollar_is_rejected(
+    bad_cost: float,
+) -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.99,
+        ),
+        side="YES",
+        spend=9.90,
+        probability=0.995,
+        edge=0.005,
+        edge_lcb=0.001,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, cost_per_contract=bad_cost),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert plans.target.legs == []
+    assert plans.motion.legs == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("edge", "edge_lcb", "limit_edge", "limit_edge_lcb", "expected_profit"),
+)
+@pytest.mark.parametrize("extreme", (1e308, -1e308), ids=("positive", "negative"))
+def test_extreme_finite_edge_and_profit_fields_reject_before_derivation(
+    field: str,
+    extreme: float,
+) -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.20,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.60,
+        edge=0.40,
+        edge_lcb=0.10,
+    )
+
+    plans = allocate_research_plans(
+        [
+            ResearchOpportunity(
+                replace(decision, **{field: extreme}),
+                "2026-07-20",
+                2,
+            )
+        ]
+    )
+
+    assert plans.target.legs == []
+    assert plans.motion.legs == []
+
+
+def test_maximum_semantic_edge_with_huge_input_quantity_reports_only_finite_metrics() -> None:
+    decision = _decision(
+        _market(
+            "70° to 71°",
+            ticker="KXHIGHDEN-26JUL20-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.01,
+        ),
+        side="YES",
+        spend=20.0,
+        probability=0.999,
+        edge=1.0,
+        edge_lcb=1.0,
+    )
+    opportunity = ResearchOpportunity(
+        replace(decision, recommended_contracts=1e308),
+        "2026-07-20",
+        2,
+    )
+
+    plans = allocate_research_plans([opportunity])
+
+    assert plans.target.legs[0].decision.recommended_contracts == 3000.0
+    assert math.isfinite(plans.target.expected_profit)
+    assert math.isfinite(plans.target.worst_case_loss)
+    assert math.isfinite(plans.available_conservative_expected_profit)
+    assert math.isfinite(plans.target.legs[0].growth_score)
+
+
+def test_target_clips_to_aggregate_open_scenario_room() -> None:
+    active = []
+    series = ("KXHIGHTSFO", "KXHIGHDEN", "KXHIGHMIA", "KXHIGHCHI")
+    for idx in range(8):
+        market = _market(
+            "70° to 71°",
+            ticker=f"{series[idx % len(series)]}-26JUL{10 + idx}-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.50,
+        )
+        decision = _decision(
+            market,
+            side="YES",
+            spend=30.0,
+            probability=0.70,
+            edge=0.20,
+            edge_lcb=0.10,
+        )
+        active.append(
+            PortfolioLeg(
+                "target",
+                decision,
+                30.0,
+                decision.expected_profit,
+                0.0,
+                target_date=f"2026-07-{10 + idx:02d}",
+                account_id=TARGET_POLICY.account_id,
+                pending=True,
+            )
+        )
+    candidate = ResearchOpportunity(
+        _decision(
+            _market(
+                "72° to 73°",
+                ticker="KXHIGHDEN-26JUL30-B72.5",
+                floor=72,
+                cap=73,
+                yes_ask=0.50,
+            ),
+            side="YES",
+            spend=20.0,
+            probability=0.70,
+            edge=0.20,
+            edge_lcb=0.10,
+        ),
+        "2026-07-30",
+        2,
+    )
+
+    plans = allocate_research_plans([candidate], target_active_legs=active)
+
+    assert len(plans.target.legs) == 1
+    assert plans.target.legs[0].decision.recommended_contracts == 20.0
+    assert plans.target.legs[0].spend == 10.0
+
+
+def test_motion_has_no_count_throttle_and_stops_only_at_scenario_cap() -> None:
+    opportunities = []
+    for idx in range(102):
+        target = date(2026, 8, 1) + timedelta(days=idx)
+        market = _market(
+            "70° to 71°",
+            ticker=f"KXHIGHDEN-26AUG{idx:03d}-B70.5",
+            floor=70,
+            cap=71,
+            yes_ask=0.99,
+        )
+        opportunities.append(
+            ResearchOpportunity(
+                _decision(
+                    market,
+                    side="YES",
+                    spend=9.90,
+                    probability=0.995,
+                    edge=0.005,
+                    edge_lcb=-0.01,
+                ),
+                target.isoformat(),
+                1,
+            )
+        )
+
+    plans = allocate_research_plans(opportunities)
+
+    assert len(plans.motion.legs) == 101
+    assert all(leg.decision.recommended_contracts == 1 for leg in plans.motion.legs)
+    blocked = [row for row in plans.motion.dispositions if row.status == "capacity_blocked"]
+    assert len(blocked) == 1
+    assert "aggregate" in (blocked[0].reason or "")

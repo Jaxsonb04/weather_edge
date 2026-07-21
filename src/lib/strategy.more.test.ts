@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeProfiles,
   cents,
   closedLedger,
   equitySeriesFromDays,
@@ -28,6 +29,15 @@ const position = (overrides: Partial<ClosedPosition>): ClosedPosition => ({
 });
 
 describe("strategy collection helpers", () => {
+  it("deduplicates canonical active profiles without mutating the artifact", () => {
+    const live = { label: "Live", risk_profile: "live", profile_type: "primary" };
+    const duplicate = { ...live, label: "Duplicate" };
+    const profiles = [duplicate, live];
+
+    expect(activeProfiles({ profiles } as StrategyLab)).toEqual([duplicate]);
+    expect(profiles).toHaveLength(2);
+  });
+
   it("groups the closed ledger by city and orders by trade count then P&L", () => {
     const rows = [
       position({ id: 1, realized_pnl: 2 }),
