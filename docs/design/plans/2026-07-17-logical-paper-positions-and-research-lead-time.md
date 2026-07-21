@@ -1,6 +1,10 @@
 # Logical Paper Positions and Research Lead-Time Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Design record.** A planning document, kept for the reasoning it captures
+> rather than as a live task list. Its checkboxes were never updated as work
+> landed, so they understated what shipped; they have been flattened to plain
+> bullets. For what actually shipped, see the git history and the
+> [audit remediation ledger](../../codebase_audit_2026-06-15.md#remediation-status).
 
 **Goal:** Preserve immutable execution lots while making all decision-level reporting count one logical paper position, isolating the live weekly objective, fixing partial-exit diagnostics, and moving same-day research to shadow-only evidence.
 
@@ -69,7 +73,7 @@
 
 ### Design reference
 
-- `docs/superpowers/specs/2026-07-17-logical-paper-positions-and-research-lead-time-design.md`
+- `docs/design/specs/2026-07-17-logical-paper-positions-and-research-lead-time-design.md`
 
 ---
 
@@ -79,7 +83,7 @@
 - Create: `trading/sfo_kalshi_quant/logical_positions.py`
 - Create: `trading/tests/test_logical_positions.py`
 
-- [ ] **Step 1: Write pure failing tests for a four-fill terminal position**
+- **Step 1: Write pure failing tests for a four-fill terminal position**
 
 Create `trading/tests/test_logical_positions.py` with mapping fixtures that do
 not require a database:
@@ -88,7 +92,6 @@ not require a database:
 from __future__ import annotations
 
 from sfo_kalshi_quant.logical_positions import group_logical_positions
-
 
 def _row(
     order_id: int,
@@ -124,7 +127,6 @@ def _row(
         "resolved_yes": 1,
     }
 
-
 def test_groups_four_exit_lots_into_one_terminal_position() -> None:
     rows = [
         _row(456, closed_at="2026-07-17T20:06:00+00:00"),
@@ -152,7 +154,7 @@ def test_groups_four_exit_lots_into_one_terminal_position() -> None:
     assert projected["logical_outcome"] == "loss"
 ```
 
-- [ ] **Step 2: Add failing tests for incomplete, legacy, and corrupt groups**
+- **Step 2: Add failing tests for incomplete, legacy, and corrupt groups**
 
 Append:
 
@@ -176,7 +178,6 @@ def test_partial_exit_remains_open_until_root_is_terminal() -> None:
     assert group.as_row()["resolved_contracts"] == 2.0
     assert group.as_row()["open_contracts"] == 6.0
 
-
 def test_legacy_single_row_is_one_logical_position() -> None:
     group = group_logical_positions([_row(7)])[0]
 
@@ -185,14 +186,12 @@ def test_legacy_single_row_is_one_logical_position() -> None:
     assert group.logical_order_id == 7
     assert group.child_order_ids == ()
 
-
 def test_orphan_child_is_retained_but_invalid_and_nonterminal() -> None:
     group = group_logical_positions([_row(8, parent_order_id=999)])[0]
 
     assert group.valid is False
     assert group.terminal is False
     assert group.as_row()["integrity_findings"] == ["missing root order 999"]
-
 
 def test_mismatched_child_is_not_silently_merged() -> None:
     root = _row(10)
@@ -205,7 +204,7 @@ def test_mismatched_child_is_not_silently_merged() -> None:
     assert "market_ticker mismatch on child 11" in group.integrity_findings
 ```
 
-- [ ] **Step 3: Run the new tests and confirm the import fails**
+- **Step 3: Run the new tests and confirm the import fails**
 
 Run:
 
@@ -216,7 +215,7 @@ PYTHONPATH=trading python3 -m pytest trading/tests/test_logical_positions.py -q
 Expected: collection fails with `ModuleNotFoundError` for
 `sfo_kalshi_quant.logical_positions`.
 
-- [ ] **Step 4: Implement the dependency-light projection**
+- **Step 4: Implement the dependency-light projection**
 
 Create `trading/sfo_kalshi_quant/logical_positions.py` with these public
 interfaces and aggregation rules:
@@ -226,7 +225,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
-
 
 TERMINAL_STATUSES = frozenset({"PAPER_CLOSED", "PAPER_SETTLED"})
 OPEN_STATUSES = frozenset(
@@ -241,23 +239,19 @@ _MATCH_FIELDS = (
 )
 _NUMERIC_MATCH_FIELDS = ("entry_price", "cost_per_contract")
 
-
 def _dict_row(row: Mapping[str, Any] | object) -> dict[str, Any]:
     if isinstance(row, Mapping):
         return dict(row)
     keys = row.keys()  # type: ignore[attr-defined]
     return {key: row[key] for key in keys}  # type: ignore[index]
 
-
 def _number(row: Mapping[str, Any], key: str) -> float:
     value = row.get(key)
     return float(value) if value is not None else 0.0
 
-
 def _resolved_at(row: Mapping[str, Any]) -> str | None:
     value = row.get("closed_at") or row.get("settled_at")
     return str(value) if value else None
-
 
 @dataclass(frozen=True)
 class LogicalPaperPosition:
@@ -356,7 +350,6 @@ class LogicalPaperPosition:
         )
         return row
 
-
 def _group_findings(
     root: Mapping[str, Any],
     children: list[dict[str, Any]],
@@ -380,7 +373,6 @@ def _group_findings(
             if abs(_number(child, field) - _number(root, field)) > 1e-9:
                 findings.append(f"{field} mismatch on child {child_id}")
     return tuple(dict.fromkeys(findings))
-
 
 def group_logical_positions(
     rows: Iterable[Mapping[str, Any] | object],
@@ -421,7 +413,7 @@ def group_logical_positions(
     return sorted(groups, key=lambda group: group.logical_order_id)
 ```
 
-- [ ] **Step 5: Run the pure projection tests**
+- **Step 5: Run the pure projection tests**
 
 Run:
 
@@ -431,7 +423,7 @@ PYTHONPATH=trading python3 -m pytest trading/tests/test_logical_positions.py -q
 
 Expected: `5 passed`.
 
-- [ ] **Step 6: Commit the projection**
+- **Step 6: Commit the projection**
 
 ```bash
 git add trading/sfo_kalshi_quant/logical_positions.py trading/tests/test_logical_positions.py
@@ -449,7 +441,7 @@ git commit -m "feat: project execution lots into logical positions"
 - Modify: `trading/tests/test_paper_settlement.py`
 - Modify: `trading/tests/test_paper_risk_pause.py`
 
-- [ ] **Step 1: Add a failing market-summary regression**
+- **Step 1: Add a failing market-summary regression**
 
 Append to `trading/tests/test_paper_settlement.py`:
 
@@ -510,7 +502,7 @@ def test_market_summary_counts_partial_exit_lots_as_one_trade():
         assert summary["capital_at_risk"] == raw_capital
 ```
 
-- [ ] **Step 2: Add a failing circuit-breaker regression**
+- **Step 2: Add a failing circuit-breaker regression**
 
 Append to `trading/tests/test_paper_risk_pause.py`:
 
@@ -541,7 +533,7 @@ def test_partial_exit_lots_do_not_satisfy_resolved_trade_minimum():
 The root still has six open contracts, so four realized child lots must count
 as zero terminal decisions rather than four trades.
 
-- [ ] **Step 3: Run both focused tests and verify raw-row count failures**
+- **Step 3: Run both focused tests and verify raw-row count failures**
 
 Run:
 
@@ -555,7 +547,7 @@ PYTHONPATH=trading python3 -m pytest \
 Expected: the summary reports three rows and/or the breaker counts partial lots
 toward its threshold.
 
-- [ ] **Step 4: Make `market_backtest_summary` use logical outcomes**
+- **Step 4: Make `market_backtest_summary` use logical outcomes**
 
 Import `group_logical_positions` and replace raw-row counts with:
 
@@ -614,7 +606,7 @@ return {
 Do not use the old `if not realized_rows` early return; a partially exited open
 root can have realized cash but zero resolved decisions.
 
-- [ ] **Step 5: Make the breaker count terminal roots while summing lots**
+- **Step 5: Make the breaker count terminal roots while summing lots**
 
 Replace the resolved query in `paper_entry_pause_reason` with:
 
@@ -637,7 +629,7 @@ WHERE lot.realized_pnl IS NOT NULL
 
 Keep the daily-loss query lot-based and unchanged.
 
-- [ ] **Step 6: Reuse the canonical groups in readiness replay**
+- **Step 6: Reuse the canonical groups in readiness replay**
 
 Import `group_logical_positions` and replace
 `_verified_resolved_decision_groups` with:
@@ -661,7 +653,7 @@ The existing readiness regression in
 `test_audit_2026_07_14.py::test_readiness_aggregates_verified_partial_close_lots_into_one_decision`
 must keep passing.
 
-- [ ] **Step 7: Run the focused and neighboring suites**
+- **Step 7: Run the focused and neighboring suites**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -674,7 +666,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: all tests pass.
 
-- [ ] **Step 8: Commit summary and breaker corrections**
+- **Step 8: Commit summary and breaker corrections**
 
 ```bash
 git add trading/sfo_kalshi_quant/store/scoring.py trading/sfo_kalshi_quant/db.py \
@@ -693,7 +685,7 @@ git commit -m "fix: count partial exits as one paper decision"
 - Modify: `trading/tests/test_posterior_kelly.py`
 - Modify: `trading/tests/test_clv.py`
 
-- [ ] **Step 1: Extend the posterior fixture schema with logical-order fields**
+- **Step 1: Extend the posterior fixture schema with logical-order fields**
 
 Replace the `CREATE TABLE` in `_seed_orders` with a backward-compatible test
 schema that still accepts the existing insert column list:
@@ -713,7 +705,7 @@ conn.execute(
 )
 ```
 
-- [ ] **Step 2: Add a failing posterior-Kelly decision-count test**
+- **Step 2: Add a failing posterior-Kelly decision-count test**
 
 Append to `trading/tests/test_posterior_kelly.py`:
 
@@ -760,7 +752,7 @@ def test_partial_close_children_count_once_in_posterior_model():
 One settled anchor plus one closed decision must produce two observations, not
 four rows.
 
-- [ ] **Step 3: Add a failing CLV logical-position test**
+- **Step 3: Add a failing CLV logical-position test**
 
 Add the needed imports and append to `trading/tests/test_clv.py`:
 
@@ -817,7 +809,7 @@ def test_load_order_clv_collapses_partial_exit_children():
 Import `Path`, `TemporaryDirectory`, `PaperStore`, `TradeDecision`, and
 `load_order_clv`.
 
-- [ ] **Step 4: Run both focused tests and confirm inflated evidence counts**
+- **Step 4: Run both focused tests and confirm inflated evidence counts**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -828,7 +820,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: posterior `n` and CLV record count include each child row.
 
-- [ ] **Step 5: Build posterior evidence from terminal logical roots**
+- **Step 5: Build posterior evidence from terminal logical roots**
 
 In `load_posterior_kelly_model`, set `conn.row_factory = sqlite3.Row`, fetch all
 paper rows, and replace both raw SQL outcome loops with:
@@ -878,7 +870,7 @@ for position in positions:
 Import `group_logical_positions`. Preserve `_accumulate`, priors, floors, and
 cohort calculations unchanged.
 
-- [ ] **Step 6: Build CLV records from aggregate logical rows**
+- **Step 6: Build CLV records from aggregate logical rows**
 
 In `load_order_clv`, fetch `SELECT *`, group, and iterate valid logical rows:
 
@@ -936,7 +928,7 @@ return records
 
 Import `group_logical_positions`.
 
-- [ ] **Step 7: Run sizing, risk, and CLV suites**
+- **Step 7: Run sizing, risk, and CLV suites**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -949,7 +941,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: all tests pass with one sizing/CLV observation per decision.
 
-- [ ] **Step 8: Commit the sizing and diagnostic correction**
+- **Step 8: Commit the sizing and diagnostic correction**
 
 ```bash
 git add trading/sfo_kalshi_quant/posterior_kelly.py trading/sfo_kalshi_quant/clv.py \
@@ -965,7 +957,7 @@ git commit -m "fix: dedupe partial exits in sizing evidence"
 - Modify: `trading/sfo_kalshi_quant/strategy_lab/paper_card.py:27-430,762-990`
 - Modify: `trading/tests/test_strategy_research.py`
 
-- [ ] **Step 1: Add a failing Strategy Lab closed-ledger test**
+- **Step 1: Add a failing Strategy Lab closed-ledger test**
 
 Add a test using the existing forecaster fixtures and `PaperStore` setup in
 `trading/tests/test_strategy_research.py`:
@@ -1006,7 +998,7 @@ def test_strategy_research_collapses_partial_exit_lots_into_one_closed_position(
 Import `replace` from `dataclasses` if the test module does not already import
 it.
 
-- [ ] **Step 2: Run the focused test and confirm duplicate rows**
+- **Step 2: Run the focused test and confirm duplicate rows**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1016,7 +1008,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: `closed_positions` contains three rows and the summary count is three.
 
-- [ ] **Step 3: Materialize all groups before applying the recent-row limit**
+- **Step 3: Materialize all groups before applying the recent-row limit**
 
 In `_paper_payload`, fetch all non-rejected order rows once, group them, and
 derive logical closed rows before slicing:
@@ -1042,7 +1034,7 @@ closed_rows = sorted(
 Import `group_logical_positions`. Remove the old raw `closed_rows LIMIT 30`
 query and the raw resolved profile aggregate query.
 
-- [ ] **Step 4: Add a logical profile-summary helper**
+- **Step 4: Add a logical profile-summary helper**
 
 Add:
 
@@ -1121,7 +1113,7 @@ def _profile_summary_mapping(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 ```
 
-- [ ] **Step 5: Make diagnostics operate on aggregate logical rows**
+- **Step 5: Make diagnostics operate on aggregate logical rows**
 
 Replace `_paper_diagnostics` with a group-backed implementation and update
 helper type hints from `sqlite3.Row` to `Mapping[str, Any]`:
@@ -1175,7 +1167,7 @@ Publish integrity status alongside the summary:
 },
 ```
 
-- [ ] **Step 6: Make `_paper_row` accept the projected mapping fields**
+- **Step 6: Make `_paper_row` accept the projected mapping fields**
 
 Change its type to `Mapping[str, Any]`, keep existing fields, and add:
 
@@ -1189,7 +1181,7 @@ Change its type to `Mapping[str, Any]`, keep existing fields, and add:
 Use `capital_resolved` as the realized ROI denominator when present; otherwise
 retain `contracts * cost_per_contract` for legacy and open rows.
 
-- [ ] **Step 7: Run Strategy Lab and structure tests**
+- **Step 7: Run Strategy Lab and structure tests**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1200,7 +1192,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: all tests pass, including the new one-row ledger assertion.
 
-- [ ] **Step 8: Commit Strategy Lab logical publication**
+- **Step 8: Commit Strategy Lab logical publication**
 
 ```bash
 git add trading/sfo_kalshi_quant/strategy_lab/paper_card.py \
@@ -1216,7 +1208,7 @@ git commit -m "fix: publish one row per logical paper position"
 - Modify: `trading/sfo_kalshi_quant/summary.py:15-230,313-470,835-850`
 - Modify: `trading/tests/test_paper_summary.py`
 
-- [ ] **Step 1: Add a failing cross-day partial-exit summary test**
+- **Step 1: Add a failing cross-day partial-exit summary test**
 
 Append to `trading/tests/test_paper_summary.py`:
 
@@ -1262,7 +1254,7 @@ def test_paper_summary_keeps_lot_day_pnl_but_counts_one_terminal_trade():
 
 Import `replace` from `dataclasses`.
 
-- [ ] **Step 2: Run the focused test and confirm duplicate opening/outcome counts**
+- **Step 2: Run the focused test and confirm duplicate opening/outcome counts**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1272,7 +1264,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: two openings and/or two closed trades are reported.
 
-- [ ] **Step 3: Load parent metadata and build both views**
+- **Step 3: Load parent metadata and build both views**
 
 Add these fields in `_load_orders`:
 
@@ -1304,7 +1296,7 @@ open_orders = [
 ]
 ```
 
-- [ ] **Step 4: Split the existing combined loop into three explicit loops**
+- **Step 4: Split the existing combined loop into three explicit loops**
 
 Use one aggregate logical row per root for openings so a root that was later
 shrunk by partial exits retains its original filled quantity:
@@ -1392,7 +1384,7 @@ for profile_stats in day["profiles"].values():
     )
 ```
 
-- [ ] **Step 5: Use raw window lots for money and logical positions for outcomes**
+- **Step 5: Use raw window lots for money and logical positions for outcomes**
 
 Define the two window views explicitly:
 
@@ -1544,7 +1536,7 @@ learnings, and rankings. Add these fields to `_order_brief`:
 "exit_fill_count": int(order.get("exit_fill_count") or 0),
 ```
 
-- [ ] **Step 6: Run paper summary tests**
+- **Step 6: Run paper summary tests**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest trading/tests/test_paper_summary.py -q
@@ -1552,7 +1544,7 @@ PYTHONPATH=trading python3 -m pytest trading/tests/test_paper_summary.py -q
 
 Expected: all tests pass and the cross-day test shows one terminal outcome.
 
-- [ ] **Step 7: Commit daily summary semantics**
+- **Step 7: Commit daily summary semantics**
 
 ```bash
 git add trading/sfo_kalshi_quant/summary.py trading/tests/test_paper_summary.py
@@ -1569,7 +1561,7 @@ git commit -m "fix: separate paper cash timing from trade outcomes"
 - Modify: `trading/sfo_kalshi_quant/db.py:2280-2550`
 - Modify: `trading/tests/test_audit_2026_07_14.py`
 
-- [ ] **Step 1: Add a failing live weekly-attribution test**
+- **Step 1: Add a failing live weekly-attribution test**
 
 Append to `trading/tests/test_audit_2026_07_14.py`:
 
@@ -1612,7 +1604,7 @@ def test_weekly_goal_excludes_legacy_research_in_shared_account() -> None:
         assert "all research profiles" in goal["disclaimer"].lower()
 ```
 
-- [ ] **Step 2: Add a failing partial-exit diagnostic test**
+- **Step 2: Add a failing partial-exit diagnostic test**
 
 Append:
 
@@ -1638,7 +1630,7 @@ def test_partial_exit_outcome_diagnostics_use_executed_quantity() -> None:
 
 Add `json`, `pytest`, and `replace` imports only if absent.
 
-- [ ] **Step 3: Run both tests and verify attribution/arithmetic failures**
+- **Step 3: Run both tests and verify attribution/arithmetic failures**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1650,7 +1642,7 @@ PYTHONPATH=trading python3 -m pytest \
 Expected before the fix: weekly P&L is 40 and `pnl_per_contract` divides by
 eight.
 
-- [ ] **Step 4: Filter weekly rows through profile normalization**
+- **Step 4: Filter weekly rows through profile normalization**
 
 Select `risk_profile` with each resolved row:
 
@@ -1681,7 +1673,7 @@ Import `normalize_risk_profile_name`. Add `all research profiles` to the payload
 `excludes` list and disclaimer without changing the actual shared-account
 starting-equity calculation.
 
-- [ ] **Step 5: Thread executed quantity into outcome diagnostics**
+- **Step 5: Thread executed quantity into outcome diagnostics**
 
 Add a required keyword argument:
 
@@ -1713,7 +1705,7 @@ Write:
 Pass `executed_quantity=float(row["contracts"])` from settlement/full-resolution
 callers and `executed_quantity=executed` from `close_paper_order`.
 
-- [ ] **Step 6: Run audit and diagnostics tests**
+- **Step 6: Run audit and diagnostics tests**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1724,7 +1716,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Commit attribution and diagnostics fixes**
+- **Step 7: Commit attribution and diagnostics fixes**
 
 ```bash
 git add trading/sfo_kalshi_quant/strategy_lab/build.py \
@@ -1742,7 +1734,7 @@ git commit -m "fix: isolate live results and partial-exit diagnostics"
 - Modify: `trading/tests/test_entry_target_gate.py`
 - Modify: `trading/tests/test_research_shadow.py`
 
-- [ ] **Step 1: Replace the old same-day research allowance test**
+- **Step 1: Replace the old same-day research allowance test**
 
 Replace `test_research_same_day_entry_gate_allows_observed_high_lock_before_peak_window`
 with:
@@ -1769,7 +1761,7 @@ policy reason. Keep the later-target behavior unchanged, and update the live
 test's reason suffix from `research-only` to `shadow-only` so the recorded gate
 copy remains truthful.
 
-- [ ] **Step 2: Add a failing shadow-evidence test**
+- **Step 2: Add a failing shadow-evidence test**
 
 Append to `trading/tests/test_research_shadow.py`:
 
@@ -1805,7 +1797,7 @@ def test_blocked_same_day_research_signal_is_recorded_without_paper_position() -
         assert reason in row["reasons_json"]
 ```
 
-- [ ] **Step 3: Run the gate tests and confirm the old allowance fails**
+- **Step 3: Run the gate tests and confirm the old allowance fails**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1816,7 +1808,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: the gate still allows early same-day research.
 
-- [ ] **Step 4: Implement the profile-specific same-day block**
+- **Step 4: Implement the profile-specific same-day block**
 
 In `_paper_entry_gate_for_target`, keep the single-source check first and later
 targets allowed. Replace the same-day profile/cutoff branch with:
@@ -1841,7 +1833,7 @@ Do not modify the existing portfolio branch that calls
 `record_research_shadow_candidates` for blocked research plans. It is the
 approved evidence-preservation path.
 
-- [ ] **Step 5: Run entry, shadow, portfolio, and status tests**
+- **Step 5: Run entry, shadow, portfolio, and status tests**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -1854,7 +1846,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: all tests pass; day-ahead behavior remains unchanged.
 
-- [ ] **Step 6: Commit the research lead-time tune**
+- **Step 6: Commit the research lead-time tune**
 
 ```bash
 git add trading/sfo_kalshi_quant/_cli/scan.py \
@@ -1871,7 +1863,7 @@ git commit -m "fix: keep same-day research in the shadow ledger"
 - Modify: `src/components/strategy/LedgerTable.tsx:80-115`
 - Create: `src/components/strategy/LedgerTable.test.tsx`
 
-- [ ] **Step 1: Add a failing ledger rendering test**
+- **Step 1: Add a failing ledger rendering test**
 
 Create `src/components/strategy/LedgerTable.test.tsx`:
 
@@ -1928,7 +1920,7 @@ describe("LedgerTable logical exit fills", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify TypeScript/rendering failure**
+- **Step 2: Run the test and verify TypeScript/rendering failure**
 
 ```bash
 bun run test -- src/components/strategy/LedgerTable.test.tsx
@@ -1937,7 +1929,7 @@ bun run test -- src/components/strategy/LedgerTable.test.tsx
 Expected: TypeScript does not recognize the logical fields or `4 fills` is not
 rendered.
 
-- [ ] **Step 3: Add tolerant optional fields to `ClosedPosition`**
+- **Step 3: Add tolerant optional fields to `ClosedPosition`**
 
 Add:
 
@@ -1950,7 +1942,7 @@ integrity_findings?: string[];
 
 All fields remain optional so old cached/public artifacts continue to render.
 
-- [ ] **Step 4: Render the fill annotation beneath the detailed exit price**
+- **Step 4: Render the fill annotation beneath the detailed exit price**
 
 Replace the detailed fill cell contents with:
 
@@ -1969,7 +1961,7 @@ Replace the detailed fill cell contents with:
 
 Do not add a new column; the ledger is already horizontally dense on mobile.
 
-- [ ] **Step 5: Run focused and full SPA checks**
+- **Step 5: Run focused and full SPA checks**
 
 ```bash
 bun run test -- src/components/strategy/LedgerTable.test.tsx src/lib/strategy.test.ts
@@ -1979,7 +1971,7 @@ bun run build
 
 Expected: all commands exit zero.
 
-- [ ] **Step 6: Commit the UI explanation**
+- **Step 6: Commit the UI explanation**
 
 ```bash
 git add src/lib/strategy.ts src/components/strategy/LedgerTable.tsx \
@@ -1996,7 +1988,7 @@ git commit -m "feat: label multi-fill paper positions"
 - Do not commit generated runtime JSON, copied databases, `dist/`, screenshots,
   or temporary audit artifacts.
 
-- [ ] **Step 1: Run every focused regression together**
+- **Step 1: Run every focused regression together**
 
 ```bash
 PYTHONPATH=trading python3 -m pytest \
@@ -2015,7 +2007,7 @@ PYTHONPATH=trading python3 -m pytest \
 
 Expected: all focused Python tests pass.
 
-- [ ] **Step 2: Run the complete repository suites**
+- **Step 2: Run the complete repository suites**
 
 ```bash
 bash scripts/run_tests.sh
@@ -2027,7 +2019,7 @@ python3 -m compileall -q forecaster trading/sfo_kalshi_quant trading/tests scrip
 
 Expected: every command exits zero.
 
-- [ ] **Step 3: Run health and security checks**
+- **Step 3: Run health and security checks**
 
 Use the isolated Semgrep environment created during investigation if it still
 exists; otherwise create another isolated environment outside the repository:
@@ -2041,7 +2033,7 @@ PATH="/tmp/weatheredge-semgrep-venv/bin:$PATH" bash scripts/verify_project.sh
 Expected: project health, Semgrep, tests, and compile checks pass. The local
 runtime placeholder notice is informational after cleanup.
 
-- [ ] **Step 4: Copy authoritative databases to an isolated local audit directory**
+- **Step 4: Copy authoritative databases to an isolated local audit directory**
 
 Read `.local/ec2.env` without printing it, create a validated temporary
 directory, and use SQLite's online backup API on the server so both copied
@@ -2069,7 +2061,7 @@ ssh -o BatchMode=yes -i "$EC2_KEY" "${REMOTE_USER:-ubuntu}@$EC2_IP" \
 The only removals are the two exact temporary server files created by the
 preceding commands.
 
-- [ ] **Step 5: Reconcile raw lots against logical positions on the copied DB**
+- **Step 5: Reconcile raw lots against logical positions on the copied DB**
 
 Run a read-only inline audit with the new module:
 
@@ -2105,7 +2097,7 @@ Expected at the investigation snapshot: 57 logical live positions, 40 wins, 17
 losses, and unchanged live P&L. New trades settling after the snapshot may
 increase counts; P&L/capital reconciliation must remain exact.
 
-- [ ] **Step 6: Generate an isolated Strategy Lab artifact from the copied DB**
+- **Step 6: Generate an isolated Strategy Lab artifact from the copied DB**
 
 Use the copied AWS forecaster inputs and an explicit temporary output. Never
 read ignored local runtime artifacts or overwrite them:
@@ -2125,7 +2117,7 @@ jq '.paper_trading.closed_positions[] | select(.logical_order_id == 456)' \
 Expected: one Phoenix object with `contracts: 8`, `exit_fill_count: 4`, three
 child IDs, and aggregate P&L.
 
-- [ ] **Step 7: Verify weekly attribution from the isolated artifact**
+- **Step 7: Verify weekly attribution from the isolated artifact**
 
 ```bash
 jq '.accounting.goal' \
@@ -2135,7 +2127,7 @@ jq '.accounting.goal' \
 Expected at the investigation snapshot: live weekly realized P&L is about
 `16.58`, not `17.42`, and exclusion metadata names all research profiles.
 
-- [ ] **Step 8: Clear stale local runtime state and rebuild the SPA**
+- **Step 8: Clear stale local runtime state and rebuild the SPA**
 
 ```bash
 python3 scripts/clear_local_runtime_state.py --confirm
@@ -2146,7 +2138,7 @@ cp "$audit_dir/strategy_research.json" dist/strategy_research.json
 The corrected artifact is copied only into ignored generated `dist/` for visual
 verification.
 
-- [ ] **Step 9: Use the required frontend/browser skills for desktop and mobile verification**
+- **Step 9: Use the required frontend/browser skills for desktop and mobile verification**
 
 Read and follow `frontend-design`, `ui-ux-pro-max`, `web-design-guidelines`, and
 `agent-browser`. Serve `dist/`, open `#/lab`, and verify:
@@ -2164,7 +2156,7 @@ Read and follow `frontend-design`, `ui-ux-pro-max`, `web-design-guidelines`, and
 Capture desktop and mobile screenshots and read the DOM state back after each
 interaction. Stop the local server when verification is complete.
 
-- [ ] **Step 10: Inspect final changes and repository state**
+- **Step 10: Inspect final changes and repository state**
 
 ```bash
 git diff --check
@@ -2175,10 +2167,10 @@ git log --oneline --decorate -10
 Expected: no uncommitted source changes, no generated runtime artifacts staged,
 and one focused commit per completed task.
 
-- [ ] **Step 11: Perform the completion audit against the approved spec**
+- **Step 11: Perform the completion audit against the approved spec**
 
 Read the completion criteria in
-`docs/superpowers/specs/2026-07-17-logical-paper-positions-and-research-lead-time-design.md`
+`docs/design/specs/2026-07-17-logical-paper-positions-and-research-lead-time-design.md`
 and record evidence for every item:
 
 - Immutable journal preserved

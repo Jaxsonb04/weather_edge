@@ -147,11 +147,11 @@ except a clean `main`.
 
 Read these before changing architecture:
 
-- [Daily research, Google runtime, and reliability design](../superpowers/specs/2026-07-17-daily-research-google-runtime-and-reliability-design.md)
-- [Accounting, calibration, and execution reliability plan](../superpowers/plans/2026-07-17-accounting-calibration-execution-reliability.md)
-- [Research target and motion accounts plan](../superpowers/plans/2026-07-17-research-target-and-motion-accounts.md)
-- [Multi-city Google runtime weather plan](../superpowers/plans/2026-07-17-multicity-google-runtime-weather.md)
-- [Chronological research tuning and promotion plan](../superpowers/plans/2026-07-17-chronological-research-tuning-and-promotion.md)
+- [Daily research, Google runtime, and reliability design](../design/specs/2026-07-17-daily-research-google-runtime-and-reliability-design.md)
+- [Accounting, calibration, and execution reliability plan](../design/plans/2026-07-17-accounting-calibration-execution-reliability.md)
+- [Research target and motion accounts plan](../design/plans/2026-07-17-research-target-and-motion-accounts.md)
+- [Multi-city Google runtime weather plan](../design/plans/2026-07-17-multicity-google-runtime-weather.md)
+- [Chronological research tuning and promotion plan](../design/plans/2026-07-17-chronological-research-tuning-and-promotion.md)
 - [AWS deployment runbook](../aws_deployment.md)
 - [Operational runbook](../operational_runbook.md)
 
