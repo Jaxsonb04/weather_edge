@@ -1,6 +1,10 @@
 # Accounting, Calibration, and Execution Reliability Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Design record.** A planning document, kept for the reasoning it captures
+> rather than as a live task list. Its checkboxes were never updated as work
+> landed, so they understated what shipped; they have been flattened to plain
+> bullets. For what actually shipped, see the git history and the
+> [audit remediation ledger](../../codebase_audit_2026-06-15.md#remediation-status).
 
 **Goal:** Finish the logical-position migration and repair the profile-contaminated calibration sample, inside-spread queue model, and Google failure accounting before adding new research or weather behavior.
 
@@ -28,7 +32,7 @@
 - Modify: `trading/sfo_kalshi_quant/summary.py`
 - Test: `trading/tests/test_paper_summary.py`
 
-- [ ] **Step 1: Add a failing multi-lot summary regression**
+- **Step 1: Add a failing multi-lot summary regression**
 
 Create one root that closes in three lots and assert that the daily/global/profile/side/exit/mover views report one resolved decision while P&L and capital equal all three lots:
 
@@ -55,13 +59,13 @@ def test_partial_exit_lots_publish_one_logical_trade(tmp_path):
     )
 ```
 
-- [ ] **Step 2: Run the regression and verify the lot-count failure**
+- **Step 2: Run the regression and verify the lot-count failure**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_paper_summary.py::test_partial_exit_lots_publish_one_logical_trade`
 
 Expected: FAIL because profile/side/exit counts equal the number of child lots.
 
-- [ ] **Step 3: Project decisions and lots separately**
+- **Step 3: Project decisions and lots separately**
 
 Import `group_logical_positions`. Build these collections once in `build_paper_summary`:
 
@@ -75,13 +79,13 @@ terminal_lots = [lot for position in terminal_positions for lot in position.reso
 
 Use `logical_rows` for opened/resolved/win/loss, profile, side, exit, city, and best/worst counts. Use `terminal_lots` for realized P&L, capital, fees, and the actual local day of each partial realization. Never count a nonterminal partial root as a win or loss.
 
-- [ ] **Step 4: Run summary and neighboring regressions**
+- **Step 4: Run summary and neighboring regressions**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_paper_summary.py trading/tests/test_side_performance.py trading/tests/test_dynamic_bankroll.py`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 1**
+- **Step 5: Commit Task 1**
 
 ```bash
 git add trading/sfo_kalshi_quant/summary.py trading/tests/test_paper_summary.py
@@ -94,7 +98,7 @@ git commit -m "fix: summarize logical paper positions"
 - Modify: `trading/sfo_kalshi_quant/strategy_lab/paper_card.py`
 - Test: `trading/tests/test_strategy_research.py`
 
-- [ ] **Step 1: Add a failing full-card regression**
+- **Step 1: Add a failing full-card regression**
 
 ```python
 def test_strategy_lab_collapses_partial_exit_lots_everywhere(tmp_path):
@@ -109,13 +113,13 @@ def test_strategy_lab_collapses_partial_exit_lots_everywhere(tmp_path):
     assert paper["closed_positions"][0]["exit_fill_count"] == 3
 ```
 
-- [ ] **Step 2: Verify the raw-lot failure**
+- **Step 2: Verify the raw-lot failure**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_strategy_research.py::test_strategy_lab_collapses_partial_exit_lots_everywhere`
 
 Expected: FAIL with counts or closed rows equal to three.
 
-- [ ] **Step 3: Replace raw closed queries with one journal projection**
+- **Step 3: Replace raw closed queries with one journal projection**
 
 Load all non-rejected rows with the columns required by `logical_positions.py`, call `group_logical_positions`, and pass logical rows plus terminal lots into small pure helpers:
 
@@ -126,7 +130,6 @@ class PaperJournalProjection:
     terminal_rows: tuple[dict[str, Any], ...]
     terminal_lots: tuple[dict[str, Any], ...]
     open_rows: tuple[dict[str, Any], ...]
-
 
 def _paper_journal_projection(rows: Iterable[sqlite3.Row]) -> PaperJournalProjection:
     positions = tuple(group_logical_positions(rows))
@@ -141,13 +144,13 @@ def _paper_journal_projection(rows: Iterable[sqlite3.Row]) -> PaperJournalProjec
 
 Counts, ledgers, W-L, exit reasons, city chips, diagnostics, and best/worst rows consume `terminal_rows`; exact dollars consume `terminal_lots`.
 
-- [ ] **Step 4: Run Strategy Lab tests**
+- **Step 4: Run Strategy Lab tests**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_strategy_research.py trading/tests/test_strategy_lab_structure.py trading/tests/test_audit_2026_07_14.py`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- **Step 5: Commit Task 2**
 
 ```bash
 git add trading/sfo_kalshi_quant/strategy_lab/paper_card.py trading/tests/test_strategy_research.py
@@ -162,7 +165,7 @@ git commit -m "fix: publish logical Strategy Lab trades"
 - Test: `trading/tests/test_paper_settlement.py`
 - Test: `trading/tests/test_backtest_rescore.py`
 
-- [ ] **Step 1: Add insertion-order and profile regressions**
+- **Step 1: Add insertion-order and profile regressions**
 
 ```python
 @pytest.mark.parametrize("insertion_order", [("live", "research"), ("research", "live")])
@@ -178,13 +181,13 @@ def test_entry_sampler_keeps_one_row_per_profile(insertion_order, tmp_path):
     }
 ```
 
-- [ ] **Step 2: Run both SQL and fallback tests and confirm failure**
+- **Step 2: Run both SQL and fallback tests and confirm failure**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_paper_settlement.py -k 'sampler and profile' trading/tests/test_backtest_rescore.py`
 
 Expected: FAIL because the sample key omits profile.
 
-- [ ] **Step 3: Normalize profile into every sample key**
+- **Step 3: Normalize profile into every sample key**
 
 Use the same key in SQL window partitions and Python fallback:
 
@@ -200,7 +203,7 @@ def _sample_key(row: sqlite3.Row) -> tuple[str, str, str, str]:
 
 SQL must partition by `target_date, market_ticker, UPPER(COALESCE(side,'YES')), COALESCE(risk_profile,'live')`.
 
-- [ ] **Step 4: Rescore each configuration from matching rows**
+- **Step 4: Rescore each configuration from matching rows**
 
 ```python
 rows_by_profile = {
@@ -220,7 +223,7 @@ for name, profile_rows in rows_by_profile.items():
 
 Label the result `profile_specific_snapshot_replay`; do not call it source-neutral counterfactual evidence.
 
-- [ ] **Step 5: Run focused tests and commit**
+- **Step 5: Run focused tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_paper_settlement.py trading/tests/test_backtest_rescore.py trading/tests/test_strategy_research.py`
 
@@ -240,7 +243,7 @@ git commit -m "fix: isolate profile calibration samples"
 - Test: `trading/tests/test_limit_orders.py`
 - Test: `trading/tests/test_replay.py`
 
-- [ ] **Step 1: Add the exact .72/.73 reproduction**
+- **Step 1: Add the exact .72/.73 reproduction**
 
 ```python
 def test_inside_spread_limit_starts_ahead_of_old_bid_depth():
@@ -250,13 +253,13 @@ def test_inside_spread_limit_starts_ahead_of_old_bid_depth():
 
 Add an integration assertion that a five-lot public trade at .73 fills a new .73 order rather than decrementing a phantom 100-lot queue.
 
-- [ ] **Step 2: Verify the current failure**
+- **Step 2: Verify the current failure**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_limit_orders.py trading/tests/test_replay.py -k 'inside_spread or queue'`
 
 Expected: FAIL because queue starts at 100.
 
-- [ ] **Step 3: Add one shared queue helper**
+- **Step 3: Add one shared queue helper**
 
 ```python
 def initial_queue_ahead(*, limit_price: float, visible_bid: float, visible_bid_size: float) -> float:
@@ -269,13 +272,13 @@ def initial_queue_ahead(*, limit_price: float, visible_bid: float, visible_bid_s
 
 Call it when writing `queue_remaining` and when constructing `ReplayOrder`. Do not add an unmeasured hidden-queue penalty.
 
-- [ ] **Step 4: Run execution, replay, and audit tests**
+- **Step 4: Run execution, replay, and audit tests**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_limit_orders.py trading/tests/test_maker_fills.py trading/tests/test_replay.py trading/tests/test_audit_2026_07_13.py trading/tests/test_audit_2026_07_14.py`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 4**
+- **Step 5: Commit Task 4**
 
 ```bash
 git add trading/sfo_kalshi_quant/execution.py trading/sfo_kalshi_quant/db.py trading/sfo_kalshi_quant/replay.py trading/tests/test_limit_orders.py trading/tests/test_replay.py
@@ -290,7 +293,7 @@ git commit -m "fix: model maker queue at the posted price"
 - Create: `forecaster/tests/test_google_api.py`
 - Test: `forecaster/tests/test_google_weather_cache.py`
 
-- [ ] **Step 1: Add immediate and partial-failure tests**
+- **Step 1: Add immediate and partial-failure tests**
 
 Add two named tests: `test_refresh_reconciles_zero_dispatch_failure` makes the
 transport raise before dispatch and asserts the reserved usage returns to zero;
@@ -299,13 +302,13 @@ raises after page two dispatch, and asserts exactly two events remain consumed.
 
 Assert that a pre-dispatch error consumes zero; after one successful/ambiguous dispatch and a second-page failure, usage conservatively consumes both dispatched events.
 
-- [ ] **Step 2: Verify current estimated-batch failure**
+- **Step 2: Verify current estimated-batch failure**
 
 Run: `./.venv-dev/bin/pytest -q forecaster/tests/test_google_weather_cache.py -k 'failure and usage'`
 
 Expected: FAIL because the estimated reservation is left unchanged.
 
-- [ ] **Step 3: Carry dispatch counts through exceptions**
+- **Step 3: Carry dispatch counts through exceptions**
 
 ```python
 class GoogleFetchError(RuntimeError):
@@ -316,7 +319,7 @@ class GoogleFetchError(RuntimeError):
 
 Increment immediately before `urlopen`. Reconcile in `finally` from the returned count or exception count. Treat ambiguous post-dispatch failures as consumed.
 
-- [ ] **Step 4: Run forecaster Google tests and commit**
+- **Step 4: Run forecaster Google tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q forecaster/tests/test_google_api.py forecaster/tests/test_google_weather_cache.py`
 
@@ -332,29 +335,29 @@ git commit -m "fix: reconcile Google events on failures"
 **Files:**
 - Modify only if a regression exposes an in-scope defect.
 
-- [ ] **Step 1: Run all focused reliability tests**
+- **Step 1: Run all focused reliability tests**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_logical_positions.py trading/tests/test_paper_summary.py trading/tests/test_strategy_research.py trading/tests/test_paper_settlement.py trading/tests/test_backtest_rescore.py trading/tests/test_limit_orders.py trading/tests/test_maker_fills.py trading/tests/test_replay.py forecaster/tests/test_google_api.py forecaster/tests/test_google_weather_cache.py`
 
 Expected: PASS.
 
-- [ ] **Step 2: Run the full Python suite outside restricted semaphore sandboxes**
+- **Step 2: Run the full Python suite outside restricted semaphore sandboxes**
 
 Run: `./.venv-dev/bin/pytest -q`
 
 Expected: all tests pass. If only the known semaphore/network-isolation tests fail, rerun those in an environment with semaphore access and installed build dependencies before accepting.
 
-- [ ] **Step 3: Run frontend tests and lint**
+- **Step 3: Run frontend tests and lint**
 
 Run: `bun test && bun run lint`
 
 Expected: 224 frontend tests pass and lint exits zero.
 
-- [ ] **Step 4: Reconcile a synthetic multi-lot journal**
+- **Step 4: Reconcile a synthetic multi-lot journal**
 
 Run the new fixture and assert raw-lot and logical realized P&L/capital are identical while all decision counts equal one.
 
-- [ ] **Step 5: Record the verification commit if needed**
+- **Step 5: Record the verification commit if needed**
 
 If verification requires a test-only correction, stage only the exact modified
 test and implementation paths and commit them as `test: verify execution and

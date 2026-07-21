@@ -1,5 +1,11 @@
 # Logical Paper Positions and Research Lead-Time Design
 
+> **Design record.** A planning document, kept for the reasoning it captures
+> rather than as a live task list. Its checkboxes were never updated as work
+> landed, so they understated what shipped; they have been flattened to plain
+> bullets. For what actually shipped, see the git history and the
+> [audit remediation ledger](../../codebase_audit_2026-06-15.md#remediation-status).
+
 Date: 2026-07-17
 Status: Approved for implementation
 
