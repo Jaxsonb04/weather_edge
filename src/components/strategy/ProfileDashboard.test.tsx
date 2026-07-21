@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
 import { PublicationLoaded } from "../../test/PublicationLoaded";
@@ -92,12 +92,12 @@ describe("ProfileDashboard publication truthfulness", () => {
     fetchMock.mockReset();
   });
 
-  async function renderDashboard(generatedAt: string, value = profile) {
+  async function renderDashboard(generatedAt: string, value = profile, strategyValue = strategy) {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
         <PublicationLoaded artifacts={["strategy_research.json"]} />
-        <ProfileDashboard s={strategy} p={value} />
+        <ProfileDashboard s={strategyValue} p={value} />
       </PublicationProvider>,
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
@@ -136,6 +136,50 @@ describe("ProfileDashboard publication truthfulness", () => {
     const history = screen.getByText("Candidate — P&L contribution");
     const positions = screen.getByRole("heading", { name: "Positions & execution log" });
     expect(history.compareDocumentPosition(positions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps the 20 most recent closed positions together and initially shows five", async () => {
+    const closedPositions = Array.from({ length: 22 }, (_, index) => ({
+      id: index + 1,
+      ticker: `TEST-${index + 1}`,
+      label: `Closed position ${index + 1}`,
+      side: "YES",
+      contracts: 1,
+      entry_price: 0.4,
+      exit_price: 0.6,
+      realized_pnl: 0.2,
+      realized_roi: 0.5,
+      quality_score: 80,
+      risk_profile: "live",
+      target_date: "2026-07-09",
+      closed_at: new Date(Date.UTC(2026, 6, 22 - index)).toISOString(),
+    }));
+    const strategyWithLedger = {
+      ...strategy,
+      paper_trading: {
+        ...strategy.paper_trading,
+        closed_positions: closedPositions,
+      },
+    } as StrategyLab;
+    const profileWithLedger = {
+      ...profile,
+      paper_trading: {
+        summary: { ...profile.paper_trading?.summary, closed_positions: 22 },
+      },
+    } as ProfileEntry;
+
+    await renderDashboard("2026-07-09T11:59:00Z", profileWithLedger, strategyWithLedger);
+
+    expect(screen.getByRole("heading", { name: "Closed positions" })).toBeInTheDocument();
+    expect(screen.getByText("Closed position 5")).toBeInTheDocument();
+    expect(screen.queryByText("Closed position 6")).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed position 21")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 15 more closed positions" }));
+
+    expect(screen.getByText("Closed position 20")).toBeInTheDocument();
+    expect(screen.queryByText("Closed position 21")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show fewer closed positions" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("shows the target account's fixed objective, evidence breadth, and non-guarantee", async () => {
