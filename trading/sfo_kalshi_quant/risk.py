@@ -37,6 +37,7 @@ class TradeEvaluator:
         forecast_high_f: float | None = None,
         forecast_sigma_f: float | None = None,
         market_consensus: MarketConsensus | None = None,
+        candidate_only: bool = False,
     ) -> TradeDecision:
         side = _normalize_side(side)
         reasons: list[str] = []
@@ -177,10 +178,14 @@ class TradeEvaluator:
         edge = expected_profit_per_yes_contract(edge_probability, ask, fee)
         edge_lcb = side_probability_lcb - cost
 
-        if edge < self.config.min_edge:
-            reasons.append(f"edge {edge:.3f} below min {self.config.min_edge:.3f}")
-        if edge_lcb < self.config.min_edge_lcb:
-            reasons.append(f"lower-bound edge {edge_lcb:.3f} below min {self.config.min_edge_lcb:.3f}")
+        if not candidate_only:
+            if edge < self.config.min_edge:
+                reasons.append(f"edge {edge:.3f} below min {self.config.min_edge:.3f}")
+            if edge_lcb < self.config.min_edge_lcb:
+                reasons.append(
+                    f"lower-bound edge {edge_lcb:.3f} below min "
+                    f"{self.config.min_edge_lcb:.3f}"
+                )
         cheap_tail_reasons = _cheap_tail_rejection_reasons(
             side=side,
             ask=ask,
@@ -193,17 +198,19 @@ class TradeEvaluator:
             market_probability=market_probability,
             ensemble_probability=ensemble_probability,
             config=self.config,
+            enforce_edge=not candidate_only,
         )
         reasons.extend(cheap_tail_reasons)
-        reasons.extend(
-            _yes_tail_rejection_reasons(
-                side=side,
-                cost=cost,
-                probability=side_probability,
-                edge_lcb=edge_lcb,
-                config=self.config,
+        if not candidate_only:
+            reasons.extend(
+                _yes_tail_rejection_reasons(
+                    side=side,
+                    cost=cost,
+                    probability=side_probability,
+                    edge_lcb=edge_lcb,
+                    config=self.config,
+                )
             )
-        )
 
         # Comfortable far-tail NO entry: block coin-flip NO bets sitting near the
         # forecast (the documented loss source) and size up genuine far tails.
@@ -321,7 +328,12 @@ class TradeEvaluator:
 
         contracts = 0.0
         binding_constraint: str | None = None
-        if cost > 0 and not reasons:
+        if candidate_only and cost > 0 and not reasons:
+            contracts = float(self.config.max_contracts_per_market)
+            if not self.config.allow_fractional_contracts:
+                contracts = float(int(contracts))
+            binding_constraint = "research_policy_allocator"
+        elif cost > 0 and not reasons:
             allowances: dict[str, float] = {
                 budget_label: spend_budget / cost,
                 "max_contracts_per_market": float(self.config.max_contracts_per_market),
@@ -413,6 +425,7 @@ class TradeEvaluator:
         forecast_high_f: float | None = None,
         forecast_sigma_f: float | None = None,
         market_consensus: MarketConsensus | None = None,
+        candidate_only: bool = False,
     ) -> list[TradeDecision]:
         normalized_sides = tuple(_normalize_side(side) for side in sides)
         decisions = []
@@ -430,6 +443,7 @@ class TradeEvaluator:
                         forecast_high_f=forecast_high_f,
                         forecast_sigma_f=forecast_sigma_f,
                         market_consensus=market_consensus,
+                        candidate_only=candidate_only,
                     )
                 )
         decisions.sort(
@@ -441,6 +455,8 @@ class TradeEvaluator:
             ),
             reverse=True,
         )
+        if candidate_only:
+            return decisions
         return _apply_event_risk_cap(decisions, bankroll, self.config)
 
 
@@ -457,6 +473,7 @@ def _cheap_tail_rejection_reasons(
     market_probability: float | None,
     ensemble_probability: float | None,
     config: StrategyConfig,
+    enforce_edge: bool = True,
 ) -> list[str]:
     if ask <= 0.0 or ask > config.cheap_tail_max_ask:
         return []
@@ -471,7 +488,7 @@ def _cheap_tail_rejection_reasons(
             f"p_lcb {probability_lcb:.3f}<"
             f"{config.cheap_tail_min_probability_lcb:.3f}"
         )
-    if edge_lcb < config.cheap_tail_min_edge_lcb:
+    if enforce_edge and edge_lcb < config.cheap_tail_min_edge_lcb:
         failures.append(f"edge_lcb {edge_lcb:.3f}<{config.cheap_tail_min_edge_lcb:.3f}")
     if market_probability is not None:
         model_market_gap = abs(model_probability - market_probability)

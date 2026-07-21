@@ -208,3 +208,233 @@ def test_paper_summary_splits_results_by_risk_profile():
         )
         assert day_profiles["live"]["realized_pnl"] > 0
         assert day_profiles["research"]["realized_pnl"] < 0
+
+
+def test_paper_summary_counts_three_close_lots_as_one_logical_position():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+
+        local_now = _now_local()
+        opened_date = local_now.date() - timedelta(days=2)
+        first_close_date = opened_date
+        second_close_date = opened_date + timedelta(days=1)
+        final_close_date = opened_date + timedelta(days=2)
+        root_id = store.record_paper_order(
+            final_close_date.isoformat(),
+            _decision("KXHIGHTPHX-TEST-B110.5"),
+            risk_profile="live",
+        )
+        first_lot = store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        second_lot = store.close_paper_order(root_id, 0.70, max_quantity=3.0)
+        final_lot = store.close_paper_order(root_id, 0.70)
+
+        def local_noon(day) -> str:
+            return (
+                datetime.combine(day, datetime.min.time(), tzinfo=SFO_TZ)
+                + timedelta(hours=12)
+            ).isoformat()
+
+        close_days_by_id = {
+            int(first_lot["id"]): first_close_date,
+            int(second_lot["id"]): second_close_date,
+            int(final_lot["id"]): final_close_date,
+        }
+        with store.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                "UPDATE paper_orders SET created_at=?, filled_at=? "
+                "WHERE id=? OR parent_order_id=?",
+                (
+                    local_noon(opened_date),
+                    local_noon(opened_date),
+                    root_id,
+                    root_id,
+                ),
+            )
+            for order_id, close_day in close_days_by_id.items():
+                conn.execute(
+                    "UPDATE paper_orders SET closed_at=? WHERE id=?",
+                    (local_noon(close_day), order_id),
+                )
+            lots = conn.execute(
+                "SELECT id, contracts, cost_per_contract, realized_pnl, closed_at "
+                "FROM paper_orders WHERE id=? OR parent_order_id=? ORDER BY id",
+                (root_id, root_id),
+            ).fetchall()
+
+        expected_pnl = sum(float(lot["realized_pnl"]) for lot in lots)
+        expected_capital = sum(
+            float(lot["contracts"]) * float(lot["cost_per_contract"])
+            for lot in lots
+        )
+        expected_by_day = {
+            day.isoformat(): {
+                "pnl": sum(
+                    float(lot["realized_pnl"])
+                    for lot in lots
+                    if datetime.fromisoformat(lot["closed_at"]).date() == day
+                ),
+                "capital": sum(
+                    float(lot["contracts"]) * float(lot["cost_per_contract"])
+                    for lot in lots
+                    if datetime.fromisoformat(lot["closed_at"]).date() == day
+                ),
+            }
+            for day in (first_close_date, second_close_date, final_close_date)
+        }
+
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=7,
+            now=local_now,
+        )
+
+        totals = payload["totals"]
+        assert totals["trades_opened"] == 1
+        assert totals["trades_closed"] == 1
+        assert totals["trades_settled"] == 0
+        assert totals["wins"] == 1
+        assert totals["losses"] == 0
+        assert totals["realized_pnl"] == round(expected_pnl, 2)
+        assert totals["capital_resolved"] == round(expected_capital, 2)
+
+        profile = next(row for row in payload["profiles"] if row["risk_profile"] == "live")
+        assert profile["resolved"] == 1
+        assert profile["wins"] == 1
+        assert profile["losses"] == 0
+        assert profile["realized_pnl"] == round(expected_pnl, 2)
+        assert profile["capital_resolved"] == round(expected_capital, 2)
+
+        yes_side = payload["side_performance"]["YES"]
+        assert yes_side["trades"] == 1
+        assert yes_side["wins"] == 1
+        assert yes_side["losses"] == 0
+        assert yes_side["realized_pnl"] == round(expected_pnl, 2)
+        assert yes_side["capital"] == round(expected_capital, 2)
+        assert payload["exit_reasons"]["closed_take_profit"] == 1
+
+        assert len(payload["biggest_winners"]) == 1
+        assert payload["biggest_winners"][0]["id"] == root_id
+        assert payload["biggest_winners"][0]["contracts"] == 10.0
+        assert payload["biggest_winners"][0]["realized_pnl"] == round(expected_pnl, 2)
+
+        days = {row["date"]: row for row in payload["days"]}
+        for close_date, expected in expected_by_day.items():
+            assert days[close_date]["realized_pnl"] == round(expected["pnl"], 2)
+            assert days[close_date]["resolved_spend"] == round(expected["capital"], 2)
+        assert days[opened_date.isoformat()]["opened"] == 1
+        assert days[first_close_date.isoformat()]["closed"] == 0
+        assert days[second_close_date.isoformat()]["closed"] == 0
+        assert days[final_close_date.isoformat()]["closed"] == 1
+        assert days[final_close_date.isoformat()]["wins"] == 1
+
+
+def test_paper_summary_keeps_partially_realized_open_root_undecided():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+
+        local_now = _now_local()
+        today = local_now.date().isoformat()
+        root_id = store.record_paper_order(
+            today,
+            _decision("KXHIGHTPHX-TEST-B111.5"),
+            risk_profile="live",
+        )
+        store.close_paper_order(root_id, 0.70, max_quantity=2.0)
+        with store.connect() as conn:
+            realized_pnl, capital = conn.execute(
+                "SELECT SUM(realized_pnl), SUM(contracts * cost_per_contract) "
+                "FROM paper_orders WHERE parent_order_id=?",
+                (root_id,),
+            ).fetchone()
+
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=7,
+            now=local_now,
+        )
+
+        totals = payload["totals"]
+        assert totals["trades_opened"] == 1
+        assert totals["trades_closed"] == 0
+        assert totals["trades_settled"] == 0
+        assert totals["open_positions"] == 1
+        assert totals["wins"] == 0
+        assert totals["losses"] == 0
+        assert totals["hit_rate"] is None
+        assert totals["realized_pnl"] == round(realized_pnl, 2)
+        assert totals["capital_resolved"] == round(capital, 2)
+
+        profile = next(row for row in payload["profiles"] if row["risk_profile"] == "live")
+        assert profile["resolved"] == 0
+        assert profile["wins"] == 0
+        assert profile["losses"] == 0
+        assert profile["realized_pnl"] == round(realized_pnl, 2)
+        assert profile["capital_resolved"] == round(capital, 2)
+
+        yes_side = payload["side_performance"]["YES"]
+        assert yes_side["trades"] == 0
+        assert yes_side["wins"] == 0
+        assert yes_side["losses"] == 0
+        assert yes_side["realized_pnl"] == round(realized_pnl, 2)
+        assert yes_side["capital"] == round(capital, 2)
+        assert sum(payload["exit_reasons"].values()) == 0
+        assert payload["biggest_winners"] == []
+        assert payload["biggest_losers"] == []
+
+        today_row = payload["days"][-1]
+        assert today_row["date"] == today
+        assert today_row["opened"] == 1
+        assert today_row["closed"] == 0
+        assert today_row["settled"] == 0
+        assert today_row["wins"] == 0
+        assert today_row["losses"] == 0
+        assert today_row["realized_pnl"] == round(realized_pnl, 2)
+        assert today_row["resolved_spend"] == round(capital, 2)
+
+
+def test_paper_summary_excludes_malformed_exit_evidence_without_crashing():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+
+        today = _now_local().date().isoformat()
+        order_id = store.record_paper_order(
+            today,
+            _decision("KXHIGHTPHX-TEST-B112.5"),
+            risk_profile="live",
+        )
+        store.close_paper_order(order_id, 0.70)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET exit_price='not-a-price', "
+                "exit_fee_per_contract='not-a-fee' WHERE id=?",
+                (order_id,),
+            )
+
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=7,
+        )
+
+        assert payload["totals"]["trades_opened"] == 0
+        assert payload["totals"]["trades_closed"] == 0
+        assert payload["totals"]["wins"] == 0
+        assert payload["totals"]["realized_pnl"] == 0.0
+        assert payload["totals"]["capital_resolved"] == 0.0
+        assert payload["current_equity"] == 1000.0

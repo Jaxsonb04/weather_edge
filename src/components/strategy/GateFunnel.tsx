@@ -1,5 +1,4 @@
 import { Card } from "@heroui/react/card";
-import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import { gateCounts, type ProfileGateStats, type StrategyLab } from "../../lib/strategy";
 
@@ -24,17 +23,14 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
   const columns = [rejections.slice(0, half), rejections.slice(half)];
 
   return (
-    <Card className="rounded-2xl ring-1 ring-border/70">
-      <Card.Header className="flex flex-row items-center justify-between gap-3">
-        <div>
-          <Card.Title className="text-base">Signal filtering</Card.Title>
-          <Card.Description className="text-sm text-muted">
-            Every 15-minute scan re-checks every bracket and side against the full set of filters
-          </Card.Description>
-        </div>
-        <Icon icon="solar:filter-bold" className="size-4 shrink-0 text-accent" aria-hidden="true" />
+    <Card className="rounded-2xl">
+      <Card.Header>
+        <Card.Title className="text-base">Signal filtering</Card.Title>
+        <Card.Description className="text-sm text-muted">
+          Every 15-minute scan re-checks every bracket and side against the full set of filters
+        </Card.Description>
       </Card.Header>
-      <Card.Content className="space-y-5 pt-0">
+      <Card.Content className="space-y-6 pt-0">
         <div>
           <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             <p>
@@ -47,14 +43,14 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
             </p>
           </div>
           <div
-            className="mt-3 flex h-2.5 overflow-hidden rounded-full bg-foreground/8"
+            className="mt-2 flex h-2.5 overflow-hidden rounded-full bg-foreground/8"
             role="img"
             aria-label={`${approved.toLocaleString()} of ${total.toLocaleString()} gate evaluations approved (${pct(approvedPct, 2)}).`}
           >
             <div className="h-full rounded-full bg-success" style={{ width: `${Math.max(approvedPct * 100, 0.6)}%` }} />
           </div>
           {!!cats.length && (
-            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted">
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
               {cats.map(([k, v]) => (
                 <span key={k}>
                   <span className="tnum font-medium text-foreground">{v.toLocaleString()}</span> {CATEGORY_LABELS[k] ?? k}
@@ -65,9 +61,9 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
         </div>
 
         {!!rejections.length && (
-          <div className="grid gap-x-6 gap-y-2.5 border-t border-border/50 pt-5 md:grid-cols-2">
+          <div className="grid gap-x-6 gap-y-3 border-t border-border/50 pt-6 md:grid-cols-2">
             {columns.map((col, ci) => (
-              <ul key={ci} className="space-y-2.5">
+              <ul key={ci} className="space-y-2">
                 {col.map((r) => (
                   <li key={r.reason}>
                     <div className="mb-1 flex items-baseline justify-between gap-3">

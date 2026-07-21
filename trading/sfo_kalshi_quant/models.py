@@ -79,6 +79,32 @@ class ForecastSnapshot:
 
 
 @dataclass(frozen=True)
+class GoogleChallengerSnapshot:
+    """Task 7: one immutable paired baseline/Google-challenger evidence row.
+
+    Persisted ONLY as derived evidence -- station/target/issue identity, the
+    fixed policy version, baseline and challenger (mu, sigma), bracket-key ->
+    probability dicts, and the fixed action. Never a raw Google high, gap,
+    response body, conditions text, URL, key, or token (spec section
+    7.2/7.3); ``PaperStore.record_google_challenger_snapshot`` enforces that
+    boundary on write, and the ``google_challenger_snapshots`` table has no
+    column for any raw field in the first place.
+    """
+
+    station_id: str
+    target_date: date
+    issued_at: str
+    policy_version: str
+    baseline_mu: float
+    baseline_sigma: float
+    challenger_mu: float | None
+    challenger_sigma: float
+    baseline_probabilities: dict[str, float]
+    challenger_probabilities: dict[str, float] | None
+    action: str
+
+
+@dataclass(frozen=True)
 class ForecastOutcome:
     local_date: date
     predicted_high_f: float

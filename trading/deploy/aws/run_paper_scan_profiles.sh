@@ -29,12 +29,32 @@ TARGET_DATE="${SFO_PAPER_SCAN_TARGET_DATE:-rolling}"
 SIDE="${SFO_PAPER_SCAN_SIDE:-both}"
 PORTFOLIO_MAX_ARB_SPEND="${SFO_PORTFOLIO_MAX_ARB_SPEND:-12}"
 PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"
-PAPER_PLACE_ORDERS="${SFO_PAPER_PLACE_ORDERS:-1}"
+PAPER_PLACE_LIVE="${PAPER_PLACE_LIVE:-0}"
+PAPER_PLACE_RESEARCH_TARGET="${PAPER_PLACE_RESEARCH_TARGET:-0}"
+PAPER_PLACE_RESEARCH_MOTION="${PAPER_PLACE_RESEARCH_MOTION:-0}"
 
 truthy() {
   value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
     1 | true | yes | y | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_profile() {
+  local value="$1"
+  # Match Python's strip().lower().replace("_", "-") normalization without
+  # deleting whitespace inside a value. The alias sets must stay identical to
+  # config.py:normalize_risk_profile_name.
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  value="${value//_/-}"
+  case "$value" in
+    "" | live | balanced | conservative | real) printf '%s\n' live ;;
+    research | exploratory | fast-feedback | fast | collector | explore)
+      printf '%s\n' research
+      ;;
     *) return 1 ;;
   esac
 }
@@ -52,13 +72,22 @@ fi
 cd "$TRADING_DIR"
 
 IFS=',' read -r -a profiles <<< "$PROFILES_CSV"
-profile_index=0
+canonical_profiles=()
 for raw_profile in "${profiles[@]}"; do
-  profile="${raw_profile//[[:space:]]/}"
-  if [[ -z "$profile" ]]; then
+  trimmed_profile="${raw_profile#"${raw_profile%%[![:space:]]*}"}"
+  trimmed_profile="${trimmed_profile%"${trimmed_profile##*[![:space:]]}"}"
+  if [[ -z "$trimmed_profile" ]]; then
     continue
   fi
+  if ! profile="$(normalize_profile "$raw_profile")"; then
+    echo "invalid paper risk profile: $trimmed_profile" >&2
+    exit 2
+  fi
+  canonical_profiles+=("$profile")
+done
 
+profile_index=0
+for profile in "${canonical_profiles[@]}"; do
   skip_context=0
   if (( profile_index > 0 )); then
     skip_context=1
@@ -78,11 +107,26 @@ for raw_profile in "${profiles[@]}"; do
     --max-arb-spend "$PORTFOLIO_MAX_ARB_SPEND"
     --min-profit "$PORTFOLIO_MIN_PROFIT"
   )
-  if truthy "$PAPER_PLACE_ORDERS"; then
-    args+=(--place-paper)
-  else
-    echo "allocator shadow mode: recording decisions without paper placement"
-  fi
+  case "$profile" in
+    live)
+      if truthy "$PAPER_PLACE_LIVE"; then
+        args+=(--place-paper)
+      else
+        echo "live allocator shadow mode: recording decisions without paper placement"
+      fi
+      ;;
+    research)
+      if truthy "$PAPER_PLACE_RESEARCH_TARGET"; then
+        args+=(--place-research-target)
+      fi
+      if truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
+        args+=(--place-research-motion)
+      fi
+      if ! truthy "$PAPER_PLACE_RESEARCH_TARGET" && ! truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
+        echo "research allocators shadow mode: recording decisions without paper placement"
+      fi
+      ;;
+  esac
   # Forecast/probability/market context is identical across profiles in one
   # scan; only the first profile's first command records it.
   if (( skip_context > 0 )); then

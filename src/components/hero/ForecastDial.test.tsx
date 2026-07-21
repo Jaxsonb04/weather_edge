@@ -90,4 +90,18 @@ describe("ForecastDial publication truthfulness", () => {
     expect(screen.getByText(/Live · 3 obs/)).toBeInTheDocument();
   });
 
+  it("does not wait for the below-fold city artifact before showing fresh signal status", async () => {
+    fetchMock.mockResolvedValue(ok(publication("2026-07-09T11:59:00Z")));
+    render(
+      <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json"]} />
+        <ForecastDial targets={[target]} />
+      </PublicationProvider>,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    expect(screen.getByText("Market live")).toBeInTheDocument();
+    expect(screen.queryByText("Current status unavailable")).not.toBeInTheDocument();
+  });
+
 });

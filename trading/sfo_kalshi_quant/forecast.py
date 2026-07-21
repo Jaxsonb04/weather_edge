@@ -78,7 +78,6 @@ class SfoForecasterAdapter:
         self.station_id = self.city.nws_station_id
         self.weather_db = self.root / "weather.db"
         self.ab_test_path = self.root / "ab_test_results.json"
-        self.google_cache_path = self.root / "google_weather_cache.json"
 
     def latest_blend(self, target: date) -> ForecastSnapshot:
         if not self.city.has_full_blend:
@@ -93,25 +92,102 @@ class SfoForecasterAdapter:
             row = self._latest_blend_row(target)
             if row is not None:
                 return row
-        if self.google_cache_path.exists():
-            cache = json.loads(self.google_cache_path.read_text())
-            cache_row = _cache_daily_high(cache, target)
-            if cache_row is not None and cache_row.get("highF") is not None:
-                return ForecastSnapshot(
-                    target_date=target,
-                    predicted_high_f=float(cache_row["highF"]),
-                    fetched_at=cache_row.get("fetched_at") or cache.get("fetched_at"),
-                    lead_hours=_maybe_float(cache_row.get("lead_hours")),
-                    method=cache_row.get("method") or cache.get("method", "google_weather_cache"),
-                    google_high_f=float(cache_row["highF"]),
-                    source_count=1,
-                    max_calls_per_day=_maybe_int(cache_row.get("max_calls_per_day") or cache.get("max_calls_per_day")),
-                    calls_used_today=_maybe_int(cache_row.get("calls_used_today") or cache.get("calls_used_today")),
-                    raw={"source": "google_weather_cache", "cache": cache, "daily_high": cache_row},
-                )
+        # T7-1: the legacy raw-JSON google_weather_cache.json fallback that
+        # used to live here was removed (2026-07-17 plan, Task 7 binding
+        # condition T7-1). No consumer may read Google content from that
+        # file any more -- raw Google fields belong ONLY in the TTL-enforced
+        # runtime store (spec section 7.2). A missing weather.db or a
+        # weather.db with no matching forecast_blend_daily_high row is now
+        # an explicit, hard failure instead of a silent degrade to legacy
+        # cache content: callers must treat this as a real outage, not a
+        # softer "no live data yet" state.
         raise ForecastDataError(
-            f"No forecast found for {target.isoformat()} in {self.weather_db} or {self.google_cache_path}"
+            f"No forecast found for {target.isoformat()} in {self.weather_db} "
+            "(the legacy google_weather_cache.json fallback was removed; "
+            "see docs/superpowers/plans/2026-07-17-multicity-google-runtime-weather.md Task 7, T7-1)"
         )
+
+    def latest_live_forecast(
+        self,
+        target: date,
+        *,
+        max_age_hours: float,
+        now: datetime | None = None,
+    ) -> ForecastSnapshot:
+        """Return the preferred fresh forecast without weakening freshness gates.
+
+        The Google runtime-store migration stopped regenerating the legacy SFO
+        ``forecast_blend_daily_high`` rows while keeping the permanent EMOS
+        baseline current. Preserve the legacy SFO blend exactly while it is
+        fresh. If it is stale, missing, or unreadable, use a fresh live EMOS row
+        for the same station and target. If neither source is fresh, return the
+        best primary candidate so the caller's existing freshness gate still
+        fails closed with its normal diagnostic.
+
+        Non-SFO cities already use EMOS through ``latest_blend`` and are left
+        unchanged. ``latest_blend`` itself also remains unchanged for historical
+        calibration and the byte-stable Google challenger shadow comparison.
+        """
+
+        if max_age_hours < 0:
+            raise ValueError("max_age_hours must be non-negative")
+        if not self.city.has_full_blend:
+            return self.latest_blend(target)
+
+        primary: ForecastSnapshot | None = None
+        primary_error: ForecastDataError | None = None
+        if self.weather_db.exists():
+            try:
+                primary = self._latest_blend_row(target)
+            except ForecastDataError as exc:
+                primary_error = exc
+
+        primary_age = primary.age_hours(now) if primary is not None else None
+        if primary is not None and primary_age is not None and primary_age <= max_age_hours:
+            return primary
+
+        fallback: ForecastSnapshot | None = None
+        fallback_error: ForecastDataError | None = None
+        try:
+            fallback = self._latest_emos_snapshot(target)
+        except ForecastDataError as exc:
+            fallback_error = exc
+        fallback_age = fallback.age_hours(now) if fallback is not None else None
+        if fallback is not None and fallback_age is not None and fallback_age <= max_age_hours:
+            if primary is None:
+                reason = (
+                    "legacy_sfo_blend_unreadable"
+                    if primary_error is not None
+                    else "legacy_sfo_blend_missing"
+                )
+            elif primary_age is None:
+                reason = "legacy_sfo_blend_timestamp_invalid"
+            else:
+                reason = "legacy_sfo_blend_stale"
+            return replace(
+                fallback,
+                method=f"{fallback.method} [SFO operational fallback]",
+                raw={
+                    **fallback.raw,
+                    "operational_fallback": {
+                        "reason": reason,
+                        "legacy_blend_fetched_at": (
+                            primary.fetched_at if primary is not None else None
+                        ),
+                        "max_age_hours": float(max_age_hours),
+                    },
+                },
+            )
+
+        if primary is not None:
+            return primary
+        if fallback is not None:
+            return fallback
+        if primary_error is not None:
+            raise primary_error
+        if fallback_error is not None:
+            raise fallback_error
+        return self.latest_blend(target)
 
     def intraday_snapshot(self, target: date) -> IntradaySnapshot | None:
         if not self.weather_db.exists():
@@ -332,6 +408,46 @@ class SfoForecasterAdapter:
                 "google_warning": google_source.get("warning") if isinstance(google_source, dict) else None,
             },
         )
+
+    _GOOGLE_CHALLENGER_BASELINE_COLUMNS = (
+        "station_id", "target_date", "issued_at", "policy_version",
+        "baseline_mu", "baseline_sigma", "challenger_mu", "challenger_sigma", "action",
+    )
+
+    def latest_google_challenger_baseline(self, target: date) -> dict | None:
+        """Read one durable paired baseline/Google-challenger evidence row.
+
+        Task 7: a plain SQL read of the forecaster-owned, non-Google-raw
+        ``google_challenger_research_baseline`` table -- mirrors
+        ``_latest_blend_row``/``_latest_emos_snapshot``'s existing pattern of
+        reading forecaster's weather.db directly rather than importing
+        forecaster's Python modules (the two projects deliberately do not
+        import each other; see ``cities.py``). Returns ``None`` when
+        weather.db, the table, or a matching row does not exist yet -- this
+        is research-only shadow evidence and is never required for the live
+        forecast path.
+        """
+
+        if not self.weather_db.exists():
+            return None
+        columns_sql = ", ".join(self._GOOGLE_CHALLENGER_BASELINE_COLUMNS)
+        query = f"""
+            SELECT {columns_sql}
+            FROM google_challenger_research_baseline
+            WHERE station_id = ? AND target_date = ?
+            ORDER BY issued_at DESC
+            LIMIT 1
+        """
+        try:
+            with sqlite3.connect(self.weather_db) as conn:
+                if not _table_exists(conn, "google_challenger_research_baseline"):
+                    return None
+                row = conn.execute(query, (self.station_id, target.isoformat())).fetchone()
+        except sqlite3.Error as exc:
+            raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
+        if row is None:
+            return None
+        return dict(zip(self._GOOGLE_CHALLENGER_BASELINE_COLUMNS, row))
 
     def _latest_emos_snapshot(self, target: date) -> ForecastSnapshot | None:
         """Build a ForecastSnapshot from the freshest live EMOS row for a city.
@@ -750,16 +866,6 @@ def _is_clean_next_day_blend(target_iso: object, fetched_at: object, details_jso
     decision = details.get("observed_high_decision") if isinstance(details, dict) else None
     mode = decision.get("mode") if isinstance(decision, dict) else None
     return str(mode).lower() not in {"floor", "lock"}
-
-
-def _cache_daily_high(cache: dict, target: date) -> dict | None:
-    target_iso = target.isoformat()
-    for row in cache.get("daily_highs") or []:
-        if isinstance(row, dict) and row.get("target_date") == target_iso:
-            return row
-    if cache.get("target_date") == target_iso:
-        return cache
-    return None
 
 
 def _intraday_weight(

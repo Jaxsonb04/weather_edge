@@ -229,7 +229,11 @@ if (( ${#PRODUCER_TIMERS[@]} > 0 )); then
     bash -s restore "${PRODUCER_TIMERS[@]}" < "$QUIESCE_HELPER"
 fi
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service && sudo systemctl start sfo-forecast-freshness.service"
+  "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service"
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && bash deploy/aws/wait_for_publication_manifest.sh"
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "sudo systemctl start sfo-forecast-freshness.service"
 if (( WATCHDOG_ENABLED == 1 )); then
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
     bash -s restore sfo-forecast-freshness.timer < "$QUIESCE_HELPER"

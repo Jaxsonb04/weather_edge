@@ -283,3 +283,111 @@ def test_manifest_write_is_atomic_when_replace_fails():
 
         assert json.loads(output.read_text(encoding="utf-8")) == {"snapshot": "previous"}
         assert list(root.glob(".publication_manifest.json.*.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 8 item 4: fail publication if a Git-published artifact carries a raw
+# Google Weather API field.
+# ---------------------------------------------------------------------------
+
+
+def test_build_manifest_rejects_a_raw_google_api_response_field():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        _write_json(
+            root / "cities_data.json",
+            {
+                "generated_at": "2026-07-09T11:58:00+00:00",
+                "leak": {"weatherCondition": {"description": {"text": "Sunny"}}},
+            },
+        )
+
+        _assert_publication_error(
+            lambda: module.build_manifest(root, now=NOW),
+            "raw Google field in cities_data.json",
+        )
+
+
+def test_validate_manifest_rejects_a_raw_google_api_response_field():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        module.build_manifest(root, now=NOW)
+        # Taint the artifact after the manifest was built -- the raw-content
+        # scan must fire before (and independently of) the checksum check,
+        # since publish_forecaster_pages.sh's `validate` call is the actual
+        # gate right before copying artifacts and pushing to gh-pages.
+        _write_json(
+            root / "trading_signal.json",
+            {
+                "generated_at": "2026-07-09T11:59:00+00:00",
+                "raw": {"maxTemperature": {"degrees": 71.0, "unit": "FAHRENHEIT"}},
+            },
+        )
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "raw Google field in trading_signal.json",
+        )
+
+
+def test_validate_manifest_rejects_a_google_weather_api_url():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        module.build_manifest(root, now=NOW)
+        _write_json(
+            root / "weather_story_data.json",
+            {
+                "temperature_histogram": {},
+                "debug_url": "https://weather.googleapis.com/v1/forecast/days:lookup",
+            },
+        )
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "raw Google value pattern in weather_story_data.json",
+        )
+
+
+def test_validate_manifest_rejects_a_google_api_key_pattern():
+    module = _publication()
+    synthetic_google_key = "AI" + "zaSyD-abcdefghijklmnopqrstuvwxyz012345"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        module.build_manifest(root, now=NOW)
+        _write_json(
+            root / "forecast_data.json",
+            {"table": [], "leaked_key": synthetic_google_key},
+        )
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "raw Google value pattern in forecast_data.json",
+        )
+
+
+def test_validate_manifest_allows_the_legacy_google_high_f_field():
+    """The pre-existing, byte-compatible-by-design legacy SFO live blend
+    already reports `sources.google_high_f` in production trading_signal.json
+    today (spec section 7.5: legacy Google-bearing artifacts are not deleted
+    automatically). The value is Google's raw highF passed through verbatim
+    under a renamed key by the legacy blend; it is allowed ONLY as the
+    section 7.5 grandfathered legacy exception (removal is tied to the
+    Task 9+ live-promotion gate), so the Task 8 publication gate must not
+    block it -- and must not treat key-renaming as a general loophole.
+    """
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        _write_json(
+            root / "trading_signal.json",
+            {
+                "generated_at": "2026-07-09T11:59:00+00:00",
+                "targets": [{"forecast": {"sources": {"google_high_f": 71.69}}}],
+            },
+        )
+
+        module.build_manifest(root, now=NOW)
+        module.validate_manifest(root, now=NOW)

@@ -1,0 +1,15 @@
+[Unit]
+Description=Purge expired Google Weather runtime content every 10 minutes
+
+[Timer]
+# 10 minutes is well under the shortest enforced runtime TTL (1 hour, for
+# hourly/current rows -- weather_cache_config.GOOGLE_HOURLY_TTL/
+# GOOGLE_CURRENT_TTL), so this bounds how long an expired row can linger
+# in /run/weatheredge even during an extended stretch with no refresh cycle.
+RandomizedDelaySec=30
+OnCalendar=*:0/10
+Persistent=true
+Unit=weatheredge-google-runtime-purge.service
+
+[Install]
+WantedBy=timers.target

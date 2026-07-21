@@ -18,6 +18,7 @@ import blend_archive as _blend_archive
 import blend_learners as _blend_learners
 import blend_sources as _blend_sources
 import google_api as _google_api
+import google_multicity_refresh as _multicity_refresh
 import weather_cache_config as _config
 
 
@@ -30,10 +31,41 @@ _IMPLEMENTATION_MODULES = (
 )
 _EXPORT_OWNERS: dict[str, tuple[_ModuleType, ...]] = {}
 _IMPLEMENTATION_ONLY_NAMES = {
+    "GoogleFetchError",
+    "_fetch_google_json",
     "compute_adaptive_blend_weights",
     "compute_rolling_blend_residual_bias",
     "compute_source_mos_corrections",
     "_compute_source_mos_corrections_from_rows",
+    # Task 4 city-aware fetch surface (forecaster/google_api.py): not yet
+    # wired into this compatibility facade or its frozen callable inventory
+    # (forecaster/tests/google_weather_cache_signatures.json). The multi-city
+    # refresh orchestrator (Task 6) imports these from google_api directly.
+    "CityConfig",
+    "GoogleRuntimeStore",
+    "GoogleUsageLedger",
+    "HTTPError",
+    "URLError",
+    "dataclass",
+    "date",
+    "GoogleCityFetchError",
+    "GoogleHourlyRow",
+    "GoogleDailyRow",
+    "GoogleCurrentRow",
+    "GoogleFetchResult",
+    "fetch_city_hourly",
+    "fetch_city_daily",
+    "fetch_city_current",
+    "fetch_city_weather",
+    "_resolve_instant",
+    "_open_google_request",
+    "_decode_google_json",
+    "_dispatch_google_request",
+    "_city_hour_datetime",
+    "_parse_hourly_page_rows",
+    "_google_civil_display_date",
+    "_parse_daily_rows",
+    "_parse_current_row",
 }
 
 for _module in _IMPLEMENTATION_MODULES:
@@ -64,7 +96,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--refresh", action="store_true", help="fetch a fresh Google forecast")
     parser.add_argument("--force", action="store_true", help="ignore a valid cache")
+    parser.add_argument(
+        "--cities",
+        default=None,
+        help="'all' or comma slugs (e.g. sfo,nyc); omit for the legacy SFO-only refresh",
+    )
     args = parser.parse_args()
+
+    if args.cities is not None:
+        _multicity_refresh.run_cli(args.cities)
+        return
 
     target_iso = target_date()
     cache = read_json(CACHE_PATH, {})
@@ -117,20 +158,46 @@ def main():
 
     usage = reserve_google_weather_events(usage, estimated_events)
     write_json(USAGE_PATH, usage)
+    maximum_events = max(
+        estimated_events,
+        max(4, HOURLY_LOOKAHEAD_HOURS // 24 + 2)
+        + int(ENABLE_GOOGLE_DAILY_FORECAST)
+        + int(ENABLE_GOOGLE_CURRENT_CONDITIONS),
+    )
+    actual_events = 0
+    failure = None
     try:
         raw = fetch_google_forecast(key)
+        # A returned payload proves the fetch completed. Keep the conservative
+        # reservation unless its reported count validates below.
+        actual_events = estimated_events
+        reported_events = raw.get("google_weather_events_used")
+        if type(reported_events) is int and reported_events > 0:
+            actual_events = min(reported_events, maximum_events)
+        reconciled_usage = adjust_reserved_google_weather_events(
+            usage,
+            estimated_events,
+            actual_events,
+        )
+        summary = summarize_forecast(raw, target_iso, reconciled_usage)
+    except Exception as exc:
+        dispatched_events = getattr(exc, "dispatched_events", None)
+        if type(dispatched_events) is int:
+            actual_events = min(max(0, dispatched_events), maximum_events)
+        failure = exc
+    finally:
         usage = adjust_reserved_google_weather_events(
             usage,
             estimated_events,
-            int(raw.get("google_weather_events_used") or estimated_events),
+            actual_events,
         )
         write_json(USAGE_PATH, usage)
-        summary = summarize_forecast(raw, target_iso, usage)
-    except Exception as exc:
+
+    if failure is not None:
         if not cache_matches(cache, target_iso):
             write_json(CACHE_PATH, unavailable("Google Weather request failed."))
         print(
-            f"Google Weather request failed without saving a URL: {type(exc).__name__}; "
+            f"Google Weather request failed without saving a URL: {type(failure).__name__}; "
             f"scored {archive_stats['scored']}"
         )
         return

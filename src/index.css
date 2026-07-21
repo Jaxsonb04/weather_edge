@@ -10,6 +10,9 @@
 @import "@heroui/styles/components/chip.css" layer(components);
 @import "@heroui/styles/components/label.css" layer(components);
 @import "@heroui/styles/components/list-box.css" layer(components);
+/* CitySelect renders above the fold, so item sizing and its selected marker
+   must be available before the lazy Overview detail chunk is requested. */
+@import "@heroui/styles/components/list-box-item.css" layer(components);
 @import "@heroui/styles/components/select.css" layer(components);
 @import "@heroui/styles/components/separator.css" layer(components);
 @import "@heroui/styles/components/skeleton.css" layer(components);
@@ -86,6 +89,13 @@
   --accent-text: var(--accent);
   /* a touch deeper + cooler than the default dark canvas, for an instrument feel */
   --background: oklch(0.142 0.006 264);
+
+  /* Card/surface edge. In light mode HeroUI's native --surface-shadow is a real
+     drop shadow; in dark mode it resolves to a transparent inset, which would
+     leave Cards with no edge once decorative ring-1 utilities are removed at the
+     call sites. One inset hairline replaces the seven ad hoc border opacities
+     previously in use, so every surface reads with the same edge weight. */
+  --surface-shadow: 0 0 0 1px oklch(1 0 0 / 0.06) inset;
 }
 
 /* Bridge custom tokens into Tailwind v4 so bg-temp-*, font-display etc. emit. */
