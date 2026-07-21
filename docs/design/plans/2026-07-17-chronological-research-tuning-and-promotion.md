@@ -1,6 +1,10 @@
 # Chronological Research Tuning and Promotion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Design record.** A planning document, kept for the reasoning it captures
+> rather than as a live task list. Its checkboxes were never updated as work
+> landed, so they understated what shipped; they have been flattened to plain
+> bullets. For what actually shipped, see the git history and the
+> [audit remediation ledger](../../codebase_audit_2026-06-15.md#remediation-status).
 
 **Goal:** Turn the archived source-neutral scan context into leakage-resistant, execution-realistic evidence that can tune research challengers and promote only durable improvements into the target paper sleeve.
 
@@ -29,20 +33,20 @@
 - Modify: `trading/sfo_kalshi_quant/db.py`
 - Create: `trading/tests/test_research_walkforward.py`
 
-- [ ] **Step 1: Add schema and write-path regressions**
+- **Step 1: Add schema and write-path regressions**
 
 Add named tests asserting one source context can feed multiple profile decisions,
 the hash ignores profile/bankroll, experiment definitions become immutable after
 their first evidence row, and incomplete point-in-time forecast/market/feature
 payloads are rejected.
 
-- [ ] **Step 2: Verify the current profile-scoped context fails**
+- **Step 2: Verify the current profile-scoped context fails**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py -k 'source_neutral or context or experiment'`
 
 Expected: FAIL because contexts are written once per profile and no immutable experiment registry exists.
 
-- [ ] **Step 3: Add normalized source contexts and experiment tables**
+- **Step 3: Add normalized source contexts and experiment tables**
 
 Add `source_context_hash TEXT`, `source_scan_run_id TEXT`, and `decision_policy_fingerprint TEXT` to the relevant snapshot tables. Create a unique source-context index over the canonical hash. Create:
 
@@ -72,7 +76,7 @@ CREATE TABLE IF NOT EXISTS research_evidence (
 
 Reject updates to an experiment after its first evidence row. Store only normalized market/forecast input and derived Google challenger evidence; never copy expiring raw Google content into these tables.
 
-- [ ] **Step 4: Canonicalize and reuse scan contexts**
+- **Step 4: Canonicalize and reuse scan contexts**
 
 ```python
 def source_context_hash(*, target_date, station_id, forecast, intraday, market, features) -> str:
@@ -89,7 +93,7 @@ def source_context_hash(*, target_date, station_id, forecast, intraday, market, 
 
 Profile strategy, bankroll, sleeve, and account identity belong to decision rows, not the source hash. An identical scan context may therefore be evaluated by live, target, and motion policies without selecting an insertion-order winner.
 
-- [ ] **Step 5: Run schema/write-path tests and commit**
+- **Step 5: Run schema/write-path tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py trading/tests/test_paper_settlement.py trading/tests/test_profile_migration.py`
 
@@ -145,19 +149,19 @@ still written per-profile with no populated `source_context_hash`. Before groupi
 `source_context_hash`; skip any row for which it returns `None` (incomplete or malformed
 forecast/market/feature payload -- record why in fold evidence rather than silently dropping it).
 
-- [ ] **Step 1: Add fold-boundary and embargo regressions**
+- **Step 1: Add fold-boundary and embargo regressions**
 
 Add named tests for settlement-before-decision training membership, indivisible
 station target-day folds, cross-profile deduplication, the one-day embargo, and
 fold ordering that is invariant to database insertion order.
 
-- [ ] **Step 2: Verify no suitable grouped fold generator exists**
+- **Step 2: Verify no suitable grouped fold generator exists**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py -k 'training or fold or embargo'`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement station-day chronological folds**
+- **Step 3: Implement station-day chronological folds**
 
 ```python
 @dataclass(frozen=True)
@@ -172,7 +176,6 @@ class ResearchCase:
     baseline_sigma: float
     actual_high_f: float
 
-
 @dataclass(frozen=True)
 class WalkForwardFold:
     fold_id: str
@@ -183,11 +186,11 @@ class WalkForwardFold:
 
 Group test rows by `(station_id, target_date)`. A training row is eligible only when `settled_at < min(test.decision_at)` and its station target-day does not overlap the configurable one-day embargo. Duplicate profile/sleeve views of the same source hash are removed before folding.
 
-- [ ] **Step 4: Make insufficient history explicit**
+- **Step 4: Make insufficient history explicit**
 
 Return an unavailable fold reason rather than silently falling back to future data. Pooling order is exact station/lead, station/all-leads, climate-region/lead, then global/lead; every fallback is recorded in fold evidence.
 
-- [ ] **Step 5: Run fold tests and commit**
+- **Step 5: Run fold tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py`
 
@@ -205,19 +208,19 @@ git commit -m "feat: build chronological research folds"
 - Modify: `trading/tests/test_research_walkforward.py`
 - Test: `trading/tests/test_recalibration.py`
 
-- [ ] **Step 1: Add training-only parameter tests**
+- **Step 1: Add training-only parameter tests**
 
 Add named tests asserting training-only Gaussian fitting, recorded shrinkage and
 pool fallback, predeclared identity/Google candidates, and that mutating a test
 outcome cannot change the parameters used to score that case.
 
-- [ ] **Step 2: Verify candidate evaluation is missing**
+- **Step 2: Verify candidate evaluation is missing**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py -k 'recalibration or candidate or parameters'`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Reuse the existing parametric PIT implementation**
+- **Step 3: Reuse the existing parametric PIT implementation**
 
 Call `recalibration.fit_recalibration(training_triples, shrinkage_k=40.0)` for each declared cohort. Do not create per-bin isotonic maps. Evaluate these predeclared arms:
 
@@ -235,11 +238,11 @@ def fit_fold_candidates(fold: WalkForwardFold) -> tuple[FittedCandidate, ...]:
     )
 ```
 
-- [ ] **Step 4: Score distributions and bracket probabilities**
+- **Step 4: Score distributions and bracket probabilities**
 
 For every paired test case compute CRPS, ranked probability score, log score, interval coverage, PIT, bracket Brier, maximum calibration-bucket gap, and point error. Persist the candidate version and exact fitted parameters beside each fold score.
 
-- [ ] **Step 5: Run candidate tests and commit**
+- **Step 5: Run candidate tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py trading/tests/test_recalibration.py trading/tests/test_forecast_scorecards.py`
 
@@ -258,19 +261,19 @@ git commit -m "feat: score fixed research forecast challengers"
 - Modify: `trading/tests/test_replay.py`
 - Modify: `trading/tests/test_research_walkforward.py`
 
-- [ ] **Step 1: Add point-in-time execution parity tests**
+- **Step 1: Add point-in-time execution parity tests**
 
 Add named tests asserting no pre-decision quote/trade use, exec-v3 parity for
 queue/partial-fill/fee/exit math, promotion blocking on incomplete market history,
 and identical event streams for paired baseline/challenger replay.
 
-- [ ] **Step 2: Verify the replay cannot yet consume a source-neutral candidate**
+- **Step 2: Verify the replay cannot yet consume a source-neutral candidate**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py -k 'replay or quote or event_stream' trading/tests/test_replay.py`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Extract a shared replay-event constructor**
+- **Step 3: Extract a shared replay-event constructor**
 
 Expose a pure function in `replay.py` that turns archived point-in-time market snapshots, trade deltas, monitor snapshots, and settlement truth into the same ordered `ReplayEvent` stream used by chronological account replay. Preserve queue-ahead policy, partial fills, maker/taker fees, reservations, exits, cash, and settlement.
 
@@ -286,11 +289,11 @@ baseline_result = replay_events(baseline_orders, events, starting_cash=1000.0)
 challenger_result = replay_events(challenger_orders, events, starting_cash=1000.0)
 ```
 
-- [ ] **Step 4: Fail closed on incomplete execution history**
+- **Step 4: Fail closed on incomplete execution history**
 
 Set `promotion_eligible=False` with structured block reasons for missing initial quote, missing side depth, time-traveling events, missing settlement, unknown partial-fill ordering, or non-flat replay end. A research report may show diagnostic EV, but it must not label it realized P&L.
 
-- [ ] **Step 5: Run replay parity tests and commit**
+- **Step 5: Run replay parity tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_replay.py trading/tests/test_research_walkforward.py trading/tests/test_limit_orders.py`
 
@@ -307,27 +310,27 @@ git commit -m "feat: replay research candidates through exec v3"
 - Modify: `trading/sfo_kalshi_quant/research_walkforward.py`
 - Modify: `trading/tests/test_research_walkforward.py`
 
-- [ ] **Step 1: Add paired-statistic regressions**
+- **Step 1: Add paired-statistic regressions**
 
 Add named tests asserting weather-day clustering, bootstrap resampling by
 independent station-day rather than trade row, complete KPI/capacity fields, and
 retention of zero-fill days in daily statistics.
 
-- [ ] **Step 2: Verify the report lacks daily KPI/capacity evidence**
+- **Step 2: Verify the report lacks daily KPI/capacity evidence**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py -k 'daily or bootstrap or capacity'`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Build paired evidence from account replays**
+- **Step 3: Build paired evidence from account replays**
 
 Report baseline, challenger, and paired delta for realized P&L/day, mean, median, standard deviation, positive-day rate, `$50` hit rate, after-fee ROI, log growth/day, maximum drawdown, turnover, fills, rejection reasons, contracts filled, dollars at risk, and capacity under the target/motion account limits. Include forecast scores from Task 3.
 
-- [ ] **Step 4: Add deterministic day-clustered bootstrap**
+- **Step 4: Add deterministic day-clustered bootstrap**
 
 Resample independent `(station_id, target_date)` clusters with a fixed seed and 10,000 draws. Publish percentile 95% intervals for paired realized P&L/day, log growth/day, ROI, CRPS, and Brier deltas. Keep exploratory motion results separate from confirmatory target results.
 
-- [ ] **Step 5: Run statistics tests and commit**
+- **Step 5: Run statistics tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py`
 
@@ -344,20 +347,20 @@ git commit -m "feat: measure paired research performance"
 - Create: `trading/sfo_kalshi_quant/research_promotion.py`
 - Create: `trading/tests/test_research_promotion.py`
 
-- [ ] **Step 1: Add promotion and family-wise-error tests**
+- **Step 1: Add promotion and family-wise-error tests**
 
 Add named tests asserting motion has proposal-only authority, promotion requires
 30 independent confirmatory days, Holm adjustment blocks marginal repeated
 hypotheses, forecast/drawdown regressions block a profitable candidate, and no
 promotion can change live configuration or real-order flags.
 
-- [ ] **Step 2: Verify no research promotion authority exists**
+- **Step 2: Verify no research promotion authority exists**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_promotion.py`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement explicit gates**
+- **Step 3: Implement explicit gates**
 
 Require all of:
 
@@ -371,7 +374,7 @@ Require all of:
 
 The `$50/day` hit rate is reported and optimized but is not allowed to override these solvency, calibration, or evidence gates.
 
-- [ ] **Step 4: Restrict output authority**
+- **Step 4: Restrict output authority**
 
 ```python
 @dataclass(frozen=True)
@@ -384,7 +387,7 @@ class PromotionDecision:
 
 Promotion writes a versioned target-paper candidate proposal. It cannot edit `LIVE_PROFILE_OVERRIDES`, live fingerprints, `LIVE_ORDERS_ENABLED`, dry-run flags, or AWS real-order units.
 
-- [ ] **Step 5: Run promotion tests and commit**
+- **Step 5: Run promotion tests and commit**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_promotion.py trading/tests/test_shared_account.py trading/tests/test_profile_migration.py`
 
@@ -470,22 +473,22 @@ unmodified HEAD, confirmed via `git stash`; flagged separately, not part of this
 - Modify: `trading/tests/test_forecast_scorecards.py`
 - Modify: `trading/tests/test_research_promotion.py`
 
-- [ ] **Step 1: Add CLI/report structure tests**
+- **Step 1: Add CLI/report structure tests**
 
 Add named tests asserting exploratory/confirmatory separation, observed-not-guaranteed
 `$50` language, and read-only evaluation versus paper-target-only proposal authority.
 
-- [ ] **Step 2: Verify report/CLI fields are missing**
+- **Step 2: Verify report/CLI fields are missing**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_forecast_scorecards.py trading/tests/test_research_promotion.py -k 'report or cli or kpi'`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Add commands and report payloads**
+- **Step 3: Add commands and report payloads**
 
 Add read-only `research-evaluate` and paper-only `research-propose-target` commands. Publish fold coverage, replay completeness, paired statistics, adjusted promotion gates, candidate version, and immutable experiment identity. Clearly label `$50/day` as a hard research KPI and show observed hit rate/shortfall.
 
-- [ ] **Step 4: Run focused and full verification**
+- **Step 4: Run focused and full verification**
 
 Run: `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py trading/tests/test_research_promotion.py trading/tests/test_replay.py trading/tests/test_forecast_scorecards.py`
 
@@ -495,7 +498,7 @@ Run: `./.venv-dev/bin/pytest -q trading/tests`
 
 Expected: PASS except explicitly documented environment-only skips.
 
-- [ ] **Step 5: Commit Task 7**
+- **Step 5: Commit Task 7**
 
 ```bash
 git add trading/sfo_kalshi_quant/forecast_scorecards.py trading/sfo_kalshi_quant/cli.py trading/sfo_kalshi_quant/_cli/parser.py trading/tests/test_forecast_scorecards.py trading/tests/test_research_promotion.py
@@ -504,9 +507,9 @@ git commit -m "feat: publish chronological research evidence"
 
 ## Final verification
 
-- [ ] `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py trading/tests/test_research_promotion.py trading/tests/test_replay.py trading/tests/test_recalibration.py trading/tests/test_forecast_scorecards.py`
-- [ ] `./.venv-dev/bin/pytest -q trading/tests`
-- [ ] Confirm live limit/market fingerprints remain `a965c8280aca2b3621f0c312` and `73b10240c1c00a8937b5314f`.
-- [ ] Confirm all real-money flags remain disabled and dry-run remains enabled.
-- [ ] Confirm an experiment can affect only the target paper sleeve after explicit promotion evidence.
-- [ ] Confirm the report never claims the `$50/day` KPI was guaranteed or achieved when it was not.
+- `./.venv-dev/bin/pytest -q trading/tests/test_research_walkforward.py trading/tests/test_research_promotion.py trading/tests/test_replay.py trading/tests/test_recalibration.py trading/tests/test_forecast_scorecards.py`
+- `./.venv-dev/bin/pytest -q trading/tests`
+- Confirm live limit/market fingerprints remain `a965c8280aca2b3621f0c312` and `73b10240c1c00a8937b5314f`.
+- Confirm all real-money flags remain disabled and dry-run remains enabled.
+- Confirm an experiment can affect only the target paper sleeve after explicit promotion evidence.
+- Confirm the report never claims the `$50/day` KPI was guaranteed or achieved when it was not.
