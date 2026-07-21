@@ -1,20 +1,19 @@
 # WeatherEdge Agent Instructions
 
-## Attribution Hygiene
+## Attribution
 
-Do not add AI-assistant signatures, generated-by notices, model/vendor
-attribution, co-author trailers, or assistant identities to committed files,
-contributors, release notes, PR text, generated artifacts, or metadata unless
-the user explicitly asks for that attribution.
+Keep AI co-author trailers and assistant attribution on commits that carry them.
+This project documents its AI-assisted workflow openly rather than concealing it
+— see `docs/ai-assisted-development.md`. Do not strip attribution from commit
+metadata, contributor lists, PR text, release notes, or generated artifacts.
 
-Keep authorship and contributor metadata human-owned or project-bot-owned. Treat
-local assistant state directories and agent lockfiles as disposable workspace
-state, not project source.
+Treat local assistant state directories and agent lockfiles as disposable
+workspace state, not project source.
 
 ## Design And Redesign Memory
 
 The public site is the React + HeroUI Pro SPA at the repo root (`src/`,
-built with bun + Vite, served from `/opt/weatheredge/webdist` in production).
+built with bun + Vite, served from the deployment web root in production).
 
 Required design workflow:
 
@@ -67,12 +66,3 @@ after sync. For frontend checks, build and serve the SPA:
 ```bash
 bun run build   # or `bun run dev` for a live dev server
 ```
-
-## Conversation Queue
-
-When the user prefixes a message with `Queue:`, `Parking lot:`, or `Later:`,
-treat it as saved context only. Acknowledge it briefly, then continue the
-active thread without steering toward the queued item.
-
-Only switch to queued text when the user explicitly says `Switch to queue`,
-`Use the queued item`, or similar.

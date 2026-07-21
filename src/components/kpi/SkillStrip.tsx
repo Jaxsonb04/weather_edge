@@ -26,8 +26,8 @@ export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signa
   ];
 
   return (
-    <Reveal immediate className="-mt-9 mb-12 sm:-mt-12">
-      <Card className="rounded-2xl ring-1 ring-border/70">
+    <Reveal immediate className="-mt-9 sm:-mt-12">
+      <Card className="rounded-2xl">
         <Card.Content className="p-2 sm:p-3">
           <KPIGroup className="flex-wrap">
             {metrics.map((m, i) => (

@@ -33,7 +33,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
   const rows = limit ? base.slice(0, limit) : base;
   if (!rows.length) {
     return (
-      <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
+      <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">
         {emptyNote ?? "No closed positions in this slice yet."}
       </p>
     );
@@ -183,7 +183,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
       data={rows}
       getRowId={(d) => d.id}
       variant="secondary"
-      className="min-w-[54rem] rounded-2xl"
+      className="min-w-[54rem]"
     />
     </div>
   );

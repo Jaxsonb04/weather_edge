@@ -1,0 +1,27 @@
+[Unit]
+Description=Purge expired Google Weather runtime content from /run/weatheredge
+# /run/weatheredge is created by the static tmpfiles.d entry
+# (weatheredge-tmpfiles.conf), which systemd's own systemd-tmpfiles-setup.service
+# applies before any regular service starts -- no explicit ordering against a
+# WeatherEdge unit is needed. GoogleRuntimeStore itself raises a clear,
+# alertable error if the directory is ever missing when this runs.
+OnFailure=sfo-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__FORECASTER_DIR__
+EnvironmentFile=__ENV_FILE__
+# Independent safety net (see forecaster/google_runtime_purge.py's module
+# docstring): every refresh cycle already purges expired rows on its own, so
+# this exists for the case where Google is unavailable, the API key is
+# missing, or the budget is exhausted for an extended stretch and no refresh
+# cycle runs at all. Runtime content lives on tmpfs and is reset to empty by
+# systemd-tmpfiles on every reboot (see weatheredge-tmpfiles.conf) -- this
+# unit may legitimately purge zero rows right after a reboot; that is
+# expected, not a failure, since every generation watermark reset along with
+# the empty database.
+ExecStart=__FORECASTER_DIR__/.venv/bin/python google_runtime_purge.py
+Nice=15
+MemoryHigh=80M
+MemoryMax=120M

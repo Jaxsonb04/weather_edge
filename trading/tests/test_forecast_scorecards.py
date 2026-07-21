@@ -1,8 +1,24 @@
 import sqlite3
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sfo_kalshi_quant.forecast_scorecards import build_forecast_scorecards
+from sfo_kalshi_quant.forecast_scorecards import (
+    build_forecast_scorecards,
+    build_research_evaluation_report,
+)
+from sfo_kalshi_quant.research_candidates import GAUSSIAN_PIT_CANDIDATE_KEY
+from sfo_kalshi_quant.research_evidence import PairedEvidenceReport, build_paired_evidence_report
+from sfo_kalshi_quant.research_google_join import GOOGLE_JOIN_REASON_VINTAGE_MISMATCH, GoogleJoinSkip
+from sfo_kalshi_quant.research_operate import EvaluationRun
+from sfo_kalshi_quant.research_promotion import (
+    NO_EFFECT,
+    PREDICTED_EDGE_SCOPE_YES_SIDE_TAKER,
+    REASON_INSUFFICIENT_DAYS,
+    ChallengerDeclaration,
+    PromotionDecision,
+)
+from sfo_kalshi_quant.research_walkforward import WalkForwardEvidence
 
 
 def _schema(conn: sqlite3.Connection) -> None:
@@ -224,3 +240,166 @@ def test_scorecards_do_not_fall_back_when_scope_has_unscored_v2_rows() -> None:
 
     assert payload["available"] is False
     assert payload["matched_cases"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 7: build_research_evaluation_report -- publish fold coverage, replay
+# completeness, paired statistics, adjusted promotion gates, candidate
+# version, immutable experiment identity, and the observed-not-guaranteed
+# $50/day KPI language (plan Task 7 Step 3).
+# ---------------------------------------------------------------------------
+
+
+def _declaration() -> ChallengerDeclaration:
+    return ChallengerDeclaration(
+        experiment_id="exp-1",
+        hypothesis_family="gaussian-pit-station-lead",
+        candidate_key=GAUSSIAN_PIT_CANDIDATE_KEY,
+        candidate_version="v1",
+        evidence_role="confirmatory",
+        predicted_edge_scope=PREDICTED_EDGE_SCOPE_YES_SIDE_TAKER,
+        max_drawdown_tolerance_pct=0.10,
+        crps_regression_tolerance=0.5,
+        brier_regression_tolerance=0.5,
+        calibration_gap_regression_tolerance=0.3,
+    )
+
+
+def _empty_walk_forward_evidence() -> WalkForwardEvidence:
+    return WalkForwardEvidence(folds=(), unavailable=(), skips=())
+
+
+def _empty_paired_report() -> PairedEvidenceReport:
+    return build_paired_evidence_report(
+        (), (), challenger_candidate_key=GAUSSIAN_PIT_CANDIDATE_KEY
+    )
+
+
+def _blocked_decision() -> PromotionDecision:
+    return PromotionDecision(
+        experiment_id="exp-1",
+        eligible_for_target_paper=False,
+        block_reasons=(REASON_INSUFFICIENT_DAYS,),
+        effect_classification=NO_EFFECT,
+        independent_confirmatory_days=0,
+    )
+
+
+def _evaluation_run(**overrides) -> EvaluationRun:
+    defaults = dict(
+        declaration=_declaration(),
+        walk_forward=_empty_walk_forward_evidence(),
+        report=_empty_paired_report(),
+        decision=_blocked_decision(),
+        persisted_fold_count=0,
+        skipped_fold_persist_reasons=(),
+        google_join_matched_row_count=0,
+        google_join_skips=(),
+        prior_family_attempts=(),
+    )
+    defaults.update(overrides)
+    return EvaluationRun(**defaults)
+
+
+def test_report_publishes_immutable_experiment_identity_and_candidate_version() -> None:
+    report = build_research_evaluation_report(_evaluation_run())
+    identity = report["experiment_identity"]
+    assert identity["experiment_id"] == "exp-1"
+    assert identity["hypothesis_family"] == "gaussian-pit-station-lead"
+    assert identity["candidate_key"] == GAUSSIAN_PIT_CANDIDATE_KEY
+    assert identity["candidate_version"] == "v1"
+
+
+def test_report_publishes_fold_coverage_and_replay_completeness() -> None:
+    report = build_research_evaluation_report(_evaluation_run())
+    assert report["fold_coverage"] == {
+        "folds": 0, "unavailable_folds": 0, "skipped_historical_rows": 0,
+        "skipped_historical_row_load_count": 0,
+    }
+    assert report["replay_completeness"]["paired_case_count"] == 0
+
+
+def test_report_publishes_the_historical_row_load_skip_count() -> None:
+    # M-1: a sibling count alongside skipped_historical_rows (a DIFFERENT,
+    # later skip layer) -- rows a historical-row source dropped before
+    # they ever reached fold construction.
+    run = _evaluation_run(historical_row_skip_count=3)
+    report = build_research_evaluation_report(run)
+    assert report["fold_coverage"]["skipped_historical_row_load_count"] == 3
+
+
+def test_report_publishes_pre_declaration_and_stale_evidence_persistence_diagnostics() -> None:
+    run = _evaluation_run(
+        pre_declaration_fold_count=2,
+        pre_declaration_fold_ids=("KSFO:2026-01-01", "KSFO:2026-01-02"),
+        stale_evidence_fold_count=1,
+        stale_evidence_fold_ids=("KSFO:2026-01-03",),
+    )
+    report = build_research_evaluation_report(run)
+    assert report["persistence"]["pre_declaration_fold_count"] == 2
+    assert report["persistence"]["pre_declaration_fold_ids"] == [
+        "KSFO:2026-01-01", "KSFO:2026-01-02",
+    ]
+    assert report["persistence"]["stale_evidence_fold_count"] == 1
+    assert report["persistence"]["stale_evidence_fold_ids"] == ["KSFO:2026-01-03"]
+
+
+def test_report_publishes_adjusted_promotion_gate_verdict() -> None:
+    report = build_research_evaluation_report(_evaluation_run())
+    gate = report["promotion_gate"]
+    assert gate["eligible_for_target_paper"] is False
+    assert REASON_INSUFFICIENT_DAYS in gate["block_reasons"]
+    assert gate["live_activation_allowed"] is False
+
+
+def test_report_never_labels_the_50_dollar_target_as_guaranteed() -> None:
+    report = build_research_evaluation_report(_evaluation_run())
+    label = report["daily_target_kpi"]["label"]
+    assert "not" in label.lower() and "guarantee" in label.lower()
+    assert "observed" in label.lower()
+
+
+def test_report_shows_observed_hit_rate_and_shortfall_when_data_exists() -> None:
+    records, exclusions = (), ()
+    report_evidence = build_paired_evidence_report(
+        records, exclusions, challenger_candidate_key=GAUSSIAN_PIT_CANDIDATE_KEY,
+        start_day=date(2026, 1, 1), end_day=date(2026, 1, 3),
+    )
+    run = _evaluation_run(report=report_evidence)
+    report = build_research_evaluation_report(run)
+    kpi = report["daily_target_kpi"]
+    assert kpi["observed_days"] == 3
+    assert kpi["observed_hit_rate"] == 0.0
+    assert kpi["observed_shortfall_vs_target"] == report_evidence.target_pnl
+
+
+def test_report_publishes_google_evidence_join_diagnostics() -> None:
+    run = _evaluation_run(
+        google_join_matched_row_count=4,
+        google_join_skips=(
+            GoogleJoinSkip(
+                source_context_hash="h1", station_id="KSFO",
+                target_date="2026-01-01", reason=GOOGLE_JOIN_REASON_VINTAGE_MISMATCH,
+            ),
+        ),
+    )
+    report = build_research_evaluation_report(run)
+    assert report["google_evidence_join"] == {"matched_row_count": 4, "vintage_mismatch_count": 1}
+
+
+def test_report_publishes_persistence_diagnostics() -> None:
+    run = _evaluation_run(
+        persisted_fold_count=5, skipped_fold_persist_reasons=(("KSFO:2026-01-01", "declared after window"),)
+    )
+    report = build_research_evaluation_report(run)
+    assert report["persistence"]["persisted_fold_count"] == 5
+    assert report["persistence"]["skipped_fold_persist_reasons"] == [
+        ("KSFO:2026-01-01", "declared after window")
+    ]
+
+
+def test_report_is_json_serializable() -> None:
+    import json
+
+    report = build_research_evaluation_report(_evaluation_run())
+    json.dumps(report, default=str)  # must not raise

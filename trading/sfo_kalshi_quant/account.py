@@ -11,6 +11,7 @@ from dataclasses import asdict
 from typing import Iterable, Sequence
 
 from .config import StrategyConfig, normalize_risk_profile_name
+from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleeve
 
 SHARED_ACCOUNT_ID = "paper-shared"
 INITIAL_CAPITAL = 1000.0
@@ -49,6 +50,18 @@ def account_for_profile(risk_profile: str | None) -> str:
     if profile == "research" and not research_shared_capital_enabled():
         return RESEARCH_ACCOUNT_ID
     return SHARED_ACCOUNT_ID
+
+
+def account_for_research_sleeve(sleeve: ResearchSleeve) -> str:
+    """Route a new research sleeve to its isolated virtual account."""
+
+    if sleeve is ResearchSleeve.TARGET:
+        return TARGET_POLICY.account_id
+    if sleeve is ResearchSleeve.MOTION:
+        return MOTION_POLICY.account_id
+    raise ValueError(f"unsupported research sleeve: {sleeve!r}")
+
+
 MIN_EXECUTABLE_NOTIONAL = 5.0
 # Per-position ceiling: min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * equity).
 # Raised 2026-07-10 from $20/2% to $30/3%: with maker-first sizing no longer

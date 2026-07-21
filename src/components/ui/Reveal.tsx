@@ -15,13 +15,12 @@ interface RevealProps {
     animation). Degrades to instant under prefers-reduced-motion (see index.css). */
 export function Reveal({ children, className, delay = 0, immediate = false }: RevealProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(false);
+  // Above-the-fold content must not depend on requestAnimationFrame. Browsers
+  // can defer frames for background tabs, leaving the initial screen blank.
+  const [shown, setShown] = useState(immediate);
 
   useEffect(() => {
-    if (immediate) {
-      const id = requestAnimationFrame(() => setShown(true));
-      return () => cancelAnimationFrame(id);
-    }
+    if (immediate) return;
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(

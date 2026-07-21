@@ -19,18 +19,32 @@ ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 # Station observations for every configured city (intraday context +
 # observed-high conditioning). Two local days keeps it ~30 requests per tick.
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python nws_ground_truth.py --days 2 --cities all
-# The Google/blend stack remains SFO-only (metered API budget).
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --refresh
-ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py
 # Refresh station-keyed CLI truth before EMOS reads its training/serve history.
 # Fail-soft: a transient product outage must not freeze live forecasts.
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py --db __FORECASTER_DIR__/weather.db --refresh --cities all
-# Live EMOS for every city's rolling window: ONE batched Open-Meteo request
-# per city per tick. The NWP previous-runs archive and the rolling-origin EMOS
-# rebuild moved to the nightly maintenance unit -- they are training data, not
-# live state, and at fifteen cities a 30-minute cadence would blow the free
-# API budget. '-' prefix => a fetch hiccup never fails the refresh pipeline.
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python emos_forecast.py --serve-rolling --cities all
+# T8-1/T8-2/T8-3 (Task 6 review): this unit stays SFO-only at its existing
+# 38x/day cadence (see sfo-forecaster-refresh.timer) -- 3 hourly pages +
+# daily + current = 5 events/cycle x 38 cycles/day = 190 events/day,
+# 5,890/31-day month, unchanged from before the Task 4-8 Google runtime
+# refactor. The 14 non-SFO cities get their own once-daily unit instead
+# (weatheredge-google-nonsfo-refresh.service/.timer: 56 events/day,
+# 1,736/31-day month; combined steady state 190 + 56 = 246/day,
+# 7,626/31-day month -- see that unit for the full arithmetic). A naive flip
+# of THIS high-frequency unit to `--cities all` would instead spend 61
+# events/cycle and exhaust the 260/day hard cap by the 5th cycle, starving
+# SFO for the rest of the day.
+#
+# `--cities sfo` (the Task 6 orchestrator) replaces BOTH the legacy
+# `--refresh` SFO-only fetch and the separate legacy no-flag
+# compatibility-JSON rebuild that used to run here as two ExecStart lines --
+# they must never run side by side with the new orchestrator (T8-2). It also
+# serves the live EMOS baseline for every city internally, via
+# google_multicity_refresh._archive_baseline_first, ALWAYS before any Google
+# fetch is attempted on every invocation -- this is why the standalone
+# `emos_forecast.py --serve-rolling --cities all` ExecStart that used to run
+# after this line was removed (T8-3): it was calling the identical
+# Open-Meteo serve-rolling pipeline a second time, every cycle.
+ExecStart=-__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities sfo
 Nice=5
 # Contain a runaway to this unit instead of letting the kernel OOM-killer
 # pick an arbitrary victim (4 GB box: containment, not thrash-protection).

@@ -4,7 +4,7 @@ import { Icon } from "@iconify/react/offline";
 export function LoadingState() {
   return (
     <div className="min-h-screen bg-background">
-      <div className="mx-auto w-full max-w-6xl px-5 pt-24 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pt-12 sm:px-8">
         <div className="flex items-center gap-2 text-muted" role="status" aria-live="polite">
           <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           <span className="text-sm">Loading live forecast…</span>
@@ -18,7 +18,7 @@ export function LoadingState() {
           </div>
           <Skeleton className="h-80 w-full rounded-3xl" />
         </div>
-        <div className="mt-12 grid grid-cols-2 gap-3 sm:grid-cols-6">
+        <div className="mt-14 grid grid-cols-2 gap-3 sm:grid-cols-6">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-24 rounded-2xl" />
           ))}

@@ -3,11 +3,12 @@ import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
 import { money, type ReadinessCheck, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 
 function CheckRow({ c }: { c: ReadinessCheck }) {
   const progress = Math.max(0, Math.min(1, c.progress ?? 0));
   return (
-    <li className="flex items-start gap-3 py-2.5">
+    <li className="flex items-start gap-3 py-2">
       <Icon
         icon={c.passed ? "solar:check-circle-bold" : "solar:close-circle-bold"}
         className={`mt-0.5 size-4.5 shrink-0 ${c.passed ? "text-success" : "text-danger/70"}`}
@@ -16,10 +17,10 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-sm font-medium text-foreground">{c.label}</p>
-          <p className="shrink-0 font-mono text-[11px] text-muted">{c.passed ? "PASS" : "FAIL"}</p>
+          <p className="shrink-0 font-mono text-[11px] text-muted">{c.passed ? "Pass" : "Fail"}</p>
         </div>
-        <p className="mt-0.5 text-xs text-muted">{c.detail}</p>
-        <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
+        <p className="mt-1 text-xs text-muted">{c.detail}</p>
+        <div className="mt-1 h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
           <div
             className={`h-full rounded-full ${c.passed ? "bg-success" : "bg-danger/60"}`}
             style={{ width: `${Math.max(progress * 100, c.passed ? 100 : 2)}%` }}
@@ -42,7 +43,7 @@ export function ReadinessVerdict({ s }: { s: StrategyLab }) {
   const progress = r.readiness_pct != null ? r.readiness_pct : total ? (passed / total) * 100 : 0;
 
   return (
-    <Card className="h-full rounded-2xl ring-1 ring-border/70">
+    <Card className="h-full rounded-2xl">
       <Card.Header className="flex flex-row items-center gap-2">
         <Icon icon="solar:shield-keyhole-bold" className="size-4 text-accent" aria-hidden="true" />
         <div>
@@ -50,7 +51,7 @@ export function ReadinessVerdict({ s }: { s: StrategyLab }) {
           <Card.Description className="text-sm text-muted">Recomputed on every refresh · enforced in code</Card.Description>
         </div>
       </Card.Header>
-      <Card.Content className="space-y-3 pt-0">
+      <Card.Content className="space-y-4 pt-0">
         <div className="flex items-center gap-3">
           <span className={`font-display text-2xl font-bold tracking-tight ${ready ? "text-success" : "text-danger"}`}>
             {r.verdict ?? (ready ? "READY" : "NOT READY")}
@@ -81,9 +82,8 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
   const ready = r.ready === true;
   const policy = r.live_policy;
 
-  return (
-    <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-      <Card className="h-full rounded-2xl ring-1 ring-border/70">
+  const verdictCard = (
+    <Card className="h-full rounded-2xl">
         <Card.Header>
           <Card.Title className="text-base">Verdict</Card.Title>
           <Card.Description className="text-sm text-muted">Recomputed on every AWS refresh</Card.Description>
@@ -103,8 +103,8 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
 
           {policy && (
             <div>
-              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Standing pilot policy (if it ever goes live)</p>
-              <div className="grid grid-cols-2 gap-3">
+              <p className="mb-2 text-xs font-medium text-muted">Standing pilot policy (if it ever goes live)</p>
+              <div className="grid grid-cols-2 gap-4">
                 <Stat label="Live orders" value={policy.enabled ? "Enabled" : "Disabled"} tone={policy.enabled ? "pos" : "default"} />
                 <Stat label="Dry run" value={policy.dry_run ? "On" : "Off"} />
                 <Stat label="Per-trade risk" value={money(policy.per_trade_risk, { sign: "negative-only" })} />
@@ -118,23 +118,44 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
             </div>
           )}
         </Card.Content>
-      </Card>
-
-      <Card className="h-full rounded-2xl ring-1 ring-border/70">
-        <Card.Header>
-          <Card.Title className="text-base">Go-live checklist</Card.Title>
-          <Card.Description className="text-sm text-muted">
-            All {total} must pass before a single real-money order is possible
-          </Card.Description>
-        </Card.Header>
-        <Card.Content className="pt-0">
-          <ul className="divide-y divide-border/50">
-            {checks.map((c) => (
-              <CheckRow key={c.name} c={c} />
-            ))}
-          </ul>
-        </Card.Content>
-      </Card>
-    </div>
+    </Card>
   );
+
+  const checklist = (
+    <ul className="divide-y divide-border/50">
+      {checks.map((c) => (
+        <CheckRow key={c.name} c={c} />
+      ))}
+    </ul>
+  );
+
+  if (checks.length > 5) {
+    return (
+      <div className="space-y-6">
+        {verdictCard}
+        <DetailDisclosure
+          id="go-live-checklist"
+          icon="solar:clipboard-list-bold"
+          title="Go-live checklist"
+          note={`${passed}/${total} checks passed · ${checks.length} technical rows`}
+        >
+          {checklist}
+        </DetailDisclosure>
+      </div>
+    );
+  }
+
+  const checklistCard = (
+    <Card className="h-full rounded-2xl">
+      <Card.Header>
+        <Card.Title className="text-base">Go-live checklist</Card.Title>
+        <Card.Description className="text-sm text-muted">
+          All {total} must pass before a single real-money order is possible
+        </Card.Description>
+      </Card.Header>
+      <Card.Content className="pt-0">{checklist}</Card.Content>
+    </Card>
+  );
+
+  return <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">{verdictCard}{checklistCard}</div>;
 }

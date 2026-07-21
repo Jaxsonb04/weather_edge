@@ -2,8 +2,81 @@
 
 from collections.abc import Callable
 from datetime import date
+import sqlite3
 from types import SimpleNamespace
 from typing import get_type_hints
+
+import pytest
+
+
+def test_cli_reports_sqlite_lock_as_retryable_tempfail(monkeypatch, capsys) -> None:
+    from sfo_kalshi_quant import cli
+
+    def locked(_args) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    parser = SimpleNamespace(parse_args=lambda _argv: SimpleNamespace(func=locked))
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+
+    assert cli.main([]) == 75
+    assert "temporary sqlite lock: database is locked" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "database table is locked: dataset_runs",
+        "database schema is locked: main",
+    ],
+)
+def test_cli_retries_suffixed_legacy_sqlite_lock_messages(
+    monkeypatch, capsys, message: str
+) -> None:
+    from sfo_kalshi_quant import cli
+
+    def locked(_args) -> int:
+        raise sqlite3.OperationalError(message)
+
+    parser = SimpleNamespace(parse_args=lambda _argv: SimpleNamespace(func=locked))
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+
+    assert cli.main([]) == 75
+    assert f"temporary sqlite lock: {message}" in capsys.readouterr().err
+
+
+def test_cli_does_not_retry_deceptive_non_lock_operational_error(
+    monkeypatch, capsys
+) -> None:
+    from sfo_kalshi_quant import cli
+
+    def invalid_query(_args) -> int:
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("SELECT locked")
+        return 0
+
+    parser = SimpleNamespace(parse_args=lambda _argv: SimpleNamespace(func=invalid_query))
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+
+    assert cli.main([]) == 1
+    assert capsys.readouterr().err == "error: no such column: locked\n"
+
+
+@pytest.mark.parametrize("error_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
+def test_cli_retries_sqlite_lock_by_base_error_code(
+    monkeypatch, capsys, error_code: int
+) -> None:
+    from sfo_kalshi_quant import cli
+
+    def busy(_args) -> int:
+        error = sqlite3.OperationalError("opaque sqlite failure")
+        error.sqlite_errorcode = error_code | (1 << 8)
+        raise error
+
+    parser = SimpleNamespace(parse_args=lambda _argv: SimpleNamespace(func=busy))
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+
+    assert cli.main([]) == 75
+    assert "temporary sqlite lock: opaque sqlite failure" in capsys.readouterr().err
 
 
 def test_format_module_owns_pnl_formatting() -> None:

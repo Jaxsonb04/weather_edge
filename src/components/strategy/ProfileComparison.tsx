@@ -2,7 +2,15 @@ import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
-import { money, profileGate, profileGateCounts, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
+import {
+  activeProfiles,
+  money,
+  profileGate,
+  profileGateCounts,
+  researchDailyTarget,
+  type ProfileEntry,
+  type StrategyLab,
+} from "../../lib/strategy";
 import { usePublication } from "../../lib/publication";
 
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
@@ -14,7 +22,41 @@ const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
     icon: "solar:test-tube-bold",
     blurb: "Experimental book — the loosest filters at the smallest stakes, so it records the full range of opportunities quickly.",
   },
+  "research-target": {
+    icon: "solar:target-bold",
+    blurb: "A separate paper account pursuing the fixed $50 daily research objective while every risk and edge gate remains binding.",
+  },
+  "research-motion": {
+    icon: "solar:chart-2-bold",
+    blurb: "A separate high-activity experimental account built to collect execution evidence. It does not contribute to the daily target or live readiness.",
+  },
 };
+
+function profileBadge(p: ProfileEntry) {
+  if (p.risk_profile === "live") return "Primary";
+  if (p.risk_profile === "research-target") return "Daily target";
+  if (p.risk_profile === "research-motion") return "Experimental · high activity";
+  return p.profile_type === "primary" ? "Primary" : "Experimental";
+}
+
+function accountBoundary(p: ProfileEntry) {
+  if (p.risk_profile === "live") return "Live evidence account · research excluded";
+  if (p.risk_profile === "research-target") return "Separate target research account · excluded from live goal and readiness";
+  if (p.risk_profile === "research-motion") return "Excluded from daily target and live readiness";
+  return "Legacy research account · used only when canonical sleeves are absent";
+}
+
+function feasibilityLabel(value: boolean | null | undefined) {
+  if (value === true) return "Feasible from current opportunities";
+  if (value === false) return "Not feasible from current opportunities";
+  return "Feasibility unknown";
+}
+
+function targetProgress(target: NonNullable<ReturnType<typeof researchDailyTarget>>) {
+  const maximum = target.target_pnl && target.target_pnl > 0 ? target.target_pnl : 50;
+  const value = Math.min(maximum, Math.max(0, target.realized_pnl ?? 0));
+  return { maximum, value, pct: (value / maximum) * 100 };
+}
 
 interface MetricRow {
   label: string;
@@ -65,6 +107,8 @@ const CURRENT_ROWS = new Set(["Open now", "Candidates this scan"]);
 
 function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: ProfileEntry; currentStateAvailable: boolean }) {
   const meta = PROFILE_META[p.risk_profile];
+  const target = researchDailyTarget(s, p);
+  const targetProgressState = target ? targetProgress(target) : null;
   const primary = p.profile_type === "primary";
   const gate = profileGate(s, p.risk_profile);
   const gateCount = profileGateCounts(gate);
@@ -94,11 +138,45 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
           </div>
         </div>
         <Chip size="sm" variant="soft" color={primary ? "warning" : "default"}>
-          <Chip.Label>{primary ? "Primary" : "Experimental"}</Chip.Label>
+          <Chip.Label>{profileBadge(p)}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="space-y-4 pt-0">
         {meta && <p className="text-xs leading-relaxed text-muted">{meta.blurb}</p>}
+
+        <p className="rounded-lg bg-surface-secondary px-2.5 py-2 text-[11px] leading-relaxed text-muted ring-1 ring-border/50">
+          {accountBoundary(p)}
+        </p>
+
+        {p.risk_profile === "research-target" && target && (
+          <div className="rounded-xl bg-accent-soft p-3 ring-1 ring-accent/25">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+                {money(target.target_pnl, { sign: "negative-only" })} daily target
+              </p>
+              <span className="tnum text-xs font-semibold text-foreground">
+                {money(target.realized_pnl, { sign: "negative-only" })}
+              </span>
+            </div>
+            <div
+              className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10"
+              role="progressbar"
+              aria-label={`${p.label} daily target progress`}
+              aria-valuemin={0}
+              aria-valuemax={targetProgressState?.maximum}
+              aria-valuenow={targetProgressState?.value}
+            >
+              <div
+                className="h-full rounded-full bg-accent"
+                style={{ width: `${targetProgressState?.pct ?? 0}%` }}
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted">
+              <span>Remaining {money(target.remaining_pnl, { sign: "negative-only" })}</span>
+              <span>{feasibilityLabel(target.target_feasible)}</span>
+            </div>
+          </div>
+        )}
 
         <dl className="divide-y divide-border/50">
           {ROWS.map((row) => {
@@ -140,17 +218,16 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
   );
 }
 
-/** The two isolated books shown TOGETHER, side by side — same metric rows in
+/** The isolated books shown together — same metric rows in
     the same order so size, activity, hit rate and P&L compare at a glance. No
     toggle: both books are always visible. */
 export function ProfileComparison({ s }: { s: StrategyLab }) {
   const { strategy } = usePublication();
   const currentStateAvailable = strategy.state === "fresh";
-  const rank = (p: ProfileEntry) => (p.profile_type === "primary" ? 0 : 1);
-  const profiles = [...(s.profiles ?? [])].sort((a, b) => rank(a) - rank(b));
+  const profiles = activeProfiles(s);
   if (profiles.length < 2) return null;
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {profiles.map((p) => (
         <BookColumn key={p.risk_profile} s={s} p={p} currentStateAvailable={currentStateAvailable} />
       ))}

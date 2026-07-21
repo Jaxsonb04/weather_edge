@@ -200,6 +200,9 @@ also routes failures through `sfo-alert@.service`, which posts JSON to
 `SFO_FRESHNESS_ALERT_URL` without putting the endpoint in process arguments.
 The watchdog never posts directly: systemd gets one common JSON alert, while a
 manual run reports locally without duplicating the webhook.
+During a full deploy, `wait_for_publication_manifest.sh` polls for the exact
+local snapshot ID and source SHA before the watchdog is started or restored, so
+normal GitHub Pages propagation cannot produce a false stale alarm.
 
 The workstation web deploy uses rsync 3.x `--protect-args` when available.
 Apple openrsync remains supported for the shell-safe default remote base; an

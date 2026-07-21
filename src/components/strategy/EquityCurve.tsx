@@ -19,7 +19,7 @@ interface EquityCurveProps {
   contributionMode?: boolean;
   /** small uppercase kicker above the title */
   eyebrow?: string;
-  /** visual weight: headline = tall + accent frame, secondary = compact + muted */
+  /** visual weight: headline = tall + larger title, secondary = compact, normal = default */
   emphasis?: Emphasis;
   /** override the plot height in px (defaults keyed off emphasis) */
   height?: number;
@@ -27,11 +27,6 @@ interface EquityCurveProps {
 }
 
 const EMPHASIS_HEIGHT: Record<Emphasis, number> = { headline: 288, secondary: 168, normal: 240 };
-const EMPHASIS_RING: Record<Emphasis, string> = {
-  headline: "ring-1 ring-accent/30",
-  secondary: "ring-1 ring-border/60",
-  normal: "",
-};
 
 /** −$80 / $0 / +$3 — whole-dollar money for axis ticks + aria text. */
 const axisMoney = (v: number, signed = false) =>
@@ -77,7 +72,7 @@ export function EquityCurve({
   const label = `${title ?? "Paper equity curve"} over ${series.length} days, from ${axisMoney(start, contributionMode)} to ${axisMoney(last, contributionMode)} (${up ? "up" : "down"} over the window).`;
 
   return (
-    <Widget className={`w-full ${EMPHASIS_RING[emphasis]} ${className ?? ""}`.trim()}>
+    <Widget className={`w-full ${className ?? ""}`.trim()}>
       <Widget.Header className="items-start py-1">
         <div className="flex min-w-0 flex-col gap-0.5">
           {eyebrow && (
