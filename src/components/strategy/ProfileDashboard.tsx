@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
@@ -166,6 +167,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
 /** Everything for ONE book: its KPIs, equity, gate, signal quality, exits,
     lessons, and its own positions/ledger/monitor filtered to this profile. */
 export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) {
+  const [closedPositionsExpanded, setClosedPositionsExpanded] = useState(false);
   const { strategy } = usePublication();
   const currentStateAvailable = strategy.state === "fresh";
   const rp = p.risk_profile;
@@ -183,7 +185,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const maxRejection = rejections[0]?.count ?? 1;
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
 
-  const ledger = ledgerForProfile(s, rp);
+  const ledger = ledgerForProfile(s, rp).slice(0, 20);
   const byCity = ledgerByCity(ledger);
   const allTimeClosed = sum?.closed_positions ?? 0;
   const monitorRows = monitorForProfile(s, rp);
@@ -264,7 +266,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h4 id={`positions-title-${rp}`} className="font-display text-sm font-semibold text-foreground">Positions &amp; execution log</h4>
           <p className="text-xs text-muted">
-            {currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · showing {Math.min(ledger.length, 5)} recent of {allTimeClosed} resolved
+            {currentStateAvailable ? "Open exposure" : "Current exposure unavailable"} · {allTimeClosed} resolved all-time
           </p>
         </div>
 
@@ -280,8 +282,8 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         <div>
           <SubHead
             icon="solar:clipboard-list-bold"
-            title="Recent closed positions"
-            note={`latest ${Math.min(ledger.length, 5)} published rows`}
+            title="Closed positions"
+            note={`${ledger.length} most recent · showing ${closedPositionsExpanded ? ledger.length : Math.min(ledger.length, 5)}`}
           />
           {byCity.length > 0 && (
             <div className="mb-4">
@@ -300,36 +302,48 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               </ul>
             </div>
           )}
-          <LedgerTable
-            s={s}
-            rows={ledger}
-            limit={5}
-            detailed
-            hideProfile
-            emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
-          />
+          <div className="overflow-hidden rounded-2xl border border-border/50">
+            <div id={`closed-positions-${rp}`}>
+              <LedgerTable
+                s={s}
+                rows={ledger}
+                limit={closedPositionsExpanded ? undefined : 5}
+                detailed
+                hideProfile
+                emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
+              />
+            </div>
+            {ledger.length > 5 && (
+              <button
+                type="button"
+                aria-expanded={closedPositionsExpanded}
+                aria-controls={`closed-positions-${rp}`}
+                onClick={() => setClosedPositionsExpanded((expanded) => !expanded)}
+                className="flex min-h-11 w-full items-center justify-center gap-1.5 border-t border-border/50 text-xs font-medium text-muted transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)] motion-reduce:transition-none"
+              >
+                {closedPositionsExpanded ? "Show fewer closed positions" : `Show ${ledger.length - 5} more closed positions`}
+                <Icon
+                  icon="solar:alt-arrow-down-linear"
+                  className={`size-3.5 transition-transform ${closedPositionsExpanded ? "rotate-180" : ""} motion-reduce:transition-none`}
+                  aria-hidden="true"
+                />
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
-      {(ledger.length > 5 || monitorRows.length > 0) && (
+      {monitorRows.length > 0 && (
         <DetailDisclosure
           id={`execution-detail-${rp}`}
           icon="solar:history-bold"
           title="Full execution detail"
-          note={`${Math.max(ledger.length - 5, 0)} older ledger rows · monitor decisions and rule-level marks`}
+          note="Monitor decisions and rule-level marks"
         >
-          {ledger.length > 5 && (
-            <div>
-              <SubHead icon="solar:clipboard-list-bold" title="Complete published ledger" note={`${ledger.length} rows`} />
-              <LedgerTable s={s} rows={ledger} detailed hideProfile />
-            </div>
-          )}
-          {monitorRows.length > 0 && (
-            <div>
-              <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
-              <MonitorLog s={s} rows={monitorRows} hideProfile />
-            </div>
-          )}
+          <div>
+            <SubHead icon="solar:history-bold" title="Monitor decisions" note="HOLD marks are unrealized; closes are executed" />
+            <MonitorLog s={s} rows={monitorRows} hideProfile />
+          </div>
         </DetailDisclosure>
       )}
 
