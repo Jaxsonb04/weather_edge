@@ -6,6 +6,8 @@ from functools import partial
 from typing import Iterable
 
 from .._util import _row_value as _shared_row_value
+from ..config import normalize_risk_profile_name
+from ..logical_positions import group_logical_positions
 from ..settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
     is_pre_resolution_decision as _is_pre_resolution_decision,
@@ -29,64 +31,59 @@ def market_backtest_summary(
     with self.connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            f"SELECT * FROM paper_orders {where}",
+            f"SELECT * FROM paper_orders {where} ORDER BY id",
             params,
         ).fetchall()
-    # PAPER_EXPIRED rows are resting limits that never filled; they carry
-    # realized_pnl=0.0 but deployed no capital and resolved no position, so
-    # they must not count as orders, dilute the capital/ROI denominator, or
-    # drag the hit-rate denominator as phantom losses.
-    realized_rows = [
-        row
-        for row in rows
-        if row["realized_pnl"] is not None and row["status"] != "PAPER_EXPIRED"
+    groups = group_logical_positions(rows)
+    valid_groups = [group for group in groups if group.valid]
+    realized_lots = [
+        lot
+        for group in valid_groups
+        for lot in group.resolved_lots
     ]
-    open_rows = [
-        row
-        for row in rows
-        if row["status"] in {
-            "PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"
-        }
-        and row["realized_pnl"] is None
+    terminal = [group for group in valid_groups if group.terminal]
+    open_roots = [
+        group.root
+        for group in valid_groups
+        if not group.terminal
+        and group.root["status"]
+        in {"PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED"}
+        and group.root["realized_pnl"] is None
     ]
-    open_capital = sum(float(row["contracts"]) * float(row["cost_per_contract"]) for row in open_rows)
-    if not realized_rows:
-        return {
-            "orders": 0,
-            "contracts": 0.0,
-            "capital_at_risk": 0.0,
-            "realized_pnl": 0.0,
-            "roi": 0.0,
-            "hit_rate": 0.0,
-            "wins": 0.0,
-            "losses": 0.0,
-            "avg_edge": 0.0,
-            "open_orders": float(len(open_rows)),
-            "open_capital_at_risk": open_capital,
-        }
-    contracts = sum(float(row["contracts"]) for row in realized_rows)
-    capital = sum(float(row["contracts"]) * float(row["cost_per_contract"]) for row in realized_rows)
-    pnl = sum(float(row["realized_pnl"]) for row in realized_rows)
+    open_capital = sum(
+        float(row["contracts"]) * float(row["cost_per_contract"])
+        for row in open_roots
+    )
+    contracts = sum(float(row["contracts"]) for row in realized_lots)
+    capital = sum(
+        float(row["contracts"]) * float(row["cost_per_contract"])
+        for row in realized_lots
+    )
+    pnl = sum(float(row["realized_pnl"]) for row in realized_lots)
     # A break-even close (resolved_yes NULL, realized_pnl 0) is undecided: it
     # deployed capital (so it stays in orders/contracts/capital/pnl) but is
     # neither a win nor a loss, so it must not drag the hit-rate denominator
     # the way the old realized_pnl > 0 fallback did.
-    decided_rows = [row for row in realized_rows if _row_position_decided(row)]
-    hits = sum(1 for row in decided_rows if _row_position_won(row))
-    losses = len(decided_rows) - hits
+    decided = [group for group in terminal if group.won is not None]
+    hits = sum(group.won is True for group in decided)
+    losses = sum(group.won is False for group in decided)
     return {
-        "orders": float(len(realized_rows)),
+        "orders": float(len(terminal)),
         "contracts": contracts,
         "capital_at_risk": capital,
         "realized_pnl": pnl,
         "roi": pnl / capital if capital else 0.0,
-        # decided_rows excludes undecided break-evens; a 0-for-N losing
+        # decided excludes undecided break-evens; a 0-for-N losing
         # streak still reports 0.0 (hits=0 over a non-empty denominator).
-        "hit_rate": hits / len(decided_rows) if decided_rows else 0.0,
+        "hit_rate": hits / len(decided) if decided else 0.0,
         "wins": float(hits),
         "losses": float(losses),
-        "avg_edge": sum(float(row["edge"]) for row in realized_rows) / len(realized_rows),
-        "open_orders": float(len(open_rows)),
+        "avg_edge": (
+            sum(float(group.root["edge"]) for group in terminal) / len(terminal)
+            if terminal
+            else 0.0
+        ),
+        "open_orders": float(len(open_roots)),
         "open_capital_at_risk": open_capital,
     }
 
@@ -124,6 +121,12 @@ def sampled_decision_rows(
     with self.connect() as conn:
         conn.row_factory = sqlite3.Row
         if sample_mode != "all":
+            conn.create_function(
+                "normalize_risk_profile",
+                1,
+                _normalize_sample_profile,
+                deterministic=True,
+            )
             pre_filter = (
                 # Both values are canonical UTC ISO strings, so lexical
                 # ordering preserves the pre-close instant comparison.
@@ -138,12 +141,12 @@ def sampled_decision_rows(
                 else "created_at DESC, id DESC"
             )
             ranked_where = f"{where} {'AND' if where else 'WHERE'} {pre_filter}"
-            return conn.execute(
-                f"""
+            sample_query = f"""
                 WITH ranked AS (
                     SELECT id,
                            ROW_NUMBER() OVER (
                                PARTITION BY target_date, market_ticker,
+                               normalize_risk_profile(risk_profile),
                                CASE
                                    WHEN UPPER(side) IN ('YES', 'NO') THEN UPPER(side)
                                    WHEN instr(UPPER(action), 'NO') > 0 THEN 'NO'
@@ -159,9 +162,19 @@ def sampled_decision_rows(
                 JOIN decision_snapshots d ON d.id = r.id
                 WHERE r.sample_rank = 1
                 ORDER BY d.target_date, d.created_at, d.id
-                """,
-                params,
-            ).fetchall()
+                """
+            try:
+                return conn.execute(sample_query, params).fetchall()
+            except sqlite3.OperationalError as exc:
+                if str(exc) != "user-defined function raised exception":
+                    raise
+                stored_profiles = conn.execute(
+                    f"SELECT DISTINCT risk_profile FROM decision_snapshots {ranked_where}",
+                    params,
+                ).fetchall()
+                for row in stored_profiles:
+                    _normalize_sample_profile(row[0])
+                raise
         # Stream the cursor instead of fetchall(): decision_snapshots grows
         # by thousands of ~7KB-JSON rows per day, and materializing every
         # row memory-thrashed the 1GB refresh box. Sampling keeps at most
@@ -349,7 +362,12 @@ def _sample_decision_rows(rows: Iterable[sqlite3.Row], sample_mode: str) -> list
         return _entry_decision_rows(rows)
     latest = {}
     for row in rows:
-        key = (str(row["target_date"]), str(row["market_ticker"]), _row_side(row))
+        key = (
+            str(row["target_date"]),
+            str(row["market_ticker"]),
+            _normalize_row_profile(row),
+            _row_side(row),
+        )
         current = latest.get(key)
         if current is None or _row_sort_time(row) >= _row_sort_time(current):
             latest[key] = row
@@ -365,9 +383,14 @@ def _entry_decision_rows(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
     sample it.
     """
 
-    entries: dict[tuple[str, str, str], sqlite3.Row] = {}
+    entries: dict[tuple[str, str, str, str], sqlite3.Row] = {}
     for row in rows:
-        key = (str(row["target_date"]), str(row["market_ticker"]), _row_side(row))
+        key = (
+            str(row["target_date"]),
+            str(row["market_ticker"]),
+            _normalize_row_profile(row),
+            _row_side(row),
+        )
         current = entries.get(key)
         if current is None:
             entries[key] = row
@@ -381,6 +404,22 @@ def _entry_decision_rows(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
 
 def _row_sort_time(row: sqlite3.Row) -> tuple[str, int]:
     return (str(row["created_at"]), int(row["id"]))
+
+
+def _normalize_sample_profile(value: object) -> str:
+    stored = str(value) if value else "live"
+    try:
+        return normalize_risk_profile_name(stored)
+    except ValueError as exc:
+        raise ValueError(f"invalid stored risk_profile {stored!r}: {exc}") from exc
+
+
+def _normalize_row_profile(row: sqlite3.Row) -> str:
+    try:
+        value = row["risk_profile"]
+    except (IndexError, KeyError):
+        value = None
+    return _normalize_sample_profile(value)
 
 
 def _row_position_won(row: sqlite3.Row) -> bool:

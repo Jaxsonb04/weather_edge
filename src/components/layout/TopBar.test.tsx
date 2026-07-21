@@ -18,10 +18,13 @@ describe("TopBar mobile menu keyboard behavior", () => {
   it("keeps brand and source link names explicit when responsive text is hidden", () => {
     render(<TopBar {...props} />);
 
-    expect(screen.getByRole("link", { name: "WeatherEdge overview" })).toHaveAttribute(
+    const brandLink = screen.getByRole("link", { name: "WeatherEdge overview" });
+    expect(brandLink).toHaveAttribute(
       "aria-label",
       "WeatherEdge overview",
     );
+    expect(brandLink.querySelector("img")).toHaveAttribute("src", "/favicon.svg");
+    expect(brandLink.querySelector("img")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByRole("link", { name: "WeatherEdge source on GitHub" })).toHaveAttribute(
       "aria-label",
       "WeatherEdge source on GitHub",

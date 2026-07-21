@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Sequence
 
 from .config import temperature_cohort
 from .consensus import MarketConsensus
-from .models import ForecastSnapshot, IntradaySnapshot
+from .models import ForecastSnapshot, IntradaySnapshot, MarketBin
+from .probability import interval_probability_normal
 
 
 def build_prediction_feature_snapshot(
@@ -83,6 +84,34 @@ def build_prediction_feature_snapshot(
         if value is not None:
             payload[name] = _round(value)
     return {key: value for key, value in payload.items() if value is not None}
+
+
+def build_google_challenger_bracket_probabilities(
+    mu: float | None,
+    sigma: float,
+    markets: Sequence[MarketBin],
+) -> dict[str, float] | None:
+    """Research-only bracket probabilities for the paired Google challenger.
+
+    Pure derived-probability computation: callers pass an already-computed
+    (mu, sigma) pair -- e.g. the fixed research challenger's baseline or
+    challenger output -- as plain floats, never a raw Google value. Returns
+    ``None`` when ``mu`` is ``None`` (the challenger's
+    ``external_runtime_corroboration_block`` action, or no markets to price)
+    so callers never persist an empty or meaningless probability payload.
+
+    Never called from ``build_prediction_feature_snapshot`` or any live
+    decision-recording path -- used only to build the immutable paired
+    evidence Task 7 persists in ``google_challenger_snapshots``.
+    """
+
+    if mu is None or not markets:
+        return None
+    probabilities: dict[str, float] = {}
+    for market in markets:
+        lo, hi = market.continuous_interval()
+        probabilities[market.ticker] = interval_probability_normal(mu, sigma, lo, hi)
+    return probabilities
 
 
 def _round(value: float | int | None) -> float | int | None:

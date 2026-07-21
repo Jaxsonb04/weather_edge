@@ -118,7 +118,10 @@ def build_target_report(
     ensemble_timeout: float,
     allow_live_market: bool,
 ) -> dict[str, Any]:
-    forecast = adapter.latest_blend(target)
+    forecast = adapter.latest_live_forecast(
+        target,
+        max_age_hours=config.max_forecast_age_hours,
+    )
     _enforce_live_forecast_freshness(forecast, config)
     intraday = _intraday_for_report(target, adapter, observed_high)
     observed_high_f = intraday.observed_high_f if intraday else None

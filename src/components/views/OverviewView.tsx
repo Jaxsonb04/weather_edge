@@ -1,5 +1,11 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { selectCurrentTargets, type DashboardData } from "../../lib/data";
+import {
+  selectCurrentTargets,
+  useCitiesData,
+  type CitiesData,
+  type City,
+  type DashboardData,
+} from "../../lib/data";
 import { Hero } from "../hero/Hero";
 import { TargetStatusWarning } from "../overview/TargetStatusWarning";
 
@@ -7,31 +13,66 @@ const OverviewBelowFold = lazy(() =>
   import("./OverviewBelowFold").then((module) => ({ default: module.OverviewBelowFold })),
 );
 
-export function BelowFoldBoundary({ data }: { data: DashboardData }) {
+interface BelowFoldBoundaryProps {
+  data: DashboardData;
+  citiesData?: CitiesData | null;
+  citiesError?: string | null;
+  selected?: string;
+  onSelect?: (slug: string) => void;
+}
+
+export function BelowFoldBoundary({
+  data,
+  citiesData = null,
+  citiesError = null,
+  selected = "sfo",
+  onSelect = () => {},
+}: BelowFoldBoundaryProps) {
   const [ready, setReady] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    let revealTimer: number | undefined;
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
           setReady(true);
+          if (revealTimer !== undefined) window.clearTimeout(revealTimer);
           observer.disconnect();
         }
       },
       { rootMargin: "0px", threshold: 0 },
     );
     observer.observe(element);
-    return () => observer.disconnect();
+
+    // A scrollbar drag, Page End, or restored scroll position can jump past a
+    // one-pixel observer target without ever intersecting it. Keep the chunk
+    // split, but guarantee the public content mounts after the initial bundle
+    // capture window. Normal scrolling still loads it immediately via observer.
+    revealTimer = window.setTimeout(() => {
+      setReady(true);
+      observer.disconnect();
+    }, 1_500);
+
+    return () => {
+      if (revealTimer !== undefined) window.clearTimeout(revealTimer);
+      observer.disconnect();
+    };
   }, []);
 
   return (
     <div className={ready ? undefined : "relative min-h-[72rem]"} aria-busy={!ready}>
       {ready ? (
         <Suspense fallback={<BelowFoldSkeleton />}>
-          <OverviewBelowFold data={data} />
+          <OverviewBelowFold
+            data={data}
+            citiesData={citiesData}
+            citiesError={citiesError}
+            selected={selected}
+            onSelect={onSelect}
+          />
         </Suspense>
       ) : (
         <>
@@ -57,6 +98,10 @@ function BelowFoldSkeleton() {
 }
 
 export function OverviewView({ data }: { data: DashboardData }) {
+  const { data: citiesData, error: citiesError } = useCitiesData();
+  const [selected, setSelected] = useState("sfo");
+  const cities = useMemo(() => citiesData?.cities ?? [], [citiesData]);
+  const activeCity = useMemo(() => resolveCity(cities, selected), [cities, selected]);
   const targets = useMemo(() => selectCurrentTargets(data.signal.targets ?? []), [data.signal.targets]);
 
   if (!targets.length) {
@@ -70,8 +115,28 @@ export function OverviewView({ data }: { data: DashboardData }) {
 
   return (
     <>
-      <Hero targets={targets} />
-      <BelowFoldBoundary data={data} />
+      <Hero
+        targets={targets}
+        cities={cities}
+        selectedCity={selected}
+        activeCity={activeCity}
+        onSelectCity={setSelected}
+      />
+      <BelowFoldBoundary
+        data={data}
+        citiesData={citiesData}
+        citiesError={citiesError}
+        selected={selected}
+        onSelect={setSelected}
+      />
     </>
   );
+}
+
+/** Resolve the active city without trusting artifact ordering. */
+function resolveCity(cities: City[], selected: string): City | null {
+  if (!cities.length) return null;
+  return cities.find((city) => (city.slug ?? city.series_ticker) === selected)
+    ?? cities.find((city) => city.slug === "sfo")
+    ?? cities[0];
 }

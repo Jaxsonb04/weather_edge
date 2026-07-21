@@ -54,9 +54,12 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
         </button>
 
         <a href="#/overview" aria-label="WeatherEdge overview" className="flex min-w-0 items-center gap-2.5 no-underline">
-          <span className="relative grid size-7 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">
-            <Icon icon="solar:temperature-bold" className="size-4" aria-hidden="true" />
-          </span>
+          <img
+            src={`${import.meta.env.BASE_URL}favicon.svg`}
+            alt=""
+            aria-hidden="true"
+            className="size-7 shrink-0 rounded-lg"
+          />
           <span className="hidden font-display text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
             Weather<span className="temp-text">Edge</span>
           </span>

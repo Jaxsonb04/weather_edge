@@ -29,11 +29,239 @@ TIMERS = (
     "sfo-forecast-freshness.timer",
 )
 SERVICES = tuple(timer.removesuffix(".timer") + ".service" for timer in TIMERS)
+PAPER_SCAN_RUNNER = AWS_DIR / "run_paper_scan_profiles.sh"
 
 
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _invoke_paper_scan_with_placement_flags(
+    tmp_path: Path,
+    **placement_flags: str,
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+    trading_root = tmp_path / "trading"
+    trading_root.mkdir()
+    call_log = tmp_path / "paper-scan-calls.jsonl"
+    python_stub = tmp_path / "python-stub"
+    _write_executable(
+        python_stub,
+        f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ['PAPER_SCAN_CALL_LOG'], 'a', encoding='utf-8') as handle:
+    handle.write(json.dumps(sys.argv[1:]) + '\\n')
+""",
+    )
+    env = {
+        **os.environ,
+        "SFO_TRADING_ROOT": str(trading_root),
+        "SFO_FORECASTER_ROOT": str(tmp_path / "forecaster"),
+        "SFO_TRADING_PYTHON": str(python_stub),
+        "SFO_KALSHI_DB": str(tmp_path / "paper.db"),
+        "SFO_PAPER_SCAN_LOCK": str(tmp_path / "paper-scan.lock"),
+        "PAPER_RISK_PROFILES": "live,research",
+        "PAPER_SCAN_CALL_LOG": str(call_log),
+        **placement_flags,
+    }
+    for name in (
+        "PAPER_PLACE_LIVE",
+        "PAPER_PLACE_RESEARCH_TARGET",
+        "PAPER_PLACE_RESEARCH_MOTION",
+        "SFO_PAPER_PLACE_ORDERS",
+    ):
+        if name not in placement_flags:
+            env.pop(name, None)
+    result = subprocess.run(
+        ["bash", str(PAPER_SCAN_RUNNER)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    calls = (
+        [json.loads(line) for line in call_log.read_text().splitlines()]
+        if call_log.exists()
+        else []
+    )
+    return result, calls
+
+
+def _run_paper_scan_with_placement_flags(
+    tmp_path: Path,
+    **placement_flags: str,
+) -> list[list[str]]:
+    result, calls = _invoke_paper_scan_with_placement_flags(
+        tmp_path,
+        **placement_flags,
+    )
+    assert result.returncode == 0, result.stderr
+    return calls
+
+
+def _paper_scan_call_for_profile(calls: list[list[str]], profile: str) -> list[str]:
+    return next(call for call in calls if call[call.index("--risk-profile") + 1] == profile)
+
+
+@pytest.mark.parametrize(
+    ("placement_flags", "expected_live", "expected_target", "expected_motion"),
+    [
+        ({}, False, False, False),
+        ({"PAPER_PLACE_LIVE": "TRUE"}, True, False, False),
+        ({"PAPER_PLACE_RESEARCH_TARGET": "yes"}, False, True, False),
+        ({"PAPER_PLACE_RESEARCH_MOTION": "1"}, False, False, True),
+        (
+            {
+                "PAPER_PLACE_RESEARCH_TARGET": "on",
+                "PAPER_PLACE_RESEARCH_MOTION": "Y",
+            },
+            False,
+            True,
+            True,
+        ),
+        (
+            {
+                "PAPER_PLACE_LIVE": "unknown",
+                "PAPER_PLACE_RESEARCH_TARGET": "unknown",
+                "PAPER_PLACE_RESEARCH_MOTION": "unknown",
+                "SFO_PAPER_PLACE_ORDERS": "1",
+            },
+            False,
+            False,
+            False,
+        ),
+    ],
+)
+def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
+    tmp_path: Path,
+    placement_flags: dict[str, str],
+    expected_live: bool,
+    expected_target: bool,
+    expected_motion: bool,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(tmp_path, **placement_flags)
+    assert len(calls) == 2
+    live = _paper_scan_call_for_profile(calls, "live")
+    research = _paper_scan_call_for_profile(calls, "research")
+
+    assert ("--place-paper" in live) is expected_live
+    assert "--place-research-target" not in live
+    assert "--place-research-motion" not in live
+    assert "--place-paper" not in research
+    assert ("--place-research-target" in research) is expected_target
+    assert ("--place-research-motion" in research) is expected_motion
+
+
+@pytest.mark.parametrize(
+    ("raw_profile", "placement_flags", "canonical_profile", "expected_flag"),
+    [
+        ("live", {"PAPER_PLACE_LIVE": "1"}, "live", "--place-paper"),
+        ("BALANCED", {"PAPER_PLACE_LIVE": "1"}, "live", "--place-paper"),
+        ("conservative", {"PAPER_PLACE_LIVE": "1"}, "live", "--place-paper"),
+        (" REAL ", {"PAPER_PLACE_LIVE": "yes"}, "live", "--place-paper"),
+        (
+            "research",
+            {"PAPER_PLACE_RESEARCH_TARGET": "1"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "fast_feedback",
+            {"PAPER_PLACE_RESEARCH_TARGET": "on"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "FAST-FEEDBACK",
+            {"PAPER_PLACE_RESEARCH_MOTION": "TRUE"},
+            "research",
+            "--place-research-motion",
+        ),
+        (
+            " ExPlOrAtOrY ",
+            {"PAPER_PLACE_RESEARCH_TARGET": "y"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "FAST",
+            {"PAPER_PLACE_RESEARCH_MOTION": "1"},
+            "research",
+            "--place-research-motion",
+        ),
+        (
+            "collector",
+            {"PAPER_PLACE_RESEARCH_TARGET": "1"},
+            "research",
+            "--place-research-target",
+        ),
+        (
+            "EXPLORE",
+            {"PAPER_PLACE_RESEARCH_MOTION": "1"},
+            "research",
+            "--place-research-motion",
+        ),
+    ],
+)
+def test_paper_scan_normalizes_supported_profile_aliases_before_dispatch(
+    tmp_path: Path,
+    raw_profile: str,
+    placement_flags: dict[str, str],
+    canonical_profile: str,
+    expected_flag: str,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_RISK_PROFILES=raw_profile,
+        **placement_flags,
+    )
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call[call.index("--risk-profile") + 1] == canonical_profile
+    assert expected_flag in call
+    if canonical_profile == "live":
+        assert "--place-research-target" not in call
+        assert "--place-research-motion" not in call
+    else:
+        assert "--place-paper" not in call
+
+
+@pytest.mark.parametrize("profiles", ("live,bogus", "bogus,research"))
+def test_paper_scan_rejects_invalid_profile_csv_before_any_dispatch(
+    tmp_path: Path,
+    profiles: str,
+) -> None:
+    result, calls = _invoke_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_RISK_PROFILES=profiles,
+        PAPER_PLACE_LIVE="1",
+        PAPER_PLACE_RESEARCH_TARGET="1",
+        PAPER_PLACE_RESEARCH_MOTION="1",
+    )
+
+    assert result.returncode != 0
+    assert "invalid paper risk profile: bogus" in result.stderr
+    assert calls == []
+
+
+def test_paper_scan_preserves_validated_order_and_ignores_empty_tokens(
+    tmp_path: Path,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_RISK_PROFILES=" , FAST_FEEDBACK, , conservative, ",
+        PAPER_PLACE_LIVE="1",
+        PAPER_PLACE_RESEARCH_MOTION="1",
+    )
+
+    assert [call[call.index("--risk-profile") + 1] for call in calls] == [
+        "research",
+        "live",
+    ]
+    assert "--place-research-motion" in calls[0]
+    assert "--place-paper" in calls[1]
+    assert "--skip-context-snapshots" not in calls[0]
+    assert "--skip-context-snapshots" in calls[1]
 
 
 def _stub_clean_main_git(fake_bin: Path) -> None:
@@ -396,15 +624,74 @@ elif 'restore' in args:
     seed_idx = next(
         i for i, line in enumerate(actions) if "sfo-strategy-lab-refresh.service" in line
     )
+    public_wait_idx = next(
+        i for i, line in enumerate(actions) if "wait_for_publication_manifest.sh" in line
+    )
+    freshness_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "systemctl start sfo-forecast-freshness.service" in line
+    )
     assert preflight_idx < capture_idx < quiesce_idx < backup_idx < first_rsync_idx
     assert first_rsync_idx < install_idx < producer_restore_idx
-    assert producer_restore_idx < seed_idx < watchdog_restore_idx
+    assert producer_restore_idx < seed_idx < public_wait_idx < freshness_idx < watchdog_restore_idx
     assert actions[producer_restore_idx] == (
         "restore|sfo-operational-publish.timer "
         "sfo-strategy-lab-refresh.timer"
     )
     assert actions[watchdog_restore_idx] == "restore|sfo-forecast-freshness.timer"
     assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+
+
+def test_publication_wait_retries_until_exact_snapshot_is_public(tmp_path: Path) -> None:
+    base = tmp_path / "weatheredge"
+    forecaster = base / "forecaster"
+    forecaster.mkdir(parents=True)
+    local_manifest = {
+        "snapshot_id": "fresh-snapshot",
+        "provenance": {"source_sha": "abc123"},
+    }
+    (forecaster / "publication_manifest.json").write_text(
+        json.dumps(local_manifest), encoding="utf-8"
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "curl-calls"
+    _write_executable(
+        fake_bin / "curl",
+        f"""#!{sys.executable}
+import json, os
+from pathlib import Path
+
+calls = Path(os.environ['CURL_CALLS'])
+count = int(calls.read_text() or '0') if calls.exists() else 0
+calls.write_text(str(count + 1))
+snapshot = 'stale-snapshot' if count == 0 else 'fresh-snapshot'
+print(json.dumps({{'snapshot_id': snapshot, 'provenance': {{'source_sha': 'abc123'}}}}))
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "wait_for_publication_manifest.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_BASE_DIR": str(base),
+            "SFO_TRADING_PYTHON": sys.executable,
+            "SFO_PUBLISH_PAGES": "1",
+            "SFO_PUBLICATION_MANIFEST_URL": "https://pages.example/manifest.json",
+            "SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS": "4",
+            "SFO_PUBLICATION_PROPAGATION_POLL_SECONDS": "1",
+            "CURL_CALLS": str(calls),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text() == "2"
+    assert "public publication snapshot matches local manifest" in result.stdout
 
 
 @pytest.mark.parametrize(

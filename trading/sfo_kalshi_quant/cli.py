@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass, replace
@@ -94,6 +95,7 @@ from ._cli import paper as _paper
 from ._cli import backtest as _backtest_cli
 from ._cli import parser as _parser
 from ._cli import data as _data
+from ._cli import research as _research
 from ._cli.format import (
     _color_edge,
     _color_prob,
@@ -341,6 +343,27 @@ def build_parser() -> argparse.ArgumentParser:
     return _parser.build_parser(command_module=sys.modules[__name__])
 
 
+def _is_retryable_sqlite_lock(exc: sqlite3.OperationalError) -> bool:
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        base_error_code = error_code & 0xFF
+        return base_error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+
+    # Older Python/SQLite combinations may not expose sqlite_errorcode. Keep
+    # that compatibility path deliberately narrow so unrelated SQL mentioning
+    # a column or table named "locked" remains fail-fast.
+    message = str(exc).strip().casefold()
+    legacy_lock_messages = {
+        "database is locked",
+        "database table is locked",
+        "database schema is locked",
+    }
+    return any(
+        message == lock_message or message.startswith(f"{lock_message}: ")
+        for lock_message in legacy_lock_messages
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -349,6 +372,12 @@ def main(argv: list[str] | None = None) -> int:
     except ForecastDataError as exc:
         print(f"forecast data error: {exc}", file=sys.stderr)
         return 2
+    except sqlite3.OperationalError as exc:
+        if _is_retryable_sqlite_lock(exc):
+            print(f"temporary sqlite lock: {exc}", file=sys.stderr)
+            return 75
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -493,6 +522,14 @@ def cmd_daily_report(args: argparse.Namespace) -> int:
 
 def cmd_strategy_research(args: argparse.Namespace) -> int:
     return _data_dispatch("cmd_strategy_research", args)
+
+
+def cmd_research_evaluate(args: argparse.Namespace) -> int:
+    return _research.cmd_research_evaluate(args)
+
+
+def cmd_research_propose_target(args: argparse.Namespace) -> int:
+    return _research.cmd_research_propose_target(args)
 
 
 def _config(args: argparse.Namespace) -> StrategyConfig:

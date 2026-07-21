@@ -16,8 +16,8 @@ export function CitySelect({ cities, selected, onSelect }: CitySelectProps) {
     <Select
       variant="secondary"
       className="w-full sm:w-[13.5rem]"
-      value={selected}
-      onChange={(v) => v != null && onSelect(String(v))}
+      selectedKey={selected}
+      onSelectionChange={(key) => key != null && onSelect(String(key))}
       placeholder="Jump to a city"
     >
       <Label className="sr-only">Active city</Label>
@@ -25,8 +25,8 @@ export function CitySelect({ cities, selected, onSelect }: CitySelectProps) {
         <Select.Value />
         <Select.Indicator />
       </Select.Trigger>
-      <Select.Popover>
-        <ListBox>
+      <Select.Popover className="max-h-[min(20rem,calc(100dvh-2rem))] overscroll-contain">
+        <ListBox className="max-h-[min(20rem,calc(100dvh-2rem))] overflow-y-auto overscroll-contain">
           {cities.map((c) => {
             const slug = c.slug ?? c.series_ticker;
             return (

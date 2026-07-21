@@ -18,15 +18,18 @@ from .._util import (
 )
 from ..backtest import run_walk_forward_calibration_backtest
 from ..backtest_rescore import run_rescore
-from ..config import StrategyConfig, strategy_config_for_profile
+from ..config import (
+    StrategyConfig,
+    strategy_config_for_profile,
+)
 from ..db import PaperStore
 from ..forecast import ForecastDataError, SfoForecasterAdapter
+from ..profile_identity import execution_profile_key, row_published_profile_key
 from ..research_shadow import build_research_shadow_report
 from ..settlement_truth import is_pre_resolution_decision as _is_strategy_pre_resolution
 from ..synthetic_blend import build_synthetic_blend_calibration
 from . import FORECAST_LEAD_MODE_LABELS, MIN_CLEAN_WINNER_SAMPLE, PRIMARY_PROFILE
 from .consensus_offline import _market_consensus_payload
-from .paper_card import _row_risk_profile
 from .profiles import (
     _edge_by_market_bucket,
     _probability_market_points,
@@ -220,18 +223,21 @@ def _config_rescore_payload(
     settlements: dict[object, float] | None = None,
     sampled_rows: list[sqlite3.Row] | None = None,
 ) -> dict[str, Any]:
-    """Re-score recorded decision snapshots under each scanning profile's CURRENT
-    config and settle vs the official integer KSFO highs.
+    """Replay each profile's recorded decision snapshots under its current config.
 
-    This is the counterfactual the validation report needed and the signal
-    backtest cannot give: signal_backtest replays the OLD config's recorded
-    approve/size flags, while this re-runs every gate + Kelly sizing from scratch
-    under today's StrategyConfig (see backtest_rescore.run_rescore). Diagnostic
-    only -- never places, closes, or settles orders. Keyed by profile so the card
-    can show the rescore for the active profile tab.
+    Live and research scans may construct different forecast probabilities, so
+    each profile is replayed only from snapshots recorded for that normalized
+    profile. This is diagnostic only and never places, closes, or settles orders.
     """
 
-    empty = {"available": False, "by_profile": {}, "settlement_days": 0, "sampled_snapshots": 0}
+    evidence_kind = "profile_specific_snapshot_replay"
+    empty = {
+        "available": False,
+        "evidence_kind": evidence_kind,
+        "by_profile": {},
+        "settlement_days": 0,
+        "sampled_snapshots": 0,
+    }
     if not db_path.exists():
         return {**empty, "reason": f"Paper-trading DB not found: {db_path}"}
     if not _db_table_exists(db_path, "decision_snapshots"):
@@ -245,11 +251,19 @@ def _config_rescore_payload(
             if sampled_rows is not None
             else store.sampled_decision_rows(sample_mode="entry-per-market-side")
         )
+        profile_names = ("live", "research-target", "research-motion")
+        rows_by_profile: dict[str, list[sqlite3.Row]] = {
+            name: [] for name in profile_names
+        }
+        for row in rows:
+            published = row_published_profile_key(row)
+            if published in rows_by_profile:
+                rows_by_profile[published].append(row)
         by_profile: dict[str, Any] = {}
-        for name in ("live", "research"):
-            cfg = strategy_config_for_profile(name)
+        for name in profile_names:
+            cfg = strategy_config_for_profile(execution_profile_key(name))
             result = run_rescore(
-                rows,
+                rows_by_profile[name],
                 settlements,
                 cfg,
                 bankroll=cfg.paper_bankroll,
@@ -259,11 +273,15 @@ def _config_rescore_payload(
             # rollups (candidate vs recorded, per-side, per-cohort, CI), and
             # three profiles' worth of daily rows would bloat the JSON.
             result.pop("per_day", None)
+            result["evidence_kind"] = evidence_kind
             by_profile[name] = result
         return {
             "available": True,
+            "evidence_kind": evidence_kind,
             "settlement_days": len(settlements),
             "sampled_snapshots": len(rows),
+            "excluded_snapshots": len(rows)
+            - sum(len(bucket) for bucket in rows_by_profile.values()),
             "by_profile": by_profile,
         }
     except Exception as exc:  # diagnostics artifact must not fail the refresh
@@ -571,8 +589,19 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
         return []
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {
+            str(row[1])
+            for row in conn.execute(
+                "PRAGMA table_info(decision_snapshots)"
+            ).fetchall()
+        }
+        sleeve_expr = (
+            "COALESCE(d.research_sleeve, '')"
+            if "research_sleeve" in columns
+            else "''"
+        )
         rows = conn.execute(
-            """
+            f"""
             WITH recent_targets AS (
                 SELECT target_date
                 FROM decision_snapshots
@@ -584,24 +613,28 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
             latest_by_target AS (
                 SELECT d.target_date,
                        COALESCE(d.risk_profile, 'unknown') AS risk_profile,
+                       {sleeve_expr} AS research_sleeve,
                        MAX(d.created_at) AS created_at
                 FROM decision_snapshots d
                 JOIN recent_targets rt ON rt.target_date = d.target_date
                 WHERE d.market_ticker NOT LIKE '%-PAPER%'
-                GROUP BY d.target_date, COALESCE(d.risk_profile, 'unknown')
+                GROUP BY d.target_date, COALESCE(d.risk_profile, 'unknown'),
+                         {sleeve_expr}
             )
             SELECT d.*
             FROM decision_snapshots d
             JOIN latest_by_target latest
-              ON latest.target_date = d.target_date
+             ON latest.target_date = d.target_date
              AND latest.risk_profile = COALESCE(d.risk_profile, 'unknown')
+             AND latest.research_sleeve = {sleeve_expr}
              AND latest.created_at = d.created_at
             WHERE d.market_ticker NOT LIKE '%-PAPER%'
             ORDER BY d.target_date DESC, d.approved DESC,
                      d.trade_quality_score DESC, d.edge_lcb DESC, d.edge DESC
             """
         ).fetchall()
-    return [_decision_row(row) for row in rows]
+    decisions = [_decision_row(row) for row in rows]
+    return [row for row in decisions if row["risk_profile"] != "unknown"]
 
 
 def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -625,7 +658,7 @@ def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
         "market_available": not _is_probability_only_ticker(row["market_ticker"]),
         "label": row["label"],
         "side": row["side"],
-        "risk_profile": _row_risk_profile(row) or "unknown",
+        "risk_profile": row_published_profile_key(row),
         "approved": approved,
         "signal_approved": signal_approved,
         "entry_block_reason": _sqlite_row_value(row, "entry_block_reason"),

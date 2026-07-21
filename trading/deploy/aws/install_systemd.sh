@@ -82,6 +82,7 @@ render_unit() {
   local dst="$2"
   sed \
     -e "s#__APP_USER__#$APP_USER#g" \
+    -e "s#__APP_GROUP__#$APP_GROUP#g" \
     -e "s#__TRADING_DIR__#$TRADING_DIR#g" \
     -e "s#__FORECASTER_DIR__#$FORECASTER_DIR#g" \
     -e "s#__ENV_FILE__#$ENV_FILE#g" \
@@ -89,6 +90,8 @@ render_unit() {
 }
 
 render_unit "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.service.in" /etc/systemd/system/sfo-forecaster-refresh.service
+render_unit "$SCRIPT_DIR/systemd/weatheredge-google-nonsfo-refresh.service.in" /etc/systemd/system/weatheredge-google-nonsfo-refresh.service
+render_unit "$SCRIPT_DIR/systemd/weatheredge-google-runtime-purge.service.in" /etc/systemd/system/weatheredge-google-runtime-purge.service
 render_unit "$SCRIPT_DIR/systemd/sfo-operational-publish.service.in" /etc/systemd/system/sfo-operational-publish.service
 render_unit "$SCRIPT_DIR/systemd/sfo-strategy-lab-refresh.service.in" /etc/systemd/system/sfo-strategy-lab-refresh.service
 render_unit "$SCRIPT_DIR/systemd/sfo-dataset-backfill.service.in" /etc/systemd/system/sfo-dataset-backfill.service
@@ -99,9 +102,21 @@ render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-prune.service.in" /etc/systemd
 render_unit "$SCRIPT_DIR/systemd/sfo-forecast-freshness.service.in" /etc/systemd/system/sfo-forecast-freshness.service
 render_unit "$SCRIPT_DIR/systemd/sfo-alert@.service.in" /etc/systemd/system/sfo-alert@.service
 
-chmod +x "$SCRIPT_DIR/check_forecast_db_freshness.sh" "$SCRIPT_DIR/send_systemd_failure_alert.sh" 2>/dev/null || true
+chmod +x "$SCRIPT_DIR/check_forecast_db_freshness.sh" "$SCRIPT_DIR/wait_for_publication_manifest.sh" "$SCRIPT_DIR/send_systemd_failure_alert.sh" 2>/dev/null || true
+
+# Task 8 item 1: /run/weatheredge is created, owned, and permission-enforced
+# by a static tmpfiles.d entry rather than a per-unit RuntimeDirectory=,
+# because multiple independent units (the SFO refresh, the non-SFO refresh,
+# and the purge unit) all read/write the same runtime database and
+# RuntimeDirectory= ties a directory's lifecycle to a single owning unit.
+# `--create` applies it immediately so a fresh install does not have to wait
+# for a reboot before the first Google refresh can open the runtime store.
+render_unit "$SCRIPT_DIR/systemd/weatheredge-tmpfiles.conf" /etc/tmpfiles.d/weatheredge.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/weatheredge.conf
 
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.timer" /etc/systemd/system/sfo-forecaster-refresh.timer
+sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-google-nonsfo-refresh.timer" /etc/systemd/system/weatheredge-google-nonsfo-refresh.timer
+sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-google-runtime-purge.timer" /etc/systemd/system/weatheredge-google-runtime-purge.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-operational-publish.timer" /etc/systemd/system/sfo-operational-publish.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-strategy-lab-refresh.timer" /etc/systemd/system/sfo-strategy-lab-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-dataset-backfill.timer" /etc/systemd/system/sfo-dataset-backfill.timer
@@ -116,9 +131,9 @@ sudo systemctl daemon-reload
 if sudo grep -q "replace_with_google_weather_key" "$ENV_FILE"; then
   echo "Edit $ENV_FILE and set GOOGLE_WEATHER_API_KEY before enabling timers."
   echo "Then run:"
-  echo "  sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer"
+  echo "  sudo systemctl enable --now sfo-forecaster-refresh.timer weatheredge-google-nonsfo-refresh.timer weatheredge-google-runtime-purge.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer"
   exit 0
 fi
 
-sudo systemctl enable --now sfo-forecaster-refresh.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer
-sudo systemctl list-timers 'sfo-*' --all
+sudo systemctl enable --now sfo-forecaster-refresh.timer weatheredge-google-nonsfo-refresh.timer weatheredge-google-runtime-purge.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer
+sudo systemctl list-timers 'sfo-*' 'weatheredge-*' --all
