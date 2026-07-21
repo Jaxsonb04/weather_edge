@@ -1,10 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Skeleton } from "@heroui/react/skeleton";
-import { selectCurrentTargets, useCitiesData, type City, type DashboardData } from "../../lib/data";
+import { selectCurrentTargets, type CitiesData, type City, type DashboardData } from "../../lib/data";
 import { SkillStrip } from "../kpi/SkillStrip";
 import { SystemHighlights } from "../overview/SystemHighlights";
 import { CityGrid } from "../overview/CityGrid";
-import { CitySelect } from "../overview/CitySelect";
 import { TargetStatusWarning } from "../overview/TargetStatusWarning";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
@@ -44,7 +43,7 @@ function DeferredOverviewSlab({ children }: { children: ReactNode }) {
 
 function DetailSkeleton() {
   return (
-    <div role="status" aria-label="Loading city forecast detail" className="grid gap-5 lg:grid-cols-2">
+    <div role="status" aria-label="Loading city forecast detail" className="grid gap-6 lg:grid-cols-2">
       <Skeleton className="h-[23rem] rounded-2xl" />
       <Skeleton className="h-[23rem] rounded-2xl" />
       <Skeleton className="h-64 rounded-2xl lg:col-span-2" />
@@ -63,10 +62,16 @@ function resolveCity(cities: City[], selected: string): City | null {
   );
 }
 
-export function OverviewBelowFold({ data }: { data: DashboardData }) {
+interface OverviewBelowFoldProps {
+  data: DashboardData;
+  citiesData: CitiesData | null;
+  citiesError: string | null;
+  selected: string;
+  onSelect: (slug: string) => void;
+}
+
+export function OverviewBelowFold({ data, citiesData, citiesError, selected, onSelect }: OverviewBelowFoldProps) {
   const { forecast, signal } = data;
-  const { data: citiesData, error: citiesError } = useCitiesData();
-  const [selected, setSelected] = useState(DEFAULT_CITY);
 
   const cities = useMemo(() => citiesData?.cities ?? [], [citiesData]);
   const activeCity = useMemo(() => resolveCity(cities, selected), [cities, selected]);
@@ -80,15 +85,15 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
   const flagshipTarget = currentTargets[0];
 
   return (
-      <div className="mx-auto w-full max-w-6xl px-5 pb-28 sm:px-8">
+      <div className="mx-auto w-full max-w-6xl px-5 pb-20 sm:px-8">
         {hasPastDueTargets && (
-          <div className="pt-5">
+          <div className="pt-6">
             <TargetStatusWarning targets={signal.targets ?? []} />
           </div>
         )}
         <SkillStrip forecast={forecast} signal={signal} />
 
-        <section id="cities" className="scroll-mt-24">
+        <section id="cities" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="01"
             eyebrow="Coverage"
@@ -96,23 +101,17 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
             sub="Every market settles on its own official NWS climate report and runs the same NWP/EMOS forecast. Select any city to drill into its call — San Francisco is the flagship, with the full market microstructure."
           />
           <Reveal>
-            <CityGrid data={citiesData} error={citiesError} selected={selected} onSelect={setSelected} />
+            <CityGrid data={citiesData} error={citiesError} selected={selected} onSelect={onSelect} />
           </Reveal>
         </section>
 
-        <section id="today" className="scroll-mt-24">
+        <section id="today" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="02"
             eyebrow="Today's forecast"
             title={activeCity ? `${activeCity.name} — today's forecast and market` : "Today's forecast"}
             sub="The selected city's next high, its official settlement, and recent paper-trading activity. San Francisco also shows bracket-level model-vs-market detail when the current data is verified."
           />
-          {cities.length > 1 && (
-            <Reveal className="mb-5 flex flex-wrap items-center gap-3">
-              <span className="text-xs uppercase tracking-wide text-muted">Active city</span>
-              <CitySelect cities={cities} selected={selected} onSelect={setSelected} />
-            </Reveal>
-          )}
           {activeCity ? (
             <DeferredOverviewSlab>
               <Suspense fallback={<DetailSkeleton />}>
@@ -125,14 +124,14 @@ export function OverviewBelowFold({ data }: { data: DashboardData }) {
             </DeferredOverviewSlab>
           ) : (
             <Reveal>
-              <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
+              <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">
                 Per-city detail will appear once the fifteen-city coverage artifact is published.
               </p>
             </Reveal>
           )}
         </section>
 
-        <section id="system" className="scroll-mt-24">
+        <section id="system" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="03"
             eyebrow="Engineering"

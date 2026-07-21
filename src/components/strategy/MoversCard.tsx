@@ -1,5 +1,3 @@
-import { Card } from "@heroui/react/card";
-import { Icon } from "@iconify/react/offline";
 import { money, type StrategyLab, type WinnerLoser } from "../../lib/strategy";
 
 function Row({ m }: { m: WinnerLoser }) {
@@ -23,25 +21,27 @@ export function MoversCard({ s }: { s: StrategyLab }) {
   const winners = (s.daily_summary.biggest_winners ?? []).slice(0, 4);
   const losers = (s.daily_summary.biggest_losers ?? []).slice(0, 4);
   return (
-    <div className="grid gap-5 sm:grid-cols-2">
-      <Card className="rounded-2xl">
-        <Card.Header className="flex flex-row items-center gap-2">
-          <Icon icon="solar:arrow-up-bold" className="size-4 text-success" aria-hidden="true" />
-          <Card.Title className="text-base">Best trades</Card.Title>
-        </Card.Header>
-        <Card.Content className="pt-0">
-          <ul className="divide-y divide-border/50">{winners.map((m) => <Row key={`${m.ticker}-${m.target_date}-${m.side}`} m={m} />)}</ul>
-        </Card.Content>
-      </Card>
-      <Card className="rounded-2xl">
-        <Card.Header className="flex flex-row items-center gap-2">
-          <Icon icon="solar:arrow-down-bold" className="size-4 text-danger" aria-hidden="true" />
-          <Card.Title className="text-base">Worst trades</Card.Title>
-        </Card.Header>
-        <Card.Content className="pt-0">
-          <ul className="divide-y divide-border/50">{losers.map((m) => <Row key={`${m.ticker}-${m.target_date}-${m.side}`} m={m} />)}</ul>
-        </Card.Content>
-      </Card>
+    <div className="grid gap-6 sm:grid-cols-2">
+      <div>
+        <h4 id="movers-best-trades" className="mb-2 font-display text-sm font-semibold text-foreground">
+          Best trades
+        </h4>
+        <ul aria-labelledby="movers-best-trades" className="divide-y divide-border/50">
+          {winners.map((m) => (
+            <Row key={`${m.ticker}-${m.target_date}-${m.side}`} m={m} />
+          ))}
+        </ul>
+      </div>
+      <div>
+        <h4 id="movers-worst-trades" className="mb-2 font-display text-sm font-semibold text-foreground">
+          Worst trades
+        </h4>
+        <ul aria-labelledby="movers-worst-trades" className="divide-y divide-border/50">
+          {losers.map((m) => (
+            <Row key={`${m.ticker}-${m.target_date}-${m.side}`} m={m} />
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

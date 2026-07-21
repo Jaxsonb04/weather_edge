@@ -5,11 +5,16 @@ import json
 import math
 import os
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
+from zoneinfo import ZoneInfo
 
+from cities import CityConfig
+from google_weather_store import GoogleRuntimeStore, GoogleUsageLedger
 from settlement_calendar import (
     local_standard_date,
     today_local_standard,
@@ -24,6 +29,7 @@ from weather_cache_config import (
     ENABLE_GOOGLE_DAILY_FORECAST,
     GOOGLE_DAILY_DISAGREEMENT_WARN_F,
     GOOGLE_DAILY_INTERNAL_WEIGHT,
+    GOOGLE_HOURLY_MAX_PAGES,
     GOOGLE_WEATHER_DAILY_EVENT_BUDGET,
     GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
     GOOGLE_WEATHER_MONTHLY_FREE_CAP,
@@ -35,6 +41,25 @@ from weather_cache_config import (
     SFO_TZ,
     USAGE_PATH,
 )
+
+
+class GoogleFetchError(RuntimeError):
+    """A safe Google fetch failure with conservative dispatch accounting."""
+
+    def __init__(self, endpoint, dispatched_events):
+        self.endpoint = endpoint
+        self.dispatched_events = max(0, int(dispatched_events))
+        super().__init__(f"Google Weather {endpoint} request failed")
+
+    @classmethod
+    def from_unrecognized(cls, endpoint, prior_events, exc):
+        try:
+            current_events = getattr(exc, "dispatched_events", 1)
+        except Exception:
+            current_events = 1
+        if type(current_events) is not int or current_events < 0:
+            current_events = 1
+        return cls(endpoint, prior_events + current_events)
 
 
 def finite(value):
@@ -169,6 +194,7 @@ def reserve_google_weather_events(usage, events_reserved):
 
 def adjust_reserved_google_weather_events(usage, reserved_events, actual_events):
     usage = dict(usage)
+    actual_events = max(0, actual_events)
     delta = actual_events - reserved_events
     if delta:
         usage["daily_events"] = max(0, usage.get("daily_events", 0) + delta)
@@ -407,8 +433,28 @@ def summarize_forecast(payload, target_iso, usage):
     return summary
 
 
+def _fetch_google_json(endpoint, base_url, params):
+    dispatched_events = 0
+    try:
+        query = urlencode(params)
+        request_url = f"{base_url}?{query}"
+        dispatched_events += 1
+        with urlopen(request_url, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Google Weather response was not a JSON object")
+        return payload
+    except Exception:
+        # Transport errors may embed the API key and full request URL. Keep the
+        # public exception entirely detached from that unsafe exception chain.
+        failure = GoogleFetchError(endpoint, dispatched_events)
+    raise failure
+
+
 def fetch_hourly_page(key, page_token=None):
-    params = urlencode(
+    return _fetch_google_json(
+        "hourly forecast",
+        HOURLY_API_URL,
         {
             "key": key,
             "location.latitude": f"{SFO_POINT['lat']:.4f}",
@@ -417,37 +463,35 @@ def fetch_hourly_page(key, page_token=None):
             "pageSize": str(HOURLY_PAGE_SIZE),
             "unitsSystem": "IMPERIAL",
             **({"pageToken": page_token} if page_token else {}),
-        }
+        },
     )
-    with urlopen(f"{HOURLY_API_URL}?{params}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_daily_forecast(key):
-    params = urlencode(
+    return _fetch_google_json(
+        "daily forecast",
+        DAILY_API_URL,
         {
             "key": key,
             "location.latitude": f"{SFO_POINT['lat']:.4f}",
             "location.longitude": f"{SFO_POINT['lon']:.4f}",
             "days": "3",
             "unitsSystem": "IMPERIAL",
-        }
+        },
     )
-    with urlopen(f"{DAILY_API_URL}?{params}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_current_conditions(key):
-    params = urlencode(
+    return _fetch_google_json(
+        "current conditions",
+        CURRENT_API_URL,
         {
             "key": key,
             "location.latitude": f"{SFO_POINT['lat']:.4f}",
             "location.longitude": f"{SFO_POINT['lon']:.4f}",
             "unitsSystem": "IMPERIAL",
-        }
+        },
     )
-    with urlopen(f"{CURRENT_API_URL}?{params}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_google_forecast(key):
@@ -456,20 +500,46 @@ def fetch_google_forecast(key):
     page_token = None
     events_used = 0
 
-    # Hard cap on paid hourly pages. The budget reserves ~3 events per refresh; a
+    # Hard cap on paid hourly pages. The budget reserves 3 events per refresh; a
     # misbehaving API that keeps returning a nextPageToken with few/no new hours
     # could otherwise spend dozens of paid events in one refresh (and the budget
-    # reconciliation only runs AFTER, so it can't stop the current run). At ~24
-    # hours/page, the 72h lookahead needs ~3-4 pages; cap well above that and
-    # break on no forward progress.
-    max_hourly_pages = max(4, HOURLY_LOOKAHEAD_HOURS // 24 + 2)
-    while True:
-        payload = fetch_hourly_page(key, page_token)
+    # reconciliation only runs AFTER, so it can't stop the current run). Three
+    # full 24-hour pages cover the 72-hour lookahead; underfilled responses stop
+    # at the same official ceiling and are marked incomplete by their row count.
+    max_hourly_pages = GOOGLE_HOURLY_MAX_PAGES
+    while events_used < max_hourly_pages:
+        failure = None
+        try:
+            payload = fetch_hourly_page(key, page_token)
+        except GoogleFetchError as exc:
+            exc.dispatched_events += events_used
+            raise
+        except Exception as exc:
+            failure = GoogleFetchError.from_unrecognized(
+                "hourly forecast",
+                events_used,
+                exc,
+            )
+        if failure is not None:
+            raise failure
+
         events_used += 1
-        new_hours = payload.get("forecastHours") or []
-        hours.extend(new_hours)
-        time_zone = time_zone or payload.get("timeZone")
-        page_token = payload.get("nextPageToken")
+        try:
+            new_hours = payload.get("forecastHours") or []
+            if not isinstance(new_hours, list) or not all(
+                isinstance(hour, dict) for hour in new_hours
+            ):
+                raise ValueError("Google hourly forecast rows must be objects")
+            hours.extend(new_hours)
+            time_zone = time_zone or payload.get("timeZone")
+            page_token = payload.get("nextPageToken")
+            if page_token is not None and not isinstance(page_token, str):
+                raise ValueError("Google hourly page token must be a string")
+        except Exception:
+            failure = GoogleFetchError("hourly forecast", events_used)
+        if failure is not None:
+            raise failure
+
         if not page_token or len(hours) >= HOURLY_LOOKAHEAD_HOURS:
             break
         if events_used >= max_hourly_pages:
@@ -484,12 +554,38 @@ def fetch_google_forecast(key):
 
     daily_forecast = None
     if ENABLE_GOOGLE_DAILY_FORECAST:
-        daily_forecast = fetch_daily_forecast(key)
+        failure = None
+        try:
+            daily_forecast = fetch_daily_forecast(key)
+        except GoogleFetchError as exc:
+            exc.dispatched_events += events_used
+            raise
+        except Exception as exc:
+            failure = GoogleFetchError.from_unrecognized(
+                "daily forecast",
+                events_used,
+                exc,
+            )
+        if failure is not None:
+            raise failure
         events_used += 1
 
     current_conditions = None
     if ENABLE_GOOGLE_CURRENT_CONDITIONS:
-        current_conditions = fetch_current_conditions(key)
+        failure = None
+        try:
+            current_conditions = fetch_current_conditions(key)
+        except GoogleFetchError as exc:
+            exc.dispatched_events += events_used
+            raise
+        except Exception as exc:
+            failure = GoogleFetchError.from_unrecognized(
+                "current conditions",
+                events_used,
+                exc,
+            )
+        if failure is not None:
+            raise failure
         events_used += 1
 
     return {
@@ -499,3 +595,491 @@ def fetch_google_forecast(key):
         "currentConditions": current_conditions,
         "google_weather_events_used": events_used,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 4: city-aware requests, strict pagination, and per-page event
+# accounting through the transactional usage ledger and the TTL-enforced
+# runtime store. Every function below is explicit about which of the 15
+# configured cities it is fetching for; none of it depends on SFO_TZ,
+# SFO_POINT, or the legacy JSON usage/cache files above.
+# ---------------------------------------------------------------------------
+
+
+class GoogleCityFetchError(RuntimeError):
+    """A safe, city-aware Google fetch failure with no embedded secrets.
+
+    Only the city slug, endpoint name, and page number are ever included in
+    the message -- never the API key, the full request URL, or the original
+    transport/parse exception (see ``_dispatch_google_request``).
+    """
+
+    def __init__(self, *, city_slug, endpoint, page_number):
+        self.city_slug = city_slug
+        self.endpoint = endpoint
+        self.page_number = page_number
+        super().__init__(
+            f"Google Weather {endpoint} request failed for {city_slug} page {page_number}"
+        )
+
+
+@dataclass(frozen=True)
+class GoogleHourlyRow:
+    valid_at: datetime
+    temperature_f: float
+    # The station's fixed-standard (never civil/DST) settlement day for this
+    # reading -- see settlement_calendar.local_standard_date.
+    station_date: date
+
+
+@dataclass(frozen=True)
+class GoogleDailyRow:
+    target_date: str
+    high_f: float
+
+
+@dataclass(frozen=True)
+class GoogleCurrentRow:
+    observed_at: datetime
+    temperature_f: float
+
+
+@dataclass(frozen=True)
+class GoogleFetchResult:
+    city_slug: str
+    station_id: str
+    issued_at: datetime
+    hourly_rows: tuple[GoogleHourlyRow, ...]
+    daily_rows: tuple[GoogleDailyRow, ...]
+    current_row: GoogleCurrentRow | None
+    dispatched_events: int
+
+
+def _resolve_instant(now):
+    if now is None:
+        return datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be a timezone-aware datetime")
+    return now.astimezone(timezone.utc)
+
+
+def _open_google_request(base_url, params, *, transport):
+    """Perform one Google Weather HTTP GET and return the raw response body.
+
+    This is the ONLY place that ever holds the live request URL (which
+    embeds the API key): it never logs it, never returns it, and any
+    exception raised here is classified and re-raised as a sanitized
+    ``GoogleCityFetchError`` by ``_dispatch_google_request`` -- the original
+    exception (and the URL/key it may embed) never escapes that boundary.
+    """
+
+    query = urlencode(params)
+    request_url = f"{base_url}?{query}"
+    with transport(request_url, timeout=20) as response:
+        return response.read()
+
+
+def _decode_google_json(raw):
+    text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("Google Weather response was not a JSON object")
+    return payload
+
+
+def _dispatch_google_request(*, usage, city, endpoint, page_number, request, parse, now=None):
+    """Reserve, dispatch, and classify one Google Weather request.
+
+    Reserves ledger budget before dispatch, marks the reservation dispatched
+    immediately before the transport call, and completes it as success or a
+    classified failure afterward -- no path leaves a reservation dangling. On
+    any failure only a sanitized ``GoogleCityFetchError`` escapes; it is
+    raised after the classification try/except blocks have fully unwound, so
+    it never chains to the original (possibly secret-bearing) exception.
+    """
+
+    event = usage.reserve_event(
+        city_slug=city.slug,
+        station_id=city.nws_station_id,
+        endpoint=endpoint,
+        page_number=page_number,
+        now=now,
+    )
+    try:
+        usage.mark_dispatched(event, now=now)
+    except Exception:
+        usage.cancel_before_dispatch(event, now=now)
+        raise
+
+    error_kind = None
+    response_status_class = None
+    raw = None
+    try:
+        raw = request()
+    except HTTPError as exc:
+        error_kind = "http"
+        code = getattr(exc, "code", None)
+        response_status_class = code // 100 if isinstance(code, int) else None
+    except TimeoutError:
+        error_kind = "timeout"
+    except URLError:
+        error_kind = "transport"
+    except Exception:
+        error_kind = "unknown"
+
+    result = None
+    if error_kind is None:
+        try:
+            result = parse(raw)
+        except Exception:
+            error_kind = "parse"
+
+    if error_kind is None:
+        usage.complete_event(event, success=True, now=now)
+        return result
+
+    usage.complete_event(
+        event,
+        success=False,
+        error_kind=error_kind,
+        response_status_class=response_status_class,
+        now=now,
+    )
+    raise GoogleCityFetchError(city_slug=city.slug, endpoint=endpoint, page_number=page_number)
+
+
+def _city_hour_datetime(city, hour):
+    start = hour.get("interval", {}).get("startTime")
+    parsed = parse_google_timestamp(start)
+    if parsed:
+        return parsed.astimezone(timezone.utc)
+
+    display = hour.get("displayDateTime") or {}
+    year = display.get("year")
+    month = display.get("month")
+    day_num = display.get("day")
+    if not all([year, month, day_num]):
+        return None
+    civil_tz = ZoneInfo(city.civil_tz_name)
+    local = datetime(
+        int(year),
+        int(month),
+        int(day_num),
+        int(display.get("hours", display.get("hour", 0))),
+        int(display.get("minutes", display.get("minute", 0))),
+        tzinfo=civil_tz,
+    )
+    return local.astimezone(timezone.utc)
+
+
+def _parse_hourly_page_rows(city, payload):
+    raw_hours = payload.get("forecastHours")
+    if raw_hours is None:
+        raw_hours = []
+    if not isinstance(raw_hours, list) or not all(isinstance(hour, dict) for hour in raw_hours):
+        raise ValueError("Google hourly forecast rows must be objects")
+
+    rows = []
+    for hour in raw_hours:
+        valid_at = _city_hour_datetime(city, hour)
+        temperature_f = temp_to_f(hour.get("temperature") or {})
+        if valid_at is None or temperature_f is None:
+            continue
+        rows.append(
+            GoogleHourlyRow(
+                valid_at=valid_at,
+                temperature_f=round(temperature_f, 2),
+                station_date=local_standard_date(valid_at, city.fixed_standard_timezone()),
+            )
+        )
+    return tuple(rows)
+
+
+def _google_civil_display_date(city, payload):
+    display = payload.get("displayDate") or {}
+    year, month, day = display.get("year"), display.get("month"), display.get("day")
+    if not all([year, month, day]):
+        return None
+    try:
+        return (
+            datetime(int(year), int(month), int(day), tzinfo=ZoneInfo(city.civil_tz_name))
+            .date()
+            .isoformat()
+        )
+    except ValueError:
+        return None
+
+
+def _parse_daily_rows(city, payload):
+    raw_days = payload.get("forecastDays")
+    if raw_days is None:
+        raw_days = []
+    if not isinstance(raw_days, list) or not all(isinstance(day, dict) for day in raw_days):
+        raise ValueError("Google daily forecast rows must be objects")
+
+    rows = []
+    for day in raw_days:
+        target_date_iso = _google_civil_display_date(city, day)
+        high_f = temp_to_f(day.get("maxTemperature") or {})
+        if target_date_iso is None or high_f is None:
+            continue
+        rows.append(GoogleDailyRow(target_date=target_date_iso, high_f=round(high_f, 2)))
+    return tuple(rows)
+
+
+def _parse_current_row(payload, fetch_instant):
+    temperature_f = temp_to_f(payload.get("temperature") or {})
+    if temperature_f is None:
+        return None
+    observed_at = parse_google_timestamp(payload.get("currentTime")) or fetch_instant
+    return GoogleCurrentRow(
+        observed_at=observed_at.astimezone(timezone.utc),
+        temperature_f=round(temperature_f, 2),
+    )
+
+
+def fetch_city_hourly(
+    city: CityConfig,
+    *,
+    key: str,
+    usage: GoogleUsageLedger,
+    runtime: GoogleRuntimeStore,
+    max_pages: int = 3,
+    transport=urlopen,
+    now: datetime | None = None,
+) -> tuple[GoogleHourlyRow, ...]:
+    """Fetch, account for, and durably publish one city's paginated hourly forecast.
+
+    Reserves ledger budget before every page, marks the reservation
+    dispatched immediately before the transport call, and completes it as
+    success or a classified failure afterward. ``GOOGLE_HOURLY_MAX_PAGES``
+    (an official hard ceiling of 3) always wins over a larger ``max_pages``;
+    a ceiling of zero makes no hourly request at all.
+
+    The complete multi-page generation is written to the runtime store in
+    one atomic call only if every dispatched page in this attempt parsed
+    successfully. Any failure aborts the whole attempt and writes nothing --
+    a partial or empty write would wipe or falsely refresh whatever
+    generation is already active for this city
+    (see ``google_weather_store.GoogleRuntimeStore.replace_hourly_generation``).
+    """
+
+    effective_max_pages = min(max_pages, GOOGLE_HOURLY_MAX_PAGES)
+    if effective_max_pages <= 0:
+        return ()
+
+    fetch_instant = _resolve_instant(now)
+    collected: list[GoogleHourlyRow] = []
+    page_token = None
+
+    for page_number in range(1, effective_max_pages + 1):
+        requested_token = page_token
+
+        def _request(_token=requested_token):
+            return _open_google_request(
+                HOURLY_API_URL,
+                {
+                    "key": key,
+                    "location.latitude": f"{city.latitude:.4f}",
+                    "location.longitude": f"{city.longitude:.4f}",
+                    "hours": str(HOURLY_LOOKAHEAD_HOURS),
+                    "pageSize": str(HOURLY_PAGE_SIZE),
+                    "unitsSystem": "IMPERIAL",
+                    **({"pageToken": _token} if _token else {}),
+                },
+                transport=transport,
+            )
+
+        def _parse(raw):
+            payload = _decode_google_json(raw)
+            rows = _parse_hourly_page_rows(city, payload)
+            next_token = payload.get("nextPageToken")
+            if next_token is not None and not isinstance(next_token, str):
+                raise ValueError("Google hourly page token must be a string")
+            return rows, next_token
+
+        rows, next_token = _dispatch_google_request(
+            usage=usage,
+            city=city,
+            endpoint="hourly",
+            page_number=page_number,
+            request=_request,
+            parse=_parse,
+            now=now,
+        )
+        collected.extend(rows)
+        page_token = next_token
+        if not page_token:
+            break
+
+    temperatures_by_valid_at = {row.valid_at: row.temperature_f for row in collected}
+    if temperatures_by_valid_at:
+        runtime.replace_hourly_generation(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            issued_at=fetch_instant,
+            temperatures_by_valid_at=temperatures_by_valid_at,
+            stored_at=fetch_instant,
+        )
+    return tuple(collected)
+
+
+def fetch_city_daily(
+    city: CityConfig,
+    *,
+    key: str,
+    usage: GoogleUsageLedger,
+    runtime: GoogleRuntimeStore,
+    transport=urlopen,
+    now: datetime | None = None,
+) -> tuple[GoogleDailyRow, ...]:
+    """Fetch, account for, and durably publish one city's daily forecast."""
+
+    fetch_instant = _resolve_instant(now)
+
+    def _request():
+        return _open_google_request(
+            DAILY_API_URL,
+            {
+                "key": key,
+                "location.latitude": f"{city.latitude:.4f}",
+                "location.longitude": f"{city.longitude:.4f}",
+                "days": "3",
+                "unitsSystem": "IMPERIAL",
+            },
+            transport=transport,
+        )
+
+    def _parse(raw):
+        payload = _decode_google_json(raw)
+        return _parse_daily_rows(city, payload)
+
+    rows = _dispatch_google_request(
+        usage=usage,
+        city=city,
+        endpoint="daily",
+        page_number=1,
+        request=_request,
+        parse=_parse,
+        now=now,
+    )
+
+    highs_by_target_date = {row.target_date: row.high_f for row in rows}
+    if highs_by_target_date:
+        runtime.replace_daily_generation(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            issued_at=fetch_instant,
+            highs_by_target_date=highs_by_target_date,
+            stored_at=fetch_instant,
+        )
+    return rows
+
+
+def fetch_city_current(
+    city: CityConfig,
+    *,
+    key: str,
+    usage: GoogleUsageLedger,
+    runtime: GoogleRuntimeStore,
+    transport=urlopen,
+    now: datetime | None = None,
+) -> GoogleCurrentRow | None:
+    """Fetch, account for, and durably publish one city's current conditions."""
+
+    fetch_instant = _resolve_instant(now)
+
+    def _request():
+        return _open_google_request(
+            CURRENT_API_URL,
+            {
+                "key": key,
+                "location.latitude": f"{city.latitude:.4f}",
+                "location.longitude": f"{city.longitude:.4f}",
+                "unitsSystem": "IMPERIAL",
+            },
+            transport=transport,
+        )
+
+    def _parse(raw):
+        payload = _decode_google_json(raw)
+        return _parse_current_row(payload, fetch_instant)
+
+    row = _dispatch_google_request(
+        usage=usage,
+        city=city,
+        endpoint="current",
+        page_number=1,
+        request=_request,
+        parse=_parse,
+        now=now,
+    )
+
+    if row is not None:
+        runtime.replace_current_generation(
+            city_slug=city.slug,
+            station_id=city.nws_station_id,
+            issued_at=fetch_instant,
+            observed_at=row.observed_at,
+            temperature_f=row.temperature_f,
+            stored_at=fetch_instant,
+        )
+    return row
+
+
+def fetch_city_weather(
+    city: CityConfig,
+    *,
+    key: str,
+    usage: GoogleUsageLedger,
+    runtime: GoogleRuntimeStore,
+    include_daily: bool = True,
+    include_current: bool = True,
+    max_hourly_pages: int = 3,
+    transport=urlopen,
+    now: datetime | None = None,
+) -> GoogleFetchResult:
+    """Fetch every requested endpoint for one city as one bundled result.
+
+    Each endpoint is independently reserved, dispatched, and completed
+    through ``fetch_city_hourly``/``fetch_city_daily``/``fetch_city_current``;
+    a failure in one endpoint's ledger/store state never contaminates
+    another regardless of call order. This wrapper does not swallow
+    failures -- it propagates the first one it hits; callers that need
+    partial-failure tolerance across endpoints should call the per-endpoint
+    functions directly (as the multi-city refresh orchestrator does).
+    """
+
+    fetch_instant = _resolve_instant(now)
+    before = usage.usage(now=fetch_instant).monthly_events
+
+    hourly_rows = fetch_city_hourly(
+        city,
+        key=key,
+        usage=usage,
+        runtime=runtime,
+        max_pages=max_hourly_pages,
+        transport=transport,
+        now=now,
+    )
+    daily_rows = (
+        fetch_city_daily(city, key=key, usage=usage, runtime=runtime, transport=transport, now=now)
+        if include_daily
+        else ()
+    )
+    current_row = (
+        fetch_city_current(city, key=key, usage=usage, runtime=runtime, transport=transport, now=now)
+        if include_current
+        else None
+    )
+
+    after = usage.usage(now=fetch_instant).monthly_events
+    return GoogleFetchResult(
+        city_slug=city.slug,
+        station_id=city.nws_station_id,
+        issued_at=fetch_instant,
+        hourly_rows=hourly_rows,
+        daily_rows=daily_rows,
+        current_row=current_row,
+        dispatched_events=after - before,
+    )

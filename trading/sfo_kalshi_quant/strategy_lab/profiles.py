@@ -31,19 +31,29 @@ def _profile_names(
     signal_quality: dict[str, Any],
 ) -> list[str]:
     names: set[str] = set()
+    target_active = bool(
+        (paper.get("research_daily_target") or {}).get("available")
+    )
+
+    def add(value: object) -> None:
+        name = _profile_key(value)
+        if target_active and name == "research":
+            return
+        names.add(name)
+
     for row in daily_summary.get("profiles") or []:
-        names.add(_profile_key(row.get("risk_profile")))
+        add(row.get("risk_profile"))
     for row in paper.get("profiles") or []:
-        names.add(_profile_key(row.get("risk_profile")))
+        add(row.get("risk_profile"))
     for bucket in ("open_positions", "closed_positions", "recent_monitor_actions"):
         for row in paper.get(bucket) or []:
-            names.add(_profile_key(row.get("risk_profile")))
+            add(row.get("risk_profile"))
     for row in paper.get("pending_limit_orders") or []:
-        names.add(_profile_key(row.get("risk_profile")))
+        add(row.get("risk_profile"))
     for name in (signal_quality.get("latest_candidates_by_profile") or {}):
-        names.add(_profile_key(name))
+        add(name)
     for row in signal_quality.get("latest_candidates") or []:
-        names.add(_profile_key(row.get("risk_profile")))
+        add(row.get("risk_profile"))
     names.discard("unknown")
     return sorted(names, key=_profile_sort_key)
 
@@ -70,13 +80,25 @@ def _profile_view(
     return {
         "risk_profile": name,
         "label": _profile_label(name),
-        "profile_type": "experimental" if name in EXPERIMENTAL_PROFILES else "primary",
+        "profile_type": "experimental" if _is_experimental(name) else "primary",
         "daily_summary": profile_daily,
         "signal_quality": profile_signal,
         "paper_trading": profile_paper,
         "learnings": learnings,
         "recommended_changes": recommendations,
         "status": _profile_status(name, profile_daily, profile_paper, profile_signal),
+        "daily_target": (
+            paper.get("research_daily_target")
+            if name == "research-target"
+            else None
+        ),
+        "excluded_from": (
+            ["daily_target", "live_readiness"]
+            if name == "research-motion"
+            else ["live_readiness"]
+            if name == "research-target"
+            else []
+        ),
     }
 
 
@@ -154,8 +176,8 @@ def _profile_daily_summary(
         "window_start": daily_summary.get("window_start"),
         "window_end": daily_summary.get("window_end"),
         "bankroll": daily_summary.get("bankroll"),
-        # Profiles contribute P&L to one shared account. They do not each own a
-        # separate $1,000 bankroll or equity curve.
+        # Legacy profiles contribute P&L to the shared/legacy account. Explicit
+        # research sleeves have separately published $1,000 account state.
         "opening_attributed_pnl": _round(all_time_pnl - window_pnl, 2),
         "current_attributed_pnl": _round(all_time_pnl, 2),
         # Profile-scoped YES/NO split and exit-reason mix so these cards render on
@@ -269,6 +291,8 @@ def _profile_paper_payload(paper: dict[str, Any], name: str) -> dict[str, Any]:
         "recent_monitor_actions": action_rows,
         "duplicate_open_groups": duplicate_rows,
         "profiles": [profile] if profile else [],
+        "daily_target": profile.get("daily_target"),
+        "excluded_from": profile.get("excluded_from") or [],
     }
 
 
@@ -336,7 +360,7 @@ def _profile_learnings(
     signal_count = len(signal_quality.get("latest_candidates") or [])
     if signal_count:
         notes.append(f"{name} has {signal_count} current signal candidate(s) in the latest artifact.")
-    if name in EXPERIMENTAL_PROFILES:
+    if _is_experimental(name):
         notes.append(
             f"{name} is experimental paper-data collection; its P&L is isolated from the balanced headline."
         )
@@ -387,7 +411,7 @@ def _profile_status(
     return {
         "risk_profile": name,
         "profile_label": _profile_label(name),
-        "profile_type": "experimental" if name in EXPERIMENTAL_PROFILES else "primary",
+        "profile_type": "experimental" if _is_experimental(name) else "primary",
         "paper_trading_status": paper_status,
         "open_risk": _round(paper_summary.get("open_risk"), 2),
         "pending_limit_risk": _round(paper_summary.get("pending_limit_risk"), 2),
@@ -434,10 +458,16 @@ def _profile_key(value: object) -> str:
     return str(value or "unknown").strip().lower() or "unknown"
 
 
+def _is_experimental(name: str) -> bool:
+    return name in EXPERIMENTAL_PROFILES or name.startswith("research-")
+
+
 def _profile_sort_key(name: str) -> tuple[int, str]:
     order = {
         "live": 0,
-        "research": 1,
+        "research-target": 1,
+        "research-motion": 2,
+        "research": 3,
         "unknown": 9,
     }
     return order.get(name, 8), name
@@ -448,6 +478,10 @@ def _profile_label(name: str) -> str:
         return "Live (real-money candidate)"
     if name == "research":
         return "Research (experimental)"
+    if name == "research-target":
+        return "Research target (5% daily objective)"
+    if name == "research-motion":
+        return "Research motion (execution learning)"
     return name
 
 

@@ -1,9 +1,15 @@
-# SFO Weather Forecaster
+# WeatherEdge Forecaster — San Francisco flagship
 
-This project forecasts tomorrow's high temperature at San Francisco Airport. The
-research model is trained on 10 years of NOAA hourly observations, while the live
-website blends public forecast APIs with local SFO history and current airport
-observations.
+This directory holds the **San Francisco flagship** forecaster: the full legacy
+blend of Google Weather, NWS, Open-Meteo, an LSTM trained on 10 years of NOAA
+hourly observations, and marine-layer features.
+
+The other fourteen cities do **not** run this path. They run the shared,
+station-agnostic NWP→EMOS pipeline (`nwp_archive.py`, `emos_forecast.py`) with
+settlement truth from `city_truth.py`. See the
+[project README](../README.md) for how the two tiers fit together.
+
+Everything below describes the San Francisco flagship specifically.
 
 ## What It Predicts
 
@@ -134,12 +140,21 @@ publishes only the safe static output.
 
 ## Results
 
-Per-day A/B test on the held-out forecast period:
+Per-day A/B test on the held-out forecast period. Regenerate these numbers with
+`python research/ab_test.py` and `python research/compare_models.py`; the values
+below track `ab_test_results.json` and `diagnostics.json`, which are also what
+the live dashboard renders.
 
-| Target | LSTM MAE | XGBoost MAE | Persistence MAE | Result |
-|---|---:|---:|---:|---|
-| Tomorrow's daily high | **3.19°F** | 3.87°F | 3.79°F | LSTM wins |
-| Spot temp 24h ahead | 1.94°F | 1.84°F | 1.84°F | No clear model win |
+| Target | n | LSTM MAE | XGBoost MAE | Persistence MAE | Result |
+|---|---:|---:|---:|---:|---|
+| Tomorrow's daily high | 442 | **3.30°F** | 3.86°F | 3.97°F | LSTM wins; Diebold–Mariano p < 0.001 |
+| Spot temp 24h ahead | 9,897 | 2.32°F | 2.41°F | — | Significant (p = 0.03) but negligible effect (Cohen's d = 0.06) |
+
+Tomorrow's daily high is the target the markets actually settle on. There the
+LSTM beats the persistence baseline by 17% and the XGBoost challenger by 15.8%,
+winning 63% of days head-to-head. On spot temperature 24h ahead the LSTM's edge
+is real but too small to matter, which is why the daily-high model holds the
+production slot and the spot model does not.
 
 For point-in-time validation of the live blend archive, use:
 

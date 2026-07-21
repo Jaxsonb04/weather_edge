@@ -28,7 +28,7 @@ export function StrategyPublicationNotice({ generatedAt }: { generatedAt?: strin
     <div
       role={stale ? "alert" : "status"}
       aria-live={stale ? undefined : "polite"}
-      className={`mb-6 flex items-start gap-3 rounded-xl px-4 py-3 ring-1 ${
+      className={`flex items-start gap-3 rounded-xl px-4 py-3 ring-1 ${
         stale ? "bg-danger-soft ring-danger/30" : "bg-surface-secondary ring-border/70"
       }`}
     >

@@ -3,6 +3,7 @@ import { useCitiesData } from "../../lib/data";
 import { Reveal } from "../ui/Reveal";
 import { Finding } from "../ui/Finding";
 import { CityMethodTable } from "./CityMethodTable";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 
 interface Step {
   icon: string;
@@ -134,10 +135,6 @@ export function ForecastPipeline() {
         </section>
       </Reveal>
 
-      <Reveal delay={0.05}>
-        <CityMethodTable />
-      </Reveal>
-
       <Finding>
         The same leakage-free, nine-model NWP ensemble runs in{" "}
         <strong>
@@ -155,6 +152,17 @@ export function ForecastPipeline() {
         honest about the record: the multi-city EMOS pipeline is backtest-grade with only a short live
         history so far, so the fourteen non-flagship cities do not yet carry a long live track record.
       </Finding>
+
+      <Reveal delay={0.05}>
+        <DetailDisclosure
+          id="city-method-matrix"
+          icon="solar:map-point-bold"
+          title="City-by-city station matrix"
+          note="15 settlement stations, model counts, methods, and official climate reports"
+        >
+          <CityMethodTable />
+        </DetailDisclosure>
+      </Reveal>
     </div>
   );
 }

@@ -1,13 +1,65 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeProfiles,
   equitySeries,
   equitySeriesFromDays,
   gateCounts,
   profileGateCounts,
+  researchDailyTarget,
   type GateBehavior,
   type ProfileGateStats,
   type StrategyLab,
 } from "./strategy";
+
+describe("active research books", () => {
+  const profile = (riskProfile: string) => ({
+    label: riskProfile,
+    risk_profile: riskProfile,
+    profile_type: riskProfile === "live" ? "primary" : "experimental",
+  });
+
+  it("orders the canonical books live, target, motion and excludes legacy research", () => {
+    const s = {
+      profiles: [
+        profile("research-motion"),
+        profile("research"),
+        profile("live"),
+        profile("research-target"),
+      ],
+    } as StrategyLab;
+
+    expect(activeProfiles(s).map((entry) => entry.risk_profile)).toEqual([
+      "live",
+      "research-target",
+      "research-motion",
+    ]);
+  });
+
+  it("uses legacy research only when neither canonical research sleeve exists", () => {
+    const s = {
+      profiles: [profile("research"), profile("live")],
+    } as StrategyLab;
+
+    expect(activeProfiles(s).map((entry) => entry.risk_profile)).toEqual([
+      "live",
+      "research",
+    ]);
+    expect(activeProfiles({ profiles: [profile("live")] } as StrategyLab)).toHaveLength(1);
+  });
+
+  it("tolerates a missing target artifact and falls back from profile to top-level data", () => {
+    const target = profile("research-target");
+    expect(researchDailyTarget({ profiles: [target] } as StrategyLab, target)).toBeUndefined();
+
+    const artifact = { available: true, target_pnl: 50, realized_pnl: 12 };
+    expect(
+      researchDailyTarget(
+        { profiles: [target], research_daily_target: artifact } as StrategyLab,
+        target,
+      ),
+    ).toEqual(artifact);
+  });
+});
 
 describe("account equity series", () => {
   it("uses backend closing equity so the visible window retains prior realized P&L", () => {

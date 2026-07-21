@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the non-SFO Google Weather research refresh once per Pacific day
+
+[Timer]
+# Once daily, off SFO's high-frequency cadence and off the top of the hour
+# to avoid competing with sfo-forecaster-refresh's own decorrelated fires.
+RandomizedDelaySec=120
+OnCalendar=*-*-* 11:05:00 UTC
+Persistent=true
+Unit=weatheredge-google-nonsfo-refresh.service
+
+[Install]
+WantedBy=timers.target

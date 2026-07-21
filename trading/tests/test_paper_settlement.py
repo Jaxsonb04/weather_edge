@@ -2,6 +2,7 @@ import io
 import json
 import sqlite3
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from datetime import date, datetime, timezone
 from tempfile import TemporaryDirectory
@@ -17,8 +18,119 @@ from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBin, TradeDecision
 from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
+from sfo_kalshi_quant.store.scoring import _sample_decision_rows
+from sfo_kalshi_quant.summary import build_paper_summary
 
 from support import pre_resolution_event
+
+
+def _profile_sampling_decision(probability: float = 0.91) -> TradeDecision:
+    return TradeDecision(
+        ticker="KXHIGHTSFO-TEST-B66.5",
+        label="66 to 67",
+        action="BUY_YES",
+        approved=True,
+        probability=probability,
+        probability_lcb=0.61,
+        yes_bid=0.20,
+        yes_ask=0.30,
+        spread=0.10,
+        fee_per_contract=0.01,
+        cost_per_contract=0.31,
+        edge=0.60,
+        edge_lcb=0.30,
+        kelly_fraction=0.02,
+        recommended_contracts=10.0,
+        expected_profit=6.0,
+        reasons=[],
+        trade_quality_score=72.0,
+        strike_type="between",
+        floor_strike=66.0,
+        cap_strike=67.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "profile_probabilities",
+    [
+        [
+            (None, 0.91),
+            ("balanced", 0.91),
+            ("fast-feedback", 0.71),
+            ("research", 0.71),
+        ],
+        [
+            ("fast_feedback", 0.71),
+            ("research", 0.71),
+            ("balanced", 0.91),
+            (None, 0.91),
+        ],
+    ],
+)
+@pytest.mark.parametrize(
+    "sample_mode", ["entry-per-market-side", "latest-per-market-side"]
+)
+def test_python_sampling_fallback_normalizes_profile_before_deduplication(
+    profile_probabilities, sample_mode
+):
+    base = _profile_sampling_decision()
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        for profile, probability in profile_probabilities:
+            decision = replace(base, probability=probability)
+            store.record_decisions(
+                "2026-06-03",
+                [decision],
+                event=pre_resolution_event([decision]),
+                risk_profile=profile,
+            )
+        raw_rows = store.sampled_decision_rows(sample_mode="all")
+
+        rows = _sample_decision_rows(raw_rows, sample_mode)
+
+    assert {float(row["probability"]) for row in rows} == {0.91, 0.71}
+    assert len(rows) == 2
+
+
+def test_sql_sampling_reports_unknown_stored_profile_clearly():
+    decision = _profile_sampling_decision()
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03",
+            [decision],
+            event=pre_resolution_event([decision]),
+            risk_profile="mystery-profile",
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            store.sampled_decision_rows(sample_mode="entry-per-market-side")
+
+    assert str(exc_info.value) == (
+        "invalid stored risk_profile 'mystery-profile': "
+        "risk profile must be 'live' or 'research'"
+    )
+
+
+def test_python_sampling_reports_unknown_stored_profile_clearly():
+    decision = _profile_sampling_decision()
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03",
+            [decision],
+            event=pre_resolution_event([decision]),
+            risk_profile="mystery-profile",
+        )
+        rows = store.sampled_decision_rows(sample_mode="all")
+
+        with pytest.raises(ValueError) as exc_info:
+            _sample_decision_rows(rows, "entry-per-market-side")
+
+    assert str(exc_info.value) == (
+        "invalid stored risk_profile 'mystery-profile': "
+        "risk profile must be 'live' or 'research'"
+    )
 
 
 def test_auto_settle_waits_until_six_am_next_standard_day_in_winter():
@@ -959,6 +1071,243 @@ def test_close_paper_order_computes_exit_pnl():
         assert row["status"] == "PAPER_CLOSED"
         assert row["exit_price"] == 0.30
         assert row["realized_pnl"] > 0
+
+
+def test_market_summary_counts_partial_exits_as_one_terminal_decision():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.62,
+            yes_bid=0.48,
+            yes_ask=0.50,
+            spread=0.02,
+            fee_per_contract=0.02,
+            cost_per_contract=0.52,
+            edge=0.18,
+            edge_lcb=0.10,
+            kelly_fraction=0.01,
+            recommended_contracts=4.0,
+            expected_profit=0.72,
+            reasons=[],
+        )
+        order_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        store.close_paper_order(order_id, 0.20, max_quantity=1.0)
+        store.close_paper_order(order_id, 0.20, max_quantity=1.0)
+        store.close_paper_order(order_id, 0.20)
+
+        with store.connect() as conn:
+            raw_pnl, raw_capital = conn.execute(
+                "SELECT SUM(realized_pnl), "
+                "SUM(contracts * cost_per_contract) "
+                "FROM paper_orders WHERE id=? OR parent_order_id=?",
+                (order_id, order_id),
+            ).fetchone()
+
+        summary = store.market_backtest_summary()
+
+        assert summary["orders"] == 1
+        assert summary["losses"] == 1
+        assert summary["wins"] == 0
+        assert summary["contracts"] == 4
+        assert summary["realized_pnl"] == raw_pnl
+        assert summary["capital_at_risk"] == raw_capital
+
+
+def test_market_summary_excludes_invalid_group_counts_and_money():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.62,
+            yes_bid=0.48,
+            yes_ask=0.50,
+            spread=0.02,
+            fee_per_contract=0.02,
+            cost_per_contract=0.52,
+            edge=0.18,
+            edge_lcb=0.10,
+            kelly_fraction=0.01,
+            recommended_contracts=2.0,
+            expected_profit=0.36,
+            reasons=[],
+        )
+        root_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        store.close_paper_order(root_id, 0.90)
+        child_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        store.close_paper_order(child_id, 0.90)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET parent_order_id=?, market_ticker=? "
+                "WHERE id=?",
+                (root_id, "KXHIGHTSFO-TEST-B71.5", child_id),
+            )
+            raw_contracts, raw_capital, raw_pnl = conn.execute(
+                "SELECT SUM(contracts), "
+                "SUM(contracts * cost_per_contract), SUM(realized_pnl) "
+                "FROM paper_orders WHERE id=? OR parent_order_id=?",
+                (root_id, root_id),
+            ).fetchone()
+
+        valid_decision = replace(
+            decision,
+            ticker="KXHIGHTSFO-TEST-B72.5",
+            label="72° to 73°",
+            action="BUY_NO",
+            side="NO",
+            entry_bid=0.48,
+            entry_ask=0.50,
+            edge=0.17,
+        )
+        valid_id = store.record_paper_order(
+            "2026-06-03", valid_decision, risk_profile="research"
+        )
+        valid_lot = store.close_paper_order(valid_id, 0.70)
+        valid_contracts = float(valid_lot["contracts"])
+        valid_capital = valid_contracts * float(valid_lot["cost_per_contract"])
+        valid_pnl = float(valid_lot["realized_pnl"])
+
+        assert raw_contracts > 0
+        assert raw_capital > 0
+        assert raw_pnl > 0
+        assert valid_pnl > 0
+        summary = store.market_backtest_summary()
+
+        assert summary == {
+            "orders": 1.0,
+            "contracts": valid_contracts,
+            "capital_at_risk": valid_capital,
+            "realized_pnl": valid_pnl,
+            "roi": valid_pnl / valid_capital,
+            "hit_rate": 1.0,
+            "wins": 1.0,
+            "losses": 0.0,
+            "avg_edge": valid_lot["edge"],
+            "open_orders": 0.0,
+            "open_capital_at_risk": 0,
+        }
+        assert 1000.0 + summary["realized_pnl"] == 1000.0 + valid_pnl
+
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=1,
+            now=datetime.fromisoformat(valid_lot["closed_at"]),
+        )
+
+        totals = payload["totals"]
+        assert totals["trades_opened"] == 1
+        assert totals["trades_closed"] == 1
+        assert totals["trades_settled"] == 0
+        assert totals["open_positions"] == 0
+        assert totals["open_risk"] == 0.0
+        assert totals["wins"] == 1
+        assert totals["losses"] == 0
+        assert totals["hit_rate"] == 1.0
+        assert totals["realized_pnl"] == round(valid_pnl, 2)
+        assert totals["cumulative_realized_pnl"] == round(valid_pnl, 2)
+        assert totals["capital_resolved"] == round(valid_capital, 2)
+        assert totals["roi"] == round(valid_pnl / valid_capital, 4)
+        assert payload["bankroll"] == 1000.0
+        assert payload["current_equity"] == round(1000.0 + valid_pnl, 2)
+
+        assert [row["risk_profile"] for row in payload["profiles"]] == [
+            "research"
+        ]
+        profile = payload["profiles"][0]
+        assert profile["resolved"] == 1
+        assert profile["wins"] == 1
+        assert profile["losses"] == 0
+        assert profile["realized_pnl"] == round(valid_pnl, 2)
+        assert profile["capital_resolved"] == round(valid_capital, 2)
+        assert profile["hit_rate"] == 1.0
+        assert profile["roi"] == round(valid_pnl / valid_capital, 4)
+
+        no_side = payload["side_performance"]["NO"]
+        assert no_side["trades"] == 1
+        assert no_side["wins"] == 1
+        assert no_side["losses"] == 0
+        assert no_side["realized_pnl"] == round(valid_pnl, 2)
+        assert no_side["capital"] == round(valid_capital, 2)
+        assert no_side["hit_rate"] == 1.0
+        assert no_side["roi"] == round(valid_pnl / valid_capital, 4)
+        assert payload["side_performance"]["YES"] == {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "realized_pnl": 0.0,
+            "capital": 0.0,
+            "hit_rate": None,
+            "roi": None,
+        }
+        assert set(payload["side_performance_by_profile"]) == {"research"}
+        research_sides = payload["side_performance_by_profile"]["research"]
+        assert research_sides["NO"] == no_side
+        assert research_sides["YES"] == payload["side_performance"]["YES"]
+
+
+def test_market_summary_counts_partial_realization_money_without_resolving_root():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-B70.5",
+            label="70° to 71°",
+            action="BUY_YES",
+            approved=True,
+            probability=0.70,
+            probability_lcb=0.62,
+            yes_bid=0.48,
+            yes_ask=0.50,
+            spread=0.02,
+            fee_per_contract=0.02,
+            cost_per_contract=0.52,
+            edge=0.18,
+            edge_lcb=0.10,
+            kelly_fraction=0.01,
+            recommended_contracts=2.0,
+            expected_profit=0.36,
+            reasons=[],
+        )
+        root_id = store.record_paper_order(
+            "2026-06-03", decision, risk_profile="live"
+        )
+        realized_lot = store.close_paper_order(
+            root_id, 0.70, max_quantity=1.0
+        )
+
+        summary = store.market_backtest_summary()
+
+        assert summary["orders"] == 0
+        assert summary["wins"] == 0
+        assert summary["losses"] == 0
+        assert summary["hit_rate"] == 0.0
+        assert summary["contracts"] == realized_lot["contracts"]
+        expected_capital = (
+            realized_lot["contracts"] * realized_lot["cost_per_contract"]
+        )
+        assert summary["capital_at_risk"] == expected_capital
+        assert summary["realized_pnl"] == realized_lot["realized_pnl"]
+        assert summary["roi"] == realized_lot["realized_pnl"] / expected_capital
+        assert summary["open_orders"] == 1
+        assert summary["open_capital_at_risk"] > 0
 
 
 def test_open_paper_orders_returns_named_rows_for_monitor():
