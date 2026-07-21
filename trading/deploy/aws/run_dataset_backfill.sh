@@ -13,6 +13,58 @@ PREVIOUS_DAYS="${SFO_DATASET_PREVIOUS_DAYS:-7}"
 KALSHI_CANDLE_INTERVAL="${SFO_DATASET_KALSHI_CANDLE_INTERVAL:-60}"
 KALSHI_MAX_PAGES="${SFO_DATASET_KALSHI_MAX_PAGES:-20}"
 KALSHI_MAX_TRADE_PAGES="${SFO_DATASET_KALSHI_MAX_TRADE_PAGES:-1}"
+LOCK_RETRY_ATTEMPTS="${SFO_DATASET_LOCK_RETRY_ATTEMPTS:-3}"
+LOCK_RETRY_DELAY_SECONDS="${SFO_DATASET_LOCK_RETRY_DELAY_SECONDS:-5}"
+LOCK_RETRY_BUDGET_SECONDS="${SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS:-600}"
+MAX_LOCK_RETRY_ATTEMPTS=10
+MAX_LOCK_RETRY_DELAY_SECONDS=300
+# sfo-dataset-backfill.service has one 1,800-second start deadline covering this
+# script plus dataset research and four sequential forecast-maintenance jobs.
+# Reserve two thirds of it for normal work; lock recovery may consume at most
+# the remaining third across the entire source batch.
+DATASET_SERVICE_TIMEOUT_SECONDS=1800
+DATASET_SERVICE_HEADROOM_SECONDS=1200
+MAX_LOCK_RETRY_BUDGET_SECONDS=$((DATASET_SERVICE_TIMEOUT_SECONDS - DATASET_SERVICE_HEADROOM_SECONDS))
+SQLITE_BUSY_TIMEOUT_MILLISECONDS=30000
+
+if [[ ! "$LOCK_RETRY_ATTEMPTS" =~ ^[1-9][0-9]?$ ]] ||
+  (( 10#$LOCK_RETRY_ATTEMPTS > MAX_LOCK_RETRY_ATTEMPTS )); then
+  echo "SFO_DATASET_LOCK_RETRY_ATTEMPTS must be a canonical integer from 1 to $MAX_LOCK_RETRY_ATTEMPTS" >&2
+  exit 2
+fi
+LOCK_RETRY_ATTEMPTS=$((10#$LOCK_RETRY_ATTEMPTS))
+
+invalid_retry_delay=0
+if [[ "$LOCK_RETRY_DELAY_SECONDS" =~ ^([0-9]|[1-9][0-9]{1,2})([.][0-9]{1,3})?$ ]]; then
+  retry_delay_whole_seconds="${BASH_REMATCH[1]}"
+  retry_delay_fraction="${BASH_REMATCH[2]:-}"
+  if (( 10#$retry_delay_whole_seconds > MAX_LOCK_RETRY_DELAY_SECONDS )) ||
+    { (( 10#$retry_delay_whole_seconds == MAX_LOCK_RETRY_DELAY_SECONDS )) &&
+      [[ "$retry_delay_fraction" =~ [1-9] ]]; }; then
+    invalid_retry_delay=1
+  fi
+else
+  invalid_retry_delay=1
+fi
+if (( invalid_retry_delay )); then
+  echo "SFO_DATASET_LOCK_RETRY_DELAY_SECONDS must be a finite number from 0 to $MAX_LOCK_RETRY_DELAY_SECONDS" >&2
+  exit 2
+fi
+
+if [[ ! "$LOCK_RETRY_BUDGET_SECONDS" =~ ^([0-9]|[1-9][0-9]{1,2})$ ]] ||
+  (( 10#$LOCK_RETRY_BUDGET_SECONDS > MAX_LOCK_RETRY_BUDGET_SECONDS )); then
+  echo "SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS must be a canonical integer from 0 to $MAX_LOCK_RETRY_BUDGET_SECONDS (service timeout ${DATASET_SERVICE_TIMEOUT_SECONDS}s minus ${DATASET_SERVICE_HEADROOM_SECONDS}s headroom)" >&2
+  exit 2
+fi
+LOCK_RETRY_BUDGET_SECONDS=$((10#$LOCK_RETRY_BUDGET_SECONDS))
+
+retry_delay_fraction_digits="${retry_delay_fraction#.}"
+retry_delay_fraction_milliseconds="${retry_delay_fraction_digits}000"
+retry_delay_fraction_milliseconds="${retry_delay_fraction_milliseconds:0:3}"
+LOCK_RETRY_DELAY_MILLISECONDS=$((
+  10#$retry_delay_whole_seconds * 1000 + 10#$retry_delay_fraction_milliseconds
+))
+LOCK_RETRY_BUDGET_MILLISECONDS=$((LOCK_RETRY_BUDGET_SECONDS * 1000))
 
 if [[ "$PYTHON_BIN" != */* ]]; then
   if ! PYTHON_BIN="$(command -v "$PYTHON_BIN")"; then
@@ -46,6 +98,64 @@ truthy() {
     1 | true | yes | y | on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+monotonic_milliseconds() {
+  "$PYTHON_BIN" -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+}
+
+LOCK_RETRY_STARTED_MILLISECONDS="$(monotonic_milliseconds)"
+LOCK_RETRY_DEADLINE_MILLISECONDS=$((
+  LOCK_RETRY_STARTED_MILLISECONDS + LOCK_RETRY_BUDGET_MILLISECONDS
+))
+
+run_dataset_cli_attempt() {
+  local attempt_number="$1"
+  shift
+  if (( attempt_number > 1 )); then
+    SFO_DATASET_LOCK_RETRY_DEADLINE_MILLISECONDS="$LOCK_RETRY_DEADLINE_MILLISECONDS" \
+      "$PYTHON_BIN" -m sfo_kalshi_quant.cli "$@"
+  else
+    "$PYTHON_BIN" -m sfo_kalshi_quant.cli "$@"
+  fi
+}
+
+run_dataset_source() {
+  local attempt=1
+  local status=0
+  local now_milliseconds=0
+  local elapsed_milliseconds=0
+  local remaining_milliseconds=0
+  local required_milliseconds=0
+  while (( attempt <= LOCK_RETRY_ATTEMPTS )); do
+    if run_dataset_cli_attempt "$attempt" "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    if (( status != 75 || attempt >= LOCK_RETRY_ATTEMPTS )); then
+      return "$status"
+    fi
+    now_milliseconds="$(monotonic_milliseconds)"
+    elapsed_milliseconds=$((now_milliseconds - LOCK_RETRY_STARTED_MILLISECONDS))
+    remaining_milliseconds=$((LOCK_RETRY_BUDGET_MILLISECONDS - elapsed_milliseconds))
+    required_milliseconds=$((LOCK_RETRY_DELAY_MILLISECONDS + SQLITE_BUSY_TIMEOUT_MILLISECONDS))
+    if (( remaining_milliseconds <= required_milliseconds )); then
+      echo "warning: global SQLite lock retry budget exhausted; source will not be retried" >&2
+      return "$status"
+    fi
+    echo "warning: transient SQLite lock; retrying dataset source ($attempt/$LOCK_RETRY_ATTEMPTS)" >&2
+    sleep "$LOCK_RETRY_DELAY_SECONDS"
+    now_milliseconds="$(monotonic_milliseconds)"
+    elapsed_milliseconds=$((now_milliseconds - LOCK_RETRY_STARTED_MILLISECONDS))
+    remaining_milliseconds=$((LOCK_RETRY_BUDGET_MILLISECONDS - elapsed_milliseconds))
+    if (( remaining_milliseconds <= SQLITE_BUSY_TIMEOUT_MILLISECONDS )); then
+      echo "warning: global SQLite lock retry budget exhausted after retry delay; source will not be retried" >&2
+      return "$status"
+    fi
+    ((attempt += 1))
+  done
+  return "$status"
 }
 
 mkdir -p "$(dirname "$DB_PATH")"
@@ -98,7 +208,7 @@ for raw_source in "${sources[@]}"; do
   esac
 
   echo "running dataset backfill source=$source start=$source_start end=$source_end db=$DB_PATH"
-  if ! "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}"; then
+  if ! run_dataset_source "${args[@]}"; then
     failed_sources+=("$source")
     echo "warning: dataset backfill source=$source failed; continuing" >&2
   fi

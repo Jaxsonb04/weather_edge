@@ -16,7 +16,7 @@ export function ResearchNotes({ s }: { s: StrategyLab }) {
       {notes.map((n) => (
         <ItemCard key={n.term} variant="secondary" className="min-w-0">
           <ItemCard.Icon>
-            <Icon icon="solar:notebook-bold" className="size-4 text-accent" />
+            <Icon icon="solar:notebook-bold" className="size-4 text-accent" aria-hidden="true" />
           </ItemCard.Icon>
           <ItemCard.Content className="min-w-0">
             <ItemCard.Title className="whitespace-normal break-words">{n.term}</ItemCard.Title>

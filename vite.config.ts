@@ -20,7 +20,23 @@ function fontPreloads(): Plugin {
       const links = fonts
         .map((fileName) => `    <link rel="preload" href="./${fileName}" as="font" type="font/woff2" crossorigin />`)
         .join("\n");
-      html.source = html.source.replace("  </head>", `${links}\n  </head>`);
+      let source = html.source.replace("  </head>", `${links}\n  </head>`);
+
+      // Vite normally emits the module script before the generated stylesheet.
+      // A fast script response can therefore mount the Tailwind layout before
+      // its CSS has arrived, briefly placing the footer in the first viewport
+      // and producing a large layout shift. Put render-blocking styles first so
+      // the initial React tree is measured with its final layout primitives.
+      const stylesheetPattern = /^\s*<link rel="stylesheet"[^>]*>\s*$/gm;
+      const stylesheets = source.match(stylesheetPattern) ?? [];
+      if (stylesheets.length) {
+        source = source.replace(stylesheetPattern, "");
+        source = source.replace(
+          /^(\s*)<script type="module"/m,
+          `${stylesheets.map((link) => `    ${link.trim()}`).join("\n")}\n$1<script type="module"`,
+        );
+      }
+      html.source = source;
     },
   };
 }

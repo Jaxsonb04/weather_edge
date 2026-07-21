@@ -4,18 +4,26 @@ import { KPIGroup } from "@heroui-pro/react/kpi-group";
 import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
-import { money, type StrategyLab } from "../../lib/strategy";
+import { activeProfiles, money, type StrategyLab } from "../../lib/strategy";
 
 export function PnlHeader({ s }: { s: StrategyLab }) {
   const sum = s.paper_trading.summary;
   const account = s.accounting;
-  const allTimePnl = account?.all_time_realized_pnl ?? sum.realized_pnl;
-  const windowPnl = account?.window_realized_pnl ?? s.daily_summary.totals?.realized_pnl ?? 0;
+  // paper_trading.summary / daily_summary totals are aggregated across every
+  // account the backend tracks (live + research). They only stand in for the
+  // live book's own numbers when no research book exists in the artifact —
+  // otherwise showing them under this live-only header would mislabel
+  // research activity as live P&L.
+  const hasResearchBook = activeProfiles(s).some((p) => p.risk_profile !== "live");
+  const allTimePnl = account?.all_time_realized_pnl ?? (hasResearchBook ? undefined : sum.realized_pnl);
+  const windowPnl = account?.window_realized_pnl ?? (hasResearchBook ? undefined : (s.daily_summary.totals?.realized_pnl ?? 0));
+  const realizedEquity = account?.realized_equity ?? (hasResearchBook ? undefined : s.daily_summary.current_equity);
   const weekly = account?.goal;
+  const weeklyPnl = weekly?.weekly_realized_pnl ?? windowPnl;
   const weeklyHint = weekly
     ? `5% research objective · ${money(weekly.remaining_pnl)} remaining · ${weekly.current_week_evidence_qualified ? `${weekly.completed_week_success_streak} verified-week streak` : "full exec-v3 week pending"}`
     : "5% research objective";
-  const pnlTone = allTimePnl >= 0 ? "text-success" : "text-danger";
+  const pnlTone = allTimePnl != null && allTimePnl >= 0 ? "text-success" : "text-danger";
 
   return (
     <Reveal immediate>
@@ -23,27 +31,33 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
         <Card.Content className="p-2 sm:p-3">
           <KPIGroup className="flex-wrap">
             <Kpi icon="solar:dollar-minimalistic-bold" title="Realized P&L" hint="all time">
-              <AnimatedNumber
-                className={`font-display text-2xl font-semibold ${pnlTone}`}
-                value={allTimePnl}
-                format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
-              />
+              {allTimePnl == null ? <span className="font-display text-2xl font-semibold">—</span> : (
+                <AnimatedNumber
+                  className={`font-display text-2xl font-semibold ${pnlTone}`}
+                  value={allTimePnl}
+                  format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
+                />
+              )}
             </Kpi>
             <KPIGroup.Separator />
             <Kpi icon="solar:calendar-bold" title="Weekly realized P&L" hint="paper-shared · Mon 00:00 PT">
-              <AnimatedNumber
-                className={`font-display text-2xl font-semibold ${(weekly?.weekly_realized_pnl ?? windowPnl) >= 0 ? "text-success" : "text-danger"}`}
-                value={weekly?.weekly_realized_pnl ?? windowPnl}
-                format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
-              />
+              {weeklyPnl == null ? <span className="font-display text-2xl font-semibold">—</span> : (
+                <AnimatedNumber
+                  className={`font-display text-2xl font-semibold ${weeklyPnl >= 0 ? "text-success" : "text-danger"}`}
+                  value={weeklyPnl}
+                  format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
+                />
+              )}
             </Kpi>
             <KPIGroup.Separator />
             <Kpi icon="solar:wallet-bold" title="Realized equity" hint={`from ${money(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 1000, { digits: 0, sign: "negative-only" })}`}>
-              <AnimatedNumber
-                className="font-display text-2xl font-semibold"
-                value={account?.realized_equity ?? s.daily_summary.current_equity}
-                format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
-              />
+              {realizedEquity == null ? <span className="font-display text-2xl font-semibold">—</span> : (
+                <AnimatedNumber
+                  className="font-display text-2xl font-semibold"
+                  value={realizedEquity}
+                  format={{ style: "currency", currency: "USD", maximumFractionDigits: 2 }}
+                />
+              )}
             </Kpi>
             <KPIGroup.Separator />
             <Kpi icon="solar:chart-2-bold" title="Weekly return" hint={weeklyHint}>

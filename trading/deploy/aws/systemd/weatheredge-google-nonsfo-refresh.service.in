@@ -1,0 +1,34 @@
+[Unit]
+Description=WeatherEdge non-SFO Google Weather research refresh (once daily)
+Wants=network-online.target
+After=network-online.target
+OnFailure=sfo-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__FORECASTER_DIR__
+EnvironmentFile=__ENV_FILE__
+# T8-1 (Task 6 review, HIGH): a naive flip of the existing 38x/day
+# sfo-forecaster-refresh unit to `--cities all` would spend 61 events/cycle
+# and exhaust the 260/day hard cap by the 5th cycle, starving SFO for the
+# rest of the day. Resolution: SFO stays on the frequent unit at
+# `--cities sfo` (3 hourly pages + daily + current = 5 events/cycle x
+# 38 cycles/day = 190 events/day, 5,890/31-day month -- unchanged from
+# before this unit existed); this unit refreshes the 14 non-SFO cities
+# exactly ONCE per Pacific day (3 hourly pages + daily, no
+# current-conditions endpoint = 4 events/city x 14 cities = 56 events/day,
+# 1,736/31-day month). Combined steady state: 190 + 56 = 246 events/day
+# (5,890 + 1,736 = 7,626/31-day month) -- comfortably under the 260/day hard
+# cap and the 7,800/month soft scheduling ceiling (spec section 7.4).
+#
+# The city list below is a static ExecStart argument (this unit cannot
+# import forecaster/cities.py); it must be every CITIES slug except sfo, in
+# CITIES' own declared order. trading/tests/test_aws_deploy.py's
+# test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily
+# fails if this list and cities.py ever drift apart.
+ExecStart=-__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities mia,lax,chi,atl,nyc,dal,sea,phl,phx,aus,hou,okc,bos,den
+Nice=10
+MemoryHigh=800M
+MemoryMax=1100M
+TimeoutStartSec=900

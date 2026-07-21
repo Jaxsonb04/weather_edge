@@ -7,11 +7,11 @@ import { Stat } from "../ui/Stat";
 
 function SideCard({ side, pinned }: { side: CalibrationSide; pinned: boolean }) {
   return (
-    <Card className="h-full rounded-2xl ring-1 ring-border/70">
+    <Card className="h-full rounded-2xl">
       <Card.Header className="flex flex-row items-start justify-between gap-3">
         <div>
           <Card.Title className="text-base">{side.role ?? (pinned ? "Active calibration" : "Challenger")}</Card.Title>
-          <p className="mt-0.5 font-mono text-[11px] text-muted">source: {side.source ?? "—"}</p>
+          <p className="mt-1 font-mono text-[11px] text-muted">source: {side.source ?? "—"}</p>
         </div>
         <Chip size="sm" variant="soft" color={pinned ? "success" : "default"}>
           <Chip.Label>{pinned ? "In production" : "Shadow only"}</Chip.Label>
@@ -19,14 +19,14 @@ function SideCard({ side, pinned }: { side: CalibrationSide; pinned: boolean }) 
       </Card.Header>
       <Card.Content className="pt-0">
         {side.available ? (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-4">
             <Stat label="RPS skill vs climatology" value={pct(side.ranked_probability_skill, 1)} tone="pos" />
             <Stat label="Brier skill" value={pct(side.brier_skill, 1)} />
             <Stat label="Top-bin accuracy" value={pct(side.top_bin_accuracy, 1)} />
             <Stat label="Scored outcomes" value={`${(side.sample_size ?? 0).toLocaleString()} of ${(side.outcome_count ?? 0).toLocaleString()}`} />
           </div>
         ) : (
-          <div className="flex gap-2.5 rounded-xl bg-surface-secondary p-3 text-sm text-muted ring-1 ring-border/40">
+          <div className="flex gap-2 text-sm text-muted">
             <Icon icon="solar:hourglass-line-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
             <span>{side.reason ?? "Not enough clean data yet."}</span>
           </div>
@@ -43,17 +43,14 @@ export function CalibrationCompare({ s }: { s: StrategyLab }) {
   if (!c?.active) return null;
   return (
     <div className="space-y-4">
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2">
         <SideCard side={c.active} pinned />
         {c.challenger && <SideCard side={c.challenger} pinned={false} />}
       </div>
       {c.comparison?.recommendation && (
-        <div className="flex items-center gap-2.5 rounded-xl bg-surface-secondary/70 px-4 py-3 text-sm ring-1 ring-border/50">
-          <Icon icon="solar:lock-keyhole-bold" className="size-4 shrink-0 text-accent" aria-hidden="true" />
-          <span className="text-muted">
-            <span className="font-medium text-foreground">{c.comparison.label ?? "Verdict"}:</span>{" "}
-            {c.comparison.recommendation}
-          </span>
+        <div className="border-l-2 border-accent/40 py-1 pl-4 text-sm text-muted">
+          <span className="font-medium text-foreground">{c.comparison.label ?? "Verdict"}:</span>{" "}
+          {c.comparison.recommendation}
         </div>
       )}
     </div>

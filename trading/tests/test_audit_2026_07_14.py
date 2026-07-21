@@ -9,10 +9,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.maker_fills import (
+    EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
     RestingMakerOrder,
     allocate_maker_fills,
@@ -24,6 +27,14 @@ from test_audit_2026_07_13 import _TradesClient, _decision, _resting_order, _tra
 
 
 T0 = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
+
+
+def _verify_final_truth(store: PaperStore) -> None:
+    result = store.verify_paper_settlements(
+        {("KXHIGHTSEA", "2026-07-14"): 85.0},
+        intervals={"KXHIGHTSEA": ("2026-07-14", "2026-07-14")},
+    )
+    assert result["mismatches"] == 0
 
 
 def test_exec_v3_exposes_queue_and_fill_consumption_per_trade() -> None:
@@ -229,6 +240,7 @@ def test_exec_v3_partial_fill_survives_restart_and_ttl_expiry() -> None:
         assert {row["id"] for row in store.open_paper_orders()} == {order_id}
 
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         settled = store.paper_order(order_id)
         assert settled["status"] == "PAPER_SETTLED"
         assert settled["contracts"] == 5.0
@@ -360,7 +372,7 @@ def test_exec_v3_queue_only_progress_is_idempotent_and_later_completes() -> None
         assert filled["remaining_contracts"] == 0.0
 
 
-def test_exec_v3_cutover_expires_unreplayable_legacy_resting_orders() -> None:
+def test_exec_v4_cutover_expires_exec_v3_resting_orders_without_rewriting() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
@@ -372,7 +384,7 @@ def test_exec_v3_cutover_expires_unreplayable_legacy_resting_orders() -> None:
         )
         with store.connect() as conn:
             conn.execute(
-                "UPDATE paper_orders SET execution_model_version='exec-v2-2026-07-13' "
+                "UPDATE paper_orders SET execution_model_version='exec-v3-2026-07-14' "
                 "WHERE id=?",
                 (order_id,),
             )
@@ -383,7 +395,118 @@ def test_exec_v3_cutover_expires_unreplayable_legacy_resting_orders() -> None:
         assert expired["status"] == "PAPER_EXPIRED"
         assert expired["reserved_cost"] == 0.0
         assert expired["remaining_contracts"] == 0.0
+        assert expired["execution_model_version"] == "exec-v3-2026-07-14"
         assert store.shared_account_state()["reservations"] == 0.0
+
+
+def test_exec_v4_cutover_freezes_exec_v3_partial_remainder_once() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(side="NO", limit_price=0.72, contracts=10.0),
+            created_at=T0,
+        )
+        first_trade = _trade(
+            "T-V3-PARTIAL",
+            yes_price=0.28,
+            quantity=4.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=1),
+        )
+        store.apply_maker_trade_batch(
+            "KXHIGHTSEA-26JUL13-B82.5", [first_trade]
+        )
+        partial = store.paper_order(order_id)
+        assert partial["status"] == "PAPER_PARTIALLY_FILLED"
+        assert partial["filled_contracts"] == 4.0
+        assert partial["remaining_contracts"] == 6.0
+        reserved_remainder = float(partial["reserved_cost"])
+        historical_evidence = json.loads(partial["fill_evidence_json"])
+        historical_evidence["model"] = "maker_allocator_price_time_v3"
+        historical_evidence["execution_model_version"] = "exec-v3-2026-07-14"
+        historical_evidence_json = json.dumps(historical_evidence, sort_keys=True)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=?, "
+                "fill_evidence_json=? WHERE id=?",
+                (
+                    "exec-v3-2026-07-14",
+                    historical_evidence_json,
+                    order_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_maker_allocations SET execution_model_version=? "
+                "WHERE order_id=?",
+                ("exec-v3-2026-07-14", order_id),
+            )
+
+        PaperStore(db_path)
+
+        frozen = store.paper_order(order_id)
+        assert frozen["status"] == "PAPER_PARTIAL_EXPIRED"
+        assert frozen["contracts"] == 4.0
+        assert frozen["filled_contracts"] == 4.0
+        assert frozen["remaining_contracts"] == 0.0
+        assert frozen["queue_remaining"] == 0.0
+        assert frozen["reserved_cost"] == 0.0
+        assert frozen["execution_model_version"] == "exec-v3-2026-07-14"
+        assert frozen["fill_evidence_json"] == historical_evidence_json
+        cutover = json.loads(frozen["outcome_diagnostics_json"])
+        assert cutover["previous_execution_model_version"] == "exec-v3-2026-07-14"
+        assert cutover["cutover_execution_model_version"] == EXECUTION_MODEL_VERSION
+        assert "execution_model_version" not in cutover
+        release_key = (
+            f"order:{order_id}:{EXECUTION_MODEL_VERSION}:cutover-release"
+        )
+        with store.connect() as conn:
+            releases = conn.execute(
+                "SELECT amount FROM paper_account_ledger "
+                "WHERE order_id=? AND event_type='RESERVATION_RELEASE' "
+                "AND idempotency_key=?",
+                (order_id, release_key),
+            ).fetchall()
+        assert [amount for (amount,) in releases] == [reserved_remainder]
+        assert store.shared_account_state()["reservations"] == 0.0
+
+        PaperStore(db_path)
+        with store.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM paper_account_ledger "
+                "WHERE idempotency_key=?",
+                (release_key,),
+            ).fetchone()[0] == 1
+
+        later_trade = _trade(
+            "T-V4-MUST-NOT-FILL-V3",
+            yes_price=0.28,
+            quantity=6.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=2),
+        )
+        assert _fill_resting_orders_against_live_book(
+            store,
+            _TradesClient([later_trade]),
+            Color.from_no_color(True),
+        ) == 0
+        unchanged = store.paper_order(order_id)
+        assert unchanged["status"] == "PAPER_PARTIAL_EXPIRED"
+        assert unchanged["contracts"] == 4.0
+        assert unchanged["filled_contracts"] == 4.0
+        assert unchanged["execution_model_version"] == "exec-v3-2026-07-14"
+        assert unchanged["fill_evidence_json"] == historical_evidence_json
+        assert {row["id"] for row in store.open_paper_orders()} == {order_id}
+
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
+        settled = store.paper_order(order_id)
+        assert settled["status"] == "PAPER_SETTLED"
+        assert settled["contracts"] == 4.0
+        assert settled["execution_model_version"] == "exec-v3-2026-07-14"
+        assert settled["fill_evidence_json"] == historical_evidence_json
 
 
 def test_exec_v3_journals_raw_trade_before_using_it_as_fill_evidence() -> None:
@@ -512,6 +635,7 @@ def test_exec_v3_restatement_requires_immutable_allocation_and_tape() -> None:
             store, _TradesClient([payload]), Color.from_no_color(True)
         )
         store.settle_paper_orders("2026-07-14", 85.0)
+        _verify_final_truth(store)
 
         verified = next(
             row for row in restate(db_path)["orders"] if row["order_id"] == order_id
@@ -527,7 +651,7 @@ def test_exec_v3_restatement_requires_immutable_allocation_and_tape() -> None:
             row for row in restate(db_path)["orders"] if row["order_id"] == order_id
         )
         assert missing_tape["verification"] == "UNVERIFIABLE"
-        assert "EXEC_V3_TAPE_MISSING" in missing_tape["findings"]
+        assert "EXEC_V4_TAPE_MISSING" in missing_tape["findings"]
 
 
 def test_exec_v3_partial_close_inherits_parent_entry_findings() -> None:
@@ -571,7 +695,157 @@ def test_exec_v3_partial_close_inherits_parent_entry_findings() -> None:
             row for row in restate(db_path)["orders"] if row["order_id"] == child["id"]
         )
         assert child_result["verification"] == "UNVERIFIABLE"
-        assert "EXEC_V3_TAPE_MISSING" in child_result["findings"]
+        assert "EXEC_V4_TAPE_MISSING" in child_result["findings"]
+
+
+def _verified_terminal_readiness_root(
+    store: PaperStore,
+    *,
+    trade_id: str,
+    ticker: str = "KXHIGHTSEA-26JUL13-B82.5",
+    floor: float = 82.0,
+    cap: float = 83.0,
+) -> int:
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_account_ledger SET created_at=? "
+            "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION'",
+            ((T0 - timedelta(minutes=1)).isoformat(),),
+        )
+    order_id = _resting_order(
+        store,
+        "2026-07-14",
+        _decision(
+            ticker,
+            side="NO",
+            limit_price=0.72,
+            contracts=4.0,
+            floor=floor,
+            cap=cap,
+        ),
+        created_at=T0,
+    )
+    payload = _trade(
+        trade_id,
+        yes_price=0.28,
+        quantity=4.0,
+        taker_book_side="bid",
+        created_time=T0 + timedelta(minutes=1),
+    )
+    _fill_resting_orders_against_live_book(
+        store, _TradesClient([payload]), Color.from_no_color(True)
+    )
+    assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+    _verify_final_truth(store)
+    return order_id
+
+
+def test_exec_v4_boundary_excludes_v3_evidence_without_rewriting() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        historical_id = _verified_terminal_readiness_root(
+            store,
+            trade_id="T-HISTORICAL-V3",
+            ticker="KXHIGHTSEA-26JUL14-B82.5",
+        )
+        current_id = _verified_terminal_readiness_root(
+            store,
+            trade_id="T-CURRENT-V4",
+            ticker="KXHIGHTSEA-26JUL14-B84.5",
+            floor=84.0,
+            cap=85.0,
+        )
+        with store.connect() as conn:
+            historical_evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (historical_id,),
+                ).fetchone()[0]
+            )
+            historical_evidence["model"] = "maker_allocator_price_time_v3"
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=?, "
+                "fill_evidence_json=? WHERE id=?",
+                (
+                    "exec-v3-2026-07-14",
+                    json.dumps(historical_evidence, sort_keys=True),
+                    historical_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_maker_allocations SET execution_model_version=? "
+                "WHERE order_id=?",
+                ("exec-v3-2026-07-14", historical_id),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO paper_account_ledger "
+                "(created_at, account_id, event_type, amount, idempotency_key) "
+                "VALUES (?, 'paper-shared', 'EXECUTION_SEMANTICS_TRANSITION', 0, ?)",
+                (
+                    (T0 - timedelta(minutes=2)).isoformat(),
+                    "execution:exec-v3-2026-07-14",
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_account_ledger SET created_at=? "
+                "WHERE idempotency_key='execution:exec-v4-2026-07-17'",
+                ((T0 - timedelta(minutes=1)).isoformat(),),
+            )
+
+        replay = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert replay["source_orders"] == 1
+        assert replay["execution_model_version"] == "exec-v4-2026-07-17"
+        assert replay["semantics_boundary"] == (
+            T0 - timedelta(minutes=1)
+        ).isoformat()
+        restated = {
+            row["order_id"]: row for row in restate(db_path)["orders"]
+        }
+        assert restated[historical_id]["verification"] == "UNVERIFIABLE"
+        assert restated[historical_id]["execution_model_version"] == (
+            "exec-v3-2026-07-14"
+        )
+        assert restated[historical_id]["fill_evidence_model"] == (
+            "maker_allocator_price_time_v3"
+        )
+        assert "EXEC_V3_HISTORICAL_SEMANTICS" in restated[historical_id]["findings"]
+        assert restated[current_id]["verification"] == "VERIFIED"
+        assert restated[current_id]["execution_model_version"] == (
+            EXECUTION_MODEL_VERSION
+        )
+        with store.connect() as conn:
+            current_version, current_evidence = conn.execute(
+                "SELECT execution_model_version, fill_evidence_json "
+                "FROM paper_orders WHERE id=?",
+                (current_id,),
+            ).fetchone()
+            assert current_version == EXECUTION_MODEL_VERSION
+            assert json.loads(current_evidence)["model"] == (
+                "maker_allocator_price_time_v4"
+            )
+            assert conn.execute(
+                "SELECT DISTINCT execution_model_version "
+                "FROM paper_maker_allocations WHERE order_id=?",
+                (current_id,),
+            ).fetchone()[0] == EXECUTION_MODEL_VERSION
+            assert EXECUTION_MODEL_VERSION in conn.execute(
+                "SELECT reason FROM paper_monitor_snapshots "
+                "WHERE order_id=? AND action='LIMIT_FILLED'",
+                (current_id,),
+            ).fetchone()[0]
+            assert conn.execute(
+                "SELECT execution_model_version FROM paper_orders WHERE id=?",
+                (historical_id,),
+            ).fetchone()[0] == "exec-v3-2026-07-14"
+            assert conn.execute(
+                "SELECT DISTINCT execution_model_version "
+                "FROM paper_maker_allocations WHERE order_id=?",
+                (historical_id,),
+            ).fetchone()[0] == "exec-v3-2026-07-14"
 
 
 def test_readiness_aggregates_verified_partial_close_lots_into_one_decision() -> None:
@@ -620,6 +894,7 @@ def test_readiness_aggregates_verified_partial_close_lots_into_one_decision() ->
             },
         )
         assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
         with store.connect() as conn:
             expected_pnl, expected_capital = conn.execute(
                 "SELECT SUM(realized_pnl), SUM(contracts * cost_per_contract) "
@@ -637,6 +912,294 @@ def test_readiness_aggregates_verified_partial_close_lots_into_one_decision() ->
         assert metrics["candidate"]["capital_at_risk"] == round(expected_capital, 4)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("account_id", "paper-research-shadow"),
+        ("execution_model_version", "exec-v2-2026-07-13"),
+        ("created_at", (T0 - timedelta(minutes=2)).isoformat()),
+    ],
+)
+def test_readiness_rejects_group_with_scope_mismatched_child(
+    field: str,
+    value: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_account_ledger SET created_at=? "
+                "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION'",
+                ((T0 - timedelta(minutes=1)).isoformat(),),
+            )
+        order_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(side="NO", limit_price=0.72, contracts=4.0),
+            created_at=T0,
+        )
+        payload = _trade(
+            "T-INVALID-READINESS",
+            yes_price=0.28,
+            quantity=4.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=1),
+        )
+        _fill_resting_orders_against_live_book(
+            store, _TradesClient([payload]), Color.from_no_color(True)
+        )
+        child = store.close_paper_order(
+            order_id,
+            0.80,
+            max_quantity=2.0,
+            liquidity_evidence={
+                "displayed_depth": 2.0,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
+        with store.connect() as conn:
+            conn.execute(
+                f"UPDATE paper_orders SET {field}=? WHERE id=?",
+                (value, child["id"]),
+            )
+        verified = {
+            row["order_id"]
+            for row in restate(db_path)["orders"]
+            if row["verification"] == "VERIFIED"
+        }
+        group_evidence_invalid = field in {
+            "account_id",
+            "execution_model_version",
+        }
+        assert (order_id in verified) is not group_evidence_invalid
+        assert (child["id"] in verified) is not group_evidence_invalid
+        if field == "execution_model_version":
+            assert child["id"] not in verified
+            child_result = next(
+                row
+                for row in restate(db_path)["orders"]
+                if row["order_id"] == child["id"]
+            )
+            assert "EXEC_V4_ORDER_VERSION_MISMATCH" in child_result["findings"]
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["verified_decisions"] == 0
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 0
+        assert metrics["by_cohort"] == {}
+        assert result["post_boundary_days"] == 0
+        assert result["promotion_eligible"] is False
+
+
+@pytest.mark.parametrize("risk_profile", ["research", "not-a-profile"])
+def test_readiness_excludes_non_live_shared_account_roots(
+    risk_profile: str,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = _verified_terminal_readiness_root(
+            store, trade_id=f"T-{risk_profile.upper()}-READINESS"
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET risk_profile=?, account_id='paper-shared' WHERE id=?",
+                (risk_profile, order_id),
+            )
+        verified = next(
+            row for row in restate(db_path)["orders"] if row["order_id"] == order_id
+        )
+        assert verified["verification"] == "VERIFIED"
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 1
+        assert result["verified_decisions"] == 0
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 0
+        assert metrics["by_cohort"] == {}
+        assert result["post_boundary_days"] == 0
+
+
+def test_readiness_treats_legacy_null_root_profile_as_live() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = _verified_terminal_readiness_root(
+            store, trade_id="T-NULL-PROFILE-READINESS"
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET risk_profile=NULL WHERE id=?",
+                (order_id,),
+            )
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 1
+        assert result["verified_decisions"] == 1
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 1
+        assert result["post_boundary_days"] == 1
+
+
+@pytest.mark.parametrize(
+    ("risk_profile", "expected_post_boundary_days"),
+    [("research", 1), ("not-a-profile", 0)],
+)
+def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
+    risk_profile: str,
+    expected_post_boundary_days: int,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        live_id = _verified_terminal_readiness_root(
+            store, trade_id="T-MIXED-LIVE-READINESS"
+        )
+        other_id = _verified_terminal_readiness_root(
+            store,
+            trade_id="T-MIXED-OTHER-READINESS",
+            ticker="KXHIGHTSEA-26JUL14-B84.5",
+            floor=84.0,
+            cap=85.0,
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET risk_profile=?, account_id='paper-shared' WHERE id=?",
+                (risk_profile, other_id),
+            )
+        verified = {
+            row["order_id"]
+            for row in restate(db_path)["orders"]
+            if row["verification"] == "VERIFIED"
+        }
+        assert {live_id, other_id} <= verified
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 2
+        assert result["verified_decisions"] == 1
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 1
+        assert metrics["by_cohort"]["post_exec_v4_live"]["trades"] == 1
+        assert result["post_boundary_days"] == expected_post_boundary_days
+
+
+@pytest.mark.parametrize(
+    (
+        "child_version",
+        "expected_source_orders",
+        "expected_post_boundary_days",
+        "child_verified",
+    ),
+    [
+        (EXECUTION_MODEL_VERSION, 3, 1, True),
+        ("exec-v2-2026-07-13", 1, 0, False),
+    ],
+)
+def test_readiness_research_group_is_neutral_only_with_consistent_scope(
+    child_version: str,
+    expected_source_orders: int,
+    expected_post_boundary_days: int,
+    child_verified: bool,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        live_id = _verified_terminal_readiness_root(
+            store, trade_id="T-RESEARCH-SCOPE-LIVE"
+        )
+        research_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(
+                "KXHIGHTSEA-26JUL14-B84.5",
+                side="NO",
+                limit_price=0.72,
+                contracts=4.0,
+                floor=84.0,
+                cap=85.0,
+            ),
+            created_at=T0,
+        )
+        payload = _trade(
+            "T-RESEARCH-SCOPE-PARTIAL",
+            yes_price=0.28,
+            quantity=4.0,
+            taker_book_side="bid",
+            created_time=T0 + timedelta(minutes=1),
+        )
+        _fill_resting_orders_against_live_book(
+            store, _TradesClient([payload]), Color.from_no_color(True)
+        )
+        child = store.close_paper_order(
+            research_id,
+            0.80,
+            max_quantity=2.0,
+            liquidity_evidence={
+                "displayed_depth": 2.0,
+                "source": "test_depth",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders "
+                "SET risk_profile='research', account_id='paper-shared' "
+                "WHERE id=? OR parent_order_id=?",
+                (research_id, research_id),
+            )
+            conn.execute(
+                "UPDATE paper_orders SET execution_model_version=? WHERE id=?",
+                (child_version, child["id"]),
+            )
+        restated = {
+            row["order_id"]: row for row in restate(db_path)["orders"]
+        }
+        verified_ids = {
+            order_id
+            for order_id, row in restated.items()
+            if row["verification"] == "VERIFIED"
+        }
+        assert live_id in verified_ids
+        assert (research_id in verified_ids) is child_verified
+        assert (restated[child["id"]]["verification"] == "VERIFIED") is (
+            child_verified
+        )
+        if not child_verified:
+            assert "EXEC_V4_ORDER_VERSION_MISMATCH" in restated[child["id"]][
+                "findings"
+            ]
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == expected_source_orders
+        assert result["verified_decisions"] == 1
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"]["settled_decisions"] == 1
+        assert result["post_boundary_days"] == expected_post_boundary_days
+
+
 def test_weekly_goal_counts_only_consecutive_completed_five_percent_weeks() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
@@ -647,8 +1210,11 @@ def test_weekly_goal_counts_only_consecutive_completed_five_percent_weeks() -> N
         with store.connect() as conn:
             conn.execute(
                 "UPDATE paper_account_ledger SET created_at=? "
-                "WHERE idempotency_key='execution:exec-v3-2026-07-14'",
-                ((this_monday - timedelta(days=21)).astimezone(UTC).isoformat(),),
+                "WHERE idempotency_key=?",
+                (
+                    (this_monday - timedelta(days=21)).astimezone(UTC).isoformat(),
+                    f"execution:{EXECUTION_MODEL_VERSION}",
+                ),
             )
         weekly_rows = (
             (this_monday - timedelta(days=11), 50.0),
@@ -673,7 +1239,7 @@ def test_weekly_goal_counts_only_consecutive_completed_five_percent_weeks() -> N
         assert goal["evidence_boundary"]
 
 
-def test_weekly_goal_streak_excludes_weeks_before_exec_v3_boundary() -> None:
+def test_weekly_goal_streak_excludes_weeks_before_current_execution_boundary() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         now_pt = datetime.now().astimezone(ZoneInfo("America/Los_Angeles"))
@@ -694,8 +1260,11 @@ def test_weekly_goal_streak_excludes_weeks_before_exec_v3_boundary() -> None:
             )
             conn.execute(
                 "UPDATE paper_account_ledger SET created_at=? "
-                "WHERE idempotency_key='execution:exec-v3-2026-07-14'",
-                ((this_monday + timedelta(days=1)).astimezone(UTC).isoformat(),),
+                "WHERE idempotency_key=?",
+                (
+                    (this_monday + timedelta(days=1)).astimezone(UTC).isoformat(),
+                    f"execution:{EXECUTION_MODEL_VERSION}",
+                ),
             )
 
         goal = _weekly_goal_payload(store, {"realized_equity": 1050.0})

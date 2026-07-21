@@ -1,5 +1,6 @@
 import os
 import re
+from datetime import timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,12 @@ def env_bool(name, default):
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def __capped_env_int(name, official_max):
+    """Return a non-negative configured value bounded by an official maximum."""
+
+    return min(max(env_int(name, official_max), 0), official_max)
+
+
 SFO_TZ = ZoneInfo("America/Los_Angeles")
 SFO_POINT = {"lat": 37.6213, "lon": -122.3790}
 HOURLY_API_URL = "https://weather.googleapis.com/v1/forecast/hours:lookup"
@@ -41,11 +48,61 @@ API_KEY_ENV = "GOOGLE_WEATHER_API_KEY"
 CACHE_PATH = Path("google_weather_cache.json")
 USAGE_PATH = Path(".google_weather_usage.json")
 DB_PATH = Path("weather.db")
+GOOGLE_RUNTIME_DB_PATH = Path(
+    os.getenv("GOOGLE_RUNTIME_DB_PATH", "/run/weatheredge/google_runtime.db")
+)
+# Shared by GoogleRuntimeStore callers (e.g. the Task 6 multi-city
+# orchestrator) to decide whether to enforce the /run/weatheredge tmpfs
+# path and 0600 permissions -- same KALSHI_ENV=prod switch as the path
+# guard immediately below, kept as one source of truth.
+GOOGLE_RUNTIME_PRODUCTION = os.getenv("KALSHI_ENV", "").strip().lower() == "prod"
+if (
+    GOOGLE_RUNTIME_PRODUCTION
+    and not GOOGLE_RUNTIME_DB_PATH.resolve().is_relative_to(
+        Path("/run/weatheredge").resolve()
+    )
+):
+    raise RuntimeError("Google runtime content must live under /run/weatheredge")
 FORECAST_DATA_PATH = Path("forecast_data.json")
 SFO_WEATHER_STATION_ID = "USW00023234"
 GOOGLE_WEATHER_MONTHLY_FREE_CAP = 10000
-GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET = env_int("GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET", 8000)
-GOOGLE_WEATHER_DAILY_EVENT_BUDGET = env_int("GOOGLE_WEATHER_DAILY_EVENT_BUDGET", 260)
+GOOGLE_HOURLY_TTL_MAX = timedelta(hours=1)
+GOOGLE_CURRENT_TTL_MAX = timedelta(hours=1)
+GOOGLE_TODAY_DAILY_TTL_MAX = timedelta(days=30)
+GOOGLE_FUTURE_DAILY_TTL_MAX = timedelta(hours=24)
+GOOGLE_HOURLY_TTL = timedelta(
+    seconds=__capped_env_int(
+        "GOOGLE_HOURLY_TTL_SECONDS", int(GOOGLE_HOURLY_TTL_MAX.total_seconds())
+    )
+)
+GOOGLE_CURRENT_TTL = timedelta(
+    seconds=__capped_env_int(
+        "GOOGLE_CURRENT_TTL_SECONDS", int(GOOGLE_CURRENT_TTL_MAX.total_seconds())
+    )
+)
+GOOGLE_TODAY_DAILY_TTL = timedelta(
+    seconds=__capped_env_int(
+        "GOOGLE_TODAY_DAILY_TTL_SECONDS",
+        int(GOOGLE_TODAY_DAILY_TTL_MAX.total_seconds()),
+    )
+)
+GOOGLE_FUTURE_DAILY_TTL = timedelta(
+    seconds=__capped_env_int(
+        "GOOGLE_FUTURE_DAILY_TTL_SECONDS",
+        int(GOOGLE_FUTURE_DAILY_TTL_MAX.total_seconds()),
+    )
+)
+GOOGLE_HOURLY_MAX_PAGES = __capped_env_int("GOOGLE_HOURLY_MAX_PAGES", 3)
+GOOGLE_WEATHER_DAILY_EVENT_BUDGET = __capped_env_int(
+    "GOOGLE_WEATHER_DAILY_EVENT_BUDGET", 260
+)
+GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET = __capped_env_int(
+    "GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET", 8000
+)
+GOOGLE_WEATHER_SOFT_MONTHLY_CEILING = min(
+    __capped_env_int("GOOGLE_WEATHER_SOFT_MONTHLY_CEILING", 7800),
+    GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
+)
 ENABLE_GOOGLE_DAILY_FORECAST = env_bool("ENABLE_GOOGLE_DAILY_FORECAST", True)
 ENABLE_GOOGLE_CURRENT_CONDITIONS = env_bool("ENABLE_GOOGLE_CURRENT_CONDITIONS", True)
 GOOGLE_DAILY_INTERNAL_WEIGHT = env_float("GOOGLE_DAILY_INTERNAL_WEIGHT", 0.15)
