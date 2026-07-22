@@ -623,8 +623,8 @@ export function profileGateCounts(gate: ProfileGateStats | undefined) {
 export const findProfile = (s: StrategyLab, rp: string): ProfileEntry | undefined =>
   s.profiles?.find((p) => p.risk_profile === rp);
 
-/** Recent closed positions for one book (the published ledger is a recent slice,
-    not the full history — the all-time count lives in paper_trading.summary). */
+/** Closed positions for one book. The published ledger contains the current
+    calendar-month slice; the all-time count lives in paper_trading.summary. */
 export function ledgerForProfile(s: StrategyLab, rp: string): ClosedPosition[] {
   return closedLedger(s).filter((p) => p.risk_profile === rp);
 }

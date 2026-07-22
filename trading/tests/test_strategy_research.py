@@ -501,9 +501,8 @@ def test_strategy_research_exposes_compact_learning_diagnostics():
         assert closed["forecast_error_f"] == 1.0
 
 
-def test_strategy_research_summary_win_loss_counts_use_full_book():
-    """Summary win/loss counts must match the aggregate book, not the latest
-    30 published closed-position rows."""
+def test_strategy_research_publishes_all_closed_positions_from_the_latest_month():
+    """The profile ledger must not let a global recent-row cap hide a month."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         db_path = Path(tmp) / "trading" / "paper.db"
@@ -514,7 +513,9 @@ def test_strategy_research_summary_win_loss_counts_use_full_book():
         with sqlite3.connect(db_path) as conn:
             for idx in range(35):
                 won = idx >= 5
-                created_at = f"2026-06-{1 + idx // 30:02d}T00:{idx % 60:02d}:00+00:00"
+                month = "06" if idx < 30 else "07"
+                day = 1 + (idx % 30)
+                created_at = f"2026-{month}-{day:02d}T00:{idx % 60:02d}:00+00:00"
                 conn.execute(
                     """
                     INSERT INTO paper_orders (
@@ -551,7 +552,11 @@ def test_strategy_research_summary_win_loss_counts_use_full_book():
         assert summary["closed_positions"] == 35
         assert summary["win_count"] == 30
         assert summary["loss_count"] == 5
-        assert len(payload["paper_trading"]["closed_positions"]) == 30
+        published = payload["paper_trading"]["closed_positions"]
+        # 2026-07-01T00:30Z is still June 30 in the Pacific calendar used by
+        # the dashboard, so only the following four terminal rows belong here.
+        assert len(published) == 4
+        assert {row["settled_at"][:7] for row in published} == {"2026-07"}
         diagnostics = payload["paper_trading"]["diagnostics"]
         assert diagnostics["by_side"]["YES"]["resolved"] == 35
         assert diagnostics["by_exit_reason"]["held_to_settlement"]["losses"] == 5

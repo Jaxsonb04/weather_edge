@@ -138,7 +138,7 @@ describe("ProfileDashboard publication truthfulness", () => {
     expect(history.compareDocumentPosition(positions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("keeps the 20 most recent closed positions together and initially shows five", async () => {
+  it("keeps all published monthly closed positions together and initially shows five", async () => {
     const closedPositions = Array.from({ length: 22 }, (_, index) => ({
       id: index + 1,
       ticker: `TEST-${index + 1}`,
@@ -175,10 +175,9 @@ describe("ProfileDashboard publication truthfulness", () => {
     expect(screen.queryByText("Closed position 6")).not.toBeInTheDocument();
     expect(screen.queryByText("Closed position 21")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show 15 more closed positions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 17 more closed positions" }));
 
-    expect(screen.getByText("Closed position 20")).toBeInTheDocument();
-    expect(screen.queryByText("Closed position 21")).not.toBeInTheDocument();
+    expect(screen.getByText("Closed position 22")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show fewer closed positions" })).toHaveAttribute("aria-expanded", "true");
   });
 

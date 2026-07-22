@@ -185,7 +185,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const maxRejection = rejections[0]?.count ?? 1;
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
 
-  const ledger = ledgerForProfile(s, rp).slice(0, 20);
+  const ledger = ledgerForProfile(s, rp);
   const byCity = ledgerByCity(ledger);
   const allTimeClosed = sum?.closed_positions ?? 0;
   const monitorRows = monitorForProfile(s, rp);
@@ -283,7 +283,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           <SubHead
             icon="solar:clipboard-list-bold"
             title="Closed positions"
-            note={`${ledger.length} most recent · showing ${closedPositionsExpanded ? ledger.length : Math.min(ledger.length, 5)}`}
+            note={`${ledger.length} in the published month · showing ${closedPositionsExpanded ? ledger.length : Math.min(ledger.length, 5)}`}
           />
           {byCity.length > 0 && (
             <div className="mb-4">

@@ -18,7 +18,7 @@ from .._util import (
     _row_value as _sqlite_row_value,
     _to_float,
 )
-from ..config import strategy_config_for_profile, normalize_risk_profile_name
+from ..config import SFO_TZ, strategy_config_for_profile, normalize_risk_profile_name
 from ..db import PaperStore
 from ..exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
@@ -191,6 +191,35 @@ def _paper_row_time(row: dict[str, Any]) -> str:
     )
 
 
+def _closed_rows_for_latest_calendar_month(
+    rows: tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """Return every resolved logical position from the ledger's latest month.
+
+    The public Strategy Lab must keep a complete month together. A global
+    newest-N cap lets a high-activity book consume the entire published ledger,
+    hiding the other profiles' closed positions despite their all-time counts.
+    Use the latest resolved timestamp as the artifact's month anchor so stale
+    publications remain internally truthful, and compare months in Pacific
+    civil time to match the dashboard's operational calendar.
+    """
+
+    dated_rows = [
+        (row, timestamp)
+        for row in rows
+        if (timestamp := _parse_timestamp(_paper_row_time(row))) is not None
+    ]
+    if not dated_rows:
+        return []
+    anchor = max(timestamp for _, timestamp in dated_rows).astimezone(SFO_TZ)
+    return [
+        row
+        for row, timestamp in dated_rows
+        if (local := timestamp.astimezone(SFO_TZ)).year == anchor.year
+        and local.month == anchor.month
+    ]
+
+
 def _duplicate_open_rows(rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     counts: dict[tuple[str, str, str, str], int] = {}
     for row in rows:
@@ -297,10 +326,10 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             reverse=True,
         )[:30]
         closed_rows = sorted(
-            journal.terminal_rows,
+            _closed_rows_for_latest_calendar_month(journal.terminal_rows),
             key=_paper_row_time,
             reverse=True,
-        )[:30]
+        )
         closed_action_rows = sorted(
             journal.terminal_rows,
             key=_paper_row_time,
