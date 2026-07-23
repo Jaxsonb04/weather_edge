@@ -1380,12 +1380,12 @@
     ],
     "current_equity": 960.54,
     "data_collected": {
-      "decision_snapshots": 543460,
-      "forecast_snapshots": 32256,
-      "market_snapshots": 32256,
-      "paper_monitor_snapshots": 219719,
+      "decision_snapshots": 543496,
+      "forecast_snapshots": 32257,
+      "market_snapshots": 32257,
+      "paper_monitor_snapshots": 220293,
       "paper_orders": 855,
-      "probability_snapshots": 193536
+      "probability_snapshots": 193542
     },
     "days": [
       {
@@ -1815,9 +1815,9 @@
         "wins": 58
       },
       {
-        "approved_signals": 0,
-        "avg_market_probability": null,
-        "avg_model_probability": null,
+        "approved_signals": 10,
+        "avg_market_probability": 0.5,
+        "avg_model_probability": 0.5,
         "closed": 0,
         "closing_equity": 960.54,
         "cumulative_realized": -39.46,
@@ -1831,12 +1831,58 @@
         "opened": 0,
         "opened_spend": 0.0,
         "opening_equity": 960.54,
-        "profiles": {},
+        "profiles": {
+          "live": {
+            "approved_signals": 0,
+            "closed": 0,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 12,
+            "wins": 0
+          },
+          "research-motion": {
+            "approved_signals": 5,
+            "closed": 0,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 12,
+            "wins": 0
+          },
+          "research-target": {
+            "approved_signals": 5,
+            "closed": 0,
+            "hit_rate": null,
+            "losses": 0,
+            "opened": 0,
+            "opened_spend": 0.0,
+            "realized_pnl": 0.0,
+            "resolved": 0,
+            "resolved_spend": 0.0,
+            "roi": null,
+            "settled": 0,
+            "signals": 12,
+            "wins": 0
+          }
+        },
         "realized_pnl": 0.0,
         "resolved_spend": 0.0,
         "roi": null,
         "settled": 0,
-        "signals": 0,
+        "signals": 36,
         "wins": 0
       }
     ],
@@ -1878,7 +1924,7 @@
       }
     },
     "gate_behavior": {
-      "approved": 249036,
+      "approved": 249046,
       "by_profile": [
         {
           "approved": 1125,
@@ -1889,15 +1935,15 @@
             }
           ],
           "rejection_categories": {
-            "edge": 113891,
+            "edge": 113903,
             "no_data": 29988,
             "other": 0
           },
           "risk_profile": "live",
-          "signals": 145004,
+          "signals": 145016,
           "top_rejections": [
             {
-              "count": 61178,
+              "count": 61190,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
@@ -1923,19 +1969,19 @@
           ],
           "top_rejections_all": [
             {
-              "count": 143489,
+              "count": 143500,
               "reason": "lower-bound edge"
             },
             {
-              "count": 141097,
+              "count": 141109,
               "reason": "edge"
             },
             {
-              "count": 61178,
+              "count": 61190,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
-              "count": 40930,
+              "count": 40934,
               "reason": "edge_lcb"
             },
             {
@@ -1943,15 +1989,15 @@
               "reason": "source spread"
             },
             {
-              "count": 24249,
+              "count": 24251,
               "reason": "posterior probability"
             },
             {
-              "count": 22318,
+              "count": 22321,
               "reason": "spread"
             },
             {
-              "count": 11326,
+              "count": 11330,
               "reason": "model/market gap"
             }
           ]
@@ -2028,10 +2074,10 @@
           ]
         },
         {
-          "approved": 123415,
+          "approved": 123420,
           "entry_block_reasons": [
             {
-              "count": 108918,
+              "count": 108923,
               "reason": "motion requires point-positive visible-ask taker edge and lower-bound edge >= -0.07"
             },
             {
@@ -2048,23 +2094,23 @@
             }
           ],
           "rejection_categories": {
-            "edge": 45207,
+            "edge": 45214,
             "no_data": 29988,
             "other": 30
           },
           "risk_profile": "research-motion",
-          "signals": 198640,
+          "signals": 198652,
           "top_rejections": [
             {
               "count": 28989,
               "reason": "source spread"
             },
             {
-              "count": 11236,
+              "count": 11237,
               "reason": "posterior probability"
             },
             {
-              "count": 7338,
+              "count": 7340,
               "reason": "bid"
             },
             {
@@ -2076,7 +2122,7 @@
               "reason": "model/market gap"
             },
             {
-              "count": 3834,
+              "count": 3836,
               "reason": "NO ask is not tradeable"
             }
           ],
@@ -2086,40 +2132,40 @@
               "reason": "source spread"
             },
             {
-              "count": 25343,
+              "count": 25346,
               "reason": "posterior probability"
             },
             {
-              "count": 22902,
+              "count": 22903,
               "reason": "1c/2c tail requires exceptional support"
             },
             {
-              "count": 15329,
+              "count": 15332,
               "reason": "bid size"
             },
             {
-              "count": 12608,
+              "count": 12610,
               "reason": "spread"
             },
             {
-              "count": 9344,
+              "count": 9346,
               "reason": "all-in cost"
             },
             {
-              "count": 9344,
+              "count": 9346,
               "reason": "bid"
             },
             {
-              "count": 9294,
+              "count": 9296,
               "reason": "NO ask is not tradeable"
             }
           ]
         },
         {
-          "approved": 123415,
+          "approved": 123420,
           "entry_block_reasons": [
             {
-              "count": 121425,
+              "count": 121430,
               "reason": "target requires non-negative point and after-fee LCB edge"
             },
             {
@@ -2136,23 +2182,23 @@
             }
           ],
           "rejection_categories": {
-            "edge": 44995,
+            "edge": 45002,
             "no_data": 29940,
             "other": 28
           },
           "risk_profile": "research-target",
-          "signals": 198378,
+          "signals": 198390,
           "top_rejections": [
             {
               "count": 28953,
               "reason": "source spread"
             },
             {
-              "count": 11224,
+              "count": 11225,
               "reason": "posterior probability"
             },
             {
-              "count": 7264,
+              "count": 7266,
               "reason": "bid"
             },
             {
@@ -2164,7 +2210,7 @@
               "reason": "model/market gap"
             },
             {
-              "count": 3817,
+              "count": 3819,
               "reason": "NO ask is not tradeable"
             }
           ],
@@ -2174,39 +2220,39 @@
               "reason": "source spread"
             },
             {
-              "count": 25242,
+              "count": 25245,
               "reason": "posterior probability"
             },
             {
-              "count": 22881,
+              "count": 22882,
               "reason": "1c/2c tail requires exceptional support"
             },
             {
-              "count": 15233,
+              "count": 15236,
               "reason": "bid size"
             },
             {
-              "count": 12514,
+              "count": 12516,
               "reason": "spread"
             },
             {
-              "count": 9254,
+              "count": 9256,
               "reason": "all-in cost"
             },
             {
-              "count": 9254,
+              "count": 9256,
               "reason": "bid"
             },
             {
-              "count": 9205,
+              "count": 9207,
               "reason": "NO ask is not tradeable"
             }
           ]
         }
       ],
-      "rejected": 294424,
+      "rejected": 294450,
       "rejection_categories": {
-        "edge": 204413,
+        "edge": 204439,
         "no_data": 89952,
         "other": 59
       },
@@ -2216,7 +2262,7 @@
           "reason": "source spread"
         },
         {
-          "count": 61178,
+          "count": 61190,
           "reason": "live paper entry requires min_lead_days=1; same-"
         },
         {
@@ -2224,11 +2270,11 @@
           "reason": "edge"
         },
         {
-          "count": 22474,
+          "count": 22476,
           "reason": "posterior probability"
         },
         {
-          "count": 16841,
+          "count": 16845,
           "reason": "bid"
         },
         {
@@ -2238,11 +2284,11 @@
       ],
       "top_rejections_all": [
         {
-          "count": 143638,
+          "count": 143649,
           "reason": "lower-bound edge"
         },
         {
-          "count": 141361,
+          "count": 141373,
           "reason": "edge"
         },
         {
@@ -2250,40 +2296,40 @@
           "reason": "source spread"
         },
         {
-          "count": 74931,
+          "count": 74939,
           "reason": "posterior probability"
         },
         {
-          "count": 61178,
+          "count": 61190,
           "reason": "live paper entry requires min_lead_days=1; same-"
         },
         {
-          "count": 47540,
+          "count": 47547,
           "reason": "spread"
         },
         {
-          "count": 45783,
+          "count": 45785,
           "reason": "1c/2c tail requires exceptional support"
         },
         {
-          "count": 41807,
+          "count": 41814,
           "reason": "bid size"
         }
       ]
     },
-    "generated_at": "2026-07-23T07:23:23.319591+00:00",
+    "generated_at": "2026-07-23T07:38:58.186303+00:00",
     "learnings": [
       "Lower-bound edge split: edge_lcb<0 trades netted $-2.36 (262 trades) vs edge_lcb>=0 at $+67.22 (74 trades).",
       "NO side: 163/284 won, net $+67.42 this window.",
       "YES side: 6/52 won, net $-2.56 this window.",
       "Profile split: live 20/22 won ($+29.94); research 10/11 won ($+11.51); research-motion 112/271 won ($-1.99); research-target 27/32 won ($+25.39). Judge each gate set on its own book; research-profile losses are expected data-collection cost.",
-      "Most frequent gate rejections: source spread (74131x); live paper entry requires min_lead_days=1; same- (61178x).",
+      "Most frequent gate rejections: source spread (74131x); live paper entry requires min_lead_days=1; same- (61190x).",
       "Clean next-day forecast error averaged 2.47F across 2 settled day(s) in this window."
     ],
     "model_vs_market": {
       "max_abs_gap": 0.7852,
       "mean_abs_gap": 0.0739,
-      "samples": 543460
+      "samples": 543496
     },
     "profiles": [
       {
@@ -2797,7 +2843,7 @@
       "live_targets": [
         {
           "fetched_at": "2026-07-23T04:41:51+00:00",
-          "latest_age_hours": 2.69,
+          "latest_age_hours": 2.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 93.47,
@@ -2809,7 +2855,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:14+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 79.15,
@@ -2821,7 +2867,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:52+00:00",
-          "latest_age_hours": 1.69,
+          "latest_age_hours": 1.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 72.89,
@@ -2833,7 +2879,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:41:53+00:00",
-          "latest_age_hours": 2.69,
+          "latest_age_hours": 2.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 89.49,
@@ -2845,7 +2891,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:41:54+00:00",
-          "latest_age_hours": 2.69,
+          "latest_age_hours": 2.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 85.02,
@@ -2857,7 +2903,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:54+00:00",
-          "latest_age_hours": 1.69,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 105.39,
@@ -2869,7 +2915,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:18+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.6,
@@ -2881,7 +2927,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:41:57+00:00",
-          "latest_age_hours": 2.68,
+          "latest_age_hours": 2.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 88.78,
@@ -2893,7 +2939,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 105.77,
@@ -2905,7 +2951,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:57+00:00",
-          "latest_age_hours": 1.68,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 104.81,
@@ -2917,7 +2963,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:21+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 72.96,
@@ -2929,7 +2975,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:59+00:00",
-          "latest_age_hours": 1.68,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 102.86,
@@ -2941,7 +2987,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:59+00:00",
-          "latest_age_hours": 1.68,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 95.59,
@@ -2953,7 +2999,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:42:01+00:00",
-          "latest_age_hours": 2.68,
+          "latest_age_hours": 2.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 83.73,
@@ -2965,7 +3011,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:24+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 93.19,
@@ -2977,7 +3023,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:13+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 93.48,
@@ -2989,7 +3035,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:14+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 82.66,
@@ -3001,7 +3047,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:15+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 77.96,
@@ -3013,7 +3059,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 90.5,
@@ -3025,7 +3071,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 79.58,
@@ -3037,7 +3083,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:17+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 98.97,
@@ -3049,7 +3095,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:18+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 77.74,
@@ -3061,7 +3107,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:19+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 83.57,
@@ -3073,7 +3119,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 112.81,
@@ -3085,7 +3131,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 99.99,
@@ -3097,7 +3143,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:21+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 70.1,
@@ -3109,7 +3155,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:22+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.6,
@@ -3121,7 +3167,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:23+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 96.26,
@@ -3133,7 +3179,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:24+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 79.5,
@@ -3145,7 +3191,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:25+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 87.51,
@@ -3157,7 +3203,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:13+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 91.58,
@@ -3169,7 +3215,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:14+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 82.97,
@@ -3181,7 +3227,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:15+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 81.2,
@@ -3193,7 +3239,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 86.84,
@@ -3205,7 +3251,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 81.53,
@@ -3217,7 +3263,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:17+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 96.71,
@@ -3229,7 +3275,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:18+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 82.56,
@@ -3241,7 +3287,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:19+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 86.05,
@@ -3253,7 +3299,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 115.66,
@@ -3265,7 +3311,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 96.46,
@@ -3277,7 +3323,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:21+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 70.6,
@@ -3289,7 +3335,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:22+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 94.07,
@@ -3301,7 +3347,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:23+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 95.76,
@@ -3313,7 +3359,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:24+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 79.95,
@@ -3325,7 +3371,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:25+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.15,
@@ -3343,7 +3389,7 @@
       "recent_live_targets": [
         {
           "fetched_at": "2026-07-23T04:41:51+00:00",
-          "latest_age_hours": 2.69,
+          "latest_age_hours": 2.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 93.47,
@@ -3355,7 +3401,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:14+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 79.15,
@@ -3367,7 +3413,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:52+00:00",
-          "latest_age_hours": 1.69,
+          "latest_age_hours": 1.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 72.89,
@@ -3379,7 +3425,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:41:53+00:00",
-          "latest_age_hours": 2.69,
+          "latest_age_hours": 2.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 89.49,
@@ -3391,7 +3437,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:41:54+00:00",
-          "latest_age_hours": 2.69,
+          "latest_age_hours": 2.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 85.02,
@@ -3403,7 +3449,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:54+00:00",
-          "latest_age_hours": 1.69,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 105.39,
@@ -3415,7 +3461,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:18+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.6,
@@ -3427,7 +3473,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:41:57+00:00",
-          "latest_age_hours": 2.68,
+          "latest_age_hours": 2.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 88.78,
@@ -3439,7 +3485,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 105.77,
@@ -3451,7 +3497,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:57+00:00",
-          "latest_age_hours": 1.68,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 104.81,
@@ -3463,7 +3509,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:21+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 72.96,
@@ -3475,7 +3521,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:59+00:00",
-          "latest_age_hours": 1.68,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 102.86,
@@ -3487,7 +3533,7 @@
         },
         {
           "fetched_at": "2026-07-23T05:41:59+00:00",
-          "latest_age_hours": 1.68,
+          "latest_age_hours": 1.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 95.59,
@@ -3499,7 +3545,7 @@
         },
         {
           "fetched_at": "2026-07-23T04:42:01+00:00",
-          "latest_age_hours": 2.68,
+          "latest_age_hours": 2.94,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 83.73,
@@ -3511,7 +3557,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:24+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 93.19,
@@ -3523,7 +3569,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:13+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 93.48,
@@ -3535,7 +3581,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:14+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 82.66,
@@ -3547,7 +3593,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:15+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 77.96,
@@ -3559,7 +3605,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 90.5,
@@ -3571,7 +3617,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 79.58,
@@ -3583,7 +3629,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:17+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 98.97,
@@ -3595,7 +3641,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:18+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 77.74,
@@ -3607,7 +3653,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:19+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 83.57,
@@ -3619,7 +3665,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 112.81,
@@ -3631,7 +3677,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 99.99,
@@ -3643,7 +3689,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:21+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 70.1,
@@ -3655,7 +3701,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:22+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 92.6,
@@ -3667,7 +3713,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:23+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 96.26,
@@ -3679,7 +3725,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:24+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 0,
           "method": "emos_wmean",
           "mu_f": 79.5,
@@ -3691,7 +3737,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:25+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 87.51,
@@ -3703,7 +3749,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:13+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 91.58,
@@ -3715,7 +3761,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:14+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 82.97,
@@ -3727,7 +3773,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:15+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 81.2,
@@ -3739,7 +3785,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 86.84,
@@ -3751,7 +3797,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:16+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 81.53,
@@ -3763,7 +3809,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:17+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.96,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 96.71,
@@ -3775,7 +3821,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:18+00:00",
-          "latest_age_hours": 0.7,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 82.56,
@@ -3787,7 +3833,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:19+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 86.05,
@@ -3799,7 +3845,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 115.66,
@@ -3811,7 +3857,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:20+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 96.46,
@@ -3823,7 +3869,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:21+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 70.6,
@@ -3835,7 +3881,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:22+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 94.07,
@@ -3847,7 +3893,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:23+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 95.76,
@@ -3859,7 +3905,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:24+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 1,
           "method": "emos_wmean",
           "mu_f": 79.95,
@@ -3871,7 +3917,7 @@
         },
         {
           "fetched_at": "2026-07-23T06:41:25+00:00",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "lead_days": 2,
           "method": "emos_wmean",
           "mu_f": 94.15,
@@ -3905,7 +3951,7 @@
         "KDEN"
       ]
     },
-    "generated_at": "2026-07-23T07:23:00.189748+00:00",
+    "generated_at": "2026-07-23T07:38:35.162911+00:00",
     "nwp": {
       "available": true,
       "max_stale_hours": 36.0,
@@ -4062,7 +4108,7 @@
       "targets": [
         {
           "check": "archive_lead1",
-          "latest_age_hours": 21.4,
+          "latest_age_hours": 21.66,
           "latest_fetched_at": "2026-07-22T09:59:02+00:00",
           "lead_days": 1,
           "model_count": 8,
@@ -4073,7 +4119,7 @@
         },
         {
           "check": "live_serve_models",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "latest_fetched_at": "2026-07-23T06:41:25+00:00",
           "lead_days": null,
           "model_count": 8,
@@ -4084,7 +4130,7 @@
         },
         {
           "check": "live_serve_models",
-          "latest_age_hours": 0.69,
+          "latest_age_hours": 0.95,
           "latest_fetched_at": "2026-07-23T06:41:25+00:00",
           "lead_days": null,
           "model_count": 8,
@@ -5002,7 +5048,7 @@
     },
     "truth_source": "cli_settlements joined by (station_id, target_date)"
   },
-  "generated_at": "2026-07-23T07:23:37.774540+00:00",
+  "generated_at": "2026-07-23T07:39:12.616073+00:00",
   "live_frequency_tuning": {
     "approved_per_independent_day": 11.3333,
     "approved_under_current_live_config": 238,
@@ -44570,7 +44616,7 @@
           "activation_day": "2026-07-19",
           "attainment_rate": 0.0,
           "available": true,
-          "available_conservative_expected_profit": null,
+          "available_conservative_expected_profit": 0.0,
           "daily_pnl_stddev": 4.477553644123095,
           "day_cluster_bootstrap_95_ci": {
             "lower": 1.0820600000000002,
@@ -44658,7 +44704,7 @@
               "resolved_lots": 9
             }
           },
-          "feasibility_evidence": "unavailable",
+          "feasibility_evidence": "current_scan",
           "hit_count": 0,
           "independent_city_target_days": 22,
           "lead_split": {
@@ -44690,7 +44736,7 @@
           "resolved_lots": 35,
           "sleeve": "target",
           "status": "miss",
-          "target_feasible": null,
+          "target_feasible": false,
           "target_pnl": 50.0,
           "timezone": "America/Los_Angeles",
           "total_observed_days_since_activation": 5,
@@ -44747,7 +44793,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHNY-26JUL22-T91",
-        "time": "2026-07-23T07:17:15.386022+00:00",
+        "time": "2026-07-23T07:33:13.628207+00:00",
         "unrealized": true
       },
       {
@@ -44768,7 +44814,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHPHIL-26JUL22-T82",
-        "time": "2026-07-23T07:17:15.384277+00:00",
+        "time": "2026-07-23T07:33:13.626493+00:00",
         "unrealized": true
       },
       {
@@ -44789,7 +44835,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHAUS-26JUL22-T99",
-        "time": "2026-07-23T07:17:15.382548+00:00",
+        "time": "2026-07-23T07:33:13.624087+00:00",
         "unrealized": true
       },
       {
@@ -44810,7 +44856,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHTHOU-26JUL22-T108",
-        "time": "2026-07-23T07:17:15.380192+00:00",
+        "time": "2026-07-23T07:33:13.622370+00:00",
         "unrealized": true
       },
       {
@@ -44831,7 +44877,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHTHOU-26JUL22-T108",
-        "time": "2026-07-23T07:17:15.378463+00:00",
+        "time": "2026-07-23T07:33:13.620655+00:00",
         "unrealized": true
       },
       {
@@ -44852,7 +44898,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHMIA-26JUL22-B88.5",
-        "time": "2026-07-23T07:17:15.376707+00:00",
+        "time": "2026-07-23T07:33:13.618919+00:00",
         "unrealized": true
       },
       {
@@ -44873,7 +44919,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHCHI-26JUL22-T69",
-        "time": "2026-07-23T07:17:15.374935+00:00",
+        "time": "2026-07-23T07:33:13.617201+00:00",
         "unrealized": true
       },
       {
@@ -44894,7 +44940,7 @@
         "status": "FETCH_FAILED",
         "target_date": "2026-07-22",
         "ticker": "KXHIGHNY-26JUL22-B90.5",
-        "time": "2026-07-23T07:17:15.372537+00:00",
+        "time": "2026-07-23T07:33:13.615495+00:00",
         "unrealized": true
       },
       {
@@ -44984,7 +45030,7 @@
       "activation_day": "2026-07-19",
       "attainment_rate": 0.0,
       "available": true,
-      "available_conservative_expected_profit": null,
+      "available_conservative_expected_profit": 0.0,
       "daily_pnl_stddev": 4.477553644123095,
       "day_cluster_bootstrap_95_ci": {
         "lower": 1.0820600000000002,
@@ -45072,7 +45118,7 @@
           "resolved_lots": 9
         }
       },
-      "feasibility_evidence": "unavailable",
+      "feasibility_evidence": "current_scan",
       "hit_count": 0,
       "independent_city_target_days": 22,
       "lead_split": {
@@ -45104,7 +45150,7 @@
       "resolved_lots": 35,
       "sleeve": "target",
       "status": "miss",
-      "target_feasible": null,
+      "target_feasible": false,
       "target_pnl": 50.0,
       "timezone": "America/Los_Angeles",
       "total_observed_days_since_activation": 5,
@@ -45122,7 +45168,7 @@
       "hidden_pending_limit_orders": 0,
       "hit_rate": 0.5159,
       "largest_duplicate_open_group": 0,
-      "latest_monitor_action_at": "2026-07-23T07:17:15.386022+00:00",
+      "latest_monitor_action_at": "2026-07-23T07:33:13.628207+00:00",
       "latest_opened_at": "2026-07-23T04:15:28.749529+00:00",
       "loss_count": 259,
       "marked_open_positions": 30,
@@ -46548,12 +46594,12 @@
         ],
         "current_attributed_pnl": 44.66,
         "data_collected": {
-          "decision_snapshots": 543460,
-          "forecast_snapshots": 32256,
-          "market_snapshots": 32256,
-          "paper_monitor_snapshots": 219719,
+          "decision_snapshots": 543496,
+          "forecast_snapshots": 32257,
+          "market_snapshots": 32257,
+          "paper_monitor_snapshots": 220293,
           "paper_orders": 855,
-          "probability_snapshots": 193536
+          "probability_snapshots": 193542
         },
         "days": [
           {
@@ -46700,14 +46746,14 @@
             "hit_rate": null,
             "losses": 0,
             "opened": 0,
-            "opened_spend": null,
+            "opened_spend": 0.0,
             "opening_attributed_pnl": 44.66,
             "realized_pnl": 0.0,
             "resolved": 0,
-            "resolved_spend": null,
+            "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 0,
+            "signals": 12,
             "wins": 0
           }
         ],
@@ -46730,15 +46776,15 @@
                 }
               ],
               "rejection_categories": {
-                "edge": 113891,
+                "edge": 113903,
                 "no_data": 29988,
                 "other": 0
               },
               "risk_profile": "live",
-              "signals": 145004,
+              "signals": 145016,
               "top_rejections": [
                 {
-                  "count": 61178,
+                  "count": 61190,
                   "reason": "live paper entry requires min_lead_days=1; same-"
                 },
                 {
@@ -46764,19 +46810,19 @@
               ],
               "top_rejections_all": [
                 {
-                  "count": 143489,
+                  "count": 143500,
                   "reason": "lower-bound edge"
                 },
                 {
-                  "count": 141097,
+                  "count": 141109,
                   "reason": "edge"
                 },
                 {
-                  "count": 61178,
+                  "count": 61190,
                   "reason": "live paper entry requires min_lead_days=1; same-"
                 },
                 {
-                  "count": 40930,
+                  "count": 40934,
                   "reason": "edge_lcb"
                 },
                 {
@@ -46784,15 +46830,15 @@
                   "reason": "source spread"
                 },
                 {
-                  "count": 24249,
+                  "count": 24251,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 22318,
+                  "count": 22321,
                   "reason": "spread"
                 },
                 {
-                  "count": 11326,
+                  "count": 11330,
                   "reason": "model/market gap"
                 }
               ]
@@ -46804,15 +46850,15 @@
               "reason": "live paper entry requires min_lead_days=1; same-day signals are research-only"
             }
           ],
-          "rejected": 143879,
+          "rejected": 143891,
           "rejection_categories": {
-            "edge": 113891,
+            "edge": 113903,
             "no_data": 29988,
             "other": 0
           },
           "top_rejections": [
             {
-              "count": 61178,
+              "count": 61190,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
@@ -46838,19 +46884,19 @@
           ],
           "top_rejections_all": [
             {
-              "count": 143489,
+              "count": 143500,
               "reason": "lower-bound edge"
             },
             {
-              "count": 141097,
+              "count": 141109,
               "reason": "edge"
             },
             {
-              "count": 61178,
+              "count": 61190,
               "reason": "live paper entry requires min_lead_days=1; same-"
             },
             {
-              "count": 40930,
+              "count": 40934,
               "reason": "edge_lcb"
             },
             {
@@ -46858,20 +46904,20 @@
               "reason": "source spread"
             },
             {
-              "count": 24249,
+              "count": 24251,
               "reason": "posterior probability"
             },
             {
-              "count": 22318,
+              "count": 22321,
               "reason": "spread"
             },
             {
-              "count": 11326,
+              "count": 11330,
               "reason": "model/market gap"
             }
           ]
         },
-        "generated_at": "2026-07-23T07:23:23.319591+00:00",
+        "generated_at": "2026-07-23T07:38:58.186303+00:00",
         "learnings": [
           "live resolved 22 trade(s): 20W / 2L, net $+29.94.",
           "live currently has $27.87 of paper open risk.",
@@ -46880,7 +46926,7 @@
         "model_vs_market": {
           "max_abs_gap": 0.7852,
           "mean_abs_gap": 0.0739,
-          "samples": 543460
+          "samples": 543496
         },
         "opening_attributed_pnl": 14.72,
         "profiles": [
@@ -54459,12 +54505,12 @@
         ],
         "current_attributed_pnl": 25.39,
         "data_collected": {
-          "decision_snapshots": 543460,
-          "forecast_snapshots": 32256,
-          "market_snapshots": 32256,
-          "paper_monitor_snapshots": 219719,
+          "decision_snapshots": 543496,
+          "forecast_snapshots": 32257,
+          "market_snapshots": 32257,
+          "paper_monitor_snapshots": 220293,
           "paper_orders": 855,
-          "probability_snapshots": 193536
+          "probability_snapshots": 193542
         },
         "days": [
           {
@@ -54600,7 +54646,7 @@
             "wins": 14
           },
           {
-            "approved_signals": 0,
+            "approved_signals": 5,
             "closed": 0,
             "closing_attributed_pnl": 25.39,
             "cumulative_realized": 25.39,
@@ -54611,14 +54657,14 @@
             "hit_rate": null,
             "losses": 0,
             "opened": 0,
-            "opened_spend": null,
+            "opened_spend": 0.0,
             "opening_attributed_pnl": 25.39,
             "realized_pnl": 0.0,
             "resolved": 0,
-            "resolved_spend": null,
+            "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 0,
+            "signals": 12,
             "wins": 0
           }
         ],
@@ -54630,13 +54676,13 @@
           "held_to_settlement": 21
         },
         "gate_behavior": {
-          "approved": 123415,
+          "approved": 123420,
           "by_profile": [
             {
-              "approved": 123415,
+              "approved": 123420,
               "entry_block_reasons": [
                 {
-                  "count": 121425,
+                  "count": 121430,
                   "reason": "target requires non-negative point and after-fee LCB edge"
                 },
                 {
@@ -54653,23 +54699,23 @@
                 }
               ],
               "rejection_categories": {
-                "edge": 44995,
+                "edge": 45002,
                 "no_data": 29940,
                 "other": 28
               },
               "risk_profile": "research-target",
-              "signals": 198378,
+              "signals": 198390,
               "top_rejections": [
                 {
                   "count": 28953,
                   "reason": "source spread"
                 },
                 {
-                  "count": 11224,
+                  "count": 11225,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 7264,
+                  "count": 7266,
                   "reason": "bid"
                 },
                 {
@@ -54681,7 +54727,7 @@
                   "reason": "model/market gap"
                 },
                 {
-                  "count": 3817,
+                  "count": 3819,
                   "reason": "NO ask is not tradeable"
                 }
               ],
@@ -54691,31 +54737,31 @@
                   "reason": "source spread"
                 },
                 {
-                  "count": 25242,
+                  "count": 25245,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 22881,
+                  "count": 22882,
                   "reason": "1c/2c tail requires exceptional support"
                 },
                 {
-                  "count": 15233,
+                  "count": 15236,
                   "reason": "bid size"
                 },
                 {
-                  "count": 12514,
+                  "count": 12516,
                   "reason": "spread"
                 },
                 {
-                  "count": 9254,
+                  "count": 9256,
                   "reason": "all-in cost"
                 },
                 {
-                  "count": 9254,
+                  "count": 9256,
                   "reason": "bid"
                 },
                 {
-                  "count": 9205,
+                  "count": 9207,
                   "reason": "NO ask is not tradeable"
                 }
               ]
@@ -54723,7 +54769,7 @@
           ],
           "entry_block_reasons": [
             {
-              "count": 121425,
+              "count": 121430,
               "reason": "target requires non-negative point and after-fee LCB edge"
             },
             {
@@ -54739,9 +54785,9 @@
               "reason": "research account capacity below requested spend"
             }
           ],
-          "rejected": 74963,
+          "rejected": 74970,
           "rejection_categories": {
-            "edge": 44995,
+            "edge": 45002,
             "no_data": 29940,
             "other": 28
           },
@@ -54751,11 +54797,11 @@
               "reason": "source spread"
             },
             {
-              "count": 11224,
+              "count": 11225,
               "reason": "posterior probability"
             },
             {
-              "count": 7264,
+              "count": 7266,
               "reason": "bid"
             },
             {
@@ -54767,7 +54813,7 @@
               "reason": "model/market gap"
             },
             {
-              "count": 3817,
+              "count": 3819,
               "reason": "NO ask is not tradeable"
             }
           ],
@@ -54777,36 +54823,36 @@
               "reason": "source spread"
             },
             {
-              "count": 25242,
+              "count": 25245,
               "reason": "posterior probability"
             },
             {
-              "count": 22881,
+              "count": 22882,
               "reason": "1c/2c tail requires exceptional support"
             },
             {
-              "count": 15233,
+              "count": 15236,
               "reason": "bid size"
             },
             {
-              "count": 12514,
+              "count": 12516,
               "reason": "spread"
             },
             {
-              "count": 9254,
+              "count": 9256,
               "reason": "all-in cost"
             },
             {
-              "count": 9254,
+              "count": 9256,
               "reason": "bid"
             },
             {
-              "count": 9205,
+              "count": 9207,
               "reason": "NO ask is not tradeable"
             }
           ]
         },
-        "generated_at": "2026-07-23T07:23:23.319591+00:00",
+        "generated_at": "2026-07-23T07:38:58.186303+00:00",
         "learnings": [
           "research-target resolved 32 trade(s): 27W / 5L, net $+25.39.",
           "research-target currently has $146.26 of paper open risk.",
@@ -54816,7 +54862,7 @@
         "model_vs_market": {
           "max_abs_gap": 0.7852,
           "mean_abs_gap": 0.0739,
-          "samples": 543460
+          "samples": 543496
         },
         "opening_attributed_pnl": 0.0,
         "profiles": [
@@ -54885,7 +54931,7 @@
         "activation_day": "2026-07-19",
         "attainment_rate": 0.0,
         "available": true,
-        "available_conservative_expected_profit": null,
+        "available_conservative_expected_profit": 0.0,
         "daily_pnl_stddev": 4.477553644123095,
         "day_cluster_bootstrap_95_ci": {
           "lower": 1.0820600000000002,
@@ -54973,7 +55019,7 @@
             "resolved_lots": 9
           }
         },
-        "feasibility_evidence": "unavailable",
+        "feasibility_evidence": "current_scan",
         "hit_count": 0,
         "independent_city_target_days": 22,
         "lead_split": {
@@ -55005,7 +55051,7 @@
         "resolved_lots": 35,
         "sleeve": "target",
         "status": "miss",
-        "target_feasible": null,
+        "target_feasible": false,
         "target_pnl": 50.0,
         "timezone": "America/Los_Angeles",
         "total_observed_days_since_activation": 5,
@@ -57563,7 +57609,7 @@
           "activation_day": "2026-07-19",
           "attainment_rate": 0.0,
           "available": true,
-          "available_conservative_expected_profit": null,
+          "available_conservative_expected_profit": 0.0,
           "daily_pnl_stddev": 4.477553644123095,
           "day_cluster_bootstrap_95_ci": {
             "lower": 1.0820600000000002,
@@ -57651,7 +57697,7 @@
               "resolved_lots": 9
             }
           },
-          "feasibility_evidence": "unavailable",
+          "feasibility_evidence": "current_scan",
           "hit_count": 0,
           "independent_city_target_days": 22,
           "lead_split": {
@@ -57683,7 +57729,7 @@
           "resolved_lots": 35,
           "sleeve": "target",
           "status": "miss",
-          "target_feasible": null,
+          "target_feasible": false,
           "target_pnl": 50.0,
           "timezone": "America/Los_Angeles",
           "total_observed_days_since_activation": 5,
@@ -58507,7 +58553,7 @@
               "activation_day": "2026-07-19",
               "attainment_rate": 0.0,
               "available": true,
-              "available_conservative_expected_profit": null,
+              "available_conservative_expected_profit": 0.0,
               "daily_pnl_stddev": 4.477553644123095,
               "day_cluster_bootstrap_95_ci": {
                 "lower": 1.0820600000000002,
@@ -58595,7 +58641,7 @@
                   "resolved_lots": 9
                 }
               },
-              "feasibility_evidence": "unavailable",
+              "feasibility_evidence": "current_scan",
               "hit_count": 0,
               "independent_city_target_days": 22,
               "lead_split": {
@@ -58627,7 +58673,7 @@
               "resolved_lots": 35,
               "sleeve": "target",
               "status": "miss",
-              "target_feasible": null,
+              "target_feasible": false,
               "target_pnl": 50.0,
               "timezone": "America/Los_Angeles",
               "total_observed_days_since_activation": 5,
@@ -58670,7 +58716,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHTHOU-26JUL22-T108",
-            "time": "2026-07-23T07:17:15.380192+00:00",
+            "time": "2026-07-23T07:33:13.622370+00:00",
             "unrealized": true
           },
           {
@@ -58691,7 +58737,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHMIA-26JUL22-B88.5",
-            "time": "2026-07-23T07:17:15.376707+00:00",
+            "time": "2026-07-23T07:33:13.618919+00:00",
             "unrealized": true
           },
           {
@@ -58743,7 +58789,7 @@
           "hidden_pending_limit_orders": 0,
           "hit_rate": 0.8438,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-07-23T07:17:15.380192+00:00",
+          "latest_monitor_action_at": "2026-07-23T07:33:13.622370+00:00",
           "latest_opened_at": "2026-07-23T03:06:12.433791+00:00",
           "loss_count": 5,
           "marked_open_positions": 10,
@@ -60183,12 +60229,12 @@
         "biggest_winners": [],
         "current_attributed_pnl": -1.99,
         "data_collected": {
-          "decision_snapshots": 543460,
-          "forecast_snapshots": 32256,
-          "market_snapshots": 32256,
-          "paper_monitor_snapshots": 219719,
+          "decision_snapshots": 543496,
+          "forecast_snapshots": 32257,
+          "market_snapshots": 32257,
+          "paper_monitor_snapshots": 220293,
           "paper_orders": 855,
-          "probability_snapshots": 193536
+          "probability_snapshots": 193542
         },
         "days": [
           {
@@ -60324,7 +60370,7 @@
             "wins": 41
           },
           {
-            "approved_signals": 0,
+            "approved_signals": 5,
             "closed": 0,
             "closing_attributed_pnl": -1.99,
             "cumulative_realized": -1.99,
@@ -60335,14 +60381,14 @@
             "hit_rate": null,
             "losses": 0,
             "opened": 0,
-            "opened_spend": null,
+            "opened_spend": 0.0,
             "opening_attributed_pnl": -1.99,
             "realized_pnl": 0.0,
             "resolved": 0,
-            "resolved_spend": null,
+            "resolved_spend": 0.0,
             "roi": null,
             "settled": 0,
-            "signals": 0,
+            "signals": 12,
             "wins": 0
           }
         ],
@@ -60354,13 +60400,13 @@
           "held_to_settlement": 77
         },
         "gate_behavior": {
-          "approved": 123415,
+          "approved": 123420,
           "by_profile": [
             {
-              "approved": 123415,
+              "approved": 123420,
               "entry_block_reasons": [
                 {
-                  "count": 108918,
+                  "count": 108923,
                   "reason": "motion requires point-positive visible-ask taker edge and lower-bound edge >= -0.07"
                 },
                 {
@@ -60377,23 +60423,23 @@
                 }
               ],
               "rejection_categories": {
-                "edge": 45207,
+                "edge": 45214,
                 "no_data": 29988,
                 "other": 30
               },
               "risk_profile": "research-motion",
-              "signals": 198640,
+              "signals": 198652,
               "top_rejections": [
                 {
                   "count": 28989,
                   "reason": "source spread"
                 },
                 {
-                  "count": 11236,
+                  "count": 11237,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 7338,
+                  "count": 7340,
                   "reason": "bid"
                 },
                 {
@@ -60405,7 +60451,7 @@
                   "reason": "model/market gap"
                 },
                 {
-                  "count": 3834,
+                  "count": 3836,
                   "reason": "NO ask is not tradeable"
                 }
               ],
@@ -60415,31 +60461,31 @@
                   "reason": "source spread"
                 },
                 {
-                  "count": 25343,
+                  "count": 25346,
                   "reason": "posterior probability"
                 },
                 {
-                  "count": 22902,
+                  "count": 22903,
                   "reason": "1c/2c tail requires exceptional support"
                 },
                 {
-                  "count": 15329,
+                  "count": 15332,
                   "reason": "bid size"
                 },
                 {
-                  "count": 12608,
+                  "count": 12610,
                   "reason": "spread"
                 },
                 {
-                  "count": 9344,
+                  "count": 9346,
                   "reason": "all-in cost"
                 },
                 {
-                  "count": 9344,
+                  "count": 9346,
                   "reason": "bid"
                 },
                 {
-                  "count": 9294,
+                  "count": 9296,
                   "reason": "NO ask is not tradeable"
                 }
               ]
@@ -60447,7 +60493,7 @@
           ],
           "entry_block_reasons": [
             {
-              "count": 108918,
+              "count": 108923,
               "reason": "motion requires point-positive visible-ask taker edge and lower-bound edge >= -0.07"
             },
             {
@@ -60463,9 +60509,9 @@
               "reason": "research order admission disabled"
             }
           ],
-          "rejected": 75225,
+          "rejected": 75232,
           "rejection_categories": {
-            "edge": 45207,
+            "edge": 45214,
             "no_data": 29988,
             "other": 30
           },
@@ -60475,11 +60521,11 @@
               "reason": "source spread"
             },
             {
-              "count": 11236,
+              "count": 11237,
               "reason": "posterior probability"
             },
             {
-              "count": 7338,
+              "count": 7340,
               "reason": "bid"
             },
             {
@@ -60491,7 +60537,7 @@
               "reason": "model/market gap"
             },
             {
-              "count": 3834,
+              "count": 3836,
               "reason": "NO ask is not tradeable"
             }
           ],
@@ -60501,36 +60547,36 @@
               "reason": "source spread"
             },
             {
-              "count": 25343,
+              "count": 25346,
               "reason": "posterior probability"
             },
             {
-              "count": 22902,
+              "count": 22903,
               "reason": "1c/2c tail requires exceptional support"
             },
             {
-              "count": 15329,
+              "count": 15332,
               "reason": "bid size"
             },
             {
-              "count": 12608,
+              "count": 12610,
               "reason": "spread"
             },
             {
-              "count": 9344,
+              "count": 9346,
               "reason": "all-in cost"
             },
             {
-              "count": 9344,
+              "count": 9346,
               "reason": "bid"
             },
             {
-              "count": 9294,
+              "count": 9296,
               "reason": "NO ask is not tradeable"
             }
           ]
         },
-        "generated_at": "2026-07-23T07:23:23.319591+00:00",
+        "generated_at": "2026-07-23T07:38:58.186303+00:00",
         "learnings": [
           "research-motion resolved 271 trade(s): 112W / 159L, net $-1.99.",
           "research-motion currently has $50.18 of paper open risk.",
@@ -60540,7 +60586,7 @@
         "model_vs_market": {
           "max_abs_gap": 0.7852,
           "mean_abs_gap": 0.0739,
-          "samples": 543460
+          "samples": 543496
         },
         "opening_attributed_pnl": 0.0,
         "profiles": [
@@ -83588,7 +83634,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHNY-26JUL22-T91",
-            "time": "2026-07-23T07:17:15.386022+00:00",
+            "time": "2026-07-23T07:33:13.628207+00:00",
             "unrealized": true
           },
           {
@@ -83609,7 +83655,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHPHIL-26JUL22-T82",
-            "time": "2026-07-23T07:17:15.384277+00:00",
+            "time": "2026-07-23T07:33:13.626493+00:00",
             "unrealized": true
           },
           {
@@ -83630,7 +83676,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHAUS-26JUL22-T99",
-            "time": "2026-07-23T07:17:15.382548+00:00",
+            "time": "2026-07-23T07:33:13.624087+00:00",
             "unrealized": true
           },
           {
@@ -83651,7 +83697,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHTHOU-26JUL22-T108",
-            "time": "2026-07-23T07:17:15.378463+00:00",
+            "time": "2026-07-23T07:33:13.620655+00:00",
             "unrealized": true
           },
           {
@@ -83672,7 +83718,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHCHI-26JUL22-T69",
-            "time": "2026-07-23T07:17:15.374935+00:00",
+            "time": "2026-07-23T07:33:13.617201+00:00",
             "unrealized": true
           },
           {
@@ -83693,7 +83739,7 @@
             "status": "FETCH_FAILED",
             "target_date": "2026-07-22",
             "ticker": "KXHIGHNY-26JUL22-B90.5",
-            "time": "2026-07-23T07:17:15.372537+00:00",
+            "time": "2026-07-23T07:33:13.615495+00:00",
             "unrealized": true
           },
           {
@@ -83745,7 +83791,7 @@
           "hidden_pending_limit_orders": 0,
           "hit_rate": 0.4133,
           "largest_duplicate_open_group": 0,
-          "latest_monitor_action_at": "2026-07-23T07:17:15.386022+00:00",
+          "latest_monitor_action_at": "2026-07-23T07:33:13.628207+00:00",
           "latest_opened_at": "2026-07-23T04:15:28.749529+00:00",
           "loss_count": 159,
           "marked_open_positions": 19,
@@ -85330,7 +85376,7 @@
     "activation_day": "2026-07-19",
     "attainment_rate": 0.0,
     "available": true,
-    "available_conservative_expected_profit": null,
+    "available_conservative_expected_profit": 0.0,
     "daily_pnl_stddev": 4.477553644123095,
     "day_cluster_bootstrap_95_ci": {
       "lower": 1.0820600000000002,
@@ -85418,7 +85464,7 @@
         "resolved_lots": 9
       }
     },
-    "feasibility_evidence": "unavailable",
+    "feasibility_evidence": "current_scan",
     "hit_count": 0,
     "independent_city_target_days": 22,
     "lead_split": {
@@ -85450,7 +85496,7 @@
     "resolved_lots": 35,
     "sleeve": "target",
     "status": "miss",
-    "target_feasible": null,
+    "target_feasible": false,
     "target_pnl": 50.0,
     "timezone": "America/Los_Angeles",
     "total_observed_days_since_activation": 5,
@@ -90212,7 +90258,7 @@
     "deduped_signal_count": 4141,
     "entry_scanner_reason": null,
     "entry_scanner_status": "Entry scanner active for eligible target dates.",
-    "last_updated": "2026-07-23T07:23:37.697324+00:00",
+    "last_updated": "2026-07-23T07:39:12.538901+00:00",
     "latest_signal_targets": [
       "2026-07-22",
       "2026-07-23"
