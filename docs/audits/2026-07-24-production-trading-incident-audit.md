@@ -814,11 +814,121 @@ are intentionally not committed.
 | Execution model | `exec-v4-2026-07-17` |
 | Accounting model | `acct-v4-account-scoped-2026-07-14` |
 | Remediation code commit | `08770865ef1a57e04898d9d332cdde1db8ac2064` |
+| Performance follow-up code commit | `ac737d275792701b24c0a1072bf019ba4db32cd3` |
 | Remediation branch | `codex/weatheredge-production-incident-audit` |
 | Baseline Verify run | [29904535960](https://github.com/Jaxsonb04/weather_edge/actions/runs/29904535960) |
 | Pages run observed during audit | [30112787999](https://github.com/Jaxsonb04/weather_edge/actions/runs/30112787999) |
+| Performance follow-up Verify run | [30124648811](https://github.com/Jaxsonb04/weather_edge/actions/runs/30124648811) |
 | Pre-existing unrelated PR | [#29](https://github.com/Jaxsonb04/weather_edge/pull/29) |
-| Remediation PR/deployment | Recorded in the final handoff; no deployment created |
+| Remediation PR | Draft [#52](https://github.com/Jaxsonb04/weather_edge/pull/52) |
+| Deployment | None created |
+
+## 12. Performance follow-up
+
+This follow-up was observed at `2026-07-24T20:28:46Z`
+(`2026-07-24T13:28:46-0700`, America/Los_Angeles). The public Strategy Lab
+artifact used below was generated at `2026-07-24T20:13:00.094346+00:00`.
+The requested local preview PIDs `82899` and `82900` had already exited when
+the exact `kill` was attempted; a subsequent exact-PID check confirmed that
+neither process remained.
+
+### 12.1 Trading-performance conclusion
+
+No production admission, exit, sizing, threshold, or risk behavior was changed.
+The current motion evidence identifies a useful challenger but is not long
+enough to justify a profit-seeking policy change:
+
+| Evidence | YES | NO | Independence limitation |
+|---|---:|---:|---|
+| Current motion snapshot rescore | 19 trades, 4W/15L, -$25.7151, -22.8142% ROI | 70 trades, 43W/27L, +$65.1671, +8.6678% ROI | five target days |
+| Current published motion book | 69 resolved, 6W/63L, -$3.80, -23.18% ROI | 318 resolved, 172W/146L, +$3.12, +1.17% ROI | six target days |
+
+The visible motion-YES rows also showed substantial apparent overconfidence,
+but repeated entries within the same city/target cluster are correlated.
+Neither the raw trade count nor the in-sample avoided loss is an honest
+promotion statistic. The minimum next decision remains a predeclared
+chronological replay with at least 30 independent station-target folds, at
+least 10 distinct target dates, after-fee confidence bounds, and calibration
+gates.
+
+To make that decision measurable without changing orders, the branch adds the
+fixed report-only challenger `motion-yes-lcb0-v1`. It compares the current
+motion snapshot rescore with a treatment that retains NO rows and admits a YES
+row only when its persisted point-in-time `edge_lcb >= 0`. Missing YES values
+fail closed. The output reports baseline/treatment P&L, capital, ROI,
+target-day-clustered intervals, and station-target counts. It is emitted only
+for `research-motion`, is always `promotion_eligible=false`, and does not alter
+policy fingerprints or order selection.
+
+### 12.2 Forecast-research correction
+
+The previously published `matched_lead_emos` result must be regenerated. Its
+reported CRPS changed from `1.313314` to `1.297243`, with paired delta
+`-0.016071` and 95% interval `[-0.025515, -0.006692]`, but the evaluator:
+
+1. made each prior target available immediately, so a lead-two forecast for
+   target D could train on D-1 truth that was unavailable at the D-2 serve;
+2. evaluated a 60-case bias-plus-dispersion arm while production serves a
+   45-calendar-day, 1.5-standard-error-deadband, bias-only correction; and
+3. could silently overweight parallel method/source rows for one
+   station/lead/target.
+
+The branch now enforces `history_target_date < forecast_serve_date`, matches
+the production recalibration constants, deduplicates identical cases, and
+fails closed on conflicting rows until one reference method/source is selected.
+The challenger remains shadow-only and cannot activate a forecast or trading
+change.
+
+### 12.3 Report-runtime improvement
+
+Strategy Lab previously ranked `SELECT *` over every append-only monitor row,
+carrying large `diagnostics_json` payloads through a SQLite window sort every
+refresh. The replacement resolves `MAX(created_at)` per order, then `MAX(id)`
+at that timestamp using the existing `(order_id, created_at)` index, and fetches
+only the winning rows. A regression fixture covers tied timestamps and
+later-inserted older timestamps.
+
+A local synthetic benchmark with 60,000 rows, 300 orders, and 2,048-byte
+diagnostic payloads produced the same 300 row IDs:
+
+| Query | Five-run median |
+|---|---:|
+| Wide window baseline | 169.08 ms |
+| Indexed aggregate plus primary-key fetch | 6.22 ms |
+| Improvement | 27.2x |
+
+A separate 120,000-row/600-order benchmark measured 492.98 ms versus 11.75 ms
+(about 42x). These are synthetic query benchmarks, not a claim about end-to-end
+AWS refresh latency; production impact still requires timing on a redacted
+runtime database copy.
+
+### 12.4 Follow-up validation and deployment boundary
+
+Focused validation passed:
+
+- full Python suite: 2,402 passed in 73.28 seconds;
+- 76 tests across config rescore and Strategy Lab;
+- 23 tests across forecast challengers and scorecards;
+- 61 tests for the full Strategy Lab research module;
+- project health and secret-pattern checks, with the expected ignored-local-
+  runtime warning;
+- Python compilation for the changed modules; and
+- `git diff --check`.
+
+GitHub Verify
+[30124648811](https://github.com/Jaxsonb04/weather_edge/actions/runs/30124648811)
+passed for the follow-up code commit on Python 3.12, Python 3.13, and Web. The
+Python 3.13 full verification gate included the pinned Semgrep project rules.
+
+No follow-up command contacted a broker endpoint or attempted a live or
+production-paper order. No AWS or Pages deployment was made. The query and
+report-only changes do not affect order behavior. Any future deployment that
+includes the earlier signal/model-integrity remediation remains subject to the
+approval and rollback boundary in Section 9.1.
+
+The aggregate local verification wrapper could not run its Semgrep stage
+because the optional CLI was absent from this workstation; the pinned,
+successful GitHub gate is the authoritative Semgrep result for this revision.
 
 ## Security-review limitation
 
