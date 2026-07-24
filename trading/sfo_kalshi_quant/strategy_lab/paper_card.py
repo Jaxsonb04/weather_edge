@@ -398,24 +398,9 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             # per open order every ~2-minute cycle, so without this dedup a single
             # position that HOLDs for a few cycles shows up as several identical
             # "actions" (the repeated 0.59/0.40/0.11 @ 0.99 the owner saw). The
-            # window-function filter collapses those to one inspection mark per
+            # exact latest-row query collapses those to one inspection mark per
             # order. See docs/trading_engine_diagnosis_2026-06-16.md (Finding 5).
-            monitor_rows = conn.execute(
-                """
-                SELECT m.*
-                FROM (
-                    SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY order_id
-                               ORDER BY created_at DESC, id DESC
-                           ) AS rn
-                    FROM paper_monitor_snapshots
-                ) m
-                WHERE m.rn = 1
-                ORDER BY m.created_at DESC, m.id DESC
-                LIMIT 5000
-                """
-            ).fetchall()
+            monitor_rows = _latest_global_monitor_rows(conn, limit=5000)
             monitor_rows = [
                 {
                     **dict(row),
@@ -885,6 +870,46 @@ def _profile_summary_row(row: Any) -> dict[str, Any]:
 def _row_risk_profile(row: sqlite3.Row) -> str | None:
     profile = row_published_profile_key(row)
     return None if profile == "unknown" else profile
+
+
+def _latest_global_monitor_rows(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    """Read the latest monitor row per order without sorting wide payloads.
+
+    Monitor diagnostics can contain large JSON objects. Ranking ``SELECT *``
+    across the append-only table carries those objects through SQLite's window
+    sorter. Instead, resolve the maximum timestamp and then the maximum row id
+    at that timestamp using narrow indexed keys, and fetch only the winners.
+    The result is identical to ``ORDER BY created_at DESC, id DESC`` within
+    each order, including tied timestamps and out-of-order inserts.
+    """
+
+    return conn.execute(
+        """
+        WITH latest_time AS (
+            SELECT order_id, MAX(created_at) AS created_at
+            FROM paper_monitor_snapshots
+            GROUP BY order_id
+        ),
+        latest_row AS (
+            SELECT snapshots.order_id, MAX(snapshots.id) AS id
+            FROM paper_monitor_snapshots AS snapshots
+            JOIN latest_time
+              ON latest_time.order_id = snapshots.order_id
+             AND latest_time.created_at = snapshots.created_at
+            GROUP BY snapshots.order_id
+        )
+        SELECT snapshots.*
+        FROM paper_monitor_snapshots AS snapshots
+        JOIN latest_row ON latest_row.id = snapshots.id
+        ORDER BY snapshots.created_at DESC, snapshots.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
 
 
 def _latest_monitor_rows_for_orders(

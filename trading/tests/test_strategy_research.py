@@ -1944,6 +1944,39 @@ def test_profile_monitor_health_is_not_lost_to_global_activity_cap(tmp_path):
     assert target["paper_trading"]["summary"]["marked_open_positions"] == 1
 
 
+def test_latest_global_monitor_rows_preserve_timestamp_then_id_ordering():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        with store.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row_ids = []
+            for created_at, order_id in (
+                ("2026-07-24T12:00:00+00:00", 10),
+                ("2026-07-24T11:00:00+00:00", 10),
+                ("2026-07-24T12:00:00+00:00", 10),
+                ("2026-07-24T13:00:00+00:00", 20),
+                ("2026-07-24T12:30:00+00:00", 20),
+            ):
+                cursor = conn.execute(
+                    """
+                    INSERT INTO paper_monitor_snapshots (
+                        created_at, order_id, target_date, market_ticker,
+                        side, action, diagnostics_json
+                    )
+                    VALUES (?, ?, '2026-07-24', ?, 'YES', 'HOLD', '{}')
+                    """,
+                    (created_at, order_id, f"KXHIGHTSFO-{order_id}-B66.5"),
+                )
+                row_ids.append(int(cursor.lastrowid))
+
+            rows = strategy_paper_card_module._latest_global_monitor_rows(
+                conn,
+                limit=5000,
+            )
+
+        assert [int(row["id"]) for row in rows] == [row_ids[3], row_ids[2]]
+
+
 def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
@@ -1996,6 +2029,10 @@ def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
 
 
 def test_strategy_research_includes_config_rescore():
+    policy_fingerprints = (
+        TARGET_POLICY.policy_fingerprint,
+        MOTION_POLICY.policy_fingerprint,
+    )
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         db_path = Path(tmp) / "trading" / "paper.db"
@@ -2025,6 +2062,18 @@ def test_strategy_research_includes_config_rescore():
             assert {"counts", "candidate", "recorded_config_own_book"} <= set(result)
             # per_day is trimmed from the published artifact to keep it lean.
             assert "per_day" not in result
+        assert "report_only_diagnostics" not in rescore["by_profile"]["live"]
+        assert "report_only_diagnostics" not in rescore["by_profile"]["research-target"]
+        diagnostic = rescore["by_profile"]["research-motion"][
+            "report_only_diagnostics"
+        ]["motion-yes-lcb0-v1"]
+        assert diagnostic["promotion_eligible"] is False
+        assert diagnostic["baseline"]["settled_decisions"] == 0
+        assert diagnostic["treatment"]["settled_decisions"] == 0
+        assert (
+            TARGET_POLICY.policy_fingerprint,
+            MOTION_POLICY.policy_fingerprint,
+        ) == policy_fingerprints
 
         # The real-money readiness gauge is derived for the LIVE profile only and
         # exposes a percentage + per-check breakdown for the dashboard.

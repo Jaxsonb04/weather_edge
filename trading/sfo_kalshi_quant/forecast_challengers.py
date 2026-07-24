@@ -6,9 +6,16 @@ import math
 import random
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
-from statistics import fmean
+from datetime import date, timedelta
+from statistics import fmean, stdev
 from typing import Iterable
+
+
+MATCHED_LEAD_WINDOW_DAYS = 45
+MATCHED_LEAD_SHRINKAGE_K = 10.0
+MATCHED_LEAD_BIAS_DEADBAND_T = 1.5
+MATCHED_LEAD_APPLY_BIAS = True
+MATCHED_LEAD_APPLY_SIGMA = False
 
 
 @dataclass(frozen=True)
@@ -34,23 +41,46 @@ class IntradayCase:
 
 
 def evaluate_matched_lead_emos(cases: Iterable[ForecastCase]) -> dict[str, object]:
-    """Exact station/lead trailing calibration evaluated strictly forward."""
+    """Production-matched station/lead trailing calibration, strictly forward."""
+
+    cases_by_target: dict[tuple[str, int, date], ForecastCase] = {}
+    duplicate_cases_dropped = 0
+    conflicting_case_keys: set[tuple[str, int, date]] = set()
+    for case in cases:
+        key = (case.station_id, case.lead_days, case.target_date)
+        existing = cases_by_target.get(key)
+        if existing is None:
+            cases_by_target[key] = case
+        elif existing == case:
+            duplicate_cases_dropped += 1
+        else:
+            conflicting_case_keys.add(key)
 
     history: dict[tuple[str, int], list[ForecastCase]] = defaultdict(list)
     scored: list[tuple[str, float, float, float, float]] = []
-    for case in sorted(cases, key=lambda row: (row.target_date, row.station_id, row.lead_days)):
-        prior = history[(case.station_id, case.lead_days)]
-        errors = [row.mu - row.actual for row in prior[-60:]]
-        n = len(errors)
-        bias = (n / (n + 10.0)) * fmean(errors) if errors else 0.0
-        z_sq = [
-            ((row.actual - (row.mu - bias)) / max(0.1, row.sigma)) ** 2
-            for row in prior[-60:]
+    for case in sorted(
+        () if conflicting_case_keys else cases_by_target.values(),
+        key=lambda row: (row.target_date, row.station_id, row.lead_days),
+    ):
+        serve_date = case.target_date - timedelta(days=case.lead_days)
+        window_start = serve_date - timedelta(days=MATCHED_LEAD_WINDOW_DAYS)
+        prior = [
+            row
+            for row in history[(case.station_id, case.lead_days)]
+            if window_start <= row.target_date < serve_date
         ]
-        raw_scale = math.sqrt(fmean(z_sq)) if z_sq else 1.0
-        scale = min(1.5, max(0.75, 1.0 + (n / (n + 10.0)) * (raw_scale - 1.0)))
+        errors = [row.mu - row.actual for row in prior]
+        n = len(errors)
+        bias = 0.0
+        if MATCHED_LEAD_APPLY_BIAS and n >= 3:
+            raw_bias = fmean(errors)
+            stderr = stdev(errors) / math.sqrt(n)
+            excess = max(0.0, abs(raw_bias) - MATCHED_LEAD_BIAS_DEADBAND_T * stderr)
+            bias = (
+                n / (n + MATCHED_LEAD_SHRINKAGE_K)
+            ) * math.copysign(excess, raw_bias)
         candidate_mu = case.mu - bias
-        candidate_sigma = max(0.1, case.sigma * scale)
+        candidate_sigma = max(0.1, case.sigma)
         scored.append(
             (
                 case.target_date.isoformat(),
@@ -60,12 +90,27 @@ def evaluate_matched_lead_emos(cases: Iterable[ForecastCase]) -> dict[str, objec
                 _coverage(candidate_mu, candidate_sigma, case.actual),
             )
         )
-        prior.append(case)
-    return _summary(
+        history[(case.station_id, case.lead_days)].append(case)
+    result = _summary(
         "matched_lead_emos",
         scored,
-        note="exact station/lead trailing bias and dispersion; shadow only",
+        note="production-matched station/lead trailing bias; shadow only",
     )
+    result["configuration"] = {
+        "window_days": MATCHED_LEAD_WINDOW_DAYS,
+        "shrinkage_k": MATCHED_LEAD_SHRINKAGE_K,
+        "bias_deadband_t": MATCHED_LEAD_BIAS_DEADBAND_T,
+        "apply_bias": MATCHED_LEAD_APPLY_BIAS,
+        "apply_sigma": MATCHED_LEAD_APPLY_SIGMA,
+        "truth_availability": "history_target_date < forecast_serve_date",
+    }
+    result["duplicate_cases_dropped"] = duplicate_cases_dropped
+    result["conflicting_case_keys"] = len(conflicting_case_keys)
+    if conflicting_case_keys:
+        result["block_reasons"] = [
+            "conflicting station/lead/target forecast rows; select one reference method/source"
+        ]
+    return result
 
 
 def evaluate_partial_pooled_intraday(

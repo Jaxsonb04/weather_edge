@@ -254,7 +254,9 @@ def rescore_row(row: sqlite3.Row, config: StrategyConfig, *, bankroll: float) ->
 @dataclass(frozen=True)
 class _Scored:
     target_date: str
+    station_id: str | None
     side: str
+    snapshot_edge_lcb: float | None
     settlement_high_f: float
     # cohort = settled-high regime (for calibration/diagnostics). forecast_cohort
     # = the regime the live block actually gated on at entry time (it only knows
@@ -331,6 +333,187 @@ def _day_clustered_roi_ci(
     return (_percentile(rois, 2.5), _percentile(rois, 97.5))
 
 
+def _scored_per_day(rows: list[_Scored]) -> dict[str, dict[str, float]]:
+    per_day: dict[str, dict[str, float]] = {}
+    for row in rows:
+        day = per_day.setdefault(row.target_date, {"pnl": 0.0, "capital": 0.0})
+        day["pnl"] += row.pnl
+        day["capital"] += row.capital
+    return per_day
+
+
+def _diagnostic_metrics(
+    rows: list[_Scored],
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> dict[str, object]:
+    bucket = _bucket(rows)
+    ci = _day_clustered_roi_ci(
+        _scored_per_day(rows),
+        samples=bootstrap_samples,
+        seed=seed,
+    )
+    return {
+        "settled_decisions": bucket["trades"],
+        "independent_target_days": bucket["independent_days"],
+        "wins": bucket["wins"],
+        "losses": bucket["losses"],
+        "capital_at_risk": bucket["capital_at_risk"],
+        "realized_pnl": bucket["realized_pnl"],
+        "roi": bucket["roi"],
+        "roi_ci95_target_day_clustered": (
+            [round(ci[0], 6), round(ci[1], 6)] if ci is not None else None
+        ),
+    }
+
+
+def _paired_day_clustered_roi_delta_ci(
+    baseline_rows: list[_Scored],
+    treatment_rows: list[_Scored],
+    *,
+    samples: int,
+    seed: int,
+) -> tuple[float, float] | None:
+    baseline_by_day = _scored_per_day(baseline_rows)
+    treatment_by_day = _scored_per_day(treatment_rows)
+    days = sorted(baseline_by_day)
+    if len(days) < 2:
+        return None
+
+    import random
+
+    rng = random.Random(seed)
+    deltas: list[float] = []
+    for _ in range(samples):
+        baseline_pnl = 0.0
+        baseline_capital = 0.0
+        treatment_pnl = 0.0
+        treatment_capital = 0.0
+        for _ in range(len(days)):
+            day = days[rng.randrange(len(days))]
+            baseline_pnl += baseline_by_day[day]["pnl"]
+            baseline_capital += baseline_by_day[day]["capital"]
+            treatment = treatment_by_day.get(day)
+            if treatment is not None:
+                treatment_pnl += treatment["pnl"]
+                treatment_capital += treatment["capital"]
+        if baseline_capital > 0 and treatment_capital > 0:
+            deltas.append(
+                treatment_pnl / treatment_capital
+                - baseline_pnl / baseline_capital
+            )
+    if not deltas:
+        return None
+    return (_percentile(deltas, 2.5), _percentile(deltas, 97.5))
+
+
+def _motion_yes_lcb0_diagnostic(
+    baseline_rows: list[_Scored],
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> dict[str, object]:
+    excluded_negative = [
+        row
+        for row in baseline_rows
+        if row.side == "YES"
+        and row.snapshot_edge_lcb is not None
+        and row.snapshot_edge_lcb < 0.0
+    ]
+    excluded_missing = [
+        row
+        for row in baseline_rows
+        if row.side == "YES" and row.snapshot_edge_lcb is None
+    ]
+    treatment_rows = [
+        row
+        for row in baseline_rows
+        if row.side != "YES"
+        or (
+            row.snapshot_edge_lcb is not None
+            and row.snapshot_edge_lcb >= 0.0
+        )
+    ]
+    baseline = _diagnostic_metrics(
+        baseline_rows,
+        bootstrap_samples=bootstrap_samples,
+        seed=seed,
+    )
+    treatment = _diagnostic_metrics(
+        treatment_rows,
+        bootstrap_samples=bootstrap_samples,
+        seed=seed,
+    )
+    baseline_roi = baseline["roi"]
+    treatment_roi = treatment["roi"]
+    ci = _paired_day_clustered_roi_delta_ci(
+        baseline_rows,
+        treatment_rows,
+        samples=bootstrap_samples,
+        seed=seed,
+    )
+
+    def station_target_clusters(rows: list[_Scored]) -> int:
+        return len(
+            {
+                (row.station_id, row.target_date)
+                for row in rows
+                if row.station_id is not None
+            }
+        )
+
+    return {
+        "evidence_kind": "point_in_time_snapshot_diagnostic",
+        "promotion_eligible": False,
+        "promotion_block_reason": (
+            "report-only snapshot diagnostic; chronological account replay required"
+        ),
+        "after_fee_basis": "candidate entry cost held to settlement",
+        "treatment_rule": {
+            "side": "YES",
+            "snapshot_field": "edge_lcb",
+            "minimum": 0.0,
+            "missing_value_action": "exclude",
+        },
+        "counts": {
+            "excluded_yes_negative_lcb": len(excluded_negative),
+            "excluded_yes_missing_lcb": len(excluded_missing),
+            "independent_target_days": len(
+                {row.target_date for row in baseline_rows}
+            ),
+            "baseline_station_target_clusters": station_target_clusters(
+                baseline_rows
+            ),
+            "treatment_station_target_clusters": station_target_clusters(
+                treatment_rows
+            ),
+        },
+        "baseline": baseline,
+        "treatment": treatment,
+        "paired_delta": {
+            "realized_pnl": round(
+                float(treatment["realized_pnl"])
+                - float(baseline["realized_pnl"]),
+                4,
+            ),
+            "capital_at_risk": round(
+                float(treatment["capital_at_risk"])
+                - float(baseline["capital_at_risk"]),
+                4,
+            ),
+            "roi": (
+                round(float(treatment_roi) - float(baseline_roi), 6)
+                if treatment_roi is not None and baseline_roi is not None
+                else None
+            ),
+            "roi_ci95_target_day_clustered": (
+                [round(ci[0], 6), round(ci[1], 6)] if ci is not None else None
+            ),
+        },
+    }
+
+
 def _bucket(rows: list[_Scored]) -> dict[str, object]:
     """Aggregate a list of scored decisions into a metrics block."""
 
@@ -360,6 +543,7 @@ def run_rescore(
     bankroll: float,
     bootstrap_samples: int = 2000,
     seed: int = 0,
+    include_motion_yes_lcb0_diagnostic: bool = False,
 ) -> dict[str, object]:
     """Re-score ``rows`` under ``config`` and roll up by independent weather day."""
 
@@ -438,7 +622,9 @@ def run_rescore(
             scored.append(
                 _Scored(
                     target_date=target_date,
+                    station_id=city.nws_station_id if city is not None else None,
                     side=side,
+                    snapshot_edge_lcb=_opt_float(row, "edge_lcb"),
                     settlement_high_f=settlement_high,
                     cohort=(
                         temperature_cohort(settlement_high)
@@ -476,7 +662,7 @@ def run_rescore(
             recorded_wins += 1 if won else 0
             recorded_days.add(target_date)
 
-    return _summarize(
+    result = _summarize(
         scored,
         considered=considered,
         approved_under_config=approved_under_config,
@@ -493,6 +679,15 @@ def run_rescore(
             "independent_days": len(recorded_days),
         },
     )
+    if include_motion_yes_lcb0_diagnostic:
+        result["report_only_diagnostics"] = {
+            "motion-yes-lcb0-v1": _motion_yes_lcb0_diagnostic(
+                scored,
+                bootstrap_samples=bootstrap_samples,
+                seed=seed,
+            )
+        }
+    return result
 
 
 def _summarize(
