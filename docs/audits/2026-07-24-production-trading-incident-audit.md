@@ -813,10 +813,12 @@ are intentionally not committed.
 | Latest observed Pages publication during audit | `eec8d71b7bf0fc75567e98eddbe9b81ca822e371` |
 | Execution model | `exec-v4-2026-07-17` |
 | Accounting model | `acct-v4-account-scoped-2026-07-14` |
+| Remediation code commit | `08770865ef1a57e04898d9d332cdde1db8ac2064` |
+| Remediation branch | `codex/weatheredge-production-incident-audit` |
 | Baseline Verify run | [29904535960](https://github.com/Jaxsonb04/weather_edge/actions/runs/29904535960) |
 | Pages run observed during audit | [30112787999](https://github.com/Jaxsonb04/weather_edge/actions/runs/30112787999) |
 | Pre-existing unrelated PR | [#29](https://github.com/Jaxsonb04/weather_edge/pull/29) |
-| Remediation branch/PR/deployment | Recorded in the final handoff; no deployment created |
+| Remediation PR/deployment | Recorded in the final handoff; no deployment created |
 
 ## Security-review limitation
 
