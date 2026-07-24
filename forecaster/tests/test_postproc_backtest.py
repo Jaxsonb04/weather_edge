@@ -16,6 +16,7 @@ from forecast_postproc_backtest import (
     evaluate,
     gaussian_crps,
     make_nwp_consensus_predictor,
+    recalibrated_lookup_predictions,
     score_predictor,
 )
 from google_weather_cache import predicted_temperature_cohort
@@ -111,6 +112,63 @@ def test_evaluate_runs_end_to_end_and_consensus_beats_climatology():
 
     # Baseline blend has no archive table here -> zero overlap, handled gracefully.
     assert result["scores"]["baseline_blend"].days == 0
+
+
+def test_recalibration_truth_lag_excludes_truth_unavailable_at_serve_time():
+    base = date(2026, 1, 1)
+    dates = [(base + timedelta(days=offset)).isoformat() for offset in range(5)]
+    predictions = {day: (70.0, 2.0) for day in dates}
+    truth = {day: 70.0 + offset for offset, day in enumerate(dates)}
+    target = dates[-1]
+
+    baseline = recalibrated_lookup_predictions(
+        predictions,
+        truth,
+        min_train=1,
+        shrinkage_k=0.0,
+        truth_lag_days=1,
+    )
+    poisoned = dict(truth)
+    poisoned[dates[-2]] = 1000.0
+    after = recalibrated_lookup_predictions(
+        predictions,
+        poisoned,
+        min_train=1,
+        shrinkage_k=0.0,
+        truth_lag_days=1,
+    )
+
+    assert after[target] == baseline[target]
+
+
+def test_evaluate_threads_lead_days_into_every_truth_trained_challenger(monkeypatch):
+    import forecast_postproc_backtest as scoreboard
+
+    captured = {"emos": [], "analog": [], "recalibration": []}
+
+    def fake_emos(_dates, _truth, _nwp, *, truth_lag_days=0, **_kwargs):
+        captured["emos"].append(truth_lag_days)
+        return {}
+
+    def fake_analog(_dates, _truth, _nwp, *, truth_lag_days=0, **_kwargs):
+        captured["analog"].append(truth_lag_days)
+        return {}
+
+    def fake_recalibration(_predictions, _truth, *, truth_lag_days=0, **_kwargs):
+        captured["recalibration"].append(truth_lag_days)
+        return {}
+
+    monkeypatch.setattr(scoreboard, "emos_ngr_predictions", fake_emos)
+    monkeypatch.setattr(scoreboard, "analog_ensemble_predictions", fake_analog)
+    monkeypatch.setattr(scoreboard, "recalibrated_lookup_predictions", fake_recalibration)
+
+    scoreboard.evaluate(_seed_db(), lead_days=2, reference_name="climatology")
+
+    assert captured == {
+        "emos": [2, 2],
+        "analog": [2],
+        "recalibration": [2],
+    }
 
 
 def test_gaussian_crps_far_miss_approaches_abs_error():

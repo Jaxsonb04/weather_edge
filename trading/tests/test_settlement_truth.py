@@ -9,10 +9,35 @@ from sfo_kalshi_quant import archive, db, strategy_research
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.models import MarketBin
 from sfo_kalshi_quant.settlement_truth import (
+    label_resolves_yes,
     load_cli_settlement_truth,
     normalize_settlement_truth,
     settlement_for_market,
 )
+
+
+@pytest.mark.parametrize(
+    ("label", "settlement_high_f", "expected"),
+    [
+        ("-1° or below", -2.0, True),
+        ("-1° or below", 0.0, False),
+        ("-1° or above", 0.0, True),
+        ("-1° or above", -2.0, False),
+        ("-3° to -2°", -2.0, True),
+        ("-3° to -2°", -1.0, False),
+        ("68-69", 68.0, True),
+        ("68°-69°", 69.0, True),
+        ("68-69", 70.0, False),
+        ("-3--2", -2.0, True),
+        ("66F to 67F", 67.0, True),
+    ],
+)
+def test_legacy_negative_temperature_labels_preserve_the_sign(
+    label,
+    settlement_high_f,
+    expected,
+) -> None:
+    assert label_resolves_yes(label, settlement_high_f) is expected
 
 
 def test_date_only_legacy_truth_can_only_settle_sfo() -> None:

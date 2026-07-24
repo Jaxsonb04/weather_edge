@@ -133,6 +133,39 @@ def test_analog_predicts_near_truth_and_is_rolling_origin():
         assert abs(preds[day][0] - mu) < 1e-9 and abs(preds[day][1] - sigma) < 1e-9
 
 
+def test_analog_truth_lag_excludes_truth_unavailable_at_serve_time():
+    base = date(2026, 1, 1)
+    dates = [(base + timedelta(days=offset)).isoformat() for offset in range(5)]
+    nwp = {
+        day: {"a": 69.0, "b": 70.0, "c": 71.0}
+        for day in dates
+    }
+    truth = {day: 60.0 + offset for offset, day in enumerate(dates)}
+    target = dates[-1]
+
+    baseline = analog_ensemble_predictions(
+        dates,
+        truth,
+        nwp,
+        k=3,
+        min_train=1,
+        truth_lag_days=1,
+    )
+    poisoned = dict(truth)
+    poisoned[dates[-2]] = 1000.0
+    after = analog_ensemble_predictions(
+        dates,
+        poisoned,
+        nwp,
+        k=3,
+        min_train=1,
+        truth_lag_days=1,
+    )
+
+    assert target in baseline
+    assert after[target] == baseline[target]
+
+
 def test_emos_does_not_train_on_its_own_truth():
     # Same-day self-leak guard (distinct from the future-leak test): mutating a
     # day's OWN truth must not change that day's OWN prediction -- it is fit on

@@ -20,6 +20,7 @@ from sfo_kalshi_quant.cli import (
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.forecast import ForecastDataError
 from sfo_kalshi_quant.models import ForecastSnapshot
 from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
 from sfo_kalshi_quant.paper import ArbitrageContainmentError
@@ -419,3 +420,86 @@ def test_build_scan_context_preserves_event_fallback_and_injected_sizing_model()
     build_sizing.assert_not_called()
     assert evaluator_type.call_count == 2
     assert all(call.kwargs["sizing_model"] is sizing_model for call in evaluator_type.call_args_list)
+
+
+def test_live_scan_fails_closed_when_emos_point_would_use_residual_calibration() -> None:
+    target = date(2026, 7, 12)
+    adapter = Mock()
+    adapter.latest_live_forecast.return_value = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=72.0,
+        fetched_at="2026-07-12T12:00:00+00:00",
+        source_spread_override_f=3.0,
+        method="emos fixture",
+        raw={
+            "source": "forecast_emos_daily_high",
+            "emos": {"mu": 72.0, "sigma": 2.5},
+        },
+    )
+    args = SimpleNamespace(offline_events=None, side="both")
+
+    with (
+        patch("sfo_kalshi_quant.cli._enforce_live_forecast_freshness"),
+        pytest.raises(ForecastDataError, match="matching EMOS distribution"),
+    ):
+        cli_module.build_scan_context(
+            args,
+            target,
+            adapter,
+            Mock(),
+            StrategyConfig(emos_distribution_enabled=False),
+            Mock(),
+            Color.from_no_color(True),
+            city=get_city("sfo"),
+            event_lookup_done=True,
+            fallback_event_title="fallback",
+        )
+
+
+def test_emos_point_uses_the_distribution_from_the_same_forecast_row() -> None:
+    target = date(2026, 7, 12)
+    adapter = Mock()
+    adapter.latest_live_forecast.return_value = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=72.0,
+        fetched_at="2026-07-12T12:00:00+00:00",
+        source_spread_override_f=3.0,
+        method="emos fixture",
+        raw={
+            "source": "forecast_emos_daily_high",
+            "emos": {"mu": 72.0, "sigma": 2.5},
+        },
+    )
+    calibrator = Mock()
+    calibrator.bucket_probabilities.return_value = {}
+    evaluator = Mock()
+    evaluator.rank.return_value = []
+    args = SimpleNamespace(offline_events=None, side="both", no_ensemble=True)
+
+    with (
+        patch("sfo_kalshi_quant.cli._enforce_live_forecast_freshness"),
+        patch("sfo_kalshi_quant.cli._intraday_for_target", return_value=None),
+        patch("sfo_kalshi_quant.cli._ensemble_for_target", return_value=None),
+        patch("sfo_kalshi_quant.cli.build_market_consensus", return_value="consensus"),
+        patch("sfo_kalshi_quant.cli._risk_profile_name", return_value="research"),
+        patch("sfo_kalshi_quant.cli._sizing_bankroll", return_value=1000.0),
+        patch("sfo_kalshi_quant.cli.TradeEvaluator", return_value=evaluator),
+    ):
+        cli_module.build_scan_context(
+            args,
+            target,
+            adapter,
+            calibrator,
+            StrategyConfig(emos_distribution_enabled=True),
+            Mock(),
+            Color.from_no_color(True),
+            city=get_city("sfo"),
+            event_lookup_done=True,
+            emos_lookup={},
+            fallback_event_title="fallback",
+        )
+
+    assert calibrator.bucket_probabilities.call_args.kwargs["emos_mu_sigma"] == (
+        72.0,
+        2.5,
+    )

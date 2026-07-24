@@ -205,6 +205,43 @@ def test_live_forecast_freshness_rejects_stale_snapshot():
         raise AssertionError("stale live forecasts must be rejected")
 
 
+def test_live_forecast_freshness_rejects_far_future_timestamp():
+    future_fetched_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+    target = datetime.now(SFO_TZ).date() + timedelta(days=1)
+    forecast = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=70.0,
+        fetched_at=future_fetched_at,
+        method="test",
+    )
+
+    try:
+        _enforce_live_forecast_freshness(
+            forecast,
+            StrategyConfig(max_forecast_age_hours=30.0),
+        )
+    except ForecastDataError as exc:
+        assert "future" in str(exc)
+    else:
+        raise AssertionError("far-future forecast timestamps must be rejected")
+
+
+def test_live_forecast_freshness_allows_small_clock_skew():
+    fetched_at = (datetime.now(UTC) + timedelta(minutes=3)).isoformat()
+    target = datetime.now(SFO_TZ).date() + timedelta(days=1)
+    forecast = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=70.0,
+        fetched_at=fetched_at,
+        method="test",
+    )
+
+    _enforce_live_forecast_freshness(
+        forecast,
+        StrategyConfig(max_forecast_age_hours=30.0),
+    )
+
+
 def _write_sfo_live_forecast_sources(
     root: Path,
     target: date,

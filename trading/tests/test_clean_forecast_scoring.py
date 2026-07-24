@@ -254,10 +254,20 @@ def test_adaptive_weights_rejected_when_holdout_does_not_improve():
         assert weights == google_weather_cache.BLEND_WEIGHTS
 
 
-def _write_dataset_research(path: Path, keys: list[str]) -> None:
+def _write_dataset_research(
+    path: Path,
+    keys: list[str],
+    *,
+    live_approved: bool = False,
+) -> None:
     path.write_text(
         json.dumps(
             {
+                "live_promotion": {
+                    "decision": "approved" if live_approved else "blocked",
+                    "after_cost_approved": live_approved,
+                    "approved_dataset_keys": keys if live_approved else [],
+                },
                 "accuracy_gate": {
                     "candidates": [
                         {
@@ -273,14 +283,22 @@ def _write_dataset_research(path: Path, keys: list[str]) -> None:
     )
 
 
-def _dataset_row(target: date, value: float, *, issued: str = "2026-06-25T18:00:00+00:00") -> dict[str, object]:
+def _dataset_row(
+    target: date,
+    value: float,
+    *,
+    issued: str = "2026-06-25T18:00:00+00:00",
+    lead_hours: float | None = 24.0,
+    station_id: str = "KSFO",
+) -> dict[str, object]:
     return {
         "source": "noaa-lamp",
         "model": "lamp",
+        "station_id": station_id,
         "issued_at": issued,
         "target_date": target.isoformat(),
         "valid_time": target.isoformat(),
-        "lead_hours": 0.0,
+        "lead_hours": lead_hours,
         "latitude": 37.62,
         "longitude": -122.38,
         "variable": "temperature_2m_max",
@@ -291,7 +309,7 @@ def _dataset_row(target: date, value: float, *, issued: str = "2026-06-25T18:00:
     }
 
 
-def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
+def test_accuracy_candidate_does_not_receive_live_weight_without_after_cost_approval():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "dataset.db"
         research_path = Path(tmp) / "dataset_research.json"
@@ -305,7 +323,7 @@ def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
         )
         _write_dataset_research(
             research_path,
-            ["noaa-lamp/lamp/temperature_2m_max/0h"],
+            ["noaa-lamp/lamp/temperature_2m_max/24h"],
         )
 
         result = google_weather_cache.load_promoted_dataset_guidance(
@@ -314,10 +332,151 @@ def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
             research_path=research_path,
         )
 
-    assert result["highF"] == 71.0
+    assert result["highF"] is None
     assert result["source"] == "Promoted dataset guidance"
-    assert result["components"][0]["dataset_key"] == "noaa-lamp/lamp/temperature_2m_max/0h"
-    assert result["metadata"]["promoted_count"] == 1
+    assert result["components"] == []
+    assert result["metadata"]["mode"] == "collect_only"
+    assert result["metadata"]["promoted_count"] == 0
+
+
+def test_after_cost_approval_rejects_non_point_in_time_dataset_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        research_path = Path(tmp) / "dataset_research.json"
+        target = date(2026, 6, 26)
+        store = DatasetStore(db_path)
+        store.upsert_forecast_features(
+            [
+                _dataset_row(
+                    target,
+                    71.0,
+                    issued="2026-06-26T18:00:00+00:00",
+                    lead_hours=0.0,
+                )
+            ]
+        )
+        key = "noaa-lamp/lamp/temperature_2m_max/0h"
+        _write_dataset_research(research_path, [key], live_approved=True)
+
+        result = google_weather_cache.load_promoted_dataset_guidance(
+            target.isoformat(),
+            db_path=db_path,
+            research_path=research_path,
+        )
+
+    assert result["highF"] is None
+    assert result["components"] == []
+    assert result["metadata"]["mode"] == "collect_only"
+
+
+def test_after_cost_approved_point_in_time_dataset_row_can_supply_guidance():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        research_path = Path(tmp) / "dataset_research.json"
+        target = date(2026, 6, 26)
+        store = DatasetStore(db_path)
+        store.upsert_forecast_features([_dataset_row(target, 71.0)])
+        key = "noaa-lamp/lamp/temperature_2m_max/24h"
+        _write_dataset_research(research_path, [key], live_approved=True)
+
+        result = google_weather_cache.load_promoted_dataset_guidance(
+            target.isoformat(),
+            db_path=db_path,
+            research_path=research_path,
+        )
+
+    assert result["highF"] == 71.0
+    assert result["components"][0]["dataset_key"] == key
+    assert result["metadata"]["mode"] == "promoted"
+
+
+def test_promoted_dataset_guidance_is_scoped_to_sfo_station():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        research_path = Path(tmp) / "dataset_research.json"
+        target = date(2026, 6, 26)
+        store = DatasetStore(db_path)
+        store.upsert_forecast_features(
+            [
+                _dataset_row(
+                    target,
+                    70.0,
+                    issued="2026-06-25T12:00:00+00:00",
+                    station_id="KSFO",
+                ),
+                _dataset_row(
+                    target,
+                    95.0,
+                    issued="2026-06-25T18:00:00+00:00",
+                    station_id="KORD",
+                ),
+            ]
+        )
+        key = "noaa-lamp/lamp/temperature_2m_max/24h"
+        _write_dataset_research(research_path, [key], live_approved=True)
+
+        result = google_weather_cache.load_promoted_dataset_guidance(
+            target.isoformat(),
+            db_path=db_path,
+            research_path=research_path,
+        )
+
+    assert result["highF"] == 70.0
+    assert result["components"][0]["raw_high_f"] == 70.0
+
+
+def test_dataset_source_correction_excludes_other_stations():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "dataset.db"
+        research_path = Path(tmp) / "dataset_research.json"
+        target = date(2026, 6, 26)
+        store = DatasetStore(db_path)
+        historical_rows = []
+        for offset in range(10):
+            historical_target = date(2026, 6, 10) + timedelta(days=offset)
+            issued_day = historical_target - timedelta(days=1)
+            historical_rows.extend(
+                [
+                    _dataset_row(
+                        historical_target,
+                        70.0,
+                        issued=f"{issued_day.isoformat()}T12:00:00+00:00",
+                        station_id="KSFO",
+                    ),
+                    _dataset_row(
+                        historical_target,
+                        95.0,
+                        issued=f"{issued_day.isoformat()}T18:00:00+00:00",
+                        station_id="KORD",
+                    ),
+                ]
+            )
+        historical_rows.append(_dataset_row(target, 71.0, station_id="KSFO"))
+        store.upsert_forecast_features(historical_rows)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE cli_settlements ("
+                "station_id TEXT, local_date TEXT, max_temperature_f REAL, "
+                "is_final INTEGER NOT NULL DEFAULT 1)"
+            )
+            conn.executemany(
+                "INSERT INTO cli_settlements VALUES ('KSFO', ?, 72.0, 1)",
+                [
+                    ((date(2026, 6, 10) + timedelta(days=offset)).isoformat(),)
+                    for offset in range(10)
+                ],
+            )
+        key = "noaa-lamp/lamp/temperature_2m_max/24h"
+        _write_dataset_research(research_path, [key], live_approved=True)
+
+        result = google_weather_cache.load_promoted_dataset_guidance(
+            target.isoformat(),
+            db_path=db_path,
+            research_path=research_path,
+        )
+
+    assert result["highF"] == 72.5
+    assert result["metadata"]["correction"]["source_counts"] == {key: 10}
 
 
 def test_unpromoted_dataset_guidance_is_reported_but_not_weighted():

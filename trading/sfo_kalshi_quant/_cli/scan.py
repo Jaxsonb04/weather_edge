@@ -31,6 +31,7 @@ from ..forecast import (
     ForecastDataError,
     SfoForecasterAdapter,
     has_forecaster_observed_high_adjustment,
+    matching_emos_distribution,
     parse_target_date,
     parse_target_dates,
 )
@@ -123,6 +124,8 @@ def _enforce_live_forecast_freshness(forecast, config: StrategyConfig) -> None:
     age_hours = forecast.age_hours()
     if age_hours is None:
         raise ForecastDataError("forecast snapshot has no readable fetched_at timestamp")
+    if age_hours < -(5.0 / 60.0):
+        raise ForecastDataError("forecast snapshot fetched_at timestamp is in the future")
     if age_hours > config.max_forecast_age_hours:
         raise ForecastDataError(
             f"forecast snapshot for {forecast.target_date.isoformat()} is stale "
@@ -327,6 +330,10 @@ def build_scan_context(
         max_age_hours=config.max_forecast_age_hours,
     )
     _enforce_live_forecast_freshness(forecast, config)
+    matching_emos = matching_emos_distribution(
+        forecast,
+        enabled=config.emos_distribution_enabled,
+    )
     intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
@@ -372,6 +379,8 @@ def build_scan_context(
             if config.emos_distribution_enabled
             else {}
         )
+    if matching_emos is not None:
+        emos_lookup = {**emos_lookup, target: matching_emos}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
