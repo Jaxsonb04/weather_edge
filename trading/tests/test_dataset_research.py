@@ -45,8 +45,8 @@ def test_dataset_research_promotes_only_sources_that_improve_heldout_accuracy():
         row["dataset_key"]: row
         for row in payload["accuracy_gate"]["candidates"]
     }
-    good = candidates["open-meteo-previous-runs/candidate_model/temperature_2m_max/0h"]
-    bad = candidates["open-meteo-previous-runs/worse_model/temperature_2m_max/0h"]
+    good = candidates["open-meteo-previous-runs/candidate_model/temperature_2m_max/24h"]
+    bad = candidates["open-meteo-previous-runs/worse_model/temperature_2m_max/24h"]
 
     assert payload["status"] == "collect_only"
     assert good["decision"] == "accuracy_candidate"
@@ -75,7 +75,7 @@ def test_dataset_research_keeps_small_samples_collect_only():
         store = DatasetStore(db_path)
         start = date(2026, 1, 1)
         rows = [
-            _feature_row("open-meteo-historical-forecast", "best_match", start + timedelta(days=idx), _actual_for_idx(idx))
+            _feature_row("open-meteo-previous-runs", "best_match", start + timedelta(days=idx), _actual_for_idx(idx))
             for idx in range(12)
         ]
         store.upsert_forecast_features(rows)
@@ -89,6 +89,34 @@ def test_dataset_research_keeps_small_samples_collect_only():
     candidate = payload["accuracy_gate"]["candidates"][0]
     assert candidate["decision"] == "collect_only"
     assert "needs at least 30" in candidate["reason"]
+
+
+def test_dataset_research_excludes_features_without_pre_target_provenance():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        root.mkdir()
+        db_path = Path(tmp) / "paper.db"
+        _write_ab_test_fixture(root / "ab_test_results.json", row_count=12)
+        store = DatasetStore(db_path)
+        target = date(2026, 1, 1)
+        row = _feature_row(
+            "open-meteo-historical-forecast",
+            "best_match",
+            target,
+            62.0,
+        )
+        row["issued_at"] = f"{target.isoformat()}T18:00:00+00:00"
+        row["lead_hours"] = None
+        store.upsert_forecast_features([row])
+
+        payload = build_dataset_research(
+            db_path=db_path,
+            forecaster_root=root,
+            min_matched_rows=1,
+        )
+
+    assert payload["accuracy_gate"]["candidates"] == []
+    assert payload["live_promotion"]["decision"] == "blocked"
 
 
 def test_dataset_research_surfaces_source_health_and_market_history():
@@ -202,10 +230,10 @@ def _feature_row(source: str, model: str, target: date, value: float) -> dict[st
     return {
         "source": source,
         "model": model,
-        "issued_at": f"{target.isoformat()}T07:00:00+00:00",
+        "issued_at": f"{(target - timedelta(days=1)).isoformat()}T18:00:00+00:00",
         "target_date": target.isoformat(),
         "valid_time": target.isoformat(),
-        "lead_hours": 0.0,
+        "lead_hours": 24.0,
         "latitude": 37.62,
         "longitude": -122.38,
         "variable": "temperature_2m_max",

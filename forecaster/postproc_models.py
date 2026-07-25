@@ -242,6 +242,7 @@ def analog_ensemble_predictions(
     *,
     k: int = ANALOG_K,
     min_train: int = ANALOG_MIN_TRAIN,
+    truth_lag_days: int = 0,
 ) -> dict[str, tuple[float, float]]:
     """Rolling-origin analog ensemble.
 
@@ -251,18 +252,29 @@ def analog_ensemble_predictions(
     highs as the predictive ensemble.
     """
 
+    if truth_lag_days < 0:
+        raise ValueError("truth_lag_days must be non-negative")
+
     preds: dict[str, tuple[float, float]] = {}
-    history: list[tuple[float, float, float]] = []  # (mean, spread, truth)
+    history: list[tuple[str, float, float, float]] = []  # (date, mean, spread, truth)
     for date_str in dates_sorted:
         stats = day_mean_spread(nwp_by_date.get(date_str))
-        if stats is not None and len(history) >= min_train:
+        truth_cutoff = (
+            date.fromisoformat(date_str) - timedelta(days=truth_lag_days + 1)
+        ).isoformat()
+        available_history = [
+            (mean, spread, actual)
+            for history_date, mean, spread, actual in history
+            if history_date <= truth_cutoff
+        ]
+        if stats is not None and len(available_history) >= min_train:
             target_mean, target_spread, _ = stats
-            means = [h[0] for h in history]
-            spreads = [h[1] for h in history]
+            means = [h[0] for h in available_history]
+            spreads = [h[1] for h in available_history]
             mean_scale = pstdev(means) or 1.0
             spread_scale = pstdev(spreads) or 1.0
             scored = sorted(
-                history,
+                available_history,
                 key=lambda h: (
                     ((h[0] - target_mean) / mean_scale) ** 2
                     + ((h[1] - target_spread) / spread_scale) ** 2
@@ -274,7 +286,7 @@ def analog_ensemble_predictions(
                 sigma = max(stdev(analog_truths), SIGMA_FLOOR_F)
                 preds[date_str] = (mu, sigma)
         if stats is not None and date_str in truth:
-            history.append((stats[0], stats[1], truth[date_str]))
+            history.append((date_str, stats[0], stats[1], truth[date_str]))
     return preds
 
 

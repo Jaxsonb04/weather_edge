@@ -18,6 +18,12 @@ from ._util import _optional_float, _parse_timestamp, _row_value
 from .cities import city_for_market_ticker, city_for_station
 
 SettlementKey: TypeAlias = tuple[str, str]
+_LABEL_NUMBER_PATTERN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+_LABEL_RANGE_PATTERN = re.compile(
+    rf"({_LABEL_NUMBER_PATTERN})\s*(?:°\s*[Ff]?|[Ff])?\s*"
+    rf"(?:to|through|[-–—])\s*({_LABEL_NUMBER_PATTERN})",
+    re.IGNORECASE,
+)
 
 
 def integer_settlement_high_f(value: object) -> float:
@@ -56,12 +62,12 @@ def label_resolves_yes(label: str, settlement_high_f: float) -> bool:
     """Compatibility parser for legacy rows that predate typed strike fields."""
 
     if "or below" in label:
-        match = re.search(r"(\d+)", label)
-        return bool(match and settlement_high_f <= float(match.group(1)))
+        match = re.search(_LABEL_NUMBER_PATTERN, label)
+        return bool(match and settlement_high_f <= float(match.group(0)))
     if "or above" in label:
-        match = re.search(r"(\d+)", label)
-        return bool(match and settlement_high_f >= float(match.group(1)))
-    match = re.search(r"(\d+).+?(\d+)", label)
+        match = re.search(_LABEL_NUMBER_PATTERN, label)
+        return bool(match and settlement_high_f >= float(match.group(0)))
+    match = _LABEL_RANGE_PATTERN.search(label)
     if match:
         lo, hi = float(match.group(1)), float(match.group(2))
         return lo <= settlement_high_f <= hi

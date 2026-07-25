@@ -22,7 +22,11 @@ from sfo_kalshi_quant.backtest_rescore import (
     run_rescore,
 )
 from sfo_kalshi_quant.cli import main
-from sfo_kalshi_quant.config import StrategyConfig, normalize_risk_profile_name
+from sfo_kalshi_quant.config import (
+    StrategyConfig,
+    normalize_risk_profile_name,
+    strategy_config_for_profile,
+)
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import BucketProbability, MarketBin
 from sfo_kalshi_quant.risk import TradeEvaluator
@@ -424,6 +428,109 @@ def test_run_rescore_counterfactual_rejects_under_tighter_config():
     assert tight["counts"]["settled_decisions"] == 0
     # The recorded config still shows 1 approval on the same set either way.
     assert tight["counts"]["approved_under_recorded_config"] == 1
+
+
+def test_run_rescore_reports_motion_yes_lcb0_as_non_promotable_snapshot_diagnostic():
+    config = strategy_config_for_profile("research")
+    base_market = replace(
+        _no_favorite_market(),
+        yes_bid=0.19,
+        yes_ask=0.20,
+        no_bid=0.80,
+        no_ask=0.81,
+    )
+
+    def yes_decision(ticker: str, *, lower_confidence: float):
+        market = replace(
+            base_market,
+            ticker=ticker,
+            event_ticker=ticker.rsplit("-", 1)[0],
+        )
+        probability = replace(
+            _no_favorite_probability(),
+            ticker=ticker,
+            probability=0.40,
+            lower_confidence=lower_confidence,
+            residual_probability=0.40,
+            ensemble_probability=0.40,
+            model_probability=0.40,
+            market_probability=0.20,
+            intraday_probability=0.40,
+        )
+        decision = TradeEvaluator(config).evaluate_market(
+            market,
+            probability,
+            bankroll=1000.0,
+            side="YES",
+        )
+        assert decision.approved
+        return decision
+
+    negative_lcb = yes_decision(
+        "KXHIGHTSFO-TEST-B66.5",
+        lower_confidence=0.18,
+    )
+    positive_lcb = yes_decision(
+        "KXHIGHNY-TEST-B66.5",
+        lower_confidence=0.30,
+    )
+    assert negative_lcb.edge_lcb < 0
+    assert positive_lcb.edge_lcb >= 0
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        store.record_decisions(
+            "2026-06-03",
+            [negative_lcb],
+            event=pre_resolution_event([negative_lcb]),
+            risk_profile="research",
+        )
+        store.record_decisions(
+            "2026-06-04",
+            [positive_lcb],
+            event=pre_resolution_event([positive_lcb]),
+            risk_profile="research",
+        )
+        rows = store.sampled_decision_rows(sample_mode="entry-per-market-side")
+        result = run_rescore(
+            rows,
+            {
+                ("KXHIGHTSFO", "2026-06-03"): 70.0,
+                ("KXHIGHNY", "2026-06-04"): 67.0,
+            },
+            config,
+            bankroll=1000.0,
+            include_motion_yes_lcb0_diagnostic=True,
+            bootstrap_samples=200,
+            seed=7,
+        )
+
+    diagnostic = result["report_only_diagnostics"]["motion-yes-lcb0-v1"]
+    assert diagnostic["promotion_eligible"] is False
+    assert diagnostic["evidence_kind"] == "point_in_time_snapshot_diagnostic"
+    assert diagnostic["treatment_rule"] == {
+        "side": "YES",
+        "snapshot_field": "edge_lcb",
+        "minimum": 0.0,
+        "missing_value_action": "exclude",
+    }
+    assert diagnostic["baseline"]["settled_decisions"] == 2
+    assert diagnostic["treatment"]["settled_decisions"] == 1
+    assert diagnostic["counts"] == {
+        "excluded_yes_negative_lcb": 1,
+        "excluded_yes_missing_lcb": 0,
+        "independent_target_days": 2,
+        "baseline_station_target_clusters": 2,
+        "treatment_station_target_clusters": 1,
+    }
+    assert diagnostic["baseline"]["realized_pnl"] < diagnostic["treatment"]["realized_pnl"]
+    assert diagnostic["paired_delta"]["realized_pnl"] > 0
+    assert diagnostic["paired_delta"]["roi"] > 0
+    assert diagnostic["paired_delta"]["roi_ci95_target_day_clustered"] is not None
+    # The treatment is report-only: the ordinary rescore remains the unfiltered
+    # baseline and can never become promotion eligible from this diagnostic.
+    assert result["counts"]["settled_decisions"] == 2
+    assert result["promotion_eligible"] is False
 
 
 def test_backtest_rescore_cli_dispatches_and_exits_clean():

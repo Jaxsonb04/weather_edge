@@ -37,6 +37,7 @@ _IMPLEMENTATION_ONLY_NAMES = {
     "compute_rolling_blend_residual_bias",
     "compute_source_mos_corrections",
     "_compute_source_mos_corrections_from_rows",
+    "_dataset_feature_is_point_in_time",
     # Task 4 city-aware fetch surface (forecaster/google_api.py): not yet
     # wired into this compatibility facade or its frozen callable inventory
     # (forecaster/tests/google_weather_cache_signatures.json). The multi-city

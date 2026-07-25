@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -130,6 +131,49 @@ def _paper_book_summary(journal: _PaperJournalProjection) -> dict[str, float]:
         "open_orders": float(len(journal.open_root_rows)),
         "open_capital_at_risk": open_capital,
     }
+
+
+def _profile_monitor_health(
+    journal: _PaperJournalProjection,
+    monitor_rows: list[dict[str, Any]],
+    monitor_marks: dict[int, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Summarize open-position monitor coverage before public row caps apply."""
+
+    latest_monitor_by_order = {
+        int(row["order_id"]): row
+        for row in monitor_rows
+        if row.get("order_id") is not None
+    }
+    health: dict[str, dict[str, Any]] = {}
+    for row in journal.open_root_rows:
+        profile = _row_risk_profile(row) or "unknown"
+        summary = health.setdefault(
+            profile,
+            {
+                "latest_opened_at": None,
+                "latest_monitor_action_at": None,
+                "marked_open_positions": 0,
+            },
+        )
+        opened_at = row.get("created_at")
+        if opened_at and (
+            summary["latest_opened_at"] is None
+            or str(opened_at) > str(summary["latest_opened_at"])
+        ):
+            summary["latest_opened_at"] = opened_at
+
+        order_id = int(row["id"])
+        monitor_row = latest_monitor_by_order.get(order_id)
+        monitor_at = monitor_row.get("created_at") if monitor_row else None
+        if monitor_at and (
+            summary["latest_monitor_action_at"] is None
+            or str(monitor_at) > str(summary["latest_monitor_action_at"])
+        ):
+            summary["latest_monitor_action_at"] = monitor_at
+        if order_id in monitor_marks:
+            summary["marked_open_positions"] += 1
+    return health
 
 
 def _paper_profile_rows(journal: _PaperJournalProjection) -> list[dict[str, Any]]:
@@ -282,6 +326,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "pending_limit_orders": [],
         "closed_positions": [],
         "recent_monitor_actions": [],
+        "profile_monitor_health": {},
         "diagnostics": _empty_paper_diagnostics(),
         "profiles": [],
         "research_daily_target": {
@@ -304,7 +349,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
     if not _db_table_exists(db_path, "paper_orders"):
         return {**empty, "reason": "paper_orders table is not available yet."}
 
-    monitor_marks = _latest_monitor_marks(db_path)
+    monitor_marks: dict[int, dict[str, Any]] = {}
     decision_marks = _latest_position_marks(db_path)
     has_monitor_snapshots = _db_table_exists(db_path, "paper_monitor_snapshots")
     with sqlite3.connect(db_path) as conn:
@@ -340,30 +385,22 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             for position in journal.all_positions
             if position.valid and position.root.get("id") is not None
         }
+        open_order_ids = {
+            int(row["id"])
+            for row in journal.open_root_rows
+            if row.get("id") is not None
+        }
         monitor_rows = []
+        profile_monitor_health = {}
         if has_monitor_snapshots:
+            monitor_marks = _latest_monitor_marks(db_path, open_order_ids)
             # Keep only the LATEST snapshot per order. The monitor writes one row
             # per open order every ~2-minute cycle, so without this dedup a single
             # position that HOLDs for a few cycles shows up as several identical
             # "actions" (the repeated 0.59/0.40/0.11 @ 0.99 the owner saw). The
-            # window-function filter collapses those to one inspection mark per
+            # exact latest-row query collapses those to one inspection mark per
             # order. See docs/trading_engine_diagnosis_2026-06-16.md (Finding 5).
-            monitor_rows = conn.execute(
-                """
-                SELECT m.*
-                FROM (
-                    SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY order_id
-                               ORDER BY created_at DESC, id DESC
-                           ) AS rn
-                    FROM paper_monitor_snapshots
-                ) m
-                WHERE m.rn = 1
-                ORDER BY m.created_at DESC, m.id DESC
-                LIMIT 5000
-                """
-            ).fetchall()
+            monitor_rows = _latest_global_monitor_rows(conn, limit=5000)
             monitor_rows = [
                 {
                     **dict(row),
@@ -374,7 +411,20 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                 }
                 for row in monitor_rows
                 if int(row["order_id"]) in valid_roots
-            ][:12]
+            ]
+            health_rows = [
+                dict(row)
+                for row in _latest_monitor_rows_for_orders(
+                    conn,
+                    open_order_ids,
+                )
+            ]
+            profile_monitor_health = _profile_monitor_health(
+                journal,
+                health_rows,
+                monitor_marks,
+            )
+            monitor_rows = monitor_rows[:12]
         scanning_profiles = []
         if _db_table_exists(db_path, "decision_snapshots"):
             scanning_profiles = [
@@ -519,6 +569,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "pending_limit_orders": pending_limit_orders,
         "closed_positions": closed_positions,
         "recent_monitor_actions": action_rows,
+        "profile_monitor_health": profile_monitor_health,
         "duplicate_open_groups": duplicate_groups,
         "diagnostics": _paper_diagnostics(journal),
         "profiles": profile_rows,
@@ -821,21 +872,110 @@ def _row_risk_profile(row: sqlite3.Row) -> str | None:
     return None if profile == "unknown" else profile
 
 
-def _latest_monitor_marks(db_path: Path) -> dict[int, dict[str, Any]]:
+def _latest_global_monitor_rows(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    """Read the latest monitor row per order without sorting wide payloads.
+
+    Monitor diagnostics can contain large JSON objects. Ranking ``SELECT *``
+    across the append-only table carries those objects through SQLite's window
+    sorter. Instead, resolve the maximum timestamp and then the maximum row id
+    at that timestamp using narrow indexed keys, and fetch only the winners.
+    The result is identical to ``ORDER BY created_at DESC, id DESC`` within
+    each order, including tied timestamps and out-of-order inserts.
+    """
+
+    return conn.execute(
+        """
+        WITH latest_time AS (
+            SELECT order_id, MAX(created_at) AS created_at
+            FROM paper_monitor_snapshots
+            GROUP BY order_id
+        ),
+        latest_row AS (
+            SELECT snapshots.order_id, MAX(snapshots.id) AS id
+            FROM paper_monitor_snapshots AS snapshots
+            JOIN latest_time
+              ON latest_time.order_id = snapshots.order_id
+             AND latest_time.created_at = snapshots.created_at
+            GROUP BY snapshots.order_id
+        )
+        SELECT snapshots.*
+        FROM paper_monitor_snapshots AS snapshots
+        JOIN latest_row ON latest_row.id = snapshots.id
+        ORDER BY snapshots.created_at DESC, snapshots.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+
+def _latest_monitor_rows_for_orders(
+    conn: sqlite3.Connection,
+    order_ids: Iterable[int],
+    *,
+    require_live_bid: bool = False,
+) -> list[sqlite3.Row]:
+    """Read one latest monitor row per requested order without global caps."""
+
+    requested = sorted({int(order_id) for order_id in order_ids})
+    if not requested:
+        return []
+    rows: list[sqlite3.Row] = []
+    for start in range(0, len(requested), 500):
+        chunk = requested[start : start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        live_bid_filter = "AND live_bid IS NOT NULL" if require_live_bid else ""
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT m.*
+                FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY order_id
+                               ORDER BY created_at DESC, id DESC
+                           ) AS rn
+                    FROM paper_monitor_snapshots
+                    WHERE order_id IN ({placeholders})
+                      {live_bid_filter}
+                ) m
+                WHERE m.rn = 1
+                """,
+                chunk,
+            ).fetchall()
+        )
+    return sorted(
+        rows,
+        key=lambda row: (str(row["created_at"]), int(row["id"])),
+        reverse=True,
+    )
+
+
+def _latest_monitor_marks(
+    db_path: Path,
+    order_ids: Iterable[int] | None = None,
+) -> dict[int, dict[str, Any]]:
     if not db_path.exists() or not _db_table_exists(db_path, "paper_monitor_snapshots"):
         return {}
     marks: dict[int, dict[str, Any]] = {}
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM paper_monitor_snapshots
-            WHERE live_bid IS NOT NULL
-            ORDER BY created_at DESC, id DESC
-            LIMIT 5000
-            """
-        ).fetchall()
+        requested = order_ids
+        if requested is None:
+            requested = (
+                int(row["order_id"])
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM paper_monitor_snapshots"
+                ).fetchall()
+            )
+        rows = _latest_monitor_rows_for_orders(
+            conn,
+            requested,
+            require_live_bid=True,
+        )
     for row in rows:
         order_id = int(row["order_id"])
         if order_id in marks:

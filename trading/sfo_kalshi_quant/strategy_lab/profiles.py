@@ -232,6 +232,7 @@ def _profile_paper_payload(paper: dict[str, Any], name: str) -> dict[str, Any]:
         for row in action_rows
         if row.get("status") not in {"OPEN", "LIMIT_RESTING"}
     ]
+    monitor_health = (paper.get("profile_monitor_health") or {}).get(name) or {}
     profile = _profile_row(paper.get("profiles") or [], name)
     duplicate_rows = [
         row
@@ -265,14 +266,28 @@ def _profile_paper_payload(paper: dict[str, Any], name: str) -> dict[str, Any]:
             default=0,
         ),
         "unresolved_past_targets": [],
-        "latest_opened_at": open_rows[0].get("created_at") if open_rows else None,
+        "latest_opened_at": (
+            monitor_health.get("latest_opened_at")
+            if monitor_health
+            else open_rows[0].get("created_at")
+            if open_rows
+            else None
+        ),
         "latest_monitor_action_at": (
-            monitor_action_rows[0].get("time") if monitor_action_rows else None
+            monitor_health.get("latest_monitor_action_at")
+            if monitor_health
+            else monitor_action_rows[0].get("time")
+            if monitor_action_rows
+            else None
         ),
         "closed_positions": int(_to_float(profile.get("orders"))),
         "realized_pnl": _round(profile.get("realized_pnl"), 2),
         "unrealized_pnl": unrealized_pnl,
-        "marked_open_positions": len(marked_open),
+        "marked_open_positions": (
+            int(_to_float(monitor_health.get("marked_open_positions")))
+            if monitor_health
+            else len(marked_open)
+        ),
         "open_risk": _round(profile.get("open_risk"), 2),
         "open_value": open_value,
         "capital_at_risk": _round(profile.get("capital_resolved"), 2),

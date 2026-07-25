@@ -268,6 +268,9 @@ def _config_rescore_payload(
                 cfg,
                 bankroll=cfg.paper_bankroll,
                 bootstrap_samples=1000,
+                include_motion_yes_lcb0_diagnostic=(
+                    name == "research-motion"
+                ),
             )
             # Drop the per-day list from the published artifact: the card shows
             # rollups (candidate vs recorded, per-side, per-cohort, CI), and

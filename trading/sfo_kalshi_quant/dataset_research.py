@@ -12,6 +12,7 @@ from typing import Any
 from ._util import _parse_timestamp, _table_exists
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .models import ForecastOutcome
+from .settlement_day import PACIFIC_STANDARD_TZ
 
 
 DEFAULT_MIN_MATCHED_ROWS = 30
@@ -97,6 +98,7 @@ def build_dataset_research(
             "dataset_stack": {"available": False, "decision": "collect_only"},
             "probabilistic_benchmarks": _probabilistic_benchmarks([]),
             "profitability_gate": _profitability_gate({}, min_after_cost_trades=min_after_cost_trades),
+            "live_promotion": _blocked_live_promotion(),
         }
 
     baseline_by_date = {row.local_date: row for row in baseline_outcomes}
@@ -161,10 +163,23 @@ def build_dataset_research(
         "dataset_stack": dataset_stack,
         "probabilistic_benchmarks": _probabilistic_benchmarks(candidates),
         "profitability_gate": profitability_gate,
+        "live_promotion": _blocked_live_promotion(),
         "promotion_rule": (
             "Collect broadly, but do not give a new source live model weight or "
             "loosen paper-trading gates until it improves held-out forecast error "
             "and then survives an after-cost market backtest with enough trades."
+        ),
+    }
+
+
+def _blocked_live_promotion() -> dict[str, Any]:
+    return {
+        "decision": "blocked",
+        "after_cost_approved": False,
+        "approved_dataset_keys": [],
+        "reason": (
+            "Accuracy candidates are research-only until a separate, leakage-free "
+            "after-cost evaluation explicitly approves live use."
         ),
     }
 
@@ -197,6 +212,12 @@ def _load_forecast_feature_candidates(db_path: Path) -> list[_FeatureCandidate]:
 
     latest_by_key_day: dict[tuple[str, str, str, float | None, str], tuple[str, float]] = {}
     for source, model, variable, lead_hours, target_iso, value, issued_at in rows:
+        if not _feature_is_point_in_time(
+            lead_hours=lead_hours,
+            target_iso=str(target_iso),
+            issued_at=issued_at,
+        ):
+            continue
         key = (str(source), str(model), str(variable), _maybe_float(lead_hours), str(target_iso))
         current = latest_by_key_day.get(key)
         if current is None or str(issued_at) > current[0]:
@@ -210,6 +231,30 @@ def _load_forecast_feature_candidates(db_path: Path) -> list[_FeatureCandidate]:
         _FeatureCandidate(source, model, variable, lead_hours, tuple(sorted(values)))
         for (source, model, variable, lead_hours), values in grouped.items()
     ]
+
+
+def _feature_is_point_in_time(
+    *,
+    lead_hours: object,
+    target_iso: str,
+    issued_at: object,
+) -> bool:
+    lead = _maybe_float(lead_hours)
+    if lead is None or not math.isfinite(lead) or lead <= 0:
+        return False
+    issued = _parse_timestamp(issued_at)
+    if issued is None:
+        return False
+    try:
+        target = date.fromisoformat(target_iso)
+    except ValueError:
+        return False
+    target_start = datetime.combine(
+        target,
+        datetime.min.time(),
+        tzinfo=PACIFIC_STANDARD_TZ,
+    ).astimezone(UTC)
+    return issued < target_start
 
 
 def _candidate_payload(

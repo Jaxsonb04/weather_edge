@@ -32,7 +32,7 @@ import argparse
 import math
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from statistics import fmean, pstdev, stdev
 
@@ -309,6 +309,7 @@ def recalibrated_lookup_predictions(
     *,
     shrinkage_k: float = 40.0,
     min_train: int = 60,
+    truth_lag_days: int = 0,
 ) -> dict[str, tuple[float, float]]:
     """Rolling-origin per-cohort recalibration of a ``(mu, sigma)`` lookup.
 
@@ -320,14 +321,25 @@ def recalibrated_lookup_predictions(
     earns the blocked warm/hot cohorts back before it is wired into the engine.
     """
 
+    if truth_lag_days < 0:
+        raise ValueError("truth_lag_days must be non-negative")
+
     out: dict[str, tuple[float, float]] = {}
-    history: list[tuple[float, float, float, str]] = []  # (mu, sigma, realized, cohort)
+    history: list[tuple[str, float, float, float, str]] = []
     for date_str in sorted(base_preds):
         mu, sigma = base_preds[date_str]
         cohort = predicted_temperature_cohort(mu)
-        if len(history) >= min_train:
+        truth_cutoff = (
+            date.fromisoformat(date_str) - timedelta(days=truth_lag_days + 1)
+        ).isoformat()
+        available_history = [
+            (hmu, hsig, hy, hc)
+            for history_date, hmu, hsig, hy, hc in history
+            if history_date <= truth_cutoff
+        ]
+        if len(available_history) >= min_train:
             by_cohort: dict[str, list[tuple[float, float, float]]] = {}
-            for hmu, hsig, hy, hc in history:
+            for hmu, hsig, hy, hc in available_history:
                 by_cohort.setdefault(hc, []).append((hmu, hsig, hy))
             recal = fit_by_cohort(by_cohort, shrinkage_k=shrinkage_k).get(cohort)
             if recal is not None:
@@ -336,7 +348,7 @@ def recalibrated_lookup_predictions(
         # Record truth AFTER predicting so date_str never trains on its own outcome.
         if date_str in truth:
             base_mu, base_sigma = base_preds[date_str]
-            history.append((base_mu, base_sigma, truth[date_str], cohort))
+            history.append((date_str, base_mu, base_sigma, truth[date_str], cohort))
     return out
 
 
@@ -348,13 +360,33 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
 
     # Trained post-processors (rolling-origin, leakage-safe) over the NWP archive.
     nwp_dates = sorted(nwp_by_date)
-    emos_preds = emos_ngr_predictions(nwp_dates, truth, nwp_by_date)
-    analog_preds = analog_ensemble_predictions(nwp_dates, truth, nwp_by_date)
+    emos_preds = emos_ngr_predictions(
+        nwp_dates,
+        truth,
+        nwp_by_date,
+        truth_lag_days=lead_days,
+    )
+    analog_preds = analog_ensemble_predictions(
+        nwp_dates,
+        truth,
+        nwp_by_date,
+        truth_lag_days=lead_days,
+    )
     # Phase 4 candidate upgrades, gated against emos_ngr (ship only if they win OOS).
-    emos_wmean_preds = emos_ngr_predictions(nwp_dates, truth, nwp_by_date, weight_mode="inv_var")
+    emos_wmean_preds = emos_ngr_predictions(
+        nwp_dates,
+        truth,
+        nwp_by_date,
+        weight_mode="inv_var",
+        truth_lag_days=lead_days,
+    )
     emos_anen_blend = blend_gaussian_predictions(emos_preds, analog_preds)
     # Phase 1a: per-cohort recalibration on top of the winning emos_wmean arm.
-    emos_wmean_recal = recalibrated_lookup_predictions(emos_wmean_preds, truth)
+    emos_wmean_recal = recalibrated_lookup_predictions(
+        emos_wmean_preds,
+        truth,
+        truth_lag_days=lead_days,
+    )
 
     predictors = {
         "climatology": make_climatology_predictor(climatology),

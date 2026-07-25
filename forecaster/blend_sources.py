@@ -259,12 +259,18 @@ def load_promoted_dataset_guidance(target_iso, db_path=None, research_path=None)
 
     promoted_keys = _promoted_dataset_keys(resolved_research)
     metadata["promoted_count"] = len(promoted_keys)
-    rows = _latest_dataset_feature_rows(resolved_db, target_iso)
+    all_rows = _latest_dataset_feature_rows(resolved_db, target_iso)
+    rows = [
+        row
+        for row in all_rows
+        if _dataset_feature_is_point_in_time(row, target_iso)
+    ]
+    metadata["ineligible_point_in_time_count"] = len(all_rows) - len(rows)
     metadata["available_unpromoted_count"] = sum(
-        1 for row in rows if _dataset_feature_key(row) not in promoted_keys
+        1 for row in all_rows if _dataset_feature_key(row) not in promoted_keys
     )
     if not promoted_keys:
-        metadata["reason"] = "no dataset source has passed the accuracy gate"
+        metadata["reason"] = "no dataset source has explicit after-cost live approval"
         return {"highF": None, "source": "Promoted dataset guidance", "metadata": metadata, "components": []}
 
     corrections = _dataset_guidance_corrections(resolved_db, target_iso, promoted_keys)
@@ -310,11 +316,23 @@ def _promoted_dataset_keys(research_path):
     if not research_path.exists():
         return set()
     payload = read_json(research_path, {})
+    live_promotion = payload.get("live_promotion") or {}
+    if (
+        live_promotion.get("decision") != "approved"
+        or live_promotion.get("after_cost_approved") is not True
+    ):
+        return set()
+    approved_keys = {
+        str(key)
+        for key in live_promotion.get("approved_dataset_keys") or []
+        if key
+    }
     rows = ((payload.get("accuracy_gate") or {}).get("candidates") or [])
     return {
         row.get("dataset_key")
         for row in rows
-        if row.get("decision") == "accuracy_candidate" and row.get("dataset_key")
+        if row.get("decision") == "accuracy_candidate"
+        and row.get("dataset_key") in approved_keys
     }
 
 
@@ -330,6 +348,7 @@ def _latest_dataset_feature_rows(db_path, target_iso):
                        issued_at, valid_time, units, source_url
                 FROM dataset_forecast_features
                 WHERE target_date = ?
+                  AND station_id = 'KSFO'
                   AND value IS NOT NULL
                   AND variable LIKE '%temperature_2m_max%'
                 ORDER BY source, model, variable, lead_hours, target_date, issued_at
@@ -352,6 +371,23 @@ def _dataset_feature_key(row):
     lead = row["lead_hours"] if "lead_hours" in row.keys() else None
     lead_token = "none" if lead is None else f"{float(lead):g}h"
     return f"{row['source']}/{row['model']}/{row['variable']}/{lead_token}"
+
+
+def _dataset_feature_is_point_in_time(row, target_iso):
+    try:
+        lead_hours = float(row["lead_hours"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not finite(lead_hours) or lead_hours <= 0:
+        return False
+    issued_at = parse_google_timestamp(row["issued_at"])
+    if issued_at is None:
+        return False
+    try:
+        target_start, _ = utc_window_for_local_standard_date(target_iso)
+    except (TypeError, ValueError):
+        return False
+    return issued_at.astimezone(timezone.utc) < target_start
 
 
 def _dataset_guidance_corrections(db_path, target_iso, promoted_keys):
@@ -380,10 +416,12 @@ def _dataset_guidance_corrections(db_path, target_iso, promoted_keys):
                 join_clause = "JOIN clisfo_settlements c ON c.local_date = f.target_date"
             rows = conn.execute(
                 f"""
-                SELECT f.source, f.model, f.variable, f.lead_hours, f.value, c.max_temperature_f
+                SELECT f.source, f.model, f.variable, f.lead_hours, f.target_date,
+                       f.issued_at, f.value, c.max_temperature_f
                 FROM dataset_forecast_features f
                 {join_clause}
                 WHERE f.target_date < ?
+                  AND f.station_id = 'KSFO'
                   AND f.value IS NOT NULL
                   AND c.max_temperature_f IS NOT NULL
                   AND f.variable LIKE '%temperature_2m_max%'
@@ -397,6 +435,8 @@ def _dataset_guidance_corrections(db_path, target_iso, promoted_keys):
     for row in rows:
         key = _dataset_feature_key(row)
         if key not in promoted_keys:
+            continue
+        if not _dataset_feature_is_point_in_time(row, row["target_date"]):
             continue
         actual = integer_settlement_high_f(row["max_temperature_f"])
         if actual is None or not finite(row["value"]):

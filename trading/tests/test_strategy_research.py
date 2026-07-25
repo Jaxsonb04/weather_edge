@@ -1848,6 +1848,135 @@ def test_strategy_research_builds_isolated_profile_views():
         assert b_summary["exit_reasons"]["held_to_settlement"] == 1
 
 
+def test_profile_monitor_health_is_not_lost_to_global_activity_cap(tmp_path):
+    forecaster_root = tmp_path / "forecaster"
+    db_path = tmp_path / "trading" / "paper.db"
+    _write_lstm_fixture(forecaster_root)
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        db_path,
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+
+    def open_and_mark(*, ticker: str, sleeve: str) -> None:
+        decision = replace(_approved_decision(), ticker=ticker)
+        order_id = store.record_paper_order(
+            "2026-07-19",
+            decision,
+            risk_profile="research",
+        )
+        assert order_id is not None
+        policy = TARGET_POLICY if sleeve == "target" else MOTION_POLICY
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET account_id=?, research_sleeve=?, "
+                "research_policy_version=?, policy_fingerprint=?, objective_day=? "
+                "WHERE id=?",
+                (
+                    policy.account_id,
+                    sleeve,
+                    policy.policy_version,
+                    policy.policy_fingerprint,
+                    objective_day.isoformat(),
+                    order_id,
+                ),
+            )
+        order = store.open_paper_order(order_id)
+        assert order is not None
+        store.record_monitor_snapshot(
+            order,
+            side="YES",
+            action="HOLD",
+            reason="inside exit bands",
+            market_status="active",
+            live_bid=0.60,
+            exit_fee_per_contract=0.01,
+            net_exit_per_contract=0.59,
+            unrealized_pnl=1.0,
+            unrealized_roi=0.1,
+        )
+
+    # Strategy Lab publishes only twelve recent global action rows. A busy
+    # motion sleeve must not evict the target sleeve's monitor-health evidence.
+    open_and_mark(ticker="KXHIGHTSFO-TARGET-B66.5", sleeve="target")
+    for index in range(13):
+        open_and_mark(
+            ticker=f"KXHIGHTSFO-MOTION-{index:02d}-B66.5",
+            sleeve="motion",
+        )
+    # More than the old 5,000-row query cap, deliberately unrelated to the
+    # valid journal. Profile health must scope the query to valid order IDs
+    # before any result cap can evict the target row.
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO paper_monitor_snapshots (
+                created_at, order_id, target_date, market_ticker, side,
+                action, live_bid, diagnostics_json
+            )
+            VALUES (?, ?, '2026-07-19', ?, 'YES', 'HOLD', 0.61, '{}')
+            """,
+            [
+                (
+                    (
+                        datetime(2099, 1, 1, tzinfo=UTC)
+                        + timedelta(seconds=index)
+                    ).isoformat(),
+                    100_000 + index,
+                    f"KXHIGHTSFO-DISTRACTOR-{index:04d}-B66.5",
+                )
+                for index in range(5_001)
+            ],
+        )
+    store.research_daily_goal_state(objective_day=objective_day)
+
+    payload = build_strategy_research(
+        forecaster_root=forecaster_root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    profiles = {row["risk_profile"]: row for row in payload["profiles"]}
+    target = profiles["research-target"]
+    alert_codes = {row["code"] for row in target["status"]["alerts"]}
+    assert "monitor-not-recording" not in alert_codes
+    assert target["paper_trading"]["summary"]["latest_monitor_action_at"] is not None
+    assert target["paper_trading"]["summary"]["marked_open_positions"] == 1
+
+
+def test_latest_global_monitor_rows_preserve_timestamp_then_id_ordering():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        with store.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row_ids = []
+            for created_at, order_id in (
+                ("2026-07-24T12:00:00+00:00", 10),
+                ("2026-07-24T11:00:00+00:00", 10),
+                ("2026-07-24T12:00:00+00:00", 10),
+                ("2026-07-24T13:00:00+00:00", 20),
+                ("2026-07-24T12:30:00+00:00", 20),
+            ):
+                cursor = conn.execute(
+                    """
+                    INSERT INTO paper_monitor_snapshots (
+                        created_at, order_id, target_date, market_ticker,
+                        side, action, diagnostics_json
+                    )
+                    VALUES (?, ?, '2026-07-24', ?, 'YES', 'HOLD', '{}')
+                    """,
+                    (created_at, order_id, f"KXHIGHTSFO-{order_id}-B66.5"),
+                )
+                row_ids.append(int(cursor.lastrowid))
+
+            rows = strategy_paper_card_module._latest_global_monitor_rows(
+                conn,
+                limit=5000,
+            )
+
+        assert [int(row["id"]) for row in rows] == [row_ids[3], row_ids[2]]
+
+
 def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
@@ -1900,6 +2029,10 @@ def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
 
 
 def test_strategy_research_includes_config_rescore():
+    policy_fingerprints = (
+        TARGET_POLICY.policy_fingerprint,
+        MOTION_POLICY.policy_fingerprint,
+    )
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         db_path = Path(tmp) / "trading" / "paper.db"
@@ -1929,6 +2062,18 @@ def test_strategy_research_includes_config_rescore():
             assert {"counts", "candidate", "recorded_config_own_book"} <= set(result)
             # per_day is trimmed from the published artifact to keep it lean.
             assert "per_day" not in result
+        assert "report_only_diagnostics" not in rescore["by_profile"]["live"]
+        assert "report_only_diagnostics" not in rescore["by_profile"]["research-target"]
+        diagnostic = rescore["by_profile"]["research-motion"][
+            "report_only_diagnostics"
+        ]["motion-yes-lcb0-v1"]
+        assert diagnostic["promotion_eligible"] is False
+        assert diagnostic["baseline"]["settled_decisions"] == 0
+        assert diagnostic["treatment"]["settled_decisions"] == 0
+        assert (
+            TARGET_POLICY.policy_fingerprint,
+            MOTION_POLICY.policy_fingerprint,
+        ) == policy_fingerprints
 
         # The real-money readiness gauge is derived for the LIVE profile only and
         # exposes a percentage + per-check breakdown for the dashboard.
