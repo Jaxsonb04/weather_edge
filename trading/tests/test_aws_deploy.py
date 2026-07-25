@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from cities import CITIES, DEFAULT_CITY_SLUG
@@ -201,7 +203,7 @@ def test_strategy_builder_generates_only_strategy_research():
     assert "sfo_kalshi_quant.publication build" not in text
 
 
-def test_publication_cycles_serialize_builder_and_publisher_under_shared_lock():
+def test_operational_publication_serializes_builder_and_snapshot_under_shared_lock():
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
@@ -211,6 +213,7 @@ def test_publication_cycles_serialize_builder_and_publisher_under_shared_lock():
     assert "build_public_trading_signal.sh" in runner
     assert "build_strategy_research.sh" in runner
     assert "publish_forecaster_pages.sh" in runner
+    assert "SFO_STRATEGY_BUILD_STAGING=1" in runner
     assert runner.index("build_public_trading_signal.sh") < runner.index("publish_forecaster_pages.sh")
     assert "SFO_ARTIFACT_GENERATION_LOCK=/opt/weatheredge/.locks/artifact-generation.lock" in example_env
 
@@ -219,12 +222,13 @@ def test_publication_cycle_hands_generation_lock_to_snapshot_copy_then_releases_
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
 
-    held_idx = runner.index("export SFO_ARTIFACT_LOCK_HELD=1")
-    fd_idx = runner.index("export SFO_ARTIFACT_LOCK_FD=7")
-    build_idx = runner.index('/bin/bash "$BUILDER"')
-    publish_idx = runner.index('publish_forecaster_pages.sh')
+    operational_cycle = runner[runner.index("esac") :]
+    held_idx = operational_cycle.index("export SFO_ARTIFACT_LOCK_HELD=1")
+    fd_idx = operational_cycle.index("export SFO_ARTIFACT_LOCK_FD=7")
+    build_idx = operational_cycle.index('/bin/bash "$BUILDER"')
+    publish_idx = operational_cycle.index('publish_forecaster_pages.sh')
     assert held_idx < fd_idx < build_idx < publish_idx
-    assert "flock -u 7" not in runner
+    assert "flock -u 7" not in operational_cycle
 
     snapshot_copy_idx = publisher.index('cp "$source_path"')
     publisher_unlock_idx = publisher.index('flock -u "$SFO_ARTIFACT_LOCK_FD"')
@@ -240,10 +244,119 @@ def test_strategy_cycle_rebuilds_manifest_but_never_competes_with_operational_pu
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
 
     research_idx = runner.index("build_strategy_research.sh")
+    staging_idx = runner.index("SFO_STRATEGY_BUILD_STAGING=1")
+    strategy_lock_idx = runner.index('exec 7>"$ARTIFACT_LOCK"')
     manifest_idx = runner.index("sfo_kalshi_quant.publication build")
     deferred_idx = runner.index("publication deferred to the operational cycle")
-    assert research_idx < manifest_idx < deferred_idx
+    assert research_idx < staging_idx < strategy_lock_idx < manifest_idx < deferred_idx
+    assert runner.index('mv -f -- "$strategy_promote_tmp"') < manifest_idx
     assert "SFO_STRATEGY_PUBLISH" not in runner
+
+
+def test_slow_strategy_compute_does_not_block_operational_cycle(tmp_path: Path):
+    aws_dir = tmp_path / "aws"
+    aws_dir.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_flock = fake_bin / "flock"
+    fake_flock.write_text(
+        "#!/usr/bin/env python3\n"
+        "import fcntl, sys, time\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == '-u':\n"
+        "    fcntl.flock(int(args[1]), fcntl.LOCK_UN)\n"
+        "    raise SystemExit(0)\n"
+        "if args[0] == '-w':\n"
+        "    deadline = time.monotonic() + float(args[1])\n"
+        "    fd = int(args[2])\n"
+        "    while True:\n"
+        "        try:\n"
+        "            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "            raise SystemExit(0)\n"
+        "        except BlockingIOError:\n"
+        "            if time.monotonic() >= deadline:\n"
+        "                raise SystemExit(1)\n"
+        "            time.sleep(0.02)\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    fake_flock.chmod(0o755)
+    runner = aws_dir / "run_publication_cycle.sh"
+    runner.write_text(_read(AWS_DIR / "run_publication_cycle.sh"), encoding="utf-8")
+    runner.chmod(0o755)
+
+    started = tmp_path / "strategy-started"
+    release = tmp_path / "release-strategy"
+    operational_done = tmp_path / "operational-done"
+    strategy_builder = aws_dir / "build_strategy_research.sh"
+    strategy_builder.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        'touch "$STRATEGY_STARTED"\n'
+        'while [[ ! -e "$STRATEGY_RELEASE" ]]; do sleep 0.05; done\n'
+        'printf "{}\\n" > \"$SFO_STRATEGY_RESEARCH_PATH\"\n',
+        encoding="utf-8",
+    )
+    strategy_builder.chmod(0o755)
+    operational_builder = aws_dir / "build_public_trading_signal.sh"
+    operational_builder.write_text("#!/bin/bash\nset -eu\n", encoding="utf-8")
+    operational_builder.chmod(0o755)
+    publisher = aws_dir / "publish_forecaster_pages.sh"
+    publisher.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        'touch "$OPERATIONAL_DONE"\n'
+        'flock -u "$SFO_ARTIFACT_LOCK_FD"\n',
+        encoding="utf-8",
+    )
+    publisher.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        "while (($#)); do\n"
+        '  if [[ "$1" == "--output" ]]; then printf "{}\\n" > "$2"; exit 0; fi\n'
+        "  shift\n"
+        "done\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    forecaster = tmp_path / "forecaster"
+    trading = tmp_path / "trading"
+    forecaster.mkdir()
+    trading.mkdir()
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "SFO_FORECASTER_ROOT": str(forecaster),
+        "SFO_TRADING_ROOT": str(trading),
+        "SFO_TRADING_PYTHON": str(fake_python),
+        "SFO_ARTIFACT_GENERATION_LOCK": str(tmp_path / "artifact.lock"),
+        "SFO_ARTIFACT_LOCK_WAIT_SECONDS": "2",
+        "STRATEGY_STARTED": str(started),
+        "STRATEGY_RELEASE": str(release),
+        "OPERATIONAL_DONE": str(operational_done),
+    }
+    strategy = subprocess.Popen(["bash", str(runner), "strategy"], env=env)
+    try:
+        deadline = time.monotonic() + 2
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert started.exists()
+
+        operational = subprocess.run(
+            ["bash", str(runner), "operational"],
+            env=env,
+            check=False,
+            timeout=1,
+        )
+        assert operational.returncode == 0
+        assert operational_done.exists()
+    finally:
+        release.touch()
+        strategy.wait(timeout=3)
+    assert strategy.returncode == 0
 
 
 def test_paper_scan_pins_calibration_source():
@@ -488,8 +601,10 @@ def test_strategy_cycle_never_invokes_the_pages_publisher():
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
 
     assert "--require-strategy" in publisher
-    strategy_block = runner[runner.index('if [[ "$MODE" == "strategy" ]]'):]
+    strategy_start = runner.index("  strategy)")
+    strategy_block = runner[strategy_start : runner.index("  *)", strategy_start)]
     assert strategy_block.index("sfo_kalshi_quant.publication build") < strategy_block.index("exit 0")
+    assert "publish_forecaster_pages.sh" not in strategy_block
     assert "SFO_REQUIRE_STRATEGY_ARTIFACT" not in runner
 
 
