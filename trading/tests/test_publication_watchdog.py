@@ -75,6 +75,7 @@ def _run(
         "SFO_TRADING_PYTHON": sys.executable,
         "SFO_PUBLICATION_MANIFEST_PATH": str(root / "publication_manifest.json"),
         "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES": "10",
+        "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES": "10",
         "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES": "20",
         "SFO_PUBLICATION_MANIFEST_URL": public_url,
         "SFO_PUBLISH_PAGES": "1" if publish_pages else "0",

@@ -194,10 +194,14 @@ For an existing large journal, keep paper scan and monitor services paused and r
 `/opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh` once;
 resume the services only after the index build succeeds.
 
-The freshness watchdog requires local operational artifacts no older than 15 minutes
-and public operational artifacts or Strategy Lab research no older than 20 minutes. Set
+The freshness watchdog requires local and public operational artifacts no older
+than 10 minutes, and Strategy Lab research no older than 20 minutes. Its public
+manifest request uses a unique query key so the GitHub Pages ten-minute CDN TTL
+cannot conceal a stalled five-minute publisher. Set
 `SFO_PUBLICATION_MANIFEST_URL` to the public manifest URL to validate the exact
-snapshot visitors receive.
+snapshot visitors receive. A full installer run migrates only the former
+15-minute local and 20-minute public default values in `/etc/weatheredge.env`;
+operator-customized thresholds are preserved.
 
 For operator-only archive restoration, stop paper services, restore into a new
 database, and run the FK audit before any swap. The tested Python API is

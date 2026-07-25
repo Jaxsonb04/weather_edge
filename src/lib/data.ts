@@ -353,19 +353,19 @@ export interface Freshness {
   label: string;
   ageHours: number | null;
 }
-/** How recently a city's forecasts were fetched → a tone + human label. */
+/** How recently a city's forecasts were issued → a tone + human label. */
 export function cityFreshness(forecasts: CityForecast[] | undefined): Freshness {
   let newest: number | null = null;
   for (const f of forecasts ?? []) {
     const t = Date.parse(f?.fetched_at ?? "");
     if (!Number.isNaN(t) && (newest == null || t > newest)) newest = t;
   }
-  if (newest == null) return { tone: "danger", label: "No forecast fetch recorded", ageHours: null };
+  if (newest == null) return { tone: "danger", label: "No forecast issue recorded", ageHours: null };
   const hrs = Math.max(0, (Date.now() - newest) / 3_600_000);
   if (hrs < FRESH_GREEN_HOURS)
-    return { tone: "success", label: `Refreshed ${Math.max(1, Math.round(hrs * 60))}m ago`, ageHours: hrs };
-  if (hrs < FRESH_AMBER_HOURS) return { tone: "warning", label: `Refreshed ${Math.round(hrs)}h ago`, ageHours: hrs };
-  return { tone: "danger", label: `Stale — last refreshed ${Math.round(hrs)}h ago`, ageHours: hrs };
+    return { tone: "success", label: `Forecast issued ${Math.max(1, Math.round(hrs * 60))}m ago`, ageHours: hrs };
+  if (hrs < FRESH_AMBER_HOURS) return { tone: "warning", label: `Forecast issued ${Math.round(hrs)}h ago`, ageHours: hrs };
+  return { tone: "danger", label: `Stale — forecast issued ${Math.round(hrs)}h ago`, ageHours: hrs };
 }
 
 /* ---- derived helpers ---- */

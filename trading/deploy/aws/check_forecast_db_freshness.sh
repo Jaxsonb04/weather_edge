@@ -17,8 +17,8 @@ DB="${SFO_FORECAST_DB:-$FORECASTER_DIR/weather.db}"
 MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
 MARKER="${SFO_FORECAST_STALE_MARKER:-$FORECASTER_DIR/STALE_FORECAST}"
 MANIFEST="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
-OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-15}"
-PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-20}"
+OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
+PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-10}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
@@ -79,7 +79,10 @@ fi
 public_manifest_result=""
 if [[ -n "$PUBLIC_MANIFEST_URL" ]]; then
   public_tmp=$(mktemp "${TMPDIR:-/tmp}/weatheredge-public-manifest.XXXXXX")
-  if ! curl -fsS -m 15 "$PUBLIC_MANIFEST_URL" >"$public_tmp"; then
+  cache_bust_separator="?"
+  [[ "$PUBLIC_MANIFEST_URL" == *"?"* ]] && cache_bust_separator="&"
+  public_manifest_poll_url="${PUBLIC_MANIFEST_URL}${cache_bust_separator}poll=$(date +%s%N)"
+  if ! curl -fsS -m 15 "$public_manifest_poll_url" >"$public_tmp"; then
     failures+=("public publication manifest unavailable: $PUBLIC_MANIFEST_URL")
   elif ! public_manifest_result="$(
     cd "$TRADING_DIR" 2>/dev/null \

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -459,7 +459,22 @@ def _event_for_report(
             "Live prediction market lookup disabled; using probability-only fallback ladder.",
         )
     try:
-        return KalshiPublicClient().find_event_by_date(target, series_ticker=SERIES_TICKER), None
+        event = KalshiPublicClient().find_event_by_date(target, series_ticker=SERIES_TICKER)
+        if event is None:
+            return None, None
+        # Kalshi's `updated_time` on these markets is their listing/schema
+        # update time, not the age of the bid/ask snapshot returned by this
+        # request. Preserve the source field but stamp when WeatherEdge
+        # actually fetched the quote-bearing payload.
+        fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        markets = [
+            replace(market, raw={**market.raw, "fetched_at": fetched_at})
+            for market in event.markets
+        ]
+        return (
+            replace(event, markets=markets, raw={**event.raw, "fetched_at": fetched_at}),
+            None,
+        )
     except URLError as exc:
         return None, f"Live prediction market lookup failed: {exc}"
 

@@ -59,6 +59,14 @@ const UNKNOWN: PublicationFreshness = {
 const PublicationContext = createContext<PublicationContextValue | null>(null);
 const PublicationClockContext = createContext<number | null>(null);
 
+function publicationManifestUrl(now = Date.now()): string {
+  // GitHub Pages serves JSON with `Cache-Control: max-age=600`. `no-store`
+  // controls the browser cache but cannot invalidate a shared CDN response.
+  // Give every poll a unique cache key so a five-minute publication does not
+  // remain hidden behind a ten-minute edge-cache entry.
+  return `${BASE}publication_manifest.json?poll=${now}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -157,7 +165,7 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
 
     const refresh = async () => {
       try {
-        const response = await fetch(`${BASE}publication_manifest.json`, {
+        const response = await fetch(publicationManifestUrl(), {
           cache: "no-store",
           signal: controller.signal,
         });

@@ -86,6 +86,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "created $ENV_FILE"
 fi
 
+# Migrate only the superseded publication defaults. Preserve any operator-set
+# custom thresholds rather than replacing the environment file wholesale.
+if sudo grep -qx "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15" "$ENV_FILE"; then
+  sudo sed -i \
+    "s/^SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15$/SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10/" \
+    "$ENV_FILE"
+fi
+if sudo grep -qx "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20" "$ENV_FILE"; then
+  sudo sed -i \
+    "s/^SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20$/SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10/" \
+    "$ENV_FILE"
+fi
+
 render_unit() {
   local src="$1"
   local dst="$2"

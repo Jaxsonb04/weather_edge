@@ -191,8 +191,8 @@ Restore only to a new DB while paper services are stopped, using the tested
 
 Set
 `SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json`.
-The watchdog rejects local operational artifacts older than 15 minutes,
-public operational artifacts or Strategy Lab research older than 20 minutes, disk
+The watchdog rejects local or public operational artifacts older than 10 minutes,
+Strategy Lab research older than 20 minutes, disk
 usage at or above 85%, missing files,
 invalid schemas, and checksum mismatches. It writes `STALE_FORECAST` for the
 local alarm path; sync excludes preserve that marker. Every operational service

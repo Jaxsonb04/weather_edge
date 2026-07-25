@@ -44,6 +44,22 @@ def test_installers_repair_trading_venv_ownership_before_project_install():
         assert ownership_idx < project_install_idx
 
 
+def test_installers_migrate_only_obsolete_publication_threshold_defaults():
+    for name in ("install_systemd.sh", "install_systemd_notimers.sh"):
+        installer = _read(AWS_DIR / name)
+        assert 'grep -qx "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15"' in installer
+        assert (
+            "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15$/"
+            "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10/"
+        ) in installer
+        assert 'grep -qx "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20"' in installer
+        assert (
+            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20$/"
+            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10/"
+        ) in installer
+        assert "cp " not in installer[installer.index("# Migrate only"):installer.index("render_unit()")]
+
+
 def test_backup_provisioner_enforces_bucket_controls_and_least_privilege_prefixes():
     provisioner = _read(AWS_DIR / "provision_backup_bucket.sh")
 
@@ -220,13 +236,14 @@ def test_publication_cycle_hands_generation_lock_to_snapshot_copy_then_releases_
     assert "exec 8>&-" in publisher
 
 
-def test_strategy_cycle_rebuilds_manifest_before_publishing_research():
+def test_strategy_cycle_rebuilds_manifest_but_never_competes_with_operational_publisher():
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
 
     research_idx = runner.index("build_strategy_research.sh")
     manifest_idx = runner.index("sfo_kalshi_quant.publication build")
-    publish_idx = runner.index("publish_forecaster_pages.sh")
-    assert research_idx < manifest_idx < publish_idx
+    deferred_idx = runner.index("publication deferred to the operational cycle")
+    assert research_idx < manifest_idx < deferred_idx
+    assert "SFO_STRATEGY_PUBLISH" not in runner
 
 
 def test_paper_scan_pins_calibration_source():
@@ -466,15 +483,14 @@ def test_pages_publisher_validates_manifest_and_copies_exact_validated_artifacts
     assert 'if [[ -e "$FORECASTER_DIR/$artifact" ]]' not in publisher
 
 
-def test_strategy_cycle_requires_research_but_operational_cycle_allows_missing():
+def test_strategy_cycle_never_invokes_the_pages_publisher():
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
 
-    assert "export SFO_REQUIRE_STRATEGY_ARTIFACT=1" in runner
     assert "--require-strategy" in publisher
-    assert runner.index("build_strategy_research.sh") < runner.index(
-        "export SFO_REQUIRE_STRATEGY_ARTIFACT=1"
-    )
+    strategy_block = runner[runner.index('if [[ "$MODE" == "strategy" ]]'):]
+    assert strategy_block.index("sfo_kalshi_quant.publication build") < strategy_block.index("exit 0")
+    assert "SFO_REQUIRE_STRATEGY_ARTIFACT" not in runner
 
 
 def test_pages_publisher_uses_generation_lock_separately_from_git_lock():
@@ -495,8 +511,8 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     deployment = _read(AWS_DIR.parents[2] / "docs" / "aws_deployment.md")
 
     assert "sfo_kalshi_quant.publication validate" in watchdog
-    assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15" in example_env
-    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20" in example_env
+    assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
+    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10" in example_env
     assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
     assert (
         "SFO_PUBLICATION_MANIFEST_URL="
@@ -505,7 +521,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     assert "shared sfo-alert@.service JSON" in watchdog
     assert "Slack/Discord" not in watchdog
     for documentation in (readme, deployment):
-        assert "15 minutes" in documentation
+        assert "10 minutes" in documentation
         assert "20 minutes" in documentation
         assert "SFO_PUBLICATION_MANIFEST_URL" in documentation
 
