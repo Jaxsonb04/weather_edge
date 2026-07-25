@@ -166,7 +166,13 @@ The default archive is `/opt/weatheredge/trading/data/archive`; the manifest is
 `SFO_ARCHIVE_S3_BUCKET`, `SFO_ARCHIVE_S3_PREFIX`, and `SFO_ARCHIVE_AWS_CLI`.
 Full-database deployment backups use the same bucket with
 `SFO_DATABASE_BACKUP_S3_PREFIX`; local verified copies are retained according
-to `SFO_DATABASE_BACKUP_KEEP_DAYS`.
+to `SFO_DATABASE_BACKUP_KEEP_DAYS` (one day by default; the verified S3 tier
+retains database snapshots for 35 days).
+
+Preflight also checks peak local capacity before timers are quiesced. The volume
+must be able to hold both a full SQLite snapshot and its downloaded restore copy
+plus 1 GiB of operating headroom; clean only old, independently verified local
+snapshots if this gate refuses a deploy.
 Without a bucket, the local ring buffer remains authoritative and cleanup skips
 unuploaded files.
 

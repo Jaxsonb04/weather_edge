@@ -297,6 +297,39 @@ def test_database_backup_preflight_requires_off_host_target(tmp_path: Path) -> N
     assert not (tmp_path / "backups").exists()
 
 
+def test_database_backup_preflight_rejects_insufficient_restore_space(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "df",
+        "#!/bin/sh\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'fake 1 1 0 100%% /\\n'\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "snapshot + restore copy + 1 GiB headroom" in result.stderr
+
+
 def test_database_backup_round_trips_and_rechecks_sqlite(tmp_path: Path) -> None:
     db_path = tmp_path / "paper.db"
     with sqlite3.connect(db_path) as conn:

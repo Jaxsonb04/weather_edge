@@ -1,8 +1,9 @@
 """Append-only archival + feature layer for the paper-trading journal.
 
-The retention prune (``PaperStore.prune_decision_snapshots``) keeps the 1 GB
-box healthy by deleting redundant rejection ticks, but those ticks are the
-training data this project compounds on: intra-day book/probability
+The retention prune (``PaperStore.prune_decision_snapshots``) keeps the runtime
+box healthy by deleting redundant rejection ticks and old archive-backed
+stream rows, but those rows are the training data this project compounds on:
+intra-day book/probability
 evolution, per-tick rejection reasons, ladders and config snapshots inside
 the normalized ``scan_context_snapshots`` rows, and legacy embedded diagnostic
 payloads.  This module guarantees the prune can never destroy signal:

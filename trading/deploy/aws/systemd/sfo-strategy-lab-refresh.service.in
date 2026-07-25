@@ -18,6 +18,7 @@ Nice=5
 # decision-snapshot sampling runs in SQL instead of materializing rows.
 MemoryHigh=1200M
 MemoryMax=1600M
-# Fail a stuck cycle fast instead of blocking the shared publication queue for
-# hours (memory-throttled strategy-research once ran 76 minutes).
-TimeoutStartSec=900
+# Research builds no longer hold the publication lock, so allow the observed
+# 15-20 minute memory-contained pass to finish without blocking operational
+# freshness. The cap still fails genuinely stuck cycles.
+TimeoutStartSec=1800

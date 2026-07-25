@@ -86,9 +86,11 @@ weather-only scope and a re-measurement obligation rather than trust.
   retention runs only through `sfo-kalshi-paper-prune.service` and
   `run_archive_then_prune.sh`: the ordering archives and verifies complete UTC
   days before pruning. `SFO_PRUNE_FULL_DAYS=1` keeps one day at full fidelity,
-  the last snapshot per market-side-day to 45 days, and approved rows forever.
-  Do not schedule bare `paper-prune`; it is low-level/manual recovery tooling.
-  The first prune reduced 161,528 → 42,102 rows.
+  the last snapshot per market-side-day to 45 days, approved rows forever, and
+  a 45-day online window for probability/monitor streams and unreferenced
+  forecast/market parents. Older raw rows stay losslessly archived. Do not
+  schedule bare `paper-prune`; it is low-level/manual recovery tooling. The
+  first prune reduced 161,528 → 42,102 rows.
 - API budgets that shaped the design: Google Weather stays SFO-only (260
   events/day cap); live EMOS uses one batched Open-Meteo call per city per
   tick; the NWP archive fetch moved to nightly; GFS-ensemble sharpening

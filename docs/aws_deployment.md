@@ -71,8 +71,10 @@ source-controlled inputs, unlike their runtime-produced JSON siblings.
 The full sync also deploys the root `pyproject.toml` and `README.md`; both
 installers keep the executable environment under `trading/.venv` while running
 the editable install from `/opt/weatheredge`. The scheduled forecaster-only sync
-does not reinstall that environment. After every full transfer succeeds, the
-sync removes only the obsolete `trading/pyproject.toml`, the two retired service
+does not reinstall that environment. Generated `*.egg-info` metadata is excluded
+from source transfer and recreated by the remote editable install. After every
+full transfer succeeds, the sync removes only the obsolete
+`trading/pyproject.toml`, the two retired service
 templates under `trading/sfo_kalshi_quant/`, and the eleven audited top-level
 forecaster scripts now housed under `forecaster/research/`. No runtime database,
 raw input, model directory, or publication artifact is part of that cleanup.

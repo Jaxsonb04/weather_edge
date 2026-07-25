@@ -156,6 +156,7 @@ rsync -av \
   --exclude '.venv' \
   --exclude '.venv-dev' \
   --exclude 'venv' \
+  --exclude '*.egg-info' \
   --exclude 'data' \
   --exclude 'tmp_*' \
   "$LOCAL_TRADING_DIR/" \

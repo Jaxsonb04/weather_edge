@@ -174,8 +174,10 @@ def test_strategy_lab_refresh_runs_only_heavy_builder_every_fifteen_minutes():
     assert "google_weather_cache.py --refresh" not in service
     assert "OnActiveSec=4min" in timer
     assert "OnBootSec=" not in timer
-    assert "OnUnitActiveSec=15min" in timer
+    assert "OnUnitActiveSec=" not in timer
+    assert "OnUnitInactiveSec=15min" in timer
     assert "Unit=sfo-strategy-lab-refresh.service" in timer
+    assert "TimeoutStartSec=1800" in service
 
 
 def test_operational_builder_generates_fast_artifacts_and_manifest_only():
@@ -741,6 +743,7 @@ def test_full_box_sync_does_not_copy_local_runtime_state():
 
     assert "--exclude-from=\"$FORECASTER_EXCLUDES\"" in syncer
     assert "--exclude 'data'" in syncer
+    assert "--exclude '*.egg-info'" in syncer
 
 
 def test_tracked_forecaster_inputs_are_copied_to_the_box():

@@ -210,10 +210,13 @@ and verifies every complete UTC day before its final prune step. If archival or
 the explicit archive gate fails, pruning does not run.
 
 Production sets `SFO_PRUNE_FULL_DAYS=1`; last-per-market-side-day rows remain for
-45 days and approved rows remain indefinitely. Fifteen cities otherwise write
-roughly 60k rejection snapshots (~0.5 GB) per day. Do not schedule or routinely
-run bare `paper-prune`: it is a low-level/manual command for recovery work only,
-after an operator has independently completed and verified the archive gate.
+45 days and approved rows remain indefinitely. Probability and paper-monitor
+streams, plus unreferenced forecast/market parents, remain online for the same
+45-day window; their older lossless copies stay in the archive. Fifteen cities
+otherwise write roughly 60k rejection snapshots (~0.5 GB) per day. Do not
+schedule or routinely run bare `paper-prune`: it is a low-level/manual command
+for recovery work only, after an operator has independently completed and
+verified the archive gate.
 
 ## Signal Backtest
 

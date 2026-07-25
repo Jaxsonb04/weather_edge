@@ -5551,7 +5551,7 @@ class PaperStore:
         full_days: int = 7,
         dedup_days: int = 45,
     ) -> dict[str, int]:
-        """Retention for the highest-volume table on the disk-bound box.
+        """Retention for the archive-backed snapshot journal.
 
         Fifteen cities at a 5-minute scan write ~60k rejection snapshots
         (~0.5 GB) per day; unbounded growth filled the old single-city box and
@@ -5560,9 +5560,15 @@ class PaperStore:
         LAST snapshot per (market, side, target_date) survives -- the
         end-of-day context of why the book said what it said -- plus every
         approved/signal-approved row; beyond ``dedup_days`` only approved
-        rows remain. Approved rows are never deleted. The scheduled caller
-        runs the archive gate first; after decision pruning, archived context
-        rows are removed only when no retained decision references them.
+        rows remain. Approved rows are never deleted.
+
+        Probability and paper-monitor snapshots are also high-volume streams,
+        but the former implementation never pruned them. Keep their recent
+        online working set through ``dedup_days`` and rely on the lossless
+        archive for older rows. Orphaned forecast/market parents use the same
+        cutoff. The scheduled caller runs the archive gate first; after
+        decision pruning, archived context rows are removed only when no
+        retained decision references them.
         """
 
         if full_days < 1 or dedup_days <= full_days:
@@ -5603,10 +5609,56 @@ class PaperStore:
                 """,
                 (f"-{full_days} days",),
             )
+            probability_cursor = conn.execute(
+                """
+                DELETE FROM probability_snapshots
+                WHERE created_at < datetime('now', ?)
+                """,
+                (f"-{dedup_days} days",),
+            )
+            monitor_cursor = conn.execute(
+                """
+                DELETE FROM paper_monitor_snapshots
+                WHERE created_at < datetime('now', ?)
+                """,
+                (f"-{dedup_days} days",),
+            )
+            forecast_cursor = conn.execute(
+                """
+                DELETE FROM forecast_snapshots
+                WHERE created_at < datetime('now', ?)
+                  AND id NOT IN (
+                      SELECT forecast_snapshot_id FROM scan_context_snapshots
+                      WHERE forecast_snapshot_id IS NOT NULL
+                      UNION
+                      SELECT forecast_snapshot_id FROM decision_snapshots
+                      WHERE forecast_snapshot_id IS NOT NULL
+                  )
+                """,
+                (f"-{dedup_days} days",),
+            )
+            market_cursor = conn.execute(
+                """
+                DELETE FROM market_snapshots
+                WHERE created_at < datetime('now', ?)
+                  AND id NOT IN (
+                      SELECT market_snapshot_id FROM scan_context_snapshots
+                      WHERE market_snapshot_id IS NOT NULL
+                      UNION
+                      SELECT market_snapshot_id FROM decision_snapshots
+                      WHERE market_snapshot_id IS NOT NULL
+                  )
+                """,
+                (f"-{dedup_days} days",),
+            )
             return {
                 "deduped": dedup_cursor.rowcount,
                 "dropped": drop_cursor.rowcount,
                 "contexts_dropped": context_cursor.rowcount,
+                "probabilities_dropped": probability_cursor.rowcount,
+                "monitor_snapshots_dropped": monitor_cursor.rowcount,
+                "forecast_snapshots_dropped": forecast_cursor.rowcount,
+                "market_snapshots_dropped": market_cursor.rowcount,
             }
 
     def open_paper_target_dates(
