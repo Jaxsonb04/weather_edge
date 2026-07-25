@@ -67,7 +67,7 @@ describe("PublicationProvider", () => {
     expect(screen.getByText("Operational").nextElementSibling).toHaveTextContent("stale");
     expect(screen.getByText("Strategy").nextElementSibling).toHaveTextContent("stale");
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("publication_manifest.json"),
+      expect.stringContaining("publication_manifest.json?poll="),
       expect.objectContaining({ cache: "no-store" }),
     );
   });
@@ -148,6 +148,10 @@ describe("PublicationProvider", () => {
     fetchMock.mockResolvedValue(ok(manifest("2026-07-09T12:00:00Z")));
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstUrl = String(fetchMock.mock.calls[0]?.[0]);
+    const secondUrl = String(fetchMock.mock.calls[1]?.[0]);
+    expect(firstUrl).toContain("publication_manifest.json?poll=");
+    expect(secondUrl).not.toBe(firstUrl);
   });
 
   it("keeps ordinary consumers still on an age tick while the status banner rerenders", async () => {

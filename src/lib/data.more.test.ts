@@ -62,7 +62,7 @@ describe("city lookup and freshness", () => {
 
     expect(cityFreshness(undefined)).toEqual({
       tone: "danger",
-      label: "No forecast fetch recorded",
+      label: "No forecast issue recorded",
       ageHours: null,
     });
     expect(cityFreshness([{ fetched_at: "2026-07-09T13:00:00Z" }] as CityForecast[]).ageHours).toBe(0);

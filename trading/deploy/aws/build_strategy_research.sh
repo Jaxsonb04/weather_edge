@@ -25,7 +25,7 @@ if [[ ! -d "$FORECASTER_DIR" ]]; then
   exit 1
 fi
 
-if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" ]]; then
+if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" && "${SFO_STRATEGY_BUILD_STAGING:-0}" != "1" ]]; then
   mkdir -p "$(dirname "$ARTIFACT_LOCK")"
   exec 9>"$ARTIFACT_LOCK"
   if ! flock -w "$LOCK_WAIT_SECONDS" 9; then

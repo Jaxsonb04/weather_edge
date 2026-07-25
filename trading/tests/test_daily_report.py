@@ -232,6 +232,52 @@ def test_market_data_at_uses_latest_available_source_timestamp():
     assert report._market_data_at(None) is None
 
 
+def test_live_report_stamps_quote_fetch_time_instead_of_market_listing_time(monkeypatch):
+    listing_time = "2026-06-04T07:25:00Z"
+    market = MarketBin(
+        ticker="KXHIGHTSFO-26JUN04-B65.5",
+        event_ticker="KXHIGHTSFO-26JUN04",
+        title="",
+        yes_sub_title="65 to 66",
+        strike_type="between",
+        floor_strike=65.0,
+        cap_strike=66.0,
+        yes_bid=0.2,
+        yes_ask=0.3,
+        no_bid=0.7,
+        no_ask=0.8,
+        yes_bid_size=10.0,
+        yes_ask_size=10.0,
+        status="active",
+        raw={"updated_time": listing_time},
+    )
+    event = EventSnapshot(
+        event_ticker="KXHIGHTSFO-26JUN04",
+        title="",
+        target_date=date(2026, 6, 4),
+        markets=[market],
+        raw={"updated_time": listing_time},
+    )
+
+    monkeypatch.setattr(
+        report.KalshiPublicClient,
+        "find_event_by_date",
+        lambda self, target, series_ticker: event,
+    )
+    fetched, warning = report._event_for_report(
+        date(2026, 6, 4),
+        offline_events=None,
+        allow_live_market=True,
+    )
+
+    assert warning is None
+    assert fetched is not None
+    assert fetched.raw["updated_time"] == listing_time
+    assert fetched.raw["fetched_at"] > listing_time
+    assert fetched.markets[0].raw["fetched_at"] == fetched.raw["fetched_at"]
+    assert report._market_data_at(fetched) == fetched.raw["fetched_at"]
+
+
 def test_best_signal_prefers_live_market_over_probability_only_ladder():
     live = _target_report("2026-06-08", market_available=True, quality=40.0, edge_lcb=0.05)
     fallback = _target_report("2026-06-09", market_available=False, quality=90.0, edge_lcb=0.30)
