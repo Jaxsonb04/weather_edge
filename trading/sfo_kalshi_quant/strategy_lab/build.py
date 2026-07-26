@@ -125,15 +125,15 @@ def build_strategy_research(
     )
     comparison = _comparison_summary(active_calibration, challenger_calibration)
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
+    deferred_reason = (
+        "Deferred from the recurring public artifact; run the offline full "
+        "research job for historical analytics."
+    )
     if fast_publication:
         if analysis_cache is not None:
             backtest = dict(analysis_cache["backtest_summary"])
             config_rescore = dict(analysis_cache["config_rescore"])
         else:
-            deferred_reason = (
-                "Deferred from the recurring public artifact; run the offline full "
-                "research job for counterfactual decision-journal rescoring."
-            )
             backtest = _deferred_backtest_payload(deferred_reason)
             config_rescore = _deferred_config_rescore_payload(deferred_reason)
     else:
@@ -149,14 +149,20 @@ def build_strategy_research(
             settlements=settlements,
             sampled_rows=sampled_decision_rows,
         )
-    chronological_replay_full = replay_from_database(
-        db_path,
-        settlements,
-        initial_capital=cfg.paper_bankroll,
-        max_orders=10_000 if fast_publication else None,
-        max_trades=50_000 if fast_publication else None,
-    )
-    chronological_replay = _bounded_replay(chronological_replay_full)
+    if fast_publication:
+        chronological_replay = _cached_analysis_section(
+            analysis_cache,
+            "chronological_replay",
+            reason=deferred_reason,
+        )
+        chronological_replay_full = chronological_replay
+    else:
+        chronological_replay_full = replay_from_database(
+            db_path,
+            settlements,
+            initial_capital=cfg.paper_bankroll,
+        )
+        chronological_replay = _bounded_replay(chronological_replay_full)
     # These sections combine the expensive rescore with fresh calibration,
     # replay, policy environment, and pilot/account state. Cache only the
     # expensive input and always derive the public verdict on this refresh.
@@ -166,15 +172,45 @@ def build_strategy_research(
     live_frequency_tuning = _live_frequency_tuning_payload(
         config_rescore, strategy_config_for_profile("live")
     )
-    research_shadow = _research_shadow_payload(adapter, db_path, settlements=settlements)
-    signal_quality = _signal_quality_payload(db_path, trading_signal)
+    if fast_publication:
+        research_shadow = _cached_analysis_section(
+            analysis_cache,
+            "research_shadow",
+            reason=deferred_reason,
+        )
+    else:
+        research_shadow = _research_shadow_payload(
+            adapter,
+            db_path,
+            settlements=settlements,
+        )
+    signal_quality = _signal_quality_payload(
+        db_path,
+        trading_signal,
+        prefer_runtime_signal=fast_publication,
+    )
     paper = _paper_payload(db_path)
     forecast_health = _forecast_health_payload(forecaster_root, config=cfg)
-    forecast_scorecards = build_forecast_scorecards(forecaster_root / "weather.db")
+    if fast_publication:
+        forecast_scorecards = _cached_analysis_section(
+            analysis_cache,
+            "forecast_scorecards",
+            reason=deferred_reason,
+        )
+    else:
+        forecast_scorecards = build_forecast_scorecards(
+            forecaster_root / "weather.db"
+        )
     daily_summary = _daily_summary_payload(
         db_path=db_path,
         forecaster_root=forecaster_root,
         config=cfg,
+        allow_decision_scan=not fast_publication,
+        decision_analysis=(
+            analysis_cache.get("daily_summary_analysis")
+            if isinstance(analysis_cache, dict)
+            else None
+        ),
     )
     profiles = _profile_views(
         daily_summary=daily_summary,
@@ -208,6 +244,13 @@ def build_strategy_research(
             "analysis_generated_at": analysis_generated_at,
             "backtest_summary": backtest,
             "config_rescore": config_rescore,
+            "chronological_replay": chronological_replay,
+            "research_shadow": research_shadow,
+            "forecast_scorecards": forecast_scorecards,
+            "daily_summary_analysis": _daily_summary_analysis(
+                daily_summary,
+                analysis_generated_at=analysis_generated_at,
+            ),
         }
 
     payload = {
@@ -240,10 +283,6 @@ def build_strategy_research(
         "backtest_summary": backtest,
         "config_rescore": config_rescore,
         "chronological_replay": chronological_replay,
-        "_private_evidence": {
-            "generated_at": generated_at,
-            "chronological_replay": chronological_replay_full,
-        },
         "real_money_readiness": real_money_readiness,
         "live_frequency_tuning": live_frequency_tuning,
         "research_shadow": research_shadow,
@@ -264,6 +303,13 @@ def build_strategy_research(
     # staged copy would let an in-flight fast cycle replace a newer full rescore
     # after its atomic promotion.
     if not fast_publication:
+        payload["_private_evidence"] = {
+            "generated_at": generated_at,
+            "analysis_generated_at": analysis_generated_at,
+            "source_sha": current_source_sha,
+            "config_fingerprint": current_config_fingerprint,
+            "chronological_replay": chronological_replay_full,
+        }
         payload["_private_analysis_cache"] = analysis_cache
     return payload
 
@@ -301,6 +347,23 @@ def _deferred_config_rescore_payload(reason: str) -> dict[str, Any]:
     }
 
 
+def _cached_analysis_section(
+    analysis_cache: dict[str, Any] | None,
+    field: str,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    if isinstance(analysis_cache, dict) and isinstance(
+        analysis_cache.get(field), dict
+    ):
+        return dict(analysis_cache[field])
+    return {
+        "available": False,
+        "analysis_deferred": True,
+        "reason": reason,
+    }
+
+
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -319,7 +382,7 @@ def _analysis_source_sha(forecaster_root: Path) -> str | None:
 def _analysis_config_fingerprint(*, calibration_min_train: int) -> str:
     entry_mode = str(os.getenv("PAPER_ENTRY_MODE", "limit")).strip().lower()
     payload = {
-        "cache_contract": "strategy-analysis-v2",
+        "cache_contract": "strategy-analysis-v3",
         "calibration_min_train": calibration_min_train,
         "entry_mode": entry_mode,
         "execution_model_version": EXECUTION_MODEL_VERSION,
@@ -414,13 +477,31 @@ def _normalize_analysis_cache(
         or not isinstance(payload["config_rescore"].get("by_profile"), dict)
     ):
         return None
-    return {
+    additional_fields = (
+        "chronological_replay",
+        "research_shadow",
+        "forecast_scorecards",
+        "daily_summary_analysis",
+    )
+    if not legacy_public_artifact:
+        if any(
+            not isinstance(payload.get(field), dict)
+            for field in additional_fields
+        ):
+            return None
+        if payload["daily_summary_analysis"].get("available") is not True:
+            return None
+    normalized = {
         "schema_version": 2,
         "source_sha": expected_source_sha,
         "config_fingerprint": expected_config_fingerprint,
         "analysis_generated_at": generated_at,
         **{field: dict(payload[field]) for field in fields},
     }
+    for field in additional_fields:
+        if isinstance(payload.get(field), dict):
+            normalized[field] = dict(payload[field])
+    return normalized
 
 
 def _daily_summary_payload(
@@ -428,6 +509,8 @@ def _daily_summary_payload(
     db_path: Path,
     forecaster_root: Path,
     config: StrategyConfig,
+    allow_decision_scan: bool = True,
+    decision_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         payload = build_paper_summary(
@@ -435,10 +518,55 @@ def _daily_summary_payload(
             forecaster_root=forecaster_root,
             config=config,
             days=7,
+            allow_decision_scan=allow_decision_scan,
+            decision_analysis=decision_analysis,
         )
     except Exception as exc:  # diagnostics artifact must not fail the refresh
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
     return {"available": True, **payload}
+
+
+def _daily_summary_analysis(
+    daily_summary: dict[str, Any],
+    *,
+    analysis_generated_at: str,
+) -> dict[str, Any]:
+    if daily_summary.get("available") is not True:
+        return {
+            "available": False,
+            "analysis_generated_at": analysis_generated_at,
+            "reason": str(
+                daily_summary.get("reason")
+                or "full daily summary analysis is unavailable"
+            ),
+        }
+    per_day = {}
+    for row in daily_summary.get("days") or []:
+        key = row.get("date")
+        if not isinstance(key, str) or not key:
+            continue
+        per_day[key] = {
+            "signals": int(row.get("signals") or 0),
+            "approved": int(row.get("approved_signals") or 0),
+            "avg_model_probability": row.get("avg_model_probability"),
+            "avg_market_probability": row.get("avg_market_probability"),
+            "profiles": {
+                str(name): {
+                    "signals": int(profile.get("signals") or 0),
+                    "approved": int(profile.get("approved_signals") or 0),
+                }
+                for name, profile in (row.get("profiles") or {}).items()
+                if isinstance(profile, dict)
+            },
+        }
+    return {
+        "available": True,
+        "analysis_generated_at": analysis_generated_at,
+        "per_day": per_day,
+        "gate_behavior": dict(daily_summary.get("gate_behavior") or {}),
+        "model_vs_market": dict(daily_summary.get("model_vs_market") or {}),
+        "data_collected": dict(daily_summary.get("data_collected") or {}),
+    }
 
 
 def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
@@ -583,7 +711,10 @@ def _account_snapshot(
     *,
     role: str,
 ) -> dict[str, Any] | None:
-    state = store._account_state(account_id)
+    state = store._account_state(
+        account_id,
+        persist_high_water=False,
+    )
     if state is None:
         return None
     open_statuses = (

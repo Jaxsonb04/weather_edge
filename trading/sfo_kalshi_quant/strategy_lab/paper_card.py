@@ -304,9 +304,6 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
     if not _db_table_exists(db_path, "paper_orders"):
         return {**empty, "reason": "paper_orders table is not available yet."}
 
-    monitor_marks = _latest_monitor_marks(db_path)
-    decision_marks = _latest_position_marks(db_path)
-    has_monitor_snapshots = _db_table_exists(db_path, "paper_monitor_snapshots")
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         journal_rows = conn.execute(
@@ -340,30 +337,55 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             for position in journal.all_positions
             if position.valid and position.root.get("id") is not None
         }
+        open_order_ids = [
+            int(row["id"])
+            for row in journal.open_root_rows
+            if row.get("id") is not None
+        ]
+        action_order_ids = {
+            *open_order_ids,
+            *(
+                int(row["id"])
+                for row in journal.pending_root_rows
+                if row.get("id") is not None
+            ),
+            *(
+                int(row["id"])
+                for row in closed_action_rows
+                if row.get("id") is not None
+            ),
+        }
+        monitor_marks = _monitor_marks_from_rows(
+            _latest_monitor_rows(
+                conn,
+                open_order_ids,
+                require_live_bid=True,
+            )
+        )
+        decision_marks = _latest_position_marks(
+            db_path,
+            position_keys={
+                (
+                    str(row.get("target_date") or ""),
+                    str(row.get("market_ticker") or ""),
+                    _side_from_row(row),
+                )
+                for row in (*journal.open_root_rows, *journal.pending_root_rows)
+                if row.get("target_date") and row.get("market_ticker")
+            },
+        )
         monitor_rows = []
-        if has_monitor_snapshots:
+        if action_order_ids and _db_table_exists(
+            db_path,
+            "paper_monitor_snapshots",
+        ):
             # Keep only the LATEST snapshot per order. The monitor writes one row
             # per open order every ~2-minute cycle, so without this dedup a single
             # position that HOLDs for a few cycles shows up as several identical
             # "actions" (the repeated 0.59/0.40/0.11 @ 0.99 the owner saw). The
-            # window-function filter collapses those to one inspection mark per
-            # order. See docs/trading_engine_diagnosis_2026-06-16.md (Finding 5).
-            monitor_rows = conn.execute(
-                """
-                SELECT m.*
-                FROM (
-                    SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY order_id
-                               ORDER BY created_at DESC, id DESC
-                           ) AS rn
-                    FROM paper_monitor_snapshots
-                ) m
-                WHERE m.rn = 1
-                ORDER BY m.created_at DESC, m.id DESC
-                LIMIT 5000
-                """
-            ).fetchall()
+            # order-scoped reads use idx_monitor_snapshots_order and avoid
+            # sorting the complete monitor journal.
+            monitor_rows = _latest_monitor_rows(conn, action_order_ids)
             monitor_rows = [
                 {
                     **dict(row),
@@ -375,20 +397,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                 for row in monitor_rows
                 if int(row["order_id"]) in valid_roots
             ][:12]
-        scanning_profiles = []
-        if _db_table_exists(db_path, "decision_snapshots"):
-            scanning_profiles = [
-                _row_risk_profile(row) or "unknown"
-                for row in conn.execute(
-                    """
-                    SELECT DISTINCT COALESCE(risk_profile, 'unknown') AS risk_profile,
-                                    research_sleeve
-                    FROM decision_snapshots
-                    WHERE created_at >= datetime('now', '-7 days')
-                    ORDER BY 1, 2
-                    """
-                ).fetchall()
-            ]
+        scanning_profiles = _latest_scanning_profiles(conn)
         profile_rows = _paper_profile_rows(journal)
 
     research_daily_target = _research_daily_target_payload(db_path)
@@ -556,7 +565,9 @@ def _research_daily_target_payload(db_path: Path) -> dict[str, Any]:
     try:
         return {
             "available": True,
-            **PaperStore(db_path, init=False).research_daily_goal_report(),
+            **PaperStore(db_path, init=False).research_daily_goal_report(
+                read_only=True,
+            ),
         }
     except (RuntimeError, ValueError, sqlite3.Error) as exc:
         return {
@@ -829,25 +840,43 @@ def _row_risk_profile(row: sqlite3.Row) -> str | None:
     return None if profile == "unknown" else profile
 
 
-def _latest_monitor_marks(db_path: Path) -> dict[int, dict[str, Any]]:
-    if not db_path.exists() or not _db_table_exists(db_path, "paper_monitor_snapshots"):
-        return {}
-    marks: dict[int, dict[str, Any]] = {}
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
+def _latest_monitor_rows(
+    conn: sqlite3.Connection,
+    order_ids: Any,
+    *,
+    require_live_bid: bool = False,
+) -> list[sqlite3.Row]:
+    ids = sorted({int(order_id) for order_id in order_ids})
+    if not ids:
+        return []
+    live_filter = "AND live_bid IS NOT NULL" if require_live_bid else ""
+    rows = []
+    for order_id in ids:
+        row = conn.execute(
+            f"""
             SELECT *
             FROM paper_monitor_snapshots
-            WHERE live_bid IS NOT NULL
+            WHERE order_id=? {live_filter}
             ORDER BY created_at DESC, id DESC
-            LIMIT 5000
-            """
-        ).fetchall()
+            LIMIT 1
+            """,
+            (order_id,),
+        ).fetchone()
+        if row is not None:
+            rows.append(row)
+    rows.sort(
+        key=lambda row: (str(row["created_at"] or ""), int(row["id"])),
+        reverse=True,
+    )
+    return rows
+
+
+def _monitor_marks_from_rows(
+    rows: list[sqlite3.Row],
+) -> dict[int, dict[str, Any]]:
+    marks: dict[int, dict[str, Any]] = {}
     for row in rows:
         order_id = int(row["order_id"])
-        if order_id in marks:
-            continue
         marks[order_id] = {
             "source": "paper_monitor_snapshot",
             "snapshot_id": row["id"],
@@ -865,23 +894,80 @@ def _latest_monitor_marks(db_path: Path) -> dict[int, dict[str, Any]]:
     return marks
 
 
-def _latest_position_marks(db_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+def _latest_monitor_marks(
+    db_path: Path,
+    *,
+    order_ids: Any = None,
+) -> dict[int, dict[str, Any]]:
+    if not db_path.exists() or not _db_table_exists(db_path, "paper_monitor_snapshots"):
+        return {}
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        if order_ids is None:
+            if not _db_table_exists(db_path, "paper_orders"):
+                return {}
+            order_ids = [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT id FROM paper_orders "
+                    "WHERE status IN ('PAPER_FILLED','PAPER_PARTIALLY_FILLED',"
+                    "'PAPER_PARTIAL_EXPIRED') "
+                    "AND settled_at IS NULL AND closed_at IS NULL"
+                ).fetchall()
+            ]
+        rows = _latest_monitor_rows(
+            conn,
+            order_ids,
+            require_live_bid=True,
+        )
+    return _monitor_marks_from_rows(rows)
+
+
+def _latest_position_marks(
+    db_path: Path,
+    *,
+    position_keys: Any = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return {}
     marks: dict[tuple[str, str], dict[str, Any]] = {}
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT id, created_at, market_ticker, side, yes_bid, yes_ask,
-                   entry_bid, entry_ask, entry_bid_size, entry_ask_size,
-                   spread, probability, model_probability, market_probability,
-                   trade_quality_score
-            FROM decision_snapshots
-            ORDER BY created_at DESC, id DESC
-            LIMIT 5000
-            """
-        ).fetchall()
+        if position_keys is None:
+            if not _db_table_exists(db_path, "paper_orders"):
+                return {}
+            position_keys = {
+                (
+                    str(row["target_date"] or ""),
+                    str(row["market_ticker"] or ""),
+                    _side_from_row(row),
+                )
+                for row in conn.execute(
+                    "SELECT target_date, market_ticker, side, action "
+                    "FROM paper_orders "
+                    "WHERE status IN ('PAPER_FILLED','PAPER_PARTIALLY_FILLED',"
+                    "'PAPER_PARTIAL_EXPIRED','PAPER_LIMIT_RESTING') "
+                    "AND settled_at IS NULL AND closed_at IS NULL"
+                ).fetchall()
+            }
+        rows = []
+        for target_date, ticker, side in sorted(set(position_keys)):
+            row = conn.execute(
+                """
+                SELECT id, created_at, market_ticker, side, yes_bid, yes_ask,
+                       entry_bid, entry_ask, entry_bid_size, entry_ask_size,
+                       spread, probability, model_probability,
+                       market_probability, trade_quality_score
+                FROM decision_snapshots
+                WHERE target_date=? AND market_ticker=?
+                  AND UPPER(COALESCE(side, ''))=?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (target_date, ticker, str(side).upper()),
+            ).fetchone()
+            if row is not None:
+                rows.append(row)
 
     now = datetime.now(UTC)
     for row in rows:
@@ -908,6 +994,47 @@ def _latest_position_marks(db_path: Path) -> dict[tuple[str, str], dict[str, Any
             "quality_score": _round(row["trade_quality_score"], 1),
         }
     return marks
+
+
+def _latest_scanning_profiles(
+    conn: sqlite3.Connection,
+    *,
+    context_limit: int = 3,
+) -> list[str]:
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('decision_snapshots','scan_context_snapshots')"
+        ).fetchall()
+    }
+    if tables != {"decision_snapshots", "scan_context_snapshots"}:
+        return []
+    context_ids = [
+        int(row[0])
+        for row in conn.execute(
+            "SELECT id FROM scan_context_snapshots "
+            "ORDER BY id DESC LIMIT ?",
+            (max(1, context_limit),),
+        ).fetchall()
+    ]
+    if not context_ids:
+        return []
+    placeholders = ",".join("?" for _ in context_ids)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT COALESCE(risk_profile, 'unknown') AS risk_profile,
+                        research_sleeve
+        FROM decision_snapshots
+        WHERE scan_context_id IN ({placeholders})
+        ORDER BY 1, 2
+        """,
+        context_ids,
+    ).fetchall()
+    return [
+        _row_risk_profile(row) or "unknown"
+        for row in rows
+    ]
 
 
 def _fresh_model_side_probability(row: sqlite3.Row, now: datetime) -> float | None:

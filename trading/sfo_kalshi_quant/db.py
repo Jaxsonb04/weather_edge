@@ -913,6 +913,19 @@ class PaperStore:
                 TARGET_POLICY.target_pnl,
             ),
         )
+        target_pnl = PaperStore._read_research_daily_goal_on_connection(
+            conn,
+            civil_day,
+        )
+        if target_pnl is None:
+            raise RuntimeError("research daily goal disappeared after insert")
+        return target_pnl
+
+    @staticmethod
+    def _read_research_daily_goal_on_connection(
+        conn: sqlite3.Connection,
+        civil_day: date,
+    ) -> float | None:
         row = conn.execute(
             "SELECT policy_fingerprint, reference_equity, target_return, target_pnl "
             "FROM research_daily_goals WHERE objective_day=? "
@@ -924,7 +937,7 @@ class PaperStore:
             ),
         ).fetchone()
         if row is None:
-            raise RuntimeError("research daily goal disappeared after insert")
+            return None
         try:
             policy_fingerprint = str(row[0] or "")
             reference_equity = float(row[1])
@@ -979,6 +992,7 @@ class PaperStore:
         *,
         through_day: date | None = None,
         window_days: int = 30,
+        read_only: bool = False,
     ) -> dict[str, object]:
         """Return a bounded target-only history plus scalar activation facts."""
 
@@ -993,7 +1007,8 @@ class PaperStore:
             raise ValueError("research report cannot include future objective days")
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute("BEGIN IMMEDIATE")
+            if not read_only:
+                conn.execute("BEGIN IMMEDIATE")
             first_row = conn.execute(
                 "SELECT MIN(objective_day) FROM research_daily_goals "
                 "WHERE account_id=? AND policy_version=?",
@@ -1012,12 +1027,26 @@ class PaperStore:
                 last_day - timedelta(days=window_days - 1),
             )
             frozen_targets: list[tuple[date, float]] = []
+            unfrozen_days: list[str] = []
             cursor = window_first_day
             while cursor <= last_day:
+                target_pnl = self._read_research_daily_goal_on_connection(
+                    conn,
+                    cursor,
+                )
+                if target_pnl is None:
+                    if read_only:
+                        target_pnl = TARGET_POLICY.target_pnl
+                        unfrozen_days.append(cursor.isoformat())
+                    else:
+                        target_pnl = self._ensure_research_daily_goal_on_connection(
+                            conn,
+                            cursor,
+                        )
                 frozen_targets.append(
                     (
                         cursor,
-                        self._ensure_research_daily_goal_on_connection(conn, cursor),
+                        target_pnl,
                     )
                 )
                 cursor += timedelta(days=1)
@@ -1047,7 +1076,8 @@ class PaperStore:
                 if states
                 else (None, None, "unavailable")
             )
-            conn.commit()
+            if not read_only:
+                conn.commit()
         report = summarize_daily_goals(
             states,
             positions=positions,
@@ -1067,6 +1097,8 @@ class PaperStore:
                 "window_days": window_days,
                 "window_start": window_first_day.isoformat(),
                 "window_end": last_day.isoformat(),
+                "read_only": read_only,
+                "unfrozen_days": unfrozen_days,
             }
         )
         return report
@@ -1650,10 +1682,19 @@ class PaperStore:
             output[civil_day] = result
         return output
 
-    def _account_state(self, account_id: str) -> dict[str, object] | None:
+    def _account_state(
+        self,
+        account_id: str,
+        *,
+        persist_high_water: bool = True,
+    ) -> dict[str, object] | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
-            return self._account_state_on_connection(conn, account_id)
+            return self._account_state_on_connection(
+                conn,
+                account_id,
+                persist_high_water=persist_high_water,
+            )
 
     @staticmethod
     def _account_state_on_connection(
@@ -1661,6 +1702,7 @@ class PaperStore:
         account_id: str,
         *,
         validated_ledger_total: float | None = None,
+        persist_high_water: bool = True,
     ) -> dict[str, object] | None:
         """Read one complete account state without leaving the transaction."""
 
@@ -1702,7 +1744,7 @@ class PaperStore:
         realized_equity = cash_balance + open_cost
         stored_high_water = float(account["high_water_equity"])
         high_water = max(stored_high_water, realized_equity)
-        if high_water > stored_high_water:
+        if persist_high_water and high_water > stored_high_water:
             conn.execute(
                 "UPDATE paper_accounts SET high_water_equity=? WHERE account_id=?",
                 (high_water, account_id),

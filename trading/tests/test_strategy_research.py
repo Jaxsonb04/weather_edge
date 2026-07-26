@@ -37,6 +37,7 @@ from sfo_kalshi_quant.strategy_lab import (
     forecast_health as strategy_forecast_health_module,
     paper_card as strategy_paper_card_module,
 )
+from sfo_kalshi_quant import summary as paper_summary_module
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.paper import PaperTrader
 from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
@@ -190,12 +191,52 @@ def test_fast_publication_defers_full_decision_journal_analytics(
     db_path = tmp_path / "paper.db"
     _write_lstm_fixture(root)
     PaperStore(db_path)
+    (root / "trading_signal.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-25T20:00:00+00:00",
+                "risk_profile": "live",
+                "targets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
 
-    def fail_if_sampled(*args, **kwargs):
-        raise AssertionError("fast publication must not sample the decision journal")
+    def fail_historical_scan(*args, **kwargs):
+        raise AssertionError("fast publication must not scan historical analytics")
 
-    monkeypatch.setattr(PaperStore, "sampled_decision_rows", fail_if_sampled)
+    monkeypatch.setattr(PaperStore, "sampled_decision_rows", fail_historical_scan)
+    monkeypatch.setattr(
+        strategy_build_module,
+        "replay_from_database",
+        fail_historical_scan,
+    )
+    monkeypatch.setattr(
+        strategy_build_module,
+        "build_forecast_scorecards",
+        fail_historical_scan,
+    )
+    monkeypatch.setattr(
+        strategy_research_module,
+        "_research_shadow_payload",
+        fail_historical_scan,
+    )
+    monkeypatch.setattr(
+        strategy_calibration_module,
+        "_latest_decision_rows",
+        fail_historical_scan,
+    )
+    monkeypatch.setattr(
+        paper_summary_module,
+        "_decision_stats",
+        fail_historical_scan,
+    )
+    monkeypatch.setattr(
+        paper_summary_module,
+        "_data_collected",
+        fail_historical_scan,
+    )
 
     payload = build_strategy_research(
         forecaster_root=root,
@@ -211,6 +252,12 @@ def test_fast_publication_defers_full_decision_journal_analytics(
     assert payload["analysis_generated_at"] is None
     assert payload["real_money_readiness"]["available"] is False
     assert payload["paper_trading"]["available"] is True
+    assert payload["chronological_replay"]["available"] is False
+    assert payload["forecast_scorecards"]["available"] is False
+    assert payload["research_shadow"]["available"] is False
+    assert payload["daily_summary"]["decision_analytics"]["status"] == "deferred"
+    assert payload["daily_summary"]["data_collected"] is None
+    assert payload["signal_quality"]["source"] == "trading_signal.json"
 
 
 def test_fast_publication_never_rebuilds_missing_dataset_research(
@@ -237,6 +284,61 @@ def test_fast_publication_never_rebuilds_missing_dataset_research(
     assert payload is not None
     assert payload["available"] is False
     assert "deferred" in str(payload["reason"])
+
+
+def test_fast_publication_is_read_only_for_accounts_and_daily_goals(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    store = PaperStore(db_path)
+    activation_day = store.research_objective_day() - timedelta(days=1)
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO research_daily_goals "
+            "(objective_day, account_id, policy_version, policy_fingerprint, "
+            "created_at, reference_equity, target_return, target_pnl) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                activation_day.isoformat(),
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                "2026-07-24T08:00:00+00:00",
+                TARGET_POLICY.reference_equity,
+                TARGET_POLICY.target_return,
+                TARGET_POLICY.target_pnl,
+            ),
+        )
+        conn.execute(
+            "UPDATE paper_accounts SET high_water_equity=1 "
+            "WHERE account_id='paper-shared'"
+        )
+        goals_before = int(
+            conn.execute("SELECT COUNT(*) FROM research_daily_goals").fetchone()[0]
+        )
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["paper_trading"]["research_daily_target"]["available"] is True
+    with store.connect() as conn:
+        goals_after = int(
+            conn.execute("SELECT COUNT(*) FROM research_daily_goals").fetchone()[0]
+        )
+        high_water = float(
+            conn.execute(
+                "SELECT high_water_equity FROM paper_accounts "
+                "WHERE account_id='paper-shared'"
+            ).fetchone()[0]
+        )
+    assert goals_after == goals_before
+    assert high_water == 1.0
 
 
 def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch):
@@ -267,6 +369,30 @@ def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch)
         "metrics": {"approved_paper_pnl": 12.34},
         "quality_buckets": [],
     }
+    cached_replay = {
+        "available": True,
+        "evidence_kind": "chronological_account_replay",
+        "promotion_eligible": False,
+        "readiness_metrics": {},
+        "events": [],
+    }
+    cached_shadow = {
+        "available": True,
+        "summary": {"shadow_orders": 7},
+    }
+    cached_scorecards = {
+        "available": True,
+        "scorecards": [{"station_id": "KSFO"}],
+        "challenger_gates": [],
+    }
+    cached_daily_analysis = {
+        "available": True,
+        "analysis_generated_at": analysis_generated_at,
+        "per_day": {},
+        "gate_behavior": {"approved": 3, "rejected": 4, "by_profile": []},
+        "model_vs_market": {"samples": 7},
+        "data_collected": {"decision_snapshots": 101},
+    }
     (root / "build_info.json").write_text(
         json.dumps({"source_sha": source_sha, "source_dirty": False}),
         encoding="utf-8",
@@ -280,6 +406,10 @@ def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch)
                 "analysis_generated_at": analysis_generated_at,
                 "backtest_summary": cached_backtest,
                 "config_rescore": {"available": True, "by_profile": {}},
+                "chronological_replay": cached_replay,
+                "research_shadow": cached_shadow,
+                "forecast_scorecards": cached_scorecards,
+                "daily_summary_analysis": cached_daily_analysis,
             }
         ),
         encoding="utf-8",
@@ -316,12 +446,58 @@ def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch)
     assert payload["generated_at"] != analysis_generated_at
     assert payload["analysis_generated_at"] == analysis_generated_at
     assert payload["backtest_summary"] == cached_backtest
+    assert payload["chronological_replay"] == cached_replay
+    assert payload["research_shadow"] == cached_shadow
+    assert payload["forecast_scorecards"] == cached_scorecards
+    assert payload["daily_summary"]["decision_analytics"]["status"] == "cached"
+    assert payload["daily_summary"]["gate_behavior"]["approved"] == 3
+    assert payload["daily_summary"]["data_collected"]["decision_snapshots"] == 101
     assert payload["real_money_readiness"]["reason"] == "fresh derived readiness"
     assert payload["live_frequency_tuning"]["reason"] == "fresh derived tuning"
     assert "_private_analysis_cache" not in payload
+    assert "_private_evidence" not in payload
     staged_output = tmp_path / "stage" / "strategy_research.json"
+    staged_output.parent.mkdir()
+    private_output = staged_output.with_name(
+        "strategy_research_evidence.private.json"
+    )
+    private_output.write_text('{"sentinel":"full"}\n', encoding="utf-8")
     write_strategy_research(staged_output, payload)
     assert not staged_output.with_name("strategy_analysis_cache.json").exists()
+    assert json.loads(private_output.read_text(encoding="utf-8")) == {
+        "sentinel": "full"
+    }
+
+
+def test_unavailable_full_daily_summary_cannot_become_cached_analysis(
+    tmp_path,
+    monkeypatch,
+):
+    def fail_summary(*args, **kwargs):
+        raise sqlite3.OperationalError("summary failed")
+
+    monkeypatch.setattr(
+        strategy_build_module,
+        "build_paper_summary",
+        fail_summary,
+    )
+    analysis_generated_at = "2026-07-25T08:00:00+00:00"
+    summary = strategy_build_module._daily_summary_payload(
+        db_path=tmp_path / "paper.db",
+        forecaster_root=tmp_path / "forecaster",
+        config=strategy_config_for_profile("live"),
+    )
+    analysis = strategy_build_module._daily_summary_analysis(
+        summary,
+        analysis_generated_at=analysis_generated_at,
+    )
+
+    assert summary["available"] is False
+    assert analysis == {
+        "available": False,
+        "analysis_generated_at": analysis_generated_at,
+        "reason": "OperationalError: summary failed",
+    }
 
 
 def test_fast_publication_rejects_analysis_cache_from_another_source(
@@ -1627,7 +1803,9 @@ def test_signal_quality_prefers_newest_target_before_old_approved_candidates():
         assert payload["status"]["latest_target_date"] == "2026-06-20"
 
 
-def test_profile_signal_quality_keeps_live_rows_when_research_scans_later():
+def test_fast_profile_signal_quality_keeps_live_rows_when_research_scans_later(
+    monkeypatch,
+):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         db_path = Path(tmp) / "trading" / "paper.db"
@@ -1654,6 +1832,7 @@ def test_profile_signal_quality_keeps_live_rows_when_research_scans_later():
         ]
         store.record_decisions("2026-06-20", live_rows, risk_profile="live")
         store.record_decisions("2026-06-20", research_rows, risk_profile="research")
+        monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
 
         payload = build_strategy_research(
             forecaster_root=root,
@@ -1673,6 +1852,106 @@ def test_profile_signal_quality_keeps_live_rows_when_research_scans_later():
             "live",
             "research",
         }
+        assert payload["signal_quality"]["source"] == "bounded_scan_contexts"
+
+
+def test_fast_signal_tail_preserves_research_sleeve_profiles(tmp_path):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    store.record_decisions(
+        "2026-07-25",
+        [replace(_approved_decision(), ticker="KXHIGHTSFO-LIVE")],
+        risk_profile="live",
+    )
+    research_ids = store.record_decisions(
+        "2026-07-25",
+        [
+            replace(_approved_decision(), ticker="KXHIGHTSFO-TARGET"),
+            replace(_approved_decision(), ticker="KXHIGHTSFO-MOTION"),
+        ],
+        risk_profile="research",
+    )
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE decision_snapshots SET account_id=?, "
+            "research_sleeve='target', research_policy_version=?, "
+            "policy_fingerprint=?, objective_day=? WHERE id=?",
+            (
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                "2026-07-25",
+                research_ids[0],
+            ),
+        )
+        conn.execute(
+            "UPDATE decision_snapshots SET account_id=?, "
+            "research_sleeve='motion', research_policy_version=?, "
+            "policy_fingerprint=?, objective_day=? WHERE id=?",
+            (
+                MOTION_POLICY.account_id,
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+                "2026-07-25",
+                research_ids[1],
+            ),
+        )
+
+    payload = strategy_calibration_module._signal_quality_payload(
+        db_path,
+        None,
+        prefer_runtime_signal=True,
+    )
+
+    assert set(payload["latest_candidates_by_profile"]) >= {
+        "live",
+        "research-target",
+        "research-motion",
+    }
+    assert payload["source"] == "bounded_scan_contexts"
+
+
+def test_fast_signal_decision_query_is_hard_bounded_by_scan_context(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    store.record_decisions(
+        "2026-07-25",
+        [replace(_approved_decision(), ticker="KXHIGHTSFO-LIVE")],
+        risk_profile="live",
+    )
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def tracing_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(
+        strategy_calibration_module.sqlite3,
+        "connect",
+        tracing_connect,
+    )
+    rows = strategy_calibration_module._bounded_scan_context_decision_rows(
+        db_path,
+        context_limit=18,
+        row_limit=512,
+    )
+
+    assert rows
+    decision_reads = [
+        " ".join(statement.split()).lower()
+        for statement in statements
+        if "select d.*" in statement.lower()
+        and "from decision_snapshots d" in statement.lower()
+    ]
+    assert len(decision_reads) == 1
+    assert "recent_contexts" in decision_reads[0]
+    assert "d.scan_context_id" in decision_reads[0]
+    assert "limit 512" in decision_reads[0]
 
 
 def test_profile_gate_behavior_includes_profile_scoped_rejections_and_entry_blocks():
@@ -2475,7 +2754,11 @@ def test_strategy_research_cli_writes_public_artifact():
         assert "_private_evidence" not in payload
         assert private_output.exists()
         assert analysis_output.exists()
+        private = json.loads(private_output.read_text(encoding="utf-8"))
         analysis = json.loads(analysis_output.read_text(encoding="utf-8"))
+        assert private["analysis_generated_at"] == payload["analysis_generated_at"]
+        assert private["config_fingerprint"] == analysis["config_fingerprint"]
+        assert isinstance(private["chronological_replay"], dict)
         assert analysis["analysis_generated_at"] == payload["analysis_generated_at"]
         assert analysis["backtest_summary"] == payload["backtest_summary"]
         assert payload["status"]["challenger_calibration_source"] == "clean-blend/combined"
@@ -2681,6 +2964,49 @@ def test_recent_monitor_actions_dedup_to_latest_per_order_and_flag_unrealized():
         assert len(monitor_rows) == 2
         assert len(ids) == len(set(ids))
         assert all(row["status"] == "HOLD" for row in monitor_rows)
+
+
+def test_paper_card_monitor_reads_are_order_scoped(tmp_path, monkeypatch):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    decision = _approved_decision()
+    store.record_decisions("2026-06-03", [decision])
+    store.record_paper_order("2026-06-03", decision)
+    order = store.open_paper_orders(1)[0]
+    store.record_monitor_snapshot(
+        order,
+        side="YES",
+        action="HOLD",
+        reason="inside exit bands",
+        market_status="active",
+        live_bid=0.60,
+        exit_fee_per_contract=0.02,
+        net_exit_per_contract=0.58,
+        unrealized_pnl=2.70,
+        unrealized_roi=0.87,
+    )
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def tracing_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(strategy_paper_card_module.sqlite3, "connect", tracing_connect)
+
+    payload = strategy_paper_card_module._paper_payload(db_path)
+
+    assert payload["summary"]["marked_open_positions"] == 1
+    monitor_reads = [
+        " ".join(statement.split()).lower()
+        for statement in statements
+        if "from paper_monitor_snapshots" in statement.lower()
+    ]
+    assert monitor_reads
+    assert all("where order_id=" in statement for statement in monitor_reads)
+    assert all("row_number()" not in statement for statement in monitor_reads)
 
 
 def _settlement_alerts(target_date: str, *, now: datetime):

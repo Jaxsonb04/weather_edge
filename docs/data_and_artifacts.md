@@ -38,6 +38,8 @@ training intermediates, and `trading/data/` are ignored. In particular:
 - `forecaster/google_weather_cache.json`
 - `forecaster/trading_signal.json`
 - `forecaster/strategy_research.json`
+- `forecaster/strategy_analysis_cache.json`
+- `forecaster/strategy_research_evidence.private.json`
 - `forecaster/cities_data.json`
 - `forecaster/publication_manifest.json`
 - `forecaster/dataset_research.json`
@@ -52,6 +54,8 @@ After sync and refresh, the EC2 host is authoritative. Relevant paths are:
 /opt/weatheredge/forecaster/google_weather_cache.json
 /opt/weatheredge/forecaster/trading_signal.json
 /opt/weatheredge/forecaster/strategy_research.json
+/opt/weatheredge/forecaster/strategy_analysis_cache.json
+/opt/weatheredge/forecaster/strategy_research_evidence.private.json
 /opt/weatheredge/forecaster/cities_data.json
 /opt/weatheredge/forecaster/publication_manifest.json
 /opt/weatheredge/trading/data/paper_trading.db

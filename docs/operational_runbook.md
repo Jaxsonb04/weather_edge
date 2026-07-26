@@ -136,8 +136,13 @@ deployed source SHA or the effective strategy/policy fingerprint changes; until
 a matching refresh succeeds, the historical panels say that analysis is
 deferred instead of presenting stale metrics as current. Current readiness is
 still derived on every public refresh.
-That replay is fail-closed at 10,000 paper orders or 50,000 public trades, and
-the recurring path never rebuilds a missing dataset-research artifact.
+Historical replay is never executed on the recurring path: it is served from
+the source/config-matched cache or shown as deferred. Current candidates are
+supplemented from a hard-bounded, indexed scan-context tail so research profile
+tabs stay current without a journal-wide query. The recurring path never
+rebuilds a missing dataset-research artifact. A successful full analysis also
+promotes the complete private replay evidence before the bounded public
+artifact is republished.
 No published artifact contains private DB state; the trading artifacts contain
 only paper-trading research. `cities_data.json`
 supplies per-city forecasts, latest settlement, and book activity for the

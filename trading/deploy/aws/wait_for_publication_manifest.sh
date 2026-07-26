@@ -54,26 +54,34 @@ if [[ ! "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ || ! "$POLL_SECONDS" =~ ^[1-9][0-9]*
 fi
 
 public_tmp="$(mktemp "${TMPDIR:-/tmp}/weatheredge-public-wait.XXXXXX")"
-trap 'rm -f "$public_tmp"' EXIT HUP INT TERM
+expected_tmp="$(mktemp "${TMPDIR:-/tmp}/weatheredge-expected-manifest.XXXXXX")"
+cleanup() {
+  rm -f "$public_tmp" "$expected_tmp"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cp -- "$MANIFEST" "$expected_tmp"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 
 while (( SECONDS < deadline )); do
   separator='?'
   [[ "$PUBLIC_MANIFEST_URL" == *'?'* ]] && separator='&'
   if curl -fsS -m 15 "${PUBLIC_MANIFEST_URL}${separator}snapshot_wait=$(date +%s)" >"$public_tmp" \
-    && "$PYTHON_BIN" - "$MANIFEST" "$public_tmp" <<'PY'
+    && "$PYTHON_BIN" - "$expected_tmp" "$public_tmp" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
-    local = json.load(handle)
+    expected = json.load(handle)
 with open(sys.argv[2], encoding="utf-8") as handle:
     public = json.load(handle)
 
 matches = (
-    public.get("snapshot_id") == local.get("snapshot_id")
+    public.get("snapshot_id") == expected.get("snapshot_id")
     and public.get("provenance", {}).get("source_sha")
-    == local.get("provenance", {}).get("source_sha")
+    == expected.get("provenance", {}).get("source_sha")
 )
 raise SystemExit(0 if matches else 1)
 PY

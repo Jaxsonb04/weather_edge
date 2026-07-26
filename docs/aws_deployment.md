@@ -213,16 +213,24 @@ integrity-checked deploy snapshot rather than the live journal and performs the
 expensive historical rescore in a stable transient systemd unit with a 1.6 GB
 hard memory cap, low I/O priority, and a fixed runtime deadline. It requires
 clean build provenance, validates its source SHA and effective strategy
-configuration, and atomically promotes only
-`strategy_analysis_cache.json`. The stable unit name is stopped and reset on
+configuration, and atomically promotes
+`strategy_analysis_cache.json` plus its full private replay-evidence artifact.
+After promotion, deployment pauses and drains both manifest writers, rebuilds
+the bounded public Strategy artifact from the new cache, publishes it, waits
+for that exact immutable manifest on Pages, and restores both recurring timers.
+Before any timer is restored, the deploy also rejects canonical units with
+runtime drop-ins, transient shadows, stale fragments, or an unexpected Strategy
+timeout. The stable analysis unit name is stopped and reset on
 failure, including a best-effort caller-side cleanup after a dropped transport.
 Because this cache is diagnostic, a failed or resource-killed rescore is
 reported while production remains active; the public artifact explicitly marks
 historical analysis deferred.
 Recurring Strategy Lab refreshes reuse that validated input while recomputing
-current account state, calibration, bounded replay, and readiness. They never
-rebuild missing dataset research, read more than 10,000 paper orders or 50,000
-public trades for readiness replay, or scan the full decision journal. An
+current account state, calibration, readiness, and a hard-bounded tail of
+indexed scan contexts for live and research-profile candidates. Historical
+replay, scorecards, shadow analysis, and decision rollups are cached or marked
+deferred; the recurring path never recomputes them, rebuilds missing dataset
+research, or scans the full decision journal. An
 operator can run the same helper manually by setting
 `SFO_STRATEGY_ANALYSIS_DB_PATH` to a verified immutable snapshot. It loads the
 root-owned `/etc/weatheredge.env` through passwordless `sudo` before forcing

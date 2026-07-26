@@ -19,6 +19,14 @@ _COMBINED_EQUITY_UNAVAILABLE_REASON = (
     "Combined profile P&L spans separate paper accounts; "
     "account-scoped ledger balances are authoritative."
 )
+_DATA_TABLES = (
+    "decision_snapshots",
+    "probability_snapshots",
+    "forecast_snapshots",
+    "market_snapshots",
+    "paper_monitor_snapshots",
+    "paper_orders",
+)
 
 
 def build_paper_summary(
@@ -28,6 +36,8 @@ def build_paper_summary(
     config: StrategyConfig | None = None,
     days: int = 7,
     now: datetime | None = None,
+    allow_decision_scan: bool = True,
+    decision_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the daily + rolling N-day paper-trading summary.
 
@@ -53,7 +63,20 @@ def build_paper_summary(
         for position in valid_positions
         for lot in position.resolved_lots
     ]
-    decision_stats = _decision_stats(db_path, window_start)
+    cached_decision_analysis = (
+        isinstance(decision_analysis, dict)
+        and decision_analysis.get("available") is True
+    )
+    decision_stats = (
+        _decision_stats(db_path, window_start)
+        if allow_decision_scan
+        else _decision_stats_from_analysis(decision_analysis)
+    )
+    decision_analytics_status = (
+        "fresh"
+        if allow_decision_scan
+        else ("cached" if cached_decision_analysis else "deferred")
+    )
     forecast_errors = _forecast_error_by_date(forecaster_root, window_start, today)
 
     per_day = {key: _empty_day(key) for key in day_keys}
@@ -306,7 +329,27 @@ def build_paper_summary(
         ],
         "gate_behavior": decision_stats["gate_behavior"],
         "model_vs_market": decision_stats["model_vs_market"],
-        "data_collected": _data_collected(db_path, window_start),
+        "data_collected": (
+            _data_collected(db_path, window_start)
+            if allow_decision_scan
+            else _data_collected_from_analysis(decision_analysis)
+        ),
+        "decision_analytics": {
+            "status": decision_analytics_status,
+            "analysis_generated_at": (
+                decision_analysis.get("analysis_generated_at")
+                if isinstance(decision_analysis, dict)
+                else None
+            ),
+            "reason": (
+                None
+                if allow_decision_scan or cached_decision_analysis
+                else (
+                    "Historical decision analytics are deferred until the "
+                    "offline full research job completes."
+                )
+            ),
+        },
         "learnings": _learnings(
             window_terminal_rows, decision_stats, forecast_abs_errors
         ),
@@ -589,16 +632,7 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
 
 
 def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
-    empty = {
-        "per_day": {},
-        "gate_behavior": {
-            "approved": 0,
-            "rejected": 0,
-            "top_rejections": [],
-            "by_profile": [],
-        },
-        "model_vs_market": {},
-    }
+    empty = _empty_decision_stats()
     if not Path(db_path).exists():
         return empty
     with sqlite3.connect(db_path) as conn:
@@ -778,6 +812,35 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
     }
 
 
+def _empty_decision_stats() -> dict[str, Any]:
+    return {
+        "per_day": {},
+        "gate_behavior": {
+            "approved": 0,
+            "rejected": 0,
+            "top_rejections": [],
+            "by_profile": [],
+        },
+        "model_vs_market": {},
+    }
+
+
+def _decision_stats_from_analysis(
+    analysis: dict[str, Any] | None,
+) -> dict[str, Any]:
+    empty = _empty_decision_stats()
+    if not isinstance(analysis, dict) or analysis.get("available") is not True:
+        return empty
+    return {
+        "per_day": dict(analysis.get("per_day") or {}),
+        "gate_behavior": {
+            **empty["gate_behavior"],
+            **dict(analysis.get("gate_behavior") or {}),
+        },
+        "model_vs_market": dict(analysis.get("model_vs_market") or {}),
+    }
+
+
 def _profile_gate_stats(name: str, stats: dict[str, Any]) -> dict[str, Any]:
     rejection_counts = stats.get("rejection_counts") or {}
     rejection_counts_all = stats.get("rejection_counts_all") or {}
@@ -830,20 +893,12 @@ def _forecast_error_by_date(
 
 
 def _data_collected(db_path: Path, window_start: date) -> dict[str, int]:
-    tables = (
-        "decision_snapshots",
-        "probability_snapshots",
-        "forecast_snapshots",
-        "market_snapshots",
-        "paper_monitor_snapshots",
-        "paper_orders",
-    )
     counts: dict[str, int] = {}
     if not Path(db_path).exists():
-        return {table: 0 for table in tables}
+        return {table: 0 for table in _DATA_TABLES}
     cutoff = datetime.combine(window_start, datetime.min.time(), tzinfo=SFO_TZ).astimezone(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
-        for table in tables:
+        for table in _DATA_TABLES:
             if not _table_exists(conn, table):
                 counts[table] = 0
                 continue
@@ -853,6 +908,22 @@ def _data_collected(db_path: Path, window_start: date) -> dict[str, int]:
             ).fetchone()
             counts[table] = int(row[0] or 0)
     return counts
+
+
+def _data_collected_from_analysis(
+    analysis: dict[str, Any] | None,
+) -> dict[str, int] | None:
+    if not isinstance(analysis, dict) or analysis.get("available") is not True:
+        return None
+    cached = (
+        analysis.get("data_collected")
+        if isinstance(analysis.get("data_collected"), dict)
+        else {}
+    )
+    return {
+        table: int((cached or {}).get(table) or 0)
+        for table in _DATA_TABLES
+    }
 
 
 def _learnings(

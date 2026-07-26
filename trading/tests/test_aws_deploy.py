@@ -536,6 +536,7 @@ def test_pages_publish_ships_spa_and_fresh_jsons():
     excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
     assert "strategy_research.json" in excludes
     assert "strategy_analysis_cache.json" in excludes
+    assert "strategy_research_evidence.private.json" in excludes
     assert "cities_data.json" in excludes
     assert "publication_manifest.json" in excludes
 
@@ -709,6 +710,206 @@ def test_deploy_builds_decision_indexes_while_services_are_quiesced():
     assert "SFO_STRATEGY_ANALYSIS_DB_PATH=" in deployer
 
 
+def test_deploy_keeps_recurring_manifest_writers_stopped_until_seed_is_public():
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+
+    publisher_classify_idx = deployer.index(
+        'elif [[ "$timer" == "sfo-operational-publish.timer" ]]'
+    )
+    strategy_classify_idx = deployer.index(
+        'elif [[ "$timer" == "sfo-strategy-lab-refresh.timer" ]]'
+    )
+    seed_idx = deployer.index(
+        "sudo systemctl start sfo-strategy-lab-refresh.service"
+    )
+    wait_idx = deployer.index(
+        "bash deploy/aws/wait_for_publication_manifest.sh"
+    )
+    restore_idx = deployer.index(
+        'if restore_initial_timers "$(( INITIAL_SEED_STATUS != 0 ))"; then'
+    )
+
+    assert publisher_classify_idx < seed_idx
+    assert strategy_classify_idx < seed_idx
+    assert seed_idx < wait_idx < restore_idx
+    assert "PUBLISH_TIMER_ENABLED=0" in deployer
+    assert "PUBLISH_TIMER_ENABLED=1" in deployer
+    assert "STRATEGY_TIMER_ENABLED=0" in deployer
+    assert "STRATEGY_TIMER_ENABLED=1" in deployer
+    assert "INITIAL_HELD_TIMERS" in deployer
+    assert "emergency_restore_initial_timers" in deployer
+
+
+def test_deploy_verifies_canonical_systemd_units_before_restoring_timers():
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    guard = _read(AWS_DIR / "verify_systemd_unit_integrity.sh")
+
+    install_idx = deployer.index("bash deploy/aws/install_systemd_notimers.sh")
+    verify_idx = deployer.index("bash deploy/aws/verify_systemd_unit_integrity.sh")
+    restore_idx = deployer.index("PRODUCER_TIMERS=()")
+    assert install_idx < verify_idx < restore_idx
+    assert 'SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"' in deployer
+    assert 'if [[ ! -f "$SYSTEMD_VERIFY_HELPER" ]]' in deployer
+
+    for definition in (AWS_DIR / "systemd").glob("*.service.in"):
+        assert definition.name.removesuffix(".in") in guard
+    for definition in (AWS_DIR / "systemd").glob("*.timer"):
+        assert definition.name in guard
+    for property_name in (
+        "FragmentPath",
+        "DropInPaths",
+        "Transient",
+        "NeedDaemonReload",
+    ):
+        assert property_name in guard
+    assert "/etc/systemd/system" in guard
+    assert "sfo-strategy-lab-refresh.service" in guard
+    assert "TimeoutStartUSec" in guard
+    assert "2min" in guard
+
+
+def test_systemd_drift_guard_rejects_effective_unit_drift(
+    tmp_path: Path,
+):
+    guard = AWS_DIR / "verify_systemd_unit_integrity.sh"
+    fake = tmp_path / "systemctl"
+    fake.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == "show" ]]
+unit="${@: -1}"
+fragment_unit="$unit"
+if [[ "$unit" == "sfo-alert@weatheredge-integrity.service" ]]; then
+  fragment_unit="sfo-alert@.service"
+fi
+for arg in "$@"; do
+  case "$arg" in
+    --property=FragmentPath)
+      if [[ "${FAKE_FRAGMENT_UNIT:-}" == "$unit" ]]; then
+        printf 'FragmentPath=/run/systemd/transient/%s\\n' "$unit"
+      else
+        printf 'FragmentPath=/etc/systemd/system/%s\\n' "$fragment_unit"
+      fi
+      ;;
+    --property=DropInPaths)
+      if [[ "${FAKE_DROP_IN_UNIT:-}" == "$unit" ]]; then
+        printf 'DropInPaths=/run/systemd/system/%s.d/audit-timeout.conf\\n' "$unit"
+      else
+        printf 'DropInPaths=\\n'
+      fi
+      ;;
+    --property=Transient)
+      if [[ "${FAKE_TRANSIENT_UNIT:-}" == "$unit" ]]; then
+        printf 'Transient=yes\\n'
+      else
+        printf 'Transient=no\\n'
+      fi
+      ;;
+    --property=NeedDaemonReload)
+      if [[ "${FAKE_RELOAD_UNIT:-}" == "$unit" ]]; then
+        printf 'NeedDaemonReload=yes\\n'
+      else
+        printf 'NeedDaemonReload=no\\n'
+      fi
+      ;;
+    --property=TimeoutStartUSec)
+      if [[ "$unit" == "sfo-strategy-lab-refresh.service" ]]; then
+        printf 'TimeoutStartUSec=%s\\n' "${FAKE_STRATEGY_TIMEOUT:-2min}"
+      else
+        printf 'TimeoutStartUSec=infinity\\n'
+      fi
+      ;;
+  esac
+done
+""",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    base_env = {**os.environ, "SYSTEMCTL_BIN": str(fake)}
+
+    valid = subprocess.run(
+        ["bash", str(guard)],
+        env=base_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert valid.returncode == 0, valid.stderr
+    assert 'inspect_unit="sfo-alert@weatheredge-integrity.service"' in guard.read_text()
+
+    drift_cases = (
+        ("FAKE_FRAGMENT_UNIT", "unexpected FragmentPath"),
+        ("FAKE_DROP_IN_UNIT", "unexpected DropInPaths"),
+        ("FAKE_TRANSIENT_UNIT", "unexpected Transient"),
+        ("FAKE_RELOAD_UNIT", "unexpected NeedDaemonReload"),
+    )
+    for env_name, expected_error in drift_cases:
+        drift = subprocess.run(
+            ["bash", str(guard)],
+            env={
+                **base_env,
+                env_name: "sfo-strategy-lab-refresh.service",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert drift.returncode != 0
+        assert expected_error in drift.stderr
+
+    timeout = subprocess.run(
+        ["bash", str(guard)],
+        env={**base_env, "FAKE_STRATEGY_TIMEOUT": "30min"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert timeout.returncode != 0
+    assert "TimeoutStartUSec" in timeout.stderr
+    assert "expected 2min" in timeout.stderr
+
+    unit_root = tmp_path / "systemd"
+    instance_drop_in = (
+        unit_root
+        / "sfo-alert@sfo-strategy-lab-refresh.service.service.d"
+    )
+    instance_drop_in.mkdir(parents=True)
+    (instance_drop_in / "runtime.conf").write_text(
+        "[Service]\nTimeoutStartSec=30min\n",
+        encoding="utf-8",
+    )
+    instance_drift = subprocess.run(
+        ["bash", str(guard)],
+        env={
+            **base_env,
+            "SYSTEMD_UNIT_SEARCH_ROOTS": str(unit_root),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert instance_drift.returncode != 0
+    assert "unexpected alert-instance systemd override" in instance_drift.stderr
+
+
+def test_quiesce_stops_transient_strategy_analysis_without_restoring_it():
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    helper = _read(AWS_DIR / "disable_systemd_timers.sh")
+
+    quiesce_idx = deployer.index('bash -s quiesce < "$QUIESCE_HELPER"')
+    backup_idx = deployer.index('bash -s backup "$REMOTE_DB"')
+    assert quiesce_idx < backup_idx
+
+    quiesce_section = helper[
+        helper.index("  quiesce)"):helper.index("  restore)")
+    ]
+    restore_section = helper[helper.index("  restore)"):]
+    assert "weatheredge-strategy-analysis-cache.service" in quiesce_section
+    assert '"${SYSTEMCTL[@]}" stop "$service"' in quiesce_section
+    assert '"${SYSTEMCTL[@]}" reset-failed "$service"' in quiesce_section
+    assert "weatheredge-strategy-analysis-cache.service" not in restore_section
+
+
 def test_full_strategy_analysis_refresh_is_explicit_and_never_recurring():
     refresher = _read(AWS_DIR / "refresh_strategy_analysis_cache.sh")
     service = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.service.in")
@@ -726,15 +927,62 @@ def test_full_strategy_analysis_refresh_is_explicit_and_never_recurring():
     assert 'sudo -n systemctl stop "$analysis_unit"' in refresher
     assert 'sudo -n systemctl reset-failed "$analysis_unit"' in refresher
     assert "SFO_STRATEGY_ANALYSIS_DB_PATH" in refresher
+    assert "strategy_research_evidence.private.json" in refresher
+    assert 'stage_evidence="$stage_dir/strategy_research_evidence.private.json"' in refresher
+    assert "daily summary analysis is unavailable" in refresher
+    assert refresher.index('mv -f -- "$evidence_promote_tmp"') < refresher.index(
+        'mv -f -- "$promote_tmp"'
+    )
     assert "analysis snapshot must differ from the live paper database" in refresher
     assert "os.path.samefile" in refresher
     assert "deployed build_info.json is missing source_sha" in refresher
+    for cached_field in (
+        "chronological_replay",
+        "research_shadow",
+        "forecast_scorecards",
+        "daily_summary_analysis",
+    ):
+        assert cached_field in refresher
     assert refresher.index('source "$ENV_FILE"') < refresher.index(
         "SFO_STRATEGY_FAST_PUBLICATION=0"
     )
     assert "refresh_strategy_analysis_cache.sh" not in service
     assert "ANALYSIS_CACHE_REFRESHED=0" in deployer
     assert "continuing with deferred analysis" in deployer
+    assert deployer.count(
+        "sudo systemctl start sfo-strategy-lab-refresh.service"
+    ) == 2
+    assert deployer.count(
+        "bash deploy/aws/wait_for_publication_manifest.sh"
+    ) == 2
+    post_analysis_idx = deployer.index(
+        "if (( ANALYSIS_CACHE_REFRESHED == 1 ))"
+    )
+    post_analysis = deployer[post_analysis_idx:]
+    assert (
+        "systemctl stop sfo-strategy-lab-refresh.timer "
+        "sfo-operational-publish.timer"
+    ) in post_analysis
+    assert "restore_post_analysis_timers" in post_analysis
+    assert "POST_ANALYSIS_STATUS=0" in post_analysis
+    assert "POST_ANALYSIS_RESTART_STATUS=0" in post_analysis
+    post_restore_call = "if restore_post_analysis_timers; then"
+    assert post_analysis.index("POST_ANALYSIS_STATUS=0") < post_analysis.index(
+        post_restore_call
+    )
+    assert post_analysis.index(post_restore_call) < post_analysis.index(
+        "if (( POST_ANALYSIS_STATUS != 0 ))"
+    )
+
+
+def test_publication_wait_exits_on_signals_and_cleans_on_exit():
+    waiter = _read(AWS_DIR / "wait_for_publication_manifest.sh")
+
+    assert "trap cleanup EXIT" in waiter
+    assert "trap 'exit 129' HUP" in waiter
+    assert "trap 'exit 130' INT" in waiter
+    assert "trap 'exit 143' TERM" in waiter
+    assert "trap cleanup EXIT HUP INT TERM" not in waiter
 
 
 def test_recurring_services_never_mutate_deployed_source():
