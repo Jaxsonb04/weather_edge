@@ -1205,10 +1205,9 @@ def test_deploy_web_app_failure_never_reports_success(tmp_path: Path) -> None:
 
 def test_forecaster_policy_syncs_committed_inputs_but_protects_runtime() -> None:
     policy = (AWS_DIR / "forecaster-runtime.rsync-filter").read_text()
-    for script_name in ("sync_to_box.sh", "sync_forecaster_source.sh"):
-        script = (AWS_DIR / script_name).read_text()
-        assert '--exclude "forecast_data.json"' not in script
-        assert '--exclude "weather_story_data.json"' not in script
+    script = (AWS_DIR / "sync_to_box.sh").read_text()
+    assert '--exclude "forecast_data.json"' not in script
+    assert '--exclude "weather_story_data.json"' not in script
     assert "forecast_data.json" not in policy
     assert "weather_story_data.json" not in policy
     for protected in (

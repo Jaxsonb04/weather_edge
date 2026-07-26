@@ -19,6 +19,7 @@ from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
+    TARGET_POLICY_V1,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -184,20 +185,20 @@ def _insert_identity_row(
     raise AssertionError(f"unsupported identity table {table}")
 
 
-def test_research_policy_constants_are_fixed() -> None:
-    assert TARGET_POLICY.sleeve is ResearchSleeve.TARGET
-    assert TARGET_POLICY.account_id == "paper-research-target-v1"
-    assert TARGET_POLICY.policy_version == "research-target-v1"
-    assert TARGET_POLICY.reference_equity == 1000.0
-    assert TARGET_POLICY.target_return == 0.05
-    assert TARGET_POLICY.target_pnl == 50.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.03
-    assert TARGET_POLICY.max_city_target_risk_pct == 0.06
-    assert TARGET_POLICY.max_region_day_risk_pct == 0.12
-    assert TARGET_POLICY.max_aggregate_risk_pct == 0.25
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.10
-    assert TARGET_POLICY.min_lead_days == 1
-    assert TARGET_POLICY.one_contract is False
+def test_legacy_research_policy_constants_are_fixed() -> None:
+    assert TARGET_POLICY_V1.sleeve is ResearchSleeve.TARGET
+    assert TARGET_POLICY_V1.account_id == "paper-research-target-v1"
+    assert TARGET_POLICY_V1.policy_version == "research-target-v1"
+    assert TARGET_POLICY_V1.reference_equity == 1000.0
+    assert TARGET_POLICY_V1.target_return == 0.05
+    assert TARGET_POLICY_V1.target_pnl == 50.0
+    assert TARGET_POLICY_V1.max_position_risk_pct == 0.03
+    assert TARGET_POLICY_V1.max_city_target_risk_pct == 0.06
+    assert TARGET_POLICY_V1.max_region_day_risk_pct == 0.12
+    assert TARGET_POLICY_V1.max_aggregate_risk_pct == 0.25
+    assert TARGET_POLICY_V1.daily_loss_pause_pct == 0.10
+    assert TARGET_POLICY_V1.min_lead_days == 1
+    assert TARGET_POLICY_V1.one_contract is False
 
 
 def test_motion_policy_constants_are_fixed() -> None:
@@ -222,7 +223,8 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
     with pytest.raises(FrozenInstanceError):
         TARGET_POLICY.reference_equity = 2000.0  # type: ignore[misc]
 
-    assert TARGET_POLICY.policy_fingerprint == "dea759010dc85ca5f4f610e2"
+    assert TARGET_POLICY_V1.policy_fingerprint == "dea759010dc85ca5f4f610e2"
+    assert TARGET_POLICY.policy_fingerprint == "6a534a48478301a3068eb10d"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
@@ -3099,6 +3101,68 @@ def test_research_admission_exception_leaves_pending_then_next_scan_recovers(
     )
     assert admitted
     assert all(row == (1, 1, None) for row in admitted)
+
+
+def test_pending_research_admission_cleanup_uses_partial_index(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    store = PaperStore(tmp_path / "pending-index.db")
+    with store.connect() as conn:
+        index_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='idx_decision_snapshots_pending_research_admission'"
+        ).fetchone()
+        plan = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            UPDATE decision_snapshots
+            SET approved=0, signal_approved=1,
+                entry_block_reason='abandoned research admission',
+                recommended_contracts=0, recommended_spend=0,
+                expected_profit=0
+            WHERE research_sleeve IS NOT NULL
+              AND approved=0
+              AND entry_block_reason='research admission pending'
+            """
+        ).fetchall()
+
+    assert index_sql_row is not None
+    assert "WHERE research_sleeve IS NOT NULL" in str(index_sql_row[0])
+    assert any(
+        "idx_decision_snapshots_pending_research_admission" in str(row)
+        for row in plan
+    )
+
+
+def test_empty_existing_decision_table_recreates_safe_indexes(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    db_path = tmp_path / "empty-index-migration.db"
+    store = PaperStore(db_path)
+    with store.connect() as conn:
+        conn.execute(
+            "DROP INDEX idx_decision_snapshots_pending_research_admission"
+        )
+        conn.execute("DROP INDEX idx_decision_snapshots_created_market")
+        assert conn.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 0
+
+    PaperStore(db_path)
+
+    with store.connect() as conn:
+        names = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name IN ("
+                "'idx_decision_snapshots_pending_research_admission', "
+                "'idx_decision_snapshots_created_market'"
+                ")"
+            )
+        }
+    assert names == {
+        "idx_decision_snapshots_pending_research_admission",
+        "idx_decision_snapshots_created_market",
+    }
 
 
 def test_research_approval_order_and_ledger_rollback_together(

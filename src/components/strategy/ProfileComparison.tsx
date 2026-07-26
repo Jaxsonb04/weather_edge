@@ -24,7 +24,7 @@ const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   },
   "research-target": {
     icon: "solar:target-bold",
-    blurb: "A separate paper account pursuing the fixed $50 daily research objective while every risk and edge gate remains binding.",
+    blurb: "A separate paper account pursuing its policy-defined daily research objective while every risk and edge gate remains binding.",
   },
   "research-motion": {
     icon: "solar:chart-2-bold",
@@ -53,7 +53,11 @@ function feasibilityLabel(value: boolean | null | undefined) {
 }
 
 function targetProgress(target: NonNullable<ReturnType<typeof researchDailyTarget>>) {
-  const maximum = target.target_pnl && target.target_pnl > 0 ? target.target_pnl : 50;
+  const maximum =
+    target.target_pnl != null && Number.isFinite(target.target_pnl) && target.target_pnl > 0
+      ? target.target_pnl
+      : null;
+  if (maximum == null) return null;
   const value = Math.min(maximum, Math.max(0, target.realized_pnl ?? 0));
   return { maximum, value, pct: (value / maximum) * 100 };
 }
@@ -152,25 +156,33 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
           <div className="rounded-xl bg-accent-soft p-3 ring-1 ring-accent/25">
             <div className="flex items-baseline justify-between gap-2">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
-                {money(target.target_pnl, { sign: "negative-only" })} daily target
+                {targetProgressState
+                  ? `${money(target.target_pnl, { sign: "negative-only" })} daily target`
+                  : "Daily target unavailable"}
               </p>
               <span className="tnum text-xs font-semibold text-foreground">
                 {money(target.realized_pnl, { sign: "negative-only" })}
               </span>
             </div>
-            <div
-              className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10"
-              role="progressbar"
-              aria-label={`${p.label} daily target progress`}
-              aria-valuemin={0}
-              aria-valuemax={targetProgressState?.maximum}
-              aria-valuenow={targetProgressState?.value}
-            >
+            {targetProgressState ? (
               <div
-                className="h-full rounded-full bg-accent"
-                style={{ width: `${targetProgressState?.pct ?? 0}%` }}
-              />
-            </div>
+                className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10"
+                role="progressbar"
+                aria-label={`${p.label} daily target progress`}
+                aria-valuemin={0}
+                aria-valuemax={targetProgressState.maximum}
+                aria-valuenow={targetProgressState.value}
+              >
+                <div
+                  className="h-full rounded-full bg-accent"
+                  style={{ width: `${targetProgressState.pct}%` }}
+                />
+              </div>
+            ) : (
+              <p role="status" className="mt-2 text-[11px] text-muted">
+                Objective amount unavailable in this publication.
+              </p>
+            )}
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted">
               <span>Remaining {money(target.remaining_pnl, { sign: "negative-only" })}</span>
               <span>{feasibilityLabel(target.target_feasible)}</span>

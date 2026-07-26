@@ -128,3 +128,73 @@ def test_prune_cli_reports_context_rows_dropped(capsys):
         ) == 0
 
     assert "1 contexts dropped" in capsys.readouterr().out
+
+
+def test_prune_caps_archive_backed_streams_and_keeps_referenced_parents():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "p.db")
+        with store.connect() as conn:
+            old_forecast = conn.execute(
+                "INSERT INTO forecast_snapshots "
+                "(created_at, target_date, predicted_high_f, raw_json) "
+                "VALUES (datetime('now', '-100 days'), '2026-06-01', 65, '{}')"
+            ).lastrowid
+            referenced_forecast = conn.execute(
+                "INSERT INTO forecast_snapshots "
+                "(created_at, target_date, predicted_high_f, raw_json) "
+                "VALUES (datetime('now', '-100 days'), '2026-06-01', 66, '{}')"
+            ).lastrowid
+            old_market = conn.execute(
+                "INSERT INTO market_snapshots "
+                "(created_at, event_ticker, target_date, raw_json) "
+                "VALUES (datetime('now', '-100 days'), 'E-OLD', '2026-06-01', '{}')"
+            ).lastrowid
+            referenced_market = conn.execute(
+                "INSERT INTO market_snapshots "
+                "(created_at, event_ticker, target_date, raw_json) "
+                "VALUES (datetime('now', '-100 days'), 'E-KEEP', '2026-06-01', '{}')"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO scan_context_snapshots "
+                "(created_at, target_date, forecast_snapshot_id, market_snapshot_id, "
+                "prediction_features_json, source_context_hash) "
+                "VALUES (datetime('now', '-100 days'), '2026-06-01', ?, ?, '{}', 'keep')",
+                (referenced_forecast, referenced_market),
+            )
+            for age in (100, 10):
+                conn.execute(
+                    "INSERT INTO probability_snapshots "
+                    "(created_at, target_date, market_ticker, label, probability, "
+                    "lower_confidence, empirical_probability, normal_probability, effective_n) "
+                    "VALUES (datetime('now', ?), '2026-06-01', 'T-P', 'l', "
+                    "0.5, 0.4, 0.5, 0.5, 1)",
+                    (f"-{age} days",),
+                )
+                conn.execute(
+                    "INSERT INTO paper_monitor_snapshots "
+                    "(created_at, order_id, target_date, market_ticker, side, action) "
+                    "VALUES (datetime('now', ?), 1, '2026-06-01', 'T-M', 'YES', 'HOLD')",
+                    (f"-{age} days",),
+                )
+
+        result = store.prune_decision_snapshots(full_days=7, dedup_days=45)
+
+        assert result["probabilities_dropped"] == 1
+        assert result["monitor_snapshots_dropped"] == 1
+        assert result["forecast_snapshots_dropped"] == 1
+        assert result["market_snapshots_dropped"] == 1
+        with store.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM probability_snapshots"
+            ).fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT COUNT(*) FROM paper_monitor_snapshots"
+            ).fetchone()[0] == 1
+            assert {
+                row[0] for row in conn.execute("SELECT id FROM forecast_snapshots")
+            } == {referenced_forecast}
+            assert {
+                row[0] for row in conn.execute("SELECT id FROM market_snapshots")
+            } == {referenced_market}
+            assert old_forecast != referenced_forecast
+            assert old_market != referenced_market

@@ -89,7 +89,7 @@ def test_github_verify_workflow_installs_test_import_dependencies():
 
 def test_forecaster_refresh_only_refreshes_forecast_state():
     text = _read(AWS_DIR / "systemd" / "sfo-forecaster-refresh.service.in")
-    assert "sync_forecaster_source.sh" in text
+    assert "sync_forecaster_source.sh" not in text
     assert "nws_ground_truth.py" in text
     assert "google_weather_cache.py" in text
     assert "build_public_trading_signal.sh" not in text
@@ -145,7 +145,7 @@ def test_operational_publish_service_runs_fast_builder_then_publisher():
     assert "sfo-operational-publish.service.in" in installer
     assert "sfo-operational-publish.timer" in installer
     assert "sfo-operational-publish.timer" in installer
-    assert "sync_forecaster_source.sh" in service
+    assert "sync_forecaster_source.sh" not in service
     assert "run_publication_cycle.sh operational" in service
     assert "google_weather_cache.py --refresh" not in service
     assert "OnActiveSec=2min" in timer
@@ -161,7 +161,7 @@ def test_web_app_deploy_triggers_fast_operational_publication():
     assert "systemctl start sfo-strategy-lab-refresh.service" not in deployer
 
 
-def test_strategy_lab_refresh_runs_only_heavy_builder_every_fifteen_minutes():
+def test_strategy_lab_refresh_uses_bounded_fast_publication():
     installer = _read(AWS_DIR / "install_systemd.sh")
     service = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.service.in")
     timer = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.timer")
@@ -174,8 +174,17 @@ def test_strategy_lab_refresh_runs_only_heavy_builder_every_fifteen_minutes():
     assert "google_weather_cache.py --refresh" not in service
     assert "OnActiveSec=4min" in timer
     assert "OnBootSec=" not in timer
-    assert "OnUnitActiveSec=15min" in timer
+    assert "OnUnitActiveSec=" not in timer
+    assert "OnUnitInactiveSec=10min" in timer
     assert "Unit=sfo-strategy-lab-refresh.service" in timer
+    assert "TimeoutStartSec=120" in service
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+    assert "export SFO_STRATEGY_FAST_PUBLICATION=1" in runner
+    assert "Environment=SFO_STRATEGY_FAST_PUBLICATION=1" not in service
+    assert "sync_forecaster_source.sh" not in service
+    assert "SFO_STRATEGY_FAST_PUBLICATION=1" in _read(
+        AWS_DIR / "sfo-weather.env.example"
+    )
 
 
 def test_operational_builder_generates_fast_artifacts_and_manifest_only():
@@ -250,6 +259,8 @@ def test_strategy_cycle_rebuilds_manifest_but_never_competes_with_operational_pu
     deferred_idx = runner.index("publication deferred to the operational cycle")
     assert research_idx < staging_idx < strategy_lock_idx < manifest_idx < deferred_idx
     assert runner.index('mv -f -- "$strategy_promote_tmp"') < manifest_idx
+    assert "strategy_analysis_cache.json" not in runner
+    assert "strategy_analysis_promote_tmp" not in runner
     assert "SFO_STRATEGY_PUBLISH" not in runner
 
 
@@ -489,19 +500,24 @@ def test_paper_prune_retention_is_explicit_in_canonical_environment():
     assert "SFO_PRUNE_FULL_DAYS=1" in example_env
 
 
-def test_source_sync_preserves_stale_forecast_watchdog_marker():
-    # sync_forecaster_source.sh rsyncs with --delete into the forecaster root,
-    # which is also where the freshness watchdog writes its STALE_FORECAST
-    # marker; without this exclude the 5-minute sync silently erases the alarm.
+def test_source_only_sync_is_disabled_to_preserve_cross_tree_provenance():
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
+
+    assert "is disabled" in syncer
+    assert "sync_to_box.sh" in syncer
+    assert "git fetch" not in syncer
+    assert "rsync" not in syncer
+
+
+def test_full_sync_preserves_stale_forecast_watchdog_marker():
     excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
+    syncer = _read(AWS_DIR / "sync_to_box.sh")
     assert '--exclude-from="$FORECASTER_EXCLUDES"' in syncer
     assert "STALE_FORECAST" in excludes
 
 
 def test_pages_publish_ships_spa_and_fresh_jsons():
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
-    syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
     # The site is the prebuilt SPA plus the fresh public research JSONs.
@@ -519,15 +535,13 @@ def test_pages_publish_ships_spa_and_fresh_jsons():
     assert '${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}' in publisher
     excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
     assert "strategy_research.json" in excludes
+    assert "strategy_analysis_cache.json" in excludes
     assert "cities_data.json" in excludes
     assert "publication_manifest.json" in excludes
 
 
 def test_forecaster_filter_preserves_build_provenance():
-    """build_info.json (audit PR-01) is stamped once by sync_to_box.sh but must
-    survive the 5-minute sync_forecaster_source.sh git-tree refresh every
-    publish cycle runs, or the provenance-stamped manifest silently reverts to
-    unprovenanced on the very next cycle."""
+    """Runtime exclusions keep the full deploy from replacing its own stamp."""
 
     excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
     assert "build_info.json" in excludes
@@ -536,34 +550,21 @@ def test_forecaster_filter_preserves_build_provenance():
 def test_pages_deploy_key_path_matches_ec2_setup_docs():
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
-    syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
     readme = _read(AWS_DIR / "README.md")
 
     expected = "sfo_weather_pages_deploy"
     assert expected in example_env
     assert expected in publisher
-    assert expected in syncer
     assert expected in readme
-    assert "weatheredge_pages_deploy" not in example_env + publisher + syncer + readme
+    assert "weatheredge_pages_deploy" not in example_env + publisher + readme
 
 
-def test_source_sync_serializes_shared_git_cache_and_uses_current_remote():
+def test_disabled_source_sync_documents_the_controlled_replacement():
     syncer = _read(AWS_DIR / "sync_forecaster_source.sh")
-    example_env = _read(AWS_DIR / "sfo-weather.env.example")
     readme = _read(AWS_DIR / "README.md")
 
-    assert "weather_edge.git" in syncer
-    assert "weather-edge.git" not in syncer
-    assert "weather_edge.git" in example_env
-    assert "weather-edge.git" not in example_env
-    assert "weather_edge.git" in readme
-    assert "weather-edge.git" not in readme
-    assert "SFO_FORECASTER_SOURCE_LOCK" in syncer
-    assert "/opt/weatheredge/.locks/source-cache-main.lock" in syncer
-    assert 'mkdir -p "$(dirname "$SOURCE_LOCK")"' in syncer
-    assert "flock" in syncer
-    assert "exec 9>" in syncer
-    assert "git remote set-url origin" in syncer
+    assert "both source trees" in syncer
+    assert "disabled compatibility tombstone" in readme
 
 
 def test_pages_publish_is_race_safe():
@@ -654,7 +655,7 @@ def test_project_docs_describe_split_publication_cadences():
         assert "every five minutes" in normalized
         assert "publication_manifest.json" in normalized
         assert "sfo-strategy-lab-refresh.timer" in normalized
-        assert "every fifteen minutes" in normalized
+        assert "every ten minutes" in normalized
         assert "research-only" in normalized
 
 
@@ -693,6 +694,65 @@ def test_pull_paper_db_script_exists_for_offline_rescore():
     assert "backtest-rescore" in puller  # documents the next step
 
 
+def test_deploy_builds_decision_indexes_while_services_are_quiesced():
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+
+    quiesce_idx = deployer.index('bash -s quiesce < "$QUIESCE_HELPER"')
+    index_idx = deployer.index("bash deploy/aws/create_decision_snapshot_index.sh")
+    restore_idx = deployer.index("PRODUCER_TIMERS=()")
+    publication_idx = deployer.index("bash deploy/aws/wait_for_publication_manifest.sh")
+    analysis_idx = deployer.index(
+        "bash deploy/aws/refresh_strategy_analysis_cache.sh"
+    )
+    assert quiesce_idx < index_idx < restore_idx < publication_idx < analysis_idx
+    assert "WEATHEREDGE_BACKUP_SNAPSHOT=" in deployer
+    assert "SFO_STRATEGY_ANALYSIS_DB_PATH=" in deployer
+
+
+def test_full_strategy_analysis_refresh_is_explicit_and_never_recurring():
+    refresher = _read(AWS_DIR / "refresh_strategy_analysis_cache.sh")
+    service = _read(AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.service.in")
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+
+    assert "SFO_STRATEGY_FAST_PUBLICATION=0" in refresher
+    assert "strategy_analysis_cache.json" in refresher
+    assert "/etc/weatheredge.env" in refresher
+    assert 'source "$ENV_FILE"' in refresher
+    assert 'sudo -n cat -- "$ENV_FILE"' in refresher
+    assert "systemd-run" in refresher
+    assert "MemoryMax=1600M" in refresher
+    assert "RuntimeMaxSec=" in refresher
+    assert 'analysis_unit="weatheredge-strategy-analysis-cache.service"' in refresher
+    assert 'sudo -n systemctl stop "$analysis_unit"' in refresher
+    assert 'sudo -n systemctl reset-failed "$analysis_unit"' in refresher
+    assert "SFO_STRATEGY_ANALYSIS_DB_PATH" in refresher
+    assert "analysis snapshot must differ from the live paper database" in refresher
+    assert "os.path.samefile" in refresher
+    assert "deployed build_info.json is missing source_sha" in refresher
+    assert refresher.index('source "$ENV_FILE"') < refresher.index(
+        "SFO_STRATEGY_FAST_PUBLICATION=0"
+    )
+    assert "refresh_strategy_analysis_cache.sh" not in service
+    assert "ANALYSIS_CACHE_REFRESHED=0" in deployer
+    assert "continuing with deferred analysis" in deployer
+
+
+def test_recurring_services_never_mutate_deployed_source():
+    for unit in (AWS_DIR / "systemd").glob("*.service.in"):
+        assert "sync_forecaster_source.sh" not in _read(unit), unit.name
+
+
+def test_index_deploy_skips_disk_gate_when_definitions_are_current():
+    indexer = _read(AWS_DIR / "create_decision_snapshot_index.sh")
+
+    state_idx = indexer.index('if [[ "$index_state" == "current" ]]')
+    exit_idx = indexer.index("exit 0", state_idx)
+    disk_gate_idx = indexer.index("db_bytes=", exit_idx)
+    assert state_idx < exit_idx < disk_gate_idx
+    assert "SELECT name, sql FROM sqlite_master" in indexer
+    assert 'DROP INDEX IF EXISTS "{name}"' in indexer
+
+
 def test_pull_paper_db_prefers_ec2_env_with_legacy_variable_fallback():
     puller = _read(AWS_DIR / "pull_paper_db.sh")
 
@@ -713,15 +773,12 @@ def test_box_sync_prefers_ec2_env_with_legacy_variable_fallback():
     assert 'exec "$SCRIPT_DIR/sync_to_box.sh" "$@"' in compatibility_wrapper
 
 
-def test_forecaster_syncs_share_runtime_exclude_manifest():
+def test_full_forecaster_sync_uses_runtime_exclude_manifest():
     full_sync = _read(AWS_DIR / "sync_to_box.sh")
-    source_sync = _read(AWS_DIR / "sync_forecaster_source.sh")
     excludes = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
 
     assert 'FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"' in full_sync
-    assert 'FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"' in source_sync
     assert '--exclude-from="$FORECASTER_EXCLUDES"' in full_sync
-    assert '--exclude-from="$FORECASTER_EXCLUDES"' in source_sync
 
     for artifact in (
         "STALE_FORECAST",
@@ -741,18 +798,17 @@ def test_full_box_sync_does_not_copy_local_runtime_state():
 
     assert "--exclude-from=\"$FORECASTER_EXCLUDES\"" in syncer
     assert "--exclude 'data'" in syncer
+    assert "--exclude '*.egg-info'" in syncer
 
 
 def test_tracked_forecaster_inputs_are_copied_to_the_box():
     full_sync = _read(AWS_DIR / "sync_to_box.sh")
-    source_sync = _read(AWS_DIR / "sync_forecaster_source.sh")
 
     for artifact in (
         "forecast_data.json",
         "weather_story_data.json",
     ):
         assert f'--exclude "{artifact}"' not in full_sync
-        assert f'--exclude "{artifact}"' not in source_sync
 
 
 def test_retired_forecaster_refresh_gate_is_absent():

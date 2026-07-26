@@ -15,7 +15,7 @@ vi.mock("../ui/Reveal", () => ({
   Reveal: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-import { OverviewEquity } from "./StrategyLabView";
+import { AnalysisFreshness, OverviewEquity } from "./StrategyLabView";
 
 const degradedWithResearchBook = {
   available: true,
@@ -83,5 +83,34 @@ describe("OverviewEquity live-curve fallback", () => {
     const curve = screen.getByTestId("equity-curve");
     expect(curve).toHaveAttribute("data-has-days", "yes");
     expect(screen.queryByText(/equity curve unavailable/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("AnalysisFreshness", () => {
+  it("separates a fresh live publication from older cached historical analysis", () => {
+    render(
+      <AnalysisFreshness
+        s={{
+          publication_mode: "fast_public",
+          analysis_generated_at: "2026-07-25T08:00:00+00:00",
+        } as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByText(/Historical rescore cached from 2026-07-25 08:00 UTC/i)).toBeInTheDocument();
+    expect(screen.getByText(/live paper state and readiness are recomputed/i)).toBeInTheDocument();
+  });
+
+  it("states when historical analysis is deferred instead of inventing freshness", () => {
+    render(
+      <AnalysisFreshness
+        s={{
+          publication_mode: "fast_public",
+          analysis_generated_at: null,
+        } as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByText(/Historical rescore deferred/i)).toBeInTheDocument();
   });
 });

@@ -61,18 +61,24 @@ captures the enabled set before it stops/disables every WeatherEdge timer plus
 its paired service ahead of any remote tree mutation or source transfer. It does
 not assume the helper already exists in the old remote source tree. A failed
 transfer or install remains safely quiesced; a successful deploy restores only
-the captured timers. The full sync does not use `--delete`. The scheduled
-`sync_forecaster_source.sh` does, but both use
-`forecaster-runtime.rsync-filter`, which preserves runtime databases, caches,
+the captured timers. The full sync does not use `--delete`. Scheduled services
+execute the exact source installed by this controlled full deploy; they never
+fetch or replace source on their own. The former forecaster-only sync is a
+disabled compatibility tombstone because it could split the deployed revision
+across source trees. `forecaster-runtime.rsync-filter` preserves runtime
+databases, caches,
 their SQLite `-wal`/`-shm` sidecars, generated publication JSON,
 `STALE_FORECAST`, and `models/`. The committed `forecast_data.json` and
-`weather_story_data.json` inputs are deployed by both sync paths; they are
+`weather_story_data.json` inputs are deployed by the full sync; they are
 source-controlled inputs, unlike their runtime-produced JSON siblings.
 The full sync also deploys the root `pyproject.toml` and `README.md`; both
 installers keep the executable environment under `trading/.venv` while running
-the editable install from `/opt/weatheredge`. The scheduled forecaster-only sync
-does not reinstall that environment. After every full transfer succeeds, the
-sync removes only the obsolete `trading/pyproject.toml`, the two retired service
+the editable install from `/opt/weatheredge`. No timer, service, or recovery
+helper mutates source between controlled deployments.
+Generated `*.egg-info` metadata is excluded
+from source transfer and recreated by the remote editable install. After every
+full transfer succeeds, the sync removes only the obsolete
+`trading/pyproject.toml`, the two retired service
 templates under `trading/sfo_kalshi_quant/`, and the eleven audited top-level
 forecaster scripts now housed under `forecaster/research/`. No runtime database,
 raw input, model directory, or publication artifact is part of that cleanup.
@@ -137,8 +143,9 @@ The environment installed at `/etc/weatheredge.env` is based on
   forecast state for all fifteen cities, and no public artifacts.
 - `sfo-operational-publish.timer`: every five minutes; builds and validates the
   operational JSON snapshot, then publishes it.
-- `sfo-strategy-lab-refresh.timer`: every fifteen minutes; research-only build
-  and publish, with no paid Google refresh.
+- `sfo-strategy-lab-refresh.timer`: every ten minutes; bounded research-only build
+  and publish, with no paid Google refresh or full-journal rescore. The recurring
+  wrapper forces bounded mode even if `/etc/weatheredge.env` says otherwise.
 - `sfo-dataset-backfill.timer`: nightly; compact source refresh, CLI settlement
   truth, NWP leads 1 and 2, and rolling-origin EMOS. Lead 3 is manual research.
 - `sfo-kalshi-paper-scan.timer`: every five minutes across all configured city
@@ -149,10 +156,11 @@ The environment installed at `/etc/weatheredge.env` is based on
 - `sfo-kalshi-paper-prune.timer`: archive, verify, FK-check, then prune.
 - `sfo-forecast-freshness.timer`: publication and forecast health checks.
 
-Both publication paths hold `SFO_ARTIFACT_GENERATION_LOCK` while building,
-validating, and copying. `SFO_PAGES_LOCK` separately serializes Git updates.
-The publisher retries bounded non-fast-forward failures with
-`SFO_PAGES_PUSH_ATTEMPTS`.
+The operational publication path holds `SFO_ARTIFACT_GENERATION_LOCK` while
+building, validating, and copying. Strategy Lab builds in staging and takes
+that lock only for atomic artifact/cache promotion and manifest rebuild.
+`SFO_PAGES_LOCK` separately serializes Git updates. The publisher retries
+bounded non-fast-forward failures with `SFO_PAGES_PUSH_ATTEMPTS`.
 
 ## Archive, Finality, And Health
 
@@ -191,8 +199,34 @@ sudo systemctl start sfo-strategy-lab-refresh.service
 ```
 
 For an existing large journal, keep paper scan and monitor services paused and run
-`/opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh` once;
-resume the services only after the index build succeeds.
+`/opt/weatheredge/trading/deploy/aws/create_decision_snapshot_index.sh`; resume
+the services only after the index build succeeds. The script exits immediately
+when all definitions are already current and applies its conservative disk-space
+gate only when an index must be built or repaired. It also creates the narrow
+pending-admission index that prevents research scans from repeatedly reading the
+entire decision journal.
+
+`sync_to_box.sh` restores producers, seeds and validates a fresh publication,
+and restores the watchdog before it attempts
+`refresh_strategy_analysis_cache.sh`. That post-restore job reads the
+integrity-checked deploy snapshot rather than the live journal and performs the
+expensive historical rescore in a stable transient systemd unit with a 1.6 GB
+hard memory cap, low I/O priority, and a fixed runtime deadline. It requires
+clean build provenance, validates its source SHA and effective strategy
+configuration, and atomically promotes only
+`strategy_analysis_cache.json`. The stable unit name is stopped and reset on
+failure, including a best-effort caller-side cleanup after a dropped transport.
+Because this cache is diagnostic, a failed or resource-killed rescore is
+reported while production remains active; the public artifact explicitly marks
+historical analysis deferred.
+Recurring Strategy Lab refreshes reuse that validated input while recomputing
+current account state, calibration, bounded replay, and readiness. They never
+rebuild missing dataset research, read more than 10,000 paper orders or 50,000
+public trades for readiness replay, or scan the full decision journal. An
+operator can run the same helper manually by setting
+`SFO_STRATEGY_ANALYSIS_DB_PATH` to a verified immutable snapshot. It loads the
+root-owned `/etc/weatheredge.env` through passwordless `sudo` before forcing
+full-analysis mode and refuses to run against the live paper database.
 
 The freshness watchdog requires local and public operational artifacts no older
 than 10 minutes, and Strategy Lab research no older than 20 minutes. Its public

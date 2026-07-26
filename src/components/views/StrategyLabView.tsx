@@ -132,6 +132,25 @@ function BookState({ s, rp, label }: { s: StrategyLab; rp: string; label: string
   );
 }
 
+export function AnalysisFreshness({ s }: { s: StrategyLab }) {
+  if (!s.publication_mode) return null;
+  const stamp = s.analysis_generated_at
+    ? `${s.analysis_generated_at.slice(0, 16).replace("T", " ")} UTC`
+    : null;
+  const analysisStatus =
+    s.publication_mode === "full_research"
+      ? `Historical rescore completed ${stamp ?? "on this refresh"}.`
+      : stamp
+        ? `Historical rescore cached from ${stamp}.`
+        : "Historical rescore deferred until the deploy-time analysis job completes.";
+
+  return (
+    <p className="mt-4 text-[11px] leading-relaxed text-muted">
+      {analysisStatus} Live paper state and readiness are recomputed on every public refresh.
+    </p>
+  );
+}
+
 /** Live trading-status strip: a real-time snapshot of the running engine — the
     heartbeat, each book's entry state and current book, and the paper-only
     disclaimer folded in as a muted note (replaces the old warning band). */
@@ -163,6 +182,7 @@ function LiveStatusStrip({ s }: { s: StrategyLab }) {
           <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profile.label} />
         ))}
       </dl>
+      <AnalysisFreshness s={s} />
       <p className="mt-4 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
         <Icon icon="solar:shield-keyhole-bold" className="mt-px size-3.5 shrink-0" aria-hidden="true" />
         {disclaimer}

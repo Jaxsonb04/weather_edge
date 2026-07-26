@@ -125,10 +125,21 @@ minutes: `build_public_trading_signal.sh` generates
 `forecaster/trading_signal.json`, `forecaster/cities_data.json`, and
 `forecaster/publication_manifest.json`, then the publisher validates and ships
 that snapshot alongside the SPA. The research-only
-`sfo-strategy-lab-refresh.timer` runs every fifteen minutes to rebuild
+`sfo-strategy-lab-refresh.timer` runs every ten minutes to rebuild
 `forecaster/strategy_research.json` separately without calling the paid Google
-Weather refresh command. No published artifact contains private DB state; the
-trading artifacts contain only paper-trading research. `cities_data.json`
+Weather refresh command or rescanning the full decision journal. Historical
+backtest/rescore sections come from `strategy_analysis_cache.json` and expose a
+separate `analysis_generated_at` timestamp. After production is restored and its
+first publication validates, the deploy path refreshes the cache from the
+verified immutable database snapshot. The cache is rejected when either the
+deployed source SHA or the effective strategy/policy fingerprint changes; until
+a matching refresh succeeds, the historical panels say that analysis is
+deferred instead of presenting stale metrics as current. Current readiness is
+still derived on every public refresh.
+That replay is fail-closed at 10,000 paper orders or 50,000 public trades, and
+the recurring path never rebuilds a missing dataset-research artifact.
+No published artifact contains private DB state; the trading artifacts contain
+only paper-trading research. `cities_data.json`
 supplies per-city forecasts, latest settlement, and book activity for the
 fifteen-city Coverage grid.
 
@@ -210,10 +221,13 @@ and verifies every complete UTC day before its final prune step. If archival or
 the explicit archive gate fails, pruning does not run.
 
 Production sets `SFO_PRUNE_FULL_DAYS=1`; last-per-market-side-day rows remain for
-45 days and approved rows remain indefinitely. Fifteen cities otherwise write
-roughly 60k rejection snapshots (~0.5 GB) per day. Do not schedule or routinely
-run bare `paper-prune`: it is a low-level/manual command for recovery work only,
-after an operator has independently completed and verified the archive gate.
+45 days and approved rows remain indefinitely. Probability and paper-monitor
+streams, plus unreferenced forecast/market parents, remain online for the same
+45-day window; their older lossless copies stay in the archive. Fifteen cities
+otherwise write roughly 60k rejection snapshots (~0.5 GB) per day. Do not
+schedule or routinely run bare `paper-prune`: it is a low-level/manual command
+for recovery work only, after an operator has independently completed and
+verified the archive gate.
 
 ## Signal Backtest
 

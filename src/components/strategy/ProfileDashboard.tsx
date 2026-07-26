@@ -39,7 +39,7 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
   "research-target": {
     icon: "solar:target-bold",
     blurb:
-      "The fixed-objective research account. It pursues $50 of daily realized paper P&L without relaxing risk or edge gates, and remains separate from the live candidate's record and readiness.",
+      "The fixed-objective research account. It pursues its policy-defined daily realized paper P&L objective without relaxing risk or edge gates, and remains separate from the live candidate's record and readiness.",
   },
   "research-motion": {
     icon: "solar:chart-2-bold",
@@ -87,12 +87,23 @@ function objectiveDay(value: string | null | undefined) {
 /** Fixed-objective evidence panel shared by the overview and target-account
     dashboard. It intentionally reports feasibility, not a promise of return. */
 export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget }) {
-  const targetPnl = target.target_pnl ?? 50;
-  const progressMaximum = targetPnl > 0 ? targetPnl : 50;
-  const realized = target.realized_pnl ?? 0;
-  const remaining = target.remaining_pnl ?? Math.max(targetPnl - realized, 0);
-  const progressValue = Math.min(progressMaximum, Math.max(0, realized));
-  const progress = progressValue / progressMaximum;
+  const targetPnl =
+    target.target_pnl != null && Number.isFinite(target.target_pnl) && target.target_pnl > 0
+      ? target.target_pnl
+      : null;
+  const realized =
+    target.realized_pnl != null && Number.isFinite(target.realized_pnl)
+      ? target.realized_pnl
+      : 0;
+  const remaining =
+    target.remaining_pnl != null && Number.isFinite(target.remaining_pnl)
+      ? target.remaining_pnl
+      : targetPnl == null
+        ? null
+        : Math.max(targetPnl - realized, 0);
+  const progressValue =
+    targetPnl == null ? 0 : Math.min(targetPnl, Math.max(0, realized));
+  const progress = targetPnl == null ? 0 : progressValue / targetPnl;
   const feasibility = targetFeasibility(target.target_feasible);
   const formattedDay = objectiveDay(target.objective_day);
   const disclaimer = /not a guaranteed return/i.test(target.disclaimer ?? "")
@@ -108,7 +119,10 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
             Daily research objective
           </p>
           <Card.Title className="mt-1 text-lg">
-            {money(realized, { sign: "negative-only" })} of {money(targetPnl, { sign: "negative-only" })}
+            {money(realized, { sign: "negative-only" })} of{" "}
+            {targetPnl == null
+              ? "objective unavailable"
+              : money(targetPnl, { sign: "negative-only" })}
           </Card.Title>
           <p className="mt-1 break-words text-xs text-muted">
             Separate paper account
@@ -129,19 +143,25 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
         </div>
       </Card.Header>
       <Card.Content className="space-y-4 pt-0">
+        {targetPnl == null ? (
+          <p role="status" className="rounded-lg bg-surface-secondary px-3 py-2 text-xs text-muted">
+            Objective amount unavailable in this publication.
+          </p>
+        ) : (
         <div>
           <div
             className="h-2 overflow-hidden rounded-full bg-foreground/10"
             role="progressbar"
             aria-label="Daily research objective progress"
             aria-valuemin={0}
-            aria-valuemax={progressMaximum}
+            aria-valuemax={targetPnl}
             aria-valuenow={progressValue}
           >
             <div className="h-full rounded-full bg-accent" style={{ width: `${progress * 100}%` }} />
           </div>
           <p className="mt-1.5 text-right text-[11px] text-muted">{pct(progress, 0)} of today's fixed objective</p>
         </div>
+        )}
 
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-3 xl:grid-cols-6">
           <Stat label="Remaining" value={money(remaining, { sign: "negative-only" })} />
@@ -247,7 +267,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           startingBankroll={0}
           windowDays={p.daily_summary?.window_days}
           title={`${p.label} — P&L contribution`}
-          description={`Cumulative realized P&L attributed to this book within the shared account · ${p.daily_summary?.window_days ?? days.length}-day view`}
+          description={`Cumulative realized P&L attributed to this isolated book · ${p.daily_summary?.window_days ?? days.length}-day view`}
           contributionMode
         />
       ) : (

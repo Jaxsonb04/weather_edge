@@ -430,19 +430,37 @@ def replay_from_database(
     settlements,
     *,
     initial_capital: float = 1000.0,
+    max_orders: int | None = None,
+    max_trades: int | None = None,
 ) -> dict[str, object]:
     """Build replay events from persisted orders/trades and authoritative truth."""
 
     if not Path(db_path).exists():
         return {"available": False, "reason": f"paper database not found: {db_path}"}
+    for label, limit in (("max_orders", max_orders), ("max_trades", max_trades)):
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
+        ):
+            raise ValueError(f"{label} must be a positive integer or None")
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             if not _table_exists(conn, "paper_orders"):
                 return {"available": False, "reason": "paper_orders table missing"}
-            all_orders = conn.execute(
-                "SELECT * FROM paper_orders ORDER BY created_at, id"
-            ).fetchall()
+            order_sql = "SELECT * FROM paper_orders ORDER BY created_at, id"
+            order_params: tuple[object, ...] = ()
+            if max_orders is not None:
+                order_sql += " LIMIT ?"
+                order_params = (max_orders + 1,)
+            all_orders = conn.execute(order_sql, order_params).fetchall()
+            if max_orders is not None and len(all_orders) > max_orders:
+                return {
+                    "available": False,
+                    "reason": (
+                        "chronological replay deferred: paper order count exceeds "
+                        f"the recurring publication cap of {max_orders}"
+                    ),
+                }
             v4_allocation_owner_ids = {
                 order_id
                 for row in conn.execute(
@@ -494,13 +512,27 @@ def replay_from_database(
                 is not None
                 and order_id in current_entry_fill_owner_ids
             }
-            trades = (
-                conn.execute(
-                    "SELECT * FROM dataset_kalshi_trades ORDER BY created_time, trade_id"
-                ).fetchall()
-                if _table_exists(conn, "dataset_kalshi_trades")
-                else []
-            )
+            if _table_exists(conn, "dataset_kalshi_trades"):
+                trade_sql = (
+                    "SELECT * FROM dataset_kalshi_trades "
+                    "ORDER BY created_time, trade_id"
+                )
+                trade_params: tuple[object, ...] = ()
+                if max_trades is not None:
+                    trade_sql += " LIMIT ?"
+                    trade_params = (max_trades + 1,)
+                trades = conn.execute(trade_sql, trade_params).fetchall()
+                if max_trades is not None and len(trades) > max_trades:
+                    return {
+                        "available": False,
+                        "reason": (
+                            "chronological replay deferred: public trade count "
+                            "exceeds the recurring publication cap of "
+                            f"{max_trades}"
+                        ),
+                    }
+            else:
+                trades = []
             # The explicit execution transition marks when this database first
             # ran the current execution/accounting semantics. Only live rows
             # written after it can count;

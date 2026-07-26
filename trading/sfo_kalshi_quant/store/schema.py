@@ -6,7 +6,10 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
-from ..research_policy import MOTION_POLICY, TARGET_POLICY
+from ..research_policy import (
+    ALL_RESEARCH_POLICIES,
+    TARGET_POLICY_V1,
+)
 
 try:
     import fcntl
@@ -541,6 +544,13 @@ CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pre_entry
       AND market_close_time IS NOT NULL
       AND created_at < market_close_time
 """
+DECISION_SNAPSHOT_PENDING_RESEARCH_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pending_research_admission
+    ON decision_snapshots (id)
+    WHERE research_sleeve IS NOT NULL
+      AND approved = 0
+      AND entry_block_reason = 'research admission pending'
+"""
 
 # DB-level backstop for the application's concurrent-open guard. Account is the
 # isolation boundary: target and motion may independently hold the same side of
@@ -795,14 +805,11 @@ def _research_identity_trigger_sql(table: str, operation: str) -> tuple[str, str
             "policy_fingerprint",
         )
     )
-    new_research_account = (
-        f"NEW.account_id IN ('{TARGET_POLICY.account_id}', "
-        f"'{MOTION_POLICY.account_id}')"
+    research_account_ids = ", ".join(
+        repr(policy.account_id) for policy in ALL_RESEARCH_POLICIES
     )
-    old_research_account = (
-        f"OLD.account_id IN ('{TARGET_POLICY.account_id}', "
-        f"'{MOTION_POLICY.account_id}')"
-    )
+    new_research_account = f"NEW.account_id IN ({research_account_ids})"
+    old_research_account = f"OLD.account_id IN ({research_account_ids})"
     trigger = f"trg_{table}_research_identity_{operation.lower()}"
     if operation == "INSERT":
         account_condition = (
@@ -1017,7 +1024,7 @@ def _ensure_research_experiment_triggers(conn: sqlite3.Connection) -> None:
 def _backfill_legacy_research_daily_goal_fingerprints(
     conn: sqlite3.Connection,
 ) -> None:
-    """Stamp only legacy rows that exactly prove the active frozen policy."""
+    """Stamp only legacy rows that exactly prove the frozen v1 policy."""
 
     eligible = conn.execute(
         "SELECT 1 FROM research_daily_goals "
@@ -1028,11 +1035,11 @@ def _backfill_legacy_research_daily_goal_fingerprints(
         "AND typeof(target_pnl) IN ('integer', 'real') "
         "AND reference_equity=? AND target_return=? AND target_pnl=? LIMIT 1",
         (
-            TARGET_POLICY.account_id,
-            TARGET_POLICY.policy_version,
-            TARGET_POLICY.reference_equity,
-            TARGET_POLICY.target_return,
-            TARGET_POLICY.target_pnl,
+            TARGET_POLICY_V1.account_id,
+            TARGET_POLICY_V1.policy_version,
+            TARGET_POLICY_V1.reference_equity,
+            TARGET_POLICY_V1.target_return,
+            TARGET_POLICY_V1.target_pnl,
         ),
     ).fetchone()
     if eligible is None:
@@ -1052,20 +1059,20 @@ def _backfill_legacy_research_daily_goal_fingerprints(
         "AND typeof(target_pnl) IN ('integer', 'real') "
         "AND reference_equity=? AND target_return=? AND target_pnl=?",
         (
-            TARGET_POLICY.policy_fingerprint,
-            TARGET_POLICY.account_id,
-            TARGET_POLICY.policy_version,
-            TARGET_POLICY.reference_equity,
-            TARGET_POLICY.target_return,
-            TARGET_POLICY.target_pnl,
+            TARGET_POLICY_V1.policy_fingerprint,
+            TARGET_POLICY_V1.account_id,
+            TARGET_POLICY_V1.policy_version,
+            TARGET_POLICY_V1.reference_equity,
+            TARGET_POLICY_V1.target_return,
+            TARGET_POLICY_V1.target_pnl,
         ),
     )
 
 
 def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
-    """Bootstrap isolated $1,000 ledgers without touching legacy accounts."""
+    """Bootstrap isolated ledgers and keep the historical target read-only."""
 
-    for policy in (TARGET_POLICY, MOTION_POLICY):
+    for policy in ALL_RESEARCH_POLICIES:
         created_at = _now()
         conn.execute(
             "INSERT OR IGNORE INTO paper_accounts "
@@ -1092,6 +1099,11 @@ def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
                 f"{policy.account_id}:opening",
             ),
         )
+    conn.execute(
+        "UPDATE paper_accounts SET status='ARCHIVED' "
+        "WHERE account_id=? AND status!='ARCHIVED'",
+        (TARGET_POLICY_V1.account_id,),
+    )
 
 
 def _add_missing_columns(
@@ -1286,14 +1298,16 @@ def _init_store_locked(self) -> None:
         ):
             conn.execute("DROP INDEX IF EXISTS idx_decision_snapshots_scan_context")
         conn.executescript(INDEXES)
-        if not decision_table_existed:
+        decision_table_has_rows = (
+            conn.execute("SELECT 1 FROM decision_snapshots LIMIT 1").fetchone()
+            is not None
+        )
+        if not decision_table_existed or not decision_table_has_rows:
             conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
             conn.execute(DECISION_SNAPSHOT_SAMPLE_INDEX)
+            conn.execute(DECISION_SNAPSHOT_PENDING_RESEARCH_INDEX)
         elif (
             conn.execute(
-                "SELECT 1 FROM decision_snapshots LIMIT 1"
-            ).fetchone()
-            and conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
                 ("idx_decision_snapshots_created_market",),
             ).fetchone()
@@ -1303,6 +1317,20 @@ def _init_store_locked(self) -> None:
                 "decision_snapshots is nonempty but "
                 "idx_decision_snapshots_created_market is missing; pause paper "
                 "scan/monitor and run deploy/aws/create_decision_snapshot_index.sh"
+            )
+        if (
+            decision_table_existed
+            and decision_table_has_rows
+            and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                ("idx_decision_snapshots_pending_research_admission",),
+            ).fetchone()
+            is None
+        ):
+            logger.warning(
+                "decision_snapshots is nonempty but the pending research "
+                "admission index is missing; pause paper scan/monitor and run "
+                "deploy/aws/create_decision_snapshot_index.sh"
             )
         self._expire_pre_current_execution_orders(conn)
         self._ensure_shared_paper_account(conn)

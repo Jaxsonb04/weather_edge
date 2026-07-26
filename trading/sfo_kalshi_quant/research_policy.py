@@ -33,6 +33,7 @@ class ResearchSleevePolicy:
     daily_loss_pause_pct: float
     min_lead_days: int
     one_contract: bool
+    allocator_version: str | None = None
 
     @property
     def target_pnl(self) -> float:
@@ -56,6 +57,10 @@ class ResearchSleevePolicy:
             "sleeve": self.sleeve.value,
             "target_return": self.target_return,
         }
+        # Keep the frozen v1 payload byte-for-byte stable while letting later
+        # policies identify allocator semantics that percentages alone cannot.
+        if self.allocator_version is not None:
+            payload["allocator_version"] = self.allocator_version
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -72,7 +77,7 @@ def canonical_research_lead_bucket(lead_days: int) -> str:
     return "same-day" if lead_days == 0 else "day-ahead"
 
 
-TARGET_POLICY = ResearchSleevePolicy(
+TARGET_POLICY_V1 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-target-v1",
     policy_version="research-target-v1",
@@ -86,6 +91,26 @@ TARGET_POLICY = ResearchSleevePolicy(
     min_lead_days=1,
     one_contract=False,
 )
+
+
+# Active paper-only growth experiment.  A fresh account and policy identity
+# preserve the complete v1 ledger as an independent historical control.
+TARGET_POLICY = ResearchSleevePolicy(
+    sleeve=ResearchSleeve.TARGET,
+    account_id="paper-research-target-v2",
+    policy_version="research-target-growth-v2",
+    reference_equity=1000.0,
+    target_return=0.016,
+    max_position_risk_pct=0.06,
+    max_city_target_risk_pct=0.06,
+    max_region_day_risk_pct=0.12,
+    max_aggregate_risk_pct=0.25,
+    daily_loss_pause_pct=0.10,
+    min_lead_days=1,
+    one_contract=False,
+    allocator_version="policy-sized-v2",
+)
+
 
 MOTION_POLICY = ResearchSleevePolicy(
     sleeve=ResearchSleeve.MOTION,
@@ -103,4 +128,11 @@ MOTION_POLICY = ResearchSleevePolicy(
     daily_loss_pause_pct=0.05,
     min_lead_days=0,
     one_contract=True,
+)
+
+
+ALL_RESEARCH_POLICIES = (
+    TARGET_POLICY_V1,
+    TARGET_POLICY,
+    MOTION_POLICY,
 )

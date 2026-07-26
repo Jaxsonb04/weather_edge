@@ -352,7 +352,11 @@ def cmd_paper_prune(args: argparse.Namespace) -> int:
             f"pruned decision snapshots: {result['deduped']} deduped "
             f"(kept last per market-side-day), {result['dropped']} dropped "
             f"beyond {args.dedup_days}d; {result['contexts_dropped']} contexts dropped; "
-            "approved rows untouched"
+            f"{result['probabilities_dropped']} probabilities, "
+            f"{result['monitor_snapshots_dropped']} monitor snapshots, "
+            f"{result['forecast_snapshots_dropped']} orphan forecasts, and "
+            f"{result['market_snapshots_dropped']} orphan markets dropped beyond "
+            f"{args.dedup_days}d; approved rows untouched"
         )
     )
     return 0

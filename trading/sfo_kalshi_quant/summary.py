@@ -15,6 +15,12 @@ from .logical_positions import group_logical_positions
 from .profile_identity import row_published_profile_key
 
 
+_COMBINED_EQUITY_UNAVAILABLE_REASON = (
+    "Combined profile P&L spans separate paper accounts; "
+    "account-scoped ledger balances are authoritative."
+)
+
+
 def build_paper_summary(
     *,
     db_path: Path,
@@ -31,7 +37,6 @@ def build_paper_summary(
     look-ahead from same-day observed-high locks.
     """
 
-    cfg = config or StrategyConfig()
     local_now = (now or datetime.now(UTC)).astimezone(SFO_TZ)
     today = local_now.date()
     window_start = today - timedelta(days=days - 1)
@@ -136,15 +141,20 @@ def build_paper_summary(
     days_out: list[dict[str, Any]] = []
     for key in day_keys:
         day = per_day[key]
-        opening_equity = cfg.paper_bankroll + cumulative
+        opening_attributed_pnl = cumulative
         cumulative += day["realized_pnl"]
         resolved = day["closed"] + day["settled"]
         day["hit_rate"] = day["wins"] / resolved if resolved else None
         day["roi"] = day["realized_pnl"] / day["resolved_spend"] if day["resolved_spend"] > 0 else None
         day["cumulative_realized"] = round(cumulative, 2)
-        day["opening_equity"] = round(opening_equity, 2)
+        # This row combines profile attribution across economically separate
+        # accounts. Keep the legacy equity keys present, but never attach the
+        # aggregate P&L to one synthetic bankroll.
+        day["opening_equity"] = None
         day["daily_realized_pnl"] = round(day["realized_pnl"], 2)
-        day["closing_equity"] = round(cfg.paper_bankroll + cumulative, 2)
+        day["closing_equity"] = None
+        day["opening_attributed_pnl"] = round(opening_attributed_pnl, 2)
+        day["closing_attributed_pnl"] = round(cumulative, 2)
         day["realized_pnl"] = round(day["realized_pnl"], 2)
         day["opened_spend"] = round(day["opened_spend"], 2)
         day["resolved_spend"] = round(day["resolved_spend"], 2)
@@ -223,19 +233,21 @@ def build_paper_summary(
     )
     profile_keys = _profile_keys(window_terminal_rows + window_resolved_lots)
     payload = {
-        "schema_version": 1,
+        # v2 makes combined-account equity explicitly unavailable and publishes
+        # attribution-only P&L fields instead of a synthetic shared bankroll.
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "window_days": days,
         "window_start": window_start.isoformat(),
         "window_end": today.isoformat(),
-        # `bankroll` is the static STARTING notional (kept for backward compat
-        # and aliased as starting_bankroll). `current_equity` is the honest live
-        # number: starting notional + all-time realized PnL. The dashboard should
-        # lead with current_equity so a static $1000 is never mistaken for the
-        # live book value.
-        "bankroll": round(cfg.paper_bankroll, 2),
-        "starting_bankroll": round(cfg.paper_bankroll, 2),
-        "current_equity": round(cfg.paper_bankroll + total_realized_all_time, 2),
+        "equity_available": False,
+        "equity_basis": "attribution_only",
+        "equity_unavailable_reason": _COMBINED_EQUITY_UNAVAILABLE_REASON,
+        # Compatibility keys remain explicit instead of disappearing. Account
+        # equity is published from the account ledger by Strategy Lab.
+        "bankroll": None,
+        "starting_bankroll": None,
+        "current_equity": None,
         "days": days_out,
         "totals": {
             "trades_opened": sum(day["opened"] for day in days_out),

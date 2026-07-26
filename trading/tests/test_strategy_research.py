@@ -29,6 +29,7 @@ from sfo_kalshi_quant.strategy_research import (
     _strategy_alerts,
     _status_target_date,
     build_strategy_research,
+    write_strategy_research,
 )
 from sfo_kalshi_quant.strategy_lab import (
     build as strategy_build_module,
@@ -161,11 +162,12 @@ def _no_favorite_decision() -> TradeDecision:
     )
 
 
-def test_strategy_research_does_not_create_missing_paper_db():
+def test_strategy_research_does_not_create_missing_paper_db(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         missing_db = Path(tmp) / "missing" / "paper.db"
         _write_lstm_fixture(root)
+        monkeypatch.delenv("SFO_STRATEGY_FAST_PUBLICATION", raising=False)
 
         payload = build_strategy_research(
             forecaster_root=root,
@@ -174,10 +176,303 @@ def test_strategy_research_does_not_create_missing_paper_db():
         )
 
         assert payload["mode"] == "paper_research_only"
+        assert payload["publication_mode"] == "full_research"
         assert payload["live_orders_enabled"] is False
         assert payload["calibration_comparison"]["active"]["available"] is True
         assert payload["status"]["active_calibration_source"] == "lstm"
         assert not missing_db.exists()
+
+
+def test_fast_publication_defers_full_decision_journal_analytics(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    PaperStore(db_path)
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+
+    def fail_if_sampled(*args, **kwargs):
+        raise AssertionError("fast publication must not sample the decision journal")
+
+    monkeypatch.setattr(PaperStore, "sampled_decision_rows", fail_if_sampled)
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["publication_mode"] == "fast_public"
+    assert payload["backtest_summary"]["available"] is False
+    assert "offline full research job" in payload["backtest_summary"]["reason"]
+    assert payload["config_rescore"]["available"] is False
+    assert "offline full research job" in payload["config_rescore"]["reason"]
+    assert payload["analysis_generated_at"] is None
+    assert payload["real_money_readiness"]["available"] is False
+    assert payload["paper_trading"]["available"] is True
+
+
+def test_fast_publication_never_rebuilds_missing_dataset_research(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    root.mkdir()
+
+    def fail_if_rebuilt(*args, **kwargs):
+        raise AssertionError("bounded publication must not rebuild dataset research")
+
+    monkeypatch.setattr(
+        strategy_build_module,
+        "build_dataset_research_payload",
+        fail_if_rebuilt,
+    )
+
+    payload = strategy_build_module._load_or_build_dataset_research(
+        forecaster_root=root,
+        db_path=tmp_path / "paper.db",
+        allow_build=False,
+    )
+
+    assert payload is not None
+    assert payload["available"] is False
+    assert "deferred" in str(payload["reason"])
+
+
+def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    PaperStore(db_path)
+    analysis_generated_at = "2026-07-25T08:00:00+00:00"
+    source_sha = "a" * 40
+    config_fingerprint = strategy_build_module._analysis_config_fingerprint(
+        calibration_min_train=40
+    )
+    cached_backtest = {
+        "available": True,
+        "metrics_available": True,
+        "sample_mode": "entry-per-market-side",
+        "pre_resolution_only": True,
+        "counts": {
+            "raw_signals": 101,
+            "pre_resolution_signals": 91,
+            "deduped_signals": 31,
+            "excluded_post_resolution_signals": 10,
+            "settled_signals": 21,
+            "approved_signals": 11,
+            "approved_raw_signals": 11,
+            "approved_pre_resolution_signals": 11,
+        },
+        "metrics": {"approved_paper_pnl": 12.34},
+        "quality_buckets": [],
+    }
+    (root / "build_info.json").write_text(
+        json.dumps({"source_sha": source_sha, "source_dirty": False}),
+        encoding="utf-8",
+    )
+    (root / "strategy_analysis_cache.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_sha": source_sha,
+                "config_fingerprint": config_fingerprint,
+                "analysis_generated_at": analysis_generated_at,
+                "backtest_summary": cached_backtest,
+                "config_rescore": {"available": True, "by_profile": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+    monkeypatch.setattr(
+        strategy_research_module,
+        "_real_money_readiness_payload",
+        lambda *args, **kwargs: {
+            "available": False,
+            "reason": "fresh derived readiness",
+        },
+    )
+    monkeypatch.setattr(
+        strategy_research_module,
+        "_live_frequency_tuning_payload",
+        lambda *args, **kwargs: {
+            "available": False,
+            "reason": "fresh derived tuning",
+        },
+    )
+
+    def fail_if_sampled(*args, **kwargs):
+        raise AssertionError("fast publication must not sample the decision journal")
+
+    monkeypatch.setattr(PaperStore, "sampled_decision_rows", fail_if_sampled)
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["generated_at"] != analysis_generated_at
+    assert payload["analysis_generated_at"] == analysis_generated_at
+    assert payload["backtest_summary"] == cached_backtest
+    assert payload["real_money_readiness"]["reason"] == "fresh derived readiness"
+    assert payload["live_frequency_tuning"]["reason"] == "fresh derived tuning"
+    assert "_private_analysis_cache" not in payload
+    staged_output = tmp_path / "stage" / "strategy_research.json"
+    write_strategy_research(staged_output, payload)
+    assert not staged_output.with_name("strategy_analysis_cache.json").exists()
+
+
+def test_fast_publication_rejects_analysis_cache_from_another_source(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    PaperStore(db_path)
+    (root / "build_info.json").write_text(
+        json.dumps({"source_sha": "b" * 40, "source_dirty": False}),
+        encoding="utf-8",
+    )
+    (root / "strategy_analysis_cache.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_sha": "a" * 40,
+                "config_fingerprint": (
+                    strategy_build_module._analysis_config_fingerprint(
+                        calibration_min_train=40
+                    )
+                ),
+                "analysis_generated_at": "2026-07-25T08:00:00+00:00",
+                "backtest_summary": {"available": True},
+                "config_rescore": {"available": True, "by_profile": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["analysis_generated_at"] is None
+    assert payload["backtest_summary"]["available"] is False
+    assert "offline full research job" in payload["backtest_summary"]["reason"]
+
+
+def test_fast_publication_rejects_analysis_cache_from_another_config(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    PaperStore(db_path)
+    source_sha = "a" * 40
+    (root / "build_info.json").write_text(
+        json.dumps({"source_sha": source_sha, "source_dirty": False}),
+        encoding="utf-8",
+    )
+    (root / "strategy_analysis_cache.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_sha": source_sha,
+                "config_fingerprint": "stale-config",
+                "analysis_generated_at": "2026-07-25T08:00:00+00:00",
+                "backtest_summary": {"available": True},
+                "config_rescore": {"available": True, "by_profile": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["analysis_generated_at"] is None
+    assert payload["config_rescore"]["available"] is False
+
+
+def test_fast_publication_degrades_a_malformed_matching_cache(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    PaperStore(db_path)
+    source_sha = "a" * 40
+    config_fingerprint = strategy_build_module._analysis_config_fingerprint(
+        calibration_min_train=40
+    )
+    (root / "build_info.json").write_text(
+        json.dumps({"source_sha": source_sha, "source_dirty": False}),
+        encoding="utf-8",
+    )
+    (root / "strategy_analysis_cache.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_sha": source_sha,
+                "config_fingerprint": config_fingerprint,
+                "analysis_generated_at": "2026-07-25T08:00:00+00:00",
+                "backtest_summary": {"available": True, "counts": {}},
+                "config_rescore": {"available": True, "by_profile": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["analysis_generated_at"] is None
+    assert payload["backtest_summary"]["available"] is False
+
+
+def test_fast_publication_can_seed_from_legacy_full_artifact_without_provenance(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    PaperStore(db_path)
+    legacy_generated_at = "2026-07-25T08:00:00+00:00"
+    (root / "strategy_research.json").write_text(
+        json.dumps(
+            {
+                "generated_at": legacy_generated_at,
+                "publication_mode": "full_research",
+                "backtest_summary": strategy_build_module._deferred_backtest_payload(
+                    "legacy cache seed"
+                ),
+                "config_rescore": {"available": True, "by_profile": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SFO_STRATEGY_FAST_PUBLICATION", "1")
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["analysis_generated_at"] == legacy_generated_at
+    assert payload["backtest_summary"]["reason"] == "legacy cache seed"
 
 
 def test_facade_build_forwards_historical_monkeypatches_and_restores(tmp_path, monkeypatch):
@@ -678,8 +973,8 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
     paper = strategy_research_module._paper_payload(db_path)
 
     target = paper["research_daily_target"]
-    assert target["account_id"] == "paper-research-target-v1"
-    assert target["days"][-1]["target_pnl"] == 50.0
+    assert target["account_id"] == TARGET_POLICY.account_id
+    assert target["days"][-1]["target_pnl"] == 16.0
     assert target["days"][-1]["realized_pnl"] == 0.0
     profiles = {row["risk_profile"]: row for row in paper["profiles"]}
     assert set(profiles) == {"live", "research-target", "research-motion"}
@@ -698,10 +993,10 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         db_path=db_path,
         calibration_min_train=40,
     )
-    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 50.0
+    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 16.0
     profile_views = {row["risk_profile"]: row for row in payload["profiles"]}
     assert set(profile_views) == {"live", "research-target", "research-motion"}
-    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 50.0
+    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 16.0
     assert profile_views["research-motion"]["excluded_from"] == [
         "daily_target",
         "live_readiness",
@@ -710,6 +1005,7 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
     assert set(payload["accounting"]["accounts"]) >= {
         "live",
         "research_target",
+        "research_target_v1",
         "research_motion",
     }
 
@@ -797,7 +1093,7 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
                     fingerprint,
                     objective_day.isoformat(),
                     pnl,
-                    datetime(2026, 7, 18, 20, 0, tzinfo=UTC).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     order_id,
                 ),
             )
@@ -1848,7 +2144,7 @@ def test_strategy_research_builds_isolated_profile_views():
         assert b_summary["exit_reasons"]["held_to_settlement"] == 1
 
 
-def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
+def test_accounting_and_attribution_curve_reconcile_all_time_pnl_before_window():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
         db_path = Path(tmp) / "trading" / "paper.db"
@@ -1891,9 +2187,13 @@ def test_accounting_and_equity_curve_reconcile_all_time_pnl_before_window():
         assert accounting["goal"]["account_id"] == "paper-shared"
         assert accounting["goal"]["excludes"] == ["research-shadow", "unrealized-marks"]
         assert accounting["reconciliation_status"] == "reconciled"
+        assert payload["daily_summary"]["equity_available"] is False
+        assert payload["daily_summary"]["equity_basis"] == "attribution_only"
         curve = payload["daily_summary"]["days"]
-        assert curve[0]["opening_equity"] == 961.88
-        assert curve[-1]["closing_equity"] == 960.54
+        assert curve[0]["opening_equity"] is None
+        assert curve[-1]["closing_equity"] is None
+        assert curve[0]["opening_attributed_pnl"] == -38.12
+        assert curve[-1]["closing_attributed_pnl"] == -39.46
         assert curve[-1]["cumulative_realized"] == -39.46
         research = next(row for row in payload["profiles"] if row["risk_profile"] == "research")
         assert research["daily_summary"]["days"][-1]["cumulative_realized"] == -39.46
@@ -2170,9 +2470,14 @@ def test_strategy_research_cli_writes_public_artifact():
         assert code == 0
         payload = json.loads(output.read_text(encoding="utf-8"))
         private_output = output.with_name("strategy_research_evidence.private.json")
+        analysis_output = output.with_name("strategy_analysis_cache.json")
         assert payload["disclaimer"].startswith("Paper-trading research only")
         assert "_private_evidence" not in payload
         assert private_output.exists()
+        assert analysis_output.exists()
+        analysis = json.loads(analysis_output.read_text(encoding="utf-8"))
+        assert analysis["analysis_generated_at"] == payload["analysis_generated_at"]
+        assert analysis["backtest_summary"] == payload["backtest_summary"]
         assert payload["status"]["challenger_calibration_source"] == "clean-blend/combined"
         assert json.loads(out.getvalue())["schema_version"] == 2
 

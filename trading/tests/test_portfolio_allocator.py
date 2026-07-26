@@ -613,7 +613,7 @@ def test_partial_children_are_not_counted_as_separate_exposure_legs() -> None:
     assert city_target_worst_case_loss([root, child], range(68, 74)) == 20.0
 
 
-def test_target_position_risk_is_hard_capped_at_three_percent() -> None:
+def test_target_growth_position_risk_is_hard_capped_at_six_percent() -> None:
     candidate = ResearchOpportunity(
         _decision(
             _market(
@@ -635,11 +635,11 @@ def test_target_position_risk_is_hard_capped_at_three_percent() -> None:
 
     plans = allocate_research_plans([candidate])
 
-    assert plans.target.legs[0].spend == 30.0
-    assert plans.target.legs[0].decision.recommended_contracts == 150.0
+    assert plans.target.legs[0].spend == 60.0
+    assert plans.target.legs[0].decision.recommended_contracts == 300.0
 
 
-def test_infeasible_fifty_dollar_report_never_loosens_target_gates_or_count() -> None:
+def test_infeasible_growth_target_never_loosens_target_gates_or_count() -> None:
     valid = ResearchOpportunity(
         _decision(
             _market(
@@ -666,8 +666,8 @@ def test_infeasible_fifty_dollar_report_never_loosens_target_gates_or_count() ->
 
     plans = allocate_research_plans([negative_lcb, same_day, valid], realized_today=-49.0)
 
-    assert plans.target_pnl == 50.0
-    assert plans.remaining_target == 99.0
+    assert plans.target_pnl == 16.0
+    assert plans.remaining_target == 65.0
     assert plans.available_conservative_expected_profit == 1.0
     assert plans.target_feasible_from_current_opportunity_set is False
     assert [leg.decision.ticker for leg in plans.target.legs] == [valid.decision.ticker]
@@ -727,7 +727,7 @@ def test_target_priority_uses_position_capped_quantity_before_log_growth() -> No
         _decision(
             _market(
                 "72° to 73°",
-                ticker="KXHIGHDEN-26JUL20-B72.5",
+                ticker="KXHIGHTSFO-26JUL20-B72.5",
                 floor=72,
                 cap=73,
                 yes_ask=0.20,
@@ -748,7 +748,7 @@ def test_target_priority_uses_position_capped_quantity_before_log_growth() -> No
         oversized.decision.ticker,
         ordinary.decision.ticker,
     ]
-    assert plans.target.legs[0].decision.recommended_contracts == 150.0
+    assert plans.target.legs[0].decision.recommended_contracts == 300.0
 
 
 def test_target_clips_to_remaining_cash_in_integer_contracts() -> None:
@@ -1293,7 +1293,7 @@ def test_sub_cent_cost_is_rejected_without_a_minimum_notional_rule() -> None:
     assert plans.motion.dispositions[0].status == "rejected"
 
 
-def test_one_cent_contract_is_valid_and_huge_quantity_caps_at_three_thousand() -> None:
+def test_one_cent_contract_is_valid_and_huge_quantity_caps_at_six_thousand() -> None:
     decision = _decision(
         _market(
             "70° to 71°",
@@ -1319,8 +1319,8 @@ def test_one_cent_contract_is_valid_and_huge_quantity_caps_at_three_thousand() -
         target_available_cash=1e308,
     )
 
-    assert plans.target.legs[0].decision.recommended_contracts == 3000.0
-    assert plans.target.legs[0].spend == 30.0
+    assert plans.target.legs[0].decision.recommended_contracts == 6000.0
+    assert plans.target.legs[0].spend == 60.0
     assert plans.motion.legs[0].decision.recommended_contracts == 1.0
 
 
@@ -1519,7 +1519,7 @@ def test_maximum_semantic_edge_with_huge_input_quantity_reports_only_finite_metr
 
     plans = allocate_research_plans([opportunity])
 
-    assert plans.target.legs[0].decision.recommended_contracts == 3000.0
+    assert plans.target.legs[0].decision.recommended_contracts == 6000.0
     assert math.isfinite(plans.target.expected_profit)
     assert math.isfinite(plans.target.worst_case_loss)
     assert math.isfinite(plans.available_conservative_expected_profit)

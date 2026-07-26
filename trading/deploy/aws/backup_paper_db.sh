@@ -46,7 +46,9 @@ PREFIX="${PREFIX#/}"
 PREFIX="${PREFIX%/}"
 AWS_CLI="${AWS_CLI:-aws}"
 BACKUP_DIR="${BACKUP_DIR:-$(dirname "$DB_PATH")/backups}"
-KEEP_DAYS="${KEEP_DAYS:-7}"
+# S3 is the durable 35-day rollback tier. Keep only a short local rollback
+# window so multi-gigabyte snapshots do not consume the runtime volume.
+KEEP_DAYS="${KEEP_DAYS:-1}"
 ALLOW_EMPTY="${ALLOW_EMPTY:-0}"
 
 if [[ ! "$KEEP_DAYS" =~ ^[0-9]+$ ]]; then
@@ -79,6 +81,23 @@ if ! "$AWS_CLI" sts get-caller-identity >/dev/null 2>&1; then
 fi
 if ! "$AWS_CLI" s3api get-bucket-location --bucket "$BUCKET" >/dev/null 2>&1; then
   echo "backup bucket is unavailable to the instance role: $BUCKET" >&2
+  exit 1
+fi
+
+# A verified backup temporarily needs both the new SQLite snapshot and the
+# downloaded restore copy on the same volume. Refuse before the caller
+# quiesces timers if that peak cannot fit with a small operating margin.
+database_bytes="$(wc -c < "$DB_PATH")"
+available_kib="$(df -Pk "$(dirname "$DB_PATH")" | awk 'NR == 2 {print $4}')"
+if [[ ! "$available_kib" =~ ^[0-9]+$ ]]; then
+  echo "could not determine available database-volume capacity" >&2
+  exit 1
+fi
+available_bytes=$((available_kib * 1024))
+required_bytes=$((database_bytes * 2 + 1073741824))
+if (( available_bytes < required_bytes )); then
+  echo "database backup needs space for snapshot + restore copy + 1 GiB headroom" >&2
+  echo "required=$required_bytes available=$available_bytes; clean only verified old local backups first" >&2
   exit 1
 fi
 
@@ -149,3 +168,4 @@ find "$BACKUP_DIR" -maxdepth 1 -type f \
   -mtime "+$KEEP_DAYS" -delete
 
 echo "verified off-host database backup: s3://$BUCKET/$object_key"
+echo "WEATHEREDGE_BACKUP_SNAPSHOT=$snapshot"

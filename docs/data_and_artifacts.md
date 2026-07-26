@@ -59,10 +59,10 @@ After sync and refresh, the EC2 host is authoritative. Relevant paths are:
 /opt/weatheredge/webdist
 ```
 
-See [AWS Deployment](aws_deployment.md). `sync_to_box.sh` and
-`sync_forecaster_source.sh` share `forecaster-runtime.rsync-filter`, so local
-stale runtime files, models, and the watchdog marker cannot overwrite or delete
-EC2 state.
+See [AWS Deployment](aws_deployment.md). The controlled `sync_to_box.sh` deploy
+uses `forecaster-runtime.rsync-filter`, so local stale runtime files, models,
+and the watchdog marker cannot overwrite or delete EC2 state. The former
+source-only sync is disabled; recurring services do not mutate deployed source.
 
 Before local dashboard verification:
 

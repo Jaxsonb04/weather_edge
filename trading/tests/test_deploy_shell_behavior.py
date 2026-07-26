@@ -297,6 +297,39 @@ def test_database_backup_preflight_requires_off_host_target(tmp_path: Path) -> N
     assert not (tmp_path / "backups").exists()
 
 
+def test_database_backup_preflight_rejects_insufficient_restore_space(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "df",
+        "#!/bin/sh\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'fake 1 1 0 100%% /\\n'\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "snapshot + restore copy + 1 GiB headroom" in result.stderr
+
+
 def test_database_backup_round_trips_and_rechecks_sqlite(tmp_path: Path) -> None:
     db_path = tmp_path / "paper.db"
     with sqlite3.connect(db_path) as conn:
@@ -369,6 +402,8 @@ def test_full_sync_transfers_root_install_inputs_from_arbitrary_cwd(tmp_path: Pa
 import json, os, sys
 with open(os.environ['SSH_CALLS'], 'a', encoding='utf-8') as handle:
     handle.write(json.dumps(sys.argv[1:]) + '\\n')
+if len(sys.argv) >= 3 and sys.argv[-2] == 'backup':
+    print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
 """,
     )
     _write_executable(
@@ -461,7 +496,13 @@ def test_full_sync_transfer_failure_never_runs_remote_cleanup(tmp_path: Path) ->
     ssh_log = tmp_path / "ssh.log"
     _write_executable(
         fake_bin / "ssh",
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSH_LOG\"\n",
+        """#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_LOG"
+case "$*" in
+  *"bash -s backup "*) printf '%s\n' \
+    'WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3' ;;
+esac
+""",
     )
     _write_executable(
         fake_bin / "rsync",
@@ -510,7 +551,13 @@ def test_full_sync_quiesces_before_remote_mutation_and_stays_quiesced_on_transfe
     transfer_count = tmp_path / "transfer-count"
     _write_executable(
         fake_bin / "ssh",
-        "#!/bin/sh\nprintf 'ssh|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n",
+        """#!/bin/sh
+printf 'ssh|%s\n' "$*" >> "$ACTION_LOG"
+case "$*" in
+  *"bash -s backup "*) printf '%s\n' \
+    'WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3' ;;
+esac
+""",
     )
     _write_executable(
         fake_bin / "rsync",
@@ -578,6 +625,8 @@ if args[-3:] == ['bash', '-s', 'capture']:
     print('sfo-operational-publish.timer')
     print('sfo-strategy-lab-refresh.timer')
     print('sfo-forecast-freshness.timer')
+elif len(args) >= 2 and args[-2] == 'backup':
+    print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
 elif 'restore' in args:
     restored = args[args.index('restore') + 1:]
     with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:

@@ -311,8 +311,8 @@ def test_index_maintenance_script_builds_the_same_named_index():
     assert "created_at, market_ticker, approved" in script
     assert "paper-scan" in script
     assert "paper-monitor" in script
-    assert 'conn.execute("ANALYZE")' in script
-    assert 'ANALYZE decision_snapshots' not in script
+    assert 'conn.execute("ANALYZE decision_snapshots")' in script
+    assert 'conn.execute("ANALYZE")' not in script
     for documentation in (deploy_readme, aws_notes):
         assert "create_decision_snapshot_index.sh" in documentation
         assert "paused" in documentation
