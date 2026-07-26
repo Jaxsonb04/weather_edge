@@ -121,4 +121,23 @@ describe("strategy component currency formatting", () => {
       "+$0.00",
     ]);
   });
+
+  it("labels a combined attribution-only series as P&L instead of account equity", () => {
+    const s = {
+      daily_summary: {
+        equity_available: false,
+        equity_basis: "attribution_only",
+        starting_bankroll: null,
+        current_equity: null,
+        window_days: 1,
+        days: [{ date: "2026-07-11", cumulative_realized: -5, closing_equity: null }],
+      },
+    } as unknown as StrategyLab;
+
+    render(<EquityCurve s={s} />);
+
+    expect(screen.getByText("P&L contribution")).toBeInTheDocument();
+    expect(screen.getByText("break-even")).toBeInTheDocument();
+    expect(screen.queryByText("Equity")).not.toBeInTheDocument();
+  });
 });

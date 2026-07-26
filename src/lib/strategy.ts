@@ -86,9 +86,9 @@ export interface DayRow {
   date: string;
   cumulative_realized: number;
   realized_pnl?: number;
-  opening_equity?: number;
+  opening_equity?: number | null;
   daily_realized_pnl?: number;
-  closing_equity?: number;
+  closing_equity?: number | null;
   opening_attributed_pnl?: number;
   closing_attributed_pnl?: number;
   trades_opened?: number;
@@ -185,9 +185,12 @@ export interface ProfileDailySummary {
   exit_reasons?: Record<string, number>;
   side_performance?: Record<string, SideStats>;
   window_days?: number;
-  current_equity?: number;
-  starting_bankroll?: number;
-  bankroll?: number;
+  equity_available?: boolean;
+  equity_basis?: "account_equity" | "attribution_only";
+  equity_unavailable_reason?: string;
+  current_equity?: number | null;
+  starting_bankroll?: number | null;
+  bankroll?: number | null;
 }
 
 /** Optional research-target evidence published by the AWS paper runtime. Every
@@ -401,6 +404,9 @@ export interface StrategyLab {
   mode: string;
   disclaimer?: string;
   generated_at?: string;
+  analysis_generated_at?: string | null;
+  analysis_source_sha?: string | null;
+  publication_mode?: "fast_public" | "full_research";
   default_profile?: string;
   source_of_truth?: string;
   accounting?: {
@@ -487,8 +493,11 @@ export interface StrategyLab {
   };
   daily_summary: {
     available: boolean;
-    current_equity: number;
-    starting_bankroll: number;
+    equity_available?: boolean;
+    equity_basis?: "account_equity" | "attribution_only";
+    equity_unavailable_reason?: string;
+    current_equity: number | null;
+    starting_bankroll: number | null;
     window_days?: number;
     window_start?: string;
     window_end?: string;
@@ -593,7 +602,11 @@ export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankrol
 
 /** Equity curve across the reporting window: starting bankroll + cumulative realized. */
 export function equitySeries(s: StrategyLab) {
-  return equitySeriesFromDays(s.daily_summary?.days, s.daily_summary?.starting_bankroll ?? 1000);
+  const startingBankroll =
+    s.daily_summary?.equity_basis === "attribution_only"
+      ? 0
+      : (s.daily_summary?.starting_bankroll ?? 1000);
+  return equitySeriesFromDays(s.daily_summary?.days, startingBankroll);
 }
 
 /** Full closed ledger, newest first. */

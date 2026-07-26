@@ -17,10 +17,13 @@ case "$MODE" in
     ;;
   strategy)
     BUILDER="$SCRIPT_DIR/build_strategy_research.sh"
-    # Strategy Lab can take longer than its fifteen-minute cadence. Build in an
-    # isolated directory without the operational lock, then take the lock only
-    # for the atomic artifact promotion and manifest rebuild. This keeps the
-    # five-minute dashboard publisher from queueing behind research compute.
+    # This publication entry point is intentionally bounded even when an
+    # EnvironmentFile sets the flag to 0. Full analysis has a separate,
+    # deploy-time maintenance helper and never runs on the recurring timer.
+    export SFO_STRATEGY_FAST_PUBLICATION=1
+    # Build in an isolated directory without the operational lock, then take the
+    # lock only for atomic artifact promotion and the manifest rebuild.
+    # This keeps the five-minute publisher from queueing behind research work.
     strategy_stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/weatheredge-strategy.XXXXXX")"
     strategy_stage_output="$strategy_stage_dir/strategy_research.json"
     strategy_stage_private="$strategy_stage_dir/strategy_research_evidence.private.json"

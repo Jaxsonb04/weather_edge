@@ -62,6 +62,7 @@ def summarize_daily_goals(
     available_conservative_expected_profit: float | None = None,
     feasibility_evidence: str = "unavailable",
     reference_equity: float = 1000.0,
+    account_id: str = "paper-research-target-v1",
     policy_version: str = "research-target-v1",
 ) -> dict[str, object]:
     """Return an honest target-only history with explicit zero days."""
@@ -128,7 +129,7 @@ def summarize_daily_goals(
     exit_breakdown = _exit_breakdown(valid_positions)
     current = ordered[-1] if ordered else None
     return {
-        "account_id": "paper-research-target-v1",
+        "account_id": account_id,
         "sleeve": "target",
         "policy_version": policy_version,
         "timezone": "America/Los_Angeles",

@@ -22,24 +22,25 @@ changes.
   It then runs the timerless installer and restores exactly the timers that were
   enabled before the deploy. A successful sync can no longer exit with an
   established host silently disabled, while intentional per-timer pauses remain
-  intact.
+  intact. The optional historical Strategy Lab rescore is memory-capped in a
+  transient systemd unit; failure leaves historical panels explicitly deferred
+  and does not prevent timer restoration.
 - `sync_to_lightsail.sh` is a deprecated forwarding-only compatibility wrapper
   for the EC2 migration window. New commands must use `sync_to_box.sh`.
 - `pull_paper_db.sh` allocates a private mode-700 directory on the remote host,
   writes and verifies a mode-600 SQLite backup there, verifies the downloaded
   copy, and removes the complete temporary directory before publishing the
   local database atomically.
-- `sync_forecaster_source.sh` is the scheduled, source-only Git refresh. It uses
-  `--delete` for tracked forecaster source but shares
-  `forecaster-runtime.rsync-filter` with the full sync.
-- The intentional difference is scope: full sync sends the root packaging
-  inputs and both local source trees without deleting remote-only files; source
-  sync refreshes only the committed `forecaster/` subtree from `main`. The
-  scheduled source sync never reinstalls the trading environment.
+- `sync_forecaster_source.sh` is a disabled compatibility tombstone. A
+  forecaster-only refresh could split production across two revisions while
+  leaving `build_info.json` and the analysis cache falsely source-matched.
+  Normal changes and recovery both use the clean-main full deploy so root
+  packaging inputs, both source trees, dependencies, units, provenance, and
+  published artifacts identify one exact revision.
 - Runtime DBs and their SQLite `-wal`/`-shm` sidecars, publication JSONs,
   `STALE_FORECAST`, and `models/` are never clobbered. The tracked
   `forecast_data.json` and `weather_story_data.json` inputs are intentionally
-  copied by both sync paths.
+  copied by the full deploy.
 - The served committed model-evaluation input is
   `forecaster/ab_test_results.json`. There are zero committed files under
   `forecaster/models/`.
@@ -134,7 +135,11 @@ dependencies do not belong on the production box.
   overnight; all fifteen cities, SFO flagship.
 - Operational publication: every five minutes; builds
   `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.
-- Strategy Lab publication: every 15 minutes; research-only artifact build.
+- Strategy Lab publication: every 10 minutes; bounded research-only artifact
+  build backed by a separately timestamped historical-analysis cache. A full
+  source/config-bound cache refresh runs once, at low I/O priority, after
+  `sync_to_box.sh` has restored and validated production. It reads the verified
+  immutable deploy snapshot rather than the live journal.
 - Paper scan: every five minutes, all configured cities, two profiles
   (`PAPER_RISK_PROFILES=live,research`), maker-first with
   `PAPER_ENTRY_MODE=limit` and `PAPER_CITIES=all`.

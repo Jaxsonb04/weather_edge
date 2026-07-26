@@ -62,12 +62,13 @@ from .research_policy import (
     MOTION_POLICY,
     RESEARCH_OBJECTIVE_TZ,
     TARGET_POLICY,
+    TARGET_POLICY_V1,
     ResearchSleeve,
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
 )
 from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
-from .research_portfolio import ResearchPlans
+from .research_portfolio import MAX_TARGET_CONTRACTS, ResearchPlans
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
 from .settlement_truth import (
@@ -497,6 +498,11 @@ class ResearchDecisionEvidence:
 
 
 _RESEARCH_POLICIES_BY_ACCOUNT = {
+    TARGET_POLICY_V1.account_id: TARGET_POLICY_V1,
+    TARGET_POLICY.account_id: TARGET_POLICY,
+    MOTION_POLICY.account_id: MOTION_POLICY,
+}
+_ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
@@ -1048,6 +1054,7 @@ class PaperStore:
             target_feasible=target_feasible,
             available_conservative_expected_profit=available_profit,
             feasibility_evidence=feasibility_evidence,
+            account_id=TARGET_POLICY.account_id,
             policy_version=TARGET_POLICY.policy_version,
         )
         report.update(
@@ -1596,11 +1603,11 @@ class PaperStore:
         params.extend((account_id, account_id))
         conn.row_factory = sqlite3.Row
         rows = conn.execute(_RESEARCH_WINDOW_ROWS_SQL, params).fetchall()
-        expected_profile = (
-            "research-target"
-            if account_id == TARGET_POLICY.account_id
-            else "research-motion"
-        )
+        expected_profile = {
+            TARGET_POLICY_V1.account_id: "research-target-v1",
+            TARGET_POLICY.account_id: "research-target",
+            MOTION_POLICY.account_id: "research-motion",
+        }[account_id]
         return [
             position
             for position in group_logical_positions(rows)
@@ -1785,6 +1792,11 @@ class PaperStore:
         """
 
         if account_id in _RESEARCH_POLICIES_BY_ACCOUNT:
+            if account_id not in _ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT:
+                return {
+                    "allowed_spend": 0.0,
+                    "reason": "research account policy is archived",
+                }
             with self.connect() as conn:
                 conn.row_factory = sqlite3.Row
                 return self._research_capacity_on_connection(
@@ -2761,14 +2773,16 @@ class PaperStore:
     def _policy_for_research_admission(
         admission: ResearchAdmission,
     ) -> ResearchSleevePolicy:
-        policy = _RESEARCH_POLICIES_BY_ACCOUNT.get(admission.account_id)
+        policy = _ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT.get(admission.account_id)
         if (
             policy is None
             or admission.sleeve is not policy.sleeve
             or admission.policy_version != policy.policy_version
             or admission.policy_fingerprint != policy.policy_fingerprint
         ):
-            raise ValueError("research admission identity does not match fixed policy")
+            raise ValueError(
+                "research admission identity does not match an active research policy"
+            )
         for label, value in (
             ("objective day", admission.objective_day),
             ("scan run id", admission.scan_run_id),
@@ -2799,6 +2813,7 @@ class PaperStore:
         decision: TradeDecision,
         *,
         contracts: float,
+        policy: ResearchSleevePolicy,
     ) -> dict[str, object]:
         """Bind admission to the fixed research gates and represented limits."""
 
@@ -2833,13 +2848,59 @@ class PaperStore:
             ask_size = float(decision.ask_size)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("research strategy entry limits are invalid") from exc
+        allowed_contracts = float(canonical.max_contracts_per_market)
+        # The active target allocator may deliberately resize a zero-fee,
+        # non-crossing maker quote beyond the scanner's structural 25-contract
+        # source cap. Keep that exception narrow and independently bounded by
+        # the immutable target policy. Crossing/taker quotes, fee-bearing
+        # quotes, archived policies, and every other binding constraint retain
+        # the canonical scanner cap.
+        try:
+            limit_price = float(decision.limit_price)
+            limit_fee = float(decision.limit_fee_per_contract)
+            limit_cost = float(decision.limit_cost_per_contract)
+            ask = float(decision.ask)
+            represented_fee = float(decision.fee_per_contract)
+        except (TypeError, ValueError, OverflowError):
+            limit_price = limit_fee = limit_cost = ask = represented_fee = math.nan
+        policy_sized_resting_target = (
+            policy is TARGET_POLICY
+            and policy.allocator_version == "policy-sized-v2"
+            and decision.binding_constraint == "research_policy_allocator"
+            and all(
+                math.isfinite(value)
+                for value in (
+                    limit_price,
+                    limit_fee,
+                    limit_cost,
+                    ask,
+                    represented_fee,
+                )
+            )
+            and 0.0 < limit_price < ask < 1.0
+            and abs(limit_fee) <= 1e-12
+            and abs(represented_fee) <= 1e-12
+            and 0.0 < limit_cost < 1.0
+        )
+        if policy_sized_resting_target:
+            policy_contract_cap = math.floor(
+                (
+                    policy.reference_equity
+                    * policy.max_position_risk_pct
+                    / limit_cost
+                )
+                + 1e-12
+            )
+            allowed_contracts = float(
+                min(MAX_TARGET_CONTRACTS, policy_contract_cap)
+            )
         if (
             not math.isfinite(spread)
             or spread < 0
             or spread > canonical.max_spread + 1e-9
             or not math.isfinite(ask_size)
             or ask_size + 1e-9 < canonical.min_ask_size
-            or contracts > canonical.max_contracts_per_market + 1e-9
+            or contracts > allowed_contracts + 1e-9
             or (
                 not canonical.allow_fractional_contracts
                 and abs(contracts - round(contracts)) > 1e-9
@@ -3109,6 +3170,7 @@ class PaperStore:
             strategy_config,
             decision,
             contracts=contracts,
+            policy=policy,
         )
         side = str(decision.side or "").upper()
         if side not in {"YES", "NO"}:

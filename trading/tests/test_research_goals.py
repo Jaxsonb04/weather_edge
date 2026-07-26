@@ -12,7 +12,11 @@ from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.profile_identity import published_profile_key
 from sfo_kalshi_quant.research_goals import daily_goal_state, summarize_daily_goals
-from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
+from sfo_kalshi_quant.research_policy import (
+    MOTION_POLICY,
+    TARGET_POLICY,
+    TARGET_POLICY_V1,
+)
 
 
 def _approved_decision() -> TradeDecision:
@@ -53,7 +57,7 @@ def _pacific_noon(day: date) -> str:
     ).isoformat()
 
 
-def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
+def test_daily_goal_is_frozen_at_16_from_original_equity_on_pacific_day(
     tmp_path,
 ) -> None:
     current = [datetime(2026, 7, 18, 6, 59, tzinfo=UTC)]
@@ -65,9 +69,9 @@ def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
     state = store.research_daily_goal_state()
 
     assert state.objective_day == date(2026, 7, 17)
-    assert state.target_pnl == 50.0
+    assert state.target_pnl == 16.0
     assert state.realized_pnl == 0.0
-    assert state.remaining_pnl == 50.0
+    assert state.remaining_pnl == 16.0
     assert state.achieved is False
     assert state.locked is False
 
@@ -92,8 +96,8 @@ def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
             )
 
     again = store.research_daily_goal_state(objective_day=state.objective_day)
-    assert again.target_pnl == 50.0
-    assert again.remaining_pnl == 50.0
+    assert again.target_pnl == 16.0
+    assert again.remaining_pnl == 16.0
 
 
 def test_malformed_persisted_goal_fails_closed(tmp_path) -> None:
@@ -178,7 +182,7 @@ def test_first_target_scan_read_freezes_the_daily_goal(tmp_path) -> None:
             "AND account_id=? AND policy_version=?",
             (TARGET_POLICY.account_id, TARGET_POLICY.policy_version),
         ).fetchone()
-    assert frozen == (1000.0, 0.05, 50.0)
+    assert frozen == (1000.0, 0.016, 16.0)
 
 
 def test_crossed_research_identity_is_unknown_and_cannot_contaminate_kpis(
@@ -281,8 +285,8 @@ def test_init_repairs_and_enforces_immutable_research_plan_snapshots(
             "VALUES (?, '2026-07-18', 'immutable-plan', ?, ?, ?, 50, 0, 50, 0, 0)",
             (
                 datetime.now(UTC).isoformat(),
-                TARGET_POLICY.account_id,
-                TARGET_POLICY.policy_version,
+                TARGET_POLICY_V1.account_id,
+                TARGET_POLICY_V1.policy_version,
                 TARGET_POLICY.policy_fingerprint,
             ),
         )
@@ -326,8 +330,8 @@ def test_upgrade_backfills_exact_legacy_daily_goal_without_bricking_report(
             "INSERT INTO research_daily_goals VALUES "
             "('2026-07-18', ?, ?, ?, 1000, 0.05, 50)",
             (
-                TARGET_POLICY.account_id,
-                TARGET_POLICY.policy_version,
+                TARGET_POLICY_V1.account_id,
+                TARGET_POLICY_V1.policy_version,
                 datetime.now(UTC).isoformat(),
             ),
         )
@@ -342,7 +346,7 @@ def test_upgrade_backfills_exact_legacy_daily_goal_without_bricking_report(
             "SELECT policy_fingerprint FROM research_daily_goals "
             "WHERE objective_day='2026-07-18'"
         ).fetchone()
-        assert row == (TARGET_POLICY.policy_fingerprint,)
+        assert row == (TARGET_POLICY_V1.policy_fingerprint,)
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             conn.execute(
                 "UPDATE research_daily_goals SET target_pnl=51 "
@@ -353,7 +357,7 @@ def test_upgrade_backfills_exact_legacy_daily_goal_without_bricking_report(
         through_day=date(2026, 7, 18),
         window_days=1,
     )
-    assert report["target_pnl"] == 50.0
+    assert report["target_pnl"] == 16.0
     assert report["realized_pnl"] == 0.0
 
 
@@ -638,7 +642,7 @@ def test_report_does_not_infer_feasibility_from_decision_rows(tmp_path) -> None:
     report = store.research_daily_goal_report(through_day=objective_day)
 
     assert report["available_conservative_expected_profit"] is None
-    assert report["remaining_pnl"] == 50.0
+    assert report["remaining_pnl"] == 16.0
     assert report["target_feasible"] is None
     assert report["feasibility_evidence"] == "unavailable"
 

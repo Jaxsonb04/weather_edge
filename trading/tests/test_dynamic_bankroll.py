@@ -21,7 +21,7 @@ def test_clamp_equity_floors_a_drawdown_and_caps_a_hot_streak():
     assert _clamp_sizing_equity(850.0, start) == 850.0
 
 
-def test_paper_summary_reports_current_equity_distinct_from_starting_bankroll():
+def test_paper_summary_leaves_combined_equity_to_account_scoped_reporting():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
@@ -60,7 +60,9 @@ def test_paper_summary_reports_current_equity_distinct_from_starting_bankroll():
             config=StrategyConfig(paper_bankroll=1000.0),
             days=30,
         )
-        assert payload["starting_bankroll"] == 1000.0
-        # The honest live number moves with realized PnL; static bankroll does not.
-        assert round(payload["current_equity"], 2) == round(1000.0 + realized, 2)
-        assert payload["current_equity"] != payload["starting_bankroll"]
+        assert payload["equity_available"] is False
+        assert payload["equity_basis"] == "attribution_only"
+        assert payload["starting_bankroll"] is None
+        assert payload["current_equity"] is None
+        assert payload["totals"]["cumulative_realized_pnl"] == round(realized, 2)
+        assert payload["days"][-1]["closing_attributed_pnl"] == round(realized, 2)

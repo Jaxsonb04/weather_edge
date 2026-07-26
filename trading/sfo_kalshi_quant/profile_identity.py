@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .research_policy import MOTION_POLICY, TARGET_POLICY
+from .research_policy import MOTION_POLICY, TARGET_POLICY, TARGET_POLICY_V1
 
 
 def published_profile_key(
@@ -28,6 +28,7 @@ def published_profile_key(
     version = str(research_policy_version or "").strip()
     fingerprint = str(policy_fingerprint or "").strip()
     for policy, published in (
+        (TARGET_POLICY_V1, "research-target-v1"),
         (TARGET_POLICY, "research-target"),
         (MOTION_POLICY, "research-motion"),
     ):
@@ -43,8 +44,13 @@ def published_profile_key(
     # Canonical sleeve evidence is all-or-nothing. A partial, crossed, stale,
     # or forged tuple must not inherit a public profile from any one marker.
     if (
-        raw in {"research-target", "research-motion"}
-        or account in {TARGET_POLICY.account_id, MOTION_POLICY.account_id}
+        raw in {"research-target-v1", "research-target", "research-motion"}
+        or account
+        in {
+            TARGET_POLICY_V1.account_id,
+            TARGET_POLICY.account_id,
+            MOTION_POLICY.account_id,
+        }
         or bool(sleeve or version or fingerprint)
     ):
         return "unknown"
@@ -61,7 +67,12 @@ def execution_profile_key(profile: object) -> str:
     """Map a published profile back to its strategy-configuration identity."""
 
     published = str(profile or "unknown").strip().lower() or "unknown"
-    if published in {"research", "research-target", "research-motion"}:
+    if published in {
+        "research",
+        "research-target-v1",
+        "research-target",
+        "research-motion",
+    }:
         return "research"
     return published
 

@@ -1226,8 +1226,10 @@ def test_market_summary_excludes_invalid_group_counts_and_money():
         assert totals["cumulative_realized_pnl"] == round(valid_pnl, 2)
         assert totals["capital_resolved"] == round(valid_capital, 2)
         assert totals["roi"] == round(valid_pnl / valid_capital, 4)
-        assert payload["bankroll"] == 1000.0
-        assert payload["current_equity"] == round(1000.0 + valid_pnl, 2)
+        assert payload["equity_available"] is False
+        assert payload["bankroll"] is None
+        assert payload["current_equity"] is None
+        assert payload["days"][-1]["closing_attributed_pnl"] == round(valid_pnl, 2)
 
         assert [row["risk_profile"] for row in payload["profiles"]] == [
             "research"

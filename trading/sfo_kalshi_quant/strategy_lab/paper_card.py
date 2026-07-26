@@ -610,6 +610,14 @@ def _research_book_profiles(
         ),
     )
     target_row["daily_target"] = target
+    archived_target_row = by_name.get("research-target-v1")
+    if archived_target_row is not None:
+        archived_target_row["archived"] = True
+        archived_target_row["excluded_from"] = [
+            "active_admissions",
+            "daily_target",
+            "live_readiness",
+        ]
     motion_row = by_name.setdefault(
         "research-motion",
         _profile_summary_row(

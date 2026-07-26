@@ -125,10 +125,21 @@ minutes: `build_public_trading_signal.sh` generates
 `forecaster/trading_signal.json`, `forecaster/cities_data.json`, and
 `forecaster/publication_manifest.json`, then the publisher validates and ships
 that snapshot alongside the SPA. The research-only
-`sfo-strategy-lab-refresh.timer` runs every fifteen minutes to rebuild
+`sfo-strategy-lab-refresh.timer` runs every ten minutes to rebuild
 `forecaster/strategy_research.json` separately without calling the paid Google
-Weather refresh command. No published artifact contains private DB state; the
-trading artifacts contain only paper-trading research. `cities_data.json`
+Weather refresh command or rescanning the full decision journal. Historical
+backtest/rescore sections come from `strategy_analysis_cache.json` and expose a
+separate `analysis_generated_at` timestamp. After production is restored and its
+first publication validates, the deploy path refreshes the cache from the
+verified immutable database snapshot. The cache is rejected when either the
+deployed source SHA or the effective strategy/policy fingerprint changes; until
+a matching refresh succeeds, the historical panels say that analysis is
+deferred instead of presenting stale metrics as current. Current readiness is
+still derived on every public refresh.
+That replay is fail-closed at 10,000 paper orders or 50,000 public trades, and
+the recurring path never rebuilds a missing dataset-research artifact.
+No published artifact contains private DB state; the trading artifacts contain
+only paper-trading research. `cities_data.json`
 supplies per-city forecasts, latest settlement, and book activity for the
 fifteen-city Coverage grid.
 

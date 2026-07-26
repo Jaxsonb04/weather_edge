@@ -12,7 +12,6 @@ EnvironmentFile=__ENV_FILE__
 # The external forecast refresh is a legitimately long oneshot (~1-2 min);
 # raise the start timeout above the 90 s default so a normal run is not killed.
 TimeoutStartSec=900
-ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/sync_forecaster_source.sh
 # External fetches get a '-' prefix: a transient NWS/Google hiccup must NOT abort
 # the remaining refresh steps. The local re-blend runs on whatever cached data
 # did land; freshness is still gated by max_forecast_age_hours and the watchdog.

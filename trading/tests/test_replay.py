@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 
 from sfo_kalshi_quant.config import StrategyConfig
@@ -19,6 +20,23 @@ from sfo_kalshi_quant.restatement import restate
 
 def _at(minutes: int) -> datetime:
     return datetime(2026, 7, 1, 12, tzinfo=UTC) + timedelta(minutes=minutes)
+
+
+def test_recurring_replay_cap_defers_before_loading_an_unbounded_order_book(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "bounded-replay.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE paper_orders (id INTEGER, created_at TEXT)")
+        conn.executemany(
+            "INSERT INTO paper_orders VALUES (?, ?)",
+            [(1, _at(0).isoformat()), (2, _at(1).isoformat())],
+        )
+
+    result = replay_from_database(db_path, {}, max_orders=1)
+
+    assert result["available"] is False
+    assert "recurring publication cap of 1" in str(result["reason"])
 
 
 def test_replay_requires_later_trade_and_clears_queue_before_fill() -> None:

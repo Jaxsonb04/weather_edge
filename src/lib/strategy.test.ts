@@ -86,6 +86,33 @@ describe("account equity series", () => {
     expect(series[0].equity).toBe(-39.46);
   });
 
+  it("renders a combined attribution-only series from zero without inventing account equity", () => {
+    const s = {
+      daily_summary: {
+        equity_available: false,
+        equity_basis: "attribution_only",
+        equity_unavailable_reason: "separate paper accounts",
+        starting_bankroll: null,
+        current_equity: null,
+        days: [
+          {
+            date: "2026-07-09",
+            cumulative_realized: -39.46,
+            closing_equity: null,
+            closing_attributed_pnl: -39.46,
+          },
+        ],
+      },
+    } as unknown as StrategyLab;
+
+    expect(equitySeries(s)[0]).toEqual({
+      date: "07-09",
+      equity: -39.46,
+      pnl: -39.46,
+      dailyPnl: 0,
+    });
+  });
+
   it("exposes each day's own realized P&L separately from the running cumulative total", () => {
     const series = equitySeriesFromDays(
       [

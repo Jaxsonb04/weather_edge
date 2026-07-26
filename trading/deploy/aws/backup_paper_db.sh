@@ -168,3 +168,4 @@ find "$BACKUP_DIR" -maxdepth 1 -type f \
   -mtime "+$KEEP_DAYS" -delete
 
 echo "verified off-host database backup: s3://$BUCKET/$object_key"
+echo "WEATHEREDGE_BACKUP_SNAPSHOT=$snapshot"

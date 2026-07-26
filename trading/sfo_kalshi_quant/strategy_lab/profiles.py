@@ -94,7 +94,7 @@ def _profile_view(
         ),
         "excluded_from": (
             ["daily_target", "live_readiness"]
-            if name == "research-motion"
+            if name in {"research-target-v1", "research-motion"}
             else ["live_readiness"]
             if name == "research-target"
             else []
@@ -467,7 +467,8 @@ def _profile_sort_key(name: str) -> tuple[int, str]:
         "live": 0,
         "research-target": 1,
         "research-motion": 2,
-        "research": 3,
+        "research-target-v1": 3,
+        "research": 4,
         "unknown": 9,
     }
     return order.get(name, 8), name
@@ -479,7 +480,9 @@ def _profile_label(name: str) -> str:
     if name == "research":
         return "Research (experimental)"
     if name == "research-target":
-        return "Research target (5% daily objective)"
+        return "Research target v2 ($16 daily paper objective)"
+    if name == "research-target-v1":
+        return "Research target v1 (archived control)"
     if name == "research-motion":
         return "Research motion (execution learning)"
     return name

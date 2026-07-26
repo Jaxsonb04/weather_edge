@@ -119,10 +119,15 @@ now automated end to end:
    `sfo-operational-publish.timer` runs every five minutes to generate
    `trading_signal.json`, `cities_data.json`, and
    `publication_manifest.json`, validate the snapshot, and republish the site.
-   The `sfo-strategy-lab-refresh.timer` runs every fifteen minutes as the
-   research-only path that rebuilds `strategy_research.json`; it does not call
-   the paid Google Weather refresh path. Strategy Lab data is plain public JSON
-   containing only paper-trading research. The same server also runs the
+   The `sfo-strategy-lab-refresh.timer` runs every ten minutes as the
+   bounded research-only path that rebuilds `strategy_research.json`; it does
+   not call the paid Google Weather refresh path or rescan the full decision
+   journal. Slow historical rescores carry their own `analysis_generated_at`
+   timestamp in `strategy_analysis_cache.json`. The full rescore runs once after
+   a deploy has restored production, against the verified immutable backup
+   snapshot; the frequent path accepts the cache only when its source SHA and
+   effective configuration fingerprint still match. Strategy Lab data
+   is plain public JSON containing only paper-trading research. The same server also runs the
    prediction-market paper scanner and exit monitor from the companion trading
    repo.
    Nightly NWP maintenance archives leads 1 and 2, the horizons used by the

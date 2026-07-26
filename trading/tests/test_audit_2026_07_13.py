@@ -1209,18 +1209,21 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
                 "WHERE event_type='OPENING_CASH' GROUP BY account_id"
             ).fetchall()
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        # Legacy shared/shadow and both isolated research sleeves are each
-        # bootstrapped exactly once at the unchanged $1,000 opening capital.
+        # Legacy shared/shadow, the immutable v1 target control, and both
+        # active isolated research sleeves are each bootstrapped exactly once
+        # at the unchanged $1,000 opening capital.
         assert sorted(accounts) == [
             ("paper-research-motion-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-shadow", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v1", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-target-v2", 1, 1000.0, 1000.0, 1000.0),
             ("paper-shared", 1, 1000.0, 1000.0, 1000.0),
         ], f"attempt {attempt}: unexpected account rows {accounts}"
         assert sorted(openings) == [
             ("paper-research-motion-v1", 1, 1000.0),
             ("paper-research-shadow", 1, 1000.0),
             ("paper-research-target-v1", 1, 1000.0),
+            ("paper-research-target-v2", 1, 1000.0),
             ("paper-shared", 1, 1000.0),
         ], f"attempt {attempt}: unexpected opening events {openings}"
         assert integrity == "ok"

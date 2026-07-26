@@ -3,9 +3,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID, SHARED_ACCOUNT_ID
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
+from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
 from sfo_kalshi_quant.summary import (
     build_paper_summary,
     write_paper_summary,
@@ -76,18 +78,105 @@ def test_paper_summary_attributes_pnl_to_resolution_day():
         assert totals["wins"] == 1
         assert totals["losses"] == 1
         assert totals["hit_rate"] == 0.5
-        assert payload["bankroll"] == 1000.0
+        assert payload["bankroll"] is None
         assert len(payload["days"]) == 7
         today_row = payload["days"][-1]
         assert today_row["date"] == today
         assert today_row["settled"] == 2
         assert today_row["realized_pnl"] != 0.0
-        assert today_row["closing_equity"] == payload["current_equity"]
+        assert today_row["closing_equity"] is None
+        assert today_row["closing_attributed_pnl"] == totals["cumulative_realized_pnl"]
         assert today_row["daily_realized_pnl"] == today_row["realized_pnl"]
         assert payload["biggest_winners"][0]["id"] == winner
         assert payload["biggest_losers"][0]["id"] == loser
         assert payload["learnings"]
         assert payload["recommended_changes"]
+
+
+def test_combined_summary_reports_attribution_without_synthetic_account_equity():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+        today = _now_local().date().isoformat()
+
+        order_ids = [
+            store.record_paper_order(
+                today,
+                _decision("KXHIGHTSFO-LIVE-B66.5"),
+                risk_profile="live",
+            ),
+            store.record_paper_order(
+                today,
+                _decision("KXHIGHTSFO-LEGACY-RESEARCH-B67.5"),
+                risk_profile="research",
+            ),
+            store.record_paper_order(
+                today,
+                _decision("KXHIGHTSFO-TARGET-B68.5"),
+                risk_profile="research",
+            ),
+            store.record_paper_order(
+                today,
+                _decision("KXHIGHTSFO-MOTION-B69.5"),
+                risk_profile="research",
+            ),
+        ]
+        assert all(order_id is not None for order_id in order_ids)
+
+        resolved_at = _now_local().isoformat()
+        account_identities = (
+            (SHARED_ACCOUNT_ID, None, None, None),
+            (RESEARCH_ACCOUNT_ID, None, None, None),
+            (
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.sleeve.value,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+            ),
+            (
+                MOTION_POLICY.account_id,
+                MOTION_POLICY.sleeve.value,
+                MOTION_POLICY.policy_version,
+                MOTION_POLICY.policy_fingerprint,
+            ),
+        )
+        with store.connect() as conn:
+            for order_id, identity, pnl in zip(
+                order_ids, account_identities, (1.0, 2.0, 3.0, 4.0), strict=True
+            ):
+                conn.execute(
+                    "UPDATE paper_orders SET account_id=?, research_sleeve=?, "
+                    "research_policy_version=?, policy_fingerprint=?, "
+                    "status='PAPER_SETTLED', realized_pnl=?, settled_at=? "
+                    "WHERE id=?",
+                    (*identity, pnl, resolved_at, order_id),
+                )
+
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=1,
+        )
+
+        assert payload["schema_version"] == 2
+        assert {
+            row["risk_profile"] for row in payload["profiles"]
+        } == {"live", "research", "research-target", "research-motion"}
+        assert payload["equity_available"] is False
+        assert payload["equity_basis"] == "attribution_only"
+        assert "separate paper accounts" in payload["equity_unavailable_reason"]
+        assert payload["bankroll"] is None
+        assert payload["starting_bankroll"] is None
+        assert payload["current_equity"] is None
+        day = payload["days"][0]
+        assert day["opening_equity"] is None
+        assert day["closing_equity"] is None
+        assert day["opening_attributed_pnl"] == 0.0
+        assert day["closing_attributed_pnl"] == 10.0
+        assert day["cumulative_realized"] == 10.0
 
 
 def test_paper_summary_handles_empty_database():
@@ -437,4 +526,5 @@ def test_paper_summary_excludes_malformed_exit_evidence_without_crashing():
         assert payload["totals"]["wins"] == 0
         assert payload["totals"]["realized_pnl"] == 0.0
         assert payload["totals"]["capital_resolved"] == 0.0
-        assert payload["current_equity"] == 1000.0
+        assert payload["current_equity"] is None
+        assert payload["days"][-1]["closing_attributed_pnl"] == 0.0

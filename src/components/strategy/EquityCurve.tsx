@@ -49,7 +49,12 @@ export function EquityCurve({
   // duplicated SVG id would make later charts inherit the first chart's fill colour.
   const gid = `eq-fill-${useId().replace(/:/g, "")}`;
 
-  const start = startingBankroll ?? s.daily_summary.starting_bankroll ?? 1000;
+  const rendersContribution =
+    contributionMode ||
+    (!days && s.daily_summary.equity_basis === "attribution_only");
+  const start =
+    startingBankroll ??
+    (rendersContribution ? 0 : (s.daily_summary.starting_bankroll ?? 1000));
   const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
   const last = series[series.length - 1]?.equity ?? start;
   const win = windowDays ?? s.daily_summary.window_days ?? series.length;
@@ -67,9 +72,9 @@ export function EquityCurve({
   const hi = Math.max(dataHi + pad, start);
   const yDomain: [number, number] = [Math.floor(lo), Math.ceil(hi)];
   const stroke = up ? "var(--color-success)" : "var(--color-danger)";
-  const valueName = contributionMode ? "P&L contribution" : "Equity";
+  const valueName = rendersContribution ? "P&L contribution" : "Equity";
   const chartH = height ?? EMPHASIS_HEIGHT[emphasis];
-  const label = `${title ?? "Paper equity curve"} over ${series.length} days, from ${axisMoney(start, contributionMode)} to ${axisMoney(last, contributionMode)} (${up ? "up" : "down"} over the window).`;
+  const label = `${title ?? "Paper equity curve"} over ${series.length} days, from ${axisMoney(start, rendersContribution)} to ${axisMoney(last, rendersContribution)} (${up ? "up" : "down"} over the window).`;
 
   return (
     <Widget className={`w-full ${className ?? ""}`.trim()}>
@@ -86,8 +91,8 @@ export function EquityCurve({
           </Widget.Description>
         </div>
         <Widget.Legend className="shrink-0 self-start pt-0.5">
-          <Widget.LegendItem color={stroke}>{contributionMode ? "P&L" : "equity"}</Widget.LegendItem>
-          <Widget.LegendItem color="var(--color-muted)">{contributionMode ? "break-even" : "start"}</Widget.LegendItem>
+          <Widget.LegendItem color={stroke}>{rendersContribution ? "P&L" : "equity"}</Widget.LegendItem>
+          <Widget.LegendItem color="var(--color-muted)">{rendersContribution ? "break-even" : "start"}</Widget.LegendItem>
         </Widget.Legend>
       </Widget.Header>
       <Widget.Content>
@@ -101,7 +106,7 @@ export function EquityCurve({
             </defs>
             <LineChart.Grid vertical={false} />
             <LineChart.XAxis dataKey="date" tickMargin={8} />
-            <LineChart.YAxis width={56} tickFormatter={(v: number) => axisMoney(v, contributionMode)} domain={yDomain} allowDecimals={false} />
+            <LineChart.YAxis width={56} tickFormatter={(v: number) => axisMoney(v, rendersContribution)} domain={yDomain} allowDecimals={false} />
             <ReferenceLine y={start} stroke="var(--color-muted)" strokeDasharray="5 5" strokeWidth={1.25} />
             <LineChart.Line dataKey="equity" name={valueName} stroke={stroke} strokeWidth={2.5} type="monotone" fill={`url(#${gid})`} />
             <LineChart.Tooltip

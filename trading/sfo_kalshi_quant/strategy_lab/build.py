@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -24,13 +25,14 @@ from ..account import (
     SHARED_ACCOUNT_ID,
     WEEKLY_GOAL_TZ,
     WEEKLY_RETURN_TARGET,
+    strategy_fingerprint,
 )
 from ..db import PaperStore
 from ..dataset_research import build_dataset_research as build_dataset_research_payload
 from ..forecast import ForecastDataError, SfoForecasterAdapter
 from ..forecast_scorecards import build_forecast_scorecards
 from ..maker_fills import EXECUTION_MODEL_VERSION
-from ..research_policy import MOTION_POLICY, TARGET_POLICY
+from ..research_policy import MOTION_POLICY, TARGET_POLICY, TARGET_POLICY_V1
 from ..replay import replay_from_database
 from ..summary import build_paper_summary
 from . import CHALLENGER_CALIBRATION_SOURCE
@@ -68,11 +70,26 @@ def build_strategy_research(
     forecaster_root = Path(forecaster_root)
     db_path = Path(db_path)
     cfg = config or strategy_config_for_profile(None)
+    fast_publication = _env_truthy("SFO_STRATEGY_FAST_PUBLICATION")
+    current_source_sha = _analysis_source_sha(forecaster_root)
+    current_config_fingerprint = _analysis_config_fingerprint(
+        calibration_min_train=calibration_min_train
+    )
+    analysis_cache = (
+        _load_analysis_cache(
+            forecaster_root,
+            expected_source_sha=current_source_sha,
+            expected_config_fingerprint=current_config_fingerprint,
+        )
+        if fast_publication
+        else None
+    )
     adapter = SfoForecasterAdapter(forecaster_root)
     trading_signal = _load_json_optional(forecaster_root / "trading_signal.json")
     dataset_research = _load_or_build_dataset_research(
         forecaster_root=forecaster_root,
         db_path=db_path,
+        allow_build=not fast_publication,
     )
     settlements: dict[object, float] = {}
     sampled_decision_rows: list[sqlite3.Row] = []
@@ -80,7 +97,11 @@ def build_strategy_research(
         settlements = adapter.load_cli_settlement_truth()
     except (ForecastDataError, FileNotFoundError, KeyError, ValueError, sqlite3.Error):
         pass
-    if db_path.exists() and _db_table_exists(db_path, "decision_snapshots"):
+    if (
+        not fast_publication
+        and db_path.exists()
+        and _db_table_exists(db_path, "decision_snapshots")
+    ):
         try:
             sampled_decision_rows = PaperStore(db_path, init=False).sampled_decision_rows(
                 sample_mode="entry-per-market-side"
@@ -104,28 +125,47 @@ def build_strategy_research(
     )
     comparison = _comparison_summary(active_calibration, challenger_calibration)
     prediction_replay = _prediction_replay_payload(forecaster_root, cfg)
-    backtest = _signal_backtest_payload(
-        adapter,
-        db_path,
-        settlements=settlements,
-        sampled_rows=sampled_decision_rows,
-    )
-    config_rescore = _config_rescore_payload(
-        adapter,
-        db_path,
-        settlements=settlements,
-        sampled_rows=sampled_decision_rows,
-    )
+    if fast_publication:
+        if analysis_cache is not None:
+            backtest = dict(analysis_cache["backtest_summary"])
+            config_rescore = dict(analysis_cache["config_rescore"])
+        else:
+            deferred_reason = (
+                "Deferred from the recurring public artifact; run the offline full "
+                "research job for counterfactual decision-journal rescoring."
+            )
+            backtest = _deferred_backtest_payload(deferred_reason)
+            config_rescore = _deferred_config_rescore_payload(deferred_reason)
+    else:
+        backtest = _signal_backtest_payload(
+            adapter,
+            db_path,
+            settlements=settlements,
+            sampled_rows=sampled_decision_rows,
+        )
+        config_rescore = _config_rescore_payload(
+            adapter,
+            db_path,
+            settlements=settlements,
+            sampled_rows=sampled_decision_rows,
+        )
     chronological_replay_full = replay_from_database(
         db_path,
         settlements,
         initial_capital=cfg.paper_bankroll,
+        max_orders=10_000 if fast_publication else None,
+        max_trades=50_000 if fast_publication else None,
     )
     chronological_replay = _bounded_replay(chronological_replay_full)
+    # These sections combine the expensive rescore with fresh calibration,
+    # replay, policy environment, and pilot/account state. Cache only the
+    # expensive input and always derive the public verdict on this refresh.
     real_money_readiness = _real_money_readiness_payload(
         config_rescore, active_calibration, chronological_replay
     )
-    live_frequency_tuning = _live_frequency_tuning_payload(config_rescore, strategy_config_for_profile("live"))
+    live_frequency_tuning = _live_frequency_tuning_payload(
+        config_rescore, strategy_config_for_profile("live")
+    )
     research_shadow = _research_shadow_payload(adapter, db_path, settlements=settlements)
     signal_quality = _signal_quality_payload(db_path, trading_signal)
     paper = _paper_payload(db_path)
@@ -151,15 +191,40 @@ def build_strategy_research(
         forecast_health=forecast_health,
     )
     accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
+    generated_at = datetime.now(UTC).isoformat()
+    if fast_publication:
+        analysis_generated_at = (
+            str(analysis_cache["analysis_generated_at"])
+            if analysis_cache is not None
+            else None
+        )
+    else:
+        analysis_generated_at = generated_at
+    if not fast_publication:
+        analysis_cache = {
+            "schema_version": 2,
+            "source_sha": current_source_sha,
+            "config_fingerprint": current_config_fingerprint,
+            "analysis_generated_at": analysis_generated_at,
+            "backtest_summary": backtest,
+            "config_rescore": config_rescore,
+        }
 
-    return {
+    payload = {
         "schema_version": 2,
         "available": True,
         "mode": "paper_research_only",
         "live_orders_enabled": False,
         "default_profile": _default_profile(profiles),
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": generated_at,
+        "analysis_generated_at": analysis_generated_at,
+        "analysis_source_sha": (
+            analysis_cache.get("source_sha")
+            if isinstance(analysis_cache, dict)
+            else None
+        ),
         "source_of_truth": "AWS EC2 runtime artifacts after sync and refresh",
+        "publication_mode": "fast_public" if fast_publication else "full_research",
         "status": status,
         "daily_summary": daily_summary,
         "accounting": accounting,
@@ -176,7 +241,7 @@ def build_strategy_research(
         "config_rescore": config_rescore,
         "chronological_replay": chronological_replay,
         "_private_evidence": {
-            "generated_at": datetime.now(UTC).isoformat(),
+            "generated_at": generated_at,
             "chronological_replay": chronological_replay_full,
         },
         "real_money_readiness": real_money_readiness,
@@ -194,6 +259,167 @@ def build_strategy_research(
             "Paper-trading research only — no real-money orders are ever placed. "
             "Forecasts use a per-city NWP-ensemble EMOS model (San Francisco adds an LSTM blend)."
         ),
+    }
+    # The frequent builder treats the cache as read-only input. Emitting a
+    # staged copy would let an in-flight fast cycle replace a newer full rescore
+    # after its atomic promotion.
+    if not fast_publication:
+        payload["_private_analysis_cache"] = analysis_cache
+    return payload
+
+
+def _deferred_backtest_payload(reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "metrics_available": False,
+        "sample_mode": "entry-per-market-side",
+        "pre_resolution_only": True,
+        "counts": {
+            "raw_signals": 0,
+            "pre_resolution_signals": 0,
+            "deduped_signals": 0,
+            "excluded_post_resolution_signals": 0,
+            "settled_signals": 0,
+            "approved_signals": 0,
+            "approved_raw_signals": 0,
+            "approved_pre_resolution_signals": 0,
+        },
+        "metrics": {},
+        "quality_buckets": [],
+        "reason": reason,
+    }
+
+
+def _deferred_config_rescore_payload(reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "evidence_kind": "profile_specific_snapshot_replay",
+        "by_profile": {},
+        "settlement_days": 0,
+        "sampled_snapshots": 0,
+        "reason": reason,
+    }
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _analysis_source_sha(forecaster_root: Path) -> str | None:
+    build_info = _load_json_optional(forecaster_root / "build_info.json")
+    if not isinstance(build_info, dict):
+        return None
+    source_sha = build_info.get("source_sha")
+    if not isinstance(source_sha, str) or not source_sha.strip():
+        return None
+    suffix = ":dirty" if build_info.get("source_dirty") is True else ""
+    return f"{source_sha.strip()}{suffix}"
+
+
+def _analysis_config_fingerprint(*, calibration_min_train: int) -> str:
+    entry_mode = str(os.getenv("PAPER_ENTRY_MODE", "limit")).strip().lower()
+    payload = {
+        "cache_contract": "strategy-analysis-v2",
+        "calibration_min_train": calibration_min_train,
+        "entry_mode": entry_mode,
+        "execution_model_version": EXECUTION_MODEL_VERSION,
+        "live_strategy": strategy_fingerprint(
+            strategy_config_for_profile("live"),
+            entry_mode=entry_mode,
+        ),
+        "research_strategy": strategy_fingerprint(
+            strategy_config_for_profile("research"),
+            entry_mode=entry_mode,
+        ),
+        "target_policy": TARGET_POLICY.policy_fingerprint,
+        "motion_policy": MOTION_POLICY.policy_fingerprint,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _load_analysis_cache(
+    forecaster_root: Path,
+    *,
+    expected_source_sha: str | None,
+    expected_config_fingerprint: str,
+) -> dict[str, Any] | None:
+    cached = _normalize_analysis_cache(
+        _load_json_optional(forecaster_root / "strategy_analysis_cache.json"),
+        expected_source_sha=expected_source_sha,
+        expected_config_fingerprint=expected_config_fingerprint,
+    )
+    if cached is not None:
+        return cached
+    # A legacy public artifact has no immutable source identity. It is an
+    # acceptable one-time seed only in an unversioned local environment; a
+    # deployed build_info.json requires a source-matched dedicated cache.
+    if expected_source_sha is not None:
+        return None
+    legacy = _load_json_optional(forecaster_root / "strategy_research.json")
+    if legacy is None or legacy.get("publication_mode") == "fast_public":
+        return None
+    return _normalize_analysis_cache(
+        legacy,
+        expected_source_sha=None,
+        expected_config_fingerprint=expected_config_fingerprint,
+        legacy_public_artifact=True,
+    )
+
+
+def _normalize_analysis_cache(
+    payload: dict[str, Any] | None,
+    *,
+    expected_source_sha: str | None,
+    expected_config_fingerprint: str,
+    legacy_public_artifact: bool = False,
+) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    if not legacy_public_artifact and (
+        payload.get("schema_version") != 2
+        or payload.get("source_sha") != expected_source_sha
+        or payload.get("config_fingerprint") != expected_config_fingerprint
+    ):
+        return None
+    generated_at = payload.get(
+        "generated_at" if legacy_public_artifact else "analysis_generated_at"
+    )
+    if not isinstance(generated_at, str) or not generated_at.strip():
+        return None
+    fields = (
+        "backtest_summary",
+        "config_rescore",
+    )
+    if any(not isinstance(payload.get(field), dict) for field in fields):
+        return None
+    backtest = payload["backtest_summary"]
+    counts = backtest.get("counts")
+    required_counts = (
+        "raw_signals",
+        "pre_resolution_signals",
+        "deduped_signals",
+        "excluded_post_resolution_signals",
+        "settled_signals",
+    )
+    if (
+        not isinstance(counts, dict)
+        or any(
+            isinstance(counts.get(field), bool)
+            or not isinstance(counts.get(field), (int, float))
+            for field in required_counts
+        )
+        or not isinstance(payload["config_rescore"].get("by_profile"), dict)
+    ):
+        return None
+    return {
+        "schema_version": 2,
+        "source_sha": expected_source_sha,
+        "config_fingerprint": expected_config_fingerprint,
+        "analysis_generated_at": generated_at,
+        **{field: dict(payload[field]) for field in fields},
     }
 
 
@@ -223,7 +449,11 @@ def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
     # this file, so a plain truncate-write could be read half-written.
     import os
 
-    public_payload = {key: value for key, value in payload.items() if not key.startswith("_private_")}
+    public_payload = {
+        key: value
+        for key, value in payload.items()
+        if not key.startswith("_private_")
+    }
     text = json.dumps(public_payload, indent=2, sort_keys=True) + "\n"
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
@@ -236,6 +466,15 @@ def write_strategy_research(path: Path, payload: dict[str, Any]) -> None:
             json.dumps(private, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         os.replace(private_tmp, private_path)
+    analysis = payload.get("_private_analysis_cache")
+    if isinstance(analysis, dict):
+        analysis_path = path.with_name("strategy_analysis_cache.json")
+        analysis_tmp = analysis_path.with_name(f".{analysis_path.name}.tmp")
+        analysis_tmp.write_text(
+            json.dumps(analysis, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(analysis_tmp, analysis_path)
 
 
 def _bounded_replay(replay: dict[str, Any], *, event_limit: int = 200) -> dict[str, Any]:
@@ -273,6 +512,11 @@ def _accounting_payload(
         TARGET_POLICY.account_id,
         role="research_target",
     )
+    research_target_v1 = _account_snapshot(
+        store,
+        TARGET_POLICY_V1.account_id,
+        role="research_target_archived",
+    )
     research_motion = _account_snapshot(
         store,
         MOTION_POLICY.account_id,
@@ -290,6 +534,8 @@ def _accounting_payload(
         accounts["research"] = research
     if research_target is not None:
         accounts["research_target"] = research_target
+    if research_target_v1 is not None:
+        accounts["research_target_v1"] = research_target_v1
     if research_motion is not None:
         accounts["research_motion"] = research_motion
     combined = _combined_account(live, research) if research is not None else None
@@ -324,6 +570,7 @@ def _accounting_payload(
         "reconciliation_status": live["reconciliation_status"],
         "reconciliation_difference": live["reconciliation_difference"],
         "research_accounts_excluded_from_live_goal_and_readiness": [
+            TARGET_POLICY_V1.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
         ],
@@ -571,10 +818,23 @@ def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, A
     }
 
 
-def _load_or_build_dataset_research(*, forecaster_root: Path, db_path: Path) -> dict[str, Any] | None:
+def _load_or_build_dataset_research(
+    *,
+    forecaster_root: Path,
+    db_path: Path,
+    allow_build: bool = True,
+) -> dict[str, Any] | None:
     published = _load_json_optional(forecaster_root / "dataset_research.json")
     if published:
         return published
+    if not allow_build:
+        return {
+            "available": False,
+            "reason": (
+                "dataset research is not published; rebuild is deferred from "
+                "the bounded recurring Strategy Lab path"
+            ),
+        }
     try:
         return build_dataset_research_payload(
             db_path=db_path,

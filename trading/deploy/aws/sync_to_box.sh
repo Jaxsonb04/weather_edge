@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Full operator-driven deploy: copy both source trees without deleting unrelated
-# remote files. The scheduled source-only sync intentionally uses --delete for
-# tracked forecaster source; both paths share the runtime-state exclusions.
+# Full operator-driven deploy: the sole production source-change path copies
+# both source trees without deleting unrelated remote files. The manual
+# recovery sync shares the same runtime-state exclusions.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEATHEREDGE_ROOT="${WEATHEREDGE_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 ENV_FILE="${WEATHEREDGE_ENV_FILE:-$WEATHEREDGE_ROOT/.local/ec2.env}"
@@ -38,7 +38,12 @@ LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
-SSH_OPTS=(-i "$HOST_KEY" -o StrictHostKeyChecking=accept-new)
+SSH_OPTS=(
+  -i "$HOST_KEY"
+  -o StrictHostKeyChecking=accept-new
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=6
+)
 
 if [[ ! "$REMOTE_BASE" =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
   echo "REMOTE_BASE must be a canonical conservative absolute path: $REMOTE_BASE" >&2
@@ -118,8 +123,25 @@ done <<<"$enabled_timer_output"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s quiesce < "$QUIESCE_HELPER"
 
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  bash -s backup "$REMOTE_DB" < "$BACKUP_HELPER"
+backup_output="$(
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    bash -s backup "$REMOTE_DB" < "$BACKUP_HELPER"
+)"
+printf '%s\n' "$backup_output"
+ANALYSIS_DB_SNAPSHOT="$(
+  sed -n 's/^WEATHEREDGE_BACKUP_SNAPSHOT=//p' <<<"$backup_output" | tail -n 1
+)"
+if [[ ! "$ANALYSIS_DB_SNAPSHOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+  echo "verified backup did not return a conservative absolute snapshot path" >&2
+  exit 1
+fi
+IFS='/' read -r -a ANALYSIS_DB_COMPONENTS <<<"${ANALYSIS_DB_SNAPSHOT#/}"
+for component in "${ANALYSIS_DB_COMPONENTS[@]}"; do
+  if [[ "$component" == "." || "$component" == ".." ]]; then
+    echo "verified backup snapshot must not contain '.' or '..' path components" >&2
+    exit 1
+  fi
+done
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo mkdir -p '$REMOTE_BASE/requirements' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE' '$REMOTE_BASE/requirements'"
@@ -213,6 +235,8 @@ rm -f "$BUILD_INFO_TMP"
 # safely quiesced instead of restarting a partial tree.
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/install_systemd_notimers.sh"
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && bash deploy/aws/create_decision_snapshot_index.sh"
 
 # Restore producers first, seed and validate one complete publication, then
 # restore the persistent watchdog last so it cannot race the first fresh build.
@@ -240,6 +264,25 @@ if (( WATCHDOG_ENABLED == 1 )); then
     bash -s restore sfo-forecast-freshness.timer < "$QUIESCE_HELPER"
 fi
 
+# Historical analysis is diagnostic and the frequent builder has an explicit
+# deferred state. Production is already restored before this optional work
+# starts. The helper reads the immutable, integrity-checked deploy snapshot
+# instead of holding a live-WAL read transaction against active producers.
+ANALYSIS_CACHE_REFRESHED=0
+if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && SFO_STRATEGY_ANALYSIS_DB_PATH='$ANALYSIS_DB_SNAPSHOT' bash deploy/aws/refresh_strategy_analysis_cache.sh"; then
+  ANALYSIS_CACHE_REFRESHED=1
+else
+  echo "warning: historical Strategy Lab cache refresh failed; continuing with deferred analysis" >&2
+  # The helper uses a stable transient-unit name and normally cleans it up via
+  # its trap. This best-effort second guard covers an abruptly dropped SSH
+  # transport before the remote shell can run that trap.
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "sudo systemctl stop weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true; sudo systemctl reset-failed weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true" \
+    || echo "warning: could not confirm Strategy Lab analysis unit cleanup" >&2
+fi
+
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"
 echo "Restored ${#PRODUCER_TIMERS[@]} producer timer(s); watchdog restored last=$WATCHDOG_ENABLED."
+echo "Historical Strategy Lab cache refreshed=$ANALYSIS_CACHE_REFRESHED."

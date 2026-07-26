@@ -402,6 +402,8 @@ def test_full_sync_transfers_root_install_inputs_from_arbitrary_cwd(tmp_path: Pa
 import json, os, sys
 with open(os.environ['SSH_CALLS'], 'a', encoding='utf-8') as handle:
     handle.write(json.dumps(sys.argv[1:]) + '\\n')
+if len(sys.argv) >= 3 and sys.argv[-2] == 'backup':
+    print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
 """,
     )
     _write_executable(
@@ -494,7 +496,13 @@ def test_full_sync_transfer_failure_never_runs_remote_cleanup(tmp_path: Path) ->
     ssh_log = tmp_path / "ssh.log"
     _write_executable(
         fake_bin / "ssh",
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSH_LOG\"\n",
+        """#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_LOG"
+case "$*" in
+  *"bash -s backup "*) printf '%s\n' \
+    'WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3' ;;
+esac
+""",
     )
     _write_executable(
         fake_bin / "rsync",
@@ -543,7 +551,13 @@ def test_full_sync_quiesces_before_remote_mutation_and_stays_quiesced_on_transfe
     transfer_count = tmp_path / "transfer-count"
     _write_executable(
         fake_bin / "ssh",
-        "#!/bin/sh\nprintf 'ssh|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n",
+        """#!/bin/sh
+printf 'ssh|%s\n' "$*" >> "$ACTION_LOG"
+case "$*" in
+  *"bash -s backup "*) printf '%s\n' \
+    'WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3' ;;
+esac
+""",
     )
     _write_executable(
         fake_bin / "rsync",
@@ -611,6 +625,8 @@ if args[-3:] == ['bash', '-s', 'capture']:
     print('sfo-operational-publish.timer')
     print('sfo-strategy-lab-refresh.timer')
     print('sfo-forecast-freshness.timer')
+elif len(args) >= 2 and args[-2] == 'backup':
+    print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
 elif 'restore' in args:
     restored = args[args.index('restore') + 1:]
     with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:

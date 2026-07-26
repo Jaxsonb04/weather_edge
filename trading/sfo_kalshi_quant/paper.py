@@ -104,6 +104,9 @@ def with_target_research_execution(
         limit_cost_per_contract=quote.cost_per_contract,
         limit_edge=quote.edge,
         limit_edge_lcb=quote.edge_lcb,
+        binding_constraint=(
+            "visible_ask_depth" if quote.would_cross else decision.binding_constraint
+        ),
     )
 
 

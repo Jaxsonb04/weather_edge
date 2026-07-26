@@ -814,8 +814,21 @@ def _is_iso_date(value: object) -> bool:
 
 
 def _target_sized_decision(decision: TradeDecision) -> TradeDecision | None:
+    structural_cap_is_expandable = (
+        decision.binding_constraint == "research_policy_allocator"
+        and float(decision.fee_per_contract) == 0.0
+        and (
+            decision.limit_fee_per_contract is None
+            or float(decision.limit_fee_per_contract) == 0.0
+        )
+    )
+    source_max_contracts = (
+        math.inf
+        if structural_cap_is_expandable
+        else float(decision.recommended_contracts)
+    )
     max_contracts = min(
-        float(decision.recommended_contracts),
+        source_max_contracts,
         TARGET_POLICY.reference_equity
         * TARGET_POLICY.max_position_risk_pct
         / float(decision.cost_per_contract),
