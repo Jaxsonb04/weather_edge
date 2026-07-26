@@ -1954,6 +1954,69 @@ def test_fast_signal_decision_query_is_hard_bounded_by_scan_context(
     assert "limit 512" in decision_reads[0]
 
 
+def test_fast_signal_tail_does_not_scan_unrelated_historical_decisions(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    store.record_decisions(
+        "2026-07-25",
+        [replace(_approved_decision(), ticker="KXHIGHTSFO-CURRENT")],
+        risk_profile="live",
+    )
+    with store.connect() as conn:
+        columns = [
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(decision_snapshots)")
+            if str(row[1]) != "id"
+        ]
+        insert_columns = ", ".join(columns)
+        clone_columns = ", ".join(
+            "NULL" if column == "scan_context_id" else column
+            for column in columns
+        )
+        conn.execute(
+            f"INSERT INTO decision_snapshots ({insert_columns}) "
+            f"SELECT {clone_columns} FROM decision_snapshots "
+            "WHERE scan_context_id IS NOT NULL LIMIT 1"
+        )
+        for _ in range(13):
+            conn.execute(
+                f"INSERT INTO decision_snapshots ({insert_columns}) "
+                f"SELECT {insert_columns} FROM decision_snapshots "
+                "WHERE scan_context_id IS NULL"
+            )
+
+    real_connect = sqlite3.connect
+
+    def bounded_work_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        progress_calls = 0
+
+        def enforce_bounded_work():
+            nonlocal progress_calls
+            progress_calls += 1
+            return int(progress_calls > 500)
+
+        conn.set_progress_handler(enforce_bounded_work, 100)
+        return conn
+
+    monkeypatch.setattr(
+        strategy_calibration_module.sqlite3,
+        "connect",
+        bounded_work_connect,
+    )
+
+    rows = strategy_calibration_module._bounded_scan_context_decision_rows(
+        db_path,
+        context_limit=18,
+        row_limit=512,
+    )
+
+    assert [row["ticker"] for row in rows] == ["KXHIGHTSFO-CURRENT"]
+
+
 def test_profile_gate_behavior_includes_profile_scoped_rejections_and_entry_blocks():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"

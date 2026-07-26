@@ -673,24 +673,29 @@ def _bounded_scan_context_decision_rows(
         or not _db_table_exists(db_path, "scan_context_snapshots")
     ):
         return []
+    safe_context_limit = max(1, int(context_limit))
+    safe_row_limit = max(1, int(row_limit))
+    # SQLite 3.45 plans bound LIMIT parameters here as a full decision-table
+    # scan when the requested row limit exceeds the recent-context cardinality.
+    # These internal values are sanitized integers; literals preserve the
+    # scan-context index plan and keep work proportional to the bounded tail.
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
+            f"""
             WITH recent_contexts AS (
                 SELECT id
                 FROM scan_context_snapshots
                 ORDER BY id DESC
-                LIMIT ?
+                LIMIT {safe_context_limit}
             )
             SELECT d.*
             FROM decision_snapshots d
             JOIN recent_contexts c ON c.id = d.scan_context_id
             WHERE d.market_ticker NOT LIKE '%-PAPER%'
             ORDER BY d.id DESC
-            LIMIT ?
+            LIMIT {safe_row_limit}
             """,
-            (max(1, context_limit), max(1, row_limit)),
         ).fetchall()
     decisions = [_decision_row(row) for row in rows]
     return [row for row in decisions if row["risk_profile"] != "unknown"]
