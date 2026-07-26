@@ -1,10 +1,11 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-07-26 00:12 PDT
+Last updated: 2026-07-26 03:41 PDT
 
-Last production verification: 2026-07-25 23:52 PDT
+Last production verification: 2026-07-26 03:41 PDT
 
-Status: production healthy and paper-only at the last verification
+Status: production healthy, current, and paper-only on runtime revision
+`71ac845422fc75cc35e24bb3b3a918dd44f917b3`
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
@@ -12,151 +13,207 @@ current AWS state before making an operational claim.
 
 ## Session Brief
 
-- **Production baseline:** local `main`, GitHub `main`, the EC2 build, and public
-  artifact provenance matched clean revision
-  `cd58c8c749c527519642fc62b9a39fce38d04abf`.
-- **Last failure:** Strategy Lab's bounded tail query used parameterized SQLite
-  limits. Production SQLite chose a full scan over roughly 694,000 decision
-  snapshots, taking about 92 seconds for one query and pushing the service into
-  its 120-second timeout. Public Strategy data then fell behind.
-- **Recovery:** PRs #55 and #56 bounded recurring work, restored the observed
-  indexed query plan with sanitized integer literals, added a deterministic
-  query-work regression test, and separated unsafe nightly maintenance windows.
-- **Performance snapshot:** repeated production systemd Strategy refreshes
-  completed in roughly 10.6-11.7 seconds. The post-rebuild public artifact had zero
-  forecast health warnings.
-- **Runtime health:** all 23 canonical systemd units matched source, all 11
-  timers were enabled and active, the failed-unit count was zero, and the
-  weather database passed its SQLite quick check and a separate foreign-key
-  check with zero errors.
-- **Safety:** real-money trading was disabled and dry-run enforcement was on.
-  Enabled order-placement controls were for isolated paper accounts only.
-- **Performance evidence:** the live paper account realized `+$9.9765` on
-  2026-07-20. The `+$17.4301` Strategy Lab total that day combined economically
-  separate paper accounts and must never be described as one bankroll's return.
-  The active `$16/day` target-v2 research account had zero trades and zero P&L
-  because no candidate passed its after-fee and risk gates.
-- **Cleanup:** the verified EC2 backup duplicate was removed after its encrypted
-  S3 object and checksum matched, reducing root-disk use from 69% to about
-  45-46%. Merged local worktrees, stale runtime files, and disposable caches
-  were removed; unique unpushed and open-PR work was preserved.
-- **Deliberate follow-up:** retain the narrowly scoped single-IP SSH rule for the
-  owner's next AWS session. Revoke it only when the owner says that access is no
-  longer needed. Exact access identifiers stay in gitignored operator state.
+- **Production release:** PR #58 is merged. The EC2 runtime, generated
+  artifacts, public manifest, and rebuilt React app shell were verified against
+  runtime revision `71ac845422fc75cc35e24bb3b3a918dd44f917b3`. The app-shell
+  checksum matched locally, on EC2, and on the public site.
+- **Fresh account era:** exactly two `$1,000` paper ledgers are active. **Live
+  Stability** prioritizes win rate, consistency, and controlled growth and is
+  the only readiness profile. **Research ROI** accepts higher bounded paper risk
+  against a fixed `$50/day` KPI, equal to 5% of original capital, and is
+  excluded from live readiness.
+- **Preserved history:** five prior accounts are archived read-only. Sixty-two
+  legacy open paper positions remain in normal monitor/settlement lifecycle;
+  no orders, fills, P&L, or resting history were deleted or reassigned to either
+  fresh ledger.
+- **Accounting safety:** both active ledgers were `$1,000`, `ACTIVE`, and
+  reconciled with zero open or pending positions at verification. Invalid
+  account identity or reconciliation now fails closed: active profile,
+  accounting, and readiness displays disappear instead of inferring a balance.
+- **Readiness:** only canonical Live Stability evidence is eligible. The
+  deployed verdict was `REPLAY_REQUIRED` with 5 of 12 checks passed; research
+  accounts were explicitly excluded. This is not real-money ready.
+- **Reliability:** Strategy Lab now uses a persistent fixed five-minute
+  wall-clock timer. An offset scheduler watchdog verifies all canonical timers,
+  effective units, database/disk health, hashes, source provenance, and
+  local/public freshness. It can repair only bounded publication staleness and
+  never starts scan, monitor, settlement, or another trading action.
+- **Public experience:** the Strategy Lab now exposes both fresh profiles,
+  achieved-performance history, daily and cumulative P&L, and true account
+  balance. Rapid-hover QA left one tooltip, one active dot, and zero ghost
+  cursors; the current-day tooltip showed `$1,000.00` account balance. Desktop
+  and 390 px mobile layouts had no page-level horizontal overflow.
+- **Execution layout:** Positions & execution log now has balanced gutters,
+  more separation from dividers and P&L, and a compact pending-limit empty
+  state. The public desktop and mobile layouts were inspected after deployment.
+- **Operational health:** zero failed units; 25 canonical systemd units matched
+  source; 12 of 12 timers were enabled and active; scheduler health succeeded;
+  disk use was 68.4%, below the 85% guard; public and local manifests were fresh,
+  source-matched, and snapshot-identical. A natural 10:40 UTC Strategy cycle
+  published successfully after deployment on the five-minute wall clock.
+- **Safety and access:** real-money execution remains disabled and dry-run
+  remains enabled. Keep the narrowly scoped owner SSH rule for the next session;
+  revoke it only when the owner says access is no longer needed. Its identifiers
+  remain only in ignored operator state.
 
 ## What Went Wrong
 
-### Strategy query-plan regression
+### Strategy Lab appeared behind
 
-The recurring Strategy build was intended to inspect only a bounded tail of
-recent scan contexts. Its internal row and context caps were passed to SQLite as
-bound `LIMIT` parameters. On production SQLite 3.45, that form selected a full
-table scan instead of `idx_decision_snapshots_scan_context`.
+There were two different causes across the recovery:
 
-The newest 64 contexts contained only 1,176 rows, below the 2,048-row cap. That
-real data shape exposed the planner behavior that small development fixtures did
-not. The scan performed roughly 1.01 GB of physical reads and 1.79 GB of logical
-reads before the overall service timed out.
+1. The earlier production Strategy tail query used parameterized SQLite limits.
+   Production SQLite selected a full scan over a large decision journal, causing
+   a service timeout and stale public Strategy data. PRs #55 and #56 restored a
+   bounded indexed plan and separated overlapping maintenance windows.
+2. During this restart, the new schema, profiles, and interface existed on the
+   implementation branch before production had received both release halves.
+   The public site therefore still showed the prior schema/account era until the
+   runtime/data sync and separate prebuilt React app-shell sync both completed.
+   This was deployment lag, not evidence that the paper engine had stopped.
 
-### Nightly database contention
+The release was completed through both audited paths and then verified by exact
+source, manifest, app-shell checksum, DOM, and screenshot evidence.
 
-The paper-database prune and dataset-backfill schedules overlapped. One observed
-prune ran from about 02:22Z to 02:34Z while the backfill began around 02:25Z.
-The backfill exhausted three SQLite busy retries.
+### Completion-relative scheduling could drift
 
-Both heavy timers were also persistent. After a deployment or reboot, missed
-windows could therefore launch both jobs as catch-up work and recreate the same
-contention.
+The Strategy timer was completion-relative. A slow cycle moved the next cycle
+later, and no independent scheduler knew whether publication was stale, a unit
+had drifted, or trading was intentionally paused. The new calendar timer is tied
+to wall-clock time. The new watchdog distinguishes safe age-only publication
+repair from unsafe timer/unit state and refuses to auto-repair trading services.
 
-### Stale publication during recovery
+### Legacy attribution was easy to mistake for account equity
 
-The first public Strategy artifact after deployment was generated before the
-controlled dataset rebuild completed, so it still reported stale NWP data. A
-fresh Strategy build after the rebuild saw eight-model rolling-target coverage,
-fresh timestamps, and no warnings, then the operational publisher promoted the
-correct artifact.
+Early live and research strategies shared economic paper accounts, while later
+research policies used isolated accounts. A profile-attribution curve could
+therefore be misread as that profile's bankroll, and cross-account totals could
+be described as one balance. The new publication and UI separate:
 
-### Misleading local runtime state
+- strategy-attributed P&L;
+- true economic account balances;
+- two fresh active ledgers; and
+- read-only archived accounts.
 
-Ignored local databases and generated JSON files were stale but looked
-production-like. They are not valid production evidence. AWS-generated runtime
-data and the published manifest are authoritative after synchronization.
+Missing historical account balance is now shown as unavailable rather than
+synthesized from attributed P&L.
 
-### Location-dependent access
+### Network location changed
 
-The operator's public IP changed between houses, so the narrow SSH allowlist no
-longer matched. Access was restored with a temporary single-IP rule. The owner
-asked to retain it for the next session; it is deliberately not marked as an
-unfinished cleanup error.
+The owner's public IP changed between houses, so the narrow SSH allowlist no
+longer matched. This interrupted operator access but did not prove an
+application failure. A narrow owner rule restored access and is intentionally
+retained for the next session.
+
+### Profit targets were being treated too literally
+
+The July 20 live paper result demonstrated that a strict, high-confidence,
+larger-size NO position could produce roughly `$10` in one day. It did not prove
+that `$10`, `$16`, or 5% can be repeated daily. Counterfactual review did not
+support blindly holding 98-cent exits to settlement merely to collect the last
+two cents; Live Stability keeps profit-banking and safety gates. More aggressive
+exit and sizing ideas belong in Research ROI, still bounded and paper-only.
 
 ## What We Accomplished
 
-### Source and GitHub
+### Two-profile strategy restart
 
-- Merged PR #55 at `cb804e8537abc11db820d269e04139bbc0b51ebd`.
-- Merged PR #56 and deployed merge revision
-  `cd58c8c749c527519642fc62b9a39fce38d04abf`.
-- Verified local `main`, `origin/main`, GitHub `main`, EC2 build provenance, and
-  public artifact provenance agreed.
-- Passed 2,414 local tests, Python 3.12 CI, Python 3.13 CI, web CI, the Bun
-  production build, Python compilation, shell syntax checks, Semgrep with zero
-  findings, and three independent final reviews.
+- Created one fresh Live Stability paper ledger with `$1,000`.
+- Created one fresh Research ROI paper ledger with `$1,000`.
+- Fixed the Research ROI daily KPI at `$50`, measured against original capital,
+  rather than allowing the denominator or target to drift.
+- Kept Live Stability conservative and readiness-bearing.
+- Allowed Research ROI higher bounded paper risk while excluding it from
+  readiness and live goals.
+- Removed the legacy motion book from recurring entry scans. Its retained
+  positions still monitor and settle normally.
+- Archived every prior or unknown account identity and rejected new writes to
+  archived or ambiguous identities.
 
-### Strategy performance and correctness
+### Accounting, identity, and replay correctness
 
-- Replaced the two internal query limits with positive integer-sanitized SQL
-  literals while preserving the query's predicates, ordering, and caps.
-- Added a deterministic SQLite virtual-machine work-limit test that fails the
-  old full-scan implementation and guards bounded query work without depending
-  on wall-clock timing.
-- Reduced the recurring Strategy service from the timeout path to about 11
-  seconds across repeated production runs.
-- Kept the expensive historical analysis in its contained cache workflow while
-  keeping recurring public refresh bounded.
+- Added canonical account/profile identity across admission, orders, replay,
+  reports, and readiness.
+- Added exact active-order/ledger lifecycle reconciliation covering fills,
+  resting and partial orders, terminal rows, missing rows, and orphans.
+- Made deployment cutover require exactly two active fixed-capital reconciled
+  ledgers.
+- Published Strategy schema v3 with exact active ledgers, archived accounts,
+  pending risk/count, and backend-provided `closing_equity`.
+- Restricted readiness to valid live evidence across legacy and fresh live
+  identities. Research evidence cannot cross into the live cohort.
+- Made backend and frontend independently fail closed if active accounting is
+  unavailable or malformed.
 
-### Timer and maintenance reliability
+### Strategy Lab and recruiter-facing design
 
-- Scheduled prune for 09:20 UTC with up to 300 seconds of randomized delay.
-- Scheduled dataset backfill for 10:01 UTC with up to 120 seconds of randomized
-  delay.
-- Set `AccuracySec=1s` for both heavy timers.
-- Set both heavy timers to `Persistent=false`, preventing missed-window
-  catch-up from launching them concurrently after deploys or reboots.
-- Preserved persistent behavior for frequent operational timers.
+- Added **Achieved performance & profiles**.
+- Separated Strategy attribution from Historical account balances.
+- Added true total balance to profile summaries.
+- Added account balance as the third tooltip metric when the backend has
+  economic balance for that day; older attribution-only days remain honest.
+- Disabled tooltip animation and cursor rendering to remove rapid-hover
+  remnants and clipped borders.
+- Improved profile naming, readiness language, current-book spacing, and the
+  pending-limit empty state with the existing HeroUI Pro design system.
+- Verified the deployed page at desktop and real 390 px mobile viewports.
 
-### Data recovery and publication
+### Timers, deployment, and workload reduction
 
-- Ran a controlled rebuild with all producer timers safely quiesced and restored
-  by an exit trap.
-- Refreshed IEM truth, NWP archive data, and EMOS lead 1 and lead 2 across all
-  fifteen cities.
-- Completed the dataset service successfully with a measured 119.2 MB memory
-  peak and no swap.
-- Rebuilt Strategy after the data refresh, published it, waited for exact public
-  manifest parity, and reran the freshness watchdog successfully.
-- Verified the local and public manifest and Strategy files were byte-identical.
+- Replaced Strategy's completion-relative timer with a persistent five-minute
+  `OnCalendar` schedule.
+- Added a five-minute offset scheduler-health timer.
+- Added a root-owned deployment-maintenance marker and recovery trap that
+  either restores the captured timer policy or safely re-quiesces.
+- Added unit-integrity, database/disk, artifact checksum, provenance, and
+  local/public freshness checks.
+- Limited automatic repair to Strategy/publication age-only failures.
+- Kept the app-shell and runtime publication writers quiesced during the final
+  web sync, then restored both timers and reran scheduler health.
+- Preserved one short-lived local rollback snapshot plus its independently
+  downloaded, integrity-checked, encrypted off-host copy. Normal retention
+  removes old local snapshots.
 
-### Backup and cleanup
+### Security and maintenance
 
-- Created and fully verified a deployment snapshot before source changes.
-- Verified the retained S3 object was 9,367,420,928 bytes, AES256-encrypted, and
-  matched SHA-256
-  `dc9dd1ec708b6d8d63c499193ee14aebcfb10a131a1ad66a948da0a954e2468b`.
-- Removed only the redundant EC2-local copy after that verification, increasing
-  free disk from roughly 12 GB to 21 GB.
-- Removed three clean, already integrated worktrees and obsolete local branches.
-- Cleared stale local runtime state through the canonical repository cleanup
-  workflow.
-- Removed assistant, test, build, bytecode, and inactive dependency caches.
-- Preserved unique unpushed reliability work, open strategy work, learned model
-  artifacts, source weather data, and active development dependencies.
+- Restricted NWS-advertised URLs to HTTPS, the exact expected host, no
+  credentials, port absent or 443, revalidated redirects, and a 4 MiB cap.
+- Fixed the scheduler's root/application lock boundary so validation and lock
+  acquisition run as the unprivileged app user; the symlink non-truncation
+  regression passes.
+- Added a seven-day Dependabot cooldown for routine churn; security updates
+  continue to bypass cooldown.
+- Cleared stale ignored local runtime databases/data through the canonical
+  cleanup script. AWS-generated runtime state remains authoritative.
+- Removed redundant recurring motion scans and retained only data/history still
+  needed for settlement, research, rollback, or operation.
+
+## Verification Evidence
+
+- PR #58 merged at
+  `71ac845422fc75cc35e24bb3b3a918dd44f917b3`.
+- GitHub CI: Python 3.12, Python 3.13, and Web (Bun) all passed.
+- Full backend/forecaster suite: 2,469 passed, 8 skipped.
+- Frontend suite: 153 passed.
+- Deployment/watchdog suite: 146 passed.
+- Independent focused review: 186 backend/security/deploy checks and 51
+  frontend checks passed with no release blocker.
+- Production build, lint, icon integrity, Python compile, AWS shell syntax,
+  YAML parsing, diff checks, and Bun dependency audit passed.
+- The deployment backup was uploaded encrypted, downloaded independently,
+  checksum-matched, and passed SQLite integrity and foreign-key checks before
+  source transfer.
+- Independent post-deploy canary: 0 failures.
+- Public app-shell checksum matched local `dist/` and EC2 `webdist`.
+- Rapid-hover stress: one visible tooltip, one active dot, zero tooltip cursors.
+- The next natural five-minute Strategy cycle published successfully at
+  10:40 UTC with schema v3, current accounting, and live-only readiness.
 
 ## Paper Performance Snapshot
 
-The following figures were generated from logical resolved paper lots. They are
-research evidence, not promised returns.
+These are paper results and research evidence, not promised returns.
 
-| Date | Live paper account | Cross-account Strategy Lab total |
+| Date | Legacy live paper account | Cross-account Strategy Lab total |
 | --- | ---: | ---: |
 | 2026-07-20 | +$9.9765 | +$17.4301 |
 | 2026-07-21 | +$9.91 | +$18.89 |
@@ -165,53 +222,67 @@ research evidence, not promised returns.
 | 2026-07-24 | +$0.20 | +$7.95 |
 | 2026-07-25 | +$0.00 | +$4.39 |
 
-The cross-account column combines live, shadow, motion, and target research
-accounts. It cannot be summed or described as if one account earned it.
+The cross-account column combines economically separate historical paper
+accounts and must never be described as one bankroll's return.
 
-At the snapshot:
+At the 2026-07-26 verification:
 
-- Live paper equity: `$958.38`.
-- Live all-time realized P&L: `-$41.62`.
-- Live open positions: zero.
-- Active target-v2: zero trades, zero realized P&L, zero open positions.
-- The `$16/day` target was explicitly non-guaranteed and infeasible under the
-  available conservative expected-profit evidence.
-- All 24 inspected opportunities remained `NO_TRADE` under after-fee
-  lower-confidence-bound and risk gates.
+- Fresh Live Stability: `$1,000.00` realized equity, `$0.00` realized P&L,
+  zero open positions, zero pending limits.
+- Fresh Research ROI: `$1,000.00` realized equity, `$0.00` realized P&L, zero
+  open positions, zero pending limits.
+- Archived accounts: five.
+- Archived open positions: 62 total; 10 target-v1 and 52 motion positions were
+  still settling.
+- Legacy live strategy attribution: `+$45.70` across 80 resolved positions,
+  62 wins and 18 losses.
+- The legacy shared live account's true all-time realized P&L remained
+  `-$41.62`; it is deliberately not presented as the legacy live strategy's
+  attributed balance.
+- Research ROI's `$50/day` goal was not achieved on activation day and was not
+  feasible from the current scan's conservative expected-profit evidence.
 
 ## Safety And Interpretation Rules
 
-- Never enable real-money trading as part of an audit, performance recovery, or
-  target-seeking change.
-- Never promise `$16/day` or any return. A target is a paper research KPI.
-- Never weaken a `NO_TRADE`, after-fee edge, loss-pause, exposure, calibration,
-  or evidence gate merely to increase activity.
-- Report one account separately from cross-account research attribution.
-- Treat pre-current-evidence legacy outcomes as unverified when the artifact
-  labels them that way.
-- Keep AWS access identifiers and credentials out of this file and all tracked
-  project artifacts.
+- Never enable real-money trading as part of an audit, recovery, target chase,
+  or UI change.
+- Never promise `$10/day`, `$16/day`, 5% per day, or any return. Targets are
+  paper research KPIs.
+- Never weaken a `NO_TRADE`, after-fee edge, loss-pause, exposure,
+  calibration, liquidity, or evidence gate merely to increase activity.
+- Report each economic account separately from strategy attribution and
+  cross-account research totals.
+- Never synthesize account balance from attributed P&L when the backend did not
+  publish a true balance.
+- Keep AWS access identifiers, credentials, network addresses, and key paths
+  out of this file and all tracked project artifacts.
 
-## Known Nonblocking Concern
+## Known Nonblocking Concerns
 
-The LAMP and GFS-MOS NOAA archive paths returned HTTP 403 for all attempted
-cycles during the rebuild. The backfill skipped those sources safely; IEM,
-Open-Meteo previous runs, NBM, HRRR, truth, and EMOS work completed. If the 403
-responses persist, remove or replace those fetch paths so the nightly job does
-not spend time on requests that cannot succeed.
+- The watchdog deliberately refuses to auto-repair disabled or drifted trading
+  timers. That requires operator investigation; only age-only Strategy and
+  operational publication staleness is safely repairable.
+- LAMP and GFS-MOS NOAA archive paths previously returned HTTP 403 during
+  backfill. IEM, Open-Meteo previous runs, NBM, HRRR, truth, and EMOS remained
+  available. Replace or remove those fetch paths if the 403 responses persist.
+- The runtime revision above is the deployed code revision. A later
+  documentation-only commit containing this memory and the reviewer prompt does
+  not require another 9.5 GB database-backed runtime deployment because it
+  changes no deployed package, unit, SPA asset, or artifact generator.
 
 ## Next Session Checklist
 
-1. Print the `Session Brief` above.
+1. Print the `Session Brief` above before taking action.
 2. Confirm the checkout is clean and compare local `HEAD` with `origin/main`.
-3. When current production state matters, revalidate build provenance, failed
-   units, timer state, public-manifest parity, freshness, disk, and real-money
-   safety flags from AWS.
-4. Keep the single-IP SSH rule until the owner says access is finished.
-5. Observe the next natural prune and dataset-backfill runs for schedule
-   separation and successful completion.
-6. Update this file after any deployment, incident, material audit, strategy
-   policy change, or deliberate deferment.
+3. When production state matters, freshly revalidate runtime source, failed
+   units, all 12 timers, unit integrity, manifest parity/freshness, disk, active
+   ledger reconciliation, readiness scope, and real-money safety flags.
+4. Keep the narrow owner SSH rule until the owner says access is finished.
+5. Continue observing later natural Strategy refreshes and archived-position
+   settlements.
+6. Treat ignored local runtime files as disposable; use AWS/public artifacts.
+7. Update this file after every material incident, deployment, policy change,
+   deliberate deferment, or production verification.
 
 ## Memory Update Contract
 
@@ -220,10 +291,10 @@ enough that another engineer can understand the last failure without chat
 history. When updating:
 
 1. Timestamp the last production verification.
-2. Replace stale status claims rather than stacking contradictory ones.
-3. Record the root cause, not only symptoms.
+2. Replace stale status claims rather than stacking contradictions.
+3. Record root cause, not only symptoms.
 4. Record exact merged/deployed revisions and objective verification.
 5. Separate completed work, deliberate retention, and true remaining work.
 6. Preserve safety and P&L interpretation rules.
-7. Never add secrets, exact access identifiers, key paths, or commands
-   containing those sensitive values.
+7. Never add secrets, exact access identifiers, key paths, or sensitive
+   operator commands.
