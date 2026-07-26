@@ -580,10 +580,7 @@ def _research_book_profiles(
     profiles: list[dict[str, Any]],
     target: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if not target.get("available"):
-        return profiles
     by_name = {str(row["risk_profile"]): row for row in profiles}
-    by_name.pop("research", None)
     by_name.setdefault(
         "live",
         _profile_summary_row(
@@ -620,34 +617,24 @@ def _research_book_profiles(
             }
         ),
     )
-    target_row["daily_target"] = target
-    archived_target_row = by_name.get("research-target-v1")
-    if archived_target_row is not None:
-        archived_target_row["archived"] = True
-        archived_target_row["excluded_from"] = [
+    if target.get("available"):
+        target_row["daily_target"] = target
+    for archived_name in (
+        "live-legacy",
+        "research-target-v1",
+        "research-target-v2",
+        "research-motion",
+        "research",
+    ):
+        archived_row = by_name.get(archived_name)
+        if archived_row is None:
+            continue
+        archived_row["archived"] = True
+        archived_row["excluded_from"] = [
             "active_admissions",
             "daily_target",
             "live_readiness",
         ]
-    motion_row = by_name.setdefault(
-        "research-motion",
-        _profile_summary_row(
-            {
-                "risk_profile": "research-motion",
-                "orders": 0,
-                "resolved": 0,
-                "wins": 0,
-                "losses": 0,
-                "realized_pnl": 0.0,
-                "capital_resolved": 0.0,
-                "open_positions": 0,
-                "open_risk": 0.0,
-                "pending_limit_orders": 0,
-                "pending_limit_risk": 0.0,
-            }
-        ),
-    )
-    motion_row["excluded_from"] = ["daily_target", "live_readiness"]
     return sorted(by_name.values(), key=lambda row: str(row["risk_profile"]))
 
 

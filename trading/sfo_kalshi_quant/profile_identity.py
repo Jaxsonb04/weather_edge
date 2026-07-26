@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .research_policy import MOTION_POLICY, TARGET_POLICY, TARGET_POLICY_V1
+from .account import LIVE_STABILITY_ACCOUNT_ID, SHARED_ACCOUNT_ID
+from .research_policy import (
+    MOTION_POLICY,
+    TARGET_POLICY,
+    TARGET_POLICY_V1,
+    TARGET_POLICY_V2,
+)
 
 
 def published_profile_key(
@@ -29,6 +35,7 @@ def published_profile_key(
     fingerprint = str(policy_fingerprint or "").strip()
     for policy, published in (
         (TARGET_POLICY_V1, "research-target-v1"),
+        (TARGET_POLICY_V2, "research-target-v2"),
         (TARGET_POLICY, "research-target"),
         (MOTION_POLICY, "research-motion"),
     ):
@@ -44,10 +51,17 @@ def published_profile_key(
     # Canonical sleeve evidence is all-or-nothing. A partial, crossed, stale,
     # or forged tuple must not inherit a public profile from any one marker.
     if (
-        raw in {"research-target-v1", "research-target", "research-motion"}
+        raw
+        in {
+            "research-target-v1",
+            "research-target-v2",
+            "research-target",
+            "research-motion",
+        }
         or account
         in {
             TARGET_POLICY_V1.account_id,
+            TARGET_POLICY_V2.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
         }
@@ -55,11 +69,14 @@ def published_profile_key(
     ):
         return "unknown"
 
-    # Historical research rows predate isolated sleeve identity and historical
-    # paper rows predate an explicit live label. Neither fallback can become a
-    # canonical research sleeve.
-    if raw == "unknown":
-        return "live"
+    # The fresh live ledger is intentionally a distinct performance era.
+    # Legacy shared/null live rows remain readable without blending into it.
+    if raw in {"unknown", "live", "live-legacy"}:
+        if account == LIVE_STABILITY_ACCOUNT_ID:
+            return "live"
+        if not account or account == SHARED_ACCOUNT_ID:
+            return "live-legacy"
+        return "unknown"
     return raw
 
 
@@ -70,10 +87,13 @@ def execution_profile_key(profile: object) -> str:
     if published in {
         "research",
         "research-target-v1",
+        "research-target-v2",
         "research-target",
         "research-motion",
     }:
         return "research"
+    if published == "live-legacy":
+        return "live"
     return published
 
 

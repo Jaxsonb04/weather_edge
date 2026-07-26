@@ -12,6 +12,7 @@ from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
     TARGET_POLICY_V1,
+    TARGET_POLICY_V2,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
@@ -27,25 +28,38 @@ from sfo_kalshi_quant.research_portfolio import (
 )
 
 
-def test_target_growth_v2_becomes_active_without_rewriting_v1_identity() -> None:
+def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> None:
     assert TARGET_POLICY_V1.account_id == "paper-research-target-v1"
     assert TARGET_POLICY_V1.policy_version == "research-target-v1"
     assert TARGET_POLICY_V1.policy_fingerprint == "dea759010dc85ca5f4f610e2"
 
-    assert TARGET_POLICY.account_id == "paper-research-target-v2"
-    assert TARGET_POLICY.policy_version == "research-target-growth-v2"
+    assert TARGET_POLICY_V2.account_id == "paper-research-target-v2"
+    assert TARGET_POLICY_V2.policy_version == "research-target-growth-v2"
+    assert TARGET_POLICY_V2.reference_equity == 1000.0
+    assert TARGET_POLICY_V2.target_return == 0.016
+    assert TARGET_POLICY_V2.target_pnl == 16.0
+    assert TARGET_POLICY_V2.max_position_risk_pct == 0.06
+    assert TARGET_POLICY_V2.max_city_target_risk_pct == 0.06
+    assert TARGET_POLICY_V2.max_region_day_risk_pct == 0.12
+    assert TARGET_POLICY_V2.max_aggregate_risk_pct == 0.25
+    assert TARGET_POLICY_V2.daily_loss_pause_pct == 0.10
+    assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
+
+    assert TARGET_POLICY.account_id == "paper-research-roi-v3"
+    assert TARGET_POLICY.policy_version == "research-target-roi-v3"
     assert TARGET_POLICY.reference_equity == 1000.0
-    assert TARGET_POLICY.target_return == 0.016
-    assert TARGET_POLICY.target_pnl == 16.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.06
-    assert TARGET_POLICY.max_city_target_risk_pct == 0.06
-    assert TARGET_POLICY.max_region_day_risk_pct == 0.12
-    assert TARGET_POLICY.max_aggregate_risk_pct == 0.25
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.10
-    assert TARGET_POLICY.allocator_version == "policy-sized-v2"
+    assert TARGET_POLICY.target_return == 0.05
+    assert TARGET_POLICY.target_pnl == 50.0
+    assert TARGET_POLICY.max_position_risk_pct == 0.08
+    assert TARGET_POLICY.max_city_target_risk_pct == 0.10
+    assert TARGET_POLICY.max_region_day_risk_pct == 0.20
+    assert TARGET_POLICY.max_aggregate_risk_pct == 0.40
+    assert TARGET_POLICY.daily_loss_pause_pct == 0.12
+    assert TARGET_POLICY.allocator_version == "policy-sized-v3"
 
     assert ALL_RESEARCH_POLICIES == (
         TARGET_POLICY_V1,
+        TARGET_POLICY_V2,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -97,8 +111,8 @@ def test_resting_structural_target_uses_the_active_policy_position_budget() -> N
     )
 
     assert len(plans.target.legs) == 1
-    assert plans.target.legs[0].decision.recommended_contracts == 80.0
-    assert plans.target.legs[0].spend == 60.0
+    assert plans.target.legs[0].decision.recommended_contracts == 106.0
+    assert plans.target.legs[0].spend == 79.5
 
 
 def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
@@ -142,8 +156,8 @@ def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
     assert order["account_id"] == TARGET_POLICY.account_id
     assert order["entry_mode"] == "limit"
     assert order["status"] == "PAPER_LIMIT_RESTING"
-    assert order["contracts"] == 80.0
-    assert order["reserved_cost"] == 60.0
+    assert order["contracts"] == 106.0
+    assert order["reserved_cost"] == 79.5
 
 
 def test_crossing_structural_target_stays_clamped_to_visible_depth() -> None:
@@ -182,7 +196,7 @@ def test_structural_target_does_not_expand_a_fee_bearing_source_quote() -> None:
     assert plans.target.legs[0].decision.recommended_contracts == 25.0
 
 
-def test_v1_and_v2_target_evidence_keep_distinct_published_identities() -> None:
+def test_all_target_eras_keep_distinct_published_identities() -> None:
     def published(policy) -> str:
         return published_profile_key(
             "research",
@@ -193,19 +207,21 @@ def test_v1_and_v2_target_evidence_keep_distinct_published_identities() -> None:
         )
 
     assert published(TARGET_POLICY_V1) == "research-target-v1"
+    assert published(TARGET_POLICY_V2) == "research-target-v2"
     assert published(TARGET_POLICY) == "research-target"
     assert execution_profile_key("research-target-v1") == "research"
+    assert execution_profile_key("research-target-v2") == "research"
     assert execution_profile_key("research-target") == "research"
 
 
-def test_active_routing_uses_v2_while_v1_remains_a_known_research_account(
+def test_active_routing_uses_v3_while_prior_accounts_remain_known(
     tmp_path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore
 
     assert account_for_research_sleeve(ResearchSleeve.TARGET) == TARGET_POLICY.account_id
 
-    store = PaperStore(tmp_path / "target-v2-routing.db")
+    store = PaperStore(tmp_path / "target-v3-routing.db")
     archived = store.research_account_state(account_id=TARGET_POLICY_V1.account_id)
     assert archived is not None
     assert archived["status"] == "ARCHIVED"
@@ -248,7 +264,7 @@ def test_archived_v1_policy_cannot_admit_new_research_orders(tmp_path) -> None:
         store._policy_for_research_admission(admission)
 
 
-def test_legacy_v1_outcomes_remain_readable_after_v2_activation(tmp_path) -> None:
+def test_legacy_v1_outcomes_remain_readable_after_v3_activation(tmp_path) -> None:
     from sfo_kalshi_quant.db import PaperStore
 
     objective_day = date(2026, 7, 25)
@@ -256,12 +272,13 @@ def test_legacy_v1_outcomes_remain_readable_after_v2_activation(tmp_path) -> Non
     order_id = store.record_paper_order(
         "2026-07-26",
         _structural_target_candidate(bid=0.74, ask=0.76, ask_size=5.0),
-        risk_profile="research",
+        risk_profile="live",
     )
     assert order_id is not None
     with store.connect() as conn:
         conn.execute(
-            "UPDATE paper_orders SET account_id=?, research_sleeve=?, "
+            "UPDATE paper_orders SET account_id=?, risk_profile='research', "
+            "research_sleeve=?, "
             "research_policy_version=?, policy_fingerprint=?, objective_day=?, "
             "lead_bucket='day-ahead', scan_run_id='legacy-v1', "
             "reentry_fingerprint='legacy-v1-entry', status='PAPER_CLOSED', "
@@ -283,7 +300,7 @@ def test_legacy_v1_outcomes_remain_readable_after_v2_activation(tmp_path) -> Non
     ) == 5.0
 
 
-def test_fresh_store_bootstraps_separate_v1_v2_and_motion_accounts(tmp_path) -> None:
+def test_fresh_store_bootstraps_every_research_policy_account(tmp_path) -> None:
     from sfo_kalshi_quant.db import PaperStore
 
     store = PaperStore(tmp_path / "target-v2-bootstrap.db")
@@ -295,6 +312,7 @@ def test_fresh_store_bootstraps_separate_v1_v2_and_motion_accounts(tmp_path) -> 
     assert set(states) == {
         "paper-research-target-v1",
         "paper-research-target-v2",
+        "paper-research-roi-v3",
         "paper-research-motion-v1",
     }
     assert all(state is not None for state in states.values())
@@ -302,7 +320,7 @@ def test_fresh_store_bootstraps_separate_v1_v2_and_motion_accounts(tmp_path) -> 
     assert all(state["available_cash"] == 1000.0 for state in states.values())
 
 
-def test_upgrade_preserves_v1_goal_and_creates_a_separate_v2_goal(tmp_path) -> None:
+def test_upgrade_preserves_v1_goal_and_creates_a_separate_v3_goal(tmp_path) -> None:
     from sfo_kalshi_quant.db import PaperStore
 
     db_path = tmp_path / "target-v1-upgrade.db"
@@ -338,20 +356,20 @@ def test_upgrade_preserves_v1_goal_and_creates_a_separate_v2_goal(tmp_path) -> N
             "FROM research_daily_goals ORDER BY account_id"
         ).fetchall()
 
-    assert active.target_pnl == 16.0
+    assert active.target_pnl == 50.0
     assert report["account_id"] == TARGET_POLICY.account_id
     assert report["policy_version"] == TARGET_POLICY.policy_version
     assert rows == [
+        (
+            TARGET_POLICY.account_id,
+            TARGET_POLICY.policy_version,
+            TARGET_POLICY.policy_fingerprint,
+            50.0,
+        ),
         (
             TARGET_POLICY_V1.account_id,
             TARGET_POLICY_V1.policy_version,
             TARGET_POLICY_V1.policy_fingerprint,
             50.0,
-        ),
-        (
-            TARGET_POLICY.account_id,
-            TARGET_POLICY.policy_version,
-            TARGET_POLICY.policy_fingerprint,
-            16.0,
         ),
     ]

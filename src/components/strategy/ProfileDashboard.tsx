@@ -29,7 +29,7 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
   live: {
     icon: "solar:shield-check-bold",
     blurb:
-      "The real-money candidate. Trades only when the lower-bound edge is non-negative, forecast sources agree, and liquidity is structural — and stays paper-only until every go-live check passes.",
+      "The stability book. It preserves the proven strict edge and liquidity gates, prioritizes dependable wins and controlled drawdown, and remains paper-only until every readiness check passes.",
   },
   research: {
     icon: "solar:test-tube-bold",
@@ -39,7 +39,7 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
   "research-target": {
     icon: "solar:target-bold",
     blurb:
-      "The fixed-objective research account. It pursues its policy-defined daily realized paper P&L objective without relaxing risk or edge gates, and remains separate from the live candidate's record and readiness.",
+      "The Research ROI book. Its fixed $50 daily paper KPI equals 5% of the original $1,000 capital; higher bounded risk is allowed here, while its results stay completely outside live readiness.",
   },
   "research-motion": {
     icon: "solar:chart-2-bold",
@@ -49,8 +49,8 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
 };
 
 function profileBadge(p: ProfileEntry) {
-  if (p.risk_profile === "live") return "Primary";
-  if (p.risk_profile === "research-target") return "Daily target";
+  if (p.risk_profile === "live") return "Stability · readiness";
+  if (p.risk_profile === "research-target") return "ROI research · 5% KPI";
   if (p.risk_profile === "research-motion") return "Experimental · high activity";
   return p.profile_type === "primary" ? "Primary" : "Experimental";
 }
@@ -199,6 +199,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const target = researchDailyTarget(s, p);
   const primary = p.profile_type === "primary";
   const pnl = sum?.realized_pnl ?? 0;
+  const totalBalance = p.daily_summary?.current_equity;
   const charts = p.signal_quality?.charts;
   const days = p.daily_summary?.days;
   const rejections = (gate?.top_rejections_all?.length ? gate.top_rejections_all : gate?.top_rejections ?? []).slice(0, 5);
@@ -236,7 +237,15 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
         </Card.Header>
         <Card.Content className="space-y-4 pt-0">
           {copy && <p className="max-w-3xl text-sm leading-relaxed text-muted">{copy.blurb}</p>}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(7.5rem,1fr))] gap-x-6 gap-y-4">
+            <Stat
+              label="Total balance"
+              value={
+                totalBalance == null
+                  ? "—"
+                  : money(totalBalance, { sign: "negative-only" })
+              }
+            />
             <Stat label="Resolved trades" value={`${allTimeClosed}`} />
             <Stat label="Hit rate" value={sum?.hit_rate == null ? "—" : `${pct(sum.hit_rate, 1)} · ${sum.win_count}–${sum.loss_count}`} />
             <Stat label="Realized P&L" value={money(pnl)} tone={pnl > 0 ? "pos" : pnl < 0 ? "neg" : "default"} />
@@ -267,7 +276,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           startingBankroll={0}
           windowDays={p.daily_summary?.window_days}
           title={`${p.label} — P&L contribution`}
-          description={`Cumulative realized P&L attributed to this isolated book · ${p.daily_summary?.window_days ?? days.length}-day view`}
+          description={`Daily and cumulative realized P&L; true account balance appears on hover · ${p.daily_summary?.window_days ?? days.length}-day view`}
           contributionMode
         />
       ) : (

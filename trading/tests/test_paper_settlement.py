@@ -96,12 +96,18 @@ def test_sql_sampling_reports_unknown_stored_profile_clearly():
     decision = _profile_sampling_decision()
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        store.record_decisions(
+        decision_ids = store.record_decisions(
             "2026-06-03",
             [decision],
             event=pre_resolution_event([decision]),
-            risk_profile="mystery-profile",
+            risk_profile="live",
         )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE decision_snapshots SET risk_profile='mystery-profile' "
+                "WHERE id=?",
+                (decision_ids[0],),
+            )
 
         with pytest.raises(ValueError) as exc_info:
             store.sampled_decision_rows(sample_mode="entry-per-market-side")
@@ -116,12 +122,18 @@ def test_python_sampling_reports_unknown_stored_profile_clearly():
     decision = _profile_sampling_decision()
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        store.record_decisions(
+        decision_ids = store.record_decisions(
             "2026-06-03",
             [decision],
             event=pre_resolution_event([decision]),
-            risk_profile="mystery-profile",
+            risk_profile="live",
         )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE decision_snapshots SET risk_profile='mystery-profile' "
+                "WHERE id=?",
+                (decision_ids[0],),
+            )
         rows = store.sampled_decision_rows(sample_mode="all")
 
         with pytest.raises(ValueError) as exc_info:
@@ -1175,7 +1187,7 @@ def test_market_summary_excludes_invalid_group_counts_and_money():
             edge=0.17,
         )
         valid_id = store.record_paper_order(
-            "2026-06-03", valid_decision, risk_profile="research"
+            "2026-06-03", valid_decision, risk_profile="live"
         )
         valid_lot = store.close_paper_order(valid_id, 0.70)
         valid_contracts = float(valid_lot["contracts"])
@@ -1232,7 +1244,7 @@ def test_market_summary_excludes_invalid_group_counts_and_money():
         assert payload["days"][-1]["closing_attributed_pnl"] == round(valid_pnl, 2)
 
         assert [row["risk_profile"] for row in payload["profiles"]] == [
-            "research"
+            "live"
         ]
         profile = payload["profiles"][0]
         assert profile["resolved"] == 1
@@ -1260,10 +1272,10 @@ def test_market_summary_excludes_invalid_group_counts_and_money():
             "hit_rate": None,
             "roi": None,
         }
-        assert set(payload["side_performance_by_profile"]) == {"research"}
-        research_sides = payload["side_performance_by_profile"]["research"]
-        assert research_sides["NO"] == no_side
-        assert research_sides["YES"] == payload["side_performance"]["YES"]
+        assert set(payload["side_performance_by_profile"]) == {"live"}
+        live_sides = payload["side_performance_by_profile"]["live"]
+        assert live_sides["NO"] == no_side
+        assert live_sides["YES"] == payload["side_performance"]["YES"]
 
 
 def test_market_summary_counts_partial_realization_money_without_resolving_root():
@@ -1470,7 +1482,7 @@ def test_place_arbitrage_blocks_when_market_already_has_open_position():
 def test_place_arbitrage_preflight_rejects_existing_resting_limit_before_any_leg():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        trader = PaperTrader(store, risk_profile="research")
+        trader = PaperTrader(store, risk_profile="live")
         market = MarketBin(
             ticker="KXHIGHTSFO-TEST-B68.5",
             event_ticker="KXHIGHTSFO-TEST",
@@ -1500,7 +1512,7 @@ def test_place_arbitrage_preflight_rejects_existing_resting_limit_before_any_leg
         assert store.record_paper_order(
             "2026-06-03",
             resting,
-            risk_profile="research",
+            risk_profile="live",
             status="PAPER_LIMIT_RESTING",
             entry_mode="limit",
         ) is not None
@@ -1514,7 +1526,7 @@ def test_place_arbitrage_preflight_rejects_existing_resting_limit_before_any_leg
 def test_place_arbitrage_compensates_first_leg_when_second_leg_races():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        trader = PaperTrader(store, risk_profile="research")
+        trader = PaperTrader(store, risk_profile="live")
         market = MarketBin(
             ticker="KXHIGHTSFO-TEST-B68.5",
             event_ticker="KXHIGHTSFO-TEST",
@@ -1565,7 +1577,7 @@ def test_place_arbitrage_compensates_first_leg_when_second_leg_races():
 def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        trader = PaperTrader(store, risk_profile="research")
+        trader = PaperTrader(store, risk_profile="live")
         decision = TradeDecision(
             ticker="KXHIGHTSFO-TEST-B68.5",
             label="68° to 69°",
@@ -1595,7 +1607,7 @@ def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
         order_id = store.record_paper_order(
             "2026-06-03",
             decision,
-            risk_profile="research",
+            risk_profile="live",
             status="PAPER_LIMIT_RESTING",
             entry_mode="limit",
             group_id=group_id,
@@ -1623,10 +1635,9 @@ def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
         assert row["exit_price"] == row["entry_bid"] == 0.40
         assert row["realized_pnl"] < 0
         assert str(row["group_id"]).startswith("DEGRADED-ARB-")
-        # Research-profile orders book against the research shadow ledger
-        # (audit AC-01); the compensation close must reconcile there while the
-        # live shared account stays untouched.
-        state = store.research_account_state()
+        # The supported live fixture must reconcile in the fresh stability
+        # ledger after the compensation close.
+        state = store.live_account_state()
         assert abs(state["realized_equity"] - (1000.0 + row["realized_pnl"])) < 1e-9
         assert store.shared_account_state()["realized_equity"] == 1000.0
         with store.connect() as conn:
@@ -1693,7 +1704,7 @@ def test_arbitrage_compensation_raises_fatal_when_active_leg_cannot_be_contained
         assert str(store.paper_order(order_id)["group_id"]).startswith("DEGRADED-ARB-")
 
 
-def test_place_approved_keeps_profiles_in_separate_paper_books():
+def test_place_approved_keeps_archived_generic_research_fail_closed():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         balanced = PaperTrader(store, risk_profile="live")
@@ -1720,11 +1731,11 @@ def test_place_approved_keeps_profiles_in_separate_paper_books():
 
         assert len(balanced.place_approved("2026-06-03", [decision])) == 1
         assert balanced.place_approved("2026-06-03", [decision]) == []
-        assert len(fast.place_approved("2026-06-03", [decision])) == 1
+        assert fast.place_approved("2026-06-03", [decision]) == []
 
         rows = store.paper_orders(10)
-        assert {row["risk_profile"] for row in rows} == {"live", "research"}
-        assert len(store.open_paper_orders(10)) == 2
+        assert {row["risk_profile"] for row in rows} == {"live"}
+        assert len(store.open_paper_orders(10)) == 1
 
 
 def test_place_approved_blocks_reentry_after_close_by_default():

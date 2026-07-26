@@ -93,9 +93,9 @@ TARGET_POLICY_V1 = ResearchSleevePolicy(
 )
 
 
-# Active paper-only growth experiment.  A fresh account and policy identity
-# preserve the complete v1 ledger as an independent historical control.
-TARGET_POLICY = ResearchSleevePolicy(
+# Frozen paper-only growth experiment. Its ledger remains an independent
+# historical control after the v3 account cutover.
+TARGET_POLICY_V2 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-target-v2",
     policy_version="research-target-growth-v2",
@@ -109,6 +109,24 @@ TARGET_POLICY = ResearchSleevePolicy(
     min_lead_days=1,
     one_contract=False,
     allocator_version="policy-sized-v2",
+)
+
+# Active paper-only ROI experiment. A fresh account keeps v1 and v2 evidence
+# immutable while applying the bounded aggressive limits chosen for v3.
+TARGET_POLICY = ResearchSleevePolicy(
+    sleeve=ResearchSleeve.TARGET,
+    account_id="paper-research-roi-v3",
+    policy_version="research-target-roi-v3",
+    reference_equity=1000.0,
+    target_return=0.05,
+    max_position_risk_pct=0.08,
+    max_city_target_risk_pct=0.10,
+    max_region_day_risk_pct=0.20,
+    max_aggregate_risk_pct=0.40,
+    daily_loss_pause_pct=0.12,
+    min_lead_days=1,
+    one_contract=False,
+    allocator_version="policy-sized-v3",
 )
 
 
@@ -133,6 +151,7 @@ MOTION_POLICY = ResearchSleevePolicy(
 
 ALL_RESEARCH_POLICIES = (
     TARGET_POLICY_V1,
+    TARGET_POLICY_V2,
     TARGET_POLICY,
     MOTION_POLICY,
 )

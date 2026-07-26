@@ -97,7 +97,7 @@ def test_legacy_stored_profile_names_are_migrated_on_init():
         # Record valid rows, then stamp legacy names directly to simulate a DB
         # written before the collapse.
         store.record_paper_order("2026-06-12", _decision("T-A"), risk_profile="live")
-        store.record_paper_order("2026-06-12", _decision("T-B"), risk_profile="research")
+        store.record_paper_order("2026-06-12", _decision("T-B"), risk_profile="live")
         store.record_decisions("2026-06-12", [_decision("T-C")], risk_profile="live")
         with store.connect() as conn:
             conn.execute("UPDATE paper_orders SET risk_profile='balanced' WHERE market_ticker='T-A'")

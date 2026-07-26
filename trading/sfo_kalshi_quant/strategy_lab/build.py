@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,8 @@ from ..config import (
     strategy_config_for_profile,
 )
 from ..account import (
+    INITIAL_CAPITAL,
+    LIVE_STABILITY_ACCOUNT_ID,
     RESEARCH_ACCOUNT_ID,
     SHARED_ACCOUNT_ID,
     WEEKLY_GOAL_TZ,
@@ -32,7 +35,12 @@ from ..dataset_research import build_dataset_research as build_dataset_research_
 from ..forecast import ForecastDataError, SfoForecasterAdapter
 from ..forecast_scorecards import build_forecast_scorecards
 from ..maker_fills import EXECUTION_MODEL_VERSION
-from ..research_policy import MOTION_POLICY, TARGET_POLICY, TARGET_POLICY_V1
+from ..research_policy import (
+    MOTION_POLICY,
+    TARGET_POLICY,
+    TARGET_POLICY_V1,
+    TARGET_POLICY_V2,
+)
 from ..replay import replay_from_database
 from ..summary import build_paper_summary
 from . import CHALLENGER_CALIBRATION_SOURCE
@@ -212,10 +220,29 @@ def build_strategy_research(
             else None
         ),
     )
-    profiles = _profile_views(
-        daily_summary=daily_summary,
-        paper=paper,
-        signal_quality=signal_quality,
+    accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
+    if accounting.get("available") is False:
+        accounting_reason = str(
+            accounting.get("reason")
+            or "fresh active paper ledgers are unavailable"
+        )
+        real_money_readiness = {
+            "available": False,
+            "profile": "live",
+            "status": "NOT_READY",
+            "status_reasons": [accounting_reason],
+            "reason": (
+                "live readiness suppressed because account validation failed: "
+                f"{accounting_reason}"
+            ),
+        }
+    profiles = _bind_accounting_to_profiles(
+        _profile_views(
+            daily_summary=daily_summary,
+            paper=paper,
+            signal_quality=signal_quality,
+        ),
+        accounting,
     )
     status = _status_payload(
         config=cfg,
@@ -226,7 +253,6 @@ def build_strategy_research(
         paper=paper,
         forecast_health=forecast_health,
     )
-    accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
     generated_at = datetime.now(UTC).isoformat()
     if fast_publication:
         analysis_generated_at = (
@@ -254,7 +280,7 @@ def build_strategy_research(
         }
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "available": True,
         "mode": "paper_research_only",
         "live_orders_enabled": False,
@@ -622,64 +648,153 @@ def _accounting_payload(
     *,
     db_path: Path,
 ) -> dict[str, Any]:
-    """Publish account-scoped balances; never mix live cash with research P&L."""
+    """Publish the two active ledgers and a separate read-only archive."""
 
     if not db_path.exists():
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "available": False,
             "reason": "paper account database unavailable",
             "accounts": {},
+            "active_ledgers": {},
+            "archived_accounts": [],
         }
 
     store = PaperStore(db_path, init=False)
-    live = _account_snapshot(store, SHARED_ACCOUNT_ID, role="live")
-    research = _account_snapshot(store, RESEARCH_ACCOUNT_ID, role="research")
+    live = _account_snapshot(
+        store,
+        LIVE_STABILITY_ACCOUNT_ID,
+        role="live_stability",
+        daily_summary=daily_summary,
+    )
     research_target = _account_snapshot(
         store,
         TARGET_POLICY.account_id,
-        role="research_target",
+        role="research_roi",
+        daily_summary=daily_summary,
     )
-    research_target_v1 = _account_snapshot(
-        store,
-        TARGET_POLICY_V1.account_id,
-        role="research_target_archived",
+    active_snapshots_valid = (
+        _active_account_snapshot_is_valid(
+            store,
+            live,
+            expected_account_id=LIVE_STABILITY_ACCOUNT_ID,
+        )
+        and _active_account_snapshot_is_valid(
+            store,
+            research_target,
+            expected_account_id=TARGET_POLICY.account_id,
+        )
     )
-    research_motion = _account_snapshot(
-        store,
-        MOTION_POLICY.account_id,
-        role="research_motion",
-    )
-    if live is None:
+    if not active_snapshots_valid:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "available": False,
-            "reason": "live paper account unavailable",
+            "reason": "fresh active paper ledgers invalid or unavailable",
             "accounts": {},
+            "active_ledgers": {},
+            "archived_accounts": [],
         }
-    accounts: dict[str, Any] = {"live": live}
-    if research is not None:
-        accounts["research"] = research
-    if research_target is not None:
-        accounts["research_target"] = research_target
-    if research_target_v1 is not None:
-        accounts["research_target_v1"] = research_target_v1
-    if research_motion is not None:
-        accounts["research_motion"] = research_motion
-    combined = _combined_account(live, research) if research is not None else None
+
+    archive_specs = (
+        (
+            "legacy_live",
+            "legacy-shared-account",
+            "Legacy shared paper account",
+            SHARED_ACCOUNT_ID,
+            "legacy_shared",
+            "live-legacy",
+        ),
+        (
+            "legacy_research",
+            "legacy-research-shadow-account",
+            "Legacy research shadow account",
+            RESEARCH_ACCOUNT_ID,
+            "legacy_research",
+            "research",
+        ),
+        (
+            "research_target_v1",
+            "research-target-v1",
+            "Research target v1 achieved performance",
+            TARGET_POLICY_V1.account_id,
+            "research_target_archived",
+            "research-target-v1",
+        ),
+        (
+            "research_target_v2",
+            "research-target-v2",
+            "Research target v2 achieved performance",
+            TARGET_POLICY_V2.account_id,
+            "research_target_archived",
+            "research-target-v2",
+        ),
+        (
+            "research_motion",
+            "research-motion",
+            "Research motion achieved performance",
+            MOTION_POLICY.account_id,
+            "research_motion_archived",
+            "research-motion",
+        ),
+    )
+    archived_accounts: list[dict[str, Any]] = []
+    accounts: dict[str, Any] = {
+        "live": live,
+        "research_target": research_target,
+    }
+    for (
+        key,
+        profile_key,
+        label,
+        account_id,
+        role,
+        attribution_profile_key,
+    ) in archive_specs:
+        snapshot = _account_snapshot(
+            store,
+            account_id,
+            role=role,
+            daily_summary=None,
+        )
+        if snapshot is None:
+            continue
+        archived = {
+            **snapshot,
+            "key": key,
+            "profile_key": profile_key,
+            "attribution_profile_key": attribution_profile_key,
+            "label": label,
+            "status": (
+                "ARCHIVED_SETTLING"
+                if (
+                    int(snapshot.get("open_positions") or 0) > 0
+                    or int(snapshot.get("pending_limit_orders") or 0) > 0
+                )
+                else "ARCHIVED"
+            ),
+        }
+        archived_accounts.append(archived)
+        accounts[key] = archived
+
+    active_ledgers = {
+        "live_stability": live,
+        "research_roi": research_target,
+    }
+    combined = _combined_account(live, research_target)
     goal = _weekly_goal_payload(store, live)
 
-    # Keep the v1 headline keys for one release. They are aliases of the LIVE
-    # account only; callers can no longer accidentally combine research P&L
-    # with live cash.
+    # Headline compatibility aliases continue to mean the active live account
+    # only. Archived and research balances never flow through these fields.
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "available": True,
         "accounts": accounts,
+        "active_ledgers": active_ledgers,
+        "archived_accounts": archived_accounts,
         "combined": combined,
         "goal": goal,
         "account_id": live["account_id"],
-        "accounting_cohort": "account_scoped_v4",
+        "accounting_cohort": "fresh_ledgers_v1",
         "initial_capital": live["initial_equity"],
         "all_time_realized_pnl": live["realized_pnl"],
         "window_realized_pnl": goal["weekly_realized_pnl"],
@@ -698,11 +813,74 @@ def _accounting_payload(
         "reconciliation_status": live["reconciliation_status"],
         "reconciliation_difference": live["reconciliation_difference"],
         "research_accounts_excluded_from_live_goal_and_readiness": [
+            RESEARCH_ACCOUNT_ID,
             TARGET_POLICY_V1.account_id,
+            TARGET_POLICY_V2.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
         ],
     }
+
+
+def _active_account_snapshot_is_valid(
+    store: PaperStore,
+    snapshot: dict[str, Any] | None,
+    *,
+    expected_account_id: str,
+) -> bool:
+    """Fail publication closed unless a fresh ledger matches its fixed policy."""
+
+    if (
+        snapshot is None
+        or snapshot.get("account_id") != expected_account_id
+        or snapshot.get("status") != "ACTIVE"
+        or snapshot.get("reconciliation_status") != "reconciled"
+        or not math.isclose(
+            _to_float(snapshot.get("initial_equity")),
+            INITIAL_CAPITAL,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    ):
+        return False
+    with store.connect() as conn:
+        row = conn.execute(
+            "SELECT status, initial_capital, opening_cash FROM paper_accounts "
+            "WHERE account_id=?",
+            (expected_account_id,),
+        ).fetchone()
+    account_row_valid = bool(
+        row is not None
+        and str(row[0]) == "ACTIVE"
+        and math.isclose(
+            float(row[1]),
+            INITIAL_CAPITAL,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+        and math.isclose(
+            float(row[2]),
+            INITIAL_CAPITAL,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    )
+    if not account_row_valid:
+        return False
+    today = datetime.now(WEEKLY_GOAL_TZ).date().isoformat()
+    today_rows = [
+        day
+        for day in list(snapshot.get("days") or [])
+        if str(day.get("date") or "") == today
+    ]
+    if today_rows and not math.isclose(
+        _to_float(today_rows[-1].get("closing_equity")),
+        _to_float(snapshot.get("realized_equity")),
+        rel_tol=0.0,
+        abs_tol=0.005,
+    ):
+        return False
+    return True
 
 
 def _account_snapshot(
@@ -710,6 +888,7 @@ def _account_snapshot(
     account_id: str,
     *,
     role: str,
+    daily_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     state = store._account_state(
         account_id,
@@ -723,8 +902,18 @@ def _account_snapshot(
         "PAPER_PARTIAL_EXPIRED",
     )
     placeholders = ",".join("?" for _ in open_statuses)
+    pending_statuses = (
+        "PAPER_LIMIT_RESTING",
+        "PAPER_PARTIALLY_FILLED",
+    )
+    pending_placeholders = ",".join("?" for _ in pending_statuses)
     with store.connect() as conn:
         conn.row_factory = sqlite3.Row
+        account_row = conn.execute(
+            "SELECT created_at, status, cutover_note FROM paper_accounts "
+            "WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
         resolved = conn.execute(
             "SELECT COALESCE(SUM(realized_pnl),0), "
             "COALESCE(SUM(contracts * cost_per_contract),0) FROM paper_orders "
@@ -735,6 +924,13 @@ def _account_snapshot(
             f"SELECT id FROM paper_orders WHERE account_id=? "
             f"AND status IN ({placeholders}) AND settled_at IS NULL AND closed_at IS NULL",
             (account_id, *open_statuses),
+        ).fetchall()
+        pending_rows = conn.execute(
+            f"SELECT id, COALESCE(reserved_cost, 0) AS reserved_cost "
+            f"FROM paper_orders WHERE account_id=? "
+            f"AND status IN ({pending_placeholders}) "
+            "AND settled_at IS NULL AND closed_at IS NULL",
+            (account_id, *pending_statuses),
         ).fetchall()
         unrealized_rows: list[sqlite3.Row] = []
         if open_rows and _db_table_exists(store.db_path, "paper_monitor_snapshots"):
@@ -752,6 +948,8 @@ def _account_snapshot(
                 (account_id, *open_statuses),
             ).fetchall()
     open_count = len(open_rows)
+    pending_count = len(pending_rows)
+    pending_risk = sum(float(row["reserved_cost"] or 0.0) for row in pending_rows)
     marked_count = sum(row["unrealized_pnl"] is not None for row in unrealized_rows)
     marks_complete = open_count == 0 or marked_count == open_count
     unrealized = (
@@ -764,15 +962,25 @@ def _account_snapshot(
     realized_pnl = realized_equity - initial
     resolved_pnl = float(resolved[0] or 0.0)
     resolved_capital = float(resolved[1] or 0.0)
-    identity_difference = (
-        _to_float(state["available_cash"])
-        + _to_float(state["reservations"])
-        + _to_float(state["open_cost_basis"])
-        - realized_equity
-    )
-    return {
+    reconciliation = store.account_order_ledger_reconciliation(account_id)
+    snapshot = {
         "account_id": account_id,
         "role": role,
+        "created_at": (
+            str(account_row["created_at"])
+            if account_row is not None and account_row["created_at"] is not None
+            else None
+        ),
+        "status": (
+            str(account_row["status"])
+            if account_row is not None and account_row["status"] is not None
+            else "UNKNOWN"
+        ),
+        "cutover_note": (
+            str(account_row["cutover_note"])
+            if account_row is not None and account_row["cutover_note"] is not None
+            else None
+        ),
         "verification_scope": (
             f"{EXECUTION_MODEL_VERSION} fills only; "
             "legacy outcomes retained as unverified"
@@ -783,6 +991,8 @@ def _account_snapshot(
         "reservations": _round(state["reservations"], 2),
         "open_cost_basis": _round(state["open_cost_basis"], 2),
         "open_positions": open_count,
+        "pending_limit_orders": pending_count,
+        "pending_limit_risk": _round(pending_risk, 2),
         "realized_equity": _round(realized_equity, 2),
         "realized_pnl": _round(realized_pnl, 2),
         "booked_resolved_pnl": _round(resolved_pnl, 2),
@@ -802,10 +1012,287 @@ def _account_snapshot(
             _round(resolved_pnl / resolved_capital, 6) if resolved_capital > 0 else None
         ),
         "reconciliation_status": (
-            "reconciled" if abs(identity_difference) < 0.005 else "mismatch"
+            str(reconciliation["status"])
         ),
-        "reconciliation_difference": _round(identity_difference, 2),
+        "reconciliation_difference": _round(
+            reconciliation.get("difference"),
+            2,
+        ),
+        "reconciliation_mismatched_order_ids": list(
+            reconciliation.get("mismatched_order_ids") or []
+        ),
     }
+    if daily_summary is not None:
+        snapshot["days"] = _account_daily_balance_rows(
+            store,
+            account_id,
+            initial_equity=initial,
+            account_created_at=snapshot["created_at"],
+            day_rows=list(daily_summary.get("days") or []),
+        )
+    return snapshot
+
+
+def _account_daily_balance_rows(
+    store: PaperStore,
+    account_id: str,
+    *,
+    initial_equity: float,
+    account_created_at: object,
+    day_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return an account-only realized balance series for the published days."""
+
+    day_keys = sorted(
+        {
+            str(row.get("date"))
+            for row in day_rows
+            if row.get("date")
+        }
+    )
+    if not day_keys:
+        return []
+
+    created_day: str | None = None
+    if account_created_at:
+        try:
+            created = datetime.fromisoformat(
+                str(account_created_at).replace("Z", "+00:00")
+            )
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            created_day = created.astimezone(WEEKLY_GOAL_TZ).date().isoformat()
+        except ValueError:
+            created_day = None
+
+    with store.connect() as conn:
+        resolved_rows = conn.execute(
+            "SELECT COALESCE(closed_at, settled_at), COALESCE(realized_pnl, 0) "
+            "FROM paper_orders WHERE account_id=? "
+            "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
+            "AND COALESCE(closed_at, settled_at) IS NOT NULL "
+            "ORDER BY COALESCE(closed_at, settled_at), id",
+            (account_id,),
+        ).fetchall()
+
+    pnl_by_day: dict[str, float] = {}
+    for resolved_at, realized_pnl in resolved_rows:
+        try:
+            resolved = datetime.fromisoformat(
+                str(resolved_at).replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if resolved.tzinfo is None:
+            resolved = resolved.replace(tzinfo=UTC)
+        key = resolved.astimezone(WEEKLY_GOAL_TZ).date().isoformat()
+        pnl_by_day[key] = pnl_by_day.get(key, 0.0) + float(realized_pnl or 0.0)
+
+    first_day = day_keys[0]
+    cumulative = float(initial_equity) + sum(
+        pnl for key, pnl in pnl_by_day.items() if key < first_day
+    )
+    output: list[dict[str, Any]] = []
+    for key in day_keys:
+        if created_day is not None and key < created_day:
+            output.append(
+                {
+                    "date": key,
+                    "opening_equity": None,
+                    "daily_realized_pnl": 0.0,
+                    "realized_pnl": 0.0,
+                    "closing_equity": None,
+                    "cumulative_realized": 0.0,
+                }
+            )
+            continue
+        opening = cumulative
+        daily_pnl = pnl_by_day.get(key, 0.0)
+        cumulative += daily_pnl
+        output.append(
+            {
+                "date": key,
+                "opening_equity": _round(opening, 2),
+                "daily_realized_pnl": _round(daily_pnl, 2),
+                "realized_pnl": _round(daily_pnl, 2),
+                "closing_equity": _round(cumulative, 2),
+                "cumulative_realized": _round(cumulative - initial_equity, 2),
+            }
+        )
+    return output
+
+
+def _empty_bound_profile(
+    *,
+    label: str,
+    risk_profile: str,
+    profile_type: str,
+) -> dict[str, Any]:
+    return {
+        "label": label,
+        "risk_profile": risk_profile,
+        "profile_type": profile_type,
+        "daily_summary": {"days": [], "totals": {}},
+        "paper_trading": {
+            "available": True,
+            "summary": {
+                "closed_positions": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "hit_rate": None,
+                "realized_pnl": 0.0,
+                "roi": None,
+                "open_positions": 0,
+                "pending_limit_orders": 0,
+                "open_risk": 0.0,
+            },
+        },
+        "learnings": [],
+        "recommended_changes": [],
+        "excluded_from": [],
+    }
+
+
+def _bind_accounting_to_profiles(
+    profiles: list[dict[str, Any]],
+    accounting: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Attach true balances to active profiles and mark all prior books read-only."""
+
+    rows = [dict(profile) for profile in profiles]
+    archive_order = {
+        "live-legacy": 0,
+        "research-target-v1": 1,
+        "research-target-v2": 2,
+        "research-motion": 3,
+        "research": 4,
+    }
+    if accounting.get("available") is False:
+        archived_rows = [
+            row
+            for row in rows
+            if row.get("archived") is True
+            or str(row.get("risk_profile")) in archive_order
+        ]
+        return sorted(
+            archived_rows,
+            key=lambda row: (
+                archive_order.get(str(row.get("risk_profile")), 99),
+                str(row.get("risk_profile")),
+            ),
+        )
+
+    by_name = {
+        str(profile.get("risk_profile")): profile
+        for profile in rows
+        if profile.get("risk_profile")
+    }
+    active_specs = (
+        ("live", "Live Stability", "primary", "live_stability"),
+        (
+            "research-target",
+            "Research ROI · 5% daily KPI",
+            "experimental",
+            "research_roi",
+        ),
+    )
+    active_ledgers = accounting.get("active_ledgers") or {}
+    for profile_key, label, profile_type, account_key in active_specs:
+        if profile_key not in by_name and active_ledgers.get(account_key):
+            profile = _empty_bound_profile(
+                label=label,
+                risk_profile=profile_key,
+                profile_type=profile_type,
+            )
+            rows.append(profile)
+            by_name[profile_key] = profile
+
+    archived_accounts = list(accounting.get("archived_accounts") or [])
+    for account in archived_accounts:
+        profile_key = str(
+            account.get("attribution_profile_key")
+            or account.get("profile_key")
+            or ""
+        )
+        if not profile_key or profile_key not in archive_order:
+            continue
+        if profile_key not in by_name:
+            profile = _empty_bound_profile(
+                label=str(account.get("label") or profile_key),
+                risk_profile=profile_key,
+                profile_type=(
+                    "primary" if profile_key == "live-legacy" else "experimental"
+                ),
+            )
+            rows.append(profile)
+            by_name[profile_key] = profile
+        by_name[profile_key]["archived"] = True
+
+    profile_to_ledger = {
+        "live": "live_stability",
+        "research-target": "research_roi",
+    }
+    for profile_key, ledger_key in profile_to_ledger.items():
+        profile = by_name.get(profile_key)
+        account = active_ledgers.get(ledger_key)
+        if profile is None or not isinstance(account, dict):
+            continue
+        profile["archived"] = False
+        profile["account_key"] = ledger_key
+        daily = dict(profile.get("daily_summary") or {})
+        balances = {
+            str(day.get("date")): day
+            for day in account.get("days") or []
+            if day.get("date")
+        }
+        source_days = list(daily.get("days") or [])
+        if not source_days:
+            source_days = [
+                {
+                    "date": day.get("date"),
+                    "cumulative_realized": day.get("cumulative_realized", 0.0),
+                    "realized_pnl": day.get("realized_pnl", 0.0),
+                }
+                for day in account.get("days") or []
+            ]
+        merged_days = []
+        for source in source_days:
+            balance = balances.get(str(source.get("date"))) or {}
+            merged_days.append(
+                {
+                    **source,
+                    "opening_equity": balance.get("opening_equity"),
+                    "daily_realized_pnl": balance.get("daily_realized_pnl"),
+                    "closing_equity": balance.get("closing_equity"),
+                }
+            )
+        daily.update(
+            {
+                "available": True,
+                "equity_available": True,
+                "equity_basis": "account_equity",
+                "starting_bankroll": account.get("initial_equity"),
+                "bankroll": account.get("initial_equity"),
+                "current_equity": account.get("realized_equity"),
+                "days": merged_days,
+            }
+        )
+        profile["daily_summary"] = daily
+
+    active_order = {"live": 0, "research-target": 1}
+    return sorted(
+        rows,
+        key=lambda row: (
+            0
+            if str(row.get("risk_profile")) in active_order
+            else 1,
+            active_order.get(
+                str(row.get("risk_profile")),
+                archive_order.get(str(row.get("risk_profile")), 99),
+            ),
+            str(row.get("risk_profile")),
+        ),
+    )
 
 
 def _combined_account(live: dict[str, Any], research: dict[str, Any]) -> dict[str, Any]:
@@ -835,6 +1322,9 @@ def _combined_account(live: dict[str, Any], research: dict[str, Any]) -> dict[st
 
 
 def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, Any]:
+    live_account_id = str(
+        live.get("account_id") or LIVE_STABILITY_ACCOUNT_ID
+    )
     now_local = datetime.now(WEEKLY_GOAL_TZ)
     start_local = (now_local - timedelta(days=now_local.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -847,16 +1337,20 @@ def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, A
             "AND status IN ('PAPER_SETTLED','PAPER_CLOSED') "
             "AND COALESCE(closed_at,settled_at) IS NOT NULL "
             "ORDER BY COALESCE(closed_at,settled_at), id",
-            (SHARED_ACCOUNT_ID,),
+            (live_account_id,),
         ).fetchall()
         boundary_row = conn.execute(
             "SELECT MIN(created_at) FROM paper_account_ledger "
-            "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION' "
+            "WHERE account_id=? AND event_type='EXECUTION_SEMANTICS_TRANSITION' "
             "AND idempotency_key=?",
-            (f"execution:{EXECUTION_MODEL_VERSION}",),
+            (live_account_id, f"execution:{EXECUTION_MODEL_VERSION}"),
         ).fetchone()
 
-    evidence_boundary = boundary_row[0] if boundary_row else None
+    evidence_boundary = (
+        boundary_row[0]
+        if boundary_row and boundary_row[0]
+        else live.get("created_at")
+    )
     first_full_evidence_week: datetime | None = None
     if evidence_boundary:
         try:
@@ -922,7 +1416,7 @@ def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, A
 
     return {
         "metric": "weekly_realized_return",
-        "account_id": SHARED_ACCOUNT_ID,
+        "account_id": live_account_id,
         "timezone": str(WEEKLY_GOAL_TZ),
         "week_starts": "Monday 00:00",
         "period_start": start_local.isoformat(),
@@ -944,7 +1438,11 @@ def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, A
             first_full_evidence_week is not None and start_local >= first_full_evidence_week
         ),
         "execution_model_version": EXECUTION_MODEL_VERSION,
-        "excludes": ["research-shadow", "unrealized-marks"],
+        "excludes": [
+            "research-roi",
+            "archived-performance",
+            "unrealized-marks",
+        ],
         "disclaimer": "Research objective, not a guaranteed return; risk gates remain binding.",
     }
 

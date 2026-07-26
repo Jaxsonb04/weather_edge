@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID, RESEARCH_ACCOUNT_ID
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.paper import PaperTrader
@@ -35,15 +36,41 @@ def _decision(ticker: str = "KXHIGHTSFO-TEST-B70.5") -> TradeDecision:
     )
 
 
+def _record_archived_research_order(
+    store: PaperStore,
+    target_date: str,
+    decision: TradeDecision,
+) -> int:
+    """Seed a pre-cutover research outcome for historical breaker tests."""
+
+    order_id = store.record_paper_order(
+        target_date,
+        decision,
+        risk_profile="live",
+    )
+    assert order_id is not None
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET risk_profile='research', account_id=? "
+            "WHERE id=?",
+            (RESEARCH_ACCOUNT_ID, order_id),
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (RESEARCH_ACCOUNT_ID, order_id),
+        )
+    return order_id
+
+
 def test_research_pauses_after_five_bad_resolved_trades():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
         for idx in range(5):
-            order_id = store.record_paper_order(
+            order_id = _record_archived_research_order(
+                store,
                 "2026-06-12",
                 _decision(f"KXHIGHTSFO-TEST-B{70 + idx}.5"),
-                risk_profile="research",
             )
             store.close_paper_order(order_id, 0.01)
 
@@ -67,10 +94,10 @@ def test_research_pauses_after_five_bad_resolved_trades():
 def test_partial_exit_lots_do_not_count_as_resolved_trades():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        order_id = store.record_paper_order(
+        order_id = _record_archived_research_order(
+            store,
             "2026-06-12",
             _decision(),
-            risk_profile="research",
         )
         for _ in range(5):
             store.close_paper_order(order_id, 0.01, max_quantity=1.0)
@@ -92,10 +119,10 @@ def test_live_does_not_pause_from_research_losses():
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
         for idx in range(5):
-            order_id = store.record_paper_order(
+            order_id = _record_archived_research_order(
+                store,
                 "2026-06-12",
                 _decision(f"KXHIGHTSFO-TEST-B{70 + idx}.5"),
-                risk_profile="research",
             )
             store.close_paper_order(order_id, 0.01)
 
@@ -156,10 +183,10 @@ def test_research_pauses_after_daily_loss_limit():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
-        order_id = store.record_paper_order(
+        order_id = _record_archived_research_order(
+            store,
             "2026-06-12",
             _decision(),
-            risk_profile="research",
         )
         store.close_paper_order(order_id, 0.01)
 
@@ -225,7 +252,7 @@ def test_motion_daily_loss_pause_cannot_pause_target_or_live():
             "live",
             bankroll=1000.0,
             target_date="2026-07-19",
-            account_id="paper-shared",
+            account_id=LIVE_STABILITY_ACCOUNT_ID,
             now=datetime(2026, 7, 18, 21, 0, tzinfo=UTC),
         )
 

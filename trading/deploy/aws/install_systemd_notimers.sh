@@ -122,9 +122,13 @@ render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-monitor.service.in" /etc/syste
 render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-settle.service.in" /etc/systemd/system/sfo-kalshi-paper-settle.service
 render_unit "$SCRIPT_DIR/systemd/sfo-kalshi-paper-prune.service.in" /etc/systemd/system/sfo-kalshi-paper-prune.service
 render_unit "$SCRIPT_DIR/systemd/sfo-forecast-freshness.service.in" /etc/systemd/system/sfo-forecast-freshness.service
+render_unit "$SCRIPT_DIR/systemd/sfo-scheduler-health.service.in" /etc/systemd/system/sfo-scheduler-health.service
 render_unit "$SCRIPT_DIR/systemd/sfo-alert@.service.in" /etc/systemd/system/sfo-alert@.service
 
 chmod +x "$SCRIPT_DIR/check_forecast_db_freshness.sh" "$SCRIPT_DIR/wait_for_publication_manifest.sh" "$SCRIPT_DIR/send_systemd_failure_alert.sh" 2>/dev/null || true
+sudo install -d -m 755 /usr/local/libexec/weatheredge
+sudo install -m 755 "$SCRIPT_DIR/check_scheduler_health.sh" /usr/local/libexec/weatheredge/check_scheduler_health.sh
+sudo install -m 755 "$SCRIPT_DIR/verify_systemd_unit_integrity.sh" /usr/local/libexec/weatheredge/verify_systemd_unit_integrity.sh
 
 # Task 8 item 1: /run/weatheredge is created, owned, and permission-enforced
 # by a static tmpfiles.d entry rather than a per-unit RuntimeDirectory=,
@@ -147,6 +151,7 @@ sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-kalshi-paper-monitor.timer" /etc/sy
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-kalshi-paper-settle.timer" /etc/systemd/system/sfo-kalshi-paper-settle.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-kalshi-paper-prune.timer" /etc/systemd/system/sfo-kalshi-paper-prune.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecast-freshness.timer" /etc/systemd/system/sfo-forecast-freshness.timer
+sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-scheduler-health.timer" /etc/systemd/system/sfo-scheduler-health.timer
 
 sudo systemctl daemon-reload
 echo "units rendered and installed; all WeatherEdge timers remain disabled"

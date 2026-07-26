@@ -7,7 +7,7 @@ from sfo_kalshi_quant._cli import scan as scan_module
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import SFO_TZ, strategy_config_for_profile
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot
-from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
+from sfo_kalshi_quant.research_policy import TARGET_POLICY
 
 
 def _forecast(target: date, raw=None, *, source_count: int = 4) -> ForecastSnapshot:
@@ -113,11 +113,10 @@ def test_same_day_entry_gate_blocks_complete_intraday_high():
     assert "official daily high is complete" in reason
 
 
-def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None:
+def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() -> None:
     target = date(2026, 7, 19)
     decisions = [object(), object(), object()]
     target_decisions = [object(), object(), object()]
-    motion_decisions = [object(), object(), object()]
     context = SimpleNamespace(
         decisions=decisions,
         series_ticker="KXHIGHTSFO",
@@ -128,11 +127,8 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     )
     store = Mock()
     store.research_objective_day.return_value = date(2026, 7, 18)
-    store.research_account_state.side_effect = (
-        {"available_cash": 900.0},
-        {"available_cash": 800.0},
-    )
-    store.research_realized_pnl_for_day.side_effect = (12.0, -3.0)
+    store.research_account_state.return_value = {"available_cash": 900.0}
+    store.research_realized_pnl_for_day.return_value = 12.0
     plans = SimpleNamespace(target=object(), motion=object())
     execution = object()
     trader = Mock()
@@ -141,8 +137,8 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     with (
         patch.object(
             scan_module,
-            "prepare_research_sleeve_decisions",
-            return_value=(target_decisions, motion_decisions),
+            "prepare_research_target_decisions",
+            return_value=target_decisions,
         ) as prepare,
         patch.object(scan_module, "ResearchOpportunity", side_effect=lambda d, t, l: (d, t, l)),
         patch.object(scan_module, "allocate_research_plans", return_value=plans) as allocate,
@@ -157,7 +153,7 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
             entry_block_reason=None,
             place_paper=False,
             place_research_target=True,
-            place_research_motion=False,
+            place_research_motion=True,
             forecast_snapshot_id=10,
             market_snapshot_id=20,
             scan_run_id="one-shared-scan",
@@ -170,13 +166,11 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     assert prepare.call_args.args[0] == decisions
     allocate.assert_called_once_with(
         [(decision, "2026-07-19", 1) for decision in target_decisions],
-        motion_opportunities=[
-            (decision, "2026-07-19", 1) for decision in motion_decisions
-        ],
+        motion_opportunities=[],
         target_available_cash=900.0,
-        motion_available_cash=800.0,
+        motion_available_cash=0.0,
         realized_today=12.0,
-        motion_realized_today=-3.0,
+        motion_realized_today=0.0,
         run_id="one-shared-scan",
     )
     assert trader_type.call_count == 1
@@ -184,7 +178,7 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     assert call.args[0] == "2026-07-19"
     assert call.args[1] is plans
     assert call.kwargs["source_decisions"] == target_decisions
-    assert call.kwargs["motion_source_decisions"] == motion_decisions
+    assert call.kwargs["motion_source_decisions"] == []
     assert call.kwargs["scan_run_id"] == "one-shared-scan"
     assert call.kwargs["admit_orders"] is False
     assert call.kwargs["admit_target_orders"] is True
@@ -192,6 +186,4 @@ def test_research_scan_passes_one_shared_opportunity_set_to_both_books() -> None
     assert store.research_account_state.call_args_list[0].kwargs == {
         "account_id": TARGET_POLICY.account_id
     }
-    assert store.research_account_state.call_args_list[1].kwargs == {
-        "account_id": MOTION_POLICY.account_id
-    }
+    assert store.research_account_state.call_count == 1

@@ -56,7 +56,8 @@ export function EquityCurve({
     startingBankroll ??
     (rendersContribution ? 0 : (s.daily_summary.starting_bankroll ?? 1000));
   const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
-  const last = series[series.length - 1]?.equity ?? start;
+  const lineKey = rendersContribution ? "pnl" : "equity";
+  const last = series[series.length - 1]?.[lineKey] ?? start;
   const win = windowDays ?? s.daily_summary.window_days ?? series.length;
   const up = last >= start;
   // Adaptive y-domain: pad proportional to the actual DATA swing (with a small
@@ -64,7 +65,7 @@ export function EquityCurve({
   // data range — not data∪break-even — so a book sitting entirely on one side of
   // break-even fills its plot instead of leaving a dead band up to the reference
   // line. The break-even line stays visible, but flush, with no overshoot past it.
-  const eqs = series.map((d) => d.equity);
+  const eqs = series.map((d) => d[lineKey]);
   const dataLo = Math.min(...eqs);
   const dataHi = Math.max(...eqs);
   const pad = Math.max((dataHi - dataLo) * 0.15, 3);
@@ -108,27 +109,44 @@ export function EquityCurve({
             <LineChart.XAxis dataKey="date" tickMargin={8} />
             <LineChart.YAxis width={56} tickFormatter={(v: number) => axisMoney(v, rendersContribution)} domain={yDomain} allowDecimals={false} />
             <ReferenceLine y={start} stroke="var(--color-muted)" strokeDasharray="5 5" strokeWidth={1.25} />
-            <LineChart.Line dataKey="equity" name={valueName} stroke={stroke} strokeWidth={2.5} type="monotone" fill={`url(#${gid})`} />
+            <LineChart.Line dataKey={lineKey} name={valueName} stroke={stroke} strokeWidth={2.5} type="monotone" fill={`url(#${gid})`} />
             <LineChart.Tooltip
+              cursor={false}
+              isAnimationActive={false}
               content={({ active, label, payload }) => {
                 if (!active || !payload?.length) return null;
-                const row = payload[0]?.payload as { equity: number; pnl: number; dailyPnl: number };
+                const row = payload[0]?.payload as {
+                  equity: number;
+                  pnl: number;
+                  dailyPnl: number;
+                  accountBalance?: number;
+                };
                 return (
                   <ChartTooltip>
                     <ChartTooltip.Header>{label}</ChartTooltip.Header>
                     <ChartTooltip.Item>
                       <ChartTooltip.Indicator color={stroke} />
                       <ChartTooltip.Label>{valueName}</ChartTooltip.Label>
-                      <ChartTooltip.Value>{money(row.equity)}</ChartTooltip.Value>
+                      <ChartTooltip.Value>{money(row[lineKey])}</ChartTooltip.Value>
                     </ChartTooltip.Item>
-                    <ChartTooltip.Item>
-                      <ChartTooltip.Label>Cum. P&L</ChartTooltip.Label>
-                      <ChartTooltip.Value>{money(row.pnl)}</ChartTooltip.Value>
-                    </ChartTooltip.Item>
+                    {!rendersContribution && (
+                      <ChartTooltip.Item>
+                        <ChartTooltip.Label>Cum. P&L</ChartTooltip.Label>
+                        <ChartTooltip.Value>{money(row.pnl)}</ChartTooltip.Value>
+                      </ChartTooltip.Item>
+                    )}
                     <ChartTooltip.Item>
                       <ChartTooltip.Label>Daily P&L</ChartTooltip.Label>
                       <ChartTooltip.Value>{money(row.dailyPnl)}</ChartTooltip.Value>
                     </ChartTooltip.Item>
+                    {rendersContribution && row.accountBalance != null && (
+                      <ChartTooltip.Item>
+                        <ChartTooltip.Label>Account balance</ChartTooltip.Label>
+                        <ChartTooltip.Value>
+                          {money(row.accountBalance, { sign: "negative-only" })}
+                        </ChartTooltip.Value>
+                      </ChartTooltip.Item>
+                    )}
                   </ChartTooltip>
                 );
               }}

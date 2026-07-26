@@ -1912,7 +1912,9 @@ def test_valid_genuine_v3_allocation_does_not_poison_v4_candidate() -> None:
             placed_at=T0 + timedelta(seconds=1),
             risk_profile="research",
         )
-        _apply(store, "mixed-generation", no_price=0.72, quantity=5.0)
+        # Supply enough public volume for both account-scoped orders so the
+        # historical row carries genuine allocation evidence to restate.
+        _apply(store, "mixed-generation", no_price=0.72, quantity=10.0)
         _settle(store)
         with store.connect() as conn:
             evidence = json.loads(

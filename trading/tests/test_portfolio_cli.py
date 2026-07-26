@@ -47,7 +47,7 @@ def test_portfolio_scan_parser_is_paper_only_by_default() -> None:
     assert args.min_profit == 0.01
 
 
-def test_portfolio_scan_parser_exposes_independent_research_placement() -> None:
+def test_portfolio_scan_parser_exposes_active_research_target_placement() -> None:
     args = build_parser().parse_args(
         [
             "--risk-profile",
@@ -60,6 +60,21 @@ def test_portfolio_scan_parser_exposes_independent_research_placement() -> None:
     assert args.place_paper is False
     assert args.place_research_target is True
     assert args.place_research_motion is False
+
+
+def test_archived_motion_placement_flag_is_a_compatibility_noop() -> None:
+    args = build_parser().parse_args(
+        [
+            "--risk-profile",
+            "research",
+            "portfolio-scan",
+            "--place-research-motion",
+        ]
+    )
+
+    assert args.place_research_motion is True
+    assert scan_module._research_placement_flags(args) == (False, False)
+    assert scan_module._paper_placement_requested(args) is False
 
 
 def test_research_placement_switches_cannot_request_live_placement() -> None:

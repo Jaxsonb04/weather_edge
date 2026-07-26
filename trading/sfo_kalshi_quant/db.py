@@ -23,6 +23,7 @@ from .config import (
 from .account import (
     ACCOUNTING_POLICY_VERSION,
     INITIAL_CAPITAL,
+    LIVE_STABILITY_ACCOUNT_ID,
     RESEARCH_ACCOUNT_ID,
     RESEARCH_VIRTUAL_CAPITAL,
     REGION_BY_SERIES,
@@ -39,7 +40,12 @@ from .fees import (
     quadratic_fee_per_contract,
 )
 from .execution import BuyLimitQuote, initial_queue_ahead, target_research_quote
-from .logical_positions import LOGICAL_IDENTITY_FIELDS, group_logical_positions
+from .logical_positions import (
+    LOGICAL_IDENTITY_FIELDS,
+    OPEN_STATUSES,
+    TERMINAL_STATUSES,
+    group_logical_positions,
+)
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
@@ -63,6 +69,7 @@ from .research_policy import (
     RESEARCH_OBJECTIVE_TZ,
     TARGET_POLICY,
     TARGET_POLICY_V1,
+    TARGET_POLICY_V2,
     ResearchSleeve,
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
@@ -499,12 +506,12 @@ class ResearchDecisionEvidence:
 
 _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY_V1.account_id: TARGET_POLICY_V1,
+    TARGET_POLICY_V2.account_id: TARGET_POLICY_V2,
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
 _ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY.account_id: TARGET_POLICY,
-    MOTION_POLICY.account_id: MOTION_POLICY,
 }
 
 _RESEARCH_WINDOW_ROWS_SQL = """
@@ -745,6 +752,39 @@ class PaperStore:
             details={"initial_capital": INITIAL_CAPITAL, "legacy_realized_pnl": opening_cash - INITIAL_CAPITAL},
         )
 
+    def _ensure_live_stability_account(self, conn: sqlite3.Connection) -> None:
+        """Bootstrap the active live ledger without rewriting legacy history."""
+
+        created_at = _now()
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_accounts "
+            "(account_id, created_at, initial_capital, opening_cash, "
+            "high_water_equity, status, cutover_note) "
+            "VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)",
+            (
+                LIVE_STABILITY_ACCOUNT_ID,
+                created_at,
+                INITIAL_CAPITAL,
+                INITIAL_CAPITAL,
+                INITIAL_CAPITAL,
+                "fresh live stability ledger cutover",
+            ),
+        )
+        self._record_ledger_event(
+            conn,
+            account_id=LIVE_STABILITY_ACCOUNT_ID,
+            order_id=None,
+            event_type="OPENING_CASH",
+            amount=INITIAL_CAPITAL,
+            idempotency_key=f"{LIVE_STABILITY_ACCOUNT_ID}:opening",
+            details={"initial_capital": INITIAL_CAPITAL},
+        )
+        conn.execute(
+            "UPDATE paper_accounts SET status='ARCHIVED' "
+            "WHERE account_id IN (?, ?) AND status!='ARCHIVED'",
+            (SHARED_ACCOUNT_ID, RESEARCH_ACCOUNT_ID),
+        )
+
     def _expire_pre_current_execution_orders(
         self, conn: sqlite3.Connection
     ) -> None:
@@ -835,6 +875,154 @@ class PaperStore:
 
     def shared_account_state(self) -> dict[str, object] | None:
         return self._account_state(SHARED_ACCOUNT_ID)
+
+    def live_account_state(self) -> dict[str, object] | None:
+        return self._account_state(LIVE_STABILITY_ACCOUNT_ID)
+
+    def account_order_ledger_reconciliation(
+        self,
+        account_id: str,
+    ) -> dict[str, object]:
+        """Reconcile each logical order lifecycle against its ledger cash flow."""
+
+        state = self._account_state(account_id, persist_high_water=False)
+        if state is None:
+            return {
+                "status": "unavailable",
+                "difference": None,
+                "mismatched_order_ids": [],
+            }
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            orders = conn.execute(
+                "SELECT * FROM paper_orders "
+                "WHERE account_id=? AND status!='REJECTED' ORDER BY id",
+                (account_id,),
+            ).fetchall()
+            ledger_rows = conn.execute(
+                "SELECT order_id, event_type, amount "
+                "FROM paper_account_ledger "
+                "WHERE account_id=? AND order_id IS NOT NULL ORDER BY id",
+                (account_id,),
+            ).fetchall()
+
+        ledger_by_order: dict[int, list[sqlite3.Row]] = {}
+        for row in ledger_rows:
+            try:
+                order_id = int(row["order_id"])
+            except (TypeError, ValueError):
+                continue
+            ledger_by_order.setdefault(order_id, []).append(row)
+
+        known_order_ids = {int(row["id"]) for row in orders}
+        mismatched: set[int] = set(ledger_by_order) - known_order_ids
+        expected_account_delta = 0.0
+        for group in group_logical_positions(orders):
+            group_order_ids = {
+                int(lot["id"])
+                for lot in group.lots
+                if lot.get("id") is not None
+            }
+            if not group.valid:
+                mismatched.add(group.logical_order_id)
+                continue
+            expected_group_delta = 0.0
+            has_exposure = False
+            for lot in group.lots:
+                order_id = int(lot["id"])
+                status = str(lot.get("status") or "")
+                contracts = float(lot.get("contracts") or 0.0)
+                cost = float(lot.get("cost_per_contract") or 0.0)
+                reserved = float(lot.get("reserved_cost") or 0.0)
+                if status in TERMINAL_STATUSES:
+                    realized = lot.get("realized_pnl")
+                    if realized is None:
+                        mismatched.add(group.logical_order_id)
+                        continue
+                    expected_group_delta += float(realized)
+                    required_event = (
+                        "SETTLEMENT_PROCEEDS"
+                        if status == "PAPER_SETTLED"
+                        else "EXIT_PROCEEDS"
+                    )
+                    if not any(
+                        str(row["event_type"]) == required_event
+                        for row in ledger_by_order.get(order_id, [])
+                    ):
+                        mismatched.add(group.logical_order_id)
+                    has_exposure = True
+                elif status in OPEN_STATUSES:
+                    expected_group_delta -= contracts * cost
+                    has_exposure = True
+                elif status == "PAPER_LIMIT_RESTING":
+                    if not any(
+                        str(row["event_type"]) == "RESERVE"
+                        for row in ledger_by_order.get(order_id, [])
+                    ):
+                        mismatched.add(group.logical_order_id)
+                elif status != "PAPER_EXPIRED":
+                    mismatched.add(group.logical_order_id)
+                expected_group_delta -= reserved
+
+            root_id = int(group.root["id"])
+            group_events = [
+                row
+                for order_id in group_order_ids
+                for row in ledger_by_order.get(order_id, [])
+            ]
+            root_events = ledger_by_order.get(root_id, [])
+            root_status = str(group.root.get("status") or "")
+            if has_exposure and not any(
+                str(row["event_type"]) == "ENTRY_FILL"
+                for row in root_events
+            ):
+                mismatched.add(group.logical_order_id)
+            if root_status == "PAPER_EXPIRED" and (
+                not any(str(row["event_type"]) == "RESERVE" for row in root_events)
+                or not any(
+                    str(row["event_type"]) == "RESERVATION_RELEASE"
+                    for row in root_events
+                )
+            ):
+                mismatched.add(group.logical_order_id)
+            actual_group_delta = sum(float(row["amount"]) for row in group_events)
+            if not math.isclose(
+                actual_group_delta,
+                expected_group_delta,
+                rel_tol=0.0,
+                abs_tol=0.005,
+            ):
+                mismatched.add(group.logical_order_id)
+            expected_account_delta += expected_group_delta
+
+        # Ledger events are cash movements: open fills and resting reservations
+        # reduce cash even though neither is realized P&L. Account
+        # ``realized_equity`` deliberately adds those still-active balances
+        # back, so the independent lifecycle expectation must do the same.
+        expected_equity = (
+            float(state["opening_cash"])
+            + expected_account_delta
+            + float(state["open_cost_basis"])
+            + float(state["reservations"])
+        )
+        difference = float(state["realized_equity"]) - expected_equity
+        return {
+            "status": (
+                "reconciled"
+                if not mismatched
+                and math.isclose(
+                    difference,
+                    0.0,
+                    rel_tol=0.0,
+                    abs_tol=0.005,
+                )
+                else "mismatch"
+            ),
+            "difference": difference,
+            "mismatched_order_ids": sorted(mismatched),
+            "expected_realized_equity": expected_equity,
+            "actual_realized_equity": float(state["realized_equity"]),
+        }
 
     def research_account_state(
         self,
@@ -1637,6 +1825,7 @@ class PaperStore:
         rows = conn.execute(_RESEARCH_WINDOW_ROWS_SQL, params).fetchall()
         expected_profile = {
             TARGET_POLICY_V1.account_id: "research-target-v1",
+            TARGET_POLICY_V2.account_id: "research-target-v2",
             TARGET_POLICY.account_id: "research-target",
             MOTION_POLICY.account_id: "research-motion",
         }[account_id]
@@ -1825,12 +2014,10 @@ class PaperStore:
     ) -> dict[str, object]:
         """Maximum safe new notional under the paper account policy.
 
-        Live entries are governed entirely by the shared production-intent
-        account. Research entries (audit AC-01) keep their historical
-        percentage caps against live equity, but their cash constraint,
-        drawdown pause, and daily-loss pause come from the research shadow
-        account's own virtual ledger, so research losses can never pause or
-        shrink live entries and vice-versa research keeps its own discipline.
+        Live entries are governed by the active live-stability account.
+        Historical shared/shadow ledgers stay readable but cannot admit new
+        entries. Explicit isolated research policies use their own capacity
+        path above.
         """
 
         if account_id in _RESEARCH_POLICIES_BY_ACCOUNT:
@@ -1851,19 +2038,39 @@ class PaperStore:
         if account_id is not None and account_id != account_for_profile(risk_profile):
             return {"allowed_spend": 0.0, "reason": "account/profile identity mismatch"}
 
-        state = self.shared_account_state()
-        if state is None:
-            return {"allowed_spend": 0.0, "reason": "shared account cutover requires a flat book"}
         entry_account = account_id or account_for_profile(risk_profile)
-        if entry_account != SHARED_ACCOUNT_ID:
-            research_state = self.research_account_state()
-            if research_state is None:
-                return {"allowed_spend": 0.0, "reason": "research shadow account is not initialized"}
-            state = {
-                **state,
-                "available_cash": research_state["available_cash"],
-                "drawdown": research_state["drawdown"],
+        if entry_account == LIVE_STABILITY_ACCOUNT_ID:
+            state = self.live_account_state()
+            if state is None or state["status"] != "ACTIVE":
+                return {
+                    "allowed_spend": 0.0,
+                    "reason": "live stability account is not active",
+                }
+            if (
+                not math.isclose(
+                    float(state["initial_capital"]),
+                    INITIAL_CAPITAL,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                )
+                or not math.isclose(
+                    float(state["opening_cash"]),
+                    INITIAL_CAPITAL,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                )
+            ):
+                return {
+                    "allowed_spend": 0.0,
+                    "reason": "live stability account capital does not match policy",
+                }
+        elif entry_account == RESEARCH_ACCOUNT_ID:
+            return {
+                "allowed_spend": 0.0,
+                "reason": "generic research account is archived",
             }
+        else:
+            return {"allowed_spend": 0.0, "reason": "account/profile identity mismatch"}
         today_start = datetime.now(SETTLEMENT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.connect() as conn:
             daily_pnl = float(conn.execute(
@@ -1883,10 +2090,12 @@ class PaperStore:
                 "WHEN status='PAPER_PARTIALLY_FILLED' THEN "
                 "contracts * cost_per_contract + reserved_cost "
                 "ELSE contracts * cost_per_contract END AS risk "
-                "FROM paper_orders WHERE account_id IN (?, ?) AND status IN "
+                "FROM paper_orders WHERE COALESCE(account_id, ?) IN (?, ?) "
+                "AND status IN "
                 "('PAPER_FILLED','PAPER_LIMIT_RESTING','PAPER_PARTIALLY_FILLED',"
                 "'PAPER_PARTIAL_EXPIRED') AND settled_at IS NULL AND closed_at IS NULL",
                 (
+                    SHARED_ACCOUNT_ID,
                     SHARED_ACCOUNT_ID,
                     entry_account if entry_account != SHARED_ACCOUNT_ID else SHARED_ACCOUNT_ID,
                 ),
@@ -2376,6 +2585,7 @@ class PaperStore:
             prediction_features,
             sort_keys=True,
         )
+        normalized_profile = normalize_risk_profile_name(risk_profile)
         research_identity_values = (
             (
                 _research_identity.account_id,
@@ -2388,7 +2598,11 @@ class PaperStore:
                 _research_identity.reentry_fingerprint,
             )
             if _research_identity is not None
-            else (None, None, None, None, None, None, None, None)
+            else (
+                (LIVE_STABILITY_ACCOUNT_ID, None, None, None, None, None, None, None)
+                if normalized_profile == "live"
+                else (None, None, None, None, None, None, None, None)
+            )
         )
         for index, decision in enumerate(decision_list):
             evidence = evidence_batch[index] if evidence_batch is not None else None
@@ -2638,7 +2852,10 @@ class PaperStore:
                 raise ValueError("research decision evidence item is required")
             if not isinstance(item.identity, ResearchDecisionIdentity):
                 raise ValueError("research decision identity is required")
-            self._policy_for_research_admission(item.identity.admission(1))
+            self._policy_for_research_admission(
+                item.identity.admission(1),
+                active_only=False,
+            )
             if item.admission_pending and not item.decision.approved:
                 raise ValueError("pending research evidence requires an approved decision")
         scan_run_ids = {item.identity.scan_run_id for item in evidence_batch}
@@ -2814,8 +3031,15 @@ class PaperStore:
     @staticmethod
     def _policy_for_research_admission(
         admission: ResearchAdmission,
+        *,
+        active_only: bool = True,
     ) -> ResearchSleevePolicy:
-        policy = _ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT.get(admission.account_id)
+        policies = (
+            _ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT
+            if active_only
+            else _RESEARCH_POLICIES_BY_ACCOUNT
+        )
+        policy = policies.get(admission.account_id)
         if (
             policy is None
             or admission.sleeve is not policy.sleeve
@@ -2823,7 +3047,8 @@ class PaperStore:
             or admission.policy_fingerprint != policy.policy_fingerprint
         ):
             raise ValueError(
-                "research admission identity does not match an active research policy"
+                "research admission identity does not match "
+                f"an {'active ' if active_only else ''}research policy"
             )
         for label, value in (
             ("objective day", admission.objective_day),
@@ -2907,7 +3132,7 @@ class PaperStore:
             limit_price = limit_fee = limit_cost = ask = represented_fee = math.nan
         policy_sized_resting_target = (
             policy is TARGET_POLICY
-            and policy.allocator_version == "policy-sized-v2"
+            and policy.allocator_version == "policy-sized-v3"
             and decision.binding_constraint == "research_policy_allocator"
             and all(
                 math.isfinite(value)
@@ -3188,7 +3413,9 @@ class PaperStore:
     ) -> int | None:
         """Validate, reserve/fill, and journal one research entry atomically."""
 
-        policy = self._policy_for_research_admission(admission)
+        policy = self._policy_for_research_admission(admission, active_only=False)
+        if admission.account_id not in _ACTIVE_RESEARCH_POLICIES_BY_ACCOUNT:
+            return None
         if not isinstance(strategy_config, StrategyConfig):
             raise ValueError("research admission requires a strategy configuration")
         try:
@@ -3681,8 +3908,8 @@ class PaperStore:
         )
         expected_profit = edge * contracts
         profile = normalize_risk_profile_name(risk_profile) if risk_profile else None
-        # Research orders book against the shadow ledger (audit AC-01) unless
-        # the shared-capital experiment mode is explicitly enabled.
+        # Generic research keeps its historical shadow identity, which is
+        # archived after the v3 cutover; only explicit v3 admissions are live.
         entry_account = account_for_profile(profile)
         created_at = _now()
         filled_at = created_at if normalized_status == "PAPER_FILLED" else None
@@ -3717,6 +3944,35 @@ class PaperStore:
             else "immediate_visible_quote"
         )
         with self.connect() as conn:
+            if normalized_status != "REJECTED":
+                if entry_account == RESEARCH_ACCOUNT_ID:
+                    return None
+                account_status = conn.execute(
+                    "SELECT status, initial_capital, opening_cash "
+                    "FROM paper_accounts WHERE account_id=?",
+                    (entry_account,),
+                ).fetchone()
+                try:
+                    account_is_admissible = (
+                        account_status is not None
+                        and str(account_status[0]) == "ACTIVE"
+                        and math.isclose(
+                            float(account_status[1]),
+                            INITIAL_CAPITAL,
+                            rel_tol=0.0,
+                            abs_tol=1e-9,
+                        )
+                        and math.isclose(
+                            float(account_status[2]),
+                            INITIAL_CAPITAL,
+                            rel_tol=0.0,
+                            abs_tol=1e-9,
+                        )
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    account_is_admissible = False
+                if not account_is_admissible:
+                    return None
             entry_decision = _latest_entry_decision_snapshot(
                 conn,
                 target_date,

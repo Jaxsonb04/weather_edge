@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from sfo_kalshi_quant import strategy_research as strategy_research_module
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID, RESEARCH_ACCOUNT_ID
 from sfo_kalshi_quant.cities import CITIES
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
@@ -163,6 +164,53 @@ def _no_favorite_decision() -> TradeDecision:
     )
 
 
+def _seed_profile_order(
+    store: PaperStore,
+    target_date: str,
+    decision: TradeDecision,
+    *,
+    profile: str = "research",
+) -> int:
+    """Seed readable pre-cutover/sleeve history without admitting archived risk."""
+
+    policy = {
+        "research-target": TARGET_POLICY,
+        "research-motion": MOTION_POLICY,
+    }.get(profile)
+    with store.connect() as conn:
+        seed_number = int(
+            conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM paper_orders").fetchone()[0]
+        )
+    original_ticker = decision.ticker
+    order_id = store.record_paper_order(
+        target_date,
+        replace(decision, ticker=f"{original_ticker}-PROFILE-SEED-{seed_number}"),
+        risk_profile="live",
+    )
+    assert order_id is not None
+    account_id = policy.account_id if policy is not None else RESEARCH_ACCOUNT_ID
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET market_ticker=?, risk_profile='research', "
+            "account_id=?, research_sleeve=?, research_policy_version=?, "
+            "policy_fingerprint=?, sleeve=? WHERE id=?",
+            (
+                original_ticker,
+                account_id,
+                policy.sleeve.value if policy is not None else None,
+                policy.policy_version if policy is not None else None,
+                policy.policy_fingerprint if policy is not None else None,
+                policy.sleeve.value if policy is not None else "research",
+                order_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (account_id, order_id),
+        )
+    return order_id
+
+
 def test_strategy_research_does_not_create_missing_paper_db(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
@@ -258,6 +306,41 @@ def test_fast_publication_defers_full_decision_journal_analytics(
     assert payload["daily_summary"]["decision_analytics"]["status"] == "deferred"
     assert payload["daily_summary"]["data_collected"] is None
     assert payload["signal_quality"]["source"] == "trading_signal.json"
+
+
+def test_invalid_active_accounting_suppresses_otherwise_available_readiness(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "forecaster"
+    db_path = tmp_path / "paper.db"
+    _write_lstm_fixture(root)
+    store = PaperStore(db_path)
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_accounts SET opening_cash=900 WHERE account_id=?",
+            (LIVE_STABILITY_ACCOUNT_ID,),
+        )
+    monkeypatch.setattr(
+        strategy_research_module,
+        "_real_money_readiness_payload",
+        lambda *args, **kwargs: {
+            "available": True,
+            "profile": "live",
+            "ready": True,
+            "verdict": "READY",
+        },
+    )
+
+    payload = build_strategy_research(
+        forecaster_root=root,
+        db_path=db_path,
+        calibration_min_train=40,
+    )
+
+    assert payload["accounting"]["available"] is False
+    assert payload["real_money_readiness"]["available"] is False
+    assert payload["real_money_readiness"]["status"] == "NOT_READY"
+    assert "account" in payload["real_money_readiness"]["reason"].lower()
 
 
 def test_fast_publication_never_rebuilds_missing_dataset_research(
@@ -934,23 +1017,44 @@ def test_strategy_research_exposes_compact_learning_diagnostics():
         event = pre_resolution_event([decision])
         forecast_snapshot_id = store.record_forecast(forecast)
         market_snapshot_id = store.record_market(event)
-        store.record_decisions(
+        decision_id = store.record_decisions(
             "2026-06-03",
             [decision],
             forecast=forecast,
             event=event,
-            risk_profile="research",
+            risk_profile="live",
             bankroll=1000.0,
             strategy_config=StrategyConfig(),
             forecast_snapshot_id=forecast_snapshot_id,
             market_snapshot_id=market_snapshot_id,
-        )
-        store.record_paper_order(
+        )[0]
+        order_id = store.record_paper_order(
             "2026-06-03",
             decision,
-            risk_profile="research",
+            risk_profile="live",
             strategy_config=StrategyConfig(),
         )
+        assert order_id is not None
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET risk_profile='research', account_id=? "
+                "WHERE id=?",
+                (RESEARCH_ACCOUNT_ID, order_id),
+            )
+            conn.execute(
+                "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+                (RESEARCH_ACCOUNT_ID, order_id),
+            )
+            conn.execute(
+                "UPDATE decision_snapshots SET risk_profile='research', account_id=? "
+                "WHERE id=?",
+                (RESEARCH_ACCOUNT_ID, decision_id),
+            )
+            conn.execute(
+                "UPDATE scan_context_snapshots SET risk_profile='research', account_id=? "
+                "WHERE id=(SELECT scan_context_id FROM decision_snapshots WHERE id=?)",
+                (RESEARCH_ACCOUNT_ID, decision_id),
+            )
         store.settle_paper_orders("2026-06-03", 67.0)
 
         payload = build_strategy_research(
@@ -1139,8 +1243,10 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         db_path,
         research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
     )
-    legacy_id = store.record_paper_order(
-        "2026-07-18", _approved_decision(), risk_profile="research"
+    legacy_id = _seed_profile_order(
+        store,
+        "2026-07-18",
+        _approved_decision(),
     )
     assert legacy_id is not None
     store.close_paper_order(legacy_id, 0.70)
@@ -1150,12 +1256,13 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
 
     target = paper["research_daily_target"]
     assert target["account_id"] == TARGET_POLICY.account_id
-    assert target["days"][-1]["target_pnl"] == 16.0
+    assert target["days"][-1]["target_pnl"] == 50.0
     assert target["days"][-1]["realized_pnl"] == 0.0
     profiles = {row["risk_profile"]: row for row in paper["profiles"]}
-    assert set(profiles) == {"live", "research-target", "research-motion"}
+    assert set(profiles) == {"live", "research-target", "research"}
     assert profiles["research-target"]["daily_target"] == target
-    assert profiles["research-motion"]["excluded_from"] == [
+    assert profiles["research"]["excluded_from"] == [
+        "active_admissions",
         "daily_target",
         "live_readiness",
     ]
@@ -1169,11 +1276,20 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         db_path=db_path,
         calibration_min_train=40,
     )
-    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 16.0
+    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 50.0
     profile_views = {row["risk_profile"]: row for row in payload["profiles"]}
-    assert set(profile_views) == {"live", "research-target", "research-motion"}
-    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 16.0
-    assert profile_views["research-motion"]["excluded_from"] == [
+    assert set(profile_views) == {
+        "live",
+        "research-target",
+        "live-legacy",
+        "research",
+        "research-target-v1",
+        "research-target-v2",
+        "research-motion",
+    }
+    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 50.0
+    assert profile_views["research"]["excluded_from"] == [
+        "active_admissions",
         "daily_target",
         "live_readiness",
     ]
@@ -1182,6 +1298,7 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         "live",
         "research_target",
         "research_target_v1",
+        "research_target_v2",
         "research_motion",
     }
 
@@ -1201,16 +1318,23 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
     motion_decision = replace(
         _no_favorite_decision(), ticker="KXHIGHTSFO-MOTION-B71.5"
     )
-    target_order = store.record_paper_order(
-        "2026-07-19", target_decision, risk_profile="research"
+    target_order = _seed_profile_order(
+        store,
+        "2026-07-19",
+        target_decision,
+        profile="research-target",
     )
-    motion_order = store.record_paper_order(
-        "2026-07-20", motion_decision, risk_profile="research"
+    motion_order = _seed_profile_order(
+        store,
+        "2026-07-20",
+        motion_decision,
+        profile="research-motion",
     )
-    crossed_order = store.record_paper_order(
+    crossed_order = _seed_profile_order(
+        store,
         "2026-07-20",
         replace(target_decision, ticker="KXHIGHTSFO-CROSSED-B72.5"),
-        risk_profile="research",
+        profile="research-target",
     )
     assert target_order is not None and motion_order is not None
     assert crossed_order is not None
@@ -1305,25 +1429,38 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
         calibration_min_train=40,
     )
 
+    # This fixture deliberately edits order/account identity and terminal P&L
+    # without writing the corresponding account lifecycle events. Strategy
+    # diagnostics remain attributable, but active books and readiness must fail
+    # closed rather than presenting the forged ledger as economic truth.
+    assert payload["accounting"]["available"] is False
     profiles = {row["risk_profile"]: row for row in payload["profiles"]}
-    assert set(profiles) == {"live", "research-target", "research-motion"}
-    target = profiles["research-target"]
+    assert set(profiles) == {"research-motion"}
+    assert payload["real_money_readiness"]["available"] is False
     motion = profiles["research-motion"]
-    assert target["daily_summary"]["side_performance"]["YES"]["trades"] == 1
-    assert target["daily_summary"]["side_performance"]["NO"]["trades"] == 0
     assert motion["daily_summary"]["side_performance"]["NO"]["trades"] == 1
     assert motion["daily_summary"]["side_performance"]["YES"]["trades"] == 0
-    assert target["daily_summary"]["exit_reasons"]["closed_take_profit"] == 1
     assert motion["daily_summary"]["exit_reasons"]["closed_stop_loss"] == 1
-    assert [
-        row["ticker"] for row in target["signal_quality"]["latest_candidates"]
-    ] == [target_decision.ticker]
     assert [
         row["ticker"] for row in motion["signal_quality"]["latest_candidates"]
     ] == [motion_decision.ticker]
     assert motion["daily_summary"]["gate_behavior"]["entry_block_reasons"] == [
         {"reason": "motion audit block", "count": 1}
     ]
+    raw_profiles = {
+        row["risk_profile"]: row
+        for row in payload["paper_trading"]["profiles"]
+    }
+    assert raw_profiles["research-target"]["realized_pnl"] == 2.0
+    assert raw_profiles["research-target"]["wins"] == 1
+    assert raw_profiles["research-motion"]["realized_pnl"] == -2.0
+    assert raw_profiles["research-motion"]["losses"] == 1
+    assert [
+        row["ticker"]
+        for row in payload["signal_quality"]["latest_candidates_by_profile"][
+            "research-target"
+        ]
+    ] == [target_decision.ticker]
     assert payload["paper_trading"]["summary"]["closed_positions"] == 2
     assert "unknown" not in payload["paper_trading"]["diagnostics"]["by_profile"]
     assert payload["paper_trading"]["legacy_research"]["available"] is False
@@ -1418,7 +1555,16 @@ def test_strategy_research_card_fails_closed_on_inconsistent_logical_group():
             "by_exit_reason": {},
             "worst_segments": [],
         }
-        assert paper["profiles"] == []
+        profiles = {
+            row["risk_profile"]: row for row in paper["profiles"]
+        }
+        assert set(profiles) == {"live", "research-target"}
+        assert all(
+            profile["orders"] == 0
+            and profile["resolved"] == 0
+            and profile["open_positions"] == 0
+            for profile in profiles.values()
+        )
 
 
 # 2026-06-27 16:00 UTC: every traded station (fixed standard offsets -5..-8)
@@ -1736,7 +1882,11 @@ def test_strategy_research_mirrors_research_no_settlement_first_hold():
         store = PaperStore(db_path)
         decision = _no_favorite_decision()
         store.record_decisions("2026-06-20", [decision])
-        order_id = store.record_paper_order("2026-06-20", decision, risk_profile="research")
+        order_id = _seed_profile_order(
+            store,
+            "2026-06-20",
+            decision,
+        )
         assert order_id is not None
         order = store.paper_order(order_id)
         assert order is not None
@@ -2316,7 +2466,7 @@ def test_strategy_research_does_not_alert_on_same_market_across_profiles():
         store = PaperStore(db_path)
         decision = _approved_decision()
         store.record_paper_order("2026-06-03", decision, risk_profile="live")
-        store.record_paper_order("2026-06-03", decision, risk_profile="research")
+        _seed_profile_order(store, "2026-06-03", decision)
 
         payload = build_strategy_research(
             forecaster_root=root,
@@ -2345,8 +2495,8 @@ def test_strategy_research_scopes_duplicate_alerts_to_profile_views():
         balanced = replace(_approved_decision(), ticker="KXHIGHTSFO-TEST-B65.5")
         fast = _approved_decision()
         store.record_paper_order(target, balanced, risk_profile="live")
-        store.record_paper_order(target, fast, risk_profile="research")
-        store.record_paper_order(target, fast, risk_profile="research")
+        _seed_profile_order(store, target, fast)
+        _seed_profile_order(store, target, fast)
 
         payload = build_strategy_research(
             forecaster_root=root,
@@ -2400,12 +2550,12 @@ def test_strategy_research_builds_isolated_profile_views():
         store.record_decisions(today, [balanced_win], risk_profile="live")
         store.record_decisions(tomorrow, [fast_open], risk_profile="research")
         store.record_paper_order(today, balanced_win, risk_profile="live")
-        store.record_paper_order(today, fast_loss, risk_profile="research")
+        _seed_profile_order(store, today, fast_loss)
         store.settle_paper_orders(today, 67.0)
-        open_order_id = store.record_paper_order(
+        open_order_id = _seed_profile_order(
+            store,
             tomorrow,
             fast_open,
-            risk_profile="research",
         )
         open_order = store.open_paper_order(open_order_id)
         assert open_order is not None
@@ -2430,7 +2580,15 @@ def test_strategy_research_builds_isolated_profile_views():
 
         assert payload["default_profile"] == "live"
         profiles = {row["risk_profile"]: row for row in payload["profiles"]}
-        assert set(profiles) == {"live", "research"}
+        assert set(profiles) == {
+            "live",
+            "research-target",
+            "live-legacy",
+            "research",
+            "research-target-v1",
+            "research-target-v2",
+            "research-motion",
+        }
 
         balanced = profiles["live"]
         fast = profiles["research"]
@@ -2466,18 +2624,22 @@ def test_strategy_research_builds_isolated_profile_views():
         } == {"research"}
         assert any("research" in note for note in fast["learnings"])
 
-        # Profiles remain attribution views, while account schema v2 keeps the
-        # live and research ledgers economically separate.
+        # The active live view receives true account balance; archived generic
+        # research remains an attribution-only, economically separate archive.
         b_summary = balanced["daily_summary"]
         f_summary = fast["daily_summary"]
-        assert "current_equity" not in b_summary
-        assert "starting_bankroll" not in b_summary
+        assert b_summary["starting_bankroll"] == 1000.0
         assert b_summary["current_attributed_pnl"] > 0
+        assert b_summary["current_equity"] == round(
+            1000.0 + b_summary["current_attributed_pnl"], 2
+        )
+        assert f_summary.get("starting_bankroll") is None
+        assert f_summary.get("current_equity") is None
         assert f_summary["current_attributed_pnl"] < 0
         assert payload["accounting"]["profile_attributed_pnl"] == round(
             b_summary["current_attributed_pnl"], 2
         )
-        assert payload["accounting"]["accounts"]["research"]["realized_pnl"] == round(
+        assert payload["accounting"]["accounts"]["legacy_research"]["realized_pnl"] == round(
             f_summary["current_attributed_pnl"], 2
         )
         # Profile-scoped side split + exit reasons render on the profile tab.
@@ -2492,8 +2654,8 @@ def test_accounting_and_attribution_curve_reconcile_all_time_pnl_before_window()
         db_path = Path(tmp) / "trading" / "paper.db"
         _write_lstm_fixture(root)
         store = PaperStore(db_path)
-        old_id = store.record_paper_order("2026-06-20", _approved_decision(), risk_profile="research")
-        recent_id = store.record_paper_order("2026-07-09", _approved_decision(), risk_profile="research")
+        old_id = _seed_profile_order(store, "2026-06-20", _approved_decision())
+        recent_id = _seed_profile_order(store, "2026-07-09", _approved_decision())
         now = datetime.now(UTC)
         old = (now - timedelta(days=10)).isoformat()
         recent = now.isoformat()
@@ -2516,18 +2678,17 @@ def test_accounting_and_attribution_curve_reconcile_all_time_pnl_before_window()
         )
 
         accounting = payload["accounting"]
-        # Account schema v2 never mixes research outcomes into the live
-        # paper-shared headline. The direct fixture mutations intentionally do
+        # Account schema v3 never mixes archived research outcomes into the
+        # fresh live headline. The direct fixture mutations intentionally do
         # not fabricate ledger cash movements, but the booked research result
         # remains visible in its own account scope.
-        assert accounting["schema_version"] == 2
+        assert accounting["schema_version"] == 3
         assert accounting["all_time_realized_pnl"] == 0.0
         assert accounting["realized_equity"] == 1000.0
-        assert accounting["accounts"]["live"]["account_id"] == "paper-shared"
-        assert accounting["accounts"]["research"]["booked_resolved_pnl"] == -39.46
+        assert accounting["accounts"]["live"]["account_id"] == LIVE_STABILITY_ACCOUNT_ID
+        assert accounting["accounts"]["legacy_research"]["booked_resolved_pnl"] == -39.46
         assert accounting["goal"]["target_return"] == 0.05
-        assert accounting["goal"]["account_id"] == "paper-shared"
-        assert accounting["goal"]["excludes"] == ["research-shadow", "unrealized-marks"]
+        assert accounting["goal"]["account_id"] == LIVE_STABILITY_ACCOUNT_ID
         assert accounting["reconciliation_status"] == "reconciled"
         assert payload["daily_summary"]["equity_available"] is False
         assert payload["daily_summary"]["equity_basis"] == "attribution_only"
@@ -2825,7 +2986,7 @@ def test_strategy_research_cli_writes_public_artifact():
         assert analysis["analysis_generated_at"] == payload["analysis_generated_at"]
         assert analysis["backtest_summary"] == payload["backtest_summary"]
         assert payload["status"]["challenger_calibration_source"] == "clean-blend/combined"
-        assert json.loads(out.getvalue())["schema_version"] == 2
+        assert json.loads(out.getvalue())["schema_version"] == 3
 
 
 def test_dataset_research_summary_reads_accuracy_gate_candidates():

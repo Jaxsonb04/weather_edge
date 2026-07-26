@@ -4,7 +4,7 @@ import { KPIGroup } from "@heroui-pro/react/kpi-group";
 import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
-import { activeProfiles, money, type StrategyLab } from "../../lib/strategy";
+import { money, type StrategyLab } from "../../lib/strategy";
 
 export function PnlHeader({ s }: { s: StrategyLab }) {
   const sum = s.paper_trading.summary;
@@ -14,15 +14,17 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
   // live book's own numbers when no research book exists in the artifact —
   // otherwise showing them under this live-only header would mislabel
   // research activity as live P&L.
-  const hasResearchBook = activeProfiles(s).some((p) => p.risk_profile !== "live");
+  const hasResearchBook = (s.profiles ?? []).some(
+    (p) => p.risk_profile !== "live" && p.risk_profile !== "live-legacy",
+  );
   const allTimePnl = account?.all_time_realized_pnl ?? (hasResearchBook ? undefined : sum.realized_pnl);
   const windowPnl = account?.window_realized_pnl ?? (hasResearchBook ? undefined : (s.daily_summary.totals?.realized_pnl ?? 0));
   const realizedEquity = account?.realized_equity ?? (hasResearchBook ? undefined : s.daily_summary.current_equity);
   const weekly = account?.goal;
   const weeklyPnl = weekly?.weekly_realized_pnl ?? windowPnl;
   const weeklyHint = weekly
-    ? `5% research objective · ${money(weekly.remaining_pnl)} remaining · ${weekly.current_week_evidence_qualified ? `${weekly.completed_week_success_streak} verified-week streak` : "full exec-v3 week pending"}`
-    : "5% research objective";
+    ? `5% stability research objective · ${money(weekly.remaining_pnl)} remaining · ${weekly.current_week_evidence_qualified ? `${weekly.completed_week_success_streak} verified-week streak` : "full exec-v4 week pending"}`
+    : "5% stability research objective";
   const pnlTone = allTimePnl != null && allTimePnl >= 0 ? "text-success" : "text-danger";
 
   return (
@@ -40,7 +42,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:calendar-bold" title="Weekly realized P&L" hint="paper-shared · Mon 00:00 PT">
+            <Kpi icon="solar:calendar-bold" title="Weekly realized P&L" hint="Live Stability · Mon 00:00 PT">
               {weeklyPnl == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className={`font-display text-2xl font-semibold ${weeklyPnl >= 0 ? "text-success" : "text-danger"}`}

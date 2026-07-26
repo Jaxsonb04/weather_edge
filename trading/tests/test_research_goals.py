@@ -57,7 +57,42 @@ def _pacific_noon(day: date) -> str:
     ).isoformat()
 
 
-def test_daily_goal_is_frozen_at_16_from_original_equity_on_pacific_day(
+def _record_target_fixture_order(
+    store: PaperStore,
+    target_date: str,
+    decision: TradeDecision,
+) -> int:
+    """Seed historical v3 target state without using archived generic writes."""
+
+    original_ticker = decision.ticker
+    order_id = store.record_paper_order(
+        target_date,
+        replace(decision, ticker=f"{original_ticker}-TARGET-SEED"),
+        risk_profile="live",
+    )
+    assert order_id is not None
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET market_ticker=?, risk_profile='research', "
+            "account_id=?, research_sleeve=?, research_policy_version=?, "
+            "policy_fingerprint=? WHERE id=?",
+            (
+                original_ticker,
+                TARGET_POLICY.account_id,
+                TARGET_POLICY.sleeve.value,
+                TARGET_POLICY.policy_version,
+                TARGET_POLICY.policy_fingerprint,
+                order_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (TARGET_POLICY.account_id, order_id),
+        )
+    return order_id
+
+
+def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
     tmp_path,
 ) -> None:
     current = [datetime(2026, 7, 18, 6, 59, tzinfo=UTC)]
@@ -69,9 +104,9 @@ def test_daily_goal_is_frozen_at_16_from_original_equity_on_pacific_day(
     state = store.research_daily_goal_state()
 
     assert state.objective_day == date(2026, 7, 17)
-    assert state.target_pnl == 16.0
+    assert state.target_pnl == 50.0
     assert state.realized_pnl == 0.0
-    assert state.remaining_pnl == 16.0
+    assert state.remaining_pnl == 50.0
     assert state.achieved is False
     assert state.locked is False
 
@@ -96,8 +131,8 @@ def test_daily_goal_is_frozen_at_16_from_original_equity_on_pacific_day(
             )
 
     again = store.research_daily_goal_state(objective_day=state.objective_day)
-    assert again.target_pnl == 16.0
-    assert again.remaining_pnl == 16.0
+    assert again.target_pnl == 50.0
+    assert again.remaining_pnl == 50.0
 
 
 def test_malformed_persisted_goal_fails_closed(tmp_path) -> None:
@@ -182,7 +217,7 @@ def test_first_target_scan_read_freezes_the_daily_goal(tmp_path) -> None:
             "AND account_id=? AND policy_version=?",
             (TARGET_POLICY.account_id, TARGET_POLICY.policy_version),
         ).fetchone()
-    assert frozen == (1000.0, 0.016, 16.0)
+    assert frozen == (1000.0, 0.05, 50.0)
 
 
 def test_crossed_research_identity_is_unknown_and_cannot_contaminate_kpis(
@@ -193,13 +228,15 @@ def test_crossed_research_identity_is_unknown_and_cannot_contaminate_kpis(
         tmp_path / "paper.db",
         research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
     )
-    target_account_row = store.record_paper_order(
-        "2026-07-19", _approved_decision(), risk_profile="research"
+    target_account_row = _record_target_fixture_order(
+        store,
+        "2026-07-19",
+        _approved_decision(),
     )
-    motion_account_row = store.record_paper_order(
+    motion_account_row = _record_target_fixture_order(
+        store,
         "2026-07-20",
         replace(_approved_decision(), ticker="KXHIGHTPHX-CROSSED-B111.5"),
-        risk_profile="research",
     )
     assert target_account_row is not None
     assert motion_account_row is not None
@@ -357,7 +394,7 @@ def test_upgrade_backfills_exact_legacy_daily_goal_without_bricking_report(
         through_day=date(2026, 7, 18),
         window_days=1,
     )
-    assert report["target_pnl"] == 16.0
+    assert report["target_pnl"] == 50.0
     assert report["realized_pnl"] == 0.0
 
 
@@ -371,13 +408,13 @@ def test_goal_report_bounds_activity_to_window_and_uses_lifecycle_indexes(
     )
 
     def closed_target_order(target_date: str, resolved_day: date, pnl: float) -> int:
-        order_id = store.record_paper_order(
+        order_id = _record_target_fixture_order(
+            store,
             target_date,
             replace(
                 _approved_decision(),
                 ticker=f"KXHIGHTPHX-WINDOW-{resolved_day.isoformat()}-B110.5",
             ),
-            risk_profile="research",
         )
         assert order_id is not None
         with store.connect() as conn:
@@ -478,10 +515,10 @@ def test_partial_lot_money_uses_actual_pacific_day_and_counts_one_logical_decisi
         tmp_path / "paper.db",
         research_clock=lambda: datetime(2026, 7, 19, 19, 0, tzinfo=UTC),
     )
-    root_id = store.record_paper_order(
+    root_id = _record_target_fixture_order(
+        store,
         "2026-07-20",
         _approved_decision(),
-        risk_profile="research",
     )
     assert root_id is not None
     with store.connect() as conn:
@@ -562,14 +599,14 @@ def test_daily_goal_summary_reports_day_clustered_statistics_without_a_guarantee
     assert "guaranteed" in report["disclaimer"]
 
 
-def test_target_only_new_risk_locks_after_50_while_motion_continues(tmp_path) -> None:
+def test_target_locks_after_50_and_archived_motion_stays_fail_closed(tmp_path) -> None:
     objective_day = date(2026, 7, 18)
     store = PaperStore(
         tmp_path / "paper.db",
         research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
     )
-    root_id = store.record_paper_order(
-        "2026-07-19", _approved_decision(), risk_profile="research"
+    root_id = _record_target_fixture_order(
+        store, "2026-07-19", _approved_decision()
     )
     assert root_id is not None
     with store.connect() as conn:
@@ -609,7 +646,8 @@ def test_target_only_new_risk_locks_after_50_while_motion_continues(tmp_path) ->
     assert state.locked is True
     assert target_capacity["allowed_spend"] == 0.0
     assert "target attained" in target_capacity["reason"]
-    assert motion_capacity["allowed_spend"] == pytest.approx(0.50)
+    assert motion_capacity["allowed_spend"] == 0.0
+    assert motion_capacity["reason"] == "research account policy is archived"
 
 
 def test_report_does_not_infer_feasibility_from_decision_rows(tmp_path) -> None:
@@ -642,7 +680,7 @@ def test_report_does_not_infer_feasibility_from_decision_rows(tmp_path) -> None:
     report = store.research_daily_goal_report(through_day=objective_day)
 
     assert report["available_conservative_expected_profit"] is None
-    assert report["remaining_pnl"] == 16.0
+    assert report["remaining_pnl"] == 50.0
     assert report["target_feasible"] is None
     assert report["feasibility_evidence"] == "unavailable"
 
@@ -713,10 +751,10 @@ def test_report_exit_breakdown_uses_exact_audited_terminal_categories(tmp_path) 
             _approved_decision(),
             ticker=f"KXHIGHTPHX-EXIT-{index}-B110.5",
         )
-        order_id = store.record_paper_order(
+        order_id = _record_target_fixture_order(
+            store,
             f"2026-07-{19 + index:02d}",
             decision,
-            risk_profile="research",
         )
         assert order_id is not None
         created.append((order_id, status, pnl, closed_at, settled_at))

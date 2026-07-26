@@ -25,6 +25,7 @@ OPERATIONAL_SERVICES = {
     "sfo-kalshi-paper-settle.service.in",
     "sfo-kalshi-paper-prune.service.in",
     "sfo-forecast-freshness.service.in",
+    "sfo-scheduler-health.service.in",
 }
 
 
@@ -523,14 +524,22 @@ def test_paper_scan_persistent_lock_prevents_overlap(tmp_path: Path) -> None:
         "CALL_LOG": str(tmp_path / "calls"),
     }
     first = subprocess.Popen(["bash", str(AWS_DIR / "run_paper_scan_profiles.sh")], env=env)
-    time.sleep(0.2)
+    calls_path = tmp_path / "calls"
+    for _ in range(100):
+        if calls_path.exists() and "start" in calls_path.read_text().splitlines():
+            break
+        time.sleep(0.02)
+    else:
+        first.terminate()
+        first.wait()
+        pytest.fail("first paper scan did not acquire the persistent lock")
     second = subprocess.run(
         ["bash", str(AWS_DIR / "run_paper_scan_profiles.sh")], env=env, capture_output=True, text=True
     )
     assert first.wait() == 0
     assert second.returncode == 0
     assert "previous paper scan still running" in second.stdout
-    assert (tmp_path / "calls").read_text().splitlines() == ["start", "done"]
+    assert calls_path.read_text().splitlines() == ["start", "done"]
     assert (tmp_path / "base" / ".locks" / "paper-scan.lock").exists()
 
 

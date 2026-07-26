@@ -1,11 +1,11 @@
 [Unit]
-Description=Run the bounded SFO Strategy Lab public refresh every ten minutes
+Description=Run the bounded SFO Strategy Lab public refresh every five minutes
 
 [Timer]
-# Decorrelate firing so the sfo units don't all spike together
+# Use a wall-clock schedule so slow or failed builds do not permanently shift
+# later runs. systemd coalesces an elapsed firing while the oneshot is active.
 RandomizedDelaySec=30
-OnActiveSec=4min
-OnUnitInactiveSec=10min
+OnCalendar=*-*-* *:00,05,10,15,20,25,30,35,40,45,50,55
 AccuracySec=30s
 Persistent=true
 Unit=sfo-strategy-lab-refresh.service

@@ -143,9 +143,11 @@ The environment installed at `/etc/weatheredge.env` is based on
   forecast state for all fifteen cities, and no public artifacts.
 - `sfo-operational-publish.timer`: every five minutes; builds and validates the
   operational JSON snapshot, then publishes it.
-- `sfo-strategy-lab-refresh.timer`: every ten minutes; bounded research-only build
-  and publish, with no paid Google refresh or full-journal rescore. The recurring
-  wrapper forces bounded mode even if `/etc/weatheredge.env` says otherwise.
+- `sfo-strategy-lab-refresh.timer`: fixed wall-clock five-minute cadence;
+  bounded research-only build and publish, with no paid Google refresh or
+  full-journal rescore. The recurring wrapper forces bounded mode even if
+  `/etc/weatheredge.env` says otherwise. Calendar scheduling avoids
+  completion-time drift.
 - `sfo-dataset-backfill.timer`: nightly at 10:01 UTC (03:01 PDT / 02:01 PST);
   compact source refresh, CLI settlement truth, NWP leads 1 and 2, and
   rolling-origin EMOS. The fixed UTC window starts after retention prune's
@@ -160,12 +162,30 @@ The environment installed at `/etc/weatheredge.env` is based on
   missed run waits for the next nightly window instead of replaying alongside
   persistent runtime timers after a deploy or reboot.
 - `sfo-forecast-freshness.timer`: publication and forecast health checks.
+- `sfo-scheduler-health.timer`: offset five-minute independent scheduler check.
+  It requires the eleven application timers to be enabled and active, verifies
+  canonical systemd units, forecast DB safety, artifact checksums and source
+  provenance, and local/public Strategy and operational freshness. It repairs
+  only age-only failures by starting Strategy Lab and/or operational
+  publication under a single-flight lock and 15-minute cooldown. It never
+  starts scan, monitor, settlement, or any trading action.
 
 The operational publication path holds `SFO_ARTIFACT_GENERATION_LOCK` while
 building, validating, and copying. Strategy Lab builds in staging and takes
 that lock only for atomic artifact/cache promotion and manifest rebuild.
 `SFO_PAGES_LOCK` separately serializes Git updates. The publisher retries
 bounded non-fast-forward failures with `SFO_PAGES_PUSH_ATTEMPTS`.
+Strategy lock acquisition is capped at 30 seconds; operational artifact and
+Pages lock acquisition are capped at 60 seconds each, leaving service-deadline
+headroom for generation and network publication.
+
+The full sync creates the root-owned
+`/run/weatheredge-deploy-maintenance` marker after timer-state capture and
+before quiescence. Scheduler repair skips while the marker exists. After the
+captured timer policy and post-analysis publication are restored, the deploy
+removes the marker and runs the scheduler-health service once. A failed deploy
+can intentionally leave the marker in place; investigate and complete or roll
+back that deployment before removing it.
 
 ## Archive, Finality, And Health
 

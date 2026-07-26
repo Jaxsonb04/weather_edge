@@ -3,10 +3,14 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from cities import CITIES, DEFAULT_CITY_SLUG
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
+from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.models import TradeDecision
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +19,34 @@ AWS_DIR = ROOT / "trading" / "deploy" / "aws"
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _cutover_test_decision() -> TradeDecision:
+    return TradeDecision(
+        ticker="KXHIGHTSFO-26JUL27-B70.5",
+        label="70° to 71°",
+        action="BUY_NO",
+        approved=True,
+        probability=0.9,
+        probability_lcb=0.85,
+        yes_bid=0.2,
+        yes_ask=0.21,
+        spread=0.01,
+        fee_per_contract=0.0,
+        cost_per_contract=0.8,
+        edge=0.1,
+        edge_lcb=0.05,
+        kelly_fraction=0.01,
+        recommended_contracts=4.0,
+        expected_profit=0.4,
+        reasons=[],
+        side="NO",
+        entry_bid=0.79,
+        entry_ask=0.8,
+        entry_bid_size=100.0,
+        entry_ask_size=100.0,
+        trade_quality_score=80.0,
+    )
 
 
 def _explicit_utc_timer_start_seconds(timer: str) -> int:
@@ -189,10 +221,15 @@ def test_strategy_lab_refresh_uses_bounded_fast_publication():
     assert "run_publication_cycle.sh strategy" in service
     assert "build_public_trading_signal.sh" not in service
     assert "google_weather_cache.py --refresh" not in service
-    assert "OnActiveSec=4min" in timer
+    assert (
+        "OnCalendar=*-*-* *:00,05,10,15,20,25,30,35,40,45,50,55"
+        in timer
+    )
+    assert "Persistent=true" in timer
+    assert "OnActiveSec=" not in timer
     assert "OnBootSec=" not in timer
     assert "OnUnitActiveSec=" not in timer
-    assert "OnUnitInactiveSec=10min" in timer
+    assert "OnUnitInactiveSec=" not in timer
     assert "Unit=sfo-strategy-lab-refresh.service" in timer
     assert "TimeoutStartSec=120" in service
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
@@ -202,6 +239,130 @@ def test_strategy_lab_refresh_uses_bounded_fast_publication():
     assert "SFO_STRATEGY_FAST_PUBLICATION=1" in _read(
         AWS_DIR / "sfo-weather.env.example"
     )
+
+
+def test_publication_lock_waits_leave_service_deadline_headroom():
+    runner = _read(AWS_DIR / "run_publication_cycle.sh")
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+    strategy_service = _read(
+        AWS_DIR / "systemd" / "sfo-strategy-lab-refresh.service.in"
+    )
+    operational_service = _read(
+        AWS_DIR / "systemd" / "sfo-operational-publish.service.in"
+    )
+
+    strategy_wait = int(
+        re.search(
+            r"SFO_STRATEGY_ARTIFACT_LOCK_WAIT_SECONDS:-([0-9]+)",
+            runner,
+        ).group(1)
+    )
+    operational_wait = int(
+        re.search(
+            r"SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-([0-9]+)",
+            runner,
+        ).group(1)
+    )
+    pages_wait = int(
+        re.search(r"SFO_PAGES_LOCK_WAIT_SECONDS:-([0-9]+)", publisher).group(1)
+    )
+    strategy_deadline = _systemd_seconds(strategy_service, "TimeoutStartSec")
+    operational_deadline = _systemd_seconds(
+        operational_service,
+        "TimeoutStartSec",
+    )
+
+    assert strategy_wait <= 30
+    assert strategy_wait < strategy_deadline / 2
+    assert operational_wait + pages_wait <= 120
+    assert operational_wait + pages_wait < operational_deadline / 2
+    assert 'flock -w "$PAGES_LOCK_WAIT_SECONDS" 9' in publisher
+    assert "SFO_ARTIFACT_LOCK_WAIT_SECONDS" not in runner
+    assert "SFO_ARTIFACT_LOCK_WAIT_SECONDS" not in publisher
+
+
+def test_scheduler_health_watchdog_is_bounded_and_wired_everywhere():
+    script = _read(AWS_DIR / "check_scheduler_health.sh")
+    service = _read(AWS_DIR / "systemd" / "sfo-scheduler-health.service.in")
+    timer = _read(AWS_DIR / "systemd" / "sfo-scheduler-health.timer")
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+    quiesce = _read(AWS_DIR / "disable_systemd_timers.sh")
+    integrity = _read(AWS_DIR / "verify_systemd_unit_integrity.sh")
+
+    assert "OnCalendar=*-*-* *:03,08,13,18,23,28,33,38,43,48,53,58" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=sfo-scheduler-health.service" in timer
+    assert "OnFailure=sfo-alert@%n.service" in service
+    assert "Environment=SFO_SCHEDULER_APP_USER=__APP_USER__" in service
+    assert (
+        "ExecStart=/usr/local/libexec/weatheredge/check_scheduler_health.sh"
+        in service
+    )
+    assert "RuntimeDirectory=weatheredge-scheduler-health" in service
+    assert "TimeoutStartSec=1500" in service
+    assert "\nUser=" not in service
+
+    for install_script in (installer, notimers):
+        assert "check_scheduler_health.sh" in install_script
+        assert "sfo-scheduler-health.service.in" in install_script
+        assert "sfo-scheduler-health.timer" in install_script
+    assert "sfo-scheduler-health.timer" in installer[installer.index("systemctl enable --now") :]
+    assert (
+        "sfo-scheduler-health.timer sfo-scheduler-health.service"
+        in quiesce
+    )
+    assert "sfo-scheduler-health.service" in integrity
+    assert "sfo-scheduler-health.timer" in integrity
+
+    canonical_block = script[
+        script.index("CANONICAL_TIMERS=(") : script.index(
+            "if [[ -e \"$DEPLOY_MAINTENANCE_MARKER\""
+        )
+    ]
+    assert canonical_block.count(".timer\"") == 11
+    assert "sfo-scheduler-health.timer" not in canonical_block
+    repair_targets = set(
+        re.findall(r'SYSTEMCTL\[@\]}" start ([a-z0-9@.-]+)', script)
+    )
+    assert repair_targets == {
+        "sfo-strategy-lab-refresh.service",
+        "sfo-operational-publish.service",
+    }
+    assert "PAPER_PLACE_" not in script
+    assert "SFO_LIVE_TRADING" not in script
+
+
+def test_deploy_maintenance_marker_holds_scheduler_repair_until_restore():
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+
+    capture_idx = deployer.index("bash -s capture")
+    marker_create_idx = deployer.index(
+        "sudo install -o root -g root -m 600 /dev/null "
+        "'$DEPLOY_MAINTENANCE_MARKER'"
+    )
+    quiesce_idx = deployer.index('bash -s quiesce < "$QUIESCE_HELPER"')
+    scheduler_classify_idx = deployer.index(
+        'if [[ "$timer" == "sfo-scheduler-health.timer" ]]'
+    )
+    scheduler_restore_idx = deployer.index(
+        "bash -s restore sfo-scheduler-health.timer"
+    )
+    marker_remove_idx = deployer.rindex(
+        "sudo rm -f -- '$DEPLOY_MAINTENANCE_MARKER'"
+    )
+    scheduler_check_idx = deployer.rindex(
+        "sudo systemctl start sfo-scheduler-health.service"
+    )
+
+    assert capture_idx < marker_create_idx < quiesce_idx
+    assert quiesce_idx < scheduler_classify_idx
+    assert scheduler_classify_idx < scheduler_restore_idx
+    assert scheduler_restore_idx < marker_remove_idx < scheduler_check_idx
+    assert "SCHEDULER_WATCHDOG_ENABLED=0" in deployer
+    assert "bash -s probe sfo-scheduler-health.timer" in deployer
+    assert "SCHEDULER_WATCHDOG_WAS_ABSENT=1" in deployer
+    assert 'ENABLED_TIMERS+=("sfo-scheduler-health.timer")' in deployer
 
 
 def test_operational_builder_generates_fast_artifacts_and_manifest_only():
@@ -361,7 +522,8 @@ def test_slow_strategy_compute_does_not_block_operational_cycle(tmp_path: Path):
         "SFO_TRADING_ROOT": str(trading),
         "SFO_TRADING_PYTHON": str(fake_python),
         "SFO_ARTIFACT_GENERATION_LOCK": str(tmp_path / "artifact.lock"),
-        "SFO_ARTIFACT_LOCK_WAIT_SECONDS": "2",
+        "SFO_STRATEGY_ARTIFACT_LOCK_WAIT_SECONDS": "2",
+        "SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS": "2",
         "STRATEGY_STARTED": str(started),
         "STRATEGY_RELEASE": str(release),
         "OPERATIONAL_DONE": str(operational_done),
@@ -688,7 +850,7 @@ def test_project_docs_describe_split_publication_cadences():
         assert "every five minutes" in normalized
         assert "publication_manifest.json" in normalized
         assert "sfo-strategy-lab-refresh.timer" in normalized
-        assert "every ten minutes" in normalized
+        assert "wall-clock five-minute cadence" in normalized
         assert "research-only" in normalized
 
 
@@ -742,6 +904,112 @@ def test_deploy_builds_decision_indexes_while_services_are_quiesced():
     assert "SFO_STRATEGY_ANALYSIS_DB_PATH=" in deployer
 
 
+def test_deploy_initializes_account_cutover_before_any_producer_or_seed():
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    validator = AWS_DIR / "validate_account_cutover.py"
+
+    quiesce_idx = deployer.index('bash -s quiesce < "$QUIESCE_HELPER"')
+    cutover_idx = deployer.index("deploy/aws/validate_account_cutover.py")
+    producer_restore_idx = deployer.index("PRODUCER_TIMERS=()")
+    seed_idx = deployer.index(
+        "sudo systemctl start sfo-strategy-lab-refresh.service"
+    )
+    assert quiesce_idx < cutover_idx < producer_restore_idx < seed_idx
+    assert validator.is_file()
+
+
+def test_account_cutover_validator_imports_from_exact_deploy_cwd_without_pythonpath():
+    validator = AWS_DIR / "validate_account_cutover.py"
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(validator), "--help"],
+        cwd=ROOT / "trading",
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--db" in result.stdout
+
+
+def test_account_cutover_validator_fails_closed_on_tampered_capital(tmp_path):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    validator = AWS_DIR / "validate_account_cutover.py"
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "trading")}
+
+    healthy = subprocess.run(
+        [sys.executable, str(validator), "--db", str(db_path)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert healthy.returncode == 0, healthy.stderr
+
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_accounts SET opening_cash=900 WHERE account_id=?",
+            (LIVE_STABILITY_ACCOUNT_ID,),
+        )
+    tampered = subprocess.run(
+        [sys.executable, str(validator), "--db", str(db_path)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert tampered.returncode != 0
+    assert "active paper account capital is invalid" in tampered.stderr
+
+
+def test_failed_account_cutover_validation_does_not_raise_high_water(tmp_path):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    validator = AWS_DIR / "validate_account_cutover.py"
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "trading")}
+    order_id = store.record_paper_order(
+        "2026-07-27",
+        _cutover_test_decision(),
+        risk_profile="live",
+    )
+    assert order_id is not None
+    with store.connect() as conn:
+        before = conn.execute(
+            "SELECT high_water_equity FROM paper_accounts WHERE account_id=?",
+            (LIVE_STABILITY_ACCOUNT_ID,),
+        ).fetchone()[0]
+        conn.execute(
+            "DELETE FROM paper_account_ledger "
+            "WHERE order_id=? AND event_type='ENTRY_FILL'",
+            (order_id,),
+        )
+
+    result = subprocess.run(
+        [sys.executable, str(validator), "--db", str(db_path)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    with store.connect() as conn:
+        after = conn.execute(
+            "SELECT high_water_equity FROM paper_accounts WHERE account_id=?",
+            (LIVE_STABILITY_ACCOUNT_ID,),
+        ).fetchone()[0]
+
+    assert result.returncode != 0
+    assert "does not reconcile" in result.stderr
+    assert after == before
+
+
 def test_deploy_keeps_recurring_manifest_writers_stopped_until_seed_is_public():
     deployer = _read(AWS_DIR / "sync_to_box.sh")
 
@@ -769,7 +1037,9 @@ def test_deploy_keeps_recurring_manifest_writers_stopped_until_seed_is_public():
     assert "STRATEGY_TIMER_ENABLED=0" in deployer
     assert "STRATEGY_TIMER_ENABLED=1" in deployer
     assert "INITIAL_HELD_TIMERS" in deployer
-    assert "emergency_restore_initial_timers" in deployer
+    assert "recover_deploy_runtime" in deployer
+    assert "RUNTIME_RECOVERY_REQUIRED=1" in deployer
+    assert "RUNTIME_RECOVERY_REQUIRED=0" in deployer
 
 
 def test_deploy_verifies_canonical_systemd_units_before_restoring_timers():

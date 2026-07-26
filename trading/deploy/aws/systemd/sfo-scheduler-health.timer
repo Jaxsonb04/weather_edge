@@ -1,0 +1,13 @@
+[Unit]
+Description=Check WeatherEdge scheduler and publication health every five minutes
+
+[Timer]
+# Offset from the Strategy and paper-scan wall-clock windows.
+RandomizedDelaySec=15
+AccuracySec=15s
+OnCalendar=*-*-* *:03,08,13,18,23,28,33,38,43,48,53,58
+Persistent=true
+Unit=sfo-scheduler-health.service
+
+[Install]
+WantedBy=timers.target

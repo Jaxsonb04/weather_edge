@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.cli import _refresh_same_day_model_reads, main
 from sfo_kalshi_quant.config import StrategyConfig
@@ -129,6 +130,32 @@ def _between_no_decision(
         floor_strike=floor,
         cap_strike=cap,
     )
+
+
+def _record_archived_research_order(
+    store: PaperStore,
+    target_date: str,
+    decision: TradeDecision,
+) -> int:
+    """Seed a pre-cutover research position that remains monitorable."""
+
+    order_id = store.record_paper_order(
+        target_date,
+        decision,
+        risk_profile="live",
+    )
+    assert order_id is not None
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET risk_profile='research', account_id=? "
+            "WHERE id=?",
+            (RESEARCH_ACCOUNT_ID, order_id),
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (RESEARCH_ACCOUNT_ID, order_id),
+        )
+    return order_id
 
 
 class _FakeKalshiClient:
@@ -317,10 +344,10 @@ def test_monitor_research_no_favorite_rides_converged_profit_to_settlement():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
-        order_id = store.record_paper_order(
+        order_id = _record_archived_research_order(
+            store,
             "2026-06-12",
             _stopped_no_decision(),
-            risk_profile="research",
         )
         store.record_probabilities(
             "2026-06-12",
@@ -1063,7 +1090,8 @@ def test_same_day_no_basket_noncatastrophic_stop_is_held_without_crystallizing()
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
-        stopped_id = store.record_paper_order(
+        stopped_id = _record_archived_research_order(
+            store,
             "2026-06-26",
             _between_no_decision(
                 "KXHIGHTSFO-TEST-B68.5",
@@ -1072,9 +1100,9 @@ def test_same_day_no_basket_noncatastrophic_stop_is_held_without_crystallizing()
                 floor=68.0,
                 cap=69.0,
             ),
-            risk_profile="research",
         )
-        store.record_paper_order(
+        _record_archived_research_order(
+            store,
             "2026-06-26",
             _between_no_decision(
                 "KXHIGHTSFO-TEST-B70.5",
@@ -1083,7 +1111,6 @@ def test_same_day_no_basket_noncatastrophic_stop_is_held_without_crystallizing()
                 floor=70.0,
                 cap=71.0,
             ),
-            risk_profile="research",
         )
         _record_decision_model_read(store, "2026-06-26", "KXHIGHTSFO-TEST-B68.5", "NO", 0.66)
 
@@ -1112,7 +1139,8 @@ def test_same_day_no_basket_closes_stop_when_model_thesis_dies():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
-        stopped_id = store.record_paper_order(
+        stopped_id = _record_archived_research_order(
+            store,
             "2026-06-26",
             _between_no_decision(
                 "KXHIGHTSFO-TEST-B68.5",
@@ -1121,9 +1149,9 @@ def test_same_day_no_basket_closes_stop_when_model_thesis_dies():
                 floor=68.0,
                 cap=69.0,
             ),
-            risk_profile="research",
         )
-        store.record_paper_order(
+        _record_archived_research_order(
+            store,
             "2026-06-26",
             _between_no_decision(
                 "KXHIGHTSFO-TEST-B70.5",
@@ -1132,7 +1160,6 @@ def test_same_day_no_basket_closes_stop_when_model_thesis_dies():
                 floor=70.0,
                 cap=71.0,
             ),
-            risk_profile="research",
         )
         _record_decision_model_read(store, "2026-06-26", "KXHIGHTSFO-TEST-B68.5", "NO", 0.40)
 

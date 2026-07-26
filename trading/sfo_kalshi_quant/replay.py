@@ -20,9 +20,12 @@ from pathlib import Path
 from typing import Literal, Sequence
 
 from ._util import _json_object, _row_value, _table_exists
-from .account import ACCOUNTING_POLICY_VERSION, SHARED_ACCOUNT_ID
+from .account import (
+    ACCOUNTING_POLICY_VERSION,
+    LIVE_STABILITY_ACCOUNT_ID,
+    SHARED_ACCOUNT_ID,
+)
 from .backtest_rescore import _day_clustered_roi_ci
-from .config import normalize_risk_profile_name
 from .execution import initial_queue_ahead
 from .logical_positions import LogicalPaperPosition, group_logical_positions
 from .maker_fills import (
@@ -33,6 +36,7 @@ from .maker_fills import (
     uses_current_maker_semantics,
 )
 from .restatement import VERIFIED, restate
+from .profile_identity import row_published_profile_key
 from .settlement_truth import (
     normalize_settlement_truth,
     row_resolves_yes as _resolves_yes,
@@ -43,6 +47,9 @@ from .settlement_truth import (
 # (docs.kalshi.com/getting_started/order_direction): a bid-side taker bought
 # YES and fills resting NO bids; an ask-side taker fills resting YES bids.
 _MAKER_SIDE_BY_TAKER_BOOK_SIDE = {"bid": "NO", "ask": "YES"}
+READINESS_LIVE_ACCOUNT_IDS = frozenset(
+    {SHARED_ACCOUNT_ID, LIVE_STABILITY_ACCOUNT_ID}
+)
 
 
 def _positive_integral_id(value: object) -> int | None:
@@ -552,13 +559,29 @@ def replay_from_database(
                 for row in all_orders
                 if str(row["status"]) != "REJECTED"
                 and semantics_boundary
-                and str(_row_value(row, "account_id") or "") == SHARED_ACCOUNT_ID
+                and str(_row_value(row, "account_id") or "")
+                in READINESS_LIVE_ACCOUNT_IDS
                 and str(_row_value(row, "execution_model_version") or "")
                 == EXECUTION_MODEL_VERSION
                 and str(row["created_at"] or "") >= str(semantics_boundary)
             ]
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    eligible_root_ids = _eligible_readiness_root_ids(
+        all_orders,
+        semantics_boundary,
+    )
+    eligible_order_ids = _eligible_readiness_order_ids(
+        all_orders,
+        semantics_boundary,
+        eligible_root_ids=eligible_root_ids,
+    )
+    event_orders = [
+        row
+        for row in event_orders
+        if int(row["id"]) in eligible_order_ids
+    ]
 
     try:
         restated_orders = restate(Path(db_path)).get("orders", [])
@@ -759,9 +782,6 @@ def replay_from_database(
         )
 
     result = asdict(run_replay(events, initial_capital=initial_capital))
-    eligible_root_ids = _eligible_readiness_root_ids(
-        all_orders, semantics_boundary
-    )
     reasons = set(result["promotion_block_reasons"])
     if legacy_orders:
         reasons.add(f"{legacy_orders} legacy orders lack a current strategy fingerprint")
@@ -776,13 +796,12 @@ def replay_from_database(
     for group in group_logical_positions(all_orders):
         root = group.root
         profile_class = _readiness_root_profile_class(root)
-        if (
-            profile_class == "research"
-            and group.valid
-            and _readiness_group_has_consistent_scope(
-                group, semantics_boundary
-            )
-        ):
+        # Canonically valid research history is never part of the live
+        # promotion clock, regardless of whether it predates the live
+        # execution-semantics boundary. Timing on an excluded profile must not
+        # disqualify an otherwise verified live day. Invalid/crossed research
+        # identities still fall through and fail the day closed.
+        if profile_class == "research" and group.valid:
             continue
         if str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
             continue
@@ -840,7 +859,7 @@ def replay_from_database(
         )
     )
     result["evidence_scope"] = {
-        "account_id": SHARED_ACCOUNT_ID,
+        "account_ids": sorted(READINESS_LIVE_ACCOUNT_IDS),
         "execution_model_version": EXECUTION_MODEL_VERSION,
         "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
         "pre_boundary_excluded": True,
@@ -924,7 +943,9 @@ def _post_boundary_readiness_metrics(
         }
 
     cohort = side_bucket(resolved)
-    cohort["source"] = "post-boundary exec-v4 paper-shared chronological outcomes"
+    cohort["source"] = (
+        "post-boundary exec-v4 chronological outcomes across valid live eras"
+    )
     return {
         "evidence_kind": "chronological_account_replay",
         "promotion_eligible": promotion_eligible,
@@ -967,13 +988,50 @@ def _eligible_readiness_root_ids(
     for group in group_logical_positions(orders):
         root = group.root
         if (
-            str(_row_value(root, "account_id") or "") == SHARED_ACCOUNT_ID
+            group.valid
+            and str(_row_value(root, "account_id") or "")
+            in READINESS_LIVE_ACCOUNT_IDS
             and str(_row_value(root, "execution_model_version") or "")
             == EXECUTION_MODEL_VERSION
             and str(root["created_at"] or "") >= semantics_boundary
             and _readiness_root_profile_class(root) == "live"
+            and _readiness_group_has_consistent_scope(
+                group,
+                semantics_boundary,
+            )
         ):
             eligible.add(group.logical_order_id)
+    return eligible
+
+
+def _eligible_readiness_order_ids(
+    orders: list[sqlite3.Row],
+    semantics_boundary: str | None,
+    *,
+    eligible_root_ids: set[int] | None = None,
+) -> set[int]:
+    """Return every root/child lot allowed to influence readiness replay."""
+
+    roots = (
+        eligible_root_ids
+        if eligible_root_ids is not None
+        else _eligible_readiness_root_ids(orders, semantics_boundary)
+    )
+    eligible: set[int] = set()
+    for group in group_logical_positions(orders):
+        if (
+            group.logical_order_id not in roots
+            or not _readiness_group_has_consistent_scope(
+                group,
+                semantics_boundary,
+            )
+        ):
+            continue
+        eligible.update(
+            int(lot["id"])
+            for lot in group.lots
+            if str(lot.get("id") or "").isdigit()
+        )
     return eligible
 
 
@@ -982,17 +1040,18 @@ def _readiness_root_profile_class(
 ) -> Literal["live", "research", "invalid"]:
     """Classify root policy identity without consulting ambient defaults."""
 
-    raw_profile = _row_value(root, "risk_profile")
-    profile = (
-        "live"
-        if raw_profile is None or not str(raw_profile).strip()
-        else str(raw_profile)
-    )
-    try:
-        normalized = normalize_risk_profile_name(profile)
-    except (AttributeError, TypeError, ValueError):
-        return "invalid"
-    return "research" if normalized == "research" else "live"
+    published = row_published_profile_key(root)
+    if published in {"live", "live-legacy"}:
+        return "live"
+    if published in {
+        "research",
+        "research-target-v1",
+        "research-target-v2",
+        "research-target",
+        "research-motion",
+    }:
+        return "research"
+    return "invalid"
 
 
 def _readiness_group_has_consistent_scope(

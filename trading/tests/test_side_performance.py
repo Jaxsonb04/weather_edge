@@ -3,6 +3,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
@@ -129,11 +130,22 @@ def test_side_and_exit_breakdowns_are_split_by_profile():
         )
         store.settle_paper_orders("2026-06-03", 67)
         # fast-feedback: a NO loss held to settlement (same bucket resolves YES).
-        store.record_paper_order(
+        research_id = store.record_paper_order(
             "2026-06-04",
             _decision("KXHIGHTSFO-TEST-B66.5", "BUY_NO", "NO", cost=0.30, floor=66.0, cap=67.0),
-            risk_profile="research",
+            risk_profile="live",
         )
+        assert research_id is not None
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET risk_profile='research', account_id=? "
+                "WHERE id=?",
+                (RESEARCH_ACCOUNT_ID, research_id),
+            )
+            conn.execute(
+                "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+                (RESEARCH_ACCOUNT_ID, research_id),
+            )
         store.settle_paper_orders("2026-06-04", 67)
 
         payload = build_paper_summary(

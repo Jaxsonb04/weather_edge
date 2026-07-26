@@ -39,6 +39,7 @@ FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
+DEPLOY_MAINTENANCE_MARKER="/run/weatheredge-deploy-maintenance"
 SSH_OPTS=(
   -i "$HOST_KEY"
   -o StrictHostKeyChecking=accept-new
@@ -114,6 +115,22 @@ REMOTE_DB="$REMOTE_BASE/trading/data/paper_trading.db"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   bash -s preflight "$REMOTE_DB" < "$BACKUP_HELPER"
 
+# Preserve an intentional pause if the independent scheduler watchdog already
+# exists, but enable it on the first deploy that introduces the unit.
+SCHEDULER_WATCHDOG_WAS_ABSENT=0
+scheduler_probe_status=0
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  bash -s probe sfo-scheduler-health.timer < "$QUIESCE_HELPER" \
+  || scheduler_probe_status=$?
+case "$scheduler_probe_status" in
+  0) ;;
+  10) SCHEDULER_WATCHDOG_WAS_ABSENT=1 ;;
+  *)
+    echo "failed to inspect scheduler watchdog before quiescence (status=$scheduler_probe_status)" >&2
+    exit "$scheduler_probe_status"
+    ;;
+esac
+
 # Capture the established host's timer policy before quiescing it. Stream the
 # current helper because the remote source tree may be older than this deploy.
 # A failed transfer or install deliberately leaves the box quiesced; only a
@@ -125,7 +142,12 @@ ENABLED_TIMERS=()
 while IFS= read -r timer; do
   [[ -n "$timer" ]] && ENABLED_TIMERS+=("$timer")
 done <<<"$enabled_timer_output"
+if (( SCHEDULER_WATCHDOG_WAS_ABSENT == 1 )); then
+  ENABLED_TIMERS+=("sfo-scheduler-health.timer")
+fi
 
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "sudo install -o root -g root -m 600 /dev/null '$DEPLOY_MAINTENANCE_MARKER'"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s quiesce < "$QUIESCE_HELPER"
 
 backup_output="$(
@@ -247,15 +269,76 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/verify_systemd_unit_integrity.sh"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/create_decision_snapshot_index.sh"
+# Initialize the restart-era account schema while every producer is quiesced.
+# The Strategy builder is intentionally read-only, so this gate must run before
+# any timer restoration or seed publication.
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && .venv/bin/python deploy/aws/validate_account_cutover.py --db '$REMOTE_DB'"
+
+# From this point onward the transferred source and account cutover have passed
+# their gates and producer restoration may begin. Any later exit must either
+# restore the exact captured timer policy and release maintenance, or quiesce
+# the host again while retaining the marker. This prevents a split-brain state
+# where timers run but the independent scheduler watchdog remains suppressed.
+RUNTIME_RECOVERY_REQUIRED=1
+recover_deploy_runtime() {
+  local interrupted_status="${1:-$?}"
+  local restore_status=0
+  local release_status=0
+  trap - EXIT HUP INT TERM
+
+  if (( RUNTIME_RECOVERY_REQUIRED == 1 )); then
+    if (( ${#ENABLED_TIMERS[@]} > 0 )); then
+      if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+        bash -s restore "${ENABLED_TIMERS[@]}" < "$QUIESCE_HELPER"; then
+        :
+      else
+        restore_status=$?
+      fi
+    fi
+    if (( restore_status == 0 )); then
+      if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+        "sudo rm -f -- '$DEPLOY_MAINTENANCE_MARKER'"; then
+        RUNTIME_RECOVERY_REQUIRED=0
+        if (( SCHEDULER_WATCHDOG_ENABLED == 1 )); then
+          ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+            "sudo systemctl start sfo-scheduler-health.service" \
+            || echo "warning: scheduler health recovery run failed; its timer remains active" >&2
+        fi
+      else
+        release_status=$?
+      fi
+    fi
+    if (( RUNTIME_RECOVERY_REQUIRED == 1 )); then
+      ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+        bash -s quiesce < "$QUIESCE_HELPER" \
+        || echo "warning: failed to re-quiesce after deployment recovery failure" >&2
+      if (( restore_status != 0 )); then
+        echo "warning: failed to restore captured timers during deployment recovery (status=$restore_status)" >&2
+      fi
+      if (( release_status != 0 )); then
+        echo "warning: failed to release deployment maintenance during recovery (status=$release_status)" >&2
+      fi
+    fi
+  fi
+  exit "$interrupted_status"
+}
+trap 'recover_deploy_runtime 129' HUP
+trap 'recover_deploy_runtime 130' INT
+trap 'recover_deploy_runtime 143' TERM
+trap 'recover_deploy_runtime $?' EXIT
 
 # Restore producers first, seed and validate one complete publication, then
 # restore the persistent watchdog last so it cannot race the first fresh build.
 PRODUCER_TIMERS=()
 WATCHDOG_ENABLED=0
+SCHEDULER_WATCHDOG_ENABLED=0
 PUBLISH_TIMER_ENABLED=0
 STRATEGY_TIMER_ENABLED=0
 for timer in ${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"}; do
-  if [[ "$timer" == "sfo-forecast-freshness.timer" ]]; then
+  if [[ "$timer" == "sfo-scheduler-health.timer" ]]; then
+    SCHEDULER_WATCHDOG_ENABLED=1
+  elif [[ "$timer" == "sfo-forecast-freshness.timer" ]]; then
     WATCHDOG_ENABLED=1
   elif [[ "$timer" == "sfo-operational-publish.timer" ]]; then
     # Keep the recurring publisher stopped until the one deploy-seed snapshot
@@ -293,6 +376,9 @@ restore_initial_timers() {
   if (( include_watchdog == 1 && WATCHDOG_ENABLED == 1 )); then
     timers+=("sfo-forecast-freshness.timer")
   fi
+  if (( include_watchdog == 1 && SCHEDULER_WATCHDOG_ENABLED == 1 )); then
+    timers+=("sfo-scheduler-health.timer")
+  fi
   if (( INITIAL_RESTORE_REQUIRED == 1 )); then
     if (( ${#timers[@]} == 0 )); then
       INITIAL_RESTORE_REQUIRED=0
@@ -305,18 +391,6 @@ restore_initial_timers() {
   fi
   return "$restore_status"
 }
-emergency_restore_initial_timers() {
-  local interrupted_status="${1:-$?}"
-  trap - EXIT HUP INT TERM
-  restore_initial_timers 1 \
-    || echo "warning: emergency initial timer restoration failed" >&2
-  exit "$interrupted_status"
-}
-trap 'emergency_restore_initial_timers 129' HUP
-trap 'emergency_restore_initial_timers 130' INT
-trap 'emergency_restore_initial_timers 143' TERM
-trap emergency_restore_initial_timers EXIT
-
 INITIAL_SEED_STATUS=0
 if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service"; then
@@ -334,9 +408,6 @@ if restore_initial_timers "$(( INITIAL_SEED_STATUS != 0 ))"; then
   :
 else
   INITIAL_RESTART_STATUS=$?
-fi
-if (( INITIAL_RESTART_STATUS == 0 )); then
-  trap - EXIT HUP INT TERM
 fi
 if (( INITIAL_SEED_STATUS != 0 )); then
   echo "initial Strategy Lab publication failed (status=$INITIAL_SEED_STATUS)" >&2
@@ -401,24 +472,12 @@ if (( ANALYSIS_CACHE_REFRESHED == 1 )); then
     fi
     return "$restore_status"
   }
-  emergency_restore_post_analysis_timers() {
-    local interrupted_status="${1:-$?}"
-    trap - EXIT HUP INT TERM
-    restore_post_analysis_timers \
-      || echo "warning: emergency post-analysis timer restoration failed" >&2
-    exit "$interrupted_status"
-  }
-
   POST_ANALYSIS_STATUS=0
   if (( ${#POST_ANALYSIS_TIMERS[@]} > 0 )); then
     # Prevent either recurring writer from racing cache promotion, the exact
     # Strategy rebuild, or its publication. Let already-running units finish
     # instead of terminating a Python write or git push midway through.
     POST_ANALYSIS_RESTORE_REQUIRED=1
-    trap 'emergency_restore_post_analysis_timers 129' HUP
-    trap 'emergency_restore_post_analysis_timers 130' INT
-    trap 'emergency_restore_post_analysis_timers 143' TERM
-    trap emergency_restore_post_analysis_timers EXIT
     if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
       "sudo systemctl stop sfo-strategy-lab-refresh.timer sfo-operational-publish.timer && timeout 910 bash -c 'while systemctl is-active --quiet sfo-strategy-lab-refresh.service || systemctl is-active --quiet sfo-operational-publish.service; do sleep 1; done'"; then
       :
@@ -445,9 +504,6 @@ if (( ANALYSIS_CACHE_REFRESHED == 1 )); then
   else
     POST_ANALYSIS_RESTART_STATUS=$?
   fi
-  if (( POST_ANALYSIS_RESTART_STATUS == 0 )); then
-    trap - EXIT HUP INT TERM
-  fi
   if (( POST_ANALYSIS_STATUS != 0 )); then
     echo "post-analysis Strategy Lab publication failed (status=$POST_ANALYSIS_STATUS)" >&2
   fi
@@ -462,7 +518,21 @@ if (( ANALYSIS_CACHE_REFRESHED == 1 )); then
   fi
 fi
 
+if (( SCHEDULER_WATCHDOG_ENABLED == 1 )); then
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    bash -s restore sfo-scheduler-health.timer < "$QUIESCE_HELPER"
+fi
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "sudo rm -f -- '$DEPLOY_MAINTENANCE_MARKER'"
+RUNTIME_RECOVERY_REQUIRED=0
+trap - EXIT HUP INT TERM
+if (( SCHEDULER_WATCHDOG_ENABLED == 1 )); then
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "sudo systemctl start sfo-scheduler-health.service"
+fi
+
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"
 echo "Restored ${#PRODUCER_TIMERS[@]} producer timer(s); watchdog restored last=$WATCHDOG_ENABLED."
+echo "Scheduler watchdog restored after maintenance=$SCHEDULER_WATCHDOG_ENABLED."
 echo "Historical Strategy Lab cache refreshed=$ANALYSIS_CACHE_REFRESHED."

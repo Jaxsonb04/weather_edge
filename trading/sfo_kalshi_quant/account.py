@@ -1,10 +1,9 @@
-"""Shared paper-account identity, strategy fingerprints, and risk constants."""
+"""Paper-account identities, strategy fingerprints, and risk constants."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from datetime import time
 from zoneinfo import ZoneInfo
 from dataclasses import asdict
@@ -14,15 +13,12 @@ from .config import StrategyConfig, normalize_risk_profile_name
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleeve
 
 SHARED_ACCOUNT_ID = "paper-shared"
+LIVE_STABILITY_ACCOUNT_ID = "paper-live-stability-v1"
 INITIAL_CAPITAL = 1000.0
 
-# Audit AC-01: research experiments are paper-only forever and must not be
-# able to erase live gains or trigger live risk pauses. New research orders
-# book against this separate VIRTUAL account (its own ledger, cash, pauses,
-# and drawdown) so the production-intent live equity and weekly return target
-# are measured on the live book alone. Historical research rows that already
-# consumed shared capital keep their original account: the shared history
-# (including the legacy -$87.30) is never rewritten.
+# Audit AC-01: historical generic research remains isolated in this archived
+# virtual ledger. New research admission requires an explicit active policy
+# account; the former shared-capital environment escape hatch is retired.
 RESEARCH_ACCOUNT_ID = "paper-research-shadow"
 RESEARCH_VIRTUAL_CAPITAL = INITIAL_CAPITAL
 ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
@@ -31,29 +27,15 @@ WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)
 
 
-def research_shared_capital_enabled() -> bool:
-    """Explicit opt-in for a shared-capital research experiment (off by default).
-
-    Some research questions genuinely need queue/capital competition with the
-    live book; enabling this env flag restores the old co-mingled behavior for
-    NEW research orders. It must be a deliberate, visually distinct choice.
-    """
-
-    raw = os.getenv("PAPER_RESEARCH_SHARED_CAPITAL_ENABLED")
-    if raw is None:
-        return False
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def account_for_profile(risk_profile: str | None) -> str:
     profile = normalize_risk_profile_name(risk_profile) if risk_profile else "live"
-    if profile == "research" and not research_shared_capital_enabled():
+    if profile == "research":
         return RESEARCH_ACCOUNT_ID
-    return SHARED_ACCOUNT_ID
+    return LIVE_STABILITY_ACCOUNT_ID
 
 
 def account_for_research_sleeve(sleeve: ResearchSleeve) -> str:
-    """Route a new research sleeve to its isolated virtual account."""
+    """Return a sleeve's canonical account; admission status is checked later."""
 
     if sleeve is ResearchSleeve.TARGET:
         return TARGET_POLICY.account_id
@@ -118,7 +100,7 @@ def policy_capacity(
     if drawdown >= 0.15:
         return {"allowed_spend": 0.0, "reason": "15% account drawdown pause"}
     if daily_pnl <= -DAILY_LOSS_PCT * equity:
-        return {"allowed_spend": 0.0, "reason": "2% shared-account daily loss pause"}
+        return {"allowed_spend": 0.0, "reason": "2% live-account daily loss pause"}
 
     rows = list(active_rows)
     series = market_ticker.split("-", 1)[0].upper()

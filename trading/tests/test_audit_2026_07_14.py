@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.db import PaperStore
@@ -272,7 +273,7 @@ def test_exec_v3_partial_fill_is_included_in_account_risk() -> None:
         )
 
         order = store.paper_order(order_id)
-        state = store.shared_account_state()
+        state = store.live_account_state()
         assert state is not None
         assert state["open_cost_basis"] == order["contracts"] * order["cost_per_contract"]
         assert state["reservations"] == order["reserved_cost"]
@@ -319,7 +320,7 @@ def test_exec_v3_closing_partial_fill_cancels_unfilled_reservation() -> None:
         assert closed["contracts"] == 5.0
         assert closed["remaining_contracts"] == 0.0
         assert closed["reserved_cost"] == 0.0
-        assert store.shared_account_state()["reservations"] == 0.0
+        assert store.live_account_state()["reservations"] == 0.0
 
 
 def test_exec_v3_queue_only_progress_is_idempotent_and_later_completes() -> None:
@@ -396,7 +397,7 @@ def test_exec_v4_cutover_expires_exec_v3_resting_orders_without_rewriting() -> N
         assert expired["reserved_cost"] == 0.0
         assert expired["remaining_contracts"] == 0.0
         assert expired["execution_model_version"] == "exec-v3-2026-07-14"
-        assert store.shared_account_state()["reservations"] == 0.0
+        assert store.live_account_state()["reservations"] == 0.0
 
 
 def test_exec_v4_cutover_freezes_exec_v3_partial_remainder_once() -> None:
@@ -470,7 +471,7 @@ def test_exec_v4_cutover_freezes_exec_v3_partial_remainder_once() -> None:
                 (order_id, release_key),
             ).fetchall()
         assert [amount for (amount,) in releases] == [reserved_remainder]
-        assert store.shared_account_state()["reservations"] == 0.0
+        assert store.live_account_state()["reservations"] == 0.0
 
         PaperStore(db_path)
         with store.connect() as conn:
@@ -1023,7 +1024,7 @@ def test_readiness_excludes_non_live_shared_account_roots(
             db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
         )
 
-        assert result["source_orders"] == 1
+        assert result["source_orders"] == 0
         assert result["verified_decisions"] == 0
         metrics = result["readiness_metrics"]
         assert metrics["counts"]["settled_decisions"] == 0
@@ -1093,12 +1094,44 @@ def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
             db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
         )
 
-        assert result["source_orders"] == 2
+        assert result["source_orders"] == 1
         assert result["verified_decisions"] == 1
         metrics = result["readiness_metrics"]
         assert metrics["counts"]["settled_decisions"] == 1
         assert metrics["by_cohort"]["post_exec_v4_live"]["trades"] == 1
         assert result["post_boundary_days"] == expected_post_boundary_days
+
+
+def test_readiness_mixed_day_ignores_valid_pre_boundary_research_history() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        live_id = _verified_terminal_readiness_root(
+            store, trade_id="T-MIXED-LIVE-POST-BOUNDARY"
+        )
+        research_id = _verified_terminal_readiness_root(
+            store,
+            trade_id="T-MIXED-RESEARCH-PRE-BOUNDARY",
+            ticker="KXHIGHTSEA-26JUL14-B84.5",
+            floor=84.0,
+            cap=85.0,
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET risk_profile='research', "
+                "account_id='paper-shared', created_at=? WHERE id=?",
+                ((T0 - timedelta(minutes=2)).isoformat(), research_id),
+            )
+
+        result = replay_from_database(
+            db_path, {("KXHIGHTSEA", "2026-07-14"): 85.0}
+        )
+
+        assert result["source_orders"] == 1
+        assert result["verified_decisions"] == 1
+        assert result["readiness_metrics"]["counts"]["settled_decisions"] == 1
+        assert result["post_boundary_days"] == 1
+        assert live_id != research_id
 
 
 @pytest.mark.parametrize(
@@ -1109,7 +1142,7 @@ def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
         "child_verified",
     ),
     [
-        (EXECUTION_MODEL_VERSION, 3, 1, True),
+        (EXECUTION_MODEL_VERSION, 1, 1, True),
         ("exec-v2-2026-07-13", 1, 0, False),
     ],
 )
@@ -1209,11 +1242,11 @@ def test_weekly_goal_counts_only_consecutive_completed_five_percent_weeks() -> N
         )
         with store.connect() as conn:
             conn.execute(
-                "UPDATE paper_account_ledger SET created_at=? "
-                "WHERE idempotency_key=?",
+                "UPDATE paper_accounts SET created_at=? "
+                "WHERE account_id=?",
                 (
                     (this_monday - timedelta(days=21)).astimezone(UTC).isoformat(),
-                    f"execution:{EXECUTION_MODEL_VERSION}",
+                    LIVE_STABILITY_ACCOUNT_ID,
                 ),
             )
         weekly_rows = (
@@ -1232,7 +1265,16 @@ def test_weekly_goal_counts_only_consecutive_completed_five_percent_weeks() -> N
                     (pnl, resolved_at.astimezone(UTC).isoformat(), order_id),
                 )
 
-        goal = _weekly_goal_payload(store, {"realized_equity": 1157.625})
+        goal = _weekly_goal_payload(
+            store,
+            {
+                "account_id": LIVE_STABILITY_ACCOUNT_ID,
+                "created_at": (
+                    this_monday - timedelta(days=21)
+                ).astimezone(UTC).isoformat(),
+                "realized_equity": 1157.625,
+            },
+        )
 
         assert goal["weekly_realized_return"] == 0.05
         assert goal["completed_week_success_streak"] == 2
@@ -1259,15 +1301,24 @@ def test_weekly_goal_streak_excludes_weeks_before_current_execution_boundary() -
                 ),
             )
             conn.execute(
-                "UPDATE paper_account_ledger SET created_at=? "
-                "WHERE idempotency_key=?",
+                "UPDATE paper_accounts SET created_at=? "
+                "WHERE account_id=?",
                 (
                     (this_monday + timedelta(days=1)).astimezone(UTC).isoformat(),
-                    f"execution:{EXECUTION_MODEL_VERSION}",
+                    LIVE_STABILITY_ACCOUNT_ID,
                 ),
             )
 
-        goal = _weekly_goal_payload(store, {"realized_equity": 1050.0})
+        goal = _weekly_goal_payload(
+            store,
+            {
+                "account_id": LIVE_STABILITY_ACCOUNT_ID,
+                "created_at": (
+                    this_monday + timedelta(days=1)
+                ).astimezone(UTC).isoformat(),
+                "realized_equity": 1050.0,
+            },
+        )
 
         assert goal["completed_week_success_streak"] == 0
         assert goal["first_full_evidence_week"] == (this_monday + timedelta(days=7)).isoformat()

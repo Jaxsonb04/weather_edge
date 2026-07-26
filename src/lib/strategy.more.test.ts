@@ -34,7 +34,12 @@ describe("strategy collection helpers", () => {
     const duplicate = { ...live, label: "Duplicate" };
     const profiles = [duplicate, live];
 
-    expect(activeProfiles({ profiles } as StrategyLab)).toEqual([duplicate]);
+    expect(
+      activeProfiles({
+        accounting: { available: true },
+        profiles,
+      } as StrategyLab),
+    ).toEqual([duplicate]);
     expect(profiles).toHaveLength(2);
   });
 

@@ -125,7 +125,8 @@ minutes: `build_public_trading_signal.sh` generates
 `forecaster/trading_signal.json`, `forecaster/cities_data.json`, and
 `forecaster/publication_manifest.json`, then the publisher validates and ships
 that snapshot alongside the SPA. The research-only
-`sfo-strategy-lab-refresh.timer` runs every ten minutes to rebuild
+`sfo-strategy-lab-refresh.timer` runs on a fixed wall-clock five-minute cadence
+to rebuild
 `forecaster/strategy_research.json` separately without calling the paid Google
 Weather refresh command or rescanning the full decision journal. Historical
 backtest/rescore sections come from `strategy_analysis_cache.json` and expose a

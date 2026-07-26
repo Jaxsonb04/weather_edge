@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeProfiles,
+  archivedProfiles,
   equitySeries,
   equitySeriesFromDays,
   gateCounts,
@@ -18,11 +19,12 @@ describe("active research books", () => {
     profile_type: riskProfile === "live" ? "primary" : "experimental",
   });
 
-  it("orders the canonical books live, target, motion and excludes legacy research", () => {
+  it("keeps exactly live stability and research ROI active", () => {
     const s = {
+      accounting: { available: true },
       profiles: [
-        profile("research-motion"),
-        profile("research"),
+        { ...profile("research-motion"), archived: true },
+        { ...profile("research"), archived: true },
         profile("live"),
         profile("research-target"),
       ],
@@ -31,12 +33,12 @@ describe("active research books", () => {
     expect(activeProfiles(s).map((entry) => entry.risk_profile)).toEqual([
       "live",
       "research-target",
-      "research-motion",
     ]);
   });
 
   it("uses legacy research only when neither canonical research sleeve exists", () => {
     const s = {
+      accounting: { available: true },
       profiles: [profile("research"), profile("live")],
     } as StrategyLab;
 
@@ -44,7 +46,40 @@ describe("active research books", () => {
       "live",
       "research",
     ]);
-    expect(activeProfiles({ profiles: [profile("live")] } as StrategyLab)).toHaveLength(1);
+    expect(
+      activeProfiles({
+        accounting: { available: true },
+        profiles: [profile("live")],
+      } as StrategyLab),
+    ).toHaveLength(1);
+  });
+
+  it("fails closed when active account reconciliation is unavailable", () => {
+    const s = {
+      accounting: {
+        available: false,
+        reason: "fresh active paper ledgers invalid or unavailable",
+      },
+      profiles: [profile("live"), profile("research-target")],
+    } as StrategyLab;
+
+    expect(activeProfiles(s)).toEqual([]);
+  });
+
+  it("keeps prior live, target, and motion books in achieved performance", () => {
+    const legacy = [
+      { ...profile("research-motion"), archived: true },
+      { ...profile("live-legacy"), archived: true },
+      { ...profile("research-target-v2"), archived: true },
+      profile("live"),
+      profile("research-target"),
+    ];
+
+    expect(
+      archivedProfiles({ profiles: legacy } as StrategyLab).map(
+        (entry) => entry.risk_profile,
+      ),
+    ).toEqual(["live-legacy", "research-target-v2", "research-motion"]);
   });
 
   it("tolerates a missing target artifact and falls back from profile to top-level data", () => {
@@ -74,7 +109,13 @@ describe("account equity series", () => {
     } as StrategyLab;
 
     const series = equitySeries(s);
-    expect(series.at(-1)).toEqual({ date: "07-09", equity: 960.54, pnl: -39.46, dailyPnl: 0 });
+    expect(series.at(-1)).toEqual({
+      date: "07-09",
+      equity: 960.54,
+      pnl: -39.46,
+      dailyPnl: 0,
+      accountBalance: 960.54,
+    });
   });
 
   it("renders profile data as zero-based P&L contribution", () => {

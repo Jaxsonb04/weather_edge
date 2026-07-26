@@ -378,8 +378,8 @@ def register_scan_commands(sub) -> None:
         "--place-research-motion",
         action="store_true",
         help=(
-            "Admit approved motion-sleeve paper orders only. This flag has no "
-            "effect on the live profile or the research target sleeve."
+            "Deprecated compatibility flag; the motion sleeve is archived "
+            "read-only and this flag no longer records evidence or orders."
         ),
     )
     portfolio.add_argument(

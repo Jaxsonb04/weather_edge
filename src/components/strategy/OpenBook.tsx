@@ -21,13 +21,19 @@ function PositionList({ rows, kind, scope }: { rows: OpenPosition[]; kind: "open
   const [expanded, setExpanded] = useState(false);
   const listId = `${kind}-list-${scope}`;
   if (!rows.length) {
+    if (kind === "pending") {
+      return (
+        <div role="status" className="flex items-center gap-2 py-3 text-left">
+          <Icon icon="solar:moon-sleep-bold" className="size-4 shrink-0 text-muted/70" aria-hidden="true" />
+          <p className="text-xs text-muted">No pending limit orders.</p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center gap-2 py-6 text-center">
         <Icon icon="solar:moon-sleep-bold" className="size-6 text-muted/70" aria-hidden="true" />
         <p className="max-w-sm text-sm text-muted">
-          {kind === "open"
-            ? "No open paper positions right now — everything has been closed or settled. New entries appear here the moment a scan clears the gates."
-            : "No pending limit orders. The engine posts limits only when a gate-approved price isn't immediately fillable."}
+          No open paper positions right now — everything has been closed or settled. New entries appear here the moment a scan clears the gates.
         </p>
       </div>
     );
@@ -141,8 +147,8 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
       )}
 
       {currentStateAvailable ? (
-        <div className="grid gap-x-8 gap-y-6 lg:grid-cols-2 lg:divide-x lg:divide-border/50">
-          <section aria-labelledby={`open-${scope}`} className="min-w-0">
+        <div className="grid gap-y-6 lg:grid-cols-2 lg:divide-x lg:divide-border/50">
+          <section aria-labelledby={`open-${scope}`} className="min-w-0 lg:pr-8">
             <h5 id={`open-${scope}`} className="mb-2 font-display text-sm font-semibold text-foreground">
               Open positions
             </h5>

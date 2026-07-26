@@ -78,7 +78,7 @@ def test_ledger_reserves_fills_and_settles_cash_idempotently() -> None:
             strategy_config=StrategyConfig(),
         )
         assert order_id is not None
-        reserved = store.shared_account_state()
+        reserved = store.live_account_state()
         assert reserved is not None
         assert reserved["reservations"] > 0
         assert reserved["available_cash"] < 1000
@@ -86,30 +86,29 @@ def test_ledger_reserves_fills_and_settles_cash_idempotently() -> None:
         filled = store.fill_resting_limit_order(order_id, evidence={"trade_id": "T1"})
         assert filled["filled_at"] is not None
         assert filled["reserved_cost"] == 0
-        after_fill = store.shared_account_state()
+        after_fill = store.live_account_state()
         assert after_fill["reservations"] == 0
         assert round(after_fill["realized_equity"], 2) == 1000.0
 
         assert store.settle_paper_orders("2026-07-10", 68.0) == 1
-        settled = store.shared_account_state()
+        settled = store.live_account_state()
         assert settled["realized_equity"] > 1000
         cash_once = settled["cash_balance"]
         assert store.settle_paper_orders("2026-07-10", 68.0) == 0
-        assert store.shared_account_state()["cash_balance"] == cash_once
+        assert store.live_account_state()["cash_balance"] == cash_once
 
 
 def test_legacy_flattening_is_folded_into_opening_cash_once() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
-        with store.connect() as conn:
-            conn.execute("DELETE FROM paper_account_ledger")
-            conn.execute("DELETE FROM paper_accounts")
-
         order_id = store.record_paper_order("2026-07-10", _decision())
+        assert order_id is not None
         with store.connect() as conn:
             conn.execute("UPDATE paper_orders SET account_id=NULL WHERE id=?", (order_id,))
             conn.execute("DELETE FROM paper_account_ledger")
+            conn.execute("DELETE FROM paper_accounts")
+
         assert store.paper_order(order_id)["account_id"] is None
         closed = store.close_paper_order(order_id, 0.50)
         expected_equity = 1000.0 + float(closed["realized_pnl"])
@@ -144,19 +143,17 @@ def test_resting_ttl_releases_reservation() -> None:
         expired = store.paper_order(ids[0])
         assert expired["status"] == "PAPER_EXPIRED"
         assert expired["cancelled_at"] is not None
-        assert store.shared_account_state()["available_cash"] == 1000.0
+        assert store.live_account_state()["available_cash"] == 1000.0
 
 
-def test_research_position_is_capped_at_one_percent_of_equity() -> None:
+def test_generic_research_position_fails_closed_after_cutover() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         trader = PaperTrader(store, StrategyConfig(), risk_profile="research")
         ids = trader.place_approved("2026-07-10", [_decision()], bankroll=1000.0)
 
-        assert len(ids) == 1
-        row = store.paper_order(ids[0])
-        assert 5.0 <= row["contracts"] * row["cost_per_contract"] <= 10.0 + 1e-9
-        assert row["sleeve"] == "research"
+        assert ids == []
+        assert store.research_account_state()["available_cash"] == 1000.0
 
 
 def test_daily_loss_and_drawdown_breakers_fail_closed() -> None:

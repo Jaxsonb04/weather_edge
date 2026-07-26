@@ -49,13 +49,12 @@ from ..models import (
 from ..paper import (
     ArbitrageContainmentError,
     PaperTrader,
-    prepare_research_sleeve_decisions,
+    prepare_research_target_decisions,
 )
 from ..portfolio import PortfolioPlan, allocate_portfolio
 from ..posterior_kelly import load_posterior_kelly_model
 from ..probability import ResidualCalibrator
 from ..research_policy import (
-    MOTION_POLICY,
     TARGET_POLICY,
     canonical_research_lead_bucket,
 )
@@ -84,11 +83,11 @@ def _risk_profile_name(args: argparse.Namespace) -> str:
 
 
 def _research_placement_flags(args: argparse.Namespace) -> tuple[bool, bool]:
-    """Return target/motion admission intent only for the research profile.
+    """Return active-target admission intent only for the research profile.
 
-    ``--place-paper`` remains the backwards-compatible manual research switch
-    for both sleeves. The explicit AWS switches are narrower and are ignored
-    for every other profile, so a research flag cannot enable live placement.
+    The former motion sleeve is archived and read-only. Its retained CLI flag
+    is ignored for compatibility, and can never create new decision evidence
+    or orders. ``--place-paper`` now means the active target ledger only.
     """
 
     if _risk_profile_name(args) != "research":
@@ -96,7 +95,7 @@ def _research_placement_flags(args: argparse.Namespace) -> tuple[bool, bool]:
     place_all = bool(getattr(args, "place_paper", False))
     return (
         place_all or bool(getattr(args, "place_research_target", False)),
-        place_all or bool(getattr(args, "place_research_motion", False)),
+        False,
     )
 
 
@@ -588,7 +587,7 @@ def _execute_research_scan_context(
     place_research_motion: bool | None = None,
     scan_run_id: str | None = None,
 ):
-    """Evaluate two books from one immutable in-memory research context."""
+    """Evaluate the active research book from one immutable scan context."""
 
     objective_day = store.research_objective_day()
     lead_days = (target - objective_day).days
@@ -598,19 +597,13 @@ def _execute_research_scan_context(
     if not entry_allowed and entry_block_reason:
         decisions = _block_entry_decisions(decisions, entry_block_reason)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
-    motion_state = store.research_account_state(account_id=MOTION_POLICY.account_id)
     target_cash = float(target_state["available_cash"]) if target_state else 0.0
-    motion_cash = float(motion_state["available_cash"]) if motion_state else 0.0
     target_realized = store.research_realized_pnl_for_day(
         account_id=TARGET_POLICY.account_id,
         objective_day=objective_day,
     )
-    motion_realized = store.research_realized_pnl_for_day(
-        account_id=MOTION_POLICY.account_id,
-        objective_day=objective_day,
-    )
     execution_config = strategy_config_for_profile("research")
-    target_decisions, motion_decisions = prepare_research_sleeve_decisions(
+    target_decisions = prepare_research_target_decisions(
         decisions,
         execution_config,
     )
@@ -618,24 +611,17 @@ def _execute_research_scan_context(
         ResearchOpportunity(decision, target.isoformat(), lead_days)
         for decision in target_decisions
     ]
-    motion_opportunities = [
-        ResearchOpportunity(decision, target.isoformat(), lead_days)
-        for decision in motion_decisions
-    ]
     plans = allocate_research_plans(
         target_opportunities,
-        motion_opportunities=motion_opportunities,
+        motion_opportunities=[],
         target_available_cash=target_cash,
-        motion_available_cash=motion_cash,
+        motion_available_cash=0.0,
         realized_today=target_realized,
-        motion_realized_today=motion_realized,
+        motion_realized_today=0.0,
         run_id=run_id,
     )
     admit_target_orders = (
         place_paper if place_research_target is None else place_research_target
-    )
-    admit_motion_orders = (
-        place_paper if place_research_motion is None else place_research_motion
     )
     execution = PaperTrader(
         store,
@@ -647,7 +633,7 @@ def _execute_research_scan_context(
         target.isoformat(),
         plans,
         source_decisions=target_decisions,
-        motion_source_decisions=motion_decisions,
+        motion_source_decisions=[],
         objective_day=objective_day.isoformat(),
         lead_bucket=lead_bucket,
         scan_run_id=run_id,
@@ -660,7 +646,7 @@ def _execute_research_scan_context(
         market_snapshot_id=market_snapshot_id,
         admit_orders=place_paper and entry_allowed,
         admit_target_orders=admit_target_orders and entry_allowed,
-        admit_motion_orders=admit_motion_orders and entry_allowed,
+        admit_motion_orders=False,
     )
     return plans, execution, decisions
 
