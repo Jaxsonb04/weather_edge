@@ -9,14 +9,15 @@ PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 MANIFEST_OUTPUT_PATH="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
 STRATEGY_OUTPUT_PATH="${SFO_STRATEGY_RESEARCH_PATH:-$FORECASTER_DIR/strategy_research.json}"
 ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-/opt/weatheredge/.locks/artifact-generation.lock}"
-LOCK_WAIT_SECONDS="${SFO_ARTIFACT_LOCK_WAIT_SECONDS:-900}"
 
 case "$MODE" in
   operational)
     BUILDER="$SCRIPT_DIR/build_public_trading_signal.sh"
+    LOCK_WAIT_SECONDS="${SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-60}"
     ;;
   strategy)
     BUILDER="$SCRIPT_DIR/build_strategy_research.sh"
+    LOCK_WAIT_SECONDS="${SFO_STRATEGY_ARTIFACT_LOCK_WAIT_SECONDS:-30}"
     # This publication entry point is intentionally bounded even when an
     # EnvironmentFile sets the flag to 0. Full analysis has a separate,
     # deploy-time maintenance helper and never runs on the recurring timer.

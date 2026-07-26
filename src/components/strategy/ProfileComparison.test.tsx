@@ -132,15 +132,17 @@ describe("ProfileComparison publication truthfulness", () => {
     expect(screen.getAllByText("Candidates this scan")[0].parentElement).toHaveTextContent("2");
   });
 
-  it("renders only canonical books in live-target-motion order with target and exclusion evidence", async () => {
+  it("renders only the two active books and keeps archived motion out of the workbench", async () => {
     await renderComparison("2026-07-09T11:59:00Z", canonicalStrategy);
 
     const page = document.body.textContent ?? "";
     expect(page.indexOf("Candidate")).toBeLessThan(page.indexOf("Research target"));
-    expect(page.indexOf("Research target")).toBeLessThan(page.indexOf("Research motion"));
+    expect(screen.queryByText("Research motion")).not.toBeInTheDocument();
     expect(screen.queryByText("Legacy research should not render")).not.toBeInTheDocument();
     expect(screen.getByText("$50.00 daily target")).toBeInTheDocument();
     expect(screen.getByText("Not feasible from current opportunities")).toBeInTheDocument();
-    expect(screen.getByText("Excluded from daily target and live readiness")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Separate Research ROI account · excluded from live goal and readiness/i),
+    ).toBeInTheDocument();
   });
 });

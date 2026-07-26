@@ -110,14 +110,13 @@ def with_target_research_execution(
     )
 
 
-def prepare_research_sleeve_decisions(
+def prepare_research_target_decisions(
     structural_decisions: list[TradeDecision],
     config: StrategyConfig,
-) -> tuple[list[TradeDecision], list[TradeDecision]]:
-    """Apply exact target/motion edge and quote policy to structural signals."""
+) -> list[TradeDecision]:
+    """Apply the active target policy without constructing archived motion work."""
 
     target: list[TradeDecision] = []
-    motion: list[TradeDecision] = []
     for decision in structural_decisions:
         if not decision.approved:
             structural_reason = (
@@ -134,7 +133,6 @@ def prepare_research_sleeve_decisions(
                 expected_profit=0.0,
             )
             target.append(blocked)
-            motion.append(blocked)
             continue
         target_quote = with_target_research_execution(decision, config)
         if target_quote is None:
@@ -152,6 +150,25 @@ def prepare_research_sleeve_decisions(
             )
         else:
             target.append(target_quote)
+    return target
+
+
+def prepare_research_sleeve_decisions(
+    structural_decisions: list[TradeDecision],
+    config: StrategyConfig,
+) -> tuple[list[TradeDecision], list[TradeDecision]]:
+    """Apply target/motion policy for explicit historical replay callers.
+
+    Scheduled scans use :func:`prepare_research_target_decisions` so the
+    archived motion sleeve remains read-only and no longer grows its journal.
+    """
+
+    target = prepare_research_target_decisions(structural_decisions, config)
+    motion: list[TradeDecision] = []
+    for index, decision in enumerate(structural_decisions):
+        if not decision.approved:
+            motion.append(target[index])
+            continue
         motion_quote = with_motion_taker_execution(decision, config)
         if motion_quote is None:
             motion.append(

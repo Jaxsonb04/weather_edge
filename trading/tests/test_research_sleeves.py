@@ -9,6 +9,7 @@ from threading import Barrier
 import pytest
 
 from sfo_kalshi_quant.account import (
+    LIVE_STABILITY_ACCOUNT_ID,
     account_for_profile,
     account_for_research_sleeve,
     strategy_fingerprint,
@@ -20,6 +21,7 @@ from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
     TARGET_POLICY_V1,
+    TARGET_POLICY_V2,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -224,7 +226,8 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
         TARGET_POLICY.reference_equity = 2000.0  # type: ignore[misc]
 
     assert TARGET_POLICY_V1.policy_fingerprint == "dea759010dc85ca5f4f610e2"
-    assert TARGET_POLICY.policy_fingerprint == "6a534a48478301a3068eb10d"
+    assert TARGET_POLICY_V2.policy_fingerprint == "6a534a48478301a3068eb10d"
+    assert TARGET_POLICY.policy_fingerprint == "edd7001fa6eb6e7ecfd94b48"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
@@ -233,8 +236,8 @@ def test_research_sleeves_route_to_isolated_accounts() -> None:
     assert account_for_research_sleeve(ResearchSleeve.MOTION) == MOTION_POLICY.account_id
 
 
-def test_live_account_and_fingerprint_are_unchanged() -> None:
-    assert account_for_profile("live") == "paper-shared"
+def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
+    assert account_for_profile("live") == LIVE_STABILITY_ACCOUNT_ID
     config = strategy_config_for_profile("live")
     assert strategy_fingerprint(config, entry_mode="limit") == "a965c8280aca2b3621f0c312"
     assert strategy_fingerprint(config, entry_mode="market") == "73b10240c1c00a8937b5314f"
@@ -256,7 +259,7 @@ def test_target_attainment_locks_only_target_allocation_while_motion_continues()
     assert plans.motion.legs[0].decision.recommended_contracts == 1
 
 
-def test_init_bootstraps_both_research_accounts_without_rewriting_legacy(
+def test_init_bootstraps_research_accounts_without_rewriting_legacy(
     tmp_path: Path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore
@@ -339,7 +342,7 @@ def test_init_bootstraps_both_research_accounts_without_rewriting_legacy(
 
     assert legacy_after == legacy_before
     assert research_accounts == [
-        (MOTION_POLICY.account_id, 1000.0, 1000.0, 1000.0, "ACTIVE"),
+        (MOTION_POLICY.account_id, 1000.0, 1000.0, 1000.0, "ARCHIVED"),
         (TARGET_POLICY.account_id, 1000.0, 1000.0, 1000.0, "ACTIVE"),
     ]
     assert openings == [
@@ -1061,7 +1064,7 @@ def test_active_research_exposure_releases_after_close(tmp_path: Path) -> None:
     assert capacity["allowed_spend"] == pytest.approx(20.0)
 
 
-def test_same_market_allowed_across_sleeves_but_duplicate_account_rejected(
+def test_archived_motion_and_duplicate_target_admissions_are_rejected(
     tmp_path: Path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore
@@ -1101,7 +1104,7 @@ def test_same_market_allowed_across_sleeves_but_duplicate_account_rejected(
     )
 
     assert target is not None
-    assert motion is not None
+    assert motion is None
     assert duplicate is None
     assert store.entries_for_market_side(
         "2026-07-19",
@@ -1116,7 +1119,7 @@ def test_same_market_allowed_across_sleeves_but_duplicate_account_rejected(
         "NO",
         risk_profile="research",
         account_id=MOTION_POLICY.account_id,
-    ) == 1
+    ) == 0
 
 
 def test_atomic_failure_rolls_back_order_and_ledger(
@@ -1159,7 +1162,7 @@ def test_atomic_failure_rolls_back_order_and_ledger(
         ).fetchone()[0] == 0
 
 
-def test_legacy_live_recording_api_and_fingerprints_remain_unchanged(
+def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     tmp_path: Path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore
@@ -1176,7 +1179,7 @@ def test_legacy_live_recording_api_and_fingerprints_remain_unchanged(
     assert order_id is not None
     row = store.paper_order(order_id)
     assert row is not None
-    assert row["account_id"] == "paper-shared"
+    assert row["account_id"] == LIVE_STABILITY_ACCOUNT_ID
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
@@ -1194,10 +1197,10 @@ def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> 
         _insert_research_order(
             conn,
             ticker="KXHIGHTSFO-TODAY-LOSS",
-            account_id=MOTION_POLICY.account_id,
-            sleeve=MOTION_POLICY.sleeve.value,
-            policy_version=MOTION_POLICY.policy_version,
-            policy_fingerprint=MOTION_POLICY.policy_fingerprint,
+            account_id=TARGET_POLICY.account_id,
+            sleeve=TARGET_POLICY.sleeve.value,
+            policy_version=TARGET_POLICY.policy_version,
+            policy_fingerprint=TARGET_POLICY.policy_fingerprint,
         )
         conn.execute(
             "UPDATE paper_orders SET status='PAPER_CLOSED', "
@@ -1206,7 +1209,7 @@ def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> 
         )
     admission = _linked_admission(
         store,
-        MOTION_POLICY,
+        TARGET_POLICY,
         "objective-bypass",
         decision,
         objective_day="2026-07-19",
@@ -1565,7 +1568,7 @@ def test_target_atomic_admission_rejects_past_and_same_day_targets(
         assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
 
 
-def test_motion_atomic_admission_allows_canonical_same_day_target(
+def test_archived_motion_atomic_admission_fails_closed(
     tmp_path: Path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore
@@ -1589,7 +1592,9 @@ def test_motion_atomic_admission_allows_canonical_same_day_target(
         decision,
         admission=admission,
         strategy_config=strategy_config_for_profile("research"),
-    ) is not None
+    ) is None
+    with store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("target_date", ("2026-07-19", "2026-07-22"))
@@ -2184,7 +2189,7 @@ def test_research_admission_fails_closed_on_malformed_ledger_amount(
         assert conn.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
 
 
-def test_research_evidence_api_binds_target_and_motion_execution_styles(
+def test_research_evidence_keeps_archived_motion_readable_but_not_admissible(
     tmp_path: Path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore, ResearchDecisionIdentity
@@ -2249,14 +2254,7 @@ def test_research_evidence_api_binds_target_and_motion_execution_styles(
     assert target_row is not None
     assert target_row["entry_mode"] == "limit"
     assert target_row["fill_model"] == "maker_trade_through_required"
-    assert motion_order_id is not None
-    motion_row = store.paper_order(motion_order_id)
-    assert motion_row is not None
-    assert motion_row["entry_mode"] == "market"
-    assert motion_row["status"] == "PAPER_FILLED"
-    assert motion_row["fill_model"] == "immediate_visible_quote"
-    assert motion_row["contracts"] == pytest.approx(1.0)
-    assert motion_row["entry_price"] == pytest.approx(motion.ask)
+    assert motion_order_id is None
 
     wrong_target_identity = ResearchDecisionIdentity.for_policy(
         TARGET_POLICY,
@@ -2292,16 +2290,18 @@ def test_research_evidence_api_binds_target_and_motion_execution_styles(
         identity=wrong_motion_identity,
         strategy_config=config,
     )
-    with pytest.raises(ValueError, match="motion research requires immediate taker"):
+    assert (
         store.record_research_order_atomic(
             "2026-07-19",
             target,
             admission=wrong_motion_identity.admission(wrong_motion_id),
             strategy_config=config,
         )
+        is None
+    )
 
 
-def test_same_shared_research_context_blocks_same_day_target_and_fills_motion(
+def test_same_shared_research_context_records_but_does_not_admit_archived_motion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2334,14 +2334,9 @@ def test_same_shared_research_context_blocks_same_day_target_and_fills_motion(
     )
 
     assert result.target_order_ids == ()
-    assert len(result.motion_order_ids) == 1
+    assert result.motion_order_ids == ()
     assert len(result.target_decision_ids) == 1
     assert len(result.motion_decision_ids) == 1
-    motion = store.paper_order(result.motion_order_ids[0])
-    assert motion is not None
-    assert motion["account_id"] == MOTION_POLICY.account_id
-    assert motion["entry_mode"] == "market"
-    assert motion["contracts"] == pytest.approx(1.0)
     with store.connect() as conn:
         evidence = conn.execute(
             "SELECT research_sleeve, approved, entry_block_reason "
@@ -2349,11 +2344,11 @@ def test_same_shared_research_context_blocks_same_day_target_and_fills_motion(
         ).fetchall()
     assert evidence == [
         ("target", 0, "target requires day-ahead lead"),
-        ("motion", 1, None),
+        ("motion", 0, "atomic research admission rejected"),
     ]
 
 
-def test_motion_attempts_every_candidate_in_priority_order_without_minimum_notional(
+def test_archived_motion_records_prioritized_evidence_without_orders(
     tmp_path: Path,
 ) -> None:
     from sfo_kalshi_quant.db import PaperStore
@@ -2406,7 +2401,7 @@ def test_motion_attempts_every_candidate_in_priority_order_without_minimum_notio
     )
 
     assert len(result.motion_decision_ids) == 3
-    assert len(result.motion_order_ids) == 2
+    assert result.motion_order_ids == ()
     with store.connect() as conn:
         motion_orders = conn.execute(
             "SELECT market_ticker, contracts, cost_per_contract "
@@ -2417,12 +2412,7 @@ def test_motion_attempts_every_candidate_in_priority_order_without_minimum_notio
             "SELECT market_ticker, approved, entry_block_reason "
             "FROM decision_snapshots WHERE research_sleeve='motion' ORDER BY id"
         ).fetchall()
-    assert [row[0] for row in motion_orders] == [
-        "KXHIGHTSFO-MOTION-HIGH",
-        "KXHIGHTSFO-MOTION-LOW",
-    ]
-    assert all(row[1] == pytest.approx(1.0) for row in motion_orders)
-    assert all(row[2] < 1.0 for row in motion_orders)  # deliberately below the old $5 floor
+    assert motion_orders == []
     assert [row[0] for row in motion_evidence] == [
         "KXHIGHTSFO-MOTION-HIGH",
         "KXHIGHTSFO-MOTION-NO-DEPTH",
@@ -2432,8 +2422,17 @@ def test_motion_attempts_every_candidate_in_priority_order_without_minimum_notio
         0,
         "motion visible-ask taker quote is not executable",
     )
+    assert motion_evidence[0][1:] == (
+        0,
+        "atomic research admission rejected",
+    )
+    assert motion_evidence[2][1:] == (
+        0,
+        "atomic research admission rejected",
+    )
 
 
+@pytest.mark.skip(reason="motion admissions are archived by the v3 cutover")
 @pytest.mark.parametrize(
     ("second_scan", "price_delta", "probability_delta", "observed_high", "expected"),
     (
@@ -2947,8 +2946,6 @@ def test_research_scan_batches_one_shared_context_for_all_dispositions(
     assert order_links == [
         ("target", result.target_decision_ids[0]),
         ("target", result.target_decision_ids[1]),
-        ("motion", result.motion_decision_ids[0]),
-        ("motion", result.motion_decision_ids[1]),
     ]
 
 
@@ -2993,7 +2990,7 @@ def test_research_scan_admits_sleeves_independently_in_one_batch(
     )
 
     assert bool(result.target_order_ids) is admit_target
-    assert bool(result.motion_order_ids) is admit_motion
+    assert result.motion_order_ids == ()
     with store.connect() as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM scan_context_snapshots"
@@ -3006,7 +3003,7 @@ def test_research_scan_admits_sleeves_independently_in_one_batch(
             "FROM decision_snapshots WHERE entry_block_reason="
             "'research order admission disabled'"
         ).fetchall()
-    assert orders == [(expected_sleeve,)]
+    assert orders == ([("target",)] if admit_target else [])
     assert disabled == [
         (
             "motion" if expected_sleeve == "target" else "target",
@@ -3221,6 +3218,7 @@ def test_research_approval_order_and_ledger_rollback_together(
     assert non_opening_ledger == 0
 
 
+@pytest.mark.skip(reason="motion admissions are archived by the v3 cutover")
 def test_motion_reentry_projects_root_when_newest_partial_child_is_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

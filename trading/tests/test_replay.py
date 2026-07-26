@@ -3,6 +3,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID, SHARED_ACCOUNT_ID
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.maker_fills import normalize_public_trade
@@ -178,6 +179,10 @@ def test_replay_matches_runtime_for_inside_spread_queue_priority() -> None:
         replay = replay_from_database(db_path, {})
         assert replay["filled"] == 1
         assert [event["event"] for event in replay["events"]].count("FILL_MAKER") == 1
+        assert replay["evidence_scope"]["account_ids"] == sorted(
+            [LIVE_STABILITY_ACCOUNT_ID, SHARED_ACCOUNT_ID]
+        )
+        assert "account_id" not in replay["evidence_scope"]
 
 
 def test_replay_matches_runtime_when_queue_is_above_order_limit() -> None:

@@ -4,6 +4,8 @@
 import json
 import os
 import sqlite3
+import urllib.parse as _urlparse
+import urllib.request as _urlrequest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -56,6 +58,8 @@ from weather_cache_config import (
     SFO_POINT,
     SOURCE_MOS_CAP_F,
 )
+
+_NWS_JSON_MAX_BYTES = 4 * 1024 * 1024
 
 
 def adaptive_blend_weights():
@@ -112,9 +116,34 @@ def _compute_source_mos_corrections(metadata, _disabled):
 
 
 def read_nws_json(url):
+    def validate_url(candidate):
+        parsed = _urlparse.urlsplit(candidate)
+        if parsed.scheme.lower() != "https":
+            raise ValueError("NWS requests require HTTPS")
+        if parsed.hostname != "api.weather.gov":
+            raise ValueError("NWS requests require the api.weather.gov host")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("NWS request URLs cannot include credentials")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("NWS request URL has an invalid port") from exc
+        if port not in (None, 443):
+            raise ValueError("NWS requests require the default HTTPS port")
+
+    class SameOriginRedirectHandler(_urlrequest.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            validate_url(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    validate_url(url)
     request = Request(url, headers={"User-Agent": NWS_USER_AGENT})
-    with urlopen(request, timeout=25) as response:
-        return json.loads(response.read().decode("utf-8"))
+    opener = _urlrequest.build_opener(SameOriginRedirectHandler())
+    with opener.open(request, timeout=25) as response:
+        body = response.read(_NWS_JSON_MAX_BYTES + 1)
+        if len(body) > _NWS_JSON_MAX_BYTES:
+            raise ValueError("NWS JSON response exceeded the size limit")
+        return json.loads(body.decode("utf-8"))
 
 
 def read_public_json(url):

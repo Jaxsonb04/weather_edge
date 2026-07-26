@@ -982,13 +982,13 @@ def test_delta_directions_covers_every_arm_kpi_delta_field() -> None:
 def test_sleeve_capacity_evidence_target_hand_computed() -> None:
     evidence = sleeve_capacity_evidence(100.0, TARGET_POLICY, max_daily_dollars_at_risk=40.0)
 
-    # TARGET_POLICY: reference_equity=1000, max_aggregate_risk_pct=0.25.
-    assert evidence.capacity_dollars == pytest.approx(250.0)
+    # Active ROI v3: reference_equity=1000, max_aggregate_risk_pct=0.40.
+    assert evidence.capacity_dollars == pytest.approx(400.0)
     assert evidence.window_total_dollars_at_risk == pytest.approx(100.0)
-    assert evidence.window_total_utilization_pct == pytest.approx(0.4)
-    assert evidence.capacity_remaining_dollars == pytest.approx(150.0)
+    assert evidence.window_total_utilization_pct == pytest.approx(0.25)
+    assert evidence.capacity_remaining_dollars == pytest.approx(300.0)
     assert evidence.max_daily_dollars_at_risk == pytest.approx(40.0)
-    assert evidence.max_daily_utilization_pct == pytest.approx(0.16)
+    assert evidence.max_daily_utilization_pct == pytest.approx(0.10)
 
 
 def test_sleeve_capacity_evidence_motion_hand_computed() -> None:
@@ -1029,9 +1029,9 @@ def test_capacity_evidence_window_total_overstates_versus_max_daily_concurrency_
 
     evidence = capacity_evidence(window_total, max_daily_dollars_at_risk=9.0)
 
-    # TARGET_POLICY capacity_dollars = 1000 * 0.25 = $250.
-    assert evidence["target"].window_total_utilization_pct == pytest.approx(1.08)  # 108%
-    assert evidence["target"].max_daily_utilization_pct == pytest.approx(0.036)  # 3.6%
+    # Active ROI v3 capacity_dollars = 1000 * 0.40 = $400.
+    assert evidence["target"].window_total_utilization_pct == pytest.approx(0.675)
+    assert evidence["target"].max_daily_utilization_pct == pytest.approx(0.0225)
 
 
 # ---------------------------------------------------------------------------

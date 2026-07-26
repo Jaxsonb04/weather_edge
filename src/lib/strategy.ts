@@ -256,6 +256,9 @@ export interface ProfileEntry {
   label: string;
   risk_profile: string;
   profile_type: string; // "primary" | "experimental"
+  /** Archived books remain inspectable but never participate in new entries. */
+  archived?: boolean;
+  account_key?: string;
   learnings?: string[];
   recommended_changes?: string[];
   paper_trading?: { available?: boolean; summary?: ProfilePaperSummary };
@@ -398,6 +401,30 @@ export interface ProfileResolvedStats {
   capital_resolved: number;
 }
 
+export interface AccountSnapshot {
+  account_id: string;
+  role: string;
+  status?: "ACTIVE" | "ARCHIVED" | "ARCHIVED_SETTLING" | string;
+  created_at?: string;
+  cutover_note?: string | null;
+  initial_equity: number;
+  cash_balance: number;
+  available_cash: number;
+  reservations: number;
+  open_cost_basis: number;
+  open_positions?: number;
+  pending_limit_orders?: number;
+  pending_limit_risk?: number;
+  realized_equity: number;
+  realized_pnl: number;
+  unrealized_pnl: number | null;
+  marked_equity: number | null;
+  mark_coverage: string;
+  reconciliation_status: string;
+  verification_scope?: string;
+  days?: DayRow[];
+}
+
 export interface StrategyLab {
   schema_version?: number;
   available: boolean;
@@ -412,6 +439,7 @@ export interface StrategyLab {
   accounting?: {
     schema_version?: number;
     available?: boolean;
+    reason?: string;
     initial_capital: number;
     all_time_realized_pnl: number;
     window_realized_pnl: number;
@@ -428,21 +456,17 @@ export interface StrategyLab {
     roi_on_resolved_capital: number | null;
     reconciliation_status: string;
     accounting_cohort?: string;
-    accounts?: Record<string, {
-      account_id: string;
-      role: string;
-      initial_equity: number;
-      cash_balance: number;
-      available_cash: number;
-      reservations: number;
-      open_cost_basis: number;
-      realized_equity: number;
-      realized_pnl: number;
-      unrealized_pnl: number | null;
-      marked_equity: number | null;
-      mark_coverage: string;
-      reconciliation_status: string;
-      verification_scope?: string;
+    accounts?: Record<string, AccountSnapshot>;
+    active_ledgers?: Record<string, AccountSnapshot>;
+    archived_accounts?: Array<AccountSnapshot & {
+      key?: string;
+      label?: string;
+      profile_key?: string;
+      attribution_profile_key?: string;
+      best_day_pnl?: number | null;
+      days_at_or_above_8?: number;
+      wins?: number;
+      losses?: number;
     }>;
     combined?: Record<string, unknown> | null;
     goal?: {
@@ -549,12 +573,14 @@ export interface StrategyLab {
 
 export const useStrategyLab = () => useResource<StrategyLab>("strategy_research.json");
 
-const ACTIVE_PROFILE_ORDER = ["live", "research-target", "research-motion"] as const;
+const ACTIVE_PROFILE_ORDER = ["live", "research-target"] as const;
 
 /** Canonical account projection for every public Strategy Lab surface. Legacy
     research is a fallback only when neither of the new research sleeves is in
     the artifact; this deliberately never invents an empty research book. */
 export function activeProfiles(s: StrategyLab): ProfileEntry[] {
+  if (s.accounting?.available === false) return [];
+
   const unique = new Map<string, ProfileEntry>();
   for (const profile of s.profiles ?? []) {
     if (profile?.risk_profile && !unique.has(profile.risk_profile)) {
@@ -562,16 +588,46 @@ export function activeProfiles(s: StrategyLab): ProfileEntry[] {
     }
   }
 
-  const canonicalResearchPresent = unique.has("research-target") || unique.has("research-motion");
   const ordered = ACTIVE_PROFILE_ORDER.flatMap((name) => {
     const profile = unique.get(name);
-    return profile ? [profile] : [];
+    return profile && !profile.archived ? [profile] : [];
   });
-  if (!canonicalResearchPresent) {
+  if (!unique.has("research-target")) {
     const legacy = unique.get("research");
-    if (legacy) ordered.push(legacy);
+    if (legacy && !legacy.archived) ordered.push(legacy);
   }
   return ordered;
+}
+
+const ARCHIVED_PROFILE_ORDER = [
+  "live-legacy",
+  "research-target-v1",
+  "research-target-v2",
+  "research-motion",
+  "research",
+] as const;
+
+/** Prior books stay visible as achieved performance without leaking into the
+    two active ledgers or their readiness/objective calculations. */
+export function archivedProfiles(s: StrategyLab): ProfileEntry[] {
+  const rows = new Map(
+    (s.profiles ?? [])
+      .filter((profile) => profile?.risk_profile)
+      .map((profile) => [profile.risk_profile, profile] as const),
+  );
+  const known = new Set<string>(ARCHIVED_PROFILE_ORDER);
+  return [...rows.values()]
+    .filter((profile) => profile.archived === true || known.has(profile.risk_profile))
+    .sort((a, b) => {
+      const ai = ARCHIVED_PROFILE_ORDER.indexOf(
+        a.risk_profile as (typeof ARCHIVED_PROFILE_ORDER)[number],
+      );
+      const bi = ARCHIVED_PROFILE_ORDER.indexOf(
+        b.risk_profile as (typeof ARCHIVED_PROFILE_ORDER)[number],
+      );
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi)
+        || a.risk_profile.localeCompare(b.risk_profile);
+    });
 }
 
 /** Resolve the target evidence from the profile first, then the top-level
@@ -590,14 +646,21 @@ export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankrol
   return [...(days ?? [])]
     .filter((d) => !!d?.date)
     .sort((a, b) => a.date.localeCompare(b.date))
-    .map((d) => ({
-      date: d.date.slice(5), // MM-DD
-      equity: Math.round(
-        (d.closing_equity ?? (startingBankroll + (d.cumulative_realized ?? 0))) * 100,
-      ) / 100,
-      pnl: d.cumulative_realized ?? 0,
-      dailyPnl: d.realized_pnl ?? 0,
-    }));
+    .map((d) => {
+      const accountBalance =
+        typeof d.closing_equity === "number" && Number.isFinite(d.closing_equity)
+          ? Math.round(d.closing_equity * 100) / 100
+          : undefined;
+      return {
+        date: d.date.slice(5), // MM-DD
+        equity: accountBalance ?? Math.round(
+          (startingBankroll + (d.cumulative_realized ?? 0)) * 100,
+        ) / 100,
+        pnl: d.cumulative_realized ?? 0,
+        dailyPnl: d.realized_pnl ?? 0,
+        ...(accountBalance == null ? {} : { accountBalance }),
+      };
+    });
 }
 
 /** Equity curve across the reporting window: starting bankroll + cumulative realized. */

@@ -19,6 +19,8 @@ PULL_SCRIPT = AWS_DIR / "pull_paper_db.sh"
 
 TIMERS = (
     "sfo-forecaster-refresh.timer",
+    "weatheredge-google-nonsfo-refresh.timer",
+    "weatheredge-google-runtime-purge.timer",
     "sfo-operational-publish.timer",
     "sfo-strategy-lab-refresh.timer",
     "sfo-dataset-backfill.timer",
@@ -27,6 +29,7 @@ TIMERS = (
     "sfo-kalshi-paper-settle.timer",
     "sfo-kalshi-paper-prune.timer",
     "sfo-forecast-freshness.timer",
+    "sfo-scheduler-health.timer",
 )
 SERVICES = tuple(timer.removesuffix(".timer") + ".service" for timer in TIMERS)
 PAPER_SCAN_RUNNER = AWS_DIR / "run_paper_scan_profiles.sh"
@@ -108,7 +111,7 @@ def _paper_scan_call_for_profile(calls: list[list[str]], profile: str) -> list[s
         ({}, False, False, False),
         ({"PAPER_PLACE_LIVE": "TRUE"}, True, False, False),
         ({"PAPER_PLACE_RESEARCH_TARGET": "yes"}, False, True, False),
-        ({"PAPER_PLACE_RESEARCH_MOTION": "1"}, False, False, True),
+        ({"PAPER_PLACE_RESEARCH_MOTION": "1"}, False, False, False),
         (
             {
                 "PAPER_PLACE_RESEARCH_TARGET": "on",
@@ -116,7 +119,7 @@ def _paper_scan_call_for_profile(calls: list[list[str]], profile: str) -> list[s
             },
             False,
             True,
-            True,
+            False,
         ),
         (
             {
@@ -174,7 +177,7 @@ def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
             "FAST-FEEDBACK",
             {"PAPER_PLACE_RESEARCH_MOTION": "TRUE"},
             "research",
-            "--place-research-motion",
+            None,
         ),
         (
             " ExPlOrAtOrY ",
@@ -186,7 +189,7 @@ def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
             "FAST",
             {"PAPER_PLACE_RESEARCH_MOTION": "1"},
             "research",
-            "--place-research-motion",
+            None,
         ),
         (
             "collector",
@@ -198,7 +201,7 @@ def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
             "EXPLORE",
             {"PAPER_PLACE_RESEARCH_MOTION": "1"},
             "research",
-            "--place-research-motion",
+            None,
         ),
     ],
 )
@@ -207,7 +210,7 @@ def test_paper_scan_normalizes_supported_profile_aliases_before_dispatch(
     raw_profile: str,
     placement_flags: dict[str, str],
     canonical_profile: str,
-    expected_flag: str,
+    expected_flag: str | None,
 ) -> None:
     calls = _run_paper_scan_with_placement_flags(
         tmp_path,
@@ -218,12 +221,14 @@ def test_paper_scan_normalizes_supported_profile_aliases_before_dispatch(
     assert len(calls) == 1
     call = calls[0]
     assert call[call.index("--risk-profile") + 1] == canonical_profile
-    assert expected_flag in call
+    if expected_flag is not None:
+        assert expected_flag in call
     if canonical_profile == "live":
         assert "--place-research-target" not in call
         assert "--place-research-motion" not in call
     else:
         assert "--place-paper" not in call
+        assert "--place-research-motion" not in call
 
 
 @pytest.mark.parametrize("profiles", ("live,bogus", "bogus,research"))
@@ -258,7 +263,7 @@ def test_paper_scan_preserves_validated_order_and_ignores_empty_tokens(
         "research",
         "live",
     ]
-    assert "--place-research-motion" in calls[0]
+    assert "--place-research-motion" not in calls[0]
     assert "--place-paper" in calls[1]
     assert "--skip-context-snapshots" not in calls[0]
     assert "--skip-context-snapshots" in calls[1]
@@ -595,11 +600,13 @@ exit 0
     assert result.returncode == 23
     actions = action_log.read_text().splitlines()
     assert actions[0].endswith("bash -s preflight /opt/weatheredge/trading/data/paper_trading.db")
-    assert actions[1].endswith("bash -s capture")
-    assert actions[2].endswith("bash -s quiesce")
-    assert actions[3].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
-    assert "mkdir -p" in actions[4] and "chown" in actions[4]
-    assert actions[5].startswith("rsync|")
+    assert actions[1].endswith("bash -s probe sfo-scheduler-health.timer")
+    assert actions[2].endswith("bash -s capture")
+    assert "weatheredge-deploy-maintenance" in actions[3]
+    assert actions[4].endswith("bash -s quiesce")
+    assert actions[5].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
+    assert "mkdir -p" in actions[6] and "chown" in actions[6]
+    assert actions[7].startswith("rsync|")
     assert not any("enable" in action or "start" in action for action in actions)
 
 
@@ -874,7 +881,17 @@ elif any("wait_for_publication_manifest.sh" in arg for arg in args):
             "sfo-forecast-freshness.timer"
         )
     )
+    marker_release_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "sudo rm -f -- '/run/weatheredge-deploy-maintenance'" in line
+    )
     assert wait_idx < restore_idx
+    assert restore_idx < marker_release_idx
+    assert not any(
+        line.endswith("bash -s quiesce")
+        for line in actions[wait_idx + 1 :]
+    )
     assert "initial Strategy Lab publication failed (status=42)" in result.stderr
 
 
@@ -1483,6 +1500,49 @@ exit 0
     assert "enable --now " + " ".join(selected) in calls
     for timer in selected:
         assert f"is-active --quiet {timer}" in calls
+
+
+def test_timer_state_helper_distinguishes_new_timer_from_inspection_failure(
+    tmp_path: Path,
+) -> None:
+    helper = AWS_DIR / "disable_systemd_timers.sh"
+    fake = tmp_path / "systemctl"
+    _write_executable(
+        fake,
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == show ]]; then
+  printf '%s\n' "${FAKE_LOAD_STATE:-not-found}"
+  exit "${FAKE_SHOW_STATUS:-0}"
+fi
+exit 0
+""",
+    )
+    env = {**os.environ, "SYSTEMCTL_BIN": str(fake)}
+
+    missing = subprocess.run(
+        ["bash", str(helper), "probe", "sfo-scheduler-health.timer"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    loaded = subprocess.run(
+        ["bash", str(helper), "probe", "sfo-scheduler-health.timer"],
+        env={**env, "FAKE_LOAD_STATE": "loaded"},
+        capture_output=True,
+        text=True,
+    )
+    broken = subprocess.run(
+        ["bash", str(helper), "probe", "sfo-scheduler-health.timer"],
+        env={**env, "FAKE_SHOW_STATUS": "47"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert missing.returncode == 10
+    assert loaded.returncode == 0
+    assert broken.returncode == 47
+    assert "failed to inspect systemd unit" in broken.stderr
 
 
 def test_no_timers_helper_propagates_real_disable_failure(tmp_path: Path) -> None:

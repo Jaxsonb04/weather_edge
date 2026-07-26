@@ -31,14 +31,9 @@ def _profile_names(
     signal_quality: dict[str, Any],
 ) -> list[str]:
     names: set[str] = set()
-    target_active = bool(
-        (paper.get("research_daily_target") or {}).get("available")
-    )
 
     def add(value: object) -> None:
         name = _profile_key(value)
-        if target_active and name == "research":
-            return
         names.add(name)
 
     for row in daily_summary.get("profiles") or []:
@@ -77,10 +72,18 @@ def _profile_view(
     recommendations = _profile_recommendations(name, profile_daily)
     profile_daily["learnings"] = learnings
     profile_daily["recommended_changes"] = recommendations
+    archived = name in {
+        "live-legacy",
+        "research",
+        "research-target-v1",
+        "research-target-v2",
+        "research-motion",
+    }
     return {
         "risk_profile": name,
         "label": _profile_label(name),
         "profile_type": "experimental" if _is_experimental(name) else "primary",
+        "archived": archived,
         "daily_summary": profile_daily,
         "signal_quality": profile_signal,
         "paper_trading": profile_paper,
@@ -93,8 +96,8 @@ def _profile_view(
             else None
         ),
         "excluded_from": (
-            ["daily_target", "live_readiness"]
-            if name in {"research-target-v1", "research-motion"}
+            ["active_admissions", "daily_target", "live_readiness"]
+            if archived
             else ["live_readiness"]
             if name == "research-target"
             else []
@@ -466,9 +469,11 @@ def _profile_sort_key(name: str) -> tuple[int, str]:
     order = {
         "live": 0,
         "research-target": 1,
-        "research-motion": 2,
+        "live-legacy": 2,
         "research-target-v1": 3,
-        "research": 4,
+        "research-target-v2": 4,
+        "research-motion": 5,
+        "research": 6,
         "unknown": 9,
     }
     return order.get(name, 8), name
@@ -476,15 +481,19 @@ def _profile_sort_key(name: str) -> tuple[int, str]:
 
 def _profile_label(name: str) -> str:
     if name == "live":
-        return "Live (real-money candidate)"
+        return "Live Stability"
+    if name == "live-legacy":
+        return "Legacy live achieved performance"
     if name == "research":
-        return "Research (experimental)"
+        return "Legacy research (archived)"
     if name == "research-target":
-        return "Research target v2 ($16 daily paper objective)"
+        return "Research ROI · 5% daily KPI"
     if name == "research-target-v1":
         return "Research target v1 (archived control)"
+    if name == "research-target-v2":
+        return "Research target v2 (archived $16 experiment)"
     if name == "research-motion":
-        return "Research motion (execution learning)"
+        return "Research motion (archived execution learning)"
     return name
 
 

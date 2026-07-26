@@ -90,6 +90,40 @@ describe("OpenBook publication truthfulness", () => {
     expect(screen.getByText("Beta limit")).toBeInTheDocument();
   });
 
+  it("keeps equal desktop gutters around the positions divider", async () => {
+    await renderBook("2026-07-09T11:59:00Z");
+
+    const openSection = screen.getByRole("heading", { name: "Open positions" }).closest("section");
+    const pendingSection = screen.getByRole("heading", { name: "Pending limit orders" }).closest("section");
+    const columns = openSection?.parentElement;
+
+    expect(openSection).toHaveClass("lg:pr-8");
+    expect(pendingSection).toHaveClass("lg:pl-8");
+    expect(columns).not.toHaveClass("gap-x-8");
+  });
+
+  it("keeps an empty pending-order column compact", async () => {
+    const emptyPending = {
+      ...strategy,
+      paper_trading: {
+        ...strategy.paper_trading,
+        summary: {
+          ...strategy.paper_trading?.summary,
+          pending_limit_orders: 0,
+          pending_limit_risk: 0,
+        },
+        pending_limit_orders: [],
+      },
+    } as StrategyLab;
+
+    await renderBook("2026-07-09T11:59:00Z", emptyPending);
+
+    const message = screen.getByText("No pending limit orders.");
+    expect(message.parentElement).toHaveClass("py-3");
+    expect(message.parentElement).not.toHaveClass("py-6");
+    expect(screen.queryByText(/engine posts limits/i)).not.toBeInTheDocument();
+  });
+
   it("keeps five position rows visible and folds longer books", async () => {
     const longBook = {
       ...strategy,

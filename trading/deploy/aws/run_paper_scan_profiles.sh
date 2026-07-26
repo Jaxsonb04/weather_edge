@@ -120,10 +120,10 @@ for profile in "${canonical_profiles[@]}"; do
         args+=(--place-research-target)
       fi
       if truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
-        args+=(--place-research-motion)
+        echo "research motion is archived read-only; ignoring PAPER_PLACE_RESEARCH_MOTION"
       fi
-      if ! truthy "$PAPER_PLACE_RESEARCH_TARGET" && ! truthy "$PAPER_PLACE_RESEARCH_MOTION"; then
-        echo "research allocators shadow mode: recording decisions without paper placement"
+      if ! truthy "$PAPER_PLACE_RESEARCH_TARGET"; then
+        echo "research target allocator shadow mode: recording decisions without paper placement"
       fi
       ;;
   esac

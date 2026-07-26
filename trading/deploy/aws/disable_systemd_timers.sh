@@ -18,6 +18,7 @@ UNIT_PAIRS=(
   "sfo-kalshi-paper-settle.timer sfo-kalshi-paper-settle.service"
   "sfo-kalshi-paper-prune.timer sfo-kalshi-paper-prune.service"
   "sfo-forecast-freshness.timer sfo-forecast-freshness.service"
+  "sfo-scheduler-health.timer sfo-scheduler-health.service"
 )
 
 if [[ -n "${SYSTEMCTL_BIN:-}" ]]; then
@@ -55,6 +56,18 @@ known_timer() {
 }
 
 case "$MODE" in
+  probe)
+    if (( $# != 1 )) || ! known_timer "$1"; then
+      echo "probe requires one known WeatherEdge timer" >&2
+      exit 2
+    fi
+    if inspect_unit "$1"; then
+      exit 0
+    fi
+    # A dedicated status lets sync_to_box distinguish a newly introduced unit
+    # from an SSH/systemctl inspection failure.
+    exit 10
+    ;;
   capture)
     for pair in "${UNIT_PAIRS[@]}"; do
       read -r timer service <<<"$pair"
@@ -135,7 +148,7 @@ case "$MODE" in
     echo "restored ${#restored[@]} previously enabled WeatherEdge timer(s)"
     ;;
   *)
-    echo "usage: $0 [capture|quiesce|restore [timer ...]]" >&2
+    echo "usage: $0 [probe timer|capture|quiesce|restore [timer ...]]" >&2
     exit 2
     ;;
 esac

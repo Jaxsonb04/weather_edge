@@ -16,7 +16,7 @@ import { usePublication } from "../../lib/publication";
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   live: {
     icon: "solar:shield-check-bold",
-    blurb: "Real-money candidate — trades only on a non-negative lower-bound edge, with forecast sources in agreement and reliable liquidity. Trades infrequently by design.",
+    blurb: "Live Stability — prioritizes dependable wins, controlled drawdown, forecast agreement, and reliable liquidity. It trades infrequently by design.",
   },
   research: {
     icon: "solar:test-tube-bold",
@@ -24,7 +24,7 @@ const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   },
   "research-target": {
     icon: "solar:target-bold",
-    blurb: "A separate paper account pursuing its policy-defined daily research objective while every risk and edge gate remains binding.",
+    blurb: "Research ROI — a separate $1,000 paper account pursuing a fixed $50 daily KPI with higher bounded risk and no effect on live readiness.",
   },
   "research-motion": {
     icon: "solar:chart-2-bold",
@@ -33,15 +33,15 @@ const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
 };
 
 function profileBadge(p: ProfileEntry) {
-  if (p.risk_profile === "live") return "Primary";
-  if (p.risk_profile === "research-target") return "Daily target";
+  if (p.risk_profile === "live") return "Stability · readiness";
+  if (p.risk_profile === "research-target") return "ROI research · 5% KPI";
   if (p.risk_profile === "research-motion") return "Experimental · high activity";
   return p.profile_type === "primary" ? "Primary" : "Experimental";
 }
 
 function accountBoundary(p: ProfileEntry) {
-  if (p.risk_profile === "live") return "Live evidence account · research excluded";
-  if (p.risk_profile === "research-target") return "Separate target research account · excluded from live goal and readiness";
+  if (p.risk_profile === "live") return "Fresh Live Stability account · all research and archived results excluded";
+  if (p.risk_profile === "research-target") return "Separate Research ROI account · excluded from live goal and readiness";
   if (p.risk_profile === "research-motion") return "Excluded from daily target and live readiness";
   return "Legacy research account · used only when canonical sleeves are absent";
 }

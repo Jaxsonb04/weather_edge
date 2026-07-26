@@ -107,15 +107,23 @@ def _resting_order(
     risk_profile: str = "live",
     strategy_config: StrategyConfig | None = None,
 ) -> int:
+    original_ticker = decision.ticker
+    seed_decision = (
+        replace(decision, ticker=f"{original_ticker}-TARGET-SEED")
+        if risk_profile == "research"
+        else decision
+    )
     order_id = store.record_paper_order(
         target_date,
-        decision,
+        seed_decision,
         status="PAPER_LIMIT_RESTING",
         entry_mode="limit",
         strategy_config=strategy_config or StrategyConfig(),
-        risk_profile=risk_profile,
+        risk_profile="live",
     )
     assert order_id is not None
+    if risk_profile == "research":
+        _move_to_target_account(store, order_id, market_ticker=original_ticker)
     with store.connect() as conn:
         conn.execute(
             "UPDATE paper_orders SET created_at=?, expires_at=?, limit_price=?, "
@@ -167,6 +175,24 @@ def _move_to_target_account(
             "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
             (TARGET_POLICY.account_id, order_id),
         )
+
+
+def _record_target_fixture_order(
+    store: PaperStore,
+    target_date: str,
+    decision: TradeDecision,
+) -> int:
+    """Seed a historical target order without exercising archived generic writes."""
+
+    original_ticker = decision.ticker
+    order_id = store.record_paper_order(
+        target_date,
+        replace(decision, ticker=f"{original_ticker}-TARGET-SEED"),
+        risk_profile="live",
+    )
+    assert order_id is not None
+    _move_to_target_account(store, order_id, market_ticker=original_ticker)
+    return order_id
 
 
 def test_target_audit_fixture_has_coherent_research_identity() -> None:
@@ -895,7 +921,8 @@ def test_rk01_basket_veto_cannot_override_catastrophic_stop() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
-        stopped_id = store.record_paper_order(
+        stopped_id = _record_target_fixture_order(
+            store,
             "2026-07-13",
             _decision(
                 "KXHIGHTDAL-26JUL13-B89.5",
@@ -906,9 +933,9 @@ def test_rk01_basket_veto_cannot_override_catastrophic_stop() -> None:
                 floor=89.0,
                 cap=90.0,
             ),
-            risk_profile="research",
         )
-        store.record_paper_order(
+        _record_target_fixture_order(
+            store,
             "2026-07-13",
             _decision(
                 "KXHIGHTDAL-26JUL13-B91.5",
@@ -919,7 +946,6 @@ def test_rk01_basket_veto_cannot_override_catastrophic_stop() -> None:
                 floor=91.0,
                 cap=92.0,
             ),
-            risk_profile="research",
         )
         # A fresh model read still "supports" the stopped leg (NO p=0.80 clears
         # the veto floor at the 0.72 entry cost), the exact condition the basket
@@ -1115,7 +1141,8 @@ def test_ac01_research_loss_cannot_pause_or_shrink_live_entries() -> None:
 
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        research_id = store.record_paper_order(
+        research_id = _record_target_fixture_order(
+            store,
             "2026-07-13",
             _decision(
                 "KXHIGHTDAL-26JUL13-B89.5",
@@ -1126,7 +1153,6 @@ def test_ac01_research_loss_cannot_pause_or_shrink_live_entries() -> None:
                 floor=89.0,
                 cap=90.0,
             ),
-            risk_profile="research",
         )
         assert research_id is not None
         closed = store.close_paper_order(research_id, 0.01)
@@ -1152,8 +1178,9 @@ def test_ac01_live_and_research_ledgers_reconcile_independently() -> None:
 
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        live_before = store.shared_account_state()
-        research_id = store.record_paper_order(
+        live_before = store.live_account_state()
+        research_id = _record_target_fixture_order(
+            store,
             "2026-07-13",
             _decision(
                 "KXHIGHTDAL-26JUL13-B89.5",
@@ -1164,13 +1191,14 @@ def test_ac01_live_and_research_ledgers_reconcile_independently() -> None:
                 floor=89.0,
                 cap=90.0,
             ),
-            risk_profile="research",
         )
         assert research_id is not None
         store.close_paper_order(research_id, 0.10)
 
-        live_after = store.shared_account_state()
-        research_after = store.research_account_state()
+        live_after = store.live_account_state()
+        research_after = store.research_account_state(
+            account_id=TARGET_POLICY.account_id
+        )
 
         assert live_after["available_cash"] == live_before["available_cash"]
         assert live_after["realized_equity"] == live_before["realized_equity"]
@@ -1213,14 +1241,18 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
         # active isolated research sleeves are each bootstrapped exactly once
         # at the unchanged $1,000 opening capital.
         assert sorted(accounts) == [
+            ("paper-live-stability-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-motion-v1", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-roi-v3", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-shadow", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v2", 1, 1000.0, 1000.0, 1000.0),
             ("paper-shared", 1, 1000.0, 1000.0, 1000.0),
         ], f"attempt {attempt}: unexpected account rows {accounts}"
         assert sorted(openings) == [
+            ("paper-live-stability-v1", 1, 1000.0),
             ("paper-research-motion-v1", 1, 1000.0),
+            ("paper-research-roi-v3", 1, 1000.0),
             ("paper-research-shadow", 1, 1000.0),
             ("paper-research-target-v1", 1, 1000.0),
             ("paper-research-target-v2", 1, 1000.0),

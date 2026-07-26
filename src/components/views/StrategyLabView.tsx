@@ -30,6 +30,7 @@ import { BacktestStats } from "../strategy/BacktestStats";
 import { ResearchNotes } from "../strategy/ResearchNotes";
 import { DailyActivity } from "../strategy/DailyActivity";
 import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice";
+import { ArchivedPerformance } from "../strategy/ArchivedPerformance";
 
 function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const t = s.daily_summary?.totals;
@@ -72,12 +73,14 @@ function SelectivityFinding({ s }: { s: StrategyLab }) {
           holds off because the forecast sources disagree
         </>
       )}
-      . The live and target books keep those evidence gates binding; the separate motion account increases activity only inside realistic eligibility.
+      . Live Stability keeps those gates binding; Research ROI takes more bounded
+      paper risk without contributing to live readiness.
     </Finding>
   );
 }
 
-function ReadinessFinding({ s }: { s: StrategyLab }) {
+export function ReadinessFinding({ s }: { s: StrategyLab }) {
+  if (s.accounting?.available === false) return null;
   const r = s.real_money_readiness;
   if (!r?.available) return null;
   const total = r.checks_total ?? r.checks?.length ?? 0;
@@ -154,10 +157,39 @@ export function AnalysisFreshness({ s }: { s: StrategyLab }) {
 /** Live trading-status strip: a real-time snapshot of the running engine — the
     heartbeat, each book's entry state and current book, and the paper-only
     disclaimer folded in as a muted note (replaces the old warning band). */
-function LiveStatusStrip({ s }: { s: StrategyLab }) {
+export function LiveStatusStrip({ s }: { s: StrategyLab }) {
   const fresh = s.generated_at ? `${s.generated_at.slice(0, 16).replace("T", " ")} UTC` : null;
   const disclaimer =
     s.disclaimer ?? "Paper-trading research only — no real-money orders are ever placed.";
+  if (s.accounting?.available === false) {
+    return (
+      <div
+        role="alert"
+        aria-label="Paper account state unavailable"
+        className="rounded-xl border border-warning/25 bg-warning/5 px-4 py-3"
+      >
+        <div className="grid gap-x-4 gap-y-1 sm:grid-cols-[1fr_auto] sm:items-baseline">
+          <span className="flex items-center gap-2 text-xs font-semibold text-warning">
+            <Icon icon="solar:shield-warning-bold" className="size-4 shrink-0" aria-hidden="true" />
+            Paper account state unavailable
+          </span>
+          {fresh && (
+            <span className="tnum font-mono text-[11px] text-muted sm:justify-self-end">
+              checked {fresh}
+            </span>
+          )}
+        </div>
+        <p className="mt-2 text-xs leading-relaxed text-muted">
+          {s.accounting.reason ?? "Fresh active paper ledgers did not pass accounting validation."} Active
+          profiles and readiness are suppressed until reconciliation succeeds.
+        </p>
+        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+          <Icon icon="solar:shield-keyhole-bold" className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+          {disclaimer}
+        </p>
+      </div>
+    );
+  }
   const profiles = activeProfiles(s);
   return (
     <div
@@ -204,7 +236,7 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
             <Icon icon="solar:shield-check-bold" className="size-3.5 shrink-0" aria-hidden="true" />
-            Live candidate · real-money profile
+            Live Stability · readiness profile
           </p>
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <span className={`font-display text-4xl font-bold tracking-tight ${up ? "text-success" : "text-danger"}`}>
@@ -214,6 +246,14 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
           </div>
         </div>
         <dl className="flex flex-wrap gap-x-6 gap-y-4">
+          <HeroStat
+            label="Total realized balance"
+            value={
+              p.daily_summary?.current_equity == null
+                ? "—"
+                : money(p.daily_summary.current_equity, { sign: "negative-only" })
+            }
+          />
           <HeroStat label="ROI · resolved" value={sum.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum.roi ?? 0) > 0 ? "pos" : (sum.roi ?? 0) < 0 ? "neg" : undefined} />
           <HeroStat label="Hit rate" value={sum.hit_rate == null ? "—" : pct(sum.hit_rate, 1)} />
           <HeroStat label="Resolved" value={`${sum.closed_positions ?? 0} · ${sum.win_count ?? 0}–${sum.loss_count ?? 0}`} />
@@ -253,7 +293,9 @@ export function OverviewEquity({ s }: { s: StrategyLab }) {
   // The combined (all-account) series only stands in for the live book when no
   // research book is published — otherwise it would plot research activity
   // under the "Live candidate" label.
-  const hasResearchBook = profiles.some((profile) => profile.risk_profile !== "live");
+  const hasResearchBook = (s.profiles ?? []).some(
+    (profile) => profile.risk_profile !== "live" && profile.risk_profile !== "live-legacy",
+  );
 
   // Fall back to the combined curve only if the per-book series is missing AND
   // no research book exists to contaminate it. Otherwise show an explicit
@@ -267,14 +309,14 @@ export function OverviewEquity({ s }: { s: StrategyLab }) {
         contributionMode
         windowDays={live.daily_summary?.window_days}
         emphasis="headline"
-        eyebrow="Live candidate · real-money profile"
-        title="Live candidate — cumulative P&L"
-        description={`Realized P&L attributed to the live book · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
+        eyebrow="Live Stability · readiness profile"
+        title="Live Stability — cumulative P&L"
+        description={`Daily and cumulative realized P&L with the account balance on hover · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
       />
     ) : hasResearchBook ? (
       <LiveCurveUnavailable />
     ) : (
-      <EquityCurve s={s} emphasis="headline" eyebrow="Live candidate · real-money profile" title="Live candidate — cumulative P&L" />
+      <EquityCurve s={s} emphasis="headline" eyebrow="Live Stability · readiness profile" title="Live Stability — cumulative P&L" />
     );
 
   return (
@@ -314,8 +356,8 @@ export default function StrategyLabView() {
         eyebrow="Strategy Lab"
         title="Paper-trading results"
         sub={canonicalTargetPublished
-          ? "The strict live candidate and isolated research accounts keep equity, positions, and evidence separate. The fixed daily research objective belongs only to the target account; high-activity motion evidence and legacy executions never count toward it or live readiness. Generated directly by the AWS runtime."
-          : "The live candidate and any published legacy research evidence remain separate. Canonical target and motion accounts appear only when the AWS runtime publishes them; no empty research book is inferred."}
+          ? "Two fresh $1,000 paper ledgers: Live Stability optimizes dependable wins and drives readiness; Research ROI pursues a fixed 5% daily research KPI with higher bounded risk. Prior books remain read-only in Achieved performance."
+          : "The live candidate and published legacy research evidence remain separate. No missing account or balance is inferred; every number comes from the AWS runtime."}
       />
       <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
@@ -336,9 +378,9 @@ export default function StrategyLabView() {
             <section className="scroll-mt-24">
               <SectionHeading
                 index="01"
-                eyebrow="Live money candidate"
-                title="Live P&L first"
-                sub="The real-money candidate's own cumulative paper P&L leads the lab. Research sleeves are excluded from this chart and from every number directly beneath it."
+                eyebrow="Live Stability"
+                title="Steady growth first"
+                sub="The only readiness profile. Its daily P&L, cumulative P&L, and true realized account balance come from one fresh $1,000 ledger; research is excluded."
               />
               <Reveal>
                 <OverviewEquity s={s} />
@@ -351,17 +393,29 @@ export default function StrategyLabView() {
                 index="02"
                 eyebrow="Profile workbench"
                 title="Choose a strategy profile"
-                sub="Each preset opens one isolated book with its own performance, signal quality, exposure, trade ledger, and learnings. Nothing is blended across profiles."
+                sub="Live Stability prioritizes win rate and consistency. Research ROI accepts more bounded paper risk to maximize return against its fixed $50 daily research KPI."
               />
               <Reveal>
                 <ProfileExplorer s={s} />
               </Reveal>
             </section>
 
-            {/* ---- System-wide results and conclusions after profile inspection. ---- */}
             <section className="mt-14 scroll-mt-24">
               <SectionHeading
                 index="03"
+                eyebrow="Read-only history"
+                title="Achieved performance & profiles"
+                sub="The complete prior record remains inspectable without contaminating either fresh ledger. Open legacy paper positions continue to settle in place."
+              />
+              <Reveal>
+                <ArchivedPerformance s={s} />
+              </Reveal>
+            </section>
+
+            {/* ---- System-wide results and conclusions after profile inspection. ---- */}
+            <section className="mt-14 scroll-mt-24">
+              <SectionHeading
+                index="04"
                 eyebrow="Overall outcomes"
                 title="What the system learned"
                 sub="The cross-profile conclusions, readiness verdict, and supporting evidence. High-value outcomes stay visible; deeper trading, model, and operations diagnostics unfold on demand."

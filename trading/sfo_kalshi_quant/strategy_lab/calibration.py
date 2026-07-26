@@ -257,6 +257,8 @@ def _config_rescore_payload(
         }
         for row in rows:
             published = row_published_profile_key(row)
+            if execution_profile_key(published) == "live":
+                published = "live"
             if published in rows_by_profile:
                 rows_by_profile[published].append(row)
         by_profile: dict[str, Any] = {}

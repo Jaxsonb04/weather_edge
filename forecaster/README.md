@@ -119,7 +119,8 @@ now automated end to end:
    `sfo-operational-publish.timer` runs every five minutes to generate
    `trading_signal.json`, `cities_data.json`, and
    `publication_manifest.json`, validate the snapshot, and republish the site.
-   The `sfo-strategy-lab-refresh.timer` runs every ten minutes as the
+   The `sfo-strategy-lab-refresh.timer` runs on a fixed wall-clock five-minute
+   cadence as the
    bounded research-only path that rebuilds `strategy_research.json`; it does
    not call the paid Google Weather refresh path or rescan the full decision
    journal. Slow historical rescores carry their own `analysis_generated_at`

@@ -4,8 +4,19 @@ import type { ReactNode } from "react";
 import type { StrategyLab } from "../../lib/strategy";
 
 vi.mock("../strategy/EquityCurve", () => ({
-  EquityCurve: (props: { title?: string; eyebrow?: string; days?: unknown[] }) => (
-    <div data-testid="equity-curve" data-has-days={props.days ? "yes" : "no"}>
+  EquityCurve: (props: {
+    title?: string;
+    eyebrow?: string;
+    days?: unknown[];
+    startingBankroll?: number;
+    contributionMode?: boolean;
+  }) => (
+    <div
+      data-testid="equity-curve"
+      data-has-days={props.days ? "yes" : "no"}
+      data-starting-bankroll={props.startingBankroll}
+      data-contribution-mode={props.contributionMode ? "yes" : "no"}
+    >
       {props.eyebrow} — {props.title}
     </div>
   ),
@@ -15,7 +26,8 @@ vi.mock("../ui/Reveal", () => ({
   Reveal: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-import { AnalysisFreshness, OverviewEquity } from "./StrategyLabView";
+import { AnalysisFreshness, LiveStatusStrip, OverviewEquity } from "./StrategyLabView";
+import { ReadinessPanel } from "../strategy/ReadinessPanel";
 
 const degradedWithResearchBook = {
   available: true,
@@ -73,7 +85,7 @@ describe("OverviewEquity live-curve fallback", () => {
 
     const curve = screen.getByTestId("equity-curve");
     expect(curve).toHaveAttribute("data-has-days", "no");
-    expect(curve).toHaveTextContent("Live candidate · real-money profile — Live candidate — cumulative P&L");
+    expect(curve).toHaveTextContent("Live Stability · readiness profile — Live Stability — cumulative P&L");
     expect(screen.queryByText(/equity curve unavailable/i)).not.toBeInTheDocument();
   });
 
@@ -82,6 +94,8 @@ describe("OverviewEquity live-curve fallback", () => {
 
     const curve = screen.getByTestId("equity-curve");
     expect(curve).toHaveAttribute("data-has-days", "yes");
+    expect(curve).toHaveAttribute("data-starting-bankroll", "0");
+    expect(curve).toHaveAttribute("data-contribution-mode", "yes");
     expect(screen.queryByText(/equity curve unavailable/i)).not.toBeInTheDocument();
   });
 });
@@ -112,5 +126,67 @@ describe("AnalysisFreshness", () => {
     );
 
     expect(screen.getByText(/Historical rescore deferred/i)).toBeInTheDocument();
+  });
+});
+
+describe("LiveStatusStrip accounting gate", () => {
+  it("never labels the paper engine live when active ledgers fail reconciliation", () => {
+    render(
+      <LiveStatusStrip
+        s={{
+          available: true,
+          mode: "paper_research_only",
+          accounting: {
+            available: false,
+            reason: "fresh active paper ledgers invalid or unavailable",
+          },
+          profiles: [
+            { label: "Live Stability", risk_profile: "live", profile_type: "primary" },
+            {
+              label: "Research ROI",
+              risk_profile: "research-target",
+              profile_type: "experimental",
+            },
+          ],
+        } as StrategyLab}
+      />,
+    );
+
+    expect(screen.queryByText("Paper engine live")).not.toBeInTheDocument();
+    expect(screen.getByText("Paper account state unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/active paper ledgers invalid/i)).toBeInTheDocument();
+  });
+});
+
+describe("readiness accounting gate", () => {
+  it("suppresses both readiness surfaces when accounting is explicitly unavailable", async () => {
+    const { ReadinessFinding } = await import("./StrategyLabView");
+    const s = {
+      available: true,
+      mode: "paper_research_only",
+      accounting: {
+        available: false,
+        reason: "fresh active paper ledgers invalid or unavailable",
+      },
+      real_money_readiness: {
+        available: true,
+        ready: true,
+        verdict: "READY",
+        checks_passed: 8,
+        checks_total: 8,
+        checks: [],
+      },
+    } as unknown as StrategyLab;
+
+    render(
+      <>
+        <ReadinessFinding s={s} />
+        <ReadinessPanel s={s} />
+      </>,
+    );
+
+    expect(screen.queryByText(/8\/8 checks passed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/go-live readiness/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("READY")).not.toBeInTheDocument();
   });
 });

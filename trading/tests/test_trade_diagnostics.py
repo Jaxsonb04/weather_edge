@@ -244,16 +244,17 @@ def test_settled_order_persists_outcome_diagnostics() -> None:
             [decision],
             forecast=_forecast(),
             event=pre_resolution_event([decision]),
-            risk_profile="research",
+            risk_profile="live",
             bankroll=1000.0,
             strategy_config=StrategyConfig(),
         )
         order_id = store.record_paper_order(
             "2026-06-20",
             decision,
-            risk_profile="research",
+            risk_profile="live",
             strategy_config=StrategyConfig(),
         )
+        assert order_id is not None
 
         assert store.settle_paper_orders("2026-06-20", 67.0) == 1
 

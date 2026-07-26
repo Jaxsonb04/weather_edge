@@ -135,8 +135,9 @@ dependencies do not belong on the production box.
   overnight; all fifteen cities, SFO flagship.
 - Operational publication: every five minutes; builds
   `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.
-- Strategy Lab publication: every 10 minutes; bounded research-only artifact
-  build backed by a separately timestamped historical-analysis cache. A full
+- Strategy Lab publication: fixed wall-clock five-minute cadence; bounded
+  research-only artifact build backed by a separately timestamped
+  historical-analysis cache. A full
   source/config-bound cache refresh runs once, at low I/O priority, after
   `sync_to_box.sh` has restored and validated production. It reads the verified
   immutable deploy snapshot rather than the live journal.
@@ -149,10 +150,29 @@ dependencies do not belong on the production box.
 Publication is finality-aware and race-safe: builders share
 `SFO_ARTIFACT_GENERATION_LOCK`; the publisher validates the manifest before it
 copies exact artifacts, then serializes Git work with `SFO_PAGES_LOCK`.
+Strategy promotion waits at most 30 seconds for the artifact lock; operational
+generation and Pages serialization each wait at most 60 seconds. These bounds
+leave generation and push headroom inside their systemd deadlines.
 Both publisher and paper-scan locks default under `/opt/weatheredge/.locks` so
 reboots clean temporary storage without weakening overlap protection. Configure
 the deploy key as `/home/ubuntu/.ssh/sfo_weather_pages_deploy` and the Git source
 as `git@github.com:Jaxsonb04/weather_edge.git`.
+
+`sfo-scheduler-health.timer` runs on an offset five-minute wall clock. Its
+root-owned helper verifies that the eleven application timers are enabled and
+active, rejects effective unit drift, stale/missing forecast state, checksum or
+source-provenance mismatches, and validates both local and public artifact
+freshness. Only age-only failures are eligible for repair: it may start the
+bounded Strategy Lab service and/or the operational publisher under a
+single-flight lock and 15-minute cooldown. It never starts paper scan, monitor,
+or settlement services and never changes placement or live-trading flags.
+
+`sync_to_box.sh` creates `/run/weatheredge-deploy-maintenance` immediately
+before quiescence. Scheduler checks skip while that root-owned marker exists;
+the deploy restores its captured timer policy, removes the marker, and runs one
+explicit scheduler-health check last. A failed or interrupted deployment can
+leave the marker intentionally present so a partially installed tree is not
+auto-repaired.
 
 ## Archive-Gated Retention
 

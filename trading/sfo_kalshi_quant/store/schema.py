@@ -6,8 +6,10 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
+from ..account import LIVE_STABILITY_ACCOUNT_ID
 from ..research_policy import (
     ALL_RESEARCH_POLICIES,
+    TARGET_POLICY,
     TARGET_POLICY_V1,
 )
 
@@ -1070,7 +1072,7 @@ def _backfill_legacy_research_daily_goal_fingerprints(
 
 
 def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
-    """Bootstrap isolated ledgers and keep the historical target read-only."""
+    """Bootstrap all ledgers and archive every policy except active target v3."""
 
     for policy in ALL_RESEARCH_POLICIES:
         created_at = _now()
@@ -1099,10 +1101,26 @@ def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
                 f"{policy.account_id}:opening",
             ),
         )
+    archived_accounts = tuple(
+        policy.account_id
+        for policy in ALL_RESEARCH_POLICIES
+        if policy.account_id != TARGET_POLICY.account_id
+    )
     conn.execute(
         "UPDATE paper_accounts SET status='ARCHIVED' "
-        "WHERE account_id=? AND status!='ARCHIVED'",
-        (TARGET_POLICY_V1.account_id,),
+        f"WHERE account_id IN ({','.join('?' for _ in archived_accounts)}) "
+        "AND status!='ARCHIVED'",
+        archived_accounts,
+    )
+
+
+def _enforce_active_account_set(conn: sqlite3.Connection) -> None:
+    """Archive every account outside the two deliberate post-cutover ledgers."""
+
+    conn.execute(
+        "UPDATE paper_accounts SET status='ARCHIVED' "
+        "WHERE status='ACTIVE' AND account_id NOT IN (?, ?)",
+        (LIVE_STABILITY_ACCOUNT_ID, TARGET_POLICY.account_id),
     )
 
 
@@ -1334,8 +1352,11 @@ def _init_store_locked(self) -> None:
             )
         self._expire_pre_current_execution_orders(conn)
         self._ensure_shared_paper_account(conn)
+        self._ensure_live_stability_account(conn)
         self._ensure_open_position_guard_index(conn)
         _ensure_research_sleeve_accounts(conn)
+        _enforce_active_account_set(conn)
+
 
 def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
     """Migrate the active-order guard to account scope, or fail closed.

@@ -3,7 +3,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID, SHARED_ACCOUNT_ID
+from sfo_kalshi_quant.account import (
+    LIVE_STABILITY_ACCOUNT_ID,
+    RESEARCH_ACCOUNT_ID,
+)
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
@@ -48,6 +51,46 @@ def _decision(
 
 def _now_local() -> datetime:
     return datetime.now(UTC).astimezone(SFO_TZ)
+
+
+def _seed_profile_order(
+    store: PaperStore,
+    target_date: str,
+    decision: TradeDecision,
+    *,
+    risk_profile: str,
+    account_id: str,
+    research_sleeve: str | None = None,
+    research_policy_version: str | None = None,
+    policy_fingerprint: str | None = None,
+) -> int:
+    """Seed readable historical profile state without admitting archived risk."""
+
+    order_id = store.record_paper_order(
+        target_date,
+        decision,
+        risk_profile="live",
+    )
+    assert order_id is not None
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET risk_profile=?, account_id=?, "
+            "research_sleeve=?, research_policy_version=?, policy_fingerprint=? "
+            "WHERE id=?",
+            (
+                risk_profile,
+                account_id,
+                research_sleeve,
+                research_policy_version,
+                policy_fingerprint,
+                order_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (account_id, order_id),
+        )
+    return order_id
 
 
 def test_paper_summary_attributes_pnl_to_resolution_day():
@@ -102,32 +145,46 @@ def test_combined_summary_reports_attribution_without_synthetic_account_equity()
         today = _now_local().date().isoformat()
 
         order_ids = [
-            store.record_paper_order(
+            _seed_profile_order(
+                store,
                 today,
                 _decision("KXHIGHTSFO-LIVE-B66.5"),
                 risk_profile="live",
+                account_id=LIVE_STABILITY_ACCOUNT_ID,
             ),
-            store.record_paper_order(
+            _seed_profile_order(
+                store,
                 today,
                 _decision("KXHIGHTSFO-LEGACY-RESEARCH-B67.5"),
                 risk_profile="research",
+                account_id=RESEARCH_ACCOUNT_ID,
             ),
-            store.record_paper_order(
+            _seed_profile_order(
+                store,
                 today,
                 _decision("KXHIGHTSFO-TARGET-B68.5"),
                 risk_profile="research",
+                account_id=TARGET_POLICY.account_id,
+                research_sleeve=TARGET_POLICY.sleeve.value,
+                research_policy_version=TARGET_POLICY.policy_version,
+                policy_fingerprint=TARGET_POLICY.policy_fingerprint,
             ),
-            store.record_paper_order(
+            _seed_profile_order(
+                store,
                 today,
                 _decision("KXHIGHTSFO-MOTION-B69.5"),
                 risk_profile="research",
+                account_id=MOTION_POLICY.account_id,
+                research_sleeve=MOTION_POLICY.sleeve.value,
+                research_policy_version=MOTION_POLICY.policy_version,
+                policy_fingerprint=MOTION_POLICY.policy_fingerprint,
             ),
         ]
         assert all(order_id is not None for order_id in order_ids)
 
         resolved_at = _now_local().isoformat()
         account_identities = (
-            (SHARED_ACCOUNT_ID, None, None, None),
+            (LIVE_STABILITY_ACCOUNT_ID, None, None, None),
             (RESEARCH_ACCOUNT_ID, None, None, None),
             (
                 TARGET_POLICY.account_id,
@@ -272,10 +329,12 @@ def test_paper_summary_splits_results_by_risk_profile():
         store.record_paper_order(
             today, _decision("KXHIGHTSFO-TEST-B66.5"), risk_profile="live"
         )
-        store.record_paper_order(
+        _seed_profile_order(
+            store,
             today,
             _decision("KXHIGHTSFO-TEST-B68.5", floor_strike=68.0, cap_strike=69.0),
             risk_profile="research",
+            account_id=RESEARCH_ACCOUNT_ID,
         )
         store.settle_paper_orders(today, 67.0)  # balanced wins, fast-feedback loses
 

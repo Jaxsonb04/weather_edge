@@ -24,7 +24,8 @@ PAGES_BRANCH="${SFO_PAGES_BRANCH:-gh-pages}"
 DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
 MANIFEST_PATH="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
 ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-/opt/weatheredge/.locks/artifact-generation.lock}"
-LOCK_WAIT_SECONDS="${SFO_ARTIFACT_LOCK_WAIT_SECONDS:-900}"
+ARTIFACT_LOCK_WAIT_SECONDS="${SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-60}"
+PAGES_LOCK_WAIT_SECONDS="${SFO_PAGES_LOCK_WAIT_SECONDS:-60}"
 
 # The manifest validator always emits these required files. It emits the
 # strategy_research.json artifact only when the manifest records a validated
@@ -66,7 +67,7 @@ if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" ]]; then
   fi
   mkdir -p "$(dirname "$ARTIFACT_LOCK")"
   exec 8>"$ARTIFACT_LOCK"
-  if ! flock -w "$LOCK_WAIT_SECONDS" 8; then
+  if ! flock -w "$ARTIFACT_LOCK_WAIT_SECONDS" 8; then
     echo "timed out waiting for artifact generation lock: $ARTIFACT_LOCK" >&2
     exit 1
   fi
@@ -148,7 +149,10 @@ PAGES_LOCK="${SFO_PAGES_LOCK:-$BASE_DIR/.locks/pages-publish.lock}"
 if command -v flock >/dev/null 2>&1; then
   mkdir -p "$(dirname "$PAGES_LOCK")"
   exec 9>"$PAGES_LOCK"
-  flock 9
+  if ! flock -w "$PAGES_LOCK_WAIT_SECONDS" 9; then
+    echo "timed out waiting for Pages publication lock: $PAGES_LOCK" >&2
+    exit 1
+  fi
 fi
 
 git init -b "$PAGES_BRANCH" "$publish_dir" >/dev/null

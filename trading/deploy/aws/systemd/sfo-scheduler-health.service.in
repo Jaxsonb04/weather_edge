@@ -1,0 +1,25 @@
+[Unit]
+Description=WeatherEdge scheduler and publication self-healing watchdog
+Wants=network-online.target
+After=network-online.target
+OnFailure=sfo-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__TRADING_DIR__
+EnvironmentFile=__ENV_FILE__
+Environment=SFO_SCHEDULER_APP_USER=__APP_USER__
+Environment=SFO_SCHEDULER_TEST_MODE=0
+ExecStart=/usr/local/libexec/weatheredge/check_scheduler_health.sh
+RuntimeDirectory=weatheredge-scheduler-health
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+MemoryHigh=120M
+MemoryMax=180M
+# One bounded Strategy build (120s), one operational publication (900s), a
+# 180-second propagation check, and final validation all fit below this cap.
+TimeoutStartSec=1500

@@ -3,7 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StrategyLab, WinnerLoser } from "../../lib/strategy";
 
 const chartState = vi.hoisted(() => ({
-  tooltipRow: { equity: -5, pnl: 2, dailyPnl: 0 },
+  tooltipRow: { equity: -5, pnl: 2, dailyPnl: 0 } as {
+    equity: number;
+    pnl: number;
+    dailyPnl: number;
+    accountBalance?: number;
+  } | null,
+  chartData: [] as Array<{
+    equity: number;
+    pnl: number;
+    dailyPnl: number;
+    accountBalance?: number;
+  }>,
+  tooltipProps: {} as { cursor?: unknown; isAnimationActive?: boolean },
 }));
 
 vi.mock("@iconify/react/offline", () => ({ Icon: () => null }));
@@ -52,10 +64,29 @@ vi.mock("@heroui-pro/react/chart-tooltip", () => {
   return { ChartTooltip };
 });
 vi.mock("@heroui-pro/react/line-chart", () => {
-  const Part = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
-  const Tooltip = ({ content }: { content: (args: unknown) => React.ReactNode }) => (
-    <div>{content({ active: true, label: "Jul 11", payload: [{ payload: chartState.tooltipRow }] })}</div>
-  );
+  const Part = ({
+    children,
+    data,
+  }: {
+    children?: React.ReactNode;
+    data?: Array<{ equity: number; pnl: number; dailyPnl: number; accountBalance?: number }>;
+  }) => {
+    if (data) chartState.chartData = data;
+    return <div>{children}</div>;
+  };
+  const Tooltip = ({
+    content,
+    cursor,
+    isAnimationActive,
+  }: {
+    content: (args: unknown) => React.ReactNode;
+    cursor?: unknown;
+    isAnimationActive?: boolean;
+  }) => {
+    chartState.tooltipProps = { cursor, isAnimationActive };
+    const row = chartState.tooltipRow ?? chartState.chartData[0];
+    return <div>{content({ active: true, label: "Jul 11", payload: [{ payload: row }] })}</div>;
+  };
   const LineChart = Part as typeof Part & {
     Grid: () => null;
     XAxis: () => null;
@@ -85,6 +116,8 @@ const mover = (realized_pnl: number, label: string): WinnerLoser => ({
 
 beforeEach(() => {
   chartState.tooltipRow = { equity: -5, pnl: 2, dailyPnl: 0 };
+  chartState.chartData = [];
+  chartState.tooltipProps = {};
 });
 
 describe("strategy component currency formatting", () => {
@@ -111,7 +144,6 @@ describe("strategy component currency formatting", () => {
         s={s}
         days={[{ date: "2026-07-11", cumulative_realized: -5 }]}
         startingBankroll={0}
-        contributionMode
       />,
     );
 
@@ -123,6 +155,7 @@ describe("strategy component currency formatting", () => {
   });
 
   it("labels a combined attribution-only series as P&L instead of account equity", () => {
+    chartState.tooltipRow = null;
     const s = {
       daily_summary: {
         equity_available: false,
@@ -139,5 +172,61 @@ describe("strategy component currency formatting", () => {
     expect(screen.getByText("P&L contribution")).toBeInTheDocument();
     expect(screen.getByText("break-even")).toBeInTheDocument();
     expect(screen.queryByText("Equity")).not.toBeInTheDocument();
+    expect(screen.queryByText("Account balance")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("tooltip-value").map((node) => node.textContent)).toEqual([
+      "−$5.00",
+      "+$0.00",
+    ]);
+  });
+
+  it("tracks rapid pointer movement without an animated tooltip or independent cursor", () => {
+    const s = { daily_summary: { starting_bankroll: 0, window_days: 1 } } as StrategyLab;
+
+    render(
+      <EquityCurve
+        s={s}
+        days={[{ date: "2026-07-11", cumulative_realized: -5 }]}
+        startingBankroll={0}
+        contributionMode
+      />,
+    );
+
+    expect(chartState.tooltipProps).toEqual({
+      cursor: false,
+      isAnimationActive: false,
+    });
+  });
+
+  it("keeps attributed P&L separate from a published account closing balance", () => {
+    chartState.tooltipRow = null;
+    const s = { daily_summary: { starting_bankroll: 0, window_days: 1 } } as StrategyLab;
+
+    render(
+      <EquityCurve
+        s={s}
+        days={[{
+          date: "2026-07-11",
+          cumulative_realized: 5,
+          realized_pnl: 2,
+          closing_equity: 1005,
+        }]}
+        startingBankroll={0}
+        contributionMode
+      />,
+    );
+
+    expect(screen.getByRole("img")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("from $0 to +$5"),
+    );
+    expect(screen.getByText("P&L contribution")).toBeInTheDocument();
+    expect(screen.getByText("Daily P&L")).toBeInTheDocument();
+    expect(screen.getByText("Account balance")).toBeInTheDocument();
+    expect(screen.queryByText("Cum. P&L")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("tooltip-value").map((node) => node.textContent)).toEqual([
+      "+$5.00",
+      "+$2.00",
+      "$1,005.00",
+    ]);
   });
 });

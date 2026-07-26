@@ -34,6 +34,7 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
 /** Compact go-live verdict for the book overview — the headline number, a
     progress bar, and the one-line summary. The full checklist is ReadinessPanel. */
 export function ReadinessVerdict({ s }: { s: StrategyLab }) {
+  if (s.accounting?.available === false) return null;
   const r = s.real_money_readiness;
   if (!r?.available) return null;
   const checks = r.checks ?? [];
@@ -74,6 +75,7 @@ export function ReadinessVerdict({ s }: { s: StrategyLab }) {
 /** The full go-live checks: the engine's own answer to "would you trade real
     money with this?" — enforced in code, published unedited. */
 export function ReadinessPanel({ s }: { s: StrategyLab }) {
+  if (s.accounting?.available === false) return null;
   const r = s.real_money_readiness;
   if (!r?.available) return null;
   const checks = r.checks ?? [];

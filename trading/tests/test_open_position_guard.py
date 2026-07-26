@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID, SHARED_ACCOUNT_ID
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
@@ -100,8 +100,8 @@ def test_guard_index_is_created_on_init():
 def test_duplicate_open_same_market_side_account_is_rejected():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        first = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
-        second = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
+        first = store.record_paper_order("2026-06-19", _decision(), risk_profile="live")
+        second = store.record_paper_order("2026-06-19", _decision(), risk_profile="live")
 
         assert isinstance(first, int)
         # The backstop rejects the concurrent duplicate; the store signals None.
@@ -111,27 +111,48 @@ def test_duplicate_open_same_market_side_account_is_rejected():
                 store,
                 "KXHIGHTSFO-26JUN19-B72.5",
                 "NO",
-                RESEARCH_ACCOUNT_ID,
+                LIVE_STABILITY_ACCOUNT_ID,
             )
             == 1
         )
 
 
-def test_same_market_other_account_is_independent():
-    # Live and legacy research shadow accounts have independent active guards.
+def test_same_market_other_active_account_is_independent():
+    # Live Stability and Research ROI have independent account-scoped guards.
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        research = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
+        research = store.record_paper_order(
+            "2026-06-19",
+            _decision(),
+            risk_profile="live",
+        )
+        assert isinstance(research, int)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET risk_profile='research', account_id=?, "
+                "research_sleeve=?, research_policy_version=?, policy_fingerprint=? "
+                "WHERE id=?",
+                (
+                    TARGET_POLICY.account_id,
+                    TARGET_POLICY.sleeve.value,
+                    TARGET_POLICY.policy_version,
+                    TARGET_POLICY.policy_fingerprint,
+                    research,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+                (TARGET_POLICY.account_id, research),
+            )
         live = store.record_paper_order("2026-06-19", _decision(), risk_profile="live")
 
-        assert isinstance(research, int)
         assert isinstance(live, int)
         assert (
             _open_count(
                 store,
                 "KXHIGHTSFO-26JUN19-B72.5",
                 "NO",
-                RESEARCH_ACCOUNT_ID,
+                TARGET_POLICY.account_id,
             )
             == 1
         )
@@ -140,7 +161,7 @@ def test_same_market_other_account_is_independent():
                 store,
                 "KXHIGHTSFO-26JUN19-B72.5",
                 "NO",
-                SHARED_ACCOUNT_ID,
+                LIVE_STABILITY_ACCOUNT_ID,
             )
             == 1
         )
@@ -151,10 +172,10 @@ def test_arbitrage_yes_and_no_box_on_one_market_is_allowed():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         no_leg = store.record_paper_order(
-            "2026-06-19", _decision(side="NO"), risk_profile="research", group_id="ARB-test"
+            "2026-06-19", _decision(side="NO"), risk_profile="live", group_id="ARB-test"
         )
         yes_leg = store.record_paper_order(
-            "2026-06-19", _decision(side="YES"), risk_profile="research", group_id="ARB-test"
+            "2026-06-19", _decision(side="YES"), risk_profile="live", group_id="ARB-test"
         )
 
         assert isinstance(no_leg, int)
@@ -164,7 +185,7 @@ def test_arbitrage_yes_and_no_box_on_one_market_is_allowed():
                 store,
                 "KXHIGHTSFO-26JUN19-B72.5",
                 "NO",
-                RESEARCH_ACCOUNT_ID,
+                LIVE_STABILITY_ACCOUNT_ID,
             )
             == 1
         )
@@ -173,7 +194,7 @@ def test_arbitrage_yes_and_no_box_on_one_market_is_allowed():
                 store,
                 "KXHIGHTSFO-26JUN19-B72.5",
                 "YES",
-                RESEARCH_ACCOUNT_ID,
+                LIVE_STABILITY_ACCOUNT_ID,
             )
             == 1
         )
@@ -183,9 +204,9 @@ def test_reentry_after_close_is_allowed():
     # The index is partial on the open lifecycle, so re-entry after a close works.
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
-        first = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
+        first = store.record_paper_order("2026-06-19", _decision(), risk_profile="live")
         store.close_paper_order(first, 0.5)
-        second = store.record_paper_order("2026-06-19", _decision(), risk_profile="research")
+        second = store.record_paper_order("2026-06-19", _decision(), risk_profile="live")
 
         assert isinstance(first, int)
         assert isinstance(second, int)
@@ -194,7 +215,7 @@ def test_reentry_after_close_is_allowed():
                 store,
                 "KXHIGHTSFO-26JUN19-B72.5",
                 "NO",
-                RESEARCH_ACCOUNT_ID,
+                LIVE_STABILITY_ACCOUNT_ID,
             )
             == 1
         )
@@ -217,13 +238,13 @@ def test_every_active_status_is_counted_and_uniquely_guarded(
     first = store.record_paper_order(
         "2026-06-19",
         _decision(),
-        risk_profile="research",
+        risk_profile="live",
         status=status,
     )
     second = store.record_paper_order(
         "2026-06-19",
         _decision(),
-        risk_profile="research",
+        risk_profile="live",
         status=status,
     )
 
@@ -234,7 +255,7 @@ def test_every_active_status_is_counted_and_uniquely_guarded(
             store,
             "KXHIGHTSFO-26JUN19-B72.5",
             "NO",
-            RESEARCH_ACCOUNT_ID,
+            LIVE_STABILITY_ACCOUNT_ID,
         )
         == 1
     )
