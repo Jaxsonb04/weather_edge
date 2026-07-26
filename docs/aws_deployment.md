@@ -146,14 +146,19 @@ The environment installed at `/etc/weatheredge.env` is based on
 - `sfo-strategy-lab-refresh.timer`: every ten minutes; bounded research-only build
   and publish, with no paid Google refresh or full-journal rescore. The recurring
   wrapper forces bounded mode even if `/etc/weatheredge.env` says otherwise.
-- `sfo-dataset-backfill.timer`: nightly; compact source refresh, CLI settlement
-  truth, NWP leads 1 and 2, and rolling-origin EMOS. Lead 3 is manual research.
+- `sfo-dataset-backfill.timer`: nightly at 10:01 UTC (03:01 PDT / 02:01 PST);
+  compact source refresh, CLI settlement truth, NWP leads 1 and 2, and
+  rolling-origin EMOS. The fixed UTC window starts after retention prune's
+  worst-case deadline. Missed heavy-maintenance windows do not replay during
+  timer restoration; the next nightly window is used. Lead 3 is manual research.
 - `sfo-kalshi-paper-scan.timer`: every five minutes across all configured city
   prediction markets.
 - `sfo-kalshi-paper-monitor.timer`: every two minutes; monitors paper exits and
   maker-limit proxy fills.
 - `sfo-kalshi-paper-settle.timer`: finality-gated, series-scoped settlement.
-- `sfo-kalshi-paper-prune.timer`: archive, verify, FK-check, then prune.
+- `sfo-kalshi-paper-prune.timer`: archive, verify, FK-check, then prune. A
+  missed run waits for the next nightly window instead of replaying alongside
+  persistent runtime timers after a deploy or reboot.
 - `sfo-forecast-freshness.timer`: publication and forecast health checks.
 
 The operational publication path holds `SFO_ARTIFACT_GENERATION_LOCK` while

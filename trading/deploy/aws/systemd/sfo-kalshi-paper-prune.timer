@@ -4,8 +4,11 @@ Description=Run SFO decision-journal retention daily
 [Timer]
 # Decorrelate firing so the sfo units don't all spike together
 RandomizedDelaySec=300
+AccuracySec=1
 OnCalendar=*-*-* 09:20:00 UTC
-Persistent=true
+# A missed retention run is safe to defer one day. Replaying it on timer
+# restoration can overlap other persistent database writers.
+Persistent=false
 Unit=sfo-kalshi-paper-prune.service
 
 [Install]

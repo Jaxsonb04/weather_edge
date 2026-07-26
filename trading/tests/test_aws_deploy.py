@@ -17,6 +17,23 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _explicit_utc_timer_start_seconds(timer: str) -> int:
+    match = re.search(
+        r"^OnCalendar=\*-\*-\* (\d{2}):(\d{2}):(\d{2}) UTC$",
+        timer,
+        re.MULTILINE,
+    )
+    assert match is not None, "maintenance timer must declare an explicit UTC time"
+    hours, minutes, seconds = (int(value) for value in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _systemd_seconds(unit: str, setting: str) -> int:
+    match = re.search(rf"^{re.escape(setting)}=(\d+)$", unit, re.MULTILINE)
+    assert match is not None, f"{setting} must be an integer number of seconds"
+    return int(match.group(1))
+
+
 def test_systemd_units_use_rendered_weatheredge_env_file():
     installer = _read(AWS_DIR / "install_systemd.sh")
     assert "ENV_FILE=\"${ENV_FILE:-/etc/weatheredge.env}\"" in installer
@@ -431,6 +448,10 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     installer = _read(AWS_DIR / "install_systemd.sh")
     service = _read(AWS_DIR / "systemd" / "sfo-dataset-backfill.service.in")
     timer = _read(AWS_DIR / "systemd" / "sfo-dataset-backfill.timer")
+    prune_service = _read(
+        AWS_DIR / "systemd" / "sfo-kalshi-paper-prune.service.in"
+    )
+    prune_timer = _read(AWS_DIR / "systemd" / "sfo-kalshi-paper-prune.timer")
     runner = _read(AWS_DIR / "run_dataset_backfill.sh")
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
 
@@ -439,7 +460,17 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     assert "sfo-dataset-backfill.timer" in installer
     assert "run_dataset_backfill.sh" in service
     assert "EnvironmentFile=__ENV_FILE__" in service
-    assert "OnCalendar=*-*-* 02:25:00" in timer
+    dataset_start = _explicit_utc_timer_start_seconds(timer)
+    prune_latest_finish = (
+        _explicit_utc_timer_start_seconds(prune_timer)
+        + _systemd_seconds(prune_timer, "RandomizedDelaySec")
+        + _systemd_seconds(prune_timer, "AccuracySec")
+        + _systemd_seconds(prune_service, "TimeoutStartSec")
+    )
+    assert _systemd_seconds(timer, "AccuracySec") == 1
+    assert dataset_start - prune_latest_finish >= 300
+    assert "Persistent=false" in timer
+    assert "Persistent=true" not in timer
     assert "Unit=sfo-dataset-backfill.service" in timer
 
     assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"' in runner
@@ -478,7 +509,8 @@ def test_paper_prune_unit_is_installed_and_archive_gated():
     # The archive-then-prune chain runs long; it must outlive the 90 s default.
     assert "TimeoutStartSec=1800" in service
     assert "OnCalendar=*-*-* 09:20:00 UTC" in timer
-    assert "Persistent=true" in timer
+    assert "Persistent=false" in timer
+    assert "Persistent=true" not in timer
     assert "Unit=sfo-kalshi-paper-prune.service" in timer
 
 

@@ -2,10 +2,14 @@
 Description=Run SFO compact dataset backfill nightly
 
 [Timer]
-# Decorrelate firing so the sfo units don't all spike together
+# Start after the prune unit's worst-case 09:55 UTC finish and finish before
+# the next hourly forecaster refresh, even with both units' full timeouts.
 RandomizedDelaySec=120
-OnCalendar=*-*-* 02:25:00
-Persistent=true
+AccuracySec=1
+OnCalendar=*-*-* 10:01:00 UTC
+# Heavy database maintenance must not replay immediately after a deploy or
+# reboot, where it could overlap the prune or persistent forecaster catch-up.
+Persistent=false
 Unit=sfo-dataset-backfill.service
 
 [Install]

@@ -207,11 +207,17 @@ On AWS, the 30-minute forecaster refresh serves live EMOS forecasts for all
 fifteen cities (one batched Open-Meteo call per city) plus NWS observations
 (`--days 2 --cities all`).
 
-The nightly dataset unit (02:25 Pacific) additionally runs:
+The nightly dataset unit (10:01 UTC, or 03:01 PDT / 02:01 PST) starts after
+the archive/prune unit's worst-case deadline and additionally runs:
 
 - IEM CLI settlement-truth refresh
 - NWP archive update (`--daily --cities all`, scheduled leads 1 and 2 only)
 - EMOS rolling-origin rebuild (leads 1 and 2)
+
+Dataset backfill and retention prune deliberately use `Persistent=false`.
+If a deploy or reboot misses either heavy-maintenance window, systemd waits for
+the next nightly run instead of replaying both jobs beside persistent forecast
+or paper-runtime timers.
 
 Lead 3 is research/on-demand only. Preserve it in explicit historical
 `nwp_archive.py --backfill --start ... --end ...` runs, but do not add it back
