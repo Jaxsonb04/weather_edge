@@ -124,6 +124,35 @@ class StrategyConfig:
     fee_multiplier: float = 1.0
     limit_price_tick: float = 0.01
     limit_price_edge_lcb_buffer: float = 0.02
+    # --- Execution capture (2026-07-26 regime response) ---------------------
+    # July's tightening favorite markets starved the maker-only entry path:
+    # approved candidates carried positive after-fee taker-cost edge, but the
+    # bid+1 resting quote filled <20% of the time (46/49 expired on 07-18) and
+    # realized P&L collapsed while expected value went unharvested. These
+    # flags change EXECUTION only -- every decision/safety gate, sizing cap,
+    # and account policy is evaluated exactly as before. All default OFF so
+    # the frozen conservative baseline stays reproducible.
+    #
+    # Cross the displayed ask immediately when the after-fee LOWER-BOUND edge
+    # at the taker price still clears limit_taker_cross_min_edge_lcb. The live
+    # override sets that bar equal to limit_price_edge_lcb_buffer: the same 2%
+    # LCB standard the maker path enforces, at a strictly worse price, so the
+    # cross can only be MORE conservative than today's resting placement.
+    limit_taker_cross_enabled: bool = False
+    limit_taker_cross_min_edge_lcb: float = 0.02
+    # A crossing fill is capped at displayed ask depth; below this notional the
+    # $5 executable minimum in the account policy would reject the order, so
+    # fall back to the resting quote instead of burning the candidate.
+    limit_taker_cross_min_notional: float = 5.0
+    # When bid+1 violates the LCB buffer, rest deeper at the highest tick that
+    # preserves the buffer by construction instead of dropping the candidate.
+    # A deep fill carries at least the buffered lower-bound edge; no fill
+    # leaves the book exactly where dropping would have.
+    limit_resting_reservation_fallback: bool = False
+    # Target research book: cross the displayed ask whenever its documented
+    # zero after-fee point/LCB floor holds at the taker cost, instead of only
+    # when the spread is one tick. The floor itself is unchanged.
+    research_target_taker_cross: bool = False
     min_conditional_samples: int = 35
     shrinkage_samples: int = 70
     empirical_weight: float = 0.75
@@ -440,6 +469,16 @@ LIVE_PROFILE_OVERRIDES = {
     # negative. The research collector keeps the full price curve so the band
     # itself stays measurable.
     "favorite_band_enabled": True,
+    # EXECUTION CAPTURE (2026-07-26). Maker-first placement stays, but when the
+    # after-fee LCB edge at the displayed ask clears the SAME 2% buffer the
+    # maker path enforces, take the fill now instead of resting into the <20%
+    # fill-rate regime that flattened realized P&L after 07-22. Candidates the
+    # buffer rejects at bid+1 rest deeper at the buffer-preserving reservation
+    # price instead of being dropped. Decision gates, sizing caps, and account
+    # policy are unchanged; see StrategyConfig field comments.
+    "limit_taker_cross_enabled": True,
+    "limit_taker_cross_min_edge_lcb": 0.02,
+    "limit_resting_reservation_fallback": True,
 }
 
 
@@ -528,6 +567,15 @@ RESEARCH_PROFILE_OVERRIDES = {
     # The collector measures the whole price curve (including the longshots the
     # live band rejects) so the favorite-band choice remains evidence, not dogma.
     "favorite_band_enabled": False,
+    # EXECUTION CAPTURE (2026-07-26): live-only for now. The research
+    # collector's admission layer re-derives quotes from this canonical
+    # config, and its atomic reservation accounting is pinned by the sleeve
+    # suite, so flipping crossing semantics here is a separate, test-migrated
+    # change. Explicitly pin every capture flag off so the **live spread
+    # above cannot silently alter research admission behavior.
+    "limit_taker_cross_enabled": False,
+    "limit_resting_reservation_fallback": False,
+    "research_target_taker_cross": False,
 }
 
 

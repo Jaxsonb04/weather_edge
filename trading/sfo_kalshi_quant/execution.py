@@ -65,6 +65,16 @@ def buy_limit_for_decision(
     visible_bid = max(0.0, float(decision.bid))
     inside_price = _floor_to_tick(visible_bid + tick, tick)
     crosses = inside_price >= visible_ask - 1e-12
+    if not crosses and config.limit_taker_cross_enabled:
+        # Opportunistic taker cross: when the after-fee LOWER-BOUND edge at the
+        # displayed ask still clears the SAME buffer the maker path enforces,
+        # an immediate ask-capped fill realizes more expected value than a
+        # resting quote whose fill depends on sparse aggressor flow. Only
+        # already-approved candidates reach this point, so no decision gate is
+        # bypassed; the crossing bar is the maker bar at a strictly worse price.
+        taker = _taker_cross_quote(decision, config)
+        if taker is not None:
+            return taker
     price = _floor_to_tick(visible_ask if crosses else inside_price, tick)
     fee = quadratic_fee_average_per_contract(
         price,
@@ -79,7 +89,9 @@ def buy_limit_for_decision(
     edge = decision.probability - cost
     edge_lcb = decision.probability_lcb - cost
     if edge_lcb + 1e-12 < config.limit_price_edge_lcb_buffer:
-        return None
+        if crosses or not config.limit_resting_reservation_fallback:
+            return None
+        return _reservation_resting_quote(decision, config, inside_price)
     return BuyLimitQuote(
         price=_round_price(price),
         fee_per_contract=fee,
@@ -89,6 +101,99 @@ def buy_limit_for_decision(
         would_cross=crosses,
         contracts=float(decision.recommended_contracts),
     )
+
+
+def _taker_cross_quote(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> BuyLimitQuote | None:
+    """Whole-contract taker fill at the displayed ask, or None to rest."""
+
+    try:
+        ask = float(decision.ask)
+        ask_size = float(decision.ask_size)
+        contracts = float(decision.recommended_contracts)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not math.isfinite(ask)
+        or not math.isfinite(ask_size)
+        or not math.isfinite(contracts)
+        or not 0.0 < ask < 1.0
+    ):
+        return None
+    contracts = float(math.floor(min(contracts, ask_size) + 1e-12))
+    if contracts < 1.0:
+        return None
+    price = _floor_to_tick(ask, float(config.limit_price_tick))
+    fee = quadratic_fee_average_per_contract(
+        price,
+        contracts,
+        maker=False,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=decision.ticker,
+    )
+    cost = price + fee
+    edge = decision.probability - cost
+    edge_lcb = decision.probability_lcb - cost
+    if edge_lcb + 1e-12 < config.limit_taker_cross_min_edge_lcb:
+        return None
+    if contracts * cost + 1e-9 < config.limit_taker_cross_min_notional:
+        return None
+    return BuyLimitQuote(
+        price=_round_price(price),
+        fee_per_contract=fee,
+        cost_per_contract=cost,
+        edge=edge,
+        edge_lcb=edge_lcb,
+        would_cross=True,
+        contracts=contracts,
+    )
+
+
+def _reservation_resting_quote(
+    decision: TradeDecision,
+    config: StrategyConfig,
+    inside_price: float,
+) -> BuyLimitQuote | None:
+    """Rest at the highest tick that preserves the LCB buffer, or None.
+
+    The maker path's reservation-price rule ("never pay more than the lower
+    confidence bound supports after fees and the buffer") previously DROPPED a
+    candidate whose bid+1 quote violated the buffer. Resting deeper at a price
+    that satisfies the buffer by construction risks nothing new: when it fills
+    the position carries at least the buffered lower-bound edge, and when it
+    does not the book is exactly where dropping would have left it.
+    """
+
+    tick = float(config.limit_price_tick)
+    price = _floor_to_tick(inside_price - tick, tick)
+    while price >= tick - 1e-12:
+        fee = quadratic_fee_average_per_contract(
+            price,
+            decision.recommended_contracts,
+            maker=True,
+            fee_multiplier=config.fee_multiplier,
+            taker_rate=config.taker_fee_rate,
+            maker_rate=config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
+        cost = price + fee
+        edge_lcb = decision.probability_lcb - cost
+        if edge_lcb + 1e-12 >= config.limit_price_edge_lcb_buffer:
+            return BuyLimitQuote(
+                price=_round_price(price),
+                fee_per_contract=fee,
+                cost_per_contract=cost,
+                edge=decision.probability - cost,
+                edge_lcb=edge_lcb,
+                would_cross=False,
+                contracts=float(decision.recommended_contracts),
+            )
+        price = _floor_to_tick(price - tick, tick)
+    return None
 
 
 def target_research_quote(
@@ -131,6 +236,35 @@ def target_research_quote(
     )
     inside_price = _floor_to_tick(visible_bid + tick, tick)
     crosses = inside_price >= visible_ask - 1e-12
+    if not crosses and config.research_target_taker_cross:
+        # The target book's documented floor is exactly non-negative after-fee
+        # point and LCB edge. When that floor holds at the displayed ask, an
+        # immediate whole-contract taker fill realizes the edge now instead of
+        # gambling a resting quote on sparse aggressor flow. The floor check
+        # below runs against the taker cost, so nothing is weakened.
+        try:
+            displayed_ask_size = float(decision.ask_size)
+        except (TypeError, ValueError, OverflowError):
+            displayed_ask_size = 0.0
+        if math.isfinite(displayed_ask_size) and displayed_ask_size >= 1.0:
+            taker_contracts = float(math.floor(min(contracts, displayed_ask_size)))
+            taker_price = _floor_to_tick(visible_ask, tick)
+            taker_fee = quadratic_fee_average_per_contract(
+                taker_price,
+                taker_contracts,
+                maker=False,
+                fee_multiplier=config.fee_multiplier,
+                taker_rate=config.taker_fee_rate,
+                maker_rate=config.maker_fee_rate,
+                series_ticker=decision.ticker,
+            )
+            taker_cost = taker_price + taker_fee
+            if (
+                taker_contracts >= 1.0
+                and point_probability - taker_cost >= -1e-12
+                and float(decision.probability_lcb) - taker_cost >= -1e-12
+            ):
+                crosses = True
     if crosses:
         try:
             ask_size = float(decision.ask_size)
