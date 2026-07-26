@@ -7,7 +7,9 @@ Description=Run SFO compact dataset backfill nightly
 RandomizedDelaySec=120
 AccuracySec=1
 OnCalendar=*-*-* 10:01:00 UTC
-Persistent=true
+# Heavy database maintenance must not replay immediately after a deploy or
+# reboot, where it could overlap the prune or persistent forecaster catch-up.
+Persistent=false
 Unit=sfo-dataset-backfill.service
 
 [Install]

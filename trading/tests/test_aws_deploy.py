@@ -469,6 +469,8 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     )
     assert _systemd_seconds(timer, "AccuracySec") == 1
     assert dataset_start - prune_latest_finish >= 300
+    assert "Persistent=false" in timer
+    assert "Persistent=true" not in timer
     assert "Unit=sfo-dataset-backfill.service" in timer
 
     assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"' in runner
@@ -507,7 +509,8 @@ def test_paper_prune_unit_is_installed_and_archive_gated():
     # The archive-then-prune chain runs long; it must outlive the 90 s default.
     assert "TimeoutStartSec=1800" in service
     assert "OnCalendar=*-*-* 09:20:00 UTC" in timer
-    assert "Persistent=true" in timer
+    assert "Persistent=false" in timer
+    assert "Persistent=true" not in timer
     assert "Unit=sfo-kalshi-paper-prune.service" in timer
 
 
