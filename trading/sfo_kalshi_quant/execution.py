@@ -238,20 +238,27 @@ def target_research_quote(
     crosses = inside_price >= visible_ask - 1e-12
     if not crosses and config.research_target_taker_cross:
         # The target book's documented floor is exactly non-negative after-fee
-        # point and LCB edge. When that floor holds at the displayed ask, an
-        # immediate whole-contract taker fill realizes the edge now instead of
-        # gambling a resting quote on sparse aggressor flow. The floor check
-        # below runs against the taker cost, so nothing is weakened.
+        # point and LCB edge. When that floor holds at the displayed ask AND
+        # the displayed depth absorbs the ENTIRE intended size, an immediate
+        # whole-contract taker fill realizes the edge now instead of gambling
+        # a resting quote on sparse aggressor flow. Candidates larger than the
+        # displayed ask keep resting so the policy allocator's zero-fee
+        # up-sizing path stays intact; the floor check below runs against the
+        # taker cost, so nothing is weakened.
         try:
             displayed_ask_size = float(decision.ask_size)
         except (TypeError, ValueError, OverflowError):
             displayed_ask_size = 0.0
-        if math.isfinite(displayed_ask_size) and displayed_ask_size >= 1.0:
-            taker_contracts = float(math.floor(min(contracts, displayed_ask_size)))
+        full_size = float(math.floor(contracts + 1e-12))
+        if (
+            math.isfinite(displayed_ask_size)
+            and full_size >= 1.0
+            and displayed_ask_size >= full_size
+        ):
             taker_price = _floor_to_tick(visible_ask, tick)
             taker_fee = quadratic_fee_average_per_contract(
                 taker_price,
-                taker_contracts,
+                full_size,
                 maker=False,
                 fee_multiplier=config.fee_multiplier,
                 taker_rate=config.taker_fee_rate,
@@ -260,8 +267,7 @@ def target_research_quote(
             )
             taker_cost = taker_price + taker_fee
             if (
-                taker_contracts >= 1.0
-                and point_probability - taker_cost >= -1e-12
+                point_probability - taker_cost >= -1e-12
                 and float(decision.probability_lcb) - taker_cost >= -1e-12
             ):
                 crosses = True

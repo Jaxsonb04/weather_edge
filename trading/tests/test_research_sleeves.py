@@ -611,7 +611,13 @@ def _atomic_decision(
         action="BUY_NO",
         approved=True,
         probability=0.90,
-        probability_lcb=0.88,
+        # Resting fixtures pin the reservation-accounting invariants, so their
+        # LCB sits below the taker cost at the 0.82 ask (~0.83 with fees) --
+        # the canonical target quote then KEEPS RESTING under
+        # research_target_taker_cross -- while still clearing the generic
+        # maker path's 2% LCB buffer at 0.80. Crossing fixtures keep an LCB
+        # above the taker cost so both crossing routes stay covered.
+        probability_lcb=0.821 if resting else 0.88,
         yes_bid=0.17,
         yes_ask=0.18,
         spread=0.02,
@@ -3326,3 +3332,70 @@ def test_atomic_none_downgrades_persisted_research_attempt(
             "WHERE research_sleeve='motion' ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert latest == (0, "atomic research admission rejected")
+
+
+def test_atomic_admission_crosses_wide_spread_when_depth_covers_full_size(
+    tmp_path: Path,
+) -> None:
+    """research_target_taker_cross: floor-clearing wide-spread admissions fill now.
+
+    A candidate whose after-fee point/LCB floor holds at the displayed ask and
+    whose displayed depth absorbs the ENTIRE intended size must take
+    immediately (ENTRY_FILL, zero reservation) instead of resting into the
+    sparse-aggressor fill regime that missed the activation-day KPI.
+    """
+
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import with_target_research_execution
+
+    store = PaperStore(
+        tmp_path / "wide-spread-cross.db",
+        research_clock=_fixed_research_clock,
+    )
+    raw = replace(
+        _atomic_decision("KXHIGHTSFO-WIDE-CROSS", resting=True),
+        probability_lcb=0.88,
+        limit_price=None,
+        limit_fee_per_contract=None,
+        limit_cost_per_contract=None,
+        limit_edge=None,
+        limit_edge_lcb=None,
+    )
+    decision = with_target_research_execution(
+        raw,
+        strategy_config_for_profile("research"),
+    )
+    assert decision is not None
+    assert decision.limit_price == pytest.approx(0.82)
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "wide-spread-cross",
+        decision,
+    )
+
+    order_id = store.record_research_order_atomic(
+        "2026-07-19",
+        decision,
+        admission=admission,
+        strategy_config=strategy_config_for_profile("research"),
+    )
+    assert order_id is not None
+    order = store.paper_order(order_id)
+    assert order is not None
+    assert order["status"] == "PAPER_FILLED"
+    assert order["entry_mode"] == "limit"
+    state = store.research_account_state(account_id=TARGET_POLICY.account_id)
+    assert state is not None
+    assert state["reservations"] == pytest.approx(0.0)
+    with store.connect() as conn:
+        events = conn.execute(
+            "SELECT event_type FROM paper_account_ledger "
+            "WHERE account_id=? AND order_id=? ORDER BY id",
+            (TARGET_POLICY.account_id, order_id),
+        ).fetchall()
+    assert [str(row[0]) for row in events] == ["ENTRY_FILL"]
+    reconciliation = store.account_order_ledger_reconciliation(
+        TARGET_POLICY.account_id
+    )
+    assert reconciliation["status"] == "reconciled"

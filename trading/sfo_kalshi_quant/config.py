@@ -567,15 +567,19 @@ RESEARCH_PROFILE_OVERRIDES = {
     # The collector measures the whole price curve (including the longshots the
     # live band rejects) so the favorite-band choice remains evidence, not dogma.
     "favorite_band_enabled": False,
-    # EXECUTION CAPTURE (2026-07-26): live-only for now. The research
-    # collector's admission layer re-derives quotes from this canonical
-    # config, and its atomic reservation accounting is pinned by the sleeve
-    # suite, so flipping crossing semantics here is a separate, test-migrated
-    # change. Explicitly pin every capture flag off so the **live spread
-    # above cannot silently alter research admission behavior.
+    # EXECUTION CAPTURE (2026-07-26). The generic-path capture flags stay
+    # OFF here: legacy generic research is archived and the collector's
+    # bid+1 semantics on that path remain the tested baseline. The TARGET
+    # book's crossing flag is ON: the active ROI ledger keeps its
+    # documented zero after-fee point/LCB floor but may realize it by
+    # crossing the displayed ask instead of only resting -- post-restart the
+    # maker-only path filled 4 of 22 activation-day placements while
+    # $17-48/day of floor-clearing expected value was observed at taker
+    # cost. The floor itself is unchanged; admissions whose floor only
+    # holds at the maker price still rest exactly as before.
     "limit_taker_cross_enabled": False,
     "limit_resting_reservation_fallback": False,
-    "research_target_taker_cross": False,
+    "research_target_taker_cross": True,
 }
 
 

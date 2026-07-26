@@ -96,18 +96,23 @@ def test_live_profile_enables_taker_cross_and_reservation_fallback():
     assert live.limit_taker_cross_min_edge_lcb == live.limit_price_edge_lcb_buffer
 
 
-def test_research_profile_keeps_every_capture_flag_off():
-    # The research collector's atomic admission accounting re-derives quotes
-    # from this canonical config; crossing stays off until that migration.
+def test_research_profile_scopes_capture_to_the_target_book():
+    # The generic-path flags stay off (legacy generic research is archived and
+    # its bid+1 semantics are the tested baseline); the active target ledger
+    # gets the crossing capture at its own unchanged zero floor.
     research = strategy_config_for_profile("research")
     assert research.limit_taker_cross_enabled is False
     assert research.limit_resting_reservation_fallback is False
-    assert research.research_target_taker_cross is False
+    assert research.research_target_taker_cross is True
 
 
 def _research_cross_config() -> StrategyConfig:
+    return strategy_config_for_profile("research")
+
+
+def _research_rest_config() -> StrategyConfig:
     base = strategy_config_for_profile("research")
-    return StrategyConfig(**{**base.__dict__, "research_target_taker_cross": True})
+    return StrategyConfig(**{**base.__dict__, "research_target_taker_cross": False})
 
 
 def test_disabled_flag_preserves_resting_maker_behavior():
@@ -217,21 +222,31 @@ def test_reservation_fallback_gives_up_below_one_tick():
 
 
 def test_target_research_flag_off_rests_on_wide_spread():
-    quote = target_research_quote(_decision(), strategy_config_for_profile("research"))
+    quote = target_research_quote(_decision(), _research_rest_config())
     assert quote is not None
     assert quote.would_cross is False
     assert quote.price == 0.89
 
 
 def test_target_research_taker_cross_crosses_wide_spread_at_zero_floor():
-    decision = _decision()
+    decision = _decision(recommended_contracts=8.0)
     quote = target_research_quote(decision, _research_cross_config())
     assert quote is not None
     assert quote.would_cross is True
     assert quote.price == 0.90
-    assert quote.contracts == 10.0
+    assert quote.contracts == 8.0
     assert quote.edge >= -1e-12
     assert quote.edge_lcb >= -1e-12
+
+
+def test_target_research_taker_cross_rests_when_depth_cannot_absorb_full_size():
+    # A candidate larger than the displayed ask keeps resting so the policy
+    # allocator's zero-fee up-sizing path stays available.
+    decision = _decision(recommended_contracts=12.0, entry_ask_size=10.0)
+    quote = target_research_quote(decision, _research_cross_config())
+    assert quote is not None
+    assert quote.would_cross is False
+    assert quote.price == 0.89
 
 
 def test_target_research_taker_cross_falls_back_when_floor_fails():
