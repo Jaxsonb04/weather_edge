@@ -1,8 +1,8 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-07-26 03:40 PDT
+Last updated: 2026-07-26 03:41 PDT
 
-Last production verification: 2026-07-26 03:38 PDT
+Last production verification: 2026-07-26 03:41 PDT
 
 Status: production healthy, current, and paper-only on runtime revision
 `71ac845422fc75cc35e24bb3b3a918dd44f917b3`
@@ -49,7 +49,8 @@ current AWS state before making an operational claim.
 - **Operational health:** zero failed units; 25 canonical systemd units matched
   source; 12 of 12 timers were enabled and active; scheduler health succeeded;
   disk use was 68.4%, below the 85% guard; public and local manifests were fresh,
-  source-matched, and snapshot-identical.
+  source-matched, and snapshot-identical. A natural 10:40 UTC Strategy cycle
+  published successfully after deployment on the five-minute wall clock.
 - **Safety and access:** real-money execution remains disabled and dry-run
   remains enabled. Keep the narrowly scoped owner SSH rule for the next session;
   revoke it only when the owner says access is no longer needed. Its identifiers
@@ -205,6 +206,8 @@ exit and sizing ideas belong in Research ROI, still bounded and paper-only.
 - Independent post-deploy canary: 0 failures.
 - Public app-shell checksum matched local `dist/` and EC2 `webdist`.
 - Rapid-hover stress: one visible tooltip, one active dot, zero tooltip cursors.
+- The next natural five-minute Strategy cycle published successfully at
+  10:40 UTC with schema v3, current accounting, and live-only readiness.
 
 ## Paper Performance Snapshot
 
@@ -275,7 +278,8 @@ At the 2026-07-26 verification:
    units, all 12 timers, unit integrity, manifest parity/freshness, disk, active
    ledger reconciliation, readiness scope, and real-money safety flags.
 4. Keep the narrow owner SSH rule until the owner says access is finished.
-5. Observe the next natural Strategy refresh and archived-position settlements.
+5. Continue observing later natural Strategy refreshes and archived-position
+   settlements.
 6. Treat ignored local runtime files as disposable; use AWS/public artifacts.
 7. Update this file after every material incident, deployment, policy change,
    deliberate deferment, or production verification.
