@@ -89,7 +89,60 @@ def _latest_consensus_inputs(db_path: Path) -> tuple[str, float, dict[str, float
     return target_date, predicted_high_f, model_probabilities
 
 
-def _market_consensus_payload(db_path: Path) -> dict[str, Any]:
+def _consensus_inputs_from_decision_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[str, float, dict[str, float]] | None:
+    latest_target = max(
+        (str(row.get("target_date")) for row in rows if row.get("target_date")),
+        default=None,
+    )
+    if latest_target is None:
+        return None
+    target_rows = [
+        row for row in rows
+        if str(row.get("target_date") or "") == latest_target
+    ]
+    latest_created_at = max(
+        (str(row.get("created_at")) for row in target_rows if row.get("created_at")),
+        default=None,
+    )
+    if latest_created_at is not None:
+        target_rows = [
+            row
+            for row in target_rows
+            if str(row.get("created_at") or "") == latest_created_at
+        ]
+
+    predicted_high_f: float | None = None
+    model_probabilities: dict[str, float] = {}
+    for row in target_rows:
+        if predicted_high_f is None:
+            value = _to_float(
+                row.get("forecast_predicted_high_f"),
+                default=math.nan,
+            )
+            if math.isfinite(value):
+                predicted_high_f = value
+        ticker = str(row.get("ticker") or "")
+        if not ticker or ticker in model_probabilities:
+            continue
+        value = _to_float(row.get("model_probability"), default=math.nan)
+        if not math.isfinite(value):
+            continue
+        if str(row.get("side") or "").upper() == "NO":
+            value = 1.0 - value
+        model_probabilities[ticker] = max(0.0, min(1.0, value))
+
+    if predicted_high_f is None:
+        return None
+    return latest_target, predicted_high_f, model_probabilities
+
+
+def _market_consensus_payload(
+    db_path: Path,
+    *,
+    decision_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Reconstruct the Kalshi market consensus for the latest live target.
 
     The Strategy Lab artifact is built offline from stored runtime state, so the
@@ -100,7 +153,11 @@ def _market_consensus_payload(db_path: Path) -> dict[str, Any]:
     there is no recent stored ladder or no live forecast to compare against.
     """
 
-    inputs = _latest_consensus_inputs(db_path)
+    inputs = (
+        _consensus_inputs_from_decision_rows(decision_rows)
+        if decision_rows is not None
+        else _latest_consensus_inputs(db_path)
+    )
     if inputs is None:
         return {"available": False}
     target_date, predicted_high_f, model_probabilities = inputs

@@ -44,6 +44,8 @@ disposable unless you just regenerated them in the current task:
 - `forecaster/google_weather_cache.json`
 - `forecaster/trading_signal.json`
 - `forecaster/strategy_research.json`
+- `forecaster/strategy_analysis_cache.json`
+- `forecaster/strategy_research_evidence.private.json`
 - `forecaster/cities_data.json`
 - `trading/data/`
 

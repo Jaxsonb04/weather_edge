@@ -38,6 +38,7 @@ LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
+SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
 SSH_OPTS=(
   -i "$HOST_KEY"
   -o StrictHostKeyChecking=accept-new
@@ -83,6 +84,10 @@ if [[ ! -f "$QUIESCE_HELPER" ]]; then
 fi
 if [[ ! -f "$BACKUP_HELPER" ]]; then
   echo "Database backup helper not found: $BACKUP_HELPER" >&2
+  exit 1
+fi
+if [[ ! -f "$SYSTEMD_VERIFY_HELPER" ]]; then
+  echo "Systemd unit verification helper not found: $SYSTEMD_VERIFY_HELPER" >&2
   exit 1
 fi
 
@@ -235,6 +240,11 @@ rm -f "$BUILD_INFO_TMP"
 # safely quiesced instead of restarting a partial tree.
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/install_systemd_notimers.sh"
+# This read-only gate catches runtime drop-ins and other effective-unit drift
+# after daemon-reload. Any mismatch exits while all producer timers are still
+# quiesced; operators must remove the drift explicitly before retrying.
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && bash deploy/aws/verify_systemd_unit_integrity.sh"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/create_decision_snapshot_index.sh"
 
@@ -242,9 +252,20 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 # restore the persistent watchdog last so it cannot race the first fresh build.
 PRODUCER_TIMERS=()
 WATCHDOG_ENABLED=0
+PUBLISH_TIMER_ENABLED=0
+STRATEGY_TIMER_ENABLED=0
 for timer in ${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"}; do
   if [[ "$timer" == "sfo-forecast-freshness.timer" ]]; then
     WATCHDOG_ENABLED=1
+  elif [[ "$timer" == "sfo-operational-publish.timer" ]]; then
+    # Keep the recurring publisher stopped until the one deploy-seed snapshot
+    # is visible publicly. Otherwise the five-minute timer changes the local
+    # manifest while the propagation waiter is checking the prior snapshot.
+    PUBLISH_TIMER_ENABLED=1
+  elif [[ "$timer" == "sfo-strategy-lab-refresh.timer" ]]; then
+    # Strategy cycles also rebuild the global manifest. Hold this timer with
+    # the publisher until the explicit seed has propagated.
+    STRATEGY_TIMER_ENABLED=1
   else
     PRODUCER_TIMERS+=("$timer")
   fi
@@ -253,10 +274,82 @@ if (( ${#PRODUCER_TIMERS[@]} > 0 )); then
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
     bash -s restore "${PRODUCER_TIMERS[@]}" < "$QUIESCE_HELPER"
 fi
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service"
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  "cd '$REMOTE_BASE/trading' && bash deploy/aws/wait_for_publication_manifest.sh"
+INITIAL_HELD_TIMERS=()
+if (( STRATEGY_TIMER_ENABLED == 1 )); then
+  INITIAL_HELD_TIMERS+=("sfo-strategy-lab-refresh.timer")
+fi
+if (( PUBLISH_TIMER_ENABLED == 1 )); then
+  INITIAL_HELD_TIMERS+=("sfo-operational-publish.timer")
+fi
+INITIAL_RESTORE_REQUIRED=1
+restore_initial_timers() {
+  local include_watchdog="${1:-0}"
+  local restore_status=0
+  local timers=()
+  local timer=""
+  for timer in ${INITIAL_HELD_TIMERS[@]+"${INITIAL_HELD_TIMERS[@]}"}; do
+    timers+=("$timer")
+  done
+  if (( include_watchdog == 1 && WATCHDOG_ENABLED == 1 )); then
+    timers+=("sfo-forecast-freshness.timer")
+  fi
+  if (( INITIAL_RESTORE_REQUIRED == 1 )); then
+    if (( ${#timers[@]} == 0 )); then
+      INITIAL_RESTORE_REQUIRED=0
+    elif ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      bash -s restore "${timers[@]}" < "$QUIESCE_HELPER"; then
+      INITIAL_RESTORE_REQUIRED=0
+    else
+      restore_status=$?
+    fi
+  fi
+  return "$restore_status"
+}
+emergency_restore_initial_timers() {
+  local interrupted_status="${1:-$?}"
+  trap - EXIT HUP INT TERM
+  restore_initial_timers 1 \
+    || echo "warning: emergency initial timer restoration failed" >&2
+  exit "$interrupted_status"
+}
+trap 'emergency_restore_initial_timers 129' HUP
+trap 'emergency_restore_initial_timers 130' INT
+trap 'emergency_restore_initial_timers 143' TERM
+trap emergency_restore_initial_timers EXIT
+
+INITIAL_SEED_STATUS=0
+if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service"; then
+  if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "cd '$REMOTE_BASE/trading' && bash deploy/aws/wait_for_publication_manifest.sh"; then
+    :
+  else
+    INITIAL_SEED_STATUS=$?
+  fi
+else
+  INITIAL_SEED_STATUS=$?
+fi
+INITIAL_RESTART_STATUS=0
+if restore_initial_timers "$(( INITIAL_SEED_STATUS != 0 ))"; then
+  :
+else
+  INITIAL_RESTART_STATUS=$?
+fi
+if (( INITIAL_RESTART_STATUS == 0 )); then
+  trap - EXIT HUP INT TERM
+fi
+if (( INITIAL_SEED_STATUS != 0 )); then
+  echo "initial Strategy Lab publication failed (status=$INITIAL_SEED_STATUS)" >&2
+fi
+if (( INITIAL_RESTART_STATUS != 0 )); then
+  echo "failed to restore held deployment timers after the initial publication (status=$INITIAL_RESTART_STATUS)" >&2
+fi
+if (( INITIAL_SEED_STATUS != 0 )); then
+  exit "$INITIAL_SEED_STATUS"
+fi
+if (( INITIAL_RESTART_STATUS != 0 )); then
+  exit "$INITIAL_RESTART_STATUS"
+fi
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo systemctl start sfo-forecast-freshness.service"
 if (( WATCHDOG_ENABLED == 1 )); then
@@ -280,6 +373,93 @@ else
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
     "sudo systemctl stop weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true; sudo systemctl reset-failed weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true" \
     || echo "warning: could not confirm Strategy Lab analysis unit cleanup" >&2
+fi
+
+# A successful full analysis only updates the private cache. Rebuild the
+# bounded public artifact from that cache, publish it, and wait for the exact
+# immutable manifest captured by the waiter so the deploy does not finish with
+# a fresh cache but a deferred public Strategy Lab.
+if (( ANALYSIS_CACHE_REFRESHED == 1 )); then
+  POST_ANALYSIS_TIMERS=()
+  if (( STRATEGY_TIMER_ENABLED == 1 )); then
+    POST_ANALYSIS_TIMERS+=("sfo-strategy-lab-refresh.timer")
+  fi
+  if (( PUBLISH_TIMER_ENABLED == 1 )); then
+    POST_ANALYSIS_TIMERS+=("sfo-operational-publish.timer")
+  fi
+  POST_ANALYSIS_RESTORE_REQUIRED=0
+  restore_post_analysis_timers() {
+    local restore_status=0
+    if (( POST_ANALYSIS_RESTORE_REQUIRED == 1 )) \
+      && (( ${#POST_ANALYSIS_TIMERS[@]} > 0 )); then
+      if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+        bash -s restore "${POST_ANALYSIS_TIMERS[@]}" < "$QUIESCE_HELPER"; then
+        POST_ANALYSIS_RESTORE_REQUIRED=0
+      else
+        restore_status=$?
+      fi
+    fi
+    return "$restore_status"
+  }
+  emergency_restore_post_analysis_timers() {
+    local interrupted_status="${1:-$?}"
+    trap - EXIT HUP INT TERM
+    restore_post_analysis_timers \
+      || echo "warning: emergency post-analysis timer restoration failed" >&2
+    exit "$interrupted_status"
+  }
+
+  POST_ANALYSIS_STATUS=0
+  if (( ${#POST_ANALYSIS_TIMERS[@]} > 0 )); then
+    # Prevent either recurring writer from racing cache promotion, the exact
+    # Strategy rebuild, or its publication. Let already-running units finish
+    # instead of terminating a Python write or git push midway through.
+    POST_ANALYSIS_RESTORE_REQUIRED=1
+    trap 'emergency_restore_post_analysis_timers 129' HUP
+    trap 'emergency_restore_post_analysis_timers 130' INT
+    trap 'emergency_restore_post_analysis_timers 143' TERM
+    trap emergency_restore_post_analysis_timers EXIT
+    if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      "sudo systemctl stop sfo-strategy-lab-refresh.timer sfo-operational-publish.timer && timeout 910 bash -c 'while systemctl is-active --quiet sfo-strategy-lab-refresh.service || systemctl is-active --quiet sfo-operational-publish.service; do sleep 1; done'"; then
+      :
+    else
+      POST_ANALYSIS_STATUS=$?
+    fi
+  fi
+  if (( POST_ANALYSIS_STATUS == 0 )); then
+    if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      "sudo systemctl start sfo-strategy-lab-refresh.service && sudo systemctl start sfo-operational-publish.service"; then
+      if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+        "cd '$REMOTE_BASE/trading' && bash deploy/aws/wait_for_publication_manifest.sh"; then
+        :
+      else
+        POST_ANALYSIS_STATUS=$?
+      fi
+    else
+      POST_ANALYSIS_STATUS=$?
+    fi
+  fi
+  POST_ANALYSIS_RESTART_STATUS=0
+  if restore_post_analysis_timers; then
+    :
+  else
+    POST_ANALYSIS_RESTART_STATUS=$?
+  fi
+  if (( POST_ANALYSIS_RESTART_STATUS == 0 )); then
+    trap - EXIT HUP INT TERM
+  fi
+  if (( POST_ANALYSIS_STATUS != 0 )); then
+    echo "post-analysis Strategy Lab publication failed (status=$POST_ANALYSIS_STATUS)" >&2
+  fi
+  if (( POST_ANALYSIS_RESTART_STATUS != 0 )); then
+    echo "failed to restore recurring Strategy Lab/publication timers after post-analysis publication (status=$POST_ANALYSIS_RESTART_STATUS)" >&2
+  fi
+  if (( POST_ANALYSIS_STATUS != 0 )); then
+    exit "$POST_ANALYSIS_STATUS"
+  fi
+  if (( POST_ANALYSIS_RESTART_STATUS != 0 )); then
+    exit "$POST_ANALYSIS_RESTART_STATUS"
+  fi
 fi
 
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"

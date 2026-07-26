@@ -428,12 +428,31 @@ def _is_live_candidate(row: dict[str, Any]) -> bool:
     return True
 
 
-def _signal_quality_payload(db_path: Path, trading_signal: dict[str, Any] | None) -> dict[str, Any]:
-    decisions = _latest_decision_rows(db_path)
-    source = "decision_snapshots"
-    if not decisions:
-        decisions = _decisions_from_trading_signal(trading_signal)
-        source = "trading_signal.json"
+def _signal_quality_payload(
+    db_path: Path,
+    trading_signal: dict[str, Any] | None,
+    *,
+    prefer_runtime_signal: bool = False,
+) -> dict[str, Any]:
+    if prefer_runtime_signal:
+        runtime_decisions = _decisions_from_trading_signal(trading_signal)
+        persisted_decisions = _bounded_scan_context_decision_rows(db_path)
+        decisions = _dedupe_current_decisions(
+            runtime_decisions,
+            persisted_decisions,
+        )
+        if runtime_decisions and persisted_decisions:
+            source = "trading_signal.json+bounded_scan_contexts"
+        elif persisted_decisions:
+            source = "bounded_scan_contexts"
+        else:
+            source = "trading_signal.json"
+    else:
+        decisions = _latest_decision_rows(db_path)
+        source = "decision_snapshots"
+        if not decisions:
+            decisions = _decisions_from_trading_signal(trading_signal)
+            source = "trading_signal.json"
 
     pre_filter_count = len(decisions)
     decisions = [row for row in decisions if _is_live_candidate(row)]
@@ -468,7 +487,10 @@ def _signal_quality_payload(db_path: Path, trading_signal: dict[str, Any] | None
         "latest_candidates": published_decisions,
         "latest_candidates_by_profile": latest_candidates_by_profile,
         "lead_mode_counts": _lead_mode_counts(decisions),
-        "market_consensus": _market_consensus_payload(db_path),
+        "market_consensus": _market_consensus_payload(
+            db_path,
+            decision_rows=decisions,
+        ),
         "charts": {
             "probability_vs_market": _probability_market_points(published_decisions),
             "edge_by_market_bucket": _edge_by_market_bucket(published_decisions),
@@ -637,6 +659,59 @@ def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
     return [row for row in decisions if row["risk_profile"] != "unknown"]
 
 
+def _bounded_scan_context_decision_rows(
+    db_path: Path,
+    *,
+    context_limit: int = 64,
+    row_limit: int = 2048,
+) -> list[dict[str, Any]]:
+    """Read a hard-bounded tail that retains current research profiles."""
+
+    if (
+        not db_path.exists()
+        or not _db_table_exists(db_path, "decision_snapshots")
+        or not _db_table_exists(db_path, "scan_context_snapshots")
+    ):
+        return []
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            WITH recent_contexts AS (
+                SELECT id
+                FROM scan_context_snapshots
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            SELECT d.*
+            FROM decision_snapshots d
+            JOIN recent_contexts c ON c.id = d.scan_context_id
+            WHERE d.market_ticker NOT LIKE '%-PAPER%'
+            ORDER BY d.id DESC
+            LIMIT ?
+            """,
+            (max(1, context_limit), max(1, row_limit)),
+        ).fetchall()
+    decisions = [_decision_row(row) for row in rows]
+    return [row for row in decisions if row["risk_profile"] != "unknown"]
+
+
+def _dedupe_current_decisions(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    decisions: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for group in groups:
+        for row in group:
+            key = (
+                str(row.get("target_date") or ""),
+                str(row.get("ticker") or ""),
+                str(row.get("side") or "").upper(),
+                str(row.get("risk_profile") or PRIMARY_PROFILE),
+            )
+            decisions.setdefault(key, row)
+    return list(decisions.values())
+
+
 def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
     reasons = _json_list(row["reasons_json"])
     approved = bool(row["approved"])
@@ -685,6 +760,10 @@ def _decision_row(row: sqlite3.Row) -> dict[str, Any]:
         "expected_profit": _round(row["expected_profit"], 2),
         "forecast_lead_hours": _round(lead_hours, 2),
         "forecast_method": _sqlite_row_value(row, "forecast_method"),
+        "forecast_predicted_high_f": _round(
+            _sqlite_row_value(row, "forecast_predicted_high_f"),
+            4,
+        ),
         "forecast_observed_high_mode": _sqlite_row_value(row, "forecast_observed_high_mode"),
         "lead_mode": lead_mode,
         "lead_mode_label": FORECAST_LEAD_MODE_LABELS.get(lead_mode, FORECAST_LEAD_MODE_LABELS["unknown"]),
@@ -757,6 +836,9 @@ def _decisions_from_trading_signal(payload: dict[str, Any] | None) -> list[dict[
                     "expected_profit": row.get("expected_profit"),
                     "forecast_lead_hours": lead_hours,
                     "forecast_method": forecast_method,
+                    "forecast_predicted_high_f": forecast.get(
+                        "predicted_high_f"
+                    ),
                     "forecast_observed_high_mode": observed_high_mode,
                     "lead_mode": lead_mode,
                     "lead_mode_label": FORECAST_LEAD_MODE_LABELS.get(

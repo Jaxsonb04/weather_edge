@@ -155,7 +155,7 @@ def test_local_runtime_placeholder_is_not_stale():
         assert "strategy_research.json" in runtime.details
 
 
-def test_city_and_manifest_runtime_artifacts_are_ignored_cleared_and_health_checked():
+def test_runtime_artifacts_are_ignored_cleared_and_health_checked():
     repo_root = Path(__file__).resolve().parents[2]
     ignored = (repo_root / ".gitignore").read_text(encoding="utf-8")
     documentation = (repo_root / "docs" / "data_and_artifacts.md").read_text(
@@ -164,6 +164,8 @@ def test_city_and_manifest_runtime_artifacts_are_ignored_cleared_and_health_chec
     artifacts = (
         "forecaster/cities_data.json",
         "forecaster/publication_manifest.json",
+        "forecaster/strategy_analysis_cache.json",
+        "forecaster/strategy_research_evidence.private.json",
     )
 
     for artifact in artifacts:
@@ -183,6 +185,8 @@ def test_city_and_manifest_runtime_artifacts_are_ignored_cleared_and_health_chec
     assert runtime.status == "WARN"
     assert "cities_data.json" in runtime.details
     assert "publication_manifest.json" in runtime.details
+    assert "strategy_analysis_cache.json" in runtime.details
+    assert "strategy_research_evidence.private.json" in runtime.details
 
 
 # ---------------------------------------------------------------------------

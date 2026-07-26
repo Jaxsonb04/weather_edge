@@ -81,8 +81,11 @@ fi
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/weatheredge-analysis.XXXXXX")"
 stage_output="$stage_dir/strategy_research.json"
 stage_cache="$stage_dir/strategy_analysis_cache.json"
+stage_evidence="$stage_dir/strategy_research_evidence.private.json"
 cache_output="$FORECASTER_DIR/strategy_analysis_cache.json"
+evidence_output="$FORECASTER_DIR/strategy_research_evidence.private.json"
 promote_tmp="${cache_output}.promote.$$"
+evidence_promote_tmp="${evidence_output}.promote.$$"
 analysis_unit="weatheredge-strategy-analysis-cache.service"
 analysis_started=0
 cleanup() {
@@ -99,7 +102,7 @@ cleanup() {
     sudo -n systemctl reset-failed "$analysis_unit" >/dev/null 2>&1 || true
   fi
   rm -rf -- "$stage_dir"
-  rm -f -- "$promote_tmp"
+  rm -f -- "$promote_tmp" "$evidence_promote_tmp"
   exit "$status"
 }
 trap cleanup EXIT HUP INT TERM
@@ -146,15 +149,21 @@ if [[ ! -f "$stage_cache" ]]; then
   echo "full Strategy Lab analysis did not produce its cache" >&2
   exit 1
 fi
+if [[ ! -f "$stage_evidence" ]]; then
+  echo "full Strategy Lab analysis did not produce private replay evidence" >&2
+  exit 1
+fi
 
-"$PYTHON_BIN" - "$stage_cache" "$FORECASTER_DIR/build_info.json" <<'PY'
+"$PYTHON_BIN" - "$stage_cache" "$stage_evidence" "$FORECASTER_DIR/build_info.json" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 cache_path = Path(sys.argv[1])
-build_info_path = Path(sys.argv[2])
+evidence_path = Path(sys.argv[2])
+build_info_path = Path(sys.argv[3])
 cache = json.loads(cache_path.read_text(encoding="utf-8"))
+evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
 build_info = (
     json.loads(build_info_path.read_text(encoding="utf-8"))
     if build_info_path.exists()
@@ -180,11 +189,27 @@ for field in (
     "analysis_generated_at",
     "backtest_summary",
     "config_rescore",
+    "chronological_replay",
+    "research_shadow",
+    "forecast_scorecards",
+    "daily_summary_analysis",
 ):
     if not cache.get(field):
         raise SystemExit(f"Strategy Lab analysis cache is missing {field}")
+if cache["daily_summary_analysis"].get("available") is not True:
+    raise SystemExit("Strategy Lab daily summary analysis is unavailable")
+if evidence.get("source_sha") != expected:
+    raise SystemExit("Strategy Lab private evidence source does not match build_info")
+if evidence.get("config_fingerprint") != cache.get("config_fingerprint"):
+    raise SystemExit("Strategy Lab private evidence config does not match cache")
+if evidence.get("analysis_generated_at") != cache.get("analysis_generated_at"):
+    raise SystemExit("Strategy Lab private evidence timestamp does not match cache")
+if not isinstance(evidence.get("chronological_replay"), dict):
+    raise SystemExit("Strategy Lab private replay evidence is missing")
 PY
 
+cp -- "$stage_evidence" "$evidence_promote_tmp"
+mv -f -- "$evidence_promote_tmp" "$evidence_output"
 cp -- "$stage_cache" "$promote_tmp"
 mv -f -- "$promote_tmp" "$cache_output"
-echo "full Strategy Lab analysis cache refreshed from the current deployed source"
+echo "full Strategy Lab analysis cache and private evidence refreshed from the current deployed source"

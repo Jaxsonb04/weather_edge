@@ -668,28 +668,214 @@ elif 'restore' in args:
         i for i, line in enumerate(actions) if "install_systemd_notimers.sh" in line
     )
     restore_indexes = [i for i, line in enumerate(actions) if line.startswith("restore|")]
-    assert len(restore_indexes) == 2
-    producer_restore_idx, watchdog_restore_idx = restore_indexes
-    seed_idx = next(
+    assert len(restore_indexes) == 3
+    initial_writer_restore_idx, watchdog_restore_idx, post_writer_restore_idx = (
+        restore_indexes
+    )
+    seed_indexes = [
         i for i, line in enumerate(actions) if "sfo-strategy-lab-refresh.service" in line
-    )
-    public_wait_idx = next(
+        and "systemctl start" in line
+    ]
+    public_wait_indexes = [
         i for i, line in enumerate(actions) if "wait_for_publication_manifest.sh" in line
-    )
+    ]
     freshness_idx = next(
         i
         for i, line in enumerate(actions)
         if "systemctl start sfo-forecast-freshness.service" in line
     )
+    analysis_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "refresh_strategy_analysis_cache.sh" in line
+    )
+    publisher_stop_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "systemctl stop sfo-strategy-lab-refresh.timer "
+        "sfo-operational-publish.timer" in line
+    )
+    assert len(seed_indexes) == 2
+    assert len(public_wait_indexes) == 2
     assert preflight_idx < capture_idx < quiesce_idx < backup_idx < first_rsync_idx
-    assert first_rsync_idx < install_idx < producer_restore_idx
-    assert producer_restore_idx < seed_idx < public_wait_idx < freshness_idx < watchdog_restore_idx
-    assert actions[producer_restore_idx] == (
-        "restore|sfo-operational-publish.timer "
-        "sfo-strategy-lab-refresh.timer"
+    assert first_rsync_idx < install_idx
+    assert (
+        install_idx
+        < seed_indexes[0]
+        < public_wait_indexes[0]
+        < initial_writer_restore_idx
+        < freshness_idx
+        < watchdog_restore_idx
+        < analysis_idx
+        < publisher_stop_idx
+        < seed_indexes[1]
+        < public_wait_indexes[1]
+        < post_writer_restore_idx
+    )
+    assert actions[initial_writer_restore_idx] == (
+        "restore|sfo-strategy-lab-refresh.timer "
+        "sfo-operational-publish.timer"
     )
     assert actions[watchdog_restore_idx] == "restore|sfo-forecast-freshness.timer"
-    assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+    assert actions[post_writer_restore_idx] == (
+        "restore|sfo-strategy-lab-refresh.timer "
+        "sfo-operational-publish.timer"
+    )
+    assert "restored 0 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+
+
+def test_full_sync_restores_writers_when_post_analysis_drain_fails(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
+    action_log = tmp_path / "actions.log"
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!{sys.executable}
+import os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+sys.stdin.read()
+with Path(os.environ["ACTION_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write("ssh|" + " ".join(args) + "\\n")
+
+if args[-3:] == ["bash", "-s", "capture"]:
+    print("sfo-operational-publish.timer")
+    print("sfo-strategy-lab-refresh.timer")
+    print("sfo-forecast-freshness.timer")
+elif len(args) >= 2 and args[-2] == "backup":
+    print("WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3")
+elif "restore" in args:
+    restored = args[args.index("restore") + 1:]
+    with Path(os.environ["ACTION_LOG"]).open("a", encoding="utf-8") as handle:
+        handle.write("restore|" + " ".join(restored) + "\\n")
+elif any(
+    "systemctl stop sfo-strategy-lab-refresh.timer" in arg
+    for arg in args
+):
+    raise SystemExit(124)
+""",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\nprintf 'rsync|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n",
+    )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example",
+            "EC2_KEY": str(key),
+            "REMOTE_BASE": "/opt/weatheredge",
+            "ACTION_LOG": str(action_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 124
+    actions = action_log.read_text().splitlines()
+    stop_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "systemctl stop sfo-strategy-lab-refresh.timer" in line
+    )
+    post_restore_idx = max(
+        i
+        for i, line in enumerate(actions)
+        if line == (
+            "restore|sfo-strategy-lab-refresh.timer "
+            "sfo-operational-publish.timer"
+        )
+    )
+    assert stop_idx < post_restore_idx
+    assert "post-analysis Strategy Lab publication failed (status=124)" in result.stderr
+
+
+def test_full_sync_restores_all_held_timers_when_initial_seed_wait_fails(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
+    action_log = tmp_path / "actions.log"
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!{sys.executable}
+import os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+sys.stdin.read()
+with Path(os.environ["ACTION_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write("ssh|" + " ".join(args) + "\\n")
+
+if args[-3:] == ["bash", "-s", "capture"]:
+    print("sfo-operational-publish.timer")
+    print("sfo-strategy-lab-refresh.timer")
+    print("sfo-forecast-freshness.timer")
+elif len(args) >= 2 and args[-2] == "backup":
+    print("WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3")
+elif "restore" in args:
+    restored = args[args.index("restore") + 1:]
+    with Path(os.environ["ACTION_LOG"]).open("a", encoding="utf-8") as handle:
+        handle.write("restore|" + " ".join(restored) + "\\n")
+elif any("wait_for_publication_manifest.sh" in arg for arg in args):
+    raise SystemExit(42)
+""",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\nprintf 'rsync|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n",
+    )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example",
+            "EC2_KEY": str(key),
+            "REMOTE_BASE": "/opt/weatheredge",
+            "ACTION_LOG": str(action_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 42
+    actions = action_log.read_text().splitlines()
+    wait_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "wait_for_publication_manifest.sh" in line
+    )
+    restore_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if line == (
+            "restore|sfo-strategy-lab-refresh.timer "
+            "sfo-operational-publish.timer "
+            "sfo-forecast-freshness.timer"
+        )
+    )
+    assert wait_idx < restore_idx
+    assert "initial Strategy Lab publication failed (status=42)" in result.stderr
 
 
 def test_publication_wait_retries_until_exact_snapshot_is_public(tmp_path: Path) -> None:
@@ -740,6 +926,61 @@ print(json.dumps({{'snapshot_id': snapshot, 'provenance': {{'source_sha': 'abc12
 
     assert result.returncode == 0, result.stderr
     assert calls.read_text() == "2"
+    assert "public publication snapshot matches local manifest" in result.stdout
+
+
+def test_publication_wait_uses_immutable_expected_manifest(tmp_path: Path) -> None:
+    base = tmp_path / "weatheredge"
+    forecaster = base / "forecaster"
+    forecaster.mkdir(parents=True)
+    manifest = forecaster / "publication_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "snapshot_id": "expected-snapshot",
+                "provenance": {"source_sha": "abc123"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "curl",
+        f"""#!{sys.executable}
+import json, os
+from pathlib import Path
+
+Path(os.environ["LOCAL_MANIFEST"]).write_text(json.dumps({{
+    "snapshot_id": "newer-recurring-snapshot",
+    "provenance": {{"source_sha": "abc123"}},
+}}))
+print(json.dumps({{
+    "snapshot_id": "expected-snapshot",
+    "provenance": {{"source_sha": "abc123"}},
+}}))
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "wait_for_publication_manifest.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_BASE_DIR": str(base),
+            "SFO_TRADING_PYTHON": sys.executable,
+            "SFO_PUBLISH_PAGES": "1",
+            "SFO_PUBLICATION_MANIFEST_URL": "https://pages.example/manifest.json",
+            "SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS": "2",
+            "SFO_PUBLICATION_PROPAGATION_POLL_SECONDS": "1",
+            "LOCAL_MANIFEST": str(manifest),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
     assert "public publication snapshot matches local manifest" in result.stdout
 
 

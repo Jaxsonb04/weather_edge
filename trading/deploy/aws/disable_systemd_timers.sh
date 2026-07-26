@@ -68,6 +68,33 @@ case "$MODE" in
       echo "quiesce mode does not accept timer arguments" >&2
       exit 2
     fi
+    # The full historical analysis is intentionally non-recurring, so it is
+    # not part of capture/restore. A dropped SSH session can nevertheless
+    # leave its stable transient unit running; stop and clear that exact unit
+    # before the deploy backup or source transfer begins.
+    quiesce_only_services=(
+      "weatheredge-strategy-analysis-cache.service"
+    )
+    for service in "${quiesce_only_services[@]}"; do
+      if inspect_unit "$service"; then
+        "${SYSTEMCTL[@]}" stop "$service"
+        if inspect_unit "$service"; then
+          service_state=""
+          service_status=0
+          service_state="$("${SYSTEMCTL[@]}" is-active "$service")" || service_status=$?
+          if [[ ( "$service_state" != "inactive" && "$service_state" != "failed" ) || "$service_status" -ne 3 ]]; then
+            echo "quiesce-only systemd service remains active or unverifiable: $service ($service_state)" >&2
+            exit 1
+          fi
+        fi
+        reset_status=0
+        "${SYSTEMCTL[@]}" reset-failed "$service" || reset_status=$?
+        if (( reset_status != 0 )) && inspect_unit "$service"; then
+          echo "failed to reset quiesce-only systemd service: $service" >&2
+          exit "$reset_status"
+        fi
+      fi
+    done
     for pair in "${UNIT_PAIRS[@]}"; do
       read -r timer service <<<"$pair"
       if inspect_unit "$timer"; then
@@ -85,7 +112,7 @@ case "$MODE" in
         fi
       fi
     done
-    echo "existing WeatherEdge timers disabled and paired services inactive"
+    echo "existing WeatherEdge timers disabled; paired and quiesce-only services inactive"
     ;;
   restore)
     restored=()
