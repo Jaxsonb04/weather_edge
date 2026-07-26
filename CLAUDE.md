@@ -1,5 +1,19 @@
 # WeatherEdge — production access
 
+## Session memory
+
+At the start of the first WeatherEdge task in every new session, read
+`docs/SESSION_MEMORY.md` and print its `Session Brief` to the user before doing
+project work. Treat its production facts as a dated handoff that must be
+revalidated when current operational state matters.
+
+After a production incident, deployment, material audit, strategy-policy change,
+or deliberate deferment, update that memory with the root cause, completed work,
+verification evidence, safety state, and remaining work. Keep credentials, exact
+access identifiers, key paths, and commands containing those sensitive values in
+the gitignored `.local` directory. Sanitized access decisions and outcomes may
+be recorded in the tracked memory.
+
 ## Authoritative runtime
 
 The trading and forecasting runtime is the AWS EC2 deployment documented in
