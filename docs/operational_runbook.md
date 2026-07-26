@@ -207,7 +207,7 @@ On AWS, the 30-minute forecaster refresh serves live EMOS forecasts for all
 fifteen cities (one batched Open-Meteo call per city) plus NWS observations
 (`--days 2 --cities all`).
 
-The nightly dataset unit (10:00 UTC, or 03:00 PDT / 02:00 PST) starts after
+The nightly dataset unit (10:01 UTC, or 03:01 PDT / 02:01 PST) starts after
 the archive/prune unit's worst-case deadline and additionally runs:
 
 - IEM CLI settlement-truth refresh

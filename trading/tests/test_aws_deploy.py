@@ -464,8 +464,10 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     prune_latest_finish = (
         _explicit_utc_timer_start_seconds(prune_timer)
         + _systemd_seconds(prune_timer, "RandomizedDelaySec")
+        + _systemd_seconds(prune_timer, "AccuracySec")
         + _systemd_seconds(prune_service, "TimeoutStartSec")
     )
+    assert _systemd_seconds(timer, "AccuracySec") == 1
     assert dataset_start - prune_latest_finish >= 300
     assert "Unit=sfo-dataset-backfill.service" in timer
 

@@ -146,7 +146,7 @@ The environment installed at `/etc/weatheredge.env` is based on
 - `sfo-strategy-lab-refresh.timer`: every ten minutes; bounded research-only build
   and publish, with no paid Google refresh or full-journal rescore. The recurring
   wrapper forces bounded mode even if `/etc/weatheredge.env` says otherwise.
-- `sfo-dataset-backfill.timer`: nightly at 10:00 UTC (03:00 PDT / 02:00 PST);
+- `sfo-dataset-backfill.timer`: nightly at 10:01 UTC (03:01 PDT / 02:01 PST);
   compact source refresh, CLI settlement truth, NWP leads 1 and 2, and
   rolling-origin EMOS. The fixed UTC window starts after retention prune's
   worst-case deadline. Lead 3 is manual research.
