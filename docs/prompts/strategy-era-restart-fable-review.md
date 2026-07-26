@@ -29,8 +29,8 @@ Lead your final response with `PASS` or `BLOCKED`.
     readiness profile.
   - **Research ROI** — higher bounded paper risk with a fixed `$50/day` KPI,
     excluded from live readiness.
-- Five prior accounts should be archived read-only. Legacy open positions
-  should continue to monitor and settle without allowing new entries.
+- Five prior accounts should be archived and entry-frozen. Legacy open
+  positions should remain settlement-active without allowing new entries.
 - Real-money execution should be disabled and dry-run enabled.
 - The narrow owner SSH rule is intentionally retained for a later session.
   Never print or alter its identifiers.
@@ -48,8 +48,19 @@ Treat this as a claim list to reproduce, not proof to trust:
 - Production canary recorded zero failed units, 25 canonical units matching
   source, 12/12 timers enabled and active, disk at 68.4%, and successful
   scheduler health.
+- Natural five-minute Strategy cycles generated at 10:40 and 10:45 UTC with
+  schema v3, current accounting, and live-only readiness. The latest was present
+  in the public manifest published at 10:50 UTC.
 - Production accounting recorded two active `$1,000`, `ACTIVE`, reconciled
   ledgers and five archived accounts retaining 62 open legacy positions.
+- Both fresh ledgers recorded `$1,000` realized equity, `$0` realized P&L, and
+  zero open or pending positions. Legacy live strategy attribution was
+  `+$45.70`, while the old shared account's true realized P&L was `-$41.62`;
+  those values are intentionally not the same economic claim.
+- Research ROI's `$50` activation-day KPI was missed and infeasible from the
+  current scan's conservative expected-profit evidence.
+- The deployed readiness status was `REPLAY_REQUIRED`, with 5 of 12 checks
+  passed and every research account excluded. It was not real-money ready.
 - Public/local manifests were fresh, source-matched, and snapshot-identical.
 - The React shell checksum matched local `dist`, EC2 `webdist`, and public
   `index.html`.
@@ -59,12 +70,13 @@ Treat this as a claim list to reproduce, not proof to trust:
 
 ## Decisions To Preserve
 
-- Live Stability alone drives readiness and prioritizes dependable wins,
-  controlled drawdown, and steady growth.
+- Live Stability is the sole readiness profile and prioritizes dependable wins,
+  controlled drawdown, and steady growth. Its readiness computation may use
+  valid live evidence across legacy and fresh live account identities.
 - Research ROI maximizes bounded paper ROI against the fixed 5% of original
   capital KPI; it never contributes to live readiness.
-- Historical books remain read-only achieved performance. Existing legacy
-  positions may settle normally.
+- Historical books accept no new entries. Existing legacy positions remain
+  settlement-active and may update achieved performance as they settle.
 - Strategy attribution and economic account balance are separate concepts.
 - Cross-account totals are never one bankroll.
 - A missing historical balance remains unavailable; it is never reconstructed
@@ -81,20 +93,26 @@ Treat this as a claim list to reproduce, not proof to trust:
 1. Read `AGENTS.md`, `CLAUDE.md`, and `docs/SESSION_MEMORY.md` in full before
    making a claim.
 2. Inspect PR #58 and the complete diff from its merge base.
-3. Verify local and GitHub state. Distinguish a later documentation-only memory
-   commit from the deployed runtime code revision.
+3. Verify local and GitHub state. Distinguish later documentation-only commits
+   and current documentation HEAD from the deployed runtime code revision.
 4. Verify deployed build provenance and public artifact provenance against
    `71ac845422fc75cc35e24bb3b3a918dd44f917b3`.
 5. Confirm exactly two active fixed-capital ledgers, canonical account/profile
-   identity, archived-account write rejection, account-scoped balances, and
-   order/ledger lifecycle reconciliation.
+   identity, archived-account new-entry rejection, account-scoped balances, and
+   order/ledger lifecycle reconciliation. Reproduce the fresh-ledger `$1,000 /
+   $0 / 0 open / 0 pending` state, the `+$45.70` legacy-live strategy
+   attribution versus `-$41.62` shared-account P&L distinction, and the missed,
+   currently infeasible `$50` Research ROI KPI.
 6. Confirm malformed or unavailable active accounting suppresses active
    profiles and readiness in both backend publication and frontend parsing.
-7. Confirm readiness uses valid Live Stability evidence only and excludes every
-   research account, including the active Research ROI ledger.
+7. Confirm readiness uses valid live evidence across legacy and fresh live
+   account identities, remains scoped to the Live Stability profile, and
+   excludes every research account, including the active Research ROI ledger.
 8. Confirm Strategy uses a persistent wall-clock five-minute schedule and that
-   the offset watchdog checks canonical timers, unit drift, database/disk,
-   hashes, provenance, and freshness.
+   the offset watchdog checks the 11 application timers, all canonical unit
+   definitions, database/disk health, hashes, provenance, and freshness.
+   Confirm the separate production canary checks all 12 timers, including the
+   watchdog.
 9. Prove the watchdog's repair allowlist cannot start scan, monitor,
    settlement, or another trading action.
 10. Review the deployment maintenance marker and exit/signal recovery path.
@@ -161,9 +179,10 @@ Treat this as a claim list to reproduce, not proof to trust:
 
 - Did any post-release timer, artifact, or shell drift occur after the recorded
   canary?
-- Does the next natural Strategy refresh stay on the five-minute wall clock?
+- Do subsequent natural Strategy refreshes remain on the five-minute wall
+  clock?
 - Do the 62 archived positions continue settlement without admitting a new
-  archived-account order?
+  entry order for an archived account?
 - Do the previously observed LAMP/GFS-MOS archive HTTP 403 responses persist?
 
 Treat these as observations to verify where current evidence is available, not
