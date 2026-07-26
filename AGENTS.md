@@ -10,6 +10,26 @@ metadata, contributor lists, PR text, release notes, or generated artifacts.
 Treat local assistant state directories and agent lockfiles as disposable
 workspace state, not project source.
 
+## Session Memory And Opening Brief
+
+For the first WeatherEdge task in every new assistant session:
+
+1. Read `docs/SESSION_MEMORY.md` before diagnosing, editing, or deploying.
+2. Print the document's `Session Brief` section to the user, followed by any
+   immediately verifiable Git state. Label dated production facts as a snapshot,
+   not as guaranteed current state.
+3. Preserve the brief's distinction between one paper account and totals across
+   economically separate research accounts.
+
+Update `docs/SESSION_MEMORY.md` after every material production incident,
+deployment, audit, strategy-policy change, or deliberate operational deferment.
+Record what went wrong, what changed, validation evidence, safety state, and
+remaining work. Never put credentials, private-key paths, public IP addresses,
+security-group identifiers, account identifiers, or commands containing those
+sensitive values in the tracked memory file; those remain in the gitignored
+`.local` operator state. High-level access decisions and sanitized operational
+outcomes belong in the tracked memory.
+
 ## Design And Redesign Memory
 
 The public site is the React + HeroUI Pro SPA at the repo root (`src/`,
