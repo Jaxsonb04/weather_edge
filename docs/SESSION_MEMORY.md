@@ -1,8 +1,8 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-07-26 03:41 PDT
+Last updated: 2026-07-26 03:52 PDT
 
-Last production verification: 2026-07-26 03:41 PDT
+Last production verification: 2026-07-26 03:52 PDT
 
 Status: production healthy, current, and paper-only on runtime revision
 `71ac845422fc75cc35e24bb3b3a918dd44f917b3`
@@ -22,22 +22,25 @@ current AWS state before making an operational claim.
   the only readiness profile. **Research ROI** accepts higher bounded paper risk
   against a fixed `$50/day` KPI, equal to 5% of original capital, and is
   excluded from live readiness.
-- **Preserved history:** five prior accounts are archived read-only. Sixty-two
-  legacy open paper positions remain in normal monitor/settlement lifecycle;
-  no orders, fills, P&L, or resting history were deleted or reassigned to either
-  fresh ledger.
+- **Preserved history:** five prior accounts are archived and entry-frozen.
+  Sixty-two legacy open paper positions remain settlement-active in the normal
+  monitor/settlement lifecycle; no orders, fills, P&L, or resting history were
+  deleted or reassigned to either fresh ledger.
 - **Accounting safety:** both active ledgers were `$1,000`, `ACTIVE`, and
   reconciled with zero open or pending positions at verification. Invalid
   account identity or reconciliation now fails closed: active profile,
   accounting, and readiness displays disappear instead of inferring a balance.
-- **Readiness:** only canonical Live Stability evidence is eligible. The
-  deployed verdict was `REPLAY_REQUIRED` with 5 of 12 checks passed; research
-  accounts were explicitly excluded. This is not real-money ready.
+- **Readiness:** Live Stability is the sole readiness profile, using valid live
+  evidence across the legacy and fresh live identities. The deployed status
+  was `REPLAY_REQUIRED` with 5 of 12 checks passed; every research account was
+  explicitly excluded. This is not real-money ready.
 - **Reliability:** Strategy Lab now uses a persistent fixed five-minute
-  wall-clock timer. An offset scheduler watchdog verifies all canonical timers,
-  effective units, database/disk health, hashes, source provenance, and
-  local/public freshness. It can repair only bounded publication staleness and
-  never starts scan, monitor, settlement, or another trading action.
+  wall-clock timer. An offset scheduler watchdog verifies the 11 application
+  timers, all canonical unit definitions, database/disk health, hashes, source
+  provenance, and local/public freshness. It can repair only bounded
+  publication staleness and never starts scan, monitor, settlement, or another
+  trading action. A separate production canary verifies all 12 timers,
+  including the watchdog.
 - **Public experience:** the Strategy Lab now exposes both fresh profiles,
   achieved-performance history, daily and cumulative P&L, and true account
   balance. Rapid-hover QA left one tooltip, one active dot, and zero ghost
@@ -49,8 +52,9 @@ current AWS state before making an operational claim.
 - **Operational health:** zero failed units; 25 canonical systemd units matched
   source; 12 of 12 timers were enabled and active; scheduler health succeeded;
   disk use was 68.4%, below the 85% guard; public and local manifests were fresh,
-  source-matched, and snapshot-identical. A natural 10:40 UTC Strategy cycle
-  published successfully after deployment on the five-minute wall clock.
+  source-matched, and snapshot-identical. Natural Strategy cycles generated at
+  10:40 and 10:45 UTC after deployment; the latest was present in the public
+  manifest published at 10:50 UTC.
 - **Safety and access:** real-money execution remains disabled and dry-run
   remains enabled. Keep the narrowly scoped owner SSH rule for the next session;
   revoke it only when the owner says access is no longer needed. Its identifiers
@@ -93,7 +97,7 @@ be described as one balance. The new publication and UI separate:
 - strategy-attributed P&L;
 - true economic account balances;
 - two fresh active ledgers; and
-- read-only archived accounts.
+- entry-frozen archived histories with settlement state shown explicitly.
 
 Missing historical account balance is now shown as unavailable rather than
 synthesized from attributed P&L.
@@ -127,8 +131,8 @@ exit and sizing ideas belong in Research ROI, still bounded and paper-only.
   readiness and live goals.
 - Removed the legacy motion book from recurring entry scans. Its retained
   positions still monitor and settle normally.
-- Archived every prior or unknown account identity and rejected new writes to
-  archived or ambiguous identities.
+- Archived every prior or unknown account identity and rejected new-entry
+  admission to archived or ambiguous identities.
 
 ### Accounting, identity, and replay correctness
 
@@ -206,24 +210,27 @@ exit and sizing ideas belong in Research ROI, still bounded and paper-only.
 - Independent post-deploy canary: 0 failures.
 - Public app-shell checksum matched local `dist/` and EC2 `webdist`.
 - Rapid-hover stress: one visible tooltip, one active dot, zero tooltip cursors.
-- The next natural five-minute Strategy cycle published successfully at
-  10:40 UTC with schema v3, current accounting, and live-only readiness.
+- Natural five-minute Strategy cycles generated successfully at 10:40 and
+  10:45 UTC with schema v3, current accounting, and live-only readiness. The
+  latest was promoted in the public manifest at 10:50 UTC.
 
 ## Paper Performance Snapshot
 
-These are paper results and research evidence, not promised returns.
+These are paper results and research evidence, not promised returns. The table
+stops at the last completed published day, 2026-07-25.
 
-| Date | Legacy live paper account | Cross-account Strategy Lab total |
+| Date | Legacy live strategy attribution | Cross-account Strategy Lab total |
 | --- | ---: | ---: |
 | 2026-07-20 | +$9.9765 | +$17.4301 |
 | 2026-07-21 | +$9.91 | +$18.89 |
 | 2026-07-22 | +$7.57 | +$18.22 |
 | 2026-07-23 | +$0.83 | +$11.58 |
 | 2026-07-24 | +$0.20 | +$7.95 |
-| 2026-07-25 | +$0.00 | +$4.39 |
+| 2026-07-25 | +$0.00 | +$4.38 |
 
-The cross-account column combines economically separate historical paper
-accounts and must never be described as one bankroll's return.
+The cross-account column combines strategy-attributed outcomes from
+economically separate historical paper accounts and must never be described as
+one bankroll's return.
 
 At the 2026-07-26 verification:
 
