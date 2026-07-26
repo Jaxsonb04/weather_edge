@@ -2,9 +2,10 @@
 Description=Run SFO compact dataset backfill nightly
 
 [Timer]
-# Decorrelate firing so the sfo units don't all spike together
+# Start after the prune unit's worst-case 09:55 UTC finish and finish before
+# the next hourly forecaster refresh, even with both units' full timeouts.
 RandomizedDelaySec=120
-OnCalendar=*-*-* 02:25:00
+OnCalendar=*-*-* 10:00:00 UTC
 Persistent=true
 Unit=sfo-dataset-backfill.service
 
