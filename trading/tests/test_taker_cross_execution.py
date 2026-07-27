@@ -91,9 +91,12 @@ def test_live_profile_enables_taker_cross_and_reservation_fallback():
     live = strategy_config_for_profile("live")
     assert live.limit_taker_cross_enabled is True
     assert live.limit_resting_reservation_fallback is True
-    # The crossing bar equals the maker buffer: the same 2% LCB standard at a
-    # strictly worse (taker) price, so no gate is weakened.
-    assert live.limit_taker_cross_min_edge_lcb == live.limit_price_edge_lcb_buffer
+    # The crossing bar is the APPROVAL gate's own after-fee lower-bound floor,
+    # not the maker reservation margin. Superseded 2026-07-27: holding taker
+    # fills to the maker margin refused a population that settled at a 95.1%
+    # win rate and +$3.47/day (see the LIVE_PROFILE_OVERRIDES rationale).
+    assert live.limit_taker_cross_min_edge_lcb == 0.0
+    assert live.limit_taker_cross_min_edge_lcb < live.limit_price_edge_lcb_buffer
 
 
 def test_research_profile_scopes_capture_to_the_target_book():

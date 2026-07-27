@@ -241,8 +241,8 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     config = strategy_config_for_profile("live")
     # 2026-07-26: fingerprints move with any live-config change; the taker-cross
     # capture flags are part of execution identity, exactly as intended.
-    assert strategy_fingerprint(config, entry_mode="limit") == "b0075c015530e830c11c588b"
-    assert strategy_fingerprint(config, entry_mode="market") == "b0fece729659b86d2e1e35f1"
+    assert strategy_fingerprint(config, entry_mode="limit") == "09a0f5325ade90f340fb1689"
+    assert strategy_fingerprint(config, entry_mode="market") == "af5fa9bfe5080734f694d925"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1191,7 +1191,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "b0fece729659b86d2e1e35f1"
+    assert row["strategy_fingerprint"] == "af5fa9bfe5080734f694d925"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
