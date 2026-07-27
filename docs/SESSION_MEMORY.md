@@ -1,11 +1,11 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-07-26 03:52 PDT
+Last updated: 2026-07-26 22:15 PDT
 
-Last production verification: 2026-07-26 03:52 PDT
+Last production verification: 2026-07-26 22:10 PDT
 
 Status: production healthy, current, and paper-only on runtime revision
-`71ac845422fc75cc35e24bb3b3a918dd44f917b3`
+`5f5dc1e05e0a40524042710c9943f1290a02d2be`
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
@@ -13,6 +13,34 @@ current AWS state before making an operational claim.
 
 ## Session Brief
 
+- **Execution-capture release (2026-07-26 evening):** PRs #66 and #67 are
+  merged and deployed at runtime revision
+  `5f5dc1e05e0a40524042710c9943f1290a02d2be`. July's tightening favorite
+  books (displayed ask depth 21 -> 4-6 contracts, spreads 3.6c -> 1.5-1.9c)
+  had starved maker-only entries: live maker quotes filled under 20% (46/49
+  expired 07-18; 0/3 on 07-22) and live realized P&L fell from ~$10/day to
+  ~$0 while approved candidates carried positive after-fee taker-cost edge.
+  The release changes EXECUTION only: (1) live taker-cross when the
+  after-fee LOWER-BOUND edge at the displayed ask clears the SAME 2% buffer
+  the maker path enforces (whole contracts, depth-capped, >= $5 crossing
+  notional); (2) live reservation-price resting fallback (rest at the
+  highest tick preserving the buffer instead of dropping the candidate);
+  (3) target-research crossing at its UNCHANGED zero after-fee point/LCB
+  floor, only when displayed depth absorbs the entire intended size, so the
+  v3 allocator's policy-sized resting path is preserved. No decision gate,
+  sizing cap, account policy, loss pause, or readiness scope changed; the
+  frozen `StrategyConfig()` defaults keep every new flag off. Live strategy
+  fingerprints moved with the config (limit `b0075c015530e830c11c588b`,
+  market `b0fece729659b86d2e1e35f1`); readiness treats any non-legacy
+  fingerprint as valid, so the promotion clock is unaffected.
+- **Post-deploy state:** cutover validation reported exactly two
+  fixed-capital ledgers; build_info matched the new revision with a clean
+  tree; 0 failed units; 12/12 timers enabled and active; scheduler health
+  succeeded; the first post-deploy scans gated normally and the first new
+  order was a policy-sized resting research entry (the preserved allocator
+  path). No capture-eligible live candidate appeared in the overnight
+  window; watch the first liquid US afternoon for taker-cross fills
+  (PAPER_FILLED, entry_mode=limit, filled_at=created_at, price at the ask).
 - **Production release:** PR #58 is merged. The EC2 runtime, generated
   artifacts, public manifest, and rebuilt React app shell were verified against
   runtime revision `71ac845422fc75cc35e24bb3b3a918dd44f917b3`. The app-shell
@@ -108,6 +136,37 @@ The owner's public IP changed between houses, so the narrow SSH allowlist no
 longer matched. This interrupted operator access but did not prove an
 application failure. A narrow owner rule restored access and is intentionally
 retained for the next session.
+
+### Maker-only entries starved once the market tightened
+
+After 07-22 the favorite books thinned (displayed ask 21 -> 4-6 contracts,
+spreads 3.6c -> 1.5-1.9c) and live volume collapsed (45 placements/day ->
+2-9) while win rate stayed ~100%: a fill-capture failure, not an edge
+failure. Journal counterfactuals showed capture-eligible expected profit of
+$0.8-2.2/day (live, at the unchanged 2% LCB bar with >= $5 depth) and
+$8.6-44.5/day (research target, at its unchanged zero floor with full depth
+coverage). The 07-26 evening release converts exactly that eligible set to
+immediate fills and rests everything else as before. It cannot conjure edge
+on days the bars fail; expect live recovery toward $10/day only when
+capture-eligible candidates exist, and treat the research $50/day KPI as an
+aspiration the market may simply not offer on quiet days.
+
+### Deploy preflight ran out of disk twice, then needed a modern python3
+
+Back-to-back deploys hit the backup preflight space check (snapshot +
+restore copy + 1 GiB ~= 19.6 GB): KEEP_DAYS=1 never removes same-day
+snapshots, so each earlier same-day deploy's verified 9 GB local rollback
+snapshot had to be removed manually after confirming its off-host copy and
+checksum existed. Separately, sync_to_box.sh shells `python3` for the
+execution/accounting version stamps; the Mac's default python3 is Xcode
+3.9 (no `datetime.UTC`) and one run aborted after quiesce+transfer,
+leaving the box safely quiesced with the maintenance marker as designed.
+The rerun used a PATH with a modern python3 first. Rerun hazard to know:
+capture records the CURRENTLY-enabled timer policy, so a rerun from the
+quiesced state would capture an empty policy and restore nothing;
+neutralized by `systemctl enable` (without `--now`) of the 12-timer policy
+before rerunning, so capture saw the true policy while nothing ran
+unvalidated.
 
 ### Profit targets were being treated too literally
 
