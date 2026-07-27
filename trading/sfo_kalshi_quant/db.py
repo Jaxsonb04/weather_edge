@@ -2312,6 +2312,44 @@ class PaperStore:
             )
             return int(cursor.lastrowid)
 
+    def record_orderbook_depth(
+        self,
+        *,
+        target_date: str,
+        market_ticker: str,
+        yes_levels: list[list[float]],
+        no_levels: list[list[float]],
+        levels_requested: int,
+        scan_run_id: str | None = None,
+        risk_profile: str | None = None,
+    ) -> int:
+        """Persist one ladder-depth observation. Purely additive telemetry.
+
+        Never called from a gate, a size, or a price decision -- see
+        orderbook_capture.py for the never-raises fetch this backs.
+        """
+
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO market_orderbook_depth_snapshots
+                (created_at, scan_run_id, target_date, market_ticker,
+                 risk_profile, levels_requested, yes_levels_json, no_levels_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _now(),
+                    scan_run_id,
+                    target_date,
+                    market_ticker,
+                    risk_profile,
+                    int(levels_requested),
+                    json.dumps(yes_levels, sort_keys=False),
+                    json.dumps(no_levels, sort_keys=False),
+                ),
+            )
+            return int(cursor.lastrowid)
+
     def latest_market_snapshot(
         self,
         target_date: str,
