@@ -1,17 +1,94 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-07-26 22:15 PDT
+Last updated: 2026-07-27 03:20 PDT
 
-Last production verification: 2026-07-26 22:10 PDT
+Last production verification: 2026-07-27 03:15 PDT
 
 Status: production healthy, current, and paper-only on runtime revision
-`5f5dc1e05e0a40524042710c9943f1290a02d2be`
+`b5ae442b22d37ac6ad831db02e7c50a5309a47fc`
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **Execution-bar alignment (2026-07-27, PR #69, runtime revision
+  `b5ae442b22d37ac6ad831db02e7c50a5309a47fc`):** the 07-26 capture release was
+  a near-no-op in production. On 07-26/27 the live book recorded 23 approved
+  candidates and placed ZERO orders: every one had a one-tick spread and an
+  after-fee lower-bound edge of 0.002-0.007, while the execution layer still
+  demanded the 0.02 MAKER reservation margin. Two fixes: a natural cross
+  (bid+1 already at the ask) now routes through the taker path instead of
+  being judged against a margin that exists to cover adverse selection on a
+  RESTING quote, and the live crossing bar is now the approval gate's own
+  floor (non-negative after-fee edge against the modelled lower bound).
+  Measured on settled outcomes with the repo's canonical
+  `settlement_truth` rule -- which reproduces the engine's realized P&L on
+  283/283 settled orders with zero mismatches -- the change moves live from
+  58 positions / 87.9% win / $1.33 per day (day-clustered 95% CI
+  -$0.41..+$3.14) to 144 positions / 92.4% win / $3.22 per day (CI
+  +$0.27..+$5.94). No decision or safety gate moved.
+
+- **MEASURED CEILING -- read before promising a daily number.** A 36-agent
+  adversarially-verified analysis over the full decision journal established
+  that the binding constraint is DISPLAYED LIQUIDITY, not the model, the
+  gates, sizing, or exits. Median `recommended_contracts` is 88 against a
+  median displayed ask of 5, and **97.4% of live approved candidates are
+  depth-bound**. At recommended Kelly size the approved population was worth
+  ~$41/day; capped at the depth actually shown it is ~$5/day. Peak daily
+  capital deployed was $76 of a $180 budget (42%) -- the book is
+  liquidity-starved, not capital- or gate-starved. Best case with three
+  entries per market/side and perfect capture is $9.29/day; a realistic
+  post-change run rate is **$4-6/day, with $10 days on roughly the 40% of
+  days when depth is generous**. **$10/day is not reachable as a sustained
+  average on this liquidity, and Research ROI's $50/day is roughly 3x above
+  its measured ceiling (~$18.60/day even granted live-like caps).** Closing
+  the gap needs more markets or deeper books, not looser gates.
+
+- **What was measured and REJECTED** (do not re-propose without new
+  evidence): loosening any rejection bucket -- every one loses money on
+  settled outcomes (sleeve edge/LCB -$0.028/-$0.032 per contract, source
+  spread -$0.047 and monotonically worse with spread, the 1c/2c tail rule
+  0/34 wins, model/market gap -$0.024); the live `edge_lcb >= 0` floor's
+  marginal population is a null (n=28, -$0.0019/contract, t=-0.03); the
+  same-day `min_lead_days=1` block (research same-day is ~6x worse than
+  next-day, and all 7 signal-approved blocked live candidates had zero
+  displayed depth, so $0.00 was forgone); per-city selection (permutation
+  test p=0.538 live, p=0.958 research); narrowing or widening the 0.70-0.97
+  favorite band; banking profits earlier (every variant loses at every
+  level); raising position caps (buys ~$1/day while the worst position grows
+  to 201% of the daily-loss breaker, and inflates the bucket with the LOWEST
+  settled ROI); and a research policy v4 with live-like caps (order coverage
+  of approved candidates is already 100%, so it cannot add a filled
+  contract).
+
+- **Position accumulation was measured, not assumed.** Allowing 2/3/5 lots
+  per market-side lifts live to $3.55/$5.27/$6.67 per day but pushes the
+  day-clustered CI lower bound to -$1.00/-$0.20/+$1.09 and the worst day
+  from -$13.30 to -$20.09 (the 2% daily-loss breaker), while capital
+  efficiency falls. It also requires relaxing the side-agnostic
+  `has_active_paper_entry` guard, which additionally prevents holding YES and
+  NO on the same market. Deferred as the highest-EV candidate for a future
+  walk-forward, not shipped.
+
+- **Highest-value next step is instrumentation, not tuning.** Only
+  top-of-book depth is persisted, so whether walking one or two ticks deeper
+  into the ladder would lift the ceiling is currently UNANSWERABLE. Record
+  the top ~3 ladder levels per side plus a per-attempt fill record (quoted
+  price, mode, filled/expired, depth visible at attempt), mindful that
+  `decision_snapshots` is already the table under retention pressure. Then
+  hold live behavior steady for a ~30-day window: the capture release has
+  only one day of evidence (07-26 filled 3 of 7 placements, 43%, against a
+  15.6% baseline of 26/167 over 07-18..07-25).
+
+- **A methodology warning that invalidated an early pass.** `decision_snapshots`
+  recording changed TWICE inside retention: research began recording the FULL
+  ladder on 07-19 (~60k rows/day) and live on 07-24 (43 -> 64,872 rows). Any
+  approval-RATE comparison across that boundary is a denominator artifact.
+  Use `approved`/`signal_approved` counts and de-duplicate to DISTINCT
+  (target_date, market_ticker, side). Live distinct approved opportunities
+  per day: 20, 18, 15, 21, 8, 4, 8, 4, 8, 3 (07-18..07-27).
 
 - **Execution-capture release (2026-07-26 evening):** PRs #66 and #67 are
   merged and deployed at runtime revision
@@ -167,6 +244,18 @@ quiesced state would capture an empty policy and restore nothing;
 neutralized by `systemctl enable` (without `--now`) of the 12-timer policy
 before rerunning, so capture saw the true policy while nothing ran
 unvalidated.
+
+### Supply decline is a market condition, not a fixable data bug
+
+The LAMP/GFS-MOS HTTP 403s look alarming but do NOT explain the decline: those
+feeds supply station-guidance features, not the NWP ensemble that drives EMOS.
+`nwp_model_forecasts` is stable at 8 models x 240 rows/day through 07-27
+(only `gfs_graphcast025` stopped, on 2026-05-21, two months before the decay).
+What actually happened is that the crowd priced closer to the model: mean edge
+on APPROVED live rows fell 0.064 -> 0.033-0.056, spreads tightened 3.6c ->
+1.5-1.9c, and displayed depth fell 21 -> 4-11 contracts. Distinct approved
+opportunities fell from ~20/day to 3-8/day. Nothing in our control caused it
+and no safe parameter change reverses it.
 
 ### Profit targets were being treated too literally
 
