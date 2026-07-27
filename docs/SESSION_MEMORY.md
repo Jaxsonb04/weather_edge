@@ -13,6 +13,51 @@ current AWS state before making an operational claim.
 
 ## Session Brief
 
+- **UNRESOLVED BLOCKER (2026-07-27, found ~18:00 PDT): the retention prune job
+  has been timing out, and decision_snapshots has never been successfully
+  pruned across the entire 47-day window it has existed (873,944 rows,
+  2026-06-10..2026-07-27; SFO_PRUNE_FULL_DAYS=1 / SFO_PRUNE_DEDUP_DAYS=45
+  should bound this to a small fraction of that).**
+  `sfo-kalshi-paper-prune.service` failed with `Result: timeout` at
+  2026-07-27 02:50 PDT: `TimeoutStartSec=1800` (30 min) was exceeded after the
+  archive/S3-upload steps completed, most likely inside the foreign-key audit
+  or the prune DELETE itself against the now-large table, on a
+  `MemoryHigh=1200M`/`MemoryMax=1600M`-constrained oneshot on a 4 GB box. This
+  is very likely the reason `paper_trading.db` reached 10.6 GB and is the
+  direct cause of the disk-preflight failures on the last three deploys this
+  session (each needed a manual same-day-snapshot prune to proceed -- see
+  below). I deliberately did NOT touch the prune job's timeout/memory or run
+  it manually in the foreground: both are live-timer-adjacent changes to a
+  DATA-DELETION path on a resource-constrained box, and the right fix depends
+  on WHY it's slow now (missing index / genuine data-volume growth) which I
+  did not have time to diagnose. The EC2 instance's own IAM role cannot even
+  `ec2:DescribeVolumes` (correctly scoped to backup-only S3 access), so an
+  EBS resize needs the owner's broader AWS credentials in any case.
+  **Recommended next action, in order:** (1) `journalctl -u
+  sfo-kalshi-paper-prune.service -n 200` to see whether the same timeout
+  recurs on the next scheduled attempt tonight and pin down which of the two
+  slow steps (FK audit vs. prune) it dies in; (2) if it is a single slow
+  query, consider `EXPLAIN QUERY PLAN` on the relevant `paper-prune` DELETE
+  and FK-audit SELECT against the live DB size before assuming a timeout bump
+  is sufficient; (3) only after that, raise `TimeoutStartSec` and/or
+  `MemoryMax` on `sfo-kalshi-paper-prune.service` and manually trigger one run
+  during a quiet window, watching `top`/`free -h` for contention with the
+  concurrent scan/monitor timers; (4) separately, an EBS volume increase
+  removes the symptom but not the underlying growth trend and needs the
+  owner's own AWS access.
+- **Ladder-depth capture merged to main but NOT YET DEPLOYED (PR #71,
+  `7de41a89`).** Blocked purely by the disk issue above: the deploy backup
+  preflight needs ~2x the 10.6 GB paper_trading.db plus 1 GiB headroom
+  (~22.3 GB) and, even after freeing every safely-reclaimable byte on the box
+  (rotated/archived logs, `apt-get clean`, pip cache -- recovered roughly
+  600 MB), the box still came up ~400 MB short. This is purely
+  observation-only instrumentation (piloted on the research profile: a
+  best-effort, never-raises capture of order-book depth beyond top-of-book,
+  answering whether liquidity beyond the displayed top matters for the
+  liquidity ceiling documented below) and carries zero urgency -- do not
+  rush a disk workaround to ship it. Deploy it once the prune blocker above
+  is resolved and headroom returns to normal, or once local main revision
+  moves again for another reason and a deploy is due anyway.
 - **Execution-bar alignment (2026-07-27, PR #69, runtime revision
   `b5ae442b22d37ac6ad831db02e7c50a5309a47fc`):** the 07-26 capture release was
   a near-no-op in production. On 07-26/27 the live book recorded 23 approved
@@ -110,14 +155,16 @@ current AWS state before making an operational claim.
   fingerprints moved with the config (limit `b0075c015530e830c11c588b`,
   market `b0fece729659b86d2e1e35f1`); readiness treats any non-legacy
   fingerprint as valid, so the promotion clock is unaffected.
-- **Post-deploy state:** cutover validation reported exactly two
-  fixed-capital ledgers; build_info matched the new revision with a clean
-  tree; 0 failed units; 12/12 timers enabled and active; scheduler health
-  succeeded; the first post-deploy scans gated normally and the first new
-  order was a policy-sized resting research entry (the preserved allocator
-  path). No capture-eligible live candidate appeared in the overnight
-  window; watch the first liquid US afternoon for taker-cross fills
-  (PAPER_FILLED, entry_mode=limit, filled_at=created_at, price at the ask).
+- **Post-deploy state (confirmed with LIVE production data, not just
+  backtest):** cutover validation reported exactly two fixed-capital
+  ledgers; build_info matched the new revision with a clean tree; 0 failed
+  units; 12/12 timers enabled and active; scheduler health succeeded. Within
+  hours of the liquid US afternoon window (14:00-17:00 UTC), the live book
+  produced real taker-cross fills: order 1711 (KXHIGHTSEA, 8 contracts,
+  instant fill at the ask), order 1714 (KXHIGHPHIL, 6 contracts, instant),
+  order 1721 (KXHIGHTATL, 14 contracts, instant) -- confirming the natural-
+  cross routing fix works against the real Kalshi order book, not only the
+  settlement-replay backtest.
 - **Production release:** PR #58 is merged. The EC2 runtime, generated
   artifacts, public manifest, and rebuilt React app shell were verified against
   runtime revision `71ac845422fc75cc35e24bb3b3a918dd44f917b3`. The app-shell
