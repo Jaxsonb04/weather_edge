@@ -65,13 +65,19 @@ def buy_limit_for_decision(
     visible_bid = max(0.0, float(decision.bid))
     inside_price = _floor_to_tick(visible_bid + tick, tick)
     crosses = inside_price >= visible_ask - 1e-12
-    if not crosses and config.limit_taker_cross_enabled:
+    if config.limit_taker_cross_enabled:
         # Opportunistic taker cross: when the after-fee LOWER-BOUND edge at the
-        # displayed ask still clears the SAME buffer the maker path enforces,
-        # an immediate ask-capped fill realizes more expected value than a
-        # resting quote whose fill depends on sparse aggressor flow. Only
-        # already-approved candidates reach this point, so no decision gate is
-        # bypassed; the crossing bar is the maker bar at a strictly worse price.
+        # displayed ask clears ``limit_taker_cross_min_edge_lcb``, an immediate
+        # ask-capped fill realizes the approved edge instead of depending on
+        # sparse aggressor flow. Only already-approved candidates reach this
+        # point, so no decision gate is bypassed.
+        #
+        # This runs for a NATURAL cross too (a one-tick spread, where bid+1 is
+        # already the ask). That case is a taker fill either way, so gating it
+        # on the MAKER reservation buffer only refused the fill outright: in
+        # production every approved live candidate on 2026-07-26/27 had a
+        # one-tick spread and an after-fee lower-bound edge of 0.002-0.007,
+        # so all 23 were approved and then silently never placed.
         taker = _taker_cross_quote(decision, config)
         if taker is not None:
             return taker

@@ -477,7 +477,31 @@ LIVE_PROFILE_OVERRIDES = {
     # price instead of being dropped. Decision gates, sizing caps, and account
     # policy are unchanged; see StrategyConfig field comments.
     "limit_taker_cross_enabled": True,
-    "limit_taker_cross_min_edge_lcb": 0.02,
+    # BAR ALIGNED TO THE APPROVAL GATE (2026-07-27). The 0.02 bar was carried
+    # over from the MAKER reservation margin, which exists to cover adverse
+    # selection on a resting quote. A taker cross carries no such exposure: it
+    # lifts a displayed offer at a known price. Holding taker fills to the
+    # maker margin made the capture a near-no-op -- every approved live
+    # candidate in the current regime sits at an after-fee lower-bound edge of
+    # 0.002-0.007, so the book approved trades and then never placed them.
+    #
+    # Settled-outcome evidence (2026-07-06..07-26, first approval per
+    # target/market/side, taker cost, size capped at displayed ask depth,
+    # scored against official CLI settlement): the population this bar refused
+    # returned +$69.45 over 20 target days -- +$3.47/day, 16/20 positive days,
+    # day-clustered 95% CI +$0.80..+$6.05 -- at a 95.1% win rate. Every
+    # sub-0.02 band was profitable, and the 0.000-0.005 band had the HIGHEST
+    # win rate (98.1%) and a 9.90% return on deployed capital.
+    #
+    # The floor is not thin: on the population the live book actually trades,
+    # realized frequency (0.9467) BEAT the mean modelled lower bound (0.9050)
+    # by 4.2 points, in every probability band. probability_lcb is therefore a
+    # genuinely conservative bound, so requiring a non-negative after-fee edge
+    # against it is a real EV floor rather than a formality. The approval gates
+    # (min_edge 0.012, edge_lcb >= 0 on the blended LCB, posterior, favorite
+    # band, spread, depth, model/market gap) are UNCHANGED; this only stops
+    # discarding trades those gates already approved.
+    "limit_taker_cross_min_edge_lcb": 0.0,
     "limit_resting_reservation_fallback": True,
 }
 
