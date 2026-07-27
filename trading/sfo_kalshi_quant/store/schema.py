@@ -83,6 +83,21 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     raw_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS market_orderbook_depth_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    scan_run_id TEXT,
+    target_date TEXT NOT NULL,
+    market_ticker TEXT NOT NULL,
+    risk_profile TEXT,
+    levels_requested INTEGER NOT NULL,
+    yes_levels_json TEXT NOT NULL,
+    no_levels_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_orderbook_depth_ticker_time
+ON market_orderbook_depth_snapshots(market_ticker, created_at);
+
 CREATE TABLE IF NOT EXISTS probability_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,

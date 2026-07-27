@@ -35,6 +35,7 @@ from ..forecast import (
     parse_target_dates,
 )
 from ..kalshi import KalshiPublicClient, load_event_snapshots
+from ..orderbook_capture import capture_orderbook_depth, depth_levels_json
 from ..models import (
     BucketProbability,
     EnsembleSnapshot,
@@ -586,6 +587,7 @@ def _execute_research_scan_context(
     place_research_target: bool | None = None,
     place_research_motion: bool | None = None,
     scan_run_id: str | None = None,
+    kalshi_client: KalshiPublicClient | None = None,
 ):
     """Evaluate the active research book from one immutable scan context."""
 
@@ -648,7 +650,67 @@ def _execute_research_scan_context(
         admit_target_orders=admit_target_orders and entry_allowed,
         admit_motion_orders=False,
     )
+    _capture_target_orderbook_depth(
+        execution_config,
+        kalshi_client,
+        plans,
+        target_date=target.isoformat(),
+        scan_run_id=run_id,
+        store=store,
+    )
     return plans, execution, decisions
+
+
+def _capture_target_orderbook_depth(
+    execution_config: StrategyConfig,
+    kalshi_client: KalshiPublicClient | None,
+    plans: ResearchPlans,
+    *,
+    target_date: str,
+    scan_run_id: str,
+    store: PaperStore,
+) -> None:
+    """Best-effort ladder-depth telemetry for the target sleeve's gated legs.
+
+    Runs AFTER order placement so a capture failure can never affect it.
+    Deduplicates by ticker: a scan can gate the same market on multiple
+    sides/bins, and depth is a property of the market, not the candidate.
+    """
+
+    if not execution_config.orderbook_depth_capture_enabled or kalshi_client is None:
+        return
+    try:
+        legs = plans.target.legs
+    except AttributeError:  # noqa: BLE001 -- plans shape is not this function's contract
+        return
+    seen_tickers: set[str] = set()
+    for leg in legs:
+        try:
+            ticker = leg.decision.ticker
+        except AttributeError:  # noqa: BLE001 -- same: never affect the scan
+            continue
+        if ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
+        depth = capture_orderbook_depth(
+            kalshi_client,
+            ticker,
+            levels=execution_config.orderbook_depth_capture_levels,
+        )
+        if depth is None:
+            continue
+        try:
+            store.record_orderbook_depth(
+                target_date=target_date,
+                market_ticker=ticker,
+                yes_levels=depth_levels_json(depth.yes),
+                no_levels=depth_levels_json(depth.no),
+                levels_requested=execution_config.orderbook_depth_capture_levels,
+                scan_run_id=scan_run_id,
+                risk_profile="research",
+            )
+        except Exception:  # noqa: BLE001 -- observation only, never affects a scan
+            continue
 
 
 def _research_portfolio_scan_from_context(
@@ -658,6 +720,8 @@ def _research_portfolio_scan_from_context(
     config: StrategyConfig,
     store: PaperStore,
     color: Color,
+    *,
+    kalshi_client: KalshiPublicClient | None = None,
 ) -> None:
     place_research_target, place_research_motion = _research_placement_flags(args)
     placement_requested = place_research_target or place_research_motion
@@ -701,6 +765,7 @@ def _research_portfolio_scan_from_context(
         place_research_motion=place_research_motion,
         forecast_snapshot_id=forecast_snapshot_id,
         market_snapshot_id=market_snapshot_id,
+        kalshi_client=kalshi_client,
     )
     placed_ids = [*execution.target_order_ids, *execution.motion_order_ids]
     _print_portfolio_scan(
@@ -773,6 +838,7 @@ def _portfolio_scan_one_target(
             config,
             store,
             color,
+            kalshi_client=kalshi_client,
         )
         return
     opportunities = build_arbitrage_opportunities(

@@ -153,6 +153,20 @@ class StrategyConfig:
     # zero after-fee point/LCB floor holds at the taker cost, instead of only
     # when the spread is one tick. The floor itself is unchanged.
     research_target_taker_cross: bool = False
+    # OBSERVATION ONLY (2026-07-27): the scanner and account policy have only
+    # ever seen TOP-of-book size (yes_bid_size_fp / yes_ask_size_fp). The
+    # 2026-07-27 performance analysis found 97.4% of live approved candidates
+    # are displayed-depth-bound, capping realistic daily P&L well below the
+    # owner's $10/day target -- but whether walking one or two ticks deeper
+    # into the book would recover any of that gap is UNANSWERABLE with data
+    # that was never recorded. When enabled, a best-effort, exception-swallowing
+    # fetch of the public orderbook records the top few resting levels for
+    # candidates the research allocator has already gated and is about to
+    # place. It never influences a gate, a size, or a price, and a failure can
+    # never affect a scan or an order (see orderbook_capture.py). Off by
+    # default; on for research only -- see RESEARCH_PROFILE_OVERRIDES.
+    orderbook_depth_capture_enabled: bool = False
+    orderbook_depth_capture_levels: int = 3
     min_conditional_samples: int = 35
     shrinkage_samples: int = 70
     empirical_weight: float = 0.75
@@ -604,6 +618,10 @@ RESEARCH_PROFILE_OVERRIDES = {
     "limit_taker_cross_enabled": False,
     "limit_resting_reservation_fallback": False,
     "research_target_taker_cross": True,
+    # Observation only; see the StrategyConfig field comment. Piloted on
+    # research (the collect-data-risk-nothing book) so the already-fragile
+    # live 15-minute scan cadence is untouched by a new API dependency.
+    "orderbook_depth_capture_enabled": True,
 }
 
 
