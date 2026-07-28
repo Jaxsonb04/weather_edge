@@ -333,7 +333,7 @@ def test_database_backup_preflight_rejects_insufficient_restore_space(
     )
 
     assert result.returncode != 0
-    assert "snapshot + restore copy + 1 GiB headroom" in result.stderr
+    assert "one snapshot + 1 GiB headroom" in result.stderr
 
 
 def test_database_backup_round_trips_and_rechecks_sqlite(tmp_path: Path) -> None:
@@ -1805,3 +1805,80 @@ def test_backup_preflight_sweeps_aged_snapshots_before_measuring_space(
     assert not aged.exists(), "aged snapshot should be reclaimed during preflight"
     assert not aged_sum.exists(), "aged checksum should be reclaimed too"
     assert fresh.exists(), "a snapshot inside the retention window must survive"
+
+
+def test_backup_gate_requires_one_database_copy_not_two(tmp_path: Path) -> None:
+    """The gate's arithmetic is the thing that matters, so pin it directly.
+
+    Both sides of `available >= required` move with the database, so a 2x
+    requirement tightens three times as fast as the file grows. On the live
+    volume that produced a hard ceiling of ~10.3 GB against a journal growing
+    ~690 MB/day -- about one deployable day per compaction. The snapshot is
+    deleted once S3 holds it and before the restore copy is pulled, so only one
+    copy is ever on disk and the requirement is db + 1 GiB.
+    """
+
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    payload = b"x" * (5 * 1024 * 1024)
+    with open(db_path, "ab") as handle:
+        handle.write(payload)
+    database_bytes = db_path.stat().st_size
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+    # Report exactly one byte less than a single copy plus 1 GiB needs.
+    short_kib = (database_bytes + 1073741824 - 1) // 1024
+    _write_executable(
+        fake_bin / "df",
+        "#!/bin/sh\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        f"printf 'fake 1 1 {short_kib} 100%% /\\n'\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0, "one byte short must still fail"
+    assert f"required={database_bytes + 1073741824}" in result.stderr, (
+        "the gate must ask for ONE database copy plus 1 GiB, not two copies; "
+        f"got: {result.stderr}"
+    )
+
+
+def test_backup_drops_the_local_snapshot_before_pulling_the_restore_copy() -> None:
+    """Ordering is what makes the single-copy requirement true."""
+
+    helper = _read_backup_helper()
+    upload_idx = helper.index('s3 cp "$snapshot"')
+    drop_idx = helper.index('rm -f -- "$snapshot"')
+    download_idx = helper.index('s3 cp "s3://$BUCKET/$object_key" "$restore_copy"')
+    assert upload_idx < drop_idx < download_idx, (
+        "the local snapshot must be uploaded, then dropped, and only then may "
+        "the restore copy be pulled -- otherwise two copies coexist and the "
+        "gate genuinely does need 2x the database"
+    )
+
+
+def test_backup_hands_back_the_copy_that_survived_the_round_trip() -> None:
+    helper = _read_backup_helper()
+    verify_idx = helper.index("downloaded backup failed integrity_check")
+    promote_idx = helper.index('mv -f -- "$restore_copy" "$snapshot"')
+    report_idx = helper.index("WEATHEREDGE_BACKUP_SNAPSHOT=$snapshot")
+    assert verify_idx < promote_idx < report_idx
+
+
+def _read_backup_helper() -> str:
+    return (AWS_DIR / "backup_paper_db.sh").read_text()

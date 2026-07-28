@@ -96,9 +96,16 @@ if [[ -d "$BACKUP_DIR" ]]; then
     -mtime "+$KEEP_DAYS" -delete 2>/dev/null || true
 fi
 
-# A verified backup temporarily needs both the new SQLite snapshot and the
-# downloaded restore copy on the same volume. Refuse before the caller
-# quiesces timers if that peak cannot fit with a small operating margin.
+# A verified backup holds ONE copy at a time: the snapshot is deleted locally
+# once S3 has it, before the restore copy is pulled back for verification. So
+# the peak is a single database plus an operating margin, not two.
+#
+# This matters more than it looks. Both sides of the comparison move with the
+# database -- growing it consumes free space AND raises the requirement -- so
+# the old 2x constraint tightened three times as fast as the file grew, and on
+# the live volume it yielded a hard ceiling of ~10.3 GB against a journal that
+# grows ~690 MB/day. That was about one deployable day per compaction. At 1x
+# the same volume allows ~15.4 GB.
 database_bytes="$(wc -c < "$DB_PATH")"
 available_kib="$(df -Pk "$(dirname "$DB_PATH")" | awk 'NR == 2 {print $4}')"
 if [[ ! "$available_kib" =~ ^[0-9]+$ ]]; then
@@ -106,9 +113,9 @@ if [[ ! "$available_kib" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 available_bytes=$((available_kib * 1024))
-required_bytes=$((database_bytes * 2 + 1073741824))
+required_bytes=$((database_bytes + 1073741824))
 if (( available_bytes < required_bytes )); then
-  echo "database backup needs space for snapshot + restore copy + 1 GiB headroom" >&2
+  echo "database backup needs space for one snapshot + 1 GiB headroom" >&2
   echo "required=$required_bytes available=$available_bytes; clean only verified old local backups first" >&2
   exit 1
 fi
@@ -158,6 +165,12 @@ object_key="$PREFIX/$(basename "$snapshot")"
   --sse AES256 --only-show-errors
 "$AWS_CLI" s3 cp "$checksum" "s3://$BUCKET/$object_key.sha256" \
   --sse AES256 --only-show-errors
+# Drop the local snapshot before pulling the restore copy: S3 now holds it, so
+# a second simultaneous copy buys nothing and doubles the volume requirement.
+# If anything below fails the script aborts having already removed it, which is
+# safe -- the object is in S3 and the live database was never touched.
+rm -f -- "$snapshot"
+
 "$AWS_CLI" s3 cp "s3://$BUCKET/$object_key" "$restore_copy" --only-show-errors
 
 restored_sha="$(sha256sum "$restore_copy" | awk '{print $1}')"
@@ -180,6 +193,12 @@ fi
 # lifetime -- sync_to_box.sh still needs it to build the Strategy Lab analysis
 # cache -- and deletes it once finished. It is safe to delete because this
 # script has already round-tripped it through S3 and re-verified the download.
+
+# Hand the caller the copy that provably survived the round trip, rather than
+# the one that was merely uploaded. Same path as before, so callers are
+# unaffected; the cleanup trap then finds an empty restore directory.
+mv -f -- "$restore_copy" "$snapshot"
+chmod 600 "$snapshot"
 
 echo "verified off-host database backup: s3://$BUCKET/$object_key"
 echo "WEATHEREDGE_BACKUP_SNAPSHOT=$snapshot"
