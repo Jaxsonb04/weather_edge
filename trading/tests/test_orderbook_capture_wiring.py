@@ -14,6 +14,7 @@ SEQUENCED inside _execute_research_scan_context:
 """
 
 import contextlib
+import inspect
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -290,3 +291,152 @@ def test_unexpected_plans_shape_degrades_silently():
     # Must not raise.
     _run_scan_context(config, kalshi_client=client, plans=plans)
     client.get_orderbook.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-28: the same capture now runs on the LIVE book. The depth question is
+# about that book -- 86.2% of its approved candidates are depth-bound -- and
+# research cannot supply the evidence at any useful rate, approving ~0.077% of
+# what it scans.
+# ---------------------------------------------------------------------------
+
+
+def test_live_profile_enables_ladder_capture() -> None:
+    live = strategy_config_for_profile("live")
+    assert live.orderbook_depth_capture_enabled is True
+    assert live.orderbook_depth_capture_levels >= 1
+
+
+def test_capture_records_the_risk_profile_it_is_given_not_a_hardcoded_one() -> None:
+    """The helper is shared; a live capture must not be filed as research."""
+
+    store = Mock()
+    client = Mock()
+    with patch.object(
+        scan_module,
+        "capture_orderbook_depth",
+        return_value=SimpleNamespace(yes=(), no=()),
+    ):
+        scan_module._capture_orderbook_depth_for_legs(
+            strategy_config_for_profile("live"),
+            client,
+            [_leg("KXHIGHTSFO-LIVE-A")],
+            target_date="2026-07-28",
+            scan_run_id=None,
+            store=store,
+            risk_profile="live",
+        )
+
+    assert store.record_orderbook_depth.call_count == 1
+    kwargs = store.record_orderbook_depth.call_args.kwargs
+    assert kwargs["risk_profile"] == "live"
+    assert kwargs["market_ticker"] == "KXHIGHTSFO-LIVE-A"
+    assert kwargs["scan_run_id"] is None
+
+
+def test_capture_dedupes_tickers_for_either_book() -> None:
+    store = Mock()
+    client = Mock()
+    with patch.object(
+        scan_module,
+        "capture_orderbook_depth",
+        return_value=SimpleNamespace(yes=(), no=()),
+    ):
+        scan_module._capture_orderbook_depth_for_legs(
+            strategy_config_for_profile("live"),
+            client,
+            [_leg("KXHIGH-DUP"), _leg("KXHIGH-DUP"), _leg("KXHIGH-OTHER")],
+            target_date="2026-07-28",
+            scan_run_id=None,
+            store=store,
+            risk_profile="live",
+        )
+    recorded = {
+        call.kwargs["market_ticker"]
+        for call in store.record_orderbook_depth.call_args_list
+    }
+    assert recorded == {"KXHIGH-DUP", "KXHIGH-OTHER"}
+
+
+def test_empty_leg_list_never_touches_the_client() -> None:
+    store = Mock()
+    client = Mock()
+    scan_module._capture_orderbook_depth_for_legs(
+        strategy_config_for_profile("live"),
+        client,
+        [],
+        target_date="2026-07-28",
+        scan_run_id=None,
+        store=store,
+        risk_profile="live",
+    )
+    client.get_orderbook.assert_not_called()
+    store.record_orderbook_depth.assert_not_called()
+
+
+def test_live_capture_runs_after_placement_and_after_operator_output() -> None:
+    """Ordering is the safety property: telemetry must never precede a fill."""
+
+    source = inspect.getsource(scan_module._portfolio_scan_one_target)
+    place_idx = source.index("_place_portfolio_orders(")
+    print_idx = source.index("_print_portfolio_scan(")
+    capture_idx = source.index("_capture_orderbook_depth_for_legs(")
+    assert place_idx < print_idx < capture_idx, (
+        "ladder capture must be the last thing the live scan does, so a capture "
+        "failure or latency cannot affect placement or the operator's output"
+    )
+
+
+def test_capture_stops_when_its_wall_clock_budget_is_spent() -> None:
+    """Telemetry yields to the scan; a slow API cannot eat the 300s cadence."""
+
+    store = Mock()
+    client = Mock()
+    legs = [_leg(f"KXHIGH-{i}") for i in range(6)]
+
+    # Each fetch "costs" 5 simulated seconds against a 10s budget, so the third
+    # leg finds the budget spent and the loop stops.
+    clock = {"now": 0.0}
+
+    def _slow_capture(*_args, **_kwargs):
+        clock["now"] += 5.0
+        return SimpleNamespace(yes=(), no=())
+
+    with patch.object(scan_module, "capture_orderbook_depth", side_effect=_slow_capture), \
+         patch.object(scan_module.time, "monotonic", side_effect=lambda: clock["now"]):
+        scan_module._capture_orderbook_depth_for_legs(
+            strategy_config_for_profile("live"),
+            client,
+            legs,
+            target_date="2026-07-28",
+            scan_run_id=None,
+            store=store,
+            risk_profile="live",
+            budget_seconds=10.0,
+        )
+
+    assert store.record_orderbook_depth.call_count == 2, (
+        "capture must stop once its budget is spent, not work through every leg"
+    )
+
+
+def test_a_generous_budget_captures_every_distinct_leg() -> None:
+    store = Mock()
+    client = Mock()
+    legs = [_leg(f"KXHIGH-{i}") for i in range(6)]
+    with patch.object(
+        scan_module,
+        "capture_orderbook_depth",
+        return_value=SimpleNamespace(yes=(), no=()),
+    ):
+        scan_module._capture_orderbook_depth_for_legs(
+            strategy_config_for_profile("live"),
+            client,
+            legs,
+            target_date="2026-07-28",
+            scan_run_id=None,
+            store=store,
+            risk_profile="live",
+            budget_seconds=3600.0,
+        )
+    assert store.record_orderbook_depth.call_count == 6
