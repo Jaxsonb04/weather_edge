@@ -745,7 +745,9 @@ The consequence is that the parts nobody has audited are the parts that decide w
 
 ## 10. Deployment readiness — measured, not assumed
 
-The owner's stated next step is to implement and deploy these findings. I checked the live runtime read-only on 2026-07-27 (no writes, no service actions) because a dated snapshot cannot answer whether a deploy is currently possible. It is not, and the reason is one of this audit's own findings.
+The owner's stated next step is to implement and deploy these findings. I checked the live runtime read-only on 2026-07-27 (no writes, no service actions) because a dated snapshot cannot answer whether a deploy is currently possible. It was not, and the reason was one of this audit's own findings.
+
+> **STATUS: CLEARED, 2026-07-27.** The critical path below (steps 1-5) was executed the same day. `backup_paper_db.sh preflight` now **passes**, a full `sync_to_box.sh` deploy has run, and `sfo-kalshi-paper-prune.service` completes in **255s against its unchanged `TimeoutStartSec=1800`** where it had been killed at exactly 30:00. The measurements below are retained as the *pre-fix* state, because they are what the diagnosis rests on. See F.8 for the corrected remediation — two parts of the recommendation immediately below turned out to be wrong when implemented.
 
 **Measured state.**
 
@@ -767,13 +769,33 @@ The owner's stated next step is to implement and deploy these findings. I checke
 
 **And the obvious lever does not work.** `freelist_count = 0`: the database has zero free pages, so a `VACUUM` run right now would reclaim nothing. Space can only be recovered by *first* deleting rows and *then* truncating the file. Both halves are missing — the prune has never succeeded (F.8) and there is no `VACUUM` anywhere in the repository (F.8e).
 
-**So the critical path to any deployment is F.8, and only F.8:**
+**So the critical path to any deployment was F.8, and only F.8** — all five steps are now done:
 
 1. Repair the retention job — bound the dedup subquery to its own window, add the `(market_ticker, side, target_date, id)` index, bound `gate_missing_days` to a rolling horizon, batch the deletes with a `LIMIT` and make the job resumable (F.8a–d).
 2. Protect the evidence that the repair would otherwise destroy — extract the model-vs-market table (§8.1.1) and add `risk_profile` to the dedup key — *before* the first successful run (F.9).
 3. Run the prune. 433,148 rejection rows across 47 days are queued behind it.
 4. `VACUUM` (or enable `auto_vacuum=INCREMENTAL` and run `incremental_vacuum`) to actually truncate the file. A full `VACUUM` needs scratch space of roughly the file size; 20.1 GiB available against a 10.1 GiB file, so it is feasible today.
 5. Re-check the preflight, then deploy.
+
+**Outcome, measured 2026-07-27 (PR #73, merged as `6ee2c235`).** Step 1's recommended index does not work and step 4's `VACUUM` needed a different shape; both corrections are documented in F.8. Step 2's evidence extraction produced 436,998 rejected rows before anything was deleted. Step 3 deleted 334,328 + 72 decision rows plus 21,951 dependent rows in 767s with approved rows untouched (477,770 before and after). Step 4 reclaimed 1.41 GB via `VACUUM INTO` with row-count parity verified across all 29 tables. Step 5 passed.
+
+| quantity | before | after |
+|---|---:|---:|
+| `paper_trading.db` | 10,864,291,840 B | **9,614,307,328 B** |
+| `decision_snapshots` rows | 914,768 | **580,368** |
+| …approved / signal-approved | 477,770 | **477,770** (untouched) |
+| `freelist_count` | 0 | **0** (fully compacted) |
+| disk used | 48% | **44%** |
+| `backup_paper_db.sh preflight` | fails by 1.10 GiB | **passes** |
+| nightly prune unit | killed at 1800s | **success in 255s** |
+| archive gate step | 8m05s | **41s** |
+| failed systemd units | 1 | **0** |
+
+Headroom is real but not generous: the preflight needs `2x` the file plus 1 GiB, so roughly **1 GB of journal growth re-blocks the deploy**. The nightly prune now holds the file flat, which is what makes that sustainable — but if the retention window is ever widened, or the prune fails for several days running, this returns. The EBS resize noted below is still the durable fix.
+
+**A second, structurally identical deadlock sits in the backup gate itself, and it is not yet fixed.** `backup_paper_db.sh` prunes old local snapshots with `find … -mtime "+$KEEP_DAYS" -delete` (`:168`), which runs only in `backup` mode — but the free-space check (`:96-102`) runs in *both* modes and *before* it. So the snapshot a deploy leaves behind (9.6 GB, `SFO_DATABASE_BACKUP_KEEP_DAYS=1`) occupies the very space the next deploy's preflight demands, and the prune that would reclaim it is unreachable because preflight fails first. Observed directly: immediately after the 2026-07-27 deploy, available fell to 13 GB against a 20.3 GB requirement. It was cleared by deleting the local snapshot — safe, because the gate had already uploaded it to `s3://…/database-snapshots/` and verified a *restored* copy end to end. Left alone it is a self-inflicted block on the next deploy, with the same shape as F.8: the mechanism that reclaims the space cannot run until the space is reclaimed. Fix: move the retention sweep ahead of the free-space check, and make it also drop the current snapshot once the off-host copy is verified.
+
+**Deploys are expensive at this journal size.** The gate runs `PRAGMA integrity_check` on the 9.6 GB snapshot, `foreign_key_check`, then downloads the S3 copy and `integrity_check`s that too — roughly 10 MB/s each on this t4g.medium. The 2026-07-27 deploy took **~65 minutes with every timer quiesced**, on top of the ~85-minute retention maintenance window. That is sound engineering (it proves the backup restores before production source changes) but it is a real operational cost, and a further argument for keeping the journal small.
 
 The emergency alternative — deleting the 1.38 GiB local `archive/` ring buffer, which is redundant now that the S3 uploads in the prune journal are succeeding — would clear the 1.10 GiB shortfall immediately but fixes nothing and removes the only local copy. That is a data-deletion decision for the owner, not a workaround to reach for.
 
