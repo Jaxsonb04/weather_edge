@@ -5,6 +5,8 @@ import json
 import logging
 import math
 import sqlite3
+
+from . import _sqlite
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -586,7 +588,9 @@ class PaperStore:
         # touch this database concurrently. WAL plus a real busy_timeout lets
         # readers and a single writer coexist instead of failing fast with
         # "database is locked" on the default 5s rollback-journal connection.
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn = sqlite3.connect(
+            self.db_path, timeout=30.0, factory=_sqlite.ClosingConnection
+        )
         try:
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA busy_timeout = 30000")

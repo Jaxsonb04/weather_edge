@@ -8,6 +8,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1747,3 +1748,60 @@ def test_forecaster_cadence_is_exact_in_active_docs() -> None:
         AWS_DIR / "README.md",
     ):
         assert phrase in " ".join(path.read_text().split())
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-28: a deploy's own verified snapshot occupied exactly the space the
+# NEXT deploy's backup preflight required, and the sweep that would reclaim it
+# ran only in `backup` mode, after the check it needed to satisfy.
+# ---------------------------------------------------------------------------
+
+
+def test_backup_preflight_sweeps_aged_snapshots_before_measuring_space(
+    tmp_path: Path,
+) -> None:
+    """The sweep must run in preflight too, and before the free-space check.
+
+    Previously it lived at the very end of `backup` mode, so a preflight could
+    never reclaim anything and a same-week deploy blocked its own successor.
+    """
+
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    aged = backups / "paper_trading-20200101T000000Z.sqlite3"
+    aged.write_bytes(b"stale")
+    aged_sum = backups / "paper_trading-20200101T000000Z.sqlite3.sha256"
+    aged_sum.write_text("deadbeef  aged\n")
+    old = time.time() - 40 * 86400
+    os.utime(aged, (old, old))
+    os.utime(aged_sum, (old, old))
+
+    fresh = backups / "paper_trading-29991231T235959Z.sqlite3"
+    fresh.write_bytes(b"current")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_DIR": str(backups),
+            "SFO_DATABASE_BACKUP_KEEP_DAYS": "1",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not aged.exists(), "aged snapshot should be reclaimed during preflight"
+    assert not aged_sum.exists(), "aged checksum should be reclaimed too"
+    assert fresh.exists(), "a snapshot inside the retention window must survive"

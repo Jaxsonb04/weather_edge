@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
+
+from . import _sqlite
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -68,7 +70,7 @@ def build_forecast_scorecards(weather_db: Path | str) -> dict[str, Any]:
         return _unavailable("weather database not found")
     v2_scopes: set[tuple[str, int, str]] = set()
     try:
-        with sqlite3.connect(path) as conn:
+        with _sqlite.connect(path) as conn:
             if not _table_exists(conn, "forecast_emos_daily_high"):
                 return _unavailable("forecast_emos_daily_high table missing")
             if not _table_exists(conn, "cli_settlements"):
@@ -307,7 +309,7 @@ def _load_intraday_cases(
     if not baseline:
         return []
     try:
-        with sqlite3.connect(path) as conn:
+        with _sqlite.connect(path) as conn:
             if not _table_exists(conn, "nws_station_observations"):
                 return []
             truth_columns = _columns(conn, "cli_settlements")

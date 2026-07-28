@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
+
+from . import _sqlite
 from dataclasses import asdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -450,7 +452,7 @@ def replay_from_database(
         ):
             raise ValueError(f"{label} must be a positive integer or None")
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             if not _table_exists(conn, "paper_orders"):
                 return {"available": False, "reason": "paper_orders table missing"}

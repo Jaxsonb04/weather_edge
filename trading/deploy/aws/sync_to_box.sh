@@ -451,6 +451,17 @@ else
     || echo "warning: could not confirm Strategy Lab analysis unit cleanup" >&2
 fi
 
+# The analysis refresh was the last consumer of the verified snapshot. Drop it
+# now: it is redundant (this deploy already round-tripped it through S3 and
+# re-verified the download) and leaving it behind consumes exactly the space the
+# NEXT deploy's backup preflight requires, which is how a deploy blocks its own
+# successor. Non-fatal -- a stale snapshot is a disk problem, not a deploy one.
+if [[ -n "$ANALYSIS_DB_SNAPSHOT" ]]; then
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "rm -f -- '$ANALYSIS_DB_SNAPSHOT'" \
+    || echo "warning: could not remove verified local snapshot $ANALYSIS_DB_SNAPSHOT" >&2
+fi
+
 # A successful full analysis only updates the private cache. Rebuild the
 # bounded public artifact from that cache, publish it, and wait for the exact
 # immutable manifest captured by the waiter so the deploy does not finish with

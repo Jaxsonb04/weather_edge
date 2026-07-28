@@ -6,6 +6,8 @@ import json
 import math
 import os
 import sqlite3
+
+from . import _sqlite
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -126,7 +128,7 @@ def _load_json_optional(path: Path) -> dict[str, Any] | None:
 
 def _db_table_exists(db_path: Path, table_name: str) -> bool:
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             return _table_exists(conn, table_name)
     except sqlite3.Error:
         return False
