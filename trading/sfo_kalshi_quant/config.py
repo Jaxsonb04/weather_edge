@@ -346,6 +346,16 @@ class StrategyConfig:
 
 
 LIVE_PROFILE_OVERRIDES = {
+    # Observation only -- never reads back into a gate, a size or a price; see
+    # the StrategyConfig field comment and _capture_orderbook_depth_for_legs.
+    # Enabled on live 2026-07-28 because the depth question is ABOUT this book:
+    # 86.2% of approved live candidates are depth-bound (median 100 wanted vs 5
+    # displayed), and the first ladder data suggests +1c buys ~5.5x the size for
+    # ~14% of a 7.28c median edge. Research alone cannot supply that evidence at
+    # any useful rate -- it approves ~0.077% of what it scans. This moves the
+    # live strategy fingerprint, which is an accepted cost: the alternative is
+    # deciding a sizing change on sixteen observations.
+    "orderbook_depth_capture_enabled": True,
     # The real-money-INTENT profile (paper-only until the readiness gate in
     # backtest_rescore.py passes). The first live month (Jun 2026) proved that
     # negative lower-bound edge collects only noise: 190 approved trades with

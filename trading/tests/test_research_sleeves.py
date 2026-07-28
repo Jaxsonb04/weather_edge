@@ -241,8 +241,16 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     config = strategy_config_for_profile("live")
     # 2026-07-26: fingerprints move with any live-config change; the taker-cross
     # capture flags are part of execution identity, exactly as intended.
-    assert strategy_fingerprint(config, entry_mode="limit") == "9c9030d95f4b221ac7611573"
-    assert strategy_fingerprint(config, entry_mode="market") == "9b6235279d3f050a133de693"
+    # 2026-07-28: moved again, deliberately, by enabling ladder-depth capture on
+    # live (`orderbook_depth_capture_enabled`). That flag is observation-only --
+    # it cannot reach a gate, a size or a price -- but it IS part of the config,
+    # so it is part of execution identity, and this guard is what forces the
+    # change to be acknowledged rather than absorbed. Recorded because the
+    # evidence record will show a live policy revision on this date that changed
+    # no behaviour: it was taken to answer whether the book could take size one
+    # cent deeper, which 86.2% depth-bound approvals made the binding question.
+    assert strategy_fingerprint(config, entry_mode="limit") == "ef556591ad42e83cf4648796"
+    assert strategy_fingerprint(config, entry_mode="market") == "d4f1bf4bedf4d997e2eb2edb"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1191,7 +1199,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "9b6235279d3f050a133de693"
+    assert row["strategy_fingerprint"] == "d4f1bf4bedf4d997e2eb2edb"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

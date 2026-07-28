@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
@@ -650,41 +651,68 @@ def _execute_research_scan_context(
         admit_target_orders=admit_target_orders and entry_allowed,
         admit_motion_orders=False,
     )
-    _capture_target_orderbook_depth(
+    _capture_orderbook_depth_for_legs(
         execution_config,
         kalshi_client,
-        plans,
+        _target_sleeve_legs(plans),
         target_date=target.isoformat(),
         scan_run_id=run_id,
         store=store,
+        risk_profile="research",
     )
     return plans, execution, decisions
 
 
-def _capture_target_orderbook_depth(
+def _target_sleeve_legs(plans: ResearchPlans):
+    """The research target sleeve's legs, or nothing if the shape is unexpected."""
+
+    try:
+        return plans.target.legs
+    except AttributeError:  # noqa: BLE001 -- plans shape is not this function's contract
+        return ()
+
+
+# Wall-clock budget for one scan-target's ladder telemetry. One degraded fetch
+# can cost ~61s (3 retries x 20s + backoff) and the live scan fires every 300s,
+# so an unbounded capture could eat the cadence. A healthy fetch is ~100-300ms,
+# so this never truncates the normal case; it only yields under degradation.
+# A module constant on purpose -- a StrategyConfig field would move the strategy
+# fingerprint, and this is an operational guard rail, not execution identity.
+_ORDERBOOK_CAPTURE_BUDGET_SECONDS = 10.0
+
+
+def _capture_orderbook_depth_for_legs(
     execution_config: StrategyConfig,
     kalshi_client: KalshiPublicClient | None,
-    plans: ResearchPlans,
+    legs,
     *,
     target_date: str,
-    scan_run_id: str,
+    scan_run_id: str | None,
     store: PaperStore,
+    risk_profile: str,
+    budget_seconds: float = _ORDERBOOK_CAPTURE_BUDGET_SECONDS,
 ) -> None:
-    """Best-effort ladder-depth telemetry for the target sleeve's gated legs.
+    """Best-effort ladder-depth telemetry for a book's gated legs.
 
     Runs AFTER order placement so a capture failure can never affect it.
     Deduplicates by ticker: a scan can gate the same market on multiple
     sides/bins, and depth is a property of the market, not the candidate.
+
+    Shared by both books. `risk_profile` is recorded on the row so the two can
+    be told apart later; the ladder itself is identical for both, since it
+    belongs to the market.
     """
 
     if not execution_config.orderbook_depth_capture_enabled or kalshi_client is None:
         return
-    try:
-        legs = plans.target.legs
-    except AttributeError:  # noqa: BLE001 -- plans shape is not this function's contract
+    if not legs:
         return
+    deadline = time.monotonic() + max(0.0, budget_seconds)
     seen_tickers: set[str] = set()
     for leg in legs:
+        if time.monotonic() >= deadline:
+            # Out of budget: drop the rest rather than delay the next scan.
+            break
         try:
             ticker = leg.decision.ticker
         except AttributeError:  # noqa: BLE001 -- same: never affect the scan
@@ -707,7 +735,7 @@ def _capture_target_orderbook_depth(
                 no_levels=depth_levels_json(depth.no),
                 levels_requested=execution_config.orderbook_depth_capture_levels,
                 scan_run_id=scan_run_id,
-                risk_profile="research",
+                risk_profile=risk_profile,
             )
         except Exception:  # noqa: BLE001 -- observation only, never affects a scan
             continue
@@ -944,6 +972,21 @@ def _portfolio_scan_one_target(
         ensemble=ensemble,
         entry_block_reason=entry_block_reason,
         consensus=consensus,
+    )
+
+    # Ladder telemetry for the live book, last thing in the scan: after
+    # placement and after the operator output, so it cannot affect either.
+    # Captured for gated legs even when entry was blocked -- a blocked
+    # candidate's depth is exactly the observation needed to judge whether the
+    # book could have taken size had it been allowed to.
+    _capture_orderbook_depth_for_legs(
+        config,
+        kalshi_client,
+        getattr(plan, "legs", ()),
+        target_date=target.isoformat(),
+        scan_run_id=None,
+        store=store,
+        risk_profile=risk_profile,
     )
 
 
