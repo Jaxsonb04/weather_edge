@@ -269,6 +269,11 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/verify_systemd_unit_integrity.sh"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && bash deploy/aws/create_decision_snapshot_index.sh"
+# Retention indexes share that quiesced window. They must exist before the prune
+# timer is restored: without them the bounded-subquery prune degenerates to a
+# correlated full scan per candidate row and is slower than what it replaced.
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && bash deploy/aws/create_retention_indexes.sh"
 # Initialize the restart-era account schema while every producer is quiesced.
 # The Strategy builder is intentionally read-only, so this gate must run before
 # any timer restoration or seed publication.

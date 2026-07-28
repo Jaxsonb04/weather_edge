@@ -37,6 +37,33 @@ $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-check-foreign-keys --limit "${SFO_FK_AUDIT_LIMIT:-100}"
 
+# 5b. Index precondition. The prune's dedup grouping and its parent-orphan
+# probes depend on the retention indexes; without them each probe becomes a
+# correlated full scan and the unit exhausts TimeoutStartSec. Warn rather than
+# abort: the batched prune commits per batch, so even a slow run leaves durable
+# progress, whereas refusing to run leaves the journal growing unchecked.
+missing_indexes="$(
+  $PY - "$DB" <<'PY'
+import sqlite3
+import sys
+
+sys.path.insert(0, ".")
+from sfo_kalshi_quant.store.schema import RETENTION_INDEX_NAMES
+
+with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as conn:
+    present = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+print(",".join(name for name in RETENTION_INDEX_NAMES if name not in present))
+PY
+)" || missing_indexes=""
+if [[ -n "$missing_indexes" ]]; then
+  echo "WARN: retention indexes missing ($missing_indexes); the prune will run" >&2
+  echo "WARN: without index support and may exceed its start timeout. Pause the" >&2
+  echo "WARN: paper timers and run deploy/aws/create_retention_indexes.sh." >&2
+fi
+
 # 6. Only now may retention delete anything.
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-prune --full-days "${SFO_PRUNE_FULL_DAYS:-1}" --dedup-days "${SFO_PRUNE_DEDUP_DAYS:-45}"
