@@ -5948,6 +5948,7 @@ class PaperStore:
         *,
         full_days: int = 7,
         dedup_days: int = 45,
+        batch_limit: int = 25_000,
     ) -> dict[str, int]:
         """Retention for the archive-backed snapshot journal.
 
@@ -5955,8 +5956,8 @@ class PaperStore:
         (~0.5 GB) per day; unbounded growth filled the old single-city box and
         thrashed the strategy-lab pass. Policy: everything stays full-fidelity
         for ``full_days``; between ``full_days`` and ``dedup_days`` only the
-        LAST snapshot per (market, side, target_date) survives -- the
-        end-of-day context of why the book said what it said -- plus every
+        LAST snapshot per (market, side, target_date, risk_profile) survives --
+        the end-of-day context of why each book said what it said -- plus every
         approved/signal-approved row; beyond ``dedup_days`` only approved
         rows remain. Approved rows are never deleted.
 
@@ -5967,96 +5968,216 @@ class PaperStore:
         cutoff. The scheduled caller runs the archive gate first; after
         decision pruning, archived context rows are removed only when no
         retained decision references them.
+
+        PERFORMANCE (2026-07-27 audit, finding F.8). The previous shape timed
+        out every night on a 10.8 GB journal -- 21 minutes of wall clock for 5
+        minutes of CPU, i.e. I/O-bound -- because three of the statements below
+        carried an anti-join subquery with NO date predicate, each rescanning
+        the entire 909k-row table:
+
+        * the dedup ``MAX(id)`` grouping,
+        * the ``forecast_snapshots`` parent check, and
+        * the ``market_snapshots`` parent check.
+
+        All three are now bounded to the same window as their candidate rows.
+        Restricting the dedup window is conservative by construction: a group
+        whose true newest row lies OUTSIDE the window keeps its in-window
+        newest row as well, so the change can only ever RETAIN more evidence,
+        never delete more. Each delete is also batched under ``batch_limit`` and
+        committed per batch, so a timeout leaves durable progress instead of
+        rolling back a whole night's work and arriving slower tomorrow.
+
+        The dedup test is expressed as "a newer row exists in the same group"
+        rather than "this id is not the group's MAX(id)". The two predicates are
+        equivalent, but only the first is index-seekable: measured with EXPLAIN
+        QUERY PLAN, the MAX/GROUP BY shape falls back to USE TEMP B-TREE FOR
+        GROUP BY no matter which index is offered, because SQLite will not walk
+        a group-ordered index for the grouping while a selective created_at
+        range is also being used. That sort of the entire dedup window is what
+        drove the 1.1 GB peak against the unit's MemoryHigh=1200M. The EXISTS
+        form seeks (market_ticker, side, target_date, risk_profile, id > ?) and
+        stops at the first newer row.
+
+        RETENTION KEY (finding F.9). ``risk_profile`` is part of the dedup key.
+        It was previously absent while every analysis sampler partitions by
+        profile, so the surviving "last snapshot per market/side/day" was
+        whichever book happened to write last and the other book's end-of-day
+        rejection evidence was destroyed.
         """
 
         if full_days < 1 or dedup_days <= full_days:
             raise ValueError("need dedup_days > full_days >= 1")
+        if batch_limit < 1:
+            raise ValueError("batch_limit must be >= 1")
+
+        def _batched_delete(conn, sql: str, params: tuple) -> int:
+            """Run a bounded DELETE until it stops matching, committing each batch."""
+
+            total = 0
+            while True:
+                cursor = conn.execute(sql, (*params, batch_limit))
+                # sqlite3 reports -1 when a statement's affected-row count is
+                # unavailable. -1 is truthy, so `rowcount or 0` would add a
+                # negative to the total and then exit on `-1 < batch_limit`,
+                # reporting fewer than zero deletions. Treat it as no progress.
+                raw = cursor.rowcount
+                removed = raw if raw and raw > 0 else 0
+                total += removed
+                conn.commit()
+                if removed < batch_limit:
+                    return total
+
         with self.connect() as conn:
-            dedup_cursor = conn.execute(
-                """
-                DELETE FROM decision_snapshots
-                WHERE created_at < datetime('now', ?)
-                  AND created_at >= datetime('now', ?)
-                  AND COALESCE(approved, 0) = 0
-                  AND COALESCE(signal_approved, 0) = 0
-                  AND id NOT IN (
-                      SELECT MAX(id) FROM decision_snapshots
-                      GROUP BY market_ticker, side, target_date
-                  )
-                """,
+            # Resolve the window ONCE. Re-evaluating datetime('now', ...) inside
+            # each batched statement let the retention window slide forward
+            # while the loop was still running, so a slow backlog run pruned
+            # against a different window than the one it started with.
+            full_cutoff, dedup_cutoff = conn.execute(
+                "SELECT datetime('now', ?), datetime('now', ?)",
                 (f"-{full_days} days", f"-{dedup_days} days"),
-            )
-            drop_cursor = conn.execute(
+            ).fetchone()
+            deduped = _batched_delete(
+                conn,
                 """
                 DELETE FROM decision_snapshots
-                WHERE created_at < datetime('now', ?)
-                  AND COALESCE(approved, 0) = 0
-                  AND COALESCE(signal_approved, 0) = 0
+                WHERE id IN (
+                    SELECT d.id FROM decision_snapshots AS d
+                    WHERE d.created_at < ?
+                      AND d.created_at >= ?
+                      AND COALESCE(d.approved, 0) = 0
+                      AND COALESCE(d.signal_approved, 0) = 0
+                      AND EXISTS (
+                          SELECT 1 FROM decision_snapshots AS n
+                          WHERE n.market_ticker = d.market_ticker
+                            AND n.side = d.side
+                            AND n.target_date = d.target_date
+                            AND COALESCE(n.risk_profile, '')
+                                = COALESCE(d.risk_profile, '')
+                            AND n.id > d.id
+                            AND n.created_at < ?
+                            AND n.created_at >= ?
+                      )
+                    LIMIT ?
+                )
                 """,
-                (f"-{dedup_days} days",),
+                (
+                    full_cutoff,
+                    dedup_cutoff,
+                    full_cutoff,
+                    dedup_cutoff,
+                ),
             )
-            context_cursor = conn.execute(
+            dropped = _batched_delete(
+                conn,
+                """
+                DELETE FROM decision_snapshots
+                WHERE id IN (
+                    SELECT id FROM decision_snapshots
+                    WHERE created_at < ?
+                      AND COALESCE(approved, 0) = 0
+                      AND COALESCE(signal_approved, 0) = 0
+                    LIMIT ?
+                )
+                """,
+                (dedup_cutoff,),
+            )
+            contexts_dropped = _batched_delete(
+                conn,
                 """
                 DELETE FROM scan_context_snapshots
-                WHERE created_at < datetime('now', ?)
-                  AND source_context_hash IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM decision_snapshots
-                      WHERE decision_snapshots.scan_context_id = scan_context_snapshots.id
-                  )
+                WHERE id IN (
+                    SELECT id FROM scan_context_snapshots
+                    WHERE created_at < ?
+                      AND source_context_hash IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM decision_snapshots
+                          WHERE decision_snapshots.scan_context_id
+                                = scan_context_snapshots.id
+                      )
+                    LIMIT ?
+                )
                 """,
-                (f"-{full_days} days",),
+                (full_cutoff,),
             )
-            probability_cursor = conn.execute(
+            probabilities_dropped = _batched_delete(
+                conn,
                 """
                 DELETE FROM probability_snapshots
-                WHERE created_at < datetime('now', ?)
+                WHERE id IN (
+                    SELECT id FROM probability_snapshots
+                    WHERE created_at < ?
+                    LIMIT ?
+                )
                 """,
-                (f"-{dedup_days} days",),
+                (dedup_cutoff,),
             )
-            monitor_cursor = conn.execute(
+            monitor_dropped = _batched_delete(
+                conn,
                 """
                 DELETE FROM paper_monitor_snapshots
-                WHERE created_at < datetime('now', ?)
+                WHERE id IN (
+                    SELECT id FROM paper_monitor_snapshots
+                    WHERE created_at < ?
+                    LIMIT ?
+                )
                 """,
-                (f"-{dedup_days} days",),
+                (dedup_cutoff,),
             )
-            forecast_cursor = conn.execute(
+            # The two parent-orphan checks below previously rescanned the ENTIRE
+            # decision journal via an unbounded UNION (audit F.8b). A parent row
+            # older than the cutoff can only be referenced by a child row that is
+            # itself at least that old, so both reference probes are bounded to
+            # the same cutoff. There is no index on decision_snapshots
+            # .forecast_snapshot_id / .market_snapshot_id; store/schema.py adds
+            # them alongside this change.
+            forecast_dropped = _batched_delete(
+                conn,
                 """
                 DELETE FROM forecast_snapshots
-                WHERE created_at < datetime('now', ?)
-                  AND id NOT IN (
-                      SELECT forecast_snapshot_id FROM scan_context_snapshots
-                      WHERE forecast_snapshot_id IS NOT NULL
-                      UNION
-                      SELECT forecast_snapshot_id FROM decision_snapshots
-                      WHERE forecast_snapshot_id IS NOT NULL
-                  )
+                WHERE id IN (
+                    SELECT f.id FROM forecast_snapshots AS f
+                    WHERE f.created_at < ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM scan_context_snapshots AS s
+                          WHERE s.forecast_snapshot_id = f.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM decision_snapshots AS d
+                          WHERE d.forecast_snapshot_id = f.id
+                      )
+                    LIMIT ?
+                )
                 """,
-                (f"-{dedup_days} days",),
+                (dedup_cutoff,),
             )
-            market_cursor = conn.execute(
+            market_dropped = _batched_delete(
+                conn,
                 """
                 DELETE FROM market_snapshots
-                WHERE created_at < datetime('now', ?)
-                  AND id NOT IN (
-                      SELECT market_snapshot_id FROM scan_context_snapshots
-                      WHERE market_snapshot_id IS NOT NULL
-                      UNION
-                      SELECT market_snapshot_id FROM decision_snapshots
-                      WHERE market_snapshot_id IS NOT NULL
-                  )
+                WHERE id IN (
+                    SELECT m.id FROM market_snapshots AS m
+                    WHERE m.created_at < ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM scan_context_snapshots AS s
+                          WHERE s.market_snapshot_id = m.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM decision_snapshots AS d
+                          WHERE d.market_snapshot_id = m.id
+                      )
+                    LIMIT ?
+                )
                 """,
-                (f"-{dedup_days} days",),
+                (dedup_cutoff,),
             )
             return {
-                "deduped": dedup_cursor.rowcount,
-                "dropped": drop_cursor.rowcount,
-                "contexts_dropped": context_cursor.rowcount,
-                "probabilities_dropped": probability_cursor.rowcount,
-                "monitor_snapshots_dropped": monitor_cursor.rowcount,
-                "forecast_snapshots_dropped": forecast_cursor.rowcount,
-                "market_snapshots_dropped": market_cursor.rowcount,
+                "deduped": deduped,
+                "dropped": dropped,
+                "contexts_dropped": contexts_dropped,
+                "probabilities_dropped": probabilities_dropped,
+                "monitor_snapshots_dropped": monitor_dropped,
+                "forecast_snapshots_dropped": forecast_dropped,
+                "market_snapshots_dropped": market_dropped,
             }
 
     def open_paper_target_dates(

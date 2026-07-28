@@ -569,6 +569,83 @@ CREATE INDEX IF NOT EXISTS idx_decision_snapshots_pending_research_admission
       AND entry_block_reason = 'research admission pending'
 """
 
+# Retention indexes (2026-07-27 audit, finding F.8). The nightly prune's
+# anti-join subqueries had no index to stand on, which is why it burned 21
+# minutes of wall clock for 5 minutes of CPU and timed out every night:
+#
+#   * the dedup grouping needs to resolve MAX(id) per group by index scan
+#     instead of a full-table temp B-tree. The index must be declared on the
+#     EXPRESSION the query groups by -- COALESCE(risk_profile, '') -- not on the
+#     bare column: SQLite will not match a plain-column index to an expression,
+#     and silently falls back to USE TEMP B-TREE FOR GROUP BY, which is the very
+#     full-table sort this index exists to remove. `id` sits immediately after
+#     the group keys so the "is there a newer row in this group" probe is a
+#     range seek, and created_at trails so the window filter is covered without
+#     a table lookup. target_date leads deliberately: with market_ticker in
+#     front this index outranked the covering created_at index for the
+#     cities-report `GROUP BY market_ticker` aggregation and turned that
+#     report's date-range seek into a full index scan. The probe constrains all
+#     four group keys by equality, so their relative order costs it nothing;
+#   * the forecast/market parent-orphan probes are correlated EXISTS, so each
+#     runs once per candidate row and touches BOTH referencing tables. All four
+#     FK columns involved -- decision_snapshots.{forecast,market}_snapshot_id
+#     and scan_context_snapshots.{forecast,market}_snapshot_id -- carried no
+#     index, so every probe degenerated to a full scan of the probed table for
+#     each candidate row. Indexing only the decision_snapshots side is not
+#     enough; both sides are probed;
+#   * forecast_snapshots carried no index whatsoever, so both the prune cutoff
+#     and archive.gate_missing_days' per-day scan were full scans.
+#
+# These follow the same deliberate out-of-band contract as the report index
+# above: fresh databases build them cheaply at init, existing journals get them
+# once from deploy/aws/create_retention_indexes.sh while scanners are paused.
+# Never add these to the always-on SCHEMA block -- on the current 10.9 GB
+# production journal these are multi-minute builds.
+DECISION_SNAPSHOT_RETENTION_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_retention_dedup
+    ON decision_snapshots (
+        target_date, market_ticker, side, COALESCE(risk_profile, ''),
+        id, created_at
+    );
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_forecast_parent
+    ON decision_snapshots (forecast_snapshot_id)
+    WHERE forecast_snapshot_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_decision_snapshots_market_parent
+    ON decision_snapshots (market_snapshot_id)
+    WHERE market_snapshot_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_scan_context_snapshots_forecast_parent
+    ON scan_context_snapshots (forecast_snapshot_id)
+    WHERE forecast_snapshot_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_scan_context_snapshots_market_parent
+    ON scan_context_snapshots (market_snapshot_id)
+    WHERE market_snapshot_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_forecast_snapshots_created
+    ON forecast_snapshots (created_at, id);
+CREATE INDEX IF NOT EXISTS idx_probability_snapshots_created
+    ON probability_snapshots (created_at, id);
+CREATE INDEX IF NOT EXISTS idx_monitor_snapshots_created
+    ON paper_monitor_snapshots (created_at, id);
+CREATE INDEX IF NOT EXISTS idx_scan_context_snapshots_created
+    ON scan_context_snapshots (created_at, id);
+CREATE INDEX IF NOT EXISTS idx_market_snapshots_created
+    ON market_snapshots (created_at, id);
+"""
+
+# Canonical name list for the out-of-band builder and the init-time warning, so
+# the deploy script and the runtime check can never drift from the definitions.
+RETENTION_INDEX_NAMES = (
+    "idx_decision_snapshots_retention_dedup",
+    "idx_decision_snapshots_forecast_parent",
+    "idx_decision_snapshots_market_parent",
+    "idx_scan_context_snapshots_forecast_parent",
+    "idx_scan_context_snapshots_market_parent",
+    "idx_forecast_snapshots_created",
+    "idx_probability_snapshots_created",
+    "idx_monitor_snapshots_created",
+    "idx_scan_context_snapshots_created",
+    "idx_market_snapshots_created",
+)
+
 # DB-level backstop for the application's concurrent-open guard. Account is the
 # isolation boundary: target and motion may independently hold the same side of
 # one market, while duplicate active exposure inside either account is forbidden.
@@ -1339,6 +1416,7 @@ def _init_store_locked(self) -> None:
             conn.execute(DECISION_SNAPSHOT_REPORT_INDEX)
             conn.execute(DECISION_SNAPSHOT_SAMPLE_INDEX)
             conn.execute(DECISION_SNAPSHOT_PENDING_RESEARCH_INDEX)
+            conn.executescript(DECISION_SNAPSHOT_RETENTION_INDEXES)
         elif (
             conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
@@ -1364,6 +1442,21 @@ def _init_store_locked(self) -> None:
                 "decision_snapshots is nonempty but the pending research "
                 "admission index is missing; pause paper scan/monitor and run "
                 "deploy/aws/create_decision_snapshot_index.sh"
+            )
+        if (
+            decision_table_existed
+            and decision_table_has_rows
+            and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                ("idx_decision_snapshots_retention_dedup",),
+            ).fetchone()
+            is None
+        ):
+            logger.warning(
+                "decision_snapshots is nonempty but the retention indexes are "
+                "missing; the nightly prune will fall back to full scans and "
+                "can exceed its systemd start timeout. Pause paper "
+                "scan/monitor and run deploy/aws/create_retention_indexes.sh"
             )
         self._expire_pre_current_execution_orders(conn)
         self._ensure_shared_paper_account(conn)
