@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+
+from .. import _sqlite
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -70,7 +72,7 @@ def _forecast_health_payload(
         return payload
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             payload["available"] = True
             payload["nwp"] = _nwp_health(conn, rolling_targets, current_utc, warnings)

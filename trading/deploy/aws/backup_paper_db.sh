@@ -84,6 +84,18 @@ if ! "$AWS_CLI" s3api get-bucket-location --bucket "$BUCKET" >/dev/null 2>&1; th
   exit 1
 fi
 
+# Reclaim aged local snapshots BEFORE measuring free space. This sweep used to
+# run only at the very end of `backup` mode, which made the gate unsatisfiable
+# by its own output: the snapshot a deploy leaves behind occupies exactly the
+# space the next deploy's preflight demands, and the sweep that would reclaim it
+# sits behind that failing check. Running it here -- in both modes, before the
+# measurement -- means the check sees the space the box can actually offer.
+if [[ -d "$BACKUP_DIR" ]]; then
+  find "$BACKUP_DIR" -maxdepth 1 -type f \
+    \( -name 'paper_trading-*.sqlite3' -o -name 'paper_trading-*.sqlite3.sha256' \) \
+    -mtime "+$KEEP_DAYS" -delete 2>/dev/null || true
+fi
+
 # A verified backup temporarily needs both the new SQLite snapshot and the
 # downloaded restore copy on the same volume. Refuse before the caller
 # quiesces timers if that peak cannot fit with a small operating margin.
@@ -163,9 +175,11 @@ if [[ -n "$(sqlite3 -batch -noheader "$restore_copy" 'PRAGMA foreign_key_check;'
   exit 1
 fi
 
-find "$BACKUP_DIR" -maxdepth 1 -type f \
-  \( -name 'paper_trading-*.sqlite3' -o -name 'paper_trading-*.sqlite3.sha256' \) \
-  -mtime "+$KEEP_DAYS" -delete
+# The sweep now runs before the free-space check above; repeating it here would
+# be a no-op on the snapshot just written. The CALLER owns this snapshot's
+# lifetime -- sync_to_box.sh still needs it to build the Strategy Lab analysis
+# cache -- and deletes it once finished. It is safe to delete because this
+# script has already round-tripped it through S3 and re-verified the download.
 
 echo "verified off-host database backup: s3://$BUCKET/$object_key"
 echo "WEATHEREDGE_BACKUP_SNAPSHOT=$snapshot"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
+
+from .. import _sqlite
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +38,7 @@ def _latest_consensus_inputs(db_path: Path) -> tuple[str, float, dict[str, float
 
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return None
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """

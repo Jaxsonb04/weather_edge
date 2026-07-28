@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
+
+from .. import _sqlite
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -304,7 +306,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
     if not _db_table_exists(db_path, "paper_orders"):
         return {**empty, "reason": "paper_orders table is not available yet."}
 
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         journal_rows = conn.execute(
             "SELECT * FROM paper_orders "
@@ -551,7 +553,7 @@ def _research_daily_target_payload(db_path: Path) -> dict[str, Any]:
             "available": False,
             "reason": "target research has not activated yet",
         }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         row = conn.execute(
             "SELECT 1 FROM research_daily_goals WHERE account_id=? "
             "AND policy_version=? LIMIT 1",
@@ -647,7 +649,7 @@ def _paper_diagnostics(
         db_path = Path(source)
         if not db_path.exists() or not _db_table_exists(db_path, "paper_orders"):
             return _empty_paper_diagnostics()
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM paper_orders "
@@ -888,7 +890,7 @@ def _latest_monitor_marks(
 ) -> dict[int, dict[str, Any]]:
     if not db_path.exists() or not _db_table_exists(db_path, "paper_monitor_snapshots"):
         return {}
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         if order_ids is None:
             if not _db_table_exists(db_path, "paper_orders"):
@@ -918,7 +920,7 @@ def _latest_position_marks(
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return {}
     marks: dict[tuple[str, str], dict[str, Any]] = {}
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         if position_keys is None:
             if not _db_table_exists(db_path, "paper_orders"):

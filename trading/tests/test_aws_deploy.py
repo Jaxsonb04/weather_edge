@@ -1523,3 +1523,24 @@ def test_disable_systemd_timers_knows_about_every_installed_timer():
 
     for timer in installed_timers:
         assert timer in disable_script, timer
+
+
+def test_backup_sweep_precedes_the_free_space_measurement() -> None:
+    helper = _read(AWS_DIR / "backup_paper_db.sh")
+    sweep_idx = helper.index('-mtime "+$KEEP_DAYS" -delete')
+    measure_idx = helper.index('database_bytes="$(wc -c < "$DB_PATH")"')
+    preflight_exit_idx = helper.index('if [[ "$MODE" == "preflight" ]]; then')
+    assert sweep_idx < measure_idx < preflight_exit_idx, (
+        "the retention sweep must run before the space check, and before the "
+        "preflight early-exit, or a preflight can never reclaim anything"
+    )
+
+
+def test_deploy_removes_the_verified_snapshot_after_the_analysis_refresh() -> None:
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    analysis_idx = deployer.index("bash deploy/aws/refresh_strategy_analysis_cache.sh")
+    removal_idx = deployer.index("rm -f -- '$ANALYSIS_DB_SNAPSHOT'")
+    assert analysis_idx < removal_idx, (
+        "the snapshot feeds the Strategy Lab refresh; it may only be removed "
+        "after that step has consumed it"
+    )

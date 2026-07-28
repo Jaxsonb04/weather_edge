@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+
+from .. import _sqlite
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -514,7 +516,7 @@ def _decision_lead_mode_counts(
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return _empty_lead_mode_counts()
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -611,7 +613,7 @@ def _forecast_lead_mode(
 def _latest_decision_rows(db_path: Path) -> list[dict[str, Any]]:
     if not db_path.exists() or not _db_table_exists(db_path, "decision_snapshots"):
         return []
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         columns = {
             str(row[1])
@@ -681,7 +683,7 @@ def _bounded_scan_context_decision_rows(
     # scan when the requested row limit exceeds the recent-context cardinality.
     # These internal values are sanitized integers; literals preserve the
     # scan-context index plan and keep work proportional to the bounded tail.
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""

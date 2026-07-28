@@ -33,6 +33,8 @@ import argparse
 import json
 import math
 import sqlite3
+
+from . import _sqlite
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
@@ -76,7 +78,7 @@ def _load_live_emos(
     if not weather_db.exists():
         return {}
     preferred: dict[str, tuple[tuple[int, str], tuple[float, float]]] = {}
-    with sqlite3.connect(weather_db) as conn:
+    with _sqlite.connect(weather_db) as conn:
         if (
             conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='forecast_emos_daily_high'"

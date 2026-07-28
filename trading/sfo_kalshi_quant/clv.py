@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from . import _sqlite
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -281,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     args = parser.parse_args(argv)
 
-    with sqlite3.connect(args.db) as conn:
+    with _sqlite.connect(args.db) as conn:
         records = load_order_clv(conn)
     report = build_report(records)
 

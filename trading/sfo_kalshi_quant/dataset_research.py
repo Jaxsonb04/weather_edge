@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+
+from . import _sqlite
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -188,7 +190,7 @@ def _load_forecast_feature_candidates(db_path: Path) -> list[_FeatureCandidate]:
         ORDER BY source, model, variable, lead_hours, target_date, issued_at
     """
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             if not _table_exists(conn, "dataset_forecast_features"):
                 return []
             rows = conn.execute(query).fetchall()
@@ -660,7 +662,7 @@ def _dataset_coverage(db_path: Path) -> dict[str, Any]:
     if not Path(db_path).exists():
         return {"available": False, "tables": tables, "forecast_feature_sources": []}
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             for table in list(tables):
                 tables[table] = _table_count(conn, table)
             if not _table_exists(conn, "dataset_forecast_features"):
@@ -726,7 +728,7 @@ def _dataset_source_health(db_path: Path, *, now: datetime | None = None) -> dic
     if not Path(db_path).exists():
         return {**empty, "warnings": [_dataset_warning("dataset-db-missing", "Dataset DB missing")]}
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _sqlite.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             if not _table_exists(conn, "dataset_runs"):
                 return {
@@ -785,7 +787,7 @@ def _dataset_source_health(db_path: Path, *, now: datetime | None = None) -> dic
 def _market_history_counts(db_path: Path) -> dict[str, int]:
     if not Path(db_path).exists():
         return {"markets": 0, "candles": 0, "trades": 0}
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         return {
             "markets": _table_count(conn, "dataset_kalshi_markets"),
             "candles": _table_count(conn, "dataset_kalshi_candles"),

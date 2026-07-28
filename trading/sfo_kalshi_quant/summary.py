@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+
+from . import _sqlite
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -580,7 +582,7 @@ def _window_profile_totals(
 def _load_orders(db_path: Path) -> list[dict[str, Any]]:
     if not Path(db_path).exists():
         return []
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         if not _table_exists(conn, "paper_orders"):
             return []
@@ -635,7 +637,7 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
     empty = _empty_decision_stats()
     if not Path(db_path).exists():
         return empty
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         if not _table_exists(conn, "decision_snapshots"):
             return empty
@@ -897,7 +899,7 @@ def _data_collected(db_path: Path, window_start: date) -> dict[str, int]:
     if not Path(db_path).exists():
         return {table: 0 for table in _DATA_TABLES}
     cutoff = datetime.combine(window_start, datetime.min.time(), tzinfo=SFO_TZ).astimezone(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite.connect(db_path) as conn:
         for table in _DATA_TABLES:
             if not _table_exists(conn, table):
                 counts[table] = 0

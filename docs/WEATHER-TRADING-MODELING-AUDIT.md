@@ -621,7 +621,17 @@ Evidence, measured on the build machine at HEAD:
 
  The branch's +9 are the tests added with that fix. GitHub Actions has been **green on every recent `main` push** (runs 30289800225, 30289029915, 30253639126, …, ~2m35s each), which is consistent: Linux runners do not have a 256-descriptor limit, so CI never hit the leak. **A trustworthy regression gate does exist** — CI, and locally any run with a raised descriptor limit.
 Impact: much smaller than first stated, but not zero. The tracked "suite green" claim **is** verifiable, and the §11 program does have a regression signal. What remains real is (a) the descriptor leak itself, which is a genuine latent defect — a long-lived process that opens many connections will exhaust its own limit — and (b) the network-installing and `systemctl`-dependent tests, which make a local full run slow and host-dependent even though they do not make it non-deterministic. The retention fix was subsequently certified regression-free at full-suite level on this basis: `main` 2141 passed / branch 2150 passed, zero failures on both, plus all three CI checks passing on PR #73.
-Response: make `connect()` a closing context manager (or have callers close it) — that is the actual defect and it is a few lines; have `scripts/run_tests.sh` raise `ulimit -n` so a local run cannot silently manufacture failures; and mark the installing and `systemctl`-dependent tests opt-in so the local lane is fast and host-independent. The green baseline is **`main` @ `d16448cf`: 2141 passed, 8 skipped** (build Mac, `ulimit -n 8192`, 2026-07-27). None of this blocks the §11 program.
+Response: **DONE 2026-07-28.** The descriptor leak is fixed at the class level, not just in `PaperStore`. `sfo_kalshi_quant/_sqlite.py` provides a `ClosingConnection` whose `__exit__` commits *and* closes, and all **33** `with sqlite3.connect(...)` sites across 12 modules now use it, along with `PaperStore.connect`. The nine bare-assignment sites are deliberately untouched — several bind a connection and then re-enter it with a nested `with conn:` transaction block, where closing on exit would end the transaction early.
+
+Measured effect at the **default** `ulimit -n 256` on the build Mac:
+
+| | failures at `ulimit -n 256` |
+|---|---:|
+| before | ~30, shifting between runs |
+| `PaperStore.connect` fixed only | 1 |
+| whole class fixed | **0 — 2156 passed, 8 skipped** |
+
+So the workaround is retired: the suite no longer needs a raised descriptor limit, and a local run can no longer manufacture failures that look like flaky tests. Green baseline is now **2156 passed, 8 skipped** at stock limits. Still outstanding and unchanged: one test performs a real network `pip install` and others shell out to real `systemctl`, which makes a local full run slow and host-dependent — but not non-deterministic. None of this blocks the §11 program.
 
 ### 6.G Claims, documentation and the dashboard
 

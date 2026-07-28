@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from . import _sqlite
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -193,7 +195,7 @@ class SfoForecasterAdapter:
         if not self.weather_db.exists():
             return None
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 official_row = None
                 if _table_exists(conn, "nws_daily_high_ground_truth"):
                     official_row = conn.execute(
@@ -349,7 +351,7 @@ class SfoForecasterAdapter:
             LIMIT 1
         """
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 row = conn.execute(query, (target.isoformat(),)).fetchone()
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
@@ -439,7 +441,7 @@ class SfoForecasterAdapter:
             LIMIT 1
         """
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "google_challenger_research_baseline"):
                     return None
                 row = conn.execute(query, (self.station_id, target.isoformat())).fetchone()
@@ -467,7 +469,7 @@ class SfoForecasterAdapter:
             WHERE station_id = ? AND target_date = ?
         """
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_emos_daily_high"):
                     return None
                 columns = {
@@ -529,7 +531,7 @@ class SfoForecasterAdapter:
         if not self.weather_db.exists():
             raise ForecastDataError(f"Missing forecast archive: {self.weather_db}")
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_emos_daily_high"):
                     return []
                 settlement_columns = (
@@ -633,7 +635,7 @@ class SfoForecasterAdapter:
         if not self.weather_db.exists():
             raise ForecastDataError(f"Missing forecast archive: {self.weather_db}")
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_blend_daily_high"):
                     raise ForecastDataError("forecast_blend_daily_high archive table is missing")
                 settlement_columns = (
@@ -701,7 +703,7 @@ class SfoForecasterAdapter:
 
         if not self.weather_db.exists():
             return {}
-        with sqlite3.connect(self.weather_db) as conn:
+        with _sqlite.connect(self.weather_db) as conn:
             if not _table_exists(conn, "cli_settlements"):
                 return {}
             columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
@@ -723,7 +725,7 @@ class SfoForecasterAdapter:
 
         if not self.weather_db.exists():
             return {}
-        with sqlite3.connect(self.weather_db) as conn:
+        with _sqlite.connect(self.weather_db) as conn:
             if not _table_exists(conn, "cli_settlements"):
                 return {}
             return load_cli_settlement_truth(conn)
@@ -770,7 +772,7 @@ class SfoForecasterAdapter:
         clauses: list[str] = []
         params: list[object] = []
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 station_keyed = _table_exists(conn, "forecast_emos_daily_high") and (
                     "station_id"
                     in {
@@ -799,7 +801,7 @@ class SfoForecasterAdapter:
         # when a later maintenance rebuild carries a newer fetched_at stamp.
         query += " ORDER BY CASE WHEN source = 'live' THEN 1 ELSE 0 END, fetched_at"
         try:
-            with sqlite3.connect(self.weather_db) as conn:
+            with _sqlite.connect(self.weather_db) as conn:
                 if not _table_exists(conn, "forecast_emos_daily_high"):
                     return {}
                 rows = conn.execute(query, tuple(params)).fetchall()
