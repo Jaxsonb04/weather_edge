@@ -603,6 +603,7 @@ const ARCHIVED_PROFILE_ORDER = [
   "live-legacy",
   "research-target-v1",
   "research-target-v2",
+  "research-target-v3",
   "research-motion",
   "research",
 ] as const;

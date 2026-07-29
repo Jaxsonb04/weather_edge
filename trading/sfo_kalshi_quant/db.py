@@ -72,6 +72,7 @@ from .research_policy import (
     TARGET_POLICY,
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
+    TARGET_POLICY_V3,
     ResearchSleeve,
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
@@ -509,6 +510,7 @@ class ResearchDecisionEvidence:
 _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY_V1.account_id: TARGET_POLICY_V1,
     TARGET_POLICY_V2.account_id: TARGET_POLICY_V2,
+    TARGET_POLICY_V3.account_id: TARGET_POLICY_V3,
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
@@ -1830,6 +1832,7 @@ class PaperStore:
         expected_profile = {
             TARGET_POLICY_V1.account_id: "research-target-v1",
             TARGET_POLICY_V2.account_id: "research-target-v2",
+            TARGET_POLICY_V3.account_id: "research-target-v3",
             TARGET_POLICY.account_id: "research-target",
             MOTION_POLICY.account_id: "research-motion",
         }[account_id]
