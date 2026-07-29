@@ -625,6 +625,7 @@ def _research_book_profiles(
         "live-legacy",
         "research-target-v1",
         "research-target-v2",
+        "research-target-v3",
         "research-motion",
         "research",
     ):

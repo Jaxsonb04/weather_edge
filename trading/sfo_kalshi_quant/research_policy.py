@@ -111,9 +111,14 @@ TARGET_POLICY_V2 = ResearchSleevePolicy(
     allocator_version="policy-sized-v2",
 )
 
-# Active paper-only ROI experiment. A fresh account keeps v1 and v2 evidence
-# immutable while applying the bounded aggressive limits chosen for v3.
-TARGET_POLICY = ResearchSleevePolicy(
+# Frozen paper-only ROI experiment (2026-07-26..29). Measured outcome: the
+# larger per-position budget (8%) turned every maker request into ~90 contracts
+# whose reservation consumed the city/region/aggregate caps, collapsing the
+# number of concurrently resting quotes from ~9.6 to ~4.3 and realized P&L from
+# ~$8/day (v1 geometry) to ~$1/day. Day-clustered attribution of the position
+# knob alone: $2.70/day (95% CI $0.30-$6.15). Its ledger stays archived as the
+# evidence record of that measurement.
+TARGET_POLICY_V3 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-roi-v3",
     policy_version="research-target-roi-v3",
@@ -124,6 +129,29 @@ TARGET_POLICY = ResearchSleevePolicy(
     max_region_day_risk_pct=0.20,
     max_aggregate_risk_pct=0.40,
     daily_loss_pause_pct=0.12,
+    min_lead_days=1,
+    one_contract=False,
+    allocator_version="policy-sized-v3",
+)
+
+# Active paper-only ROI experiment. v4 keeps the v3 objective (5%/day KPI) and
+# the v3 allocator semantics, but restores the v1 risk geometry that funded
+# BREADTH: many small concurrent resting quotes across market-sides is what
+# captured tape (v1: ~9.6 concurrent quotes, ~71 filled maker contracts/day at
+# ~$0.094/contract), while v3's fewer oversized quotes filled ~15/day. The
+# per-position budget is the lever that sets both the request size (~33 vs ~90
+# contracts) and the reservation each quote charges against the shared caps.
+TARGET_POLICY = ResearchSleevePolicy(
+    sleeve=ResearchSleeve.TARGET,
+    account_id="paper-research-roi-v4",
+    policy_version="research-target-roi-v4",
+    reference_equity=1000.0,
+    target_return=0.05,
+    max_position_risk_pct=0.03,
+    max_city_target_risk_pct=0.06,
+    max_region_day_risk_pct=0.12,
+    max_aggregate_risk_pct=0.25,
+    daily_loss_pause_pct=0.10,
     min_lead_days=1,
     one_contract=False,
     allocator_version="policy-sized-v3",
@@ -152,6 +180,7 @@ MOTION_POLICY = ResearchSleevePolicy(
 ALL_RESEARCH_POLICIES = (
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
+    TARGET_POLICY_V3,
     TARGET_POLICY,
     MOTION_POLICY,
 )

@@ -22,6 +22,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY,
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
+    TARGET_POLICY_V3,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -227,7 +228,11 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
 
     assert TARGET_POLICY_V1.policy_fingerprint == "dea759010dc85ca5f4f610e2"
     assert TARGET_POLICY_V2.policy_fingerprint == "6a534a48478301a3068eb10d"
-    assert TARGET_POLICY.policy_fingerprint == "edd7001fa6eb6e7ecfd94b48"
+    assert TARGET_POLICY_V3.policy_fingerprint == "edd7001fa6eb6e7ecfd94b48"
+    # 2026-07-29: TARGET_POLICY moved to v4 deliberately -- the v3 oversize
+    # geometry was measured to cost $2.70/day (95% CI $0.30-$6.15) by starving
+    # quote breadth, so v4 restores the v1 risk geometry under the 5% KPI.
+    assert TARGET_POLICY.policy_fingerprint == "982654641249be8a63739a5c"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
@@ -249,8 +254,14 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # evidence record will show a live policy revision on this date that changed
     # no behaviour: it was taken to answer whether the book could take size one
     # cent deeper, which 86.2% depth-bound approvals made the binding question.
-    assert strategy_fingerprint(config, entry_mode="limit") == "ef556591ad42e83cf4648796"
-    assert strategy_fingerprint(config, entry_mode="market") == "d4f1bf4bedf4d997e2eb2edb"
+    # 2026-07-29: moved again, deliberately, by the phantom-budget fix
+    # (max_position_risk_pct 0.08 -> 0.03). The 8% recommendation was cut to
+    # ~$30 at placement anyway, but its pre-clamp price consumed the whole 8%
+    # daily budget in the allocator, capping live at one leg per allocation
+    # (measured 1103/1106). Sizing at placement is unchanged; the allocator
+    # simply stops double-charging risk the book never takes.
+    assert strategy_fingerprint(config, entry_mode="limit") == "dd8002d07a4944f2b90ccce0"
+    assert strategy_fingerprint(config, entry_mode="market") == "184c4a8ed01260f0e61d39cd"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1199,7 +1210,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "d4f1bf4bedf4d997e2eb2edb"
+    assert row["strategy_fingerprint"] == "184c4a8ed01260f0e61d39cd"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

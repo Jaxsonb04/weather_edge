@@ -17,6 +17,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY,
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
+    TARGET_POLICY_V3,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.profile_identity import (
@@ -100,16 +101,19 @@ def test_target_v2_is_frozen_and_target_v3_is_the_only_active_policy() -> None:
     assert TARGET_POLICY_V2.target_return == 0.016
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    assert TARGET_POLICY.account_id == "paper-research-roi-v3"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v3"
+    # 2026-07-29: the active target policy is v4 -- v1 risk geometry restored
+    # under the unchanged 5% KPI after the v3 oversize experiment was measured
+    # to starve quote breadth ($2.70/day cost, 95% CI $0.30-$6.15).
+    assert TARGET_POLICY.account_id == "paper-research-roi-v4"
+    assert TARGET_POLICY.policy_version == "research-target-roi-v4"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_return == 0.05
     assert TARGET_POLICY.target_pnl == 50.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.08
-    assert TARGET_POLICY.max_city_target_risk_pct == 0.10
-    assert TARGET_POLICY.max_region_day_risk_pct == 0.20
-    assert TARGET_POLICY.max_aggregate_risk_pct == 0.40
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.12
+    assert TARGET_POLICY.max_position_risk_pct == 0.03
+    assert TARGET_POLICY.max_city_target_risk_pct == 0.06
+    assert TARGET_POLICY.max_region_day_risk_pct == 0.12
+    assert TARGET_POLICY.max_aggregate_risk_pct == 0.25
+    assert TARGET_POLICY.daily_loss_pause_pct == 0.10
     assert TARGET_POLICY.min_lead_days == 1
     assert TARGET_POLICY.one_contract is False
     assert TARGET_POLICY.allocator_version == "policy-sized-v3"
@@ -117,6 +121,7 @@ def test_target_v2_is_frozen_and_target_v3_is_the_only_active_policy() -> None:
     assert ALL_RESEARCH_POLICIES == (
         TARGET_POLICY_V1,
         TARGET_POLICY_V2,
+        TARGET_POLICY_V3,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -159,6 +164,7 @@ def test_fresh_store_archives_every_research_policy_except_v3(tmp_path) -> None:
     assert statuses == {
         TARGET_POLICY_V1.account_id: "ARCHIVED",
         TARGET_POLICY_V2.account_id: "ARCHIVED",
+        TARGET_POLICY_V3.account_id: "ARCHIVED",
         TARGET_POLICY.account_id: "ACTIVE",
         MOTION_POLICY.account_id: "ARCHIVED",
     }

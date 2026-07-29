@@ -459,7 +459,21 @@ LIVE_PROFILE_OVERRIDES = {
     # paper appetite. The positive after-fee edge_lcb>=0 floor is UNCHANGED, so a
     # bigger size is still a positive-EV bet, never a manufactured negative-EV one.
     # PENDING walk-forward validation before any real-money use.
-    "max_position_risk_pct": 0.08,
+    #
+    # PHANTOM-BUDGET FIX (2026-07-29): 0.08 -> 0.03. Since the 07-10 account
+    # clamp (account.py: min(NORMAL_POSITION_CAP=$30, NORMAL_POSITION_PCT=3%)),
+    # the 8% per-position budget has been phantom at placement: every live leg
+    # is cut to ~$30 when the order is written. But the ALLOCATOR still budgets
+    # the pre-clamp recommended_spend (~$84 = 8% of bankroll) against the 8%
+    # daily loss budget in portfolio.py, so leg #1 consumed the entire day's
+    # directional budget and every later candidate was skipped as "directional
+    # risk budget is full" (measured: 1103/1106 live allocations since 07-18
+    # hold exactly ONE approved leg; the skip reason grew 7->60 rows/day). At
+    # 0.03 the recommended spend (~$31.5) matches what placement actually
+    # risks, so the same $84 daily budget admits ~2-3 legs instead of one
+    # phantom-priced leg. Per-order size is UNCHANGED (the $30 clamp already
+    # bound); this only stops the allocator double-charging risk it never takes.
+    "max_position_risk_pct": 0.03,
     "max_event_risk_pct": 0.12,
     "max_target_exposure_pct": 0.18,
     "max_forecast_age_hours": 12.0,
