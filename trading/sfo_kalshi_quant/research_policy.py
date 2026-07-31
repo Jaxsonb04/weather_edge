@@ -154,7 +154,9 @@ TARGET_POLICY_V4 = ResearchSleevePolicy(
     allocator_version="policy-sized-v3",
 )
 
-# Active paper-only ROI experiment. v5 scales the v4 geometry by exactly 1.5x
+# Frozen 1.5x step (2026-07-31). Superseded by v6 the same day once the size
+# curve was measured end-to-end; kept as an archived ledger.
+# v5 scaled the v4 geometry by exactly 1.5x
 # on every dollar knob while PRESERVING the ratios that make breadth work
 # (aggregate/position stays ~8.3 concurrent quotes, city/position stays 2 per
 # city). Evidence for the size step: every one of v4's day-one winners filled
@@ -163,7 +165,7 @@ TARGET_POLICY_V4 = ResearchSleevePolicy(
 # burst days the tape absorbs more than the $30 budget bought. v3's failure
 # was raising size while holding the shared caps fixed, which traded breadth
 # for size; v5 raises both together so concurrency is unchanged.
-TARGET_POLICY = ResearchSleevePolicy(
+TARGET_POLICY_V5 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-roi-v5",
     policy_version="research-target-roi-v5",
@@ -174,6 +176,55 @@ TARGET_POLICY = ResearchSleevePolicy(
     max_region_day_risk_pct=0.18,
     max_aggregate_risk_pct=0.375,
     daily_loss_pause_pct=0.12,
+    min_lead_days=1,
+    one_contract=False,
+    allocator_version="policy-sized-v3",
+)
+
+
+# Active paper-only ROI experiment. v6 is the LAST uniform size step: the size
+# curve was replayed end-to-end against the recorded public tape (every maker
+# parent order re-run through the repo's own allocate_maker_fills and the db.py
+# capacity gate), and it saturates. Measured $/day by scale factor over v4:
+# 1.5x (v5) baseline, 3.0x $15.2, 3.5x $15.5, 4.0x $15.8, 6.0x $16.4 - and both
+# sub-steps above 3.0x have bootstrap 95% lower bounds of exactly $0.00. The
+# 1.5x -> 3.0x step is +$2.9/day (day-clustered 95% CI [+$0.62, +$5.73]) and
+# survives leave-one-day-out ([+$1.98, +$3.21]) and leave-one-ORDER-out; the
+# 3.0x -> 6.0x step does not (it is one order, and deleting it flips the sign
+# negative). Request-truncation - the signal that size is still binding - is
+# already spent at 3.0x (3.9% -> 2.6%).
+#
+# STOP RULE: do NOT propose a further uniform size step on tape evidence alone.
+# The gate for any v7 is a NEWLY MEASURED truncation rate above ~10% on filled
+# maker orders after v6 has run, not an opinion. Above 3.0x the extra request
+# size is dead-weight reservation: capture of requested size falls 2.21% (3.0x)
+# -> 1.75% (4.0x) -> 1.00% (8x), while the structural full-loss day grows from
+# -$237 to -$327.
+#
+# GEOMETRY INVARIANT (enforced by test_target_geometry_invariants): the ratios,
+# not the absolute dollars, are what fund breadth. v3 raised size while holding
+# the shared caps fixed, cutting concurrent resting quotes 9.6 -> 4.3 and
+# costing $2.70/day. Every scale step must move ALL dollar knobs together so
+# aggregate/position stays 8.33 and city/position stays 2.0.
+#
+# target_return stays 0.05. The daily target-attained lock (db.py: "target
+# attained: new target risk is locked for the objective day") only halts new
+# entries once a day has already realized $50 - more than double the book's
+# best day to date - and it was measured blocking 0 of 487 placements. It is a
+# real ceiling on compounding at this size, but raising it is a change to the
+# published KPI and to the goal-freezing contract, so it waits for the day the
+# lock is measured actually firing rather than being bundled into a size step.
+TARGET_POLICY = ResearchSleevePolicy(
+    sleeve=ResearchSleeve.TARGET,
+    account_id="paper-research-roi-v6",
+    policy_version="research-target-roi-v6",
+    reference_equity=1000.0,
+    target_return=0.05,
+    max_position_risk_pct=0.09,
+    max_city_target_risk_pct=0.18,
+    max_region_day_risk_pct=0.36,
+    max_aggregate_risk_pct=0.75,
+    daily_loss_pause_pct=0.15,
     min_lead_days=1,
     one_contract=False,
     allocator_version="policy-sized-v3",
@@ -204,6 +255,7 @@ ALL_RESEARCH_POLICIES = (
     TARGET_POLICY_V2,
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
+    TARGET_POLICY_V5,
     TARGET_POLICY,
     MOTION_POLICY,
 )
