@@ -79,6 +79,7 @@ def _profile_view(
         "research-target-v2",
         "research-target-v3",
         "research-target-v4",
+        "research-target-v5",
         "research-motion",
     }
     return {
@@ -476,8 +477,9 @@ def _profile_sort_key(name: str) -> tuple[int, str]:
         "research-target-v2": 4,
         "research-target-v3": 5,
         "research-target-v4": 6,
-        "research-motion": 7,
-        "research": 8,
+        "research-target-v5": 7,
+        "research-motion": 8,
+        "research": 9,
         "unknown": 9,
     }
     return order.get(name, 8), name
@@ -500,6 +502,8 @@ def _profile_label(name: str) -> str:
         return "Research ROI v3 (archived oversize experiment)"
     if name == "research-target-v4":
         return "Research ROI v4 (archived breadth restoration)"
+    if name == "research-target-v5":
+        return "Research ROI v5 (archived 1.5x step)"
     if name == "research-motion":
         return "Research motion (archived execution learning)"
     return name

@@ -24,6 +24,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V2,
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
+    TARGET_POLICY_V5,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -238,7 +239,12 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
     # winners all filled their FULL request (size-truncated captures), so v5
     # scales every dollar knob 1.5x with ratios preserved (concurrency
     # unchanged at ~8.3 quotes; only the dollars per quote grow).
-    assert TARGET_POLICY.policy_fingerprint == "cf33c27f3f70129be1e4a9e8"
+    assert TARGET_POLICY_V5.policy_fingerprint == "cf33c27f3f70129be1e4a9e8"
+    # 2026-07-31: TARGET_POLICY moved to v6, the LAST uniform size step. The
+    # size curve was replayed against recorded tape and saturates above 3.0x of
+    # v4 (both sub-steps past 3.0x have bootstrap 95% lower bounds of $0.00),
+    # so this pin also marks where scaling stops being evidence-led.
+    assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 

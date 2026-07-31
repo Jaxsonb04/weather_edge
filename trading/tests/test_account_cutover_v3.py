@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
@@ -19,6 +21,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V2,
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
+    TARGET_POLICY_V5,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.profile_identity import (
@@ -105,16 +108,16 @@ def test_target_v2_is_frozen_and_target_v3_is_the_only_active_policy() -> None:
     # 2026-07-31: the active target policy is v5 -- the v4 breadth geometry
     # scaled 1.5x on every dollar knob with ratios preserved, because v4's
     # day-one winners were all request-truncated (size, not breadth, bound).
-    assert TARGET_POLICY.account_id == "paper-research-roi-v5"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v5"
+    assert TARGET_POLICY.account_id == "paper-research-roi-v6"
+    assert TARGET_POLICY.policy_version == "research-target-roi-v6"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_return == 0.05
     assert TARGET_POLICY.target_pnl == 50.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.045
-    assert TARGET_POLICY.max_city_target_risk_pct == 0.09
-    assert TARGET_POLICY.max_region_day_risk_pct == 0.18
-    assert TARGET_POLICY.max_aggregate_risk_pct == 0.375
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.12
+    assert TARGET_POLICY.max_position_risk_pct == 0.09
+    assert TARGET_POLICY.max_city_target_risk_pct == 0.18
+    assert TARGET_POLICY.max_region_day_risk_pct == 0.36
+    assert TARGET_POLICY.max_aggregate_risk_pct == 0.75
+    assert TARGET_POLICY.daily_loss_pause_pct == 0.15
     assert TARGET_POLICY.min_lead_days == 1
     assert TARGET_POLICY.one_contract is False
     assert TARGET_POLICY.allocator_version == "policy-sized-v3"
@@ -124,6 +127,7 @@ def test_target_v2_is_frozen_and_target_v3_is_the_only_active_policy() -> None:
         TARGET_POLICY_V2,
         TARGET_POLICY_V3,
         TARGET_POLICY_V4,
+        TARGET_POLICY_V5,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -168,6 +172,7 @@ def test_fresh_store_archives_every_research_policy_except_v3(tmp_path) -> None:
         TARGET_POLICY_V2.account_id: "ARCHIVED",
         TARGET_POLICY_V3.account_id: "ARCHIVED",
         TARGET_POLICY_V4.account_id: "ARCHIVED",
+        TARGET_POLICY_V5.account_id: "ARCHIVED",
         TARGET_POLICY.account_id: "ACTIVE",
         MOTION_POLICY.account_id: "ARCHIVED",
     }
@@ -413,3 +418,40 @@ def test_only_v3_research_capacity_accepts_new_risk(tmp_path) -> None:
         "allowed_spend": 20.0,
         "reason": None,
     }
+
+
+def test_target_geometry_invariants_prevent_a_v3_style_breadth_collapse() -> None:
+    """The ratios, not the dollars, are what fund concurrent quote breadth.
+
+    v3 raised ``max_position_risk_pct`` 0.03 -> 0.08 while leaving the shared
+    caps alone. Because the research admission gate is all-or-nothing at the
+    requested spend, that cut the number of quotes that can rest at once from
+    ~9.6 to ~4.3 and cost a measured $2.70/day (95% CI $0.30-$6.15). Maker
+    fills come from public tape trading through a resting price, so breadth in
+    front of the tape - not size per quote - is what buys volume.
+
+    Any future scale step must therefore move EVERY dollar knob together. This
+    guard is scoped to the active target policy on purpose: v2/v3 and the
+    one-contract motion sleeve are archived evidence and legitimately violate it.
+    """
+
+    concurrency = (
+        TARGET_POLICY.max_aggregate_risk_pct / TARGET_POLICY.max_position_risk_pct
+    )
+    assert concurrency == pytest.approx(8.33, abs=0.01), (
+        "aggregate/position sets how many quotes can rest at once; "
+        f"got {concurrency:.2f}, expected the v1/v4 geometry's 8.33"
+    )
+    per_city = (
+        TARGET_POLICY.max_city_target_risk_pct / TARGET_POLICY.max_position_risk_pct
+    )
+    assert per_city == pytest.approx(2.0, abs=0.01), (
+        f"city/position must allow two quotes per city; got {per_city:.2f}"
+    )
+    assert (
+        TARGET_POLICY.max_region_day_risk_pct
+        == pytest.approx(2.0 * TARGET_POLICY.max_city_target_risk_pct)
+    )
+    # The daily-loss pause is the one brake that must never be loosened in the
+    # same change that raises size, so it has to keep scaling with the book.
+    assert TARGET_POLICY.daily_loss_pause_pct >= 0.10

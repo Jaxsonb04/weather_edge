@@ -501,9 +501,9 @@ def test_target_clips_to_correlated_region_scenario_room() -> None:
         )
 
     active = [
-        # 2 x $80 = $160 pending leaves $20 of the v5 $180 west-coast region cap.
-        pending_leg("KXHIGHTSEA", "2026-07-20", 80.0),
-        pending_leg("KXHIGHLAX", "2026-07-20", 80.0),
+        # 2 x $170 = $340 pending leaves $20 of the v6 $360 west-coast region cap.
+        pending_leg("KXHIGHTSEA", "2026-07-20", 170.0),
+        pending_leg("KXHIGHLAX", "2026-07-20", 170.0),
     ]
     candidates = [
         ResearchOpportunity(
@@ -533,7 +533,7 @@ def test_target_clips_to_correlated_region_scenario_room() -> None:
         candidates[1].decision.ticker,
         candidates[0].decision.ticker,
     ]
-    # v5 geometry: west-coast region room is $180 - $160 pending = $20,
+    # v6 geometry: west-coast region room is $360 - $340 pending = $20,
     # so the TSFO leg clips to 40 contracts at $0.50.
     assert plans.target.legs[1].decision.recommended_contracts == 40.0
     assert plans.target.legs[1].spend == 20.0
@@ -552,7 +552,8 @@ def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
     active_decision = _decision(
         market,
         side="YES",
-        spend=100.0,
+        # v6 city cap is $180; leave under one $0.50 contract of room.
+        spend=179.6,
         probability=0.70,
         edge=0.20,
         edge_lcb=0.10,
@@ -560,7 +561,7 @@ def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
     active = PortfolioLeg(
         "target",
         active_decision,
-        100.0,
+        179.6,
         active_decision.expected_profit,
         0.0,
         target_date="2026-07-20",
@@ -627,7 +628,8 @@ def test_target_roi_position_risk_is_hard_capped_at_the_policy_budget() -> None:
                 yes_ask=0.20,
             ),
             side="YES",
-            spend=80.0,
+            # must exceed the v6 $90 position budget for the cap to bind
+            spend=200.0,
             probability=0.50,
             edge=0.30,
             edge_lcb=0.10,
@@ -638,9 +640,9 @@ def test_target_roi_position_risk_is_hard_capped_at_the_policy_budget() -> None:
 
     plans = allocate_research_plans([candidate])
 
-    # v5 position budget: 4.5% of $1000 = $45 -> 225 contracts at $0.20.
-    assert plans.target.legs[0].spend == 45.0
-    assert plans.target.legs[0].decision.recommended_contracts == 225.0
+    # v6 position budget: 9% of $1000 = $90 -> 450 contracts at $0.20.
+    assert plans.target.legs[0].spend == 90.0
+    assert plans.target.legs[0].decision.recommended_contracts == 450.0
 
 
 def test_infeasible_growth_target_never_loosens_target_gates_or_count() -> None:
@@ -752,7 +754,7 @@ def test_target_priority_uses_position_capped_quantity_before_log_growth() -> No
         oversized.decision.ticker,
         ordinary.decision.ticker,
     ]
-    assert plans.target.legs[0].decision.recommended_contracts == 225.0
+    assert plans.target.legs[0].decision.recommended_contracts == 450.0
 
 
 def test_target_clips_to_remaining_cash_in_integer_contracts() -> None:
@@ -792,7 +794,7 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
             yes_ask=0.50,
         ),
         side="YES",
-        spend=50.0,
+        spend=110.0,
         probability=0.70,
         edge=0.20,
         edge_lcb=0.10,
@@ -800,7 +802,7 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
     active = PortfolioLeg(
         "target",
         active_decision,
-        50.0,
+        110.0,
         active_decision.expected_profit,
         0.0,
         target_date="2026-07-20",
@@ -830,10 +832,10 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
     plans = allocate_research_plans([candidate], target_active_legs=[active])
 
     assert len(plans.target.legs) == 1
-    # v5 geometry: city-target room is $90 - $50 pending = $40 -> 200 contracts
-    # at $0.20.
-    assert plans.target.legs[0].decision.recommended_contracts == 200.0
-    assert plans.target.legs[0].spend == 40.0
+    # v6 geometry: city-target room is $180 - $110 pending = $70 -> 350
+    # contracts at $0.20.
+    assert plans.target.legs[0].decision.recommended_contracts == 350.0
+    assert plans.target.legs[0].spend == 70.0
 
 
 def test_malformed_active_exposure_fails_closed_instead_of_omitting_risk() -> None:
@@ -1325,9 +1327,9 @@ def test_one_cent_contract_is_valid_and_huge_quantity_caps_at_max_target_contrac
         target_available_cash=1e308,
     )
 
-    # v5: MAX_TARGET_CONTRACTS = floor($1000 x 4.5% / $0.01) = 4500.
-    assert plans.target.legs[0].decision.recommended_contracts == 4500.0
-    assert plans.target.legs[0].spend == 45.0
+    # v6: MAX_TARGET_CONTRACTS = floor($1000 x 9% / $0.01) = 9000.
+    assert plans.target.legs[0].decision.recommended_contracts == 9000.0
+    assert plans.target.legs[0].spend == 90.0
     assert plans.motion.legs[0].decision.recommended_contracts == 1.0
 
 
@@ -1526,7 +1528,7 @@ def test_maximum_semantic_edge_with_huge_input_quantity_reports_only_finite_metr
 
     plans = allocate_research_plans([opportunity])
 
-    assert plans.target.legs[0].decision.recommended_contracts == 4500.0
+    assert plans.target.legs[0].decision.recommended_contracts == 9000.0
     assert math.isfinite(plans.target.expected_profit)
     assert math.isfinite(plans.target.worst_case_loss)
     assert math.isfinite(plans.available_conservative_expected_profit)
@@ -1547,8 +1549,8 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
         decision = _decision(
             market,
             side="YES",
-            # 8 x $45.625 = $365 pending leaves $10 of the v5 $375 aggregate cap.
-            spend=45.625,
+            # 8 x $92.50 = $740 pending leaves $10 of the v6 $750 aggregate cap.
+            spend=92.5,
             probability=0.70,
             edge=0.20,
             edge_lcb=0.10,
@@ -1557,7 +1559,7 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
             PortfolioLeg(
                 "target",
                 decision,
-                45.625,
+                92.5,
                 decision.expected_profit,
                 0.0,
                 target_date=f"2026-07-{10 + idx:02d}",
