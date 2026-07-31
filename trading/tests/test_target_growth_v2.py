@@ -14,6 +14,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
     TARGET_POLICY_V3,
+    TARGET_POLICY_V4,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
@@ -46,23 +47,24 @@ def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> No
     assert TARGET_POLICY_V2.daily_loss_pause_pct == 0.10
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # 2026-07-29: TARGET_POLICY is v4 (v1 risk geometry, unchanged 5% KPI).
-    assert TARGET_POLICY.account_id == "paper-research-roi-v4"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v4"
+    # 2026-07-31: TARGET_POLICY is v5 (v4 breadth geometry scaled 1.5x).
+    assert TARGET_POLICY.account_id == "paper-research-roi-v5"
+    assert TARGET_POLICY.policy_version == "research-target-roi-v5"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_return == 0.05
     assert TARGET_POLICY.target_pnl == 50.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.03
-    assert TARGET_POLICY.max_city_target_risk_pct == 0.06
-    assert TARGET_POLICY.max_region_day_risk_pct == 0.12
-    assert TARGET_POLICY.max_aggregate_risk_pct == 0.25
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.10
+    assert TARGET_POLICY.max_position_risk_pct == 0.045
+    assert TARGET_POLICY.max_city_target_risk_pct == 0.09
+    assert TARGET_POLICY.max_region_day_risk_pct == 0.18
+    assert TARGET_POLICY.max_aggregate_risk_pct == 0.375
+    assert TARGET_POLICY.daily_loss_pause_pct == 0.12
     assert TARGET_POLICY.allocator_version == "policy-sized-v3"
 
     assert ALL_RESEARCH_POLICIES == (
         TARGET_POLICY_V1,
         TARGET_POLICY_V2,
         TARGET_POLICY_V3,
+        TARGET_POLICY_V4,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -114,8 +116,8 @@ def test_resting_structural_target_uses_the_active_policy_position_budget() -> N
     )
 
     assert len(plans.target.legs) == 1
-    assert plans.target.legs[0].decision.recommended_contracts == 40.0
-    assert plans.target.legs[0].spend == 30.0
+    assert plans.target.legs[0].decision.recommended_contracts == 60.0
+    assert plans.target.legs[0].spend == 45.0
 
 
 def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
@@ -159,8 +161,8 @@ def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
     assert order["account_id"] == TARGET_POLICY.account_id
     assert order["entry_mode"] == "limit"
     assert order["status"] == "PAPER_LIMIT_RESTING"
-    assert order["contracts"] == 40.0
-    assert order["reserved_cost"] == 30.0
+    assert order["contracts"] == 60.0
+    assert order["reserved_cost"] == 45.0
 
 
 def test_crossing_structural_target_stays_clamped_to_visible_depth() -> None:
@@ -317,6 +319,7 @@ def test_fresh_store_bootstraps_every_research_policy_account(tmp_path) -> None:
         "paper-research-target-v2",
         "paper-research-roi-v3",
         "paper-research-roi-v4",
+        "paper-research-roi-v5",
         "paper-research-motion-v1",
     }
     assert all(state is not None for state in states.values())

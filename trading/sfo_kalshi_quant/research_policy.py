@@ -134,14 +134,11 @@ TARGET_POLICY_V3 = ResearchSleevePolicy(
     allocator_version="policy-sized-v3",
 )
 
-# Active paper-only ROI experiment. v4 keeps the v3 objective (5%/day KPI) and
-# the v3 allocator semantics, but restores the v1 risk geometry that funded
-# BREADTH: many small concurrent resting quotes across market-sides is what
-# captured tape (v1: ~9.6 concurrent quotes, ~71 filled maker contracts/day at
-# ~$0.094/contract), while v3's fewer oversized quotes filled ~15/day. The
-# per-position budget is the lever that sets both the request size (~33 vs ~90
-# contracts) and the reservation each quote charges against the shared caps.
-TARGET_POLICY = ResearchSleevePolicy(
+# Frozen breadth-restoration era (2026-07-29..31). v4 restored the v1 risk
+# geometry after the v3 oversize experiment starved quote breadth; its first
+# full day realized +$30.17 on 272 filled contracts. Its ledger stays archived
+# as the evidence record that breadth, not per-order size, is the volume lever.
+TARGET_POLICY_V4 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-roi-v4",
     policy_version="research-target-roi-v4",
@@ -152,6 +149,31 @@ TARGET_POLICY = ResearchSleevePolicy(
     max_region_day_risk_pct=0.12,
     max_aggregate_risk_pct=0.25,
     daily_loss_pause_pct=0.10,
+    min_lead_days=1,
+    one_contract=False,
+    allocator_version="policy-sized-v3",
+)
+
+# Active paper-only ROI experiment. v5 scales the v4 geometry by exactly 1.5x
+# on every dollar knob while PRESERVING the ratios that make breadth work
+# (aggregate/position stays ~8.3 concurrent quotes, city/position stays 2 per
+# city). Evidence for the size step: every one of v4's day-one winners filled
+# its FULL request (fills were request-truncated, 40-53 contracts at 0.56-0.72
+# limits), and 19/59 of the v1 era's fills were request-truncated too - on
+# burst days the tape absorbs more than the $30 budget bought. v3's failure
+# was raising size while holding the shared caps fixed, which traded breadth
+# for size; v5 raises both together so concurrency is unchanged.
+TARGET_POLICY = ResearchSleevePolicy(
+    sleeve=ResearchSleeve.TARGET,
+    account_id="paper-research-roi-v5",
+    policy_version="research-target-roi-v5",
+    reference_equity=1000.0,
+    target_return=0.05,
+    max_position_risk_pct=0.045,
+    max_city_target_risk_pct=0.09,
+    max_region_day_risk_pct=0.18,
+    max_aggregate_risk_pct=0.375,
+    daily_loss_pause_pct=0.12,
     min_lead_days=1,
     one_contract=False,
     allocator_version="policy-sized-v3",
@@ -181,6 +203,7 @@ ALL_RESEARCH_POLICIES = (
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
     TARGET_POLICY_V3,
+    TARGET_POLICY_V4,
     TARGET_POLICY,
     MOTION_POLICY,
 )
