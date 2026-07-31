@@ -23,6 +23,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
     TARGET_POLICY_V3,
+    TARGET_POLICY_V4,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -231,8 +232,13 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
     assert TARGET_POLICY_V3.policy_fingerprint == "edd7001fa6eb6e7ecfd94b48"
     # 2026-07-29: TARGET_POLICY moved to v4 deliberately -- the v3 oversize
     # geometry was measured to cost $2.70/day (95% CI $0.30-$6.15) by starving
-    # quote breadth, so v4 restores the v1 risk geometry under the 5% KPI.
-    assert TARGET_POLICY.policy_fingerprint == "982654641249be8a63739a5c"
+    # quote breadth, so v4 restored the v1 risk geometry under the 5% KPI.
+    assert TARGET_POLICY_V4.policy_fingerprint == "982654641249be8a63739a5c"
+    # 2026-07-31: TARGET_POLICY moved to v5 deliberately -- v4's day-one
+    # winners all filled their FULL request (size-truncated captures), so v5
+    # scales every dollar knob 1.5x with ratios preserved (concurrency
+    # unchanged at ~8.3 quotes; only the dollars per quote grow).
+    assert TARGET_POLICY.policy_fingerprint == "cf33c27f3f70129be1e4a9e8"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
