@@ -1,8 +1,8 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-05 15:23 PDT
+Last updated: 2026-08-05 16:22 PDT
 
-Last production verification: 2026-08-05 15:03 PDT
+Last production verification: 2026-08-05 16:22 PDT
 
 Last public artifact verification: 2026-08-05 15:08 PDT
 
@@ -55,7 +55,27 @@ current AWS state before making an operational claim.
   disabled and dry-run remained enabled. This audit made no policy, service,
   order, ledger, deployment, or other production mutation.
 
-- **LOCAL RECRUITER-SITE REDESIGN COMPLETE, NOT YET DEPLOYED (2026-08-05):**
+- **RECRUITER-SITE DESIGN DEPLOYED (2026-08-05, PR #84):** the React SPA from
+  merge `1356a73beedef927d6227ab389acfad69ada66a2` was published with the
+  web-only deploy path. The AWS Python/runtime source deliberately remains on
+  `2c7a4b25948a6bccd38d506ea27db27f0bbcf2d9`; the user explicitly narrowed
+  this release to the design after the full runtime backup proved slow. The
+  runtime publisher changes in PR #84 therefore remain pending a later full,
+  backup-gated runtime sync.
+
+  A full sync was started, then canceled during its verified database-backup
+  gate at the user's direction. The orphaned upload and its exact temporary
+  local snapshot were removed; no source or schema transfer had begun. Recovery
+  cleared the deployment-maintenance marker, restored all 12 previously enabled
+  timers, restarted publication producers, and returned the host to zero failed
+  units with no backup process remaining. Live execution stayed disabled and
+  the runtime remained paper-only throughout.
+
+  Live production canaries at 390x844 and 1440x1000 verified zero horizontal
+  overflow, four featured archive tabs, exactly one selected evidence panel,
+  preserved open and closed position sections, and omission of the zero-trade
+  v2 archive. The Strategy Lab loaded without an error on the public URL.
+
   Strategy Lab keeps the publication-stamped dossier and economically separate
   Live Stability / Research ROI paper workbenches, including the open, pending,
   and closed positions the owner wanted to preserve. Research lineage is now a
@@ -105,8 +125,8 @@ current AWS state before making an operational claim.
   The 2026-08-05 pre-deploy audit also verified zero failed units, all 12 timers
   enabled and active, paper-only mode, live execution disabled, dry-run enabled,
   and exact source/manifest provenance at the clean `main` revision above. No
-  deployment or production mutation had been performed when this snapshot was
-  recorded.
+  The publisher/backend portion described above was not deployed in this
+  web-only release; only the reviewed SPA bundle was published.
 
 - **Retention timeout and disk-preflight blocker RESOLVED (2026-07-27; current
   health reconfirmed 2026-08-05):** PR #73 replaced the unbounded retention
