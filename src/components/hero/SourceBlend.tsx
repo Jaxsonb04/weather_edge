@@ -10,6 +10,8 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   history_high_f: { label: "SFO history", color: "var(--temp-hot)" },
 };
 
+const SOURCE_SPREAD_GATE_F = 10;
+
 /** Each live source plotted on a shared min–max temperature axis, so the
     spread between providers reads instantly (the gate's core input). */
 export function SourceBlend({ target }: { target: Target }) {
@@ -27,7 +29,7 @@ export function SourceBlend({ target }: { target: Target }) {
   const vals = entries.map(([k]) => sources[k]);
   const lo = Math.min(...vals) - 1;
   const hi = Math.max(...vals) + 1;
-  const wide = spread > 7;
+  const wide = spread > SOURCE_SPREAD_GATE_F;
 
   return (
     <div className="space-y-2.5">
@@ -54,13 +56,13 @@ export function SourceBlend({ target }: { target: Target }) {
           className={`flex w-fit items-center gap-1.5 pt-1 text-xs ${wide ? "text-warning" : "text-muted"}`}
         >
           <span className="tnum font-medium">Source spread {f1(spread)}</span>
-          {wide && <span>· over 7° gate threshold</span>}
+          {wide && <span>· over {SOURCE_SPREAD_GATE_F}° gate threshold</span>}
           <Icon icon="solar:info-circle-bold" className="size-3.5 opacity-70" />
         </button>
         <Tooltip.Content showArrow placement="top" className="max-w-[15rem]">
           <Tooltip.Arrow />
           <p className="text-xs">
-            When providers disagree by more than 7°F the point blend is unreliable, so the engine refuses to size a trade.
+            When published providers disagree by more than {SOURCE_SPREAD_GATE_F}°F, the paper engine refuses to size a new position.
           </p>
         </Tooltip.Content>
       </Tooltip>

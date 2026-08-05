@@ -4,6 +4,7 @@ import {
   archivedProfiles,
   equitySeries,
   equitySeriesFromDays,
+  featuredArchivedProfiles,
   gateCounts,
   profileGateCounts,
   researchDailyTarget,
@@ -80,6 +81,30 @@ describe("active research books", () => {
         (entry) => entry.risk_profile,
       ),
     ).toEqual(["live-legacy", "research-target-v2", "research-motion"]);
+  });
+
+  it("curates only the archive eras that changed the current strategy lineage", () => {
+    const archives = [
+      "research-target-v5",
+      "research-target-v2",
+      "research-target-v4",
+      "research-motion",
+      "live-legacy",
+      "research-target-v3",
+      "research",
+      "research-target-v1",
+    ].map((riskProfile) => ({ ...profile(riskProfile), archived: true }));
+
+    expect(
+      featuredArchivedProfiles({ profiles: archives } as StrategyLab).map(
+        (entry) => entry.risk_profile,
+      ),
+    ).toEqual([
+      "live-legacy",
+      "research-target-v1",
+      "research-target-v3",
+      "research-target-v4",
+    ]);
   });
 
   it("tolerates a missing target artifact and falls back from profile to top-level data", () => {

@@ -7,6 +7,7 @@ const TD = "px-3 py-2.5 align-top";
 /** "emos_wmean" → "EMOS · weighted mean". Tolerant of any string / missing. */
 function methodLabel(method: string | undefined): string {
   if (!method) return "—";
+  if (method.startsWith("emos_wmean") && /fallback/i.test(method)) return "EMOS · weighted mean · SFO fallback";
   if (method === "emos_wmean") return "EMOS · weighted mean";
   return method.replace(/_/g, " ");
 }
@@ -49,7 +50,7 @@ function CityRow({ city }: { city: City }) {
       </td>
       <td className={`${TD} text-muted`}>
         <span className="text-foreground">{methodLabel(method)}</span>
-        {flagship && <span className="text-muted"> + LSTM · source blend</span>}
+        {flagship && <span className="text-muted"> · blend-capable; optional SFO evidence</span>}
       </td>
       <td className={`${TD} text-right tnum text-muted`}>{models ?? "—"}</td>
       <td className={`${TD} text-muted`}>{settlementLabel(city.settlement_source)}</td>
@@ -67,8 +68,8 @@ function EmptyNote() {
 }
 
 /** Reference table of the production post-processing per settlement station:
-    City · Station · Method · Models · Settlement report. Flagship (full blend)
-    is flagged. Fed by cities_data.json; tolerant of missing fields and of the
+    City · Station · Method · Members · Settlement report. The blend-capable
+    flagship is flagged. Fed by cities_data.json; tolerant of missing fields and of the
     artifact not being published yet. Scrolls horizontally on small screens. */
 export function CityMethodTable() {
   const { data, error } = useCitiesData();
@@ -88,7 +89,7 @@ export function CityMethodTable() {
             <th scope="col" className={TH}>City</th>
             <th scope="col" className={TH}>Station</th>
             <th scope="col" className={TH}>Method</th>
-            <th scope="col" className={`${TH} text-right`}>Models</th>
+            <th scope="col" className={`${TH} text-right`}>Members</th>
             <th scope="col" className={TH}>Settlement report</th>
           </tr>
         </thead>

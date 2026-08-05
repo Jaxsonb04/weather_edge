@@ -180,7 +180,7 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
             label={`Last settlement · ${shortDateUTC(settled?.local_date)}`}
             value={settled ? `${round1(settled.high_f)}°` : "—"}
           />
-          <Stat label="Approved · 24h" value={currentStateAvailable ? String(books.approved_24h ?? 0) : "Unavailable"} />
+          <Stat label="Eligible decisions · 24h" value={currentStateAvailable ? String(books.approved_24h ?? 0) : "Unavailable"} />
         </div>
 
         <div className="overflow-x-auto">
@@ -208,10 +208,10 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
           {currentStateAvailable ? (
             <>
               <span className="tnum font-medium text-foreground">{(books.decisions_24h ?? 0).toLocaleString()}</span>{" "}
-              gate scans in the last 24h
+              bracket-side decision evaluations in the last 24h
             </>
           ) : (
-            "Current scan activity is unavailable until publication recovers"
+            "Current decision activity is unavailable until publication recovers"
           )}{" "}
           · station <span className="font-mono text-foreground">{city.station_id ?? "—"}</span>
         </p>
@@ -224,13 +224,12 @@ interface CityDetailProps {
   city: City;
   /** Status-selected SF flagship market target — only meaningful for SFO. */
   flagshipTarget?: Target;
-  approvedCount?: number;
 }
 
 /** The selected-city drill-down. Every city publishes its calibrated forecast,
     settlement and paper-book activity; the San Francisco flagship additionally
     publishes the full bracket-level market microstructure. */
-export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDetailProps) {
+export function CityDetail({ city, flagshipTarget }: CityDetailProps) {
   const { operational } = usePublication();
   const currentStateAvailable = operational.state === "fresh";
   // The bracket-level signal artifact is San-Francisco-only, so gate on the
@@ -238,6 +237,7 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
   const isFlagship = !!city.has_full_blend && city.slug === "sfo" && !!flagshipTarget;
   const showBrackets = isFlagship && currentStateAvailable;
   const mc = flagshipTarget?.market_consensus;
+  const approvedCount = flagshipTarget?.decisions?.filter((decision) => decision.approved).length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -264,7 +264,7 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
             id="flagship-market-detail"
             icon="solar:chart-square-bold"
             title="Flagship market detail"
-            note="Source inputs, pricing pipeline, bracket edge chart, market comparison, and full order book"
+            note="Runtime inputs, pricing pipeline, bracket edge chart, market comparison, and gate traces"
           >
             <div className="flex items-center gap-2 text-sm text-muted">
               <Icon icon="solar:star-bold" className="size-4 shrink-0 text-accent" aria-hidden="true" />
@@ -293,9 +293,9 @@ export function CityDetail({ city, flagshipTarget, approvedCount = 0 }: CityDeta
                 </strong>{" "}
                 disagreement. The market's most-likely bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
                 {pct(mc.modal_probability, 0)}, and the book carries a {pct(mc.overround, 1)} overround —
-                the cost any edge has to beat. The engine approved{" "}
-                <strong>{approvedCount}</strong> signal{approvedCount === 1 ? "" : "s"} on the latest
-                scan; when the gap doesn't clear fees and filters, not trading is the correct choice.
+                the cost any edge has to beat. This report marks{" "}
+                <strong>{approvedCount}</strong> bracket-side candidate{approvedCount === 1 ? "" : "s"} eligible for this target;
+                the separate paper-account scan handles admission and placement.
               </Finding>
             )}
 

@@ -7,6 +7,7 @@ import {
   money,
   profileGate,
   profileGateCounts,
+  profileDisplayLabel,
   researchDailyTarget,
   type ProfileEntry,
   type StrategyLab,
@@ -16,7 +17,7 @@ import { usePublication } from "../../lib/publication";
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   live: {
     icon: "solar:shield-check-bold",
-    blurb: "Live Stability — prioritizes dependable wins, controlled drawdown, forecast agreement, and reliable liquidity. It trades infrequently by design.",
+    blurb: "Live Stability — the paper readiness book, with published edge, drawdown, source, and liquidity gates kept binding.",
   },
   research: {
     icon: "solar:test-tube-bold",
@@ -24,25 +25,25 @@ const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   },
   "research-target": {
     icon: "solar:target-bold",
-    blurb: "Research ROI — a separate $1,000 paper account pursuing a fixed $50 daily KPI with higher bounded risk and no effect on live readiness.",
+    blurb: "Research ROI — a separate paper account pursuing the fixed objective published for each objective day under a higher bounded-risk policy.",
   },
   "research-motion": {
     icon: "solar:chart-2-bold",
-    blurb: "A separate high-activity experimental account built to collect execution evidence. It does not contribute to the daily target or live readiness.",
+    blurb: "A separate high-activity experimental account built to collect execution evidence. It does not contribute to the daily objective or real-money readiness.",
   },
 };
 
 function profileBadge(p: ProfileEntry) {
   if (p.risk_profile === "live") return "Stability · readiness";
-  if (p.risk_profile === "research-target") return "ROI research · 5% KPI";
+  if (p.risk_profile === "research-target") return "ROI research · fixed objective";
   if (p.risk_profile === "research-motion") return "Experimental · high activity";
   return p.profile_type === "primary" ? "Primary" : "Experimental";
 }
 
 function accountBoundary(p: ProfileEntry) {
-  if (p.risk_profile === "live") return "Fresh Live Stability account · all research and archived results excluded";
-  if (p.risk_profile === "research-target") return "Separate Research ROI account · excluded from live goal and readiness";
-  if (p.risk_profile === "research-motion") return "Excluded from daily target and live readiness";
+  if (p.risk_profile === "live") return "Separate Live Stability paper account · research and archived results excluded";
+  if (p.risk_profile === "research-target") return "Separate Research ROI paper account · excluded from real-money readiness";
+  if (p.risk_profile === "research-motion") return "Excluded from the daily objective and real-money readiness";
   return "Legacy research account · used only when canonical sleeves are absent";
 }
 
@@ -119,6 +120,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
   const approvalRate = gateCount.signals > 0 ? gateCount.approved / gateCount.signals : null;
   const alertOk = currentStateAvailable && (p.status?.alert_level ?? "ok") === "ok";
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
+  const displayLabel = profileDisplayLabel(p);
 
   return (
     <Card className="h-full rounded-2xl ring-1 ring-border/70">
@@ -132,7 +134,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
             <Icon icon={meta?.icon ?? "solar:notebook-bold"} className="size-4.5" aria-hidden="true" />
           </span>
           <div>
-            <Card.Title className="text-base">{p.label}</Card.Title>
+            <Card.Title className="text-base">{displayLabel}</Card.Title>
             <p className="flex items-center gap-1.5 text-xs text-muted">
               <span className={`size-1.5 rounded-full ${alertOk ? "bg-success" : "bg-warning"}`} aria-hidden="true" />
               {currentStateAvailable
@@ -168,7 +170,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
               <div
                 className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10"
                 role="progressbar"
-                aria-label={`${p.label} daily target progress`}
+                aria-label={`${displayLabel} daily target progress`}
                 aria-valuemin={0}
                 aria-valuemax={targetProgressState.maximum}
                 aria-valuenow={targetProgressState.value}
@@ -218,11 +220,11 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
             <div
               className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-foreground/10"
               role="img"
-              aria-label={`${p.label} approved ${gateCount.approved} of ${gateCount.signals} scans (${pct(approvalRate, 2)}).`}
+              aria-label={`${displayLabel} approved ${gateCount.approved} of ${gateCount.signals} gate evaluations (${pct(approvalRate, 2)}).`}
             >
               <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((approvalRate ?? 0) * 100, 0.6)}%` }} />
             </div>
-            <p className="mt-1 text-[11px] text-muted">{pct(approvalRate, 2)} approval rate — selectivity is the strategy.</p>
+            <p className="mt-1 text-[11px] text-muted">{pct(approvalRate, 2)} published approval rate for this window.</p>
           </div>
         )}
       </Card.Content>

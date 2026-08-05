@@ -51,7 +51,7 @@ describe("StrategyPublicationNotice", () => {
   it("shows unknown freshness explicitly with the artifact generated time", async () => {
     await renderNotice(publication(null, "missing"), "2026-07-09T11:30:00Z");
 
-    expect(screen.getByRole("status")).toHaveTextContent(/Live Strategy Lab status unavailable/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/Current Strategy Lab status unavailable/i);
     expect(screen.getByRole("status").querySelector("time")).toHaveAttribute("datetime", "2026-07-09T11:30:00Z");
   });
 

@@ -36,6 +36,6 @@ describe("SkillStrip", () => {
 
     expect(screen.getByText("Brier skill")).toBeInTheDocument();
     expect(screen.getByText("History")).toBeInTheDocument();
-    expect(screen.getByText("— days")).toBeInTheDocument();
+    expect(screen.getByText("— KSFO days")).toBeInTheDocument();
   });
 });

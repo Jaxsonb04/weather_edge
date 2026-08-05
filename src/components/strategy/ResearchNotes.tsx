@@ -13,17 +13,20 @@ export function ResearchNotes({ s }: { s: StrategyLab }) {
         <ItemCardGroup.Title>Glossary</ItemCardGroup.Title>
         <ItemCardGroup.Description>How to read the figures on this page</ItemCardGroup.Description>
       </ItemCardGroup.Header>
-      {notes.map((n) => (
+      {notes.map((n) => {
+        const note = n.note.replace(/repeated 15[ -]minute scans/gi, "Repeated scheduled scans");
+        return (
         <ItemCard key={n.term} variant="secondary" className="min-w-0">
           <ItemCard.Icon>
             <Icon icon="solar:notebook-bold" className="size-4 text-accent" aria-hidden="true" />
           </ItemCard.Icon>
           <ItemCard.Content className="min-w-0">
             <ItemCard.Title className="whitespace-normal break-words">{n.term}</ItemCard.Title>
-            <ItemCard.Description className="whitespace-normal break-words">{n.note}</ItemCard.Description>
+            <ItemCard.Description className="whitespace-normal break-words">{note}</ItemCard.Description>
           </ItemCard.Content>
         </ItemCard>
-      ))}
+        );
+      })}
     </ItemCardGroup>
   );
 }

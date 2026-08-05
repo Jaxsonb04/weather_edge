@@ -4,7 +4,7 @@ import { Icon } from "@iconify/react/offline";
 import { Reveal } from "../ui/Reveal";
 
 const STEPS = [
-  { title: "Blend forecast", desc: "Google · NWS · Open-Meteo · 10-yr history → station-aligned high", icon: "solar:cloud-bold" },
+  { title: "Serve forecast", desc: "Published method and member count come directly from the runtime artifact", icon: "solar:cloud-bold" },
   { title: "Post-process", desc: "NWP/EMOS calibration → predictive distribution (μ, σ)", icon: "solar:graph-up-bold" },
   { title: "Price the bins", desc: "Distribution → market bracket probabilities → fee-aware edge", icon: "solar:tag-price-bold" },
   { title: "Gate & size", desc: "Edge LCB · liquidity · spread · freshness — before any paper order", icon: "solar:shield-check-bold" },

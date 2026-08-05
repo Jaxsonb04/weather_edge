@@ -102,6 +102,9 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
             </Chip>
           </div>
           {r.summary && <p className="text-sm leading-relaxed text-muted">{r.summary}</p>}
+          <p className="text-xs leading-relaxed text-muted">
+            Passing every check would only permit considering a future pilot; authenticated real-money execution is not implemented.
+          </p>
 
           {policy && (
             <div>
@@ -152,7 +155,7 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
       <Card.Header>
         <Card.Title className="text-base">Go-live checklist</Card.Title>
         <Card.Description className="text-sm text-muted">
-          All {total} must pass before a single real-money order is possible
+          All {total} must pass before a future pilot could be considered; authenticated execution is not implemented
         </Card.Description>
       </Card.Header>
       <Card.Content className="pt-0">{checklist}</Card.Content>

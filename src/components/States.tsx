@@ -7,7 +7,7 @@ export function LoadingState() {
       <div className="mx-auto w-full max-w-6xl px-5 pt-12 sm:px-8">
         <div className="flex items-center gap-2 text-muted" role="status" aria-live="polite">
           <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-          <span className="text-sm">Loading live forecast…</span>
+          <span className="text-sm">Loading latest published forecast…</span>
         </div>
         <div className="mt-8 grid gap-10 lg:grid-cols-[1.08fr_0.92fr]">
           <div className="space-y-4">

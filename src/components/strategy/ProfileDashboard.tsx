@@ -11,6 +11,7 @@ import {
   monitorForProfile,
   profileGate,
   profileGateCounts,
+  profileDisplayLabel,
   researchDailyTarget,
   type ProfileEntry,
   type ResearchDailyTarget,
@@ -29,28 +30,28 @@ const PROFILE_COPY: Record<string, { icon: string; blurb: string }> = {
   live: {
     icon: "solar:shield-check-bold",
     blurb:
-      "The stability book. It preserves the proven strict edge and liquidity gates, prioritizes dependable wins and controlled drawdown, and remains paper-only until every readiness check passes.",
+      "The readiness book. It keeps the published edge, liquidity, and drawdown gates binding and remains paper-only while the readiness checklist is incomplete.",
   },
   research: {
     icon: "solar:test-tube-bold",
     blurb:
-      "The experimental book. Runs the loosest filters at the smallest stakes so it records the full range of opportunities quickly. Its P&L is kept separate from the live candidate's record.",
+      "The experimental book. It runs wider filters at small paper stakes to collect opportunity evidence; its P&L stays separate from the readiness book.",
   },
   "research-target": {
     icon: "solar:target-bold",
     blurb:
-      "The Research ROI book. Its fixed $50 daily paper KPI equals 5% of the original $1,000 capital; higher bounded risk is allowed here, while its results stay completely outside live readiness.",
+      "The Research ROI book. It pursues the fixed paper objective published for each objective day under a separate bounded-risk policy; its results stay outside real-money readiness.",
   },
   "research-motion": {
     icon: "solar:chart-2-bold",
     blurb:
-      "The experimental high-activity account. It records realistic execution opportunities for learning, but its results are excluded from the daily target and every live-readiness decision.",
+      "The experimental high-activity account. It records realistic execution opportunities for learning, but its results are excluded from the daily objective and every real-money readiness decision.",
   },
 };
 
 function profileBadge(p: ProfileEntry) {
   if (p.risk_profile === "live") return "Stability · readiness";
-  if (p.risk_profile === "research-target") return "ROI research · 5% KPI";
+  if (p.risk_profile === "research-target") return "ROI research · fixed objective";
   if (p.risk_profile === "research-motion") return "Experimental · high activity";
   return p.profile_type === "primary" ? "Primary" : "Experimental";
 }
@@ -132,7 +133,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
         </div>
         <div className="flex flex-wrap gap-2">
           <Chip size="sm" variant="soft" color={target.achieved ? "success" : "default"}>
-            <Chip.Label>{target.achieved ? "Hit" : "Miss"}</Chip.Label>
+            <Chip.Label>{target.achieved ? "Hit" : "Not yet hit"}</Chip.Label>
           </Chip>
           <Chip size="sm" variant="soft" color={target.locked ? "warning" : "default"}>
             <Chip.Label>{target.locked ? "Target lock active" : "Target lock open"}</Chip.Label>
@@ -159,7 +160,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
           >
             <div className="h-full rounded-full bg-accent" style={{ width: `${progress * 100}%` }} />
           </div>
-          <p className="mt-1.5 text-right text-[11px] text-muted">{pct(progress, 0)} of today's fixed objective</p>
+          <p className="mt-1.5 text-right text-[11px] text-muted">{pct(progress, 0)} of the published objective</p>
         </div>
         )}
 
@@ -205,6 +206,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const rejections = (gate?.top_rejections_all?.length ? gate.top_rejections_all : gate?.top_rejections ?? []).slice(0, 5);
   const maxRejection = rejections[0]?.count ?? 1;
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
+  const displayLabel = profileDisplayLabel(p);
 
   const ledger = ledgerForProfile(s, rp);
   const byCity = ledgerByCity(ledger);
@@ -214,9 +216,9 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   return (
     <div className="space-y-6">
       {/* identity + KPIs */}
-      <Card className="rounded-2xl">
-        <Card.Header className="flex flex-row items-start justify-between gap-3">
-          <div className="flex items-center gap-2.5">
+      <Card className="w-full min-w-0 max-w-full rounded-2xl">
+        <Card.Header className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-center gap-2.5">
             <span
               className={`grid size-9 place-items-center rounded-lg ring-1 ${
                 primary ? "bg-accent-soft text-accent ring-accent/25" : "bg-surface-secondary text-[color:var(--series-market)] ring-border/60"
@@ -224,14 +226,14 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             >
               <Icon icon={copy?.icon ?? "solar:notebook-bold"} className="size-4.5" aria-hidden="true" />
             </span>
-            <div>
-              <Card.Title className="text-base">{p.label}</Card.Title>
-              <p className="text-xs text-muted">
+            <div className="min-w-0">
+              <Card.Title className="break-words text-base">{displayLabel}</Card.Title>
+              <p className="break-words text-xs text-muted">
                 {currentStateAvailable ? p.status?.paper_trading_status ?? "status unavailable" : "Current profile status unavailable"}
               </p>
             </div>
           </div>
-          <Chip size="sm" variant="soft" color={primary ? "accent" : "default"}>
+          <Chip size="sm" variant="soft" color={primary ? "accent" : "default"} className="self-start">
             <Chip.Label>{profileBadge(p)}</Chip.Label>
           </Chip>
         </Card.Header>
@@ -239,7 +241,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           {copy && <p className="max-w-3xl text-sm leading-relaxed text-muted">{copy.blurb}</p>}
           <div className="grid grid-cols-[repeat(auto-fit,minmax(7.5rem,1fr))] gap-x-6 gap-y-4">
             <Stat
-              label="Total balance"
+              label="Realized paper balance"
               value={
                 totalBalance == null
                   ? "—"
@@ -263,7 +265,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
           <p>
             <strong className="text-foreground">Experimental · high activity.</strong>{" "}
-            This separate paper account is excluded from the daily target and live readiness; its positions and ledger remain motion-only evidence.
+            This separate paper account is excluded from the daily objective and real-money readiness; its positions and ledger remain motion-only evidence.
           </p>
         </div>
       )}
@@ -275,7 +277,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
           days={days}
           startingBankroll={0}
           windowDays={p.daily_summary?.window_days}
-          title={`${p.label} — P&L contribution`}
+          title={`${displayLabel} — P&L contribution`}
           description={`Daily and cumulative realized P&L; true account balance appears on hover · ${p.daily_summary?.window_days ?? days.length}-day view`}
           contributionMode
         />
@@ -339,7 +341,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 limit={closedPositionsExpanded ? undefined : 5}
                 detailed
                 hideProfile
-                emptyNote={`No closed positions published for the ${rp} book in the current slice — its ${allTimeClosed} resolved trades roll off as newer ones settle.`}
+                emptyNote={`No closed positions were published for the ${rp} book in the latest resolved-calendar-month slice; the all-time total above remains ${allTimeClosed}.`}
               />
             </div>
             {ledger.length > 5 && (
@@ -385,13 +387,13 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 <div className="flex items-baseline justify-between gap-2">
                   <p className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</p>
                   <p className="tnum text-sm font-semibold">
-                    {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} scans</span>
+                    {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} evaluations</span>
                   </p>
                 </div>
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
                   <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
                 </div>
-                <p className="mt-2 text-[11px] text-muted">{pct(gateCount.approved / gateCount.signals, 2)} approval rate — the gates do the heavy lifting.</p>
+                <p className="mt-2 text-[11px] text-muted">{pct(gateCount.approved / gateCount.signals, 2)} published approval rate for this window.</p>
               </div>
               <div>
                 <p className="mb-2 text-xs font-medium text-muted">Why this book says no</p>
@@ -427,7 +429,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             <div className="space-y-6">
               <div>
                 <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Exit reasons</p>
-                <ExitReasonBars reasons={p.daily_summary?.exit_reasons} emptyNote={`${p.label} recorded no monitored exits this window — the book has not been trading.`} />
+                <ExitReasonBars reasons={p.daily_summary?.exit_reasons} emptyNote={`${displayLabel} recorded no monitored exits this window — the book has not been trading.`} />
               </div>
               <div>
                 <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>

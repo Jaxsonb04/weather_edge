@@ -72,7 +72,7 @@ export function MarketBook({ target }: { target: Target }) {
       headerClassName: HEAD,
       cell: (d) => (
         <Chip size="sm" variant="soft" color={d.decision === "TRADE" ? "success" : "default"}>
-          <Chip.Label>{d.decision === "TRADE" ? "Trade" : "No trade"}</Chip.Label>
+          <Chip.Label>{d.decision === "TRADE" ? "Eligible" : "No signal"}</Chip.Label>
         </Chip>
       ),
     },

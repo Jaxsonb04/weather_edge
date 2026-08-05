@@ -167,6 +167,20 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
   const mc = target.market_consensus;
   const intraday = target.intraday;
   const delta = mc?.model_minus_market_f ?? null;
+  const forecastFields = (target.forecast ?? {}) as Record<string, unknown>;
+  const sourceFields = forecastFields.sources && typeof forecastFields.sources === "object"
+    ? forecastFields.sources as Record<string, unknown>
+    : {};
+  const hasPublishedSourceBlend = Object.values(sourceFields).some((value) => typeof value === "number");
+  const currentMethod = String(forecastFields.method ?? "Published forecast")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const modelCount = typeof forecastFields.source_count === "number"
+    ? forecastFields.source_count
+    : typeof target.ensemble?.member_count === "number"
+      ? target.ensemble.member_count
+      : null;
 
   return (
     <Card className="overflow-hidden rounded-2xl">
@@ -254,9 +268,16 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
 
         <Separator className="my-6" />
         <p className="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
-          Source blend · {targetLabel(target.target_date).toLowerCase()}
+          {hasPublishedSourceBlend ? "Published source blend" : "Current published method"} · {targetLabel(target.target_date).toLowerCase()}
         </p>
-        <SourceBlend target={target} />
+        {hasPublishedSourceBlend ? (
+          <SourceBlend target={target} />
+        ) : (
+          <div className="rounded-xl bg-surface-secondary px-3 py-2.5 text-xs leading-relaxed text-muted">
+            <span className="font-medium text-foreground">{currentMethod}</span>
+            {modelCount != null && <> · <span className="tnum">{modelCount}</span> NWP members</>}
+          </div>
+        )}
       </Card.Content>
     </Card>
   );

@@ -108,8 +108,8 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
         <section id="today" className="mt-14 scroll-mt-24">
           <SectionHeading
             index="02"
-            eyebrow="Today's forecast"
-            title={activeCity ? `${activeCity.name} — today's forecast and market` : "Today's forecast"}
+            eyebrow="Selected market"
+            title={activeCity ? `${activeCity.name} — next published forecast` : "Next published forecast"}
             sub="The selected city's next high, its official settlement, and recent paper-trading activity. San Francisco also shows bracket-level model-vs-market detail when the current data is verified."
           />
           {activeCity ? (
@@ -118,7 +118,6 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
                 <CityDetail
                   city={activeCity}
                   flagshipTarget={flagshipTarget}
-                  approvedCount={signal.summary.approved_signal_count}
                 />
               </Suspense>
             </DeferredOverviewSlab>

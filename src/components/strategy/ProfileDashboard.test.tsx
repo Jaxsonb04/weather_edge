@@ -133,7 +133,7 @@ describe("ProfileDashboard publication truthfulness", () => {
 
     await renderDashboard("2026-07-09T11:59:00Z", withHistory);
 
-    const history = screen.getByText("Candidate — P&L contribution");
+    const history = screen.getByText("Live Stability — P&L contribution");
     const positions = screen.getByRole("heading", { name: "Positions & execution log" });
     expect(history.compareDocumentPosition(positions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

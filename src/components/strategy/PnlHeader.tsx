@@ -2,6 +2,7 @@ import { Card } from "@heroui/react/card";
 import { KPI } from "@heroui-pro/react/kpi";
 import { KPIGroup } from "@heroui-pro/react/kpi-group";
 import { Icon } from "@iconify/react/offline";
+import { pct } from "../../lib/data";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
 import { money, type StrategyLab } from "../../lib/strategy";
@@ -22,9 +23,12 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
   const realizedEquity = account?.realized_equity ?? (hasResearchBook ? undefined : s.daily_summary.current_equity);
   const weekly = account?.goal;
   const weeklyPnl = weekly?.weekly_realized_pnl ?? windowPnl;
+  const weeklyObjective = weekly?.target_return == null
+    ? "Weekly paper objective"
+    : `${pct(weekly.target_return, 0)} weekly paper objective`;
   const weeklyHint = weekly
-    ? `5% stability research objective · ${money(weekly.remaining_pnl)} remaining · ${weekly.current_week_evidence_qualified ? `${weekly.completed_week_success_streak} verified-week streak` : "full exec-v4 week pending"}`
-    : "5% stability research objective";
+    ? `${weeklyObjective} · ${money(weekly.remaining_pnl)} remaining · ${weekly.current_week_evidence_qualified ? `${weekly.completed_week_success_streak} verified-week streak` : "full qualifying week pending"}`
+    : "Weekly paper objective not published";
   const pnlTone = allTimePnl != null && allTimePnl >= 0 ? "text-success" : "text-danger";
 
   return (

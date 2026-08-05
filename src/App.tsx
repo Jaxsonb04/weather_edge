@@ -20,7 +20,7 @@ const CommandPalette = lazy(() =>
 
 const REPO = "https://github.com/Jaxsonb04/weather_edge";
 const LIVE = "https://jaxsonb04.github.io/weather_edge/";
-const DISCLAIMER = "Paper-trading research only. No live orders are ever placed.";
+const DISCLAIMER = "Paper-trading research only. Live orders are disabled.";
 
 function ViewLoader() {
   return (

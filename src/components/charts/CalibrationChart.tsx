@@ -48,6 +48,12 @@ export function CalibrationChart({ signal }: { signal: TradingSignal }) {
             }}
           />
         </LineChart>
+        {!!calibration?.warnings?.length && (
+          <div className="mt-3 rounded-xl bg-warning/8 px-3 py-2 text-xs leading-relaxed text-muted ring-1 ring-warning/20">
+            <span className="font-medium text-warning">Published calibration warning:</span>{" "}
+            {calibration.warnings.join(" ")}
+          </div>
+        )}
       </Widget.Content>
     </Widget>
   );

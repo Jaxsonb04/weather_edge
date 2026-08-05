@@ -15,6 +15,7 @@ interface HeroProps {
 }
 
 export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }: HeroProps) {
+  const cityCount = cities.length || 15;
   return (
     <header className="hero-glow relative overflow-hidden border-b border-border/60">
       <div className="grid-lines pointer-events-none absolute inset-0 opacity-50" />
@@ -28,22 +29,21 @@ export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }
               <Chip.Label>Station-aligned · EMOS-calibrated</Chip.Label>
             </Chip>
             <Chip size="sm" variant="soft">
-              <Chip.Label>15 city markets</Chip.Label>
+              <Chip.Label>{cityCount} city markets</Chip.Label>
             </Chip>
           </Reveal>
 
           <Reveal immediate delay={0.08}>
             <h1 id="overview-page-title" tabIndex={-1} className="scroll-mt-24 font-display text-[2.6rem] font-bold leading-[1.02] tracking-tight text-balance focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)] sm:text-6xl">
-              Forecasting <span className="temp-text">daily highs in fifteen cities</span>, priced on prediction markets.
+              Forecasting <span className="temp-text">daily highs in {cityCount} cities</span>, priced on prediction markets.
             </h1>
           </Reveal>
 
           <Reveal immediate delay={0.16}>
             <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted">
-              One calibrated NWP/EMOS engine prices daily-high brackets across fifteen US city markets,
-              each settling on its own NWS station. San Francisco is the flagship — Google&nbsp;Weather,
-              NWS, Open-Meteo and a decade of KSFO history feed its full blend — and every trade is
-              converted to fee-aware edge and gated.
+              A leakage-free NWP ensemble and per-station EMOS layer price daily-high brackets across {cityCount} US city markets,
+              each settling on its own NWS station. San Francisco is the flagship: it adds local residual-calibration evidence,
+              marine-layer features, and optional external inputs when fresh. Every paper decision remains fee-, liquidity-, and risk-gated.
             </p>
           </Reveal>
 
@@ -62,7 +62,7 @@ export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1">
               <div>
                 <p className="font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-muted">Forecast desk</p>
-                <p className="mt-0.5 text-xs text-muted">Choose any of the 15 station-aligned city markets.</p>
+                <p className="mt-0.5 text-xs text-muted">Choose any of the {cityCount} station-aligned city markets.</p>
               </div>
               {cities.length > 0 && (
                 <CitySelect cities={cities} selected={selectedCity} onSelect={onSelectCity} />

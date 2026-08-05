@@ -127,6 +127,7 @@ export interface TradingSignal {
     n: number;
     buckets: CalibrationBucket[];
     cohorts?: Cohort[];
+    warnings?: string[];
   };
 }
 
