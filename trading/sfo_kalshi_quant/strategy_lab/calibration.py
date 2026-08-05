@@ -381,7 +381,7 @@ def _signal_backtest_payload(
         "sample_mode": summary["sample_mode"],
         "pre_resolution_only": bool(summary["pre_resolution_only"]),
         "dedupe_explanation": (
-            "Repeated 15-minute AWS scans are counted once per target, market, "
+            "Repeated scheduled AWS scans are counted once per target, market, "
             "and side, using the first approved (entry) snapshot so approved "
             "metrics reflect trades actually taken, not the decayed last scan."
         ),

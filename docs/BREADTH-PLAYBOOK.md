@@ -1,10 +1,15 @@
-# The Breadth Playbook — why 2026-07-30 made $30 in a day, and how to keep it
+# The Breadth Playbook — how large Research ROI days happen
 
 *Written 2026-07-31, after the roi-v4 era's first full day realized **+$30.17** (research)
 and **+$9.68** (live) — versus the $1-3/day the book had shrunk to the week before.
 Companion evidence: the 28-agent adversarially-verified regression investigation of
 2026-07-29 (every counterfactual scorer validated 281-756/756 exact against engine
 `realized_pnl`), and PRs #80 (v4 + live phantom-budget fix) and #81 (v5 scale-up).*
+
+*Updated 2026-08-05 after Research ROI v6 realized **+$44.5025** in one Pacific
+day. The dated audit is in
+[Research ROI v6 case study — 2026-08-05](RESEARCH-ROI-V6-2026-08-05.md). Both
+large days are paper-trading case studies, not promises of a daily return.*
 
 ## The one-sentence law
 
@@ -18,7 +23,7 @@ zero queue ahead (verified on all 553 orders of the 07/19-29 window). Displayed 
 has **no causal path** to a maker fill — only public tape trading through the level
 fills it. So volume is bought with *breadth in front of the tape*, not with size.
 
-## What the winning day actually looked like
+## What the 2026-07-30 winning day actually looked like
 
 The four orders that produced most of the $30.17, all `maker_trade_through_required`,
 all NO-side, all placed **overnight** (00:30-02:25 UTC) at **cheap-favorite** limits,
@@ -36,8 +41,10 @@ Three structural facts to preserve:
 1. **The cheap-favorite band (0.55-0.75) carries the big per-contract upside.** A
    56-cent entry has ~44 cents of room; a 92-cent deep favorite has 8. The deep
    0.92+ band is fine volume filler but cannot produce large motions.
-2. **Overnight resting into the morning tape is where full fills happen.** The
-   winners rested for 6-12 hours and were swallowed by tape bursts.
+2. **Overnight placement can expose the book to later tape, but each maker request
+   has a 15-minute lifetime.** The winning positions remained open for hours after
+   filling; the individual quotes did not rest for 6-12 hours. Repeated five-minute
+   scans create fresh, separately auditable requests.
 3. **Every winner was request-truncated** — the tape carried more than we asked for
    (BOS traded 154 contracts through the window; we captured 53. DAL traded 262; we
    took 41). In the v1 era too, 19/59 fills hit the full request. On burst days the
@@ -56,38 +63,66 @@ Three structural facts to preserve:
    while placement clamped every leg to $30 — one leg per allocation, 1103/1106
    measured. After the fix: 0 budget-skips across 106 approvals and a $9.68 day.
 
-## How to scale from here (the v5 rule)
+## The v6 ceiling and evidence required for v7
 
-When the evidence says size binds — the signal is a **high request-truncation rate**
-(fills hitting the full request) plus **shared-cap capacity hits** in the decision
-log — scale **every dollar knob by the same factor** so the ratios that fund breadth
-are preserved. v5 (PR #81) is exactly this: position $30→$45, city $60→$90, region
-$120→$180, aggregate $250→$375, pause 10%→12%, ratios identical (~8.3 concurrent
-quotes, 2 per city), 5%/day KPI unchanged.
+When size evidence is strong, every dollar cap has to move together so the ratios
+that fund breadth remain fixed. v5 moved to $45 position / $90 city / $180 region /
+$375 aggregate with a $120 daily-loss pause. v6 moved to **$90 / $180 / $360 /
+$750 with a $150 pause**, preserving about 8.3 position slots and two positions per
+city. The fixed $1,000 reference equity and $50 paper-research KPI did not change.
 
-Watch after each scale step, in order of importance:
-- **request-truncation rate on filled orders** (still high → room to scale again;
-  collapsed toward v3-style 0.4% fill-through → step back),
-- **"research account capacity below requested spend" count** (should stay near
-  zero on ordinary days; 30/day was the v4 busy-day reading),
-- **concurrent resting quotes** (must hold ~8+; if it sags, the caps are binding
-  and the geometry has drifted toward v3),
-- the **daily loss pause** is the designed downside bound ($120 at v5) — large
-  motions are the goal, and this is the one brake that must never be loosened in
-  the same change that raises size.
+v6 is the current ceiling, not an invitation to keep doubling. On the 2026-08-05
+Houston winner, v6 requested 147 contracts at $0.61 but public tape filled only
+94.1. A $45 v5 request would have filled 73; a $90 v6 request captured the extra
+21.1; requests above v6 would still have filled only 94.1 while reserving more
+shared capacity. Across the audited v6 trade-through fills, 2 of 18 positive-fill
+requests reached the full requested amount (11.1%). That small denominator is a
+study trigger, not activation authority.
 
-Scaling is cheap to evaluate: each step is one policy constant set (a new frozen
-`TARGET_POLICY_Vn`, account cutover self-bootstraps) and one day of tape gives a
-read. The ledger history of v1→v5 is the experiment log.
+Watch prospectively, in order of importance:
+
+- full-request capture with both **positive-fill and all-request denominators**;
+- requested contracts versus tape-capped fills, including every zero-fill expiry;
+- concurrent resting breadth, city/region/aggregate capacity rejections, and cash
+  reservations;
+- leave-one-position and leave-one-day-out P&L so one event cannot authorize a
+  policy; and
+- the **$150 daily-loss pause and -60% catastrophic position floor**, which must
+  not be loosened to chase the $50 KPI.
+
+Scaling is easy to code but expensive to conclude correctly. A candidate v7 needs
+a frozen policy, point-in-time tape replay that exactly reproduces 1.0× fills,
+complete after-fee exit evidence, and a predeclared prospective window. The era
+ledgers v1→v6 are the experiment log; one day of tape is never a promotion test.
+
+## 2026-08-05 v6 replication evidence
+
+Research ROI v6 realized +$44.5025, or 4.45025% of its fixed original $1,000
+reference. It missed the $50 objective by $5.4975. Seven resolved decisions won,
+but Houston supplied +$35.6927—80.20% of the day—and the position endured an
+approximately -58% marked drawdown before the existing fresh-model stop veto and
+hard -60% catastrophic floor resolved the path. Six prior-target settlements
+supplied the remaining $8.8098.
+
+The replication decision is therefore deliberately boring: **preserve v6 exactly**.
+Keep day-ahead gates, one-cent maker improvement, five-minute scans, 15-minute quote
+lifetimes, two-minute monitoring, partial-fill accounting, model-fair-value exits,
+fresh-model veto rules, and the hard floor. Do not force more trades or scale from
+this observation. The full position attribution, request curve, risk path, and
+prospective protocol are in the
+[dated v6 case study](RESEARCH-ROI-V6-2026-08-05.md).
 
 ## Honesty about the sample
 
-The +$30.17 day is **n=1**. The v1 era is the larger evidence base for this geometry:
-six trading days at $5.07–$10.98, mean ~$8/day. So the defensible statement today is
-"this geometry reliably produces high-single-digit days, and produced one $30 day once
-the caps were also raised" — not "it produces $30/day." Each scale step needs its own
-days of tape before its mean is real. Keep the per-era ledgers (v1…v5) intact: they are
-the only thing that lets a later reader tell a mechanism from a lucky Tuesday.
+The +$30.17 v4 day and +$44.5025 v6 day are each **n=1 events**. Through the
+2026-08-05 snapshot, v6's six realized days were `-$0.0086, -$16.4757, +$6.4512,
++$1.2050, +$2.5645, +$44.5025`: mean +$6.3732, median +$1.8848, and a day-cluster
+bootstrap 95% interval of -$6.7367 to +$23.5259. It hit $50 on 0 of 6 days.
+
+The defensible statement is: **the breadth geometry has now captured two unusually
+large paper days in separate policy eras, while v6 repeatability remains unproven.**
+Keep every per-era ledger (v1…v6) intact. They are the only way a later reader can
+separate mechanism, sizing, market opportunity, and luck.
 
 ## Operational trap that cost a trading day (2026-07-31)
 
