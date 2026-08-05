@@ -37,6 +37,7 @@ from sfo_kalshi_quant.strategy_lab import (
     calibration as strategy_calibration_module,
     forecast_health as strategy_forecast_health_module,
     paper_card as strategy_paper_card_module,
+    profiles as strategy_profiles_module,
 )
 from sfo_kalshi_quant import summary as paper_summary_module
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
@@ -1285,6 +1286,9 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         "research",
         "research-target-v1",
         "research-target-v2",
+        "research-target-v3",
+        "research-target-v4",
+        "research-target-v5",
         "research-motion",
     }
     assert profile_views["research-target"]["daily_target"]["target_pnl"] == 50.0
@@ -1299,6 +1303,9 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         "research_target",
         "research_target_v1",
         "research_target_v2",
+        "research_target_v3",
+        "research_target_v4",
+        "research_target_v5",
         "research_motion",
     }
 
@@ -2587,6 +2594,9 @@ def test_strategy_research_builds_isolated_profile_views():
             "research",
             "research-target-v1",
             "research-target-v2",
+            "research-target-v3",
+            "research-target-v4",
+            "research-target-v5",
             "research-motion",
         }
 
@@ -2700,6 +2710,49 @@ def test_accounting_and_attribution_curve_reconcile_all_time_pnl_before_window()
         assert curve[-1]["cumulative_realized"] == -39.46
         research = next(row for row in payload["profiles"] if row["risk_profile"] == "research")
         assert research["daily_summary"]["days"][-1]["cumulative_realized"] == -39.46
+
+
+def test_profile_daily_curve_terminal_matches_canonical_attribution_total():
+    daily = strategy_profiles_module._profile_daily_summary(
+        {
+            "available": True,
+            "window_days": 2,
+            "window_start": "2026-08-01",
+            "window_end": "2026-08-02",
+            "profiles": [
+                {
+                    "risk_profile": "research-target",
+                    "realized_pnl": -16.48,
+                    "resolved": 2,
+                    "wins": 0,
+                    "losses": 2,
+                    "capital_resolved": 100.0,
+                }
+            ],
+            # Individually rounded daily rows can differ by a cent from the
+            # canonical order-level window total.
+            "days": [
+                {
+                    "date": "2026-08-01",
+                    "profiles": {"research-target": {"realized_pnl": -8.25}},
+                },
+                {
+                    "date": "2026-08-02",
+                    "profiles": {"research-target": {"realized_pnl": -8.24}},
+                },
+            ],
+        },
+        {
+            "profiles": [
+                {"risk_profile": "research-target", "realized_pnl": -16.48}
+            ]
+        },
+        "research-target",
+    )
+
+    assert daily["current_attributed_pnl"] == -16.48
+    assert daily["days"][-1]["cumulative_realized"] == -16.48
+    assert daily["days"][-1]["closing_attributed_pnl"] == -16.48
 
 
 def test_strategy_research_includes_config_rescore():

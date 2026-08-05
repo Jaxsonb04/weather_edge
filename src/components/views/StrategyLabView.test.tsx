@@ -26,7 +26,7 @@ vi.mock("../ui/Reveal", () => ({
   Reveal: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-import { AnalysisFreshness, LiveStatusStrip, OverviewEquity } from "./StrategyLabView";
+import { AnalysisFreshness, EvidenceDossier, LiveStatusStrip, OverviewEquity, TrackRecordFinding } from "./StrategyLabView";
 import { ReadinessPanel } from "../strategy/ReadinessPanel";
 
 const degradedWithResearchBook = {
@@ -77,7 +77,7 @@ describe("OverviewEquity live-curve fallback", () => {
     render(<OverviewEquity s={degradedWithResearchBook} />);
 
     expect(screen.queryByTestId("equity-curve")).not.toBeInTheDocument();
-    expect(screen.getByText(/Live candidate equity curve unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/Readiness equity curve unavailable/i)).toBeInTheDocument();
   });
 
   it("still plots the combined series under the live label when per-book data is missing but no research book exists", () => {
@@ -85,7 +85,7 @@ describe("OverviewEquity live-curve fallback", () => {
 
     const curve = screen.getByTestId("equity-curve");
     expect(curve).toHaveAttribute("data-has-days", "no");
-    expect(curve).toHaveTextContent("Live Stability · readiness profile — Live Stability — cumulative P&L");
+    expect(curve).toHaveTextContent("Live Stability · paper readiness profile — Live Stability — cumulative P&L");
     expect(screen.queryByText(/equity curve unavailable/i)).not.toBeInTheDocument();
   });
 
@@ -112,7 +112,7 @@ describe("AnalysisFreshness", () => {
     );
 
     expect(screen.getByText(/Historical rescore cached from 2026-07-25 08:00 UTC/i)).toBeInTheDocument();
-    expect(screen.getByText(/live paper state and readiness are recomputed/i)).toBeInTheDocument();
+    expect(screen.getByText(/current paper state and readiness are recomputed/i)).toBeInTheDocument();
   });
 
   it("states when historical analysis is deferred instead of inventing freshness", () => {
@@ -129,7 +129,212 @@ describe("AnalysisFreshness", () => {
   });
 });
 
+describe("EvidenceDossier", () => {
+  it("surfaces the deployed policy version, publication date, and separate account balances", () => {
+    render(
+      <EvidenceDossier
+        s={{
+          available: true,
+          mode: "paper_research_only",
+          live_orders_enabled: false,
+          schema_version: 3,
+          generated_at: "2026-08-02T10:00:55+00:00",
+          profiles: [
+            {
+              label: "Live Stability",
+              risk_profile: "live",
+              profile_type: "primary",
+              daily_summary: { current_equity: 1025.08 },
+              paper_trading: {
+                summary: { realized_pnl: 25.08, closed_positions: 37 },
+              },
+            },
+            {
+              label: "Research ROI",
+              risk_profile: "research-target",
+              profile_type: "experimental",
+              daily_summary: { current_equity: 983.52 },
+              daily_target: {
+                available: true,
+                policy_version: "research-target-roi-v6",
+              },
+              paper_trading: {
+                summary: { realized_pnl: -16.48, closed_positions: 3 },
+              },
+            },
+            {
+              label: "Research ROI v5 (archived 1.5x step)",
+              risk_profile: "research-target-v5",
+              profile_type: "experimental",
+              archived: true,
+              paper_trading: {
+                summary: { realized_pnl: -4.65, closed_positions: 2 },
+              },
+            },
+          ],
+          real_money_readiness: {
+            available: true,
+            checks_passed: 5,
+            checks_total: 12,
+          },
+        } as unknown as StrategyLab}
+      />,
+    );
+
+    expect(screen.getAllByText("ROI v6").length).toBeGreaterThan(0);
+    expect(screen.getByText("research-target-roi-v6")).toBeInTheDocument();
+    expect(screen.getByText("$1,025.08")).toBeInTheDocument();
+    expect(screen.getByText("$983.52")).toBeInTheDocument();
+    expect(screen.getByText(/Aug 2, 2026.*10:00 UTC/i)).toBeInTheDocument();
+    expect(screen.getByText("Paper only")).toBeInTheDocument();
+    expect(screen.getByText(/5\/12 checks/i)).toBeInTheDocument();
+    expect(screen.getByText(/live orders disabled/i)).toBeInTheDocument();
+    expect(screen.getByText(/superseded scale probe · n=2/i)).toBeInTheDocument();
+  });
+
+  it("fails closed when active paper accounting is unavailable", () => {
+    render(
+      <EvidenceDossier
+        s={{
+          available: true,
+          mode: "paper_research_only",
+          generated_at: "2026-08-02T10:00:55+00:00",
+          accounting: {
+            available: false,
+            reason: "Fresh active paper ledgers failed reconciliation.",
+          },
+          profiles: [
+            {
+              label: "Live Stability",
+              risk_profile: "live",
+              profile_type: "primary",
+              daily_summary: { current_equity: 1999.99 },
+            },
+            {
+              label: "Research ROI",
+              risk_profile: "research-target",
+              profile_type: "experimental",
+              daily_summary: { current_equity: 1888.88 },
+              daily_target: { policy_version: "research-target-roi-v99" },
+            },
+          ],
+        } as unknown as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: /strategy evidence unavailable/i })).toBeInTheDocument();
+    expect(screen.getByText(/failed reconciliation/i)).toBeInTheDocument();
+    expect(screen.queryByText("$1,999.99")).not.toBeInTheDocument();
+    expect(screen.queryByText("$1,888.88")).not.toBeInTheDocument();
+    expect(screen.queryByText("ROI v99")).not.toBeInTheDocument();
+    expect(screen.queryByText(/two paper ledgers/i)).not.toBeInTheDocument();
+  });
+
+  it("fails closed when the publication artifact is unavailable", () => {
+    render(
+      <EvidenceDossier
+        s={{
+          available: false,
+          mode: "paper_research_only",
+          reason: "Live Strategy data belongs on the runtime host after sync.",
+          profiles: [
+            {
+              label: "Stale local profile",
+              risk_profile: "live",
+              profile_type: "primary",
+              daily_summary: { current_equity: 1999.99 },
+            },
+          ],
+        } as unknown as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: /strategy evidence unavailable/i })).toBeInTheDocument();
+    expect(screen.getByText(/belongs on the runtime host/i)).toBeInTheDocument();
+    expect(screen.queryByText("$1,999.99")).not.toBeInTheDocument();
+    expect(screen.queryByText(/two paper ledgers/i)).not.toBeInTheDocument();
+  });
+
+  it("does not promote an archived legacy research profile into the active ledger pair", () => {
+    render(
+      <EvidenceDossier
+        s={{
+          available: true,
+          mode: "paper_research_only",
+          accounting: { available: true },
+          profiles: [
+            {
+              label: "Live Stability",
+              risk_profile: "live",
+              profile_type: "primary",
+              daily_summary: { current_equity: 1025 },
+            },
+            {
+              label: "Archived research",
+              risk_profile: "research",
+              profile_type: "experimental",
+              archived: true,
+              daily_summary: { current_equity: 1888.88 },
+              daily_target: { policy_version: "research-target-roi-v99" },
+            },
+          ],
+        } as unknown as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Published strategy evidence" })).toBeInTheDocument();
+    expect(screen.queryByText(/two paper ledgers/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("$1,888.88")).not.toBeInTheDocument();
+    expect(screen.queryByText("ROI v99")).not.toBeInTheDocument();
+  });
+});
+
+describe("TrackRecordFinding", () => {
+  it("pairs window statistics with window P&L and labels the total as cross-profile attribution", () => {
+    render(
+      <TrackRecordFinding
+        s={{
+          daily_summary: {
+            window_days: 7,
+            totals: {
+              realized_pnl: 58.18,
+              cumulative_realized_pnl: 44.2,
+              roi: 0.12,
+              hit_rate: 0.75,
+            },
+            side_performance: {
+              NO: { trades: 125, realized_pnl: 58.18 },
+              YES: { trades: 0, realized_pnl: 0 },
+            },
+          },
+        } as unknown as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByText("+$58.18")).toBeInTheDocument();
+    expect(screen.queryByText("+$44.20")).not.toBeInTheDocument();
+    expect(screen.getByText(/cross-profile total is strategy attribution/i)).toBeInTheDocument();
+    expect(screen.queryByText(/cross-profile total is research attribution/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/losses are concentrated/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("LiveStatusStrip accounting gate", () => {
+  it("never labels an unavailable publication as a live paper engine", () => {
+    render(
+      <LiveStatusStrip
+        s={{
+          available: false,
+          mode: "paper_research_only",
+          reason: "Strategy publication unavailable after local cleanup.",
+        } as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: /strategy publication unavailable/i })).toBeInTheDocument();
+    expect(screen.queryByText(/paper engine live/i)).not.toBeInTheDocument();
+  });
+
   it("never labels the paper engine live when active ledgers fail reconciliation", () => {
     render(
       <LiveStatusStrip

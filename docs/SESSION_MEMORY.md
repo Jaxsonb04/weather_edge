@@ -1,11 +1,13 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-07-27 03:20 PDT
+Last updated: 2026-08-05 15:23 PDT
 
-Last production verification: 2026-07-27 03:15 PDT
+Last production verification: 2026-08-05 15:03 PDT
 
-Status: production healthy, current, and paper-only on runtime revision
-`b5ae442b22d37ac6ad831db02e7c50a5309a47fc`
+Last public artifact verification: 2026-08-05 15:08 PDT
+
+Production status snapshot (last verified 2026-08-05): healthy and paper-only on runtime revision
+`2c7a4b25948a6bccd38d506ea27db27f0bbcf2d9`
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
@@ -13,51 +15,115 @@ current AWS state before making an operational claim.
 
 ## Session Brief
 
-- **UNRESOLVED BLOCKER (2026-07-27, found ~18:00 PDT): the retention prune job
-  has been timing out, and decision_snapshots has never been successfully
-  pruned across the entire 47-day window it has existed (873,944 rows,
-  2026-06-10..2026-07-27; SFO_PRUNE_FULL_DAYS=1 / SFO_PRUNE_DEDUP_DAYS=45
-  should bound this to a small fraction of that).**
-  `sfo-kalshi-paper-prune.service` failed with `Result: timeout` at
-  2026-07-27 02:50 PDT: `TimeoutStartSec=1800` (30 min) was exceeded after the
-  archive/S3-upload steps completed, most likely inside the foreign-key audit
-  or the prune DELETE itself against the now-large table, on a
-  `MemoryHigh=1200M`/`MemoryMax=1600M`-constrained oneshot on a 4 GB box. This
-  is very likely the reason `paper_trading.db` reached 10.6 GB and is the
-  direct cause of the disk-preflight failures on the last three deploys this
-  session (each needed a manual same-day-snapshot prune to proceed -- see
-  below). I deliberately did NOT touch the prune job's timeout/memory or run
-  it manually in the foreground: both are live-timer-adjacent changes to a
-  DATA-DELETION path on a resource-constrained box, and the right fix depends
-  on WHY it's slow now (missing index / genuine data-volume growth) which I
-  did not have time to diagnose. The EC2 instance's own IAM role cannot even
-  `ec2:DescribeVolumes` (correctly scoped to backup-only S3 access), so an
-  EBS resize needs the owner's broader AWS credentials in any case.
-  **Recommended next action, in order:** (1) `journalctl -u
-  sfo-kalshi-paper-prune.service -n 200` to see whether the same timeout
-  recurs on the next scheduled attempt tonight and pin down which of the two
-  slow steps (FK audit vs. prune) it dies in; (2) if it is a single slow
-  query, consider `EXPLAIN QUERY PLAN` on the relevant `paper-prune` DELETE
-  and FK-audit SELECT against the live DB size before assuming a timeout bump
-  is sufficient; (3) only after that, raise `TimeoutStartSec` and/or
-  `MemoryMax` on `sfo-kalshi-paper-prune.service` and manually trigger one run
-  during a quiet window, watching `top`/`free -h` for contention with the
-  concurrent scan/monitor timers; (4) separately, an EBS volume increase
-  removes the symptom but not the underlying growth trend and needs the
-  owner's own AWS access.
-- **Ladder-depth capture merged to main but NOT YET DEPLOYED (PR #71,
-  `7de41a89`).** Blocked purely by the disk issue above: the deploy backup
-  preflight needs ~2x the 10.6 GB paper_trading.db plus 1 GiB headroom
-  (~22.3 GB) and, even after freeing every safely-reclaimable byte on the box
-  (rotated/archived logs, `apt-get clean`, pip cache -- recovered roughly
-  600 MB), the box still came up ~400 MB short. This is purely
-  observation-only instrumentation (piloted on the research profile: a
-  best-effort, never-raises capture of order-book depth beyond top-of-book,
-  answering whether liquidity beyond the displayed top matters for the
-  liquidity ceiling documented below) and carries zero urgency -- do not
-  rush a disk workaround to ship it. Deploy it once the prune blocker above
-  is resolved and headroom returns to normal, or once local main revision
-  moves again for another reason and a deploy is due anyway.
+- **RESEARCH ROI V6 NEAR-5% PAPER DAY AUDITED; POLICY HELD STEADY
+  (2026-08-05 intraday snapshot):** the economically isolated Research ROI v6
+  ledger realized **+$44.5025** on Aug 5 Pacific time: 4.45025% of the fixed
+  original $1,000 reference and $5.4975 short of the $50 paper-research
+  objective. The public objective correctly remained a miss. Seven logical
+  decisions resolved 7-0 on $181.59 of entry capital; realized equity reached
+  $1,038.2389, or +$38.2389 lifetime v6 P&L. At the 15:08 PDT publication
+  snapshot there were four separately marked open positions ($10.49 cost basis,
+  about +$0.99 unrealized) and two pending maker reservations. These figures
+  belong only to Research ROI and must not be added to Live Stability as though
+  they were one bankroll.
+
+  Houston's Aug 5 94–95 °F NO position supplied +$35.6927, or 80.20% of the
+  day. v6 requested 147 contracts at $0.61 and public tape partially filled
+  94.1; the position closed at a $0.99 displayed bid ($0.989306 net) after first
+  falling to roughly -$33.29 / -58% marked P&L. The normal NO stop fired, but
+  the existing fresh-model veto retained it while model support remained above
+  entry; the loss stayed just inside the unconditional -60% catastrophic floor.
+  Six Aug 4 targets contributed the other +$8.8098 when official settlements
+  booked on Aug 5. This is resolution-date P&L from earlier admissions, not a
+  cohort opened on Aug 5.
+
+  Fixed-placement replay shows why v6 helped without authorizing more size: the
+  same Houston tape would have filled 49 v4 contracts, 73 v5 contracts, and 94.1
+  of v6's 147 request; requests above v6 still cap at 94.1. Only 2 of 18 audited
+  positive-fill v6 trade-through requests were full (11.1%). The six-day v6
+  bootstrap interval remains -$6.7367 to +$23.5259/day and the $50 objective has
+  been hit on 0/6 days. Action: preserve the exact v6 gates, cap geometry,
+  five-minute scan, 15-minute maker-request lifetime, two-minute monitor,
+  model-fair-value take-profit, fresh-model veto, and hard floor. Do not activate
+  v7 or loosen any safety control from this concentrated observation. Full
+  evidence and the prospective replication protocol are in
+  [`docs/RESEARCH-ROI-V6-2026-08-05.md`](RESEARCH-ROI-V6-2026-08-05.md).
+
+  Read-only production checks at 15:03 PDT found zero failed units, all 12
+  canonical timers enabled and active, no runtime-unit drift, 58% disk use, and
+  clean source provenance at the revision above. Live execution remained
+  disabled and dry-run remained enabled. This audit made no policy, service,
+  order, ledger, deployment, or other production mutation.
+
+- **LOCAL RECRUITER-SITE REDESIGN COMPLETE, NOT YET DEPLOYED (2026-08-05):**
+  Strategy Lab keeps the publication-stamped dossier and economically separate
+  Live Stability / Research ROI paper workbenches, including the open, pending,
+  and closed positions the owner wanted to preserve. Research lineage is now a
+  compact four-era experiment switchboard: four selector cards show the exact
+  attributed P&L and resolved sample at a glance, while only the selected era
+  opens into its dated graph, evidence window, W-L/ROI metrics, accounting
+  boundary, and daily table. Zero-trade v2, execution-only motion, and generic
+  non-comparable archives stay queryable in the public artifact but are omitted
+  from the recruiter view; the two-trade v5 scale probe appears only in the
+  compact policy-decision ribbon. Arrow/Home/End keyboard navigation and one
+  labelled tabpanel were verified. At 390x844 the lineage fell from about 5,655
+  px to 1,951 px (-65%) and the full page from 16,229 px to 12,453 px, with zero
+  horizontal overflow. At 1440x1000 the lineage fell from about 3,051 px to
+  1,178 px (-61%) and the full page from 9,365 px to 7,519 px.
+
+  A fresh local/AWS/public copy audit also removed unsupported or stale claims
+  across all routes: current coverage is 15 cities / 8 NWP members; the current
+  scheduled paper scan is five-minute while historical dedupe copy is
+  cadence-neutral; SFO is blend-capable but currently serves the EMOS
+  operational fallback; LSTM diagnostics are SFO residual-calibration evidence,
+  optional external inputs are conditional, and overview skill metrics are
+  explicitly SFO-scoped. Read-only daily-report eligibility is no longer
+  described as an order placement, five-minute publications are no longer
+  called real-time, calibration warnings are surfaced, and the readiness panel
+  states that authenticated real-money execution is not implemented. Frontend
+  presentation normalizes older runtime labels such as `Research ROI · 5% daily
+  KPI` without altering the raw audit artifact.
+
+  The current AWS/public audit used Strategy schema v3 at
+  `2026-08-05T21:55:44Z` and city coverage at `2026-08-05T21:57:37Z`. Live
+  Stability reported `$1,032.50` realized paper balance, `+$32.50` all-time
+  realized P&L, 53 resolved (47-6), and two open positions. Research ROI v6
+  reported `$1,038.24`, `+$38.24`, 32 resolved (23-9), and four open positions.
+  The active policy remained `research-target-roi-v6`; readiness remained 5/12
+  with replay required; live orders were disabled. These are two economically
+  separate paper accounts, not one bankroll or combined return.
+
+  Verification: production build passed; 164/164 frontend tests and 2,554/2,554
+  Python tests passed (8 environment-dependent skips); lint, icon determinism,
+  diff checks, and browser-observed bundle budgets passed. Browser checks
+  covered 390 px mobile and desktop Strategy Lab layouts with zero page
+  overflow, four archive tabs, one selected evidence panel, and preserved open
+  and closed position sections. The
+  publisher now emits cadence-neutral dedupe copy, current profile labels,
+  conditional SFO-method wording, and exact archived-account snapshots for
+  v3/v4/v5; these publisher changes take effect only after a later deployment.
+  The 2026-08-05 pre-deploy audit also verified zero failed units, all 12 timers
+  enabled and active, paper-only mode, live execution disabled, dry-run enabled,
+  and exact source/manifest provenance at the clean `main` revision above. No
+  deployment or production mutation had been performed when this snapshot was
+  recorded.
+
+- **Retention timeout and disk-preflight blocker RESOLVED (2026-07-27; current
+  health reconfirmed 2026-08-05):** PR #73 replaced the unbounded retention
+  query shape with indexed, bounded work, preserved the rejected-arm evidence,
+  and added safe offline compaction without raising the 30-minute timeout.
+  The first production repair deleted the queued stale population while leaving
+  approved rows untouched and reduced the database from about 10.86 GB to 9.61
+  GB. The current deployed revision contains that fix. On Aug 5 the prune unit
+  was not failed, the canonical timer set was healthy, and disk use was 58%.
+  Remaining maintenance debt: the archive coverage gaps and the day loop noted
+  in the modeling audit should still be bounded before they become growth
+  problems again; they are not current blockers.
+- **Ladder-depth capture is present in the current runtime:** PR #71
+  (`7de41a89`) is an ancestor of the deployed revision. It remains best-effort,
+  observation-only evidence; never treat ladder depth as proof that a resting
+  maker request filled. Public trade-through tape and the canonical allocation
+  ledger remain the fill authority.
 - **Execution-bar alignment (2026-07-27, PR #69, runtime revision
   `b5ae442b22d37ac6ad831db02e7c50a5309a47fc`):** the 07-26 capture release was
   a near-no-op in production. On 07-26/27 the live book recorded 23 approved

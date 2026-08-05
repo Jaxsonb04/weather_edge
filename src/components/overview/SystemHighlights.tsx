@@ -13,9 +13,9 @@ const PILLARS: Pillar[] = [
     icon: "solar:cpu-bolt-bold",
     title: "Forecasting stack",
     points: [
-      "LSTM in production, with an XGBoost challenger A/B-tested out-of-sample (Diebold–Mariano, bootstrap CIs)",
-      "EMOS-weighted 8-member NWP ensemble in all fifteen cities, plus Google, NWS, and Open-Meteo blend inputs on the SFO flagship",
-      "A decade of station-aligned KSFO history behind climatology, bias correction, and bin calibration",
+      "An 8-member NWP ensemble with per-station EMOS point forecasts across all 15 cities",
+      "San Francisco adds LSTM residual-calibration evidence, marine-layer features, and optional external inputs when fresh",
+      "Held-out SFO diagnostics compare the LSTM with XGBoost and persistence; they are research evidence, not runtime health",
     ],
   },
   {
@@ -24,16 +24,16 @@ const PILLARS: Pillar[] = [
     points: [
       "Bin-level probability engine with boundary-aware intraday math and an observed-high lock",
       "Fee- and liquidity-aware edge, gated on the lower confidence bound — not the point estimate",
-      "Two separate risk profiles: a strict real-money candidate and a looser experimental book",
+      "Two economically separate paper cohorts: Live Stability for readiness and Research ROI for bounded policy experiments",
     ],
   },
   {
     icon: "solar:server-square-cloud-bold",
     title: "Production discipline",
     points: [
-      "Unattended AWS timers scan every city's markets on a 15-minute cadence and publish these JSON artifacts",
+      "Unattended AWS timers scan every city's markets every 5 minutes and publish the runtime artifacts",
       "SQLite paper journal with rule-based monitor exits (take-profit, stop-loss, model veto)",
-      "A go-live readiness checklist keeps real-money trading disabled in code until every criterion is met",
+      "A 12-check readiness gate keeps live orders disabled; the current runtime verdict is published without UI overrides",
     ],
   },
 ];

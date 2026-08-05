@@ -101,7 +101,7 @@ function CityCard({
               ? "Current book status unavailable"
               : openPositions > 0
               ? `${openPositions} open position${openPositions === 1 ? "" : "s"}`
-              : `${scans.toLocaleString()} scans/24h`}
+              : `${scans.toLocaleString()} decision evaluations/24h`}
           </p>
         </div>
 
@@ -111,7 +111,7 @@ function CityCard({
               isActive ? "bg-accent/15" : "bg-accent-soft"
             }`}
           >
-            flagship · full blend
+            flagship · blend-capable
           </span>
         )}
     </button>

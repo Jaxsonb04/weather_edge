@@ -11,28 +11,30 @@ interface Step {
   desc: string;
 }
 
-const TIER1_STEPS: Step[] = [
-  {
-    icon: "solar:cloud-storm-bold",
-    title: "Nine-model NWP ensemble",
-    desc: "Pulled from Open-Meteo previous-runs — only model cycles that were actually available before the target, so nothing leaks from the future.",
-  },
-  {
-    icon: "solar:graph-up-bold",
-    title: "Per-city EMOS post-processing",
-    desc: "Rolling-origin ensemble model output statistics calibrate the members into one Gaussian (μ, σ) tuned to each station's own error history.",
-  },
-  {
-    icon: "solar:documents-bold",
-    title: "Settled on the official CLI",
-    desc: "Every market resolves against that city's own NWS Climatological Report for its settlement station — never our own reading.",
-  },
-];
+function tier1Steps(modelSample: number | null): Step[] {
+  return [
+    {
+      icon: "solar:cloud-storm-bold",
+      title: modelSample == null ? "Multi-model NWP ensemble" : `${modelSample}-member NWP ensemble`,
+      desc: "Pulled from Open-Meteo previous-runs — only model cycles that were available before the target, so the evaluation does not leak future runs.",
+    },
+    {
+      icon: "solar:graph-up-bold",
+      title: "Per-city EMOS post-processing",
+      desc: "Rolling-origin ensemble model output statistics calibrate the members into one Gaussian (μ, σ) tuned to each station's own error history.",
+    },
+    {
+      icon: "solar:documents-bold",
+      title: "Settled on the official CLI",
+      desc: "Every market resolves against that city's own NWS Climatological Report for its settlement station — never our own reading.",
+    },
+  ];
+}
 
 const TIER2_EXTRAS: Step[] = [
-  { icon: "solar:cpu-bolt-bold", title: "LSTM sequence model", desc: "A recurrent net trained on a decade of station history." },
-  { icon: "solar:layers-bold", title: "Google Weather blend", desc: "A second commercial source folded into the point forecast." },
-  { icon: "solar:waterdrops-bold", title: "Marine-layer features", desc: "Coastal fog signals the ensemble alone misses." },
+  { icon: "solar:cpu-bolt-bold", title: "LSTM calibration evidence", desc: "A held-out residual model trained on a decade of SFO station history." },
+  { icon: "solar:layers-bold", title: "Optional external input", desc: "A commercial weather source may join the SFO blend when its cached value is fresh." },
+  { icon: "solar:waterdrops-bold", title: "Marine-layer features", desc: "SFO-specific coastal signals retained as an additional evidence layer." },
 ];
 
 function StepCard({ step, index }: { step: Step; index: number }) {
@@ -77,7 +79,8 @@ export function ForecastPipeline() {
   const cities = data?.cities ?? [];
   const cityCount = data?.city_count ?? (cities.length || null);
   const flagshipName = cities.find((c) => c.has_full_blend)?.name ?? "San Francisco";
-  const modelSample = cities.map((c) => c.forecasts?.find((f) => typeof f?.n_models === "number")?.n_models).find((n) => typeof n === "number");
+  const modelSample = cities.map((c) => c.forecasts?.find((f) => typeof f?.n_models === "number")?.n_models).find((n) => typeof n === "number") ?? null;
+  const nonFlagshipCount = typeof cityCount === "number" ? Math.max(cityCount - 1, 0) : null;
 
   return (
     <div className="space-y-5">
@@ -90,10 +93,10 @@ export function ForecastPipeline() {
             tone="primary"
             index="Tier 1"
             title="Production · all cities"
-            note="Runs identically for every market, each against its own settlement station."
+            note="The same architecture runs in every market, fitted and settled per station."
           />
           <div className="grid gap-3 sm:grid-cols-3">
-            {TIER1_STEPS.map((s, i) => (
+            {tier1Steps(modelSample).map((s, i) => (
               <StepCard key={s.title} step={s} index={i} />
             ))}
           </div>
@@ -116,7 +119,7 @@ export function ForecastPipeline() {
             tone="extra"
             index="Tier 2"
             title={`Flagship extras · ${flagshipName} only`}
-            note="Added on top of Tier 1 for San Francisco, where a decade of local history supports them."
+            note="Available as SFO-specific evidence; the served point forecast can fall back to EMOS when optional inputs are absent."
           />
           <div className="grid gap-3 sm:grid-cols-3">
             {TIER2_EXTRAS.map((s) => (
@@ -136,21 +139,16 @@ export function ForecastPipeline() {
       </Reveal>
 
       <Finding>
-        The same leakage-free, nine-model NWP ensemble runs in{" "}
+        The same leakage-free {modelSample == null ? "multi-model" : <><strong className="tnum">{modelSample}</strong>-member</>} NWP ensemble runs in{" "}
         <strong>
           {typeof cityCount === "number" ? <span className="tnum">{cityCount}</span> : "every"}
         </strong>{" "}
-        market, EMOS-calibrated per city
-        {typeof modelSample === "number" && (
-          <>
-            {" "}
-            (a recent run weighed <strong className="tnum">{modelSample}</strong> available members)
-          </>
-        )}{" "}
-        and settled against each station's official NWS Climatological Report. The LSTM, Google blend, and
-        marine-layer features are <strong>{flagshipName}-only extras</strong>, not the universal method. Be
-        honest about the record: the multi-city EMOS pipeline is backtest-grade with only a short live
-        history so far, so the fourteen non-flagship cities do not yet carry a long live track record.
+        market, EMOS-calibrated per city and settled against each station's official NWS Climatological Report. The
+        LSTM calibration study, marine-layer features, and optional external input are <strong>{flagshipName}-only evidence layers</strong>,
+        not the universal point-forecast method. The current SFO publication may serve the shared EMOS weighted mean as an operational fallback.
+        {nonFlagshipCount != null && nonFlagshipCount > 0 && (
+          <> The other <strong className="tnum">{nonFlagshipCount}</strong> cities have only a short operational record so far.</>
+        )}
       </Finding>
 
       <Reveal delay={0.05}>
@@ -158,7 +156,7 @@ export function ForecastPipeline() {
           id="city-method-matrix"
           icon="solar:map-point-bold"
           title="City-by-city station matrix"
-          note="15 settlement stations, model counts, methods, and official climate reports"
+          note={`${cityCount ?? "Published"} settlement stations, member counts, methods, and official climate reports`}
         >
           <CityMethodTable />
         </DetailDisclosure>

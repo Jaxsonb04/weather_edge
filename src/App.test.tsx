@@ -73,6 +73,6 @@ describe("application landmarks and route focus", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load the forecast");
     expect(screen.getByText("Published trading signal is missing or invalid.")).toBeInTheDocument();
-    expect(screen.getByText("Paper-trading research only. No live orders are ever placed.")).toBeInTheDocument();
+    expect(screen.getByText("Paper-trading research only. Live orders are disabled.")).toBeInTheDocument();
   });
 });

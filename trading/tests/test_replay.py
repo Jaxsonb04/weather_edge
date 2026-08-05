@@ -12,15 +12,30 @@ from sfo_kalshi_quant.replay import (
     ReplayEvent,
     ReplayOrder,
     SettlementFact,
+    _readiness_root_profile_class,
     build_exec_v3_events,
     replay_from_database,
     run_replay,
 )
+from sfo_kalshi_quant.research_policy import ALL_RESEARCH_POLICIES
 from sfo_kalshi_quant.restatement import restate
 
 
 def _at(minutes: int) -> datetime:
     return datetime(2026, 7, 1, 12, tzinfo=UTC) + timedelta(minutes=minutes)
+
+
+def test_readiness_classifies_every_canonical_research_policy_as_research() -> None:
+    for policy in ALL_RESEARCH_POLICIES:
+        root = {
+            "risk_profile": "research",
+            "research_sleeve": policy.sleeve.value,
+            "account_id": policy.account_id,
+            "research_policy_version": policy.policy_version,
+            "policy_fingerprint": policy.policy_fingerprint,
+        }
+
+        assert _readiness_root_profile_class(root) == "research"
 
 
 def test_recurring_replay_cap_defers_before_loading_an_unbounded_order_book(

@@ -1,6 +1,6 @@
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-methodology.css";
-import { pct, round1, type DashboardData } from "../../lib/data";
+import { pct, round1, useCitiesData, type DashboardData } from "../../lib/data";
 import { useDiagnostics, type Diagnostics } from "../../lib/diagnostics";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
@@ -21,21 +21,22 @@ function ModelProofFinding({ diag }: { diag: Diagnostics }) {
   const { models, ab } = diag;
   const persistLift = Math.round((1 - models.lstm.mae / models.persistence.mae) * 100);
   const pStr = ab.p_diebold_mariano < 0.001 ? "p < 0.001" : `p = ${ab.p_diebold_mariano.toFixed(3)}`;
+  const f2 = (value: number) => value.toFixed(2);
   return (
     <Finding>
-      This is a San Francisco flagship extra, not the universal method: on {ab.n_days.toLocaleString()} held-out
-      days the LSTM's MAE of <strong>{round1(models.lstm.mae)}°F</strong> beats the naive persistence baseline (
-      {round1(models.persistence.mae)}°F) by <strong>{persistLift}%</strong> and the XGBoost challenger by{" "}
-      <strong>{round1(ab.lift_pct)}%</strong>, winning {pct(ab.win_rate, 0)} of days head-to-head. A Diebold–Mariano test
-      puts that gap at <strong>{pStr}</strong>
+      This is SFO residual-model research, not the universal method. Across <strong>{ab.n_days.toLocaleString()}</strong> paired held-out days,
+      LSTM MAE was <strong>{f2(ab.mae_lstm)}°F</strong> versus XGBoost at <strong>{f2(ab.mae_xgb)}°F</strong>,
+      a <strong>{round1(ab.lift_pct)}%</strong> reduction; the LSTM won {pct(ab.win_rate, 0)} of days. A Diebold–Mariano test
+      reports <strong>{pStr}</strong>. In the separate baseline summary, LSTM MAE was {f2(models.lstm.mae)}°F versus
+      persistence at {f2(models.persistence.mae)}°F, a {persistLift}% reduction
       {ab.significant
-        ? " — a statistically significant edge, not a lucky sample, which is why the LSTM holds the flagship's production slot on top of the shared EMOS pipeline."
+        ? " — evidence supporting the LSTM as an SFO residual-calibration layer alongside the shared EMOS point forecast."
         : " — not yet significant, so the A/B keeps running on the flagship before anyone is promoted."}
     </Finding>
   );
 }
 
-function AccuracyFinding({ data }: { data: DashboardData }) {
+function AccuracyFinding({ data, otherCityCount }: { data: DashboardData; otherCityCount: number | null }) {
   const { forecast, signal } = data;
   const cal = signal.calibration;
   if (!cal) return null;
@@ -44,20 +45,22 @@ function AccuracyFinding({ data }: { data: DashboardData }) {
   const worst = [...cohorts].sort((a, b) => a.ranked_probability_skill - b.ranked_probability_skill)[0];
   return (
     <Finding>
-      This is San Francisco's ten-year track record. Across <strong>{cal.n.toLocaleString()}</strong> scored San Francisco
-      outcomes the probability engine carries a{" "}
+      This is held-out San Francisco probability research, not a live trading track record. Across <strong>{cal.n.toLocaleString()}</strong> scored outcomes,
+      the probability engine carries a{" "}
       <strong>{pct(cal.ranked_probability_skill, 0)} ranked-probability skill</strong> over climatology and calls the exact
-      settlement bin {pct(cal.top_bin_accuracy, 0)} of the time — against roughly a dozen 2°F-wide brackets. The calibration
-      curve above is the check on this: predicted probabilities track the observed frequencies rather than overstating them.
+      settlement bin {pct(cal.top_bin_accuracy, 0)} of the time — against roughly a dozen 2°F-wide brackets. The reliability
+      curve shows where predicted probabilities match or miss observed frequencies.
+      {!!cal.warnings?.length && <> The current publication flags calibration limitations in one or more probability buckets.</>}
       {best && worst && best.name !== worst.name && (
         <>
           {" "}
           Skill varies by regime — strongest in the <strong>{cohortLabel(best.name)}</strong> cohort (
           {pct(best.ranked_probability_skill, 0)}) and weakest in <strong>{cohortLabel(worst.name)}</strong> (
           {pct(worst.ranked_probability_skill, 0)}), which the risk gates account for when sizing positions. All of it rests
-          on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years — and the other
-          fourteen cities run the same EMOS post-processing against their own settlement stations, just without a decade of
-          scored live outcomes behind them yet.
+          on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years.
+          {otherCityCount != null && otherCityCount > 0 && (
+            <> The other {otherCityCount} cities run the same EMOS post-processing against their own settlement stations, without the same SFO-specific held-out study.</>
+          )}
         </>
       )}
     </Finding>
@@ -75,6 +78,15 @@ const cohortLabel = (name: string) => COHORT_LABELS[name] ?? name.replace(/_/g, 
 export default function MethodologyView({ data }: { data: DashboardData }) {
   const { forecast, story, signal } = data;
   const { data: diag, error: diagError } = useDiagnostics();
+  const { data: coverage } = useCitiesData();
+  const cities = coverage?.cities ?? [];
+  const cityCount = coverage?.city_count ?? (cities.length || 15);
+  const modelSample = cities
+    .map((city) => city.forecasts?.find((row) => typeof row?.n_models === "number")?.n_models)
+    .find((count) => typeof count === "number");
+  const ensemblePhrase = modelSample == null ? "a multi-model NWP ensemble" : `an ${modelSample}-member NWP ensemble`;
+  const ensembleSentence = modelSample == null ? "A multi-model NWP ensemble" : `An ${modelSample}-member NWP ensemble`;
+  const otherCityCount = Math.max(cityCount - 1, 0);
 
   return (
     <>
@@ -83,7 +95,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
         icon="solar:graph-up-bold"
         eyebrow="Methodology & diagnostics"
         title="How the forecast is built and tested"
-        sub="The production method is one pipeline in every city: a leakage-free nine-model NWP ensemble, EMOS-calibrated per station, settled on each city's own NWS Climatological Report. San Francisco layers flagship extras — an LSTM, a Google blend, and marine-layer features — on top of that shared base."
+        sub={`The current ${cityCount}-city coverage artifact uses ${ensemblePhrase}, leakage-free and EMOS-calibrated per station, then settles against each city's NWS Climatological Report. San Francisco is blend-capable, with residual-calibration, marine-layer, and optional external evidence; its served point forecast can fall back to EMOS.`}
       />
       <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <section className="scroll-mt-24">
@@ -91,7 +103,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="01"
             eyebrow="The production pipeline"
             title="One method, running in every city"
-            sub="A nine-model NWP ensemble pulled leakage-free from Open-Meteo previous-runs, post-processed per city with rolling-origin EMOS into a calibrated Gaussian, then settled against each city's own official NWS Climatological Report."
+            sub={`${ensembleSentence} is pulled leakage-free from Open-Meteo previous-runs, post-processed per city with rolling-origin EMOS into a calibrated Gaussian, then settled against each city's official NWS Climatological Report.`}
           />
           <ForecastPipeline />
         </section>
@@ -101,7 +113,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="02"
             eyebrow="Model proof"
             title="The flagship's LSTM, held out-of-sample"
-            sub="A San Francisco flagship extra — not the shared method — compared against an XGBoost challenger and a naive persistence baseline on days neither model trained on. The other fourteen cities trade on the Tier 1 EMOS pipeline alone."
+            sub={`Static held-out San Francisco research — not runtime health — comparing the residual LSTM with XGBoost and persistence on days none of the models trained on. The other ${otherCityCount} cities use the shared EMOS point-forecast path.`}
           />
           {diag ? (
             <div className="space-y-6">
@@ -140,16 +152,16 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
           <SectionHeading
             index="03"
             eyebrow="Forecast accuracy"
-            title="Ten years of San Francisco accuracy"
-            sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor San Francisco's climatology, post-processing, and calibration — each of the other fourteen cities runs the same EMOS post-processing against its own settlement station, just without a decade of scored outcomes behind it yet.`}
+            title="Ten years of San Francisco observations"
+            sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor the SFO climatology and held-out calibration study. The current operational point forecast is reported separately above.`}
           />
           <div className="space-y-6">
-            <AccuracyFinding data={data} />
+            <AccuracyFinding data={data} otherCityCount={otherCityCount} />
             <Reveal>
               <DetailDisclosure
                 id="accuracy-evidence"
                 icon="solar:graph-up-bold"
-                title="Ten-year accuracy evidence"
+                title="Held-out probability evidence"
                 note="Climatology, observed distribution, calibration curve, and performance by temperature regime"
               >
                 <ClimatologyChart forecast={forecast} />

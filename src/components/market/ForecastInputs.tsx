@@ -7,23 +7,27 @@ export function ForecastInputs({ target }: { target: Target }) {
   const e = target.ensemble ?? {};
   const f = target.forecast ?? {};
   const rows: { k: string; v: string; hint?: string }[] = [
-    { k: "Blended high", v: f1(predictedHigh(target)) },
-    { k: "Method", v: String(f.method ?? "—").replace(/\(.*\)/, "").trim() || "—" },
-    { k: "Live sources", v: `${f.source_count ?? "—"} · spread ${f1(num(f, "source_spread_f"))}` },
-    {
-      k: "GFS ensemble",
-      v: `${e.member_count ?? "—"} members`,
-      hint: `μ ${f1(num(e, "station_mean_high_f"))} · σ ${f1(num(e, "station_std_high_f"))} · bias ${f1(num(e, "station_bias_f"))}`,
-    },
-    { k: "Google budget", v: `${f.calls_used_today ?? "—"} / ${f.max_calls_per_day ?? "—"} calls` },
+    { k: "Published high", v: f1(predictedHigh(target)) },
+    { k: "Current method", v: String(f.method ?? "—").replace(/_/g, " ").replace(/\s+/g, " ").trim() || "—" },
+    { k: "NWP members", v: `${f.source_count ?? "—"}` },
   ];
+  if (e.member_count != null) {
+    rows.push({
+      k: "GFS ensemble",
+      v: `${e.member_count} members`,
+      hint: `μ ${f1(num(e, "station_mean_high_f"))} · σ ${f1(num(e, "station_std_high_f"))} · bias ${f1(num(e, "station_bias_f"))}`,
+    });
+  }
+  if (typeof f.calls_used_today === "number" && typeof f.max_calls_per_day === "number") {
+    rows.push({ k: "Google budget", v: `${f.calls_used_today} / ${f.max_calls_per_day} calls` });
+  }
 
   return (
     <Card className="h-full rounded-2xl">
       <Card.Header>
         <Card.Title className="text-base">Forecast inputs</Card.Title>
         <Card.Description className="text-sm text-muted">
-          How the {targetLabel(target.target_date).toLowerCase()} high was assembled
+          Runtime inputs published for the {targetLabel(target.target_date).toLowerCase()} high
         </Card.Description>
       </Card.Header>
       <Card.Content className="pt-0">

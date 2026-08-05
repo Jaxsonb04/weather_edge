@@ -10,15 +10,16 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
   const noTrade = d.decision !== "TRADE";
   const spread = num(target.forecast, "source_spread_f");
   const topReason = d.reasons?.[0]?.replace(/\.$/, "");
+  const decisionLabel = noTrade ? "No signal" : "Eligible";
   return (
     <Card className="h-full rounded-2xl">
       <Card.Header className="flex items-start justify-between gap-3">
         <div>
-          <Card.Title className="text-base">Best decision</Card.Title>
+          <Card.Title className="text-base">Best published signal</Card.Title>
           <Card.Description className="text-sm text-muted">{d.label} · {d.ticker}</Card.Description>
         </div>
         <Chip variant="soft" color={noTrade ? "warning" : "success"}>
-          <Chip.Label>{d.decision.replace(/_/g, " ")}</Chip.Label>
+          <Chip.Label>{decisionLabel}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="pt-0">
@@ -54,12 +55,12 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
         <p className="text-xs text-muted">
           {approvedCount > 0 ? (
             <>
-              <span className="font-medium text-success">{approvedCount}</span> signal{approvedCount === 1 ? "" : "s"} cleared every gate and would be placed.
+              <span className="font-medium text-success">{approvedCount}</span> candidate{approvedCount === 1 ? "" : "s"} cleared this target's published signal gates. Paper admission and placement run separately.
             </>
           ) : (
             <>
               <span className="font-medium text-foreground">0</span> approved signals —{" "}
-              {topReason ?? `today's sources disagree by ${f1(spread)}`}.
+              {topReason ?? `published sources disagree by ${f1(spread)}`}.
             </>
           )}
         </p>

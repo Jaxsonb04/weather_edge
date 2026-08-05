@@ -136,13 +136,13 @@ describe("ProfileComparison publication truthfulness", () => {
     await renderComparison("2026-07-09T11:59:00Z", canonicalStrategy);
 
     const page = document.body.textContent ?? "";
-    expect(page.indexOf("Candidate")).toBeLessThan(page.indexOf("Research target"));
+    expect(page.indexOf("Live Stability")).toBeLessThan(page.indexOf("Research ROI"));
     expect(screen.queryByText("Research motion")).not.toBeInTheDocument();
     expect(screen.queryByText("Legacy research should not render")).not.toBeInTheDocument();
     expect(screen.getByText("$50.00 daily target")).toBeInTheDocument();
     expect(screen.getByText("Not feasible from current opportunities")).toBeInTheDocument();
     expect(
-      screen.getByText(/Separate Research ROI account · excluded from live goal and readiness/i),
+      screen.getByText(/Separate Research ROI paper account · excluded from real-money readiness/i),
     ).toBeInTheDocument();
   });
 });

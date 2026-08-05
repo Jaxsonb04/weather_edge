@@ -4,7 +4,7 @@ import { Stat } from "../ui/Stat";
 
 const fmt = (n: number | undefined) => (n == null ? "—" : n.toLocaleString());
 
-/** The dedup funnel: hundreds of thousands of 15-min scans → unique → approved,
+/** The dedup funnel: repeated scheduled scans → unique → approved,
     plus how the approved slice actually scored. */
 export function BacktestStats({ s }: { s: StrategyLab }) {
   const c = s.backtest_summary?.counts ?? {};
@@ -16,13 +16,16 @@ export function BacktestStats({ s }: { s: StrategyLab }) {
     { label: "Approved", value: fmt(c.approved_signals) },
     { label: "Settled", value: fmt(c.settled_signals) },
   ];
+  const dedupeExplanation = (
+    s.backtest_summary?.dedupe_explanation ??
+    "Repeated scheduled scans are counted once per target, market, and side using the entry snapshot."
+  ).replace(/repeated 15[ -]minute AWS scans/gi, "Repeated scheduled AWS scans");
   return (
     <div className="space-y-4">
       <div>
         <h4 className="mb-2 font-display text-sm font-semibold text-foreground">Backtest coverage</h4>
         <p className="text-sm text-muted">
-          {s.backtest_summary?.dedupe_explanation ??
-            "Every 15-minute scan is counted once per target/market/side, using the entry snapshot."}
+          {dedupeExplanation}
         </p>
       </div>
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-5">

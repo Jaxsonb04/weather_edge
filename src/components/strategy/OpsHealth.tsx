@@ -90,7 +90,7 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
           <p className="text-sm leading-relaxed text-muted">
             {s.status?.automation_status ??
               "AWS timers generate the forecast, public signal, Strategy Lab JSON, paper scans, and monitor state."}{" "}
-            Everything on this page is that machine's own output — {(s.source_of_truth ?? "AWS runtime artifacts").toLowerCase()}.
+            All figures and runtime statuses come from {(s.source_of_truth ?? "AWS runtime artifacts").toLowerCase()}; explanatory copy and archive curation are part of this frontend.
           </p>
           {collected && (
             <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">

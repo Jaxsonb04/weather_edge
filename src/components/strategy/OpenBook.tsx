@@ -33,7 +33,7 @@ function PositionList({ rows, kind, scope }: { rows: OpenPosition[]; kind: "open
       <div className="flex flex-col items-center gap-2 py-6 text-center">
         <Icon icon="solar:moon-sleep-bold" className="size-6 text-muted/70" aria-hidden="true" />
         <p className="max-w-sm text-sm text-muted">
-          No open paper positions right now — everything has been closed or settled. New entries appear here the moment a scan clears the gates.
+          No open paper positions right now — everything has been closed or settled. New positions appear after admission and the next valid publication.
         </p>
       </div>
     );

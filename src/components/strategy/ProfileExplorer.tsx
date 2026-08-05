@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Button } from "@heroui/react/button";
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
-import { activeProfiles, money, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
+import { activeProfiles, money, profileDisplayLabel, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
 import { ProfileDashboard } from "./ProfileDashboard";
 
 const ICONS: Record<string, string> = {
@@ -20,33 +20,22 @@ const ROLES: Record<string, string> = {
   "research-motion": "Execution learning",
 };
 
-function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
+function ProfileOption({ profile, index, active, onSelect }: {
   profile: ProfileEntry;
   index: number;
   active: boolean;
-  reduceMotion: boolean | null;
   onSelect: () => void;
 }) {
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const wasActive = useRef(active);
   const pnl = profile.paper_trading?.summary?.realized_pnl ?? 0;
   const closed = profile.paper_trading?.summary?.closed_positions ?? 0;
   const pnlTone = pnl > 0 ? "text-success" : pnl < 0 ? "text-danger" : "text-foreground";
 
-  useEffect(() => {
-    if (active && !wasActive.current) {
-      buttonRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest", inline: "center" });
-    }
-    wasActive.current = active;
-  }, [active, reduceMotion]);
-
   return (
     <Button
-      ref={buttonRef}
       variant="ghost"
       onPress={onSelect}
       aria-pressed={active}
-      className={`group h-auto min-h-44 min-w-[16rem] flex-1 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] sm:min-w-0 ${
+      className={`group h-auto min-h-40 w-full min-w-0 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] ${
         active
           ? "border border-accent/45 bg-surface shadow-md"
           : "border border-border/55 bg-surface-secondary/70 hover:bg-surface-secondary"
@@ -60,7 +49,7 @@ function ProfileOption({ profile, index, active, reduceMotion, onSelect }: {
           <span className="font-mono text-[10px] tracking-[0.16em] text-muted">0{index + 1}</span>
         </span>
         <span className="min-w-0">
-          <span className="block min-h-10 text-balance font-display text-sm font-semibold leading-snug text-foreground">{profile.label}</span>
+          <span className="block min-h-10 text-balance font-display text-sm font-semibold leading-snug text-foreground">{profileDisplayLabel(profile)}</span>
           <span className="mt-1 block text-xs text-muted">{ROLES[profile.risk_profile] ?? "Research profile"}</span>
         </span>
         <span className="flex items-end justify-between gap-3">
@@ -92,23 +81,16 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
 
   return (
     <div className="mx-auto w-full">
-      {/* The rail is a plain scroll wrapper: ARIA drops accessible names on
-          generic elements, and the inner role="group" already names the control
-          set. Its buttons are focusable, so keyboard users scroll it by tabbing
-          — no separate focusable scroll region is needed. */}
-      <div className="profile-rail -mx-2 overflow-x-auto px-2 pb-3 pt-2">
-        <div className="mx-auto flex w-max min-w-full gap-3 sm:w-full sm:min-w-0" role="group" aria-label="Choose a strategy profile">
-          {profiles.map((profile, index) => (
-            <ProfileOption
-              key={profile.risk_profile}
-              profile={profile}
-              index={index}
-              active={profile.risk_profile === active.risk_profile}
-              reduceMotion={reduce}
-              onSelect={() => setSelected(profile.risk_profile)}
-            />
-          ))}
-        </div>
+      <div className="grid min-w-0 grid-cols-1 gap-3 pt-2 sm:grid-cols-2" role="group" aria-label="Choose a strategy profile">
+        {profiles.map((profile, index) => (
+          <ProfileOption
+            key={profile.risk_profile}
+            profile={profile}
+            index={index}
+            active={profile.risk_profile === active.risk_profile}
+            onSelect={() => setSelected(profile.risk_profile)}
+          />
+        ))}
       </div>
 
       <AnimatePresence mode="wait" initial={false}>

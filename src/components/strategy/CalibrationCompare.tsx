@@ -14,7 +14,7 @@ function SideCard({ side, pinned }: { side: CalibrationSide; pinned: boolean }) 
           <p className="mt-1 font-mono text-[11px] text-muted">source: {side.source ?? "—"}</p>
         </div>
         <Chip size="sm" variant="soft" color={pinned ? "success" : "default"}>
-          <Chip.Label>{pinned ? "In production" : "Shadow only"}</Chip.Label>
+          <Chip.Label>{pinned ? "Active calibration" : "Shadow only"}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="pt-0">
@@ -50,7 +50,7 @@ export function CalibrationCompare({ s }: { s: StrategyLab }) {
       {c.comparison?.recommendation && (
         <div className="border-l-2 border-accent/40 py-1 pl-4 text-sm text-muted">
           <span className="font-medium text-foreground">{c.comparison.label ?? "Verdict"}:</span>{" "}
-          {c.comparison.recommendation}
+          {c.comparison.recommendation.replace(/live model/gi, "active SFO calibration")}
         </div>
       )}
     </div>

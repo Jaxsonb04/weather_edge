@@ -215,9 +215,8 @@ describe("strategy component currency formatting", () => {
       />,
     );
 
-    expect(screen.getByRole("img")).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("from $0 to +$5"),
+    expect(screen.getByRole("img")).toHaveAccessibleName(
+      expect.stringMatching(/ending at \+\$5 cumulative attribution; zero is the break-even reference/i),
     );
     expect(screen.getByText("P&L contribution")).toBeInTheDocument();
     expect(screen.getByText("Daily P&L")).toBeInTheDocument();

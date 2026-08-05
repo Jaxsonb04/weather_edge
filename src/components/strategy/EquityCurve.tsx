@@ -57,6 +57,28 @@ export function EquityCurve({
     (rendersContribution ? 0 : (s.daily_summary.starting_bankroll ?? 1000));
   const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
   const lineKey = rendersContribution ? "pnl" : "equity";
+  if (!series.length) {
+    return (
+      <Widget className={`w-full min-w-0 max-w-full ${className ?? ""}`.trim()}>
+        <Widget.Header className="flex-col items-start gap-2 py-1 sm:flex-row sm:justify-between">
+          <div className="min-w-0">
+            {eyebrow && (
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">{eyebrow}</span>
+            )}
+            <Widget.Title className={emphasis === "headline" ? "text-base" : undefined}>
+              {title ?? "Paper equity curve"}
+            </Widget.Title>
+            <Widget.Description>{description ?? "No dated series was published for this artifact."}</Widget.Description>
+          </div>
+        </Widget.Header>
+        <Widget.Content>
+          <div role="status" className="grid h-40 place-items-center rounded-xl border border-dashed border-border/70 bg-surface-secondary/50 px-4 text-center text-xs text-muted">
+            No dated curve is available in this publication.
+          </div>
+        </Widget.Content>
+      </Widget>
+    );
+  }
   const last = series[series.length - 1]?.[lineKey] ?? start;
   const win = windowDays ?? s.daily_summary.window_days ?? series.length;
   const up = last >= start;
@@ -75,11 +97,13 @@ export function EquityCurve({
   const stroke = up ? "var(--color-success)" : "var(--color-danger)";
   const valueName = rendersContribution ? "P&L contribution" : "Equity";
   const chartH = height ?? EMPHASIS_HEIGHT[emphasis];
-  const label = `${title ?? "Paper equity curve"} over ${series.length} days, from ${axisMoney(start, rendersContribution)} to ${axisMoney(last, rendersContribution)} (${up ? "up" : "down"} over the window).`;
+  const label = rendersContribution
+    ? `${title ?? "Paper P&L curve"} with ${series.length} published daily points, ending at ${axisMoney(last, true)} cumulative attribution; zero is the break-even reference.`
+    : `${title ?? "Paper equity curve"} over ${series.length} days, from ${axisMoney(start)} to ${axisMoney(last)} (${up ? "up" : "down"} over the window).`;
 
   return (
-    <Widget className={`w-full ${className ?? ""}`.trim()}>
-      <Widget.Header className="items-start py-1">
+    <Widget className={`w-full min-w-0 max-w-full ${className ?? ""}`.trim()}>
+      <Widget.Header className="flex-col items-start gap-3 py-1 sm:flex-row sm:justify-between">
         <div className="flex min-w-0 flex-col gap-0.5">
           {eyebrow && (
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">{eyebrow}</span>
@@ -91,7 +115,7 @@ export function EquityCurve({
             {description ?? `Cumulative realized P&L over the reporting window · ${win}-day view`}
           </Widget.Description>
         </div>
-        <Widget.Legend className="shrink-0 self-start pt-0.5">
+        <Widget.Legend className="flex shrink-0 flex-wrap self-start pt-0.5">
           <Widget.LegendItem color={stroke}>{rendersContribution ? "P&L" : "equity"}</Widget.LegendItem>
           <Widget.LegendItem color="var(--color-muted)">{rendersContribution ? "break-even" : "start"}</Widget.LegendItem>
         </Widget.Legend>

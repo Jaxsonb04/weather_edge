@@ -23,14 +23,14 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
   const columns = [rejections.slice(0, half), rejections.slice(half)];
 
   return (
-    <Card className="rounded-2xl">
+    <Card className="w-full min-w-0 max-w-full rounded-2xl">
       <Card.Header>
         <Card.Title className="text-base">Signal filtering</Card.Title>
         <Card.Description className="text-sm text-muted">
-          Every 15-minute scan re-checks every bracket and side against the full set of filters
+          Every 5-minute scheduled scan re-checks each published bracket and side against the full filter set
         </Card.Description>
       </Card.Header>
-      <Card.Content className="space-y-6 pt-0">
+      <Card.Content className="min-w-0 space-y-6 pt-0">
         <div>
           <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             <p>
@@ -61,9 +61,9 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
         </div>
 
         {!!rejections.length && (
-          <div className="grid gap-x-6 gap-y-3 border-t border-border/50 pt-6 md:grid-cols-2">
+          <div className="grid min-w-0 grid-cols-1 gap-x-6 gap-y-3 border-t border-border/50 pt-6 md:grid-cols-2">
             {columns.map((col, ci) => (
-              <ul key={ci} className="space-y-2">
+              <ul key={ci} className="min-w-0 space-y-2">
                 {col.map((r) => (
                   <li key={r.reason}>
                     <div className="mb-1 flex items-baseline justify-between gap-3">

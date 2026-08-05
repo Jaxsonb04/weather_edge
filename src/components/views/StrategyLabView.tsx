@@ -1,14 +1,18 @@
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-strategy.css";
 import { Accordion } from "@heroui/react/accordion";
+import { Chip } from "@heroui/react/chip";
 import { pct } from "../../lib/data";
 import {
   activeProfiles,
+  archivedProfiles,
   findProfile,
   gateCounts,
   money,
   openForProfile,
   pendingForProfile,
+  profileDisplayLabel,
+  researchDailyTarget,
   useStrategyLab,
   type ProfileEntry,
   type ProfilePaperSummary,
@@ -32,25 +36,25 @@ import { DailyActivity } from "../strategy/DailyActivity";
 import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice";
 import { ArchivedPerformance } from "../strategy/ArchivedPerformance";
 
-function TrackRecordFinding({ s }: { s: StrategyLab }) {
+export function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const t = s.daily_summary?.totals;
   const side = s.daily_summary?.side_performance;
   if (!t) return null;
   const no = side?.NO;
   const yes = side?.YES;
+  const hasObservedSideSplit = (no?.trades ?? 0) > 0 && (yes?.trades ?? 0) > 0;
   return (
     <Finding>
-      Across all published profile attribution in the {s.daily_summary.window_days ?? "recent"}-day window, the journal recorded{" "}
-      <strong>{money(t.cumulative_realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital) at a{" "}
-      <strong>{pct(t.hit_rate, 0)} hit rate</strong> — many small wins and a few larger losses.
-      {no && yes && (
+      Across archive-inclusive, economically separate published profile attribution in the {s.daily_summary.window_days ?? "recent"}-day window, the journal recorded{" "}
+      <strong>{money(t.realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital) at a{" "}
+      <strong>{pct(t.hit_rate, 0)} hit rate</strong>.
+      {no && yes && hasObservedSideSplit && (
         <>
-          {" "}
-          The losses are concentrated on one side: NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades,
-          while the {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong> — the same
-          split the books flag in their recommended changes.
+          {" "}By side, NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades,
+          while {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong>.
         </>
       )}
+      {" "}That cross-profile total is strategy attribution, not one account&apos;s balance.
     </Finding>
   );
 }
@@ -69,12 +73,11 @@ function SelectivityFinding({ s }: { s: StrategyLab }) {
       {liveTop && (
         <>
           {" "}
-          — its most common rejection is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections), where it
-          holds off because the forecast sources disagree
+          — its most common published rejection is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections)
         </>
       )}
       . Live Stability keeps those gates binding; Research ROI takes more bounded
-      paper risk without contributing to live readiness.
+      paper risk without contributing to real-money readiness.
     </Finding>
   );
 }
@@ -86,10 +89,9 @@ export function ReadinessFinding({ s }: { s: StrategyLab }) {
   const total = r.checks_total ?? r.checks?.length ?? 0;
   return (
     <Finding>
-      Today the engine scores itself <strong>{r.checks_passed ?? 0}/{total} checks passed</strong> —{" "}
-      {(r.verdict ?? "not ready").toLowerCase()} for real money. The open items are mostly about sample size: it won't treat a
-      good week as proof until it has enough independent settlement days. The go/no-go decision is enforced in code and
-      published as-is, not set by hand.
+      In this publication, the engine reports <strong>{r.checks_passed ?? 0}/{total} checks passed</strong> —{" "}
+      {(r.verdict ?? "not ready").toLowerCase()} for real money. The checklist is recomputed from runtime evidence and
+      published as-is; this page does not override the verdict.
     </Finding>
   );
 }
@@ -149,7 +151,7 @@ export function AnalysisFreshness({ s }: { s: StrategyLab }) {
 
   return (
     <p className="mt-4 text-[11px] leading-relaxed text-muted">
-      {analysisStatus} Live paper state and readiness are recomputed on every public refresh.
+      {analysisStatus} Current paper state and readiness are recomputed on every public refresh.
     </p>
   );
 }
@@ -159,19 +161,24 @@ export function AnalysisFreshness({ s }: { s: StrategyLab }) {
     disclaimer folded in as a muted note (replaces the old warning band). */
 export function LiveStatusStrip({ s }: { s: StrategyLab }) {
   const fresh = s.generated_at ? `${s.generated_at.slice(0, 16).replace("T", " ")} UTC` : null;
-  const disclaimer =
-    s.disclaimer ?? "Paper-trading research only — no real-money orders are ever placed.";
-  if (s.accounting?.available === false) {
+  const disclaimer = s.live_orders_enabled === false
+    ? "Paper-trading research only — no real-money orders are placed. Forecasts use per-city NWP/EMOS; SFO publishes its served method and can add optional residual-calibration inputs."
+    : s.disclaimer ?? "Paper-trading research only — execution state is not published.";
+  const publicationUnavailable = !s.available;
+  if (publicationUnavailable || s.accounting?.available === false) {
+    const title = publicationUnavailable
+      ? "Strategy publication unavailable"
+      : "Paper account state unavailable";
     return (
       <div
         role="alert"
-        aria-label="Paper account state unavailable"
+        aria-label={title}
         className="rounded-xl border border-warning/25 bg-warning/5 px-4 py-3"
       >
         <div className="grid gap-x-4 gap-y-1 sm:grid-cols-[1fr_auto] sm:items-baseline">
           <span className="flex items-center gap-2 text-xs font-semibold text-warning">
             <Icon icon="solar:shield-warning-bold" className="size-4 shrink-0" aria-hidden="true" />
-            Paper account state unavailable
+            {title}
           </span>
           {fresh && (
             <span className="tnum font-mono text-[11px] text-muted sm:justify-self-end">
@@ -180,8 +187,10 @@ export function LiveStatusStrip({ s }: { s: StrategyLab }) {
           )}
         </div>
         <p className="mt-2 text-xs leading-relaxed text-muted">
-          {s.accounting.reason ?? "Fresh active paper ledgers did not pass accounting validation."} Active
-          profiles and readiness are suppressed until reconciliation succeeds.
+          {publicationUnavailable
+            ? s.reason ?? "The Strategy publication did not report an available artifact."
+            : s.accounting?.reason ?? "Fresh active paper ledgers did not pass accounting validation."} Active
+          profiles and readiness are suppressed until a valid reconciled publication is available.
         </p>
         <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
           <Icon icon="solar:shield-keyhole-bold" className="mt-px size-3.5 shrink-0" aria-hidden="true" />
@@ -194,16 +203,13 @@ export function LiveStatusStrip({ s }: { s: StrategyLab }) {
   return (
     <div
       role="status"
-      aria-label="Paper trading engine status"
+      aria-label="Paper trading runtime snapshot"
       className="rounded-xl bg-surface-secondary px-4 py-3"
     >
       <div className="grid gap-x-4 gap-y-1 sm:grid-cols-[1fr_auto] sm:items-baseline">
         <span className="flex items-center gap-2">
-          <span className="relative flex size-2" aria-hidden="true">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
-            <span className="relative inline-flex size-2 rounded-full bg-success" />
-          </span>
-          <span className="text-xs font-semibold text-foreground">Paper engine live</span>
+          <span className="size-2 shrink-0 rounded-full bg-success" aria-hidden="true" />
+          <span className="text-xs font-semibold text-foreground">Paper runtime snapshot</span>
         </span>
         {fresh && (
           <span className="tnum font-mono text-[11px] text-muted sm:justify-self-end">updated {fresh}</span>
@@ -211,7 +217,7 @@ export function LiveStatusStrip({ s }: { s: StrategyLab }) {
       </div>
       <dl className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(11.5rem,1fr))] gap-x-6 gap-y-4">
         {profiles.map((profile) => (
-          <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profile.label} />
+          <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profileDisplayLabel(profile)} />
         ))}
       </dl>
       <AnalysisFreshness s={s} />
@@ -223,7 +229,248 @@ export function LiveStatusStrip({ s }: { s: StrategyLab }) {
   );
 }
 
-/** The live candidate's own performance, surfaced as the section headline so the
+const timestampFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+  timeZoneName: "short",
+});
+
+function publishedAt(value?: string | null) {
+  if (!value) return "Publication time unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : timestampFormatter.format(date);
+}
+
+function policyName(value?: string | null) {
+  if (!value) return "Version unavailable";
+  const roi = value.match(/roi-v(\d+)$/i);
+  if (roi) return `ROI v${roi[1]}`;
+  const version = value.match(/v(\d+)$/i);
+  return version ? `Research v${version[1]}` : value;
+}
+
+function DossierStat({
+  label,
+  value,
+  note,
+  tone,
+}: {
+  label: string;
+  value: string;
+  note: string;
+  tone?: "pos" | "neg";
+}) {
+  const toneClass = tone === "pos" ? "text-success" : tone === "neg" ? "text-danger" : "text-foreground";
+  return (
+    <div className="min-w-0 border-l border-border/70 pl-3 sm:pl-4">
+      <dt className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</dt>
+      <dd className={`tnum mt-1 break-words font-display text-xl font-semibold leading-tight ${toneClass}`}>{value}</dd>
+      <dd className="mt-1 break-words text-[11px] leading-relaxed text-muted">{note}</dd>
+    </div>
+  );
+}
+
+/** Recruiter-facing evidence cover sheet. Every value comes from the active
+    public Strategy artifact; version and balance fields disappear rather than
+    being inferred when an older artifact omits them. */
+export function EvidenceDossier({ s }: { s: StrategyLab }) {
+  const publicationUnavailable = !s.available;
+  if (publicationUnavailable || s.accounting?.available === false) {
+    return (
+      <section
+        role="alert"
+        aria-labelledby="strategy-evidence-dossier"
+        className="relative min-w-0 overflow-hidden rounded-3xl border border-warning/30 bg-warning/5 p-5 shadow-lg sm:p-7"
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-warning/80 to-transparent" aria-hidden="true" />
+        <div className="flex min-w-0 items-start gap-4">
+          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-warning/10 text-warning ring-1 ring-warning/25">
+            <Icon icon="solar:shield-warning-bold" className="size-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Chip size="sm" variant="soft" color="warning">
+                <Chip.Label>Evidence withheld</Chip.Label>
+              </Chip>
+              <span className="tnum font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                {publishedAt(s.generated_at)}
+              </span>
+            </div>
+            <h2 id="strategy-evidence-dossier" className="mt-4 text-balance font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+              Strategy evidence unavailable
+            </h2>
+            <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted">
+              {publicationUnavailable
+                ? s.reason ?? "The Strategy publication did not report an available artifact."
+                : s.accounting?.reason ?? "Fresh active paper ledgers did not pass accounting validation."}
+            </p>
+            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
+              Active balances, policy claims, and readiness evidence are suppressed until a valid reconciled publication is available.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const currentProfiles = activeProfiles(s);
+  const live = currentProfiles.find((profile) => profile.risk_profile === "live");
+  const research = currentProfiles.find(
+    (profile) => profile.risk_profile === "research-target" || profile.risk_profile === "research",
+  );
+  const hasLedgerPair = Boolean(live && research);
+  const target = research ? researchDailyTarget(s, research) : undefined;
+  const liveSummary = live?.paper_trading?.summary;
+  const researchSummary = research?.paper_trading?.summary;
+  const liveBalance = live?.daily_summary?.current_equity;
+  const researchBalance = research?.daily_summary?.current_equity;
+  const policy = policyName(target?.policy_version);
+  const policyMarker = target?.policy_version?.match(/(?:^|-)v(\d+)(?:$|-)/i)?.[1];
+  const checks = s.real_money_readiness;
+  const readiness = checks?.available
+    ? `${checks.checks_passed ?? 0}/${checks.checks_total ?? checks.checks?.length ?? 0} checks`
+    : "Not published";
+  const explicitLiveOrders = s.live_orders_enabled;
+  const paperOnly = explicitLiveOrders === false
+    || (explicitLiveOrders == null && /paper/i.test(s.mode));
+  const executionState = explicitLiveOrders === true
+    ? "Live enabled"
+    : paperOnly
+      ? "Paper only"
+      : "Unverified";
+  const executionNote = explicitLiveOrders === true
+    ? `${readiness} · runtime reports live orders enabled`
+    : paperOnly
+      ? `${readiness} · live orders disabled`
+      : `${readiness} · execution flag unavailable`;
+  const archiveByKey = new Map(
+    archivedProfiles(s).map((profile) => [profile.risk_profile, profile] as const),
+  );
+  const lineageRows: Array<[string, string]> = [
+    ["research-target-v1", "Archived control"],
+    ["research-target-v3", "Rejected policy"],
+    ["research-target-v4", "Adopted revision"],
+    ["research-target-v5", "Superseded scale probe"],
+  ].flatMap(([riskProfile, note]) => {
+    const profile = archiveByKey.get(riskProfile);
+    if (!profile) return [];
+    const version = riskProfile.match(/v\d+$/i)?.[0] ?? riskProfile;
+    const resolved = profile.paper_trading?.summary?.closed_positions;
+    const sample = riskProfile === "research-target-v5" && resolved != null
+      ? ` · n=${resolved.toLocaleString()}`
+      : "";
+    return [[version, `${note}${sample}`] as [string, string]];
+  });
+  if (target?.policy_version) {
+    lineageRows.push([
+      policyMarker ? `v${policyMarker}` : "Now",
+      "Active research policy",
+    ]);
+  }
+
+  return (
+    <section
+      aria-labelledby="strategy-evidence-dossier"
+      className="relative min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-surface p-5 shadow-lg sm:p-7"
+    >
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/80 to-transparent" aria-hidden="true" />
+      <div className="min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip size="sm" variant="soft" color="accent">
+              <Chip.Label>Published evidence</Chip.Label>
+            </Chip>
+            <span className="tnum font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+              {publishedAt(s.generated_at)}
+            </span>
+          </div>
+          <h2 id="strategy-evidence-dossier" className="mt-4 max-w-3xl text-balance font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+            {hasLedgerPair
+              ? "Two paper ledgers. One public evidence trail."
+              : "Published strategy evidence"}
+          </h2>
+          <p className="mt-3 max-w-3xl text-pretty text-sm leading-relaxed text-muted">
+            {hasLedgerPair
+              ? <>Live Stability is the only readiness cohort. {policy} is the active bounded research policy. Their account balances, positions, and P&amp;L remain separate; cross-profile attribution is labeled explicitly.</>
+              : "This publication does not expose both canonical active paper ledgers. Available fields remain visible without substituting archived profiles or inferring missing balances."}
+          </p>
+
+          <dl className="mt-6 grid min-w-0 grid-cols-2 gap-x-4 gap-y-6 lg:grid-cols-4">
+            <DossierStat
+              label="Active policy"
+              value={policy}
+              note={target?.policy_version ?? "No policy version in this artifact"}
+            />
+            <DossierStat
+              label="Readiness paper balance"
+              value={liveBalance == null ? "—" : money(liveBalance, { sign: "negative-only" })}
+              note={liveSummary ? `${money(liveSummary.realized_pnl)} P&L · ${liveSummary.closed_positions} resolved` : "Readiness record unavailable"}
+              tone={(liveSummary?.realized_pnl ?? 0) > 0 ? "pos" : (liveSummary?.realized_pnl ?? 0) < 0 ? "neg" : undefined}
+            />
+            <DossierStat
+              label="Research paper balance"
+              value={researchBalance == null ? "—" : money(researchBalance, { sign: "negative-only" })}
+              note={researchSummary ? `${money(researchSummary.realized_pnl)} P&L · ${researchSummary.closed_positions} resolved` : "Research record unavailable"}
+              tone={(researchSummary?.realized_pnl ?? 0) > 0 ? "pos" : (researchSummary?.realized_pnl ?? 0) < 0 ? "neg" : undefined}
+            />
+            <DossierStat
+              label="Real-money state"
+              value={executionState}
+              note={executionNote}
+              tone={explicitLiveOrders === true ? "neg" : undefined}
+            />
+          </dl>
+        </div>
+
+        <div className="mt-6 min-w-0 border-t border-border/60 pt-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <p className="text-xs font-semibold text-foreground">Policy decision trail</p>
+            <p className="text-[11px] leading-relaxed text-muted">
+              Archived eras stay entry-frozen; preserved positions settle normally.
+            </p>
+          </div>
+          {lineageRows.length ? (
+          <ol className="mt-3 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-5">
+            {lineageRows.map(([version, note], index, rows) => (
+              <li
+                key={`${version}-${note}`}
+                className={`relative flex min-w-0 items-center gap-2 ${index === rows.length - 1 ? "col-span-2 sm:col-span-1" : ""}`}
+              >
+                <span className={`grid size-7 shrink-0 place-items-center rounded-full border font-mono text-[10px] font-semibold ${
+                  index === rows.length - 1
+                    ? "border-accent/40 bg-accent-soft text-accent"
+                    : "border-border bg-background text-foreground"
+                }`}>
+                  {version}
+                </span>
+                <span className="min-w-0 text-[11px] leading-snug text-muted">{note}</span>
+                {index < rows.length - 1 && (
+                  <Icon
+                    icon="solar:arrow-right-linear"
+                    className="ml-auto hidden size-3.5 shrink-0 text-muted/60 sm:block"
+                    aria-hidden="true"
+                  />
+                )}
+              </li>
+            ))}
+          </ol>
+          ) : (
+            <p className="mt-3 text-xs leading-relaxed text-muted">
+              No versioned policy lineage was published in this artifact.
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** The paper readiness candidate's own performance, surfaced as the section headline so the
     real-money book is judged on its own record — not the blended, research-dragged
     combined figure that leads the KPI strip. */
 function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
@@ -236,7 +483,7 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
             <Icon icon="solar:shield-check-bold" className="size-3.5 shrink-0" aria-hidden="true" />
-            Live Stability · readiness profile
+            Live Stability · paper readiness profile
           </p>
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <span className={`font-display text-4xl font-bold tracking-tight ${up ? "text-success" : "text-danger"}`}>
@@ -247,7 +494,7 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
         </div>
         <dl className="flex flex-wrap gap-x-6 gap-y-4">
           <HeroStat
-            label="Total realized balance"
+            label="Realized paper balance"
             value={
               p.daily_summary?.current_equity == null
                 ? "—"
@@ -263,7 +510,7 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
   );
 }
 
-/** Shown in place of the live equity curve when the per-book series is missing
+/** Shown in place of the readiness equity curve when the per-book series is missing
     and a research book is present in the artifact: the combined (all-account)
     series would plot research activity under the "Live candidate" label, so
     this reports the gap honestly instead of showing a mislabeled number. */
@@ -274,10 +521,10 @@ function LiveCurveUnavailable() {
       className="flex h-[288px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 text-center"
     >
       <Icon icon="solar:clock-circle-bold" className="size-5 text-warning" aria-hidden="true" />
-      <p className="text-sm font-medium text-foreground">Live candidate equity curve unavailable.</p>
+      <p className="text-sm font-medium text-foreground">Readiness equity curve unavailable.</p>
       <p className="max-w-sm text-xs text-muted">
         Per-book accounting isn't published for this artifact, and a research book is present, so the combined total
-        isn't shown under the live label.
+        isn't shown under the readiness label.
       </p>
     </div>
   );
@@ -309,14 +556,14 @@ export function OverviewEquity({ s }: { s: StrategyLab }) {
         contributionMode
         windowDays={live.daily_summary?.window_days}
         emphasis="headline"
-        eyebrow="Live Stability · readiness profile"
+        eyebrow="Live Stability · paper readiness profile"
         title="Live Stability — cumulative P&L"
         description={`Daily and cumulative realized P&L with the account balance on hover · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
       />
     ) : hasResearchBook ? (
       <LiveCurveUnavailable />
     ) : (
-      <EquityCurve s={s} emphasis="headline" eyebrow="Live Stability · readiness profile" title="Live Stability — cumulative P&L" />
+      <EquityCurve s={s} emphasis="headline" eyebrow="Live Stability · paper readiness profile" title="Live Stability — cumulative P&L" />
     );
 
   return (
@@ -347,6 +594,7 @@ function DisclosureHeading({ icon, title, note }: { icon: string; title: string;
 export default function StrategyLabView() {
   const { data: s, error } = useStrategyLab();
   const canonicalTargetPublished = !!s && activeProfiles(s).some((profile) => profile.risk_profile === "research-target");
+  const publicationUnavailable = !!s && !s.available;
 
   return (
     <>
@@ -354,10 +602,12 @@ export default function StrategyLabView() {
         headingId="lab-page-title"
         icon="solar:test-tube-bold"
         eyebrow="Strategy Lab"
-        title="Paper-trading results"
-        sub={canonicalTargetPublished
-          ? "Two fresh $1,000 paper ledgers: Live Stability optimizes dependable wins and drives readiness; Research ROI pursues a fixed 5% daily research KPI with higher bounded risk. Prior books remain read-only in Achieved performance."
-          : "The live candidate and published legacy research evidence remain separate. No missing account or balance is inferred; every number comes from the AWS runtime."}
+        title="Strategy research, in public"
+        sub={publicationUnavailable
+          ? "Strategy evidence is withheld when the runtime publication is unavailable; stale local balances and profiles are never substituted."
+          : canonicalTargetPublished
+            ? "Two independent paper ledgers, one readiness profile, and a versioned ROI research book. Open and closed positions, dated evidence, and rejected experiments remain inspectable."
+            : "The paper readiness cohort and published legacy research evidence remain separate. No missing account or balance is inferred; every number comes from the AWS runtime."}
       />
       <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
@@ -368,56 +618,50 @@ export default function StrategyLabView() {
             <span className="text-sm">Loading paper-trading research…</span>
           </div>
         )}
-        {s && (
+        {publicationUnavailable && s && (
+          <div role="alert" aria-label="Strategy publication unavailable" className="rounded-2xl border border-warning/30 bg-warning/5 p-5 text-sm leading-relaxed text-muted">
+            <strong className="block font-semibold text-warning">Strategy publication unavailable</strong>
+            <span className="mt-2 block">{s.reason ?? "The runtime did not publish an available Strategy artifact."}</span>
+          </div>
+        )}
+        {s?.available && (
           <>
-            <Reveal immediate className="mb-8">
+            <Reveal immediate className="mb-6">
+              <EvidenceDossier s={s} />
+            </Reveal>
+            <Reveal immediate className="mb-10">
               <LiveStatusStrip s={s} />
             </Reveal>
 
-            {/* ---- Live money candidate: one chart and one compact result strip. ---- */}
-            <section className="scroll-mt-24">
+            {/* ---- One profile at a time, including its open and closed book. ---- */}
+            <section id="active-books" className="scroll-mt-24">
               <SectionHeading
                 index="01"
-                eyebrow="Live Stability"
-                title="Steady growth first"
-                sub="The only readiness profile. Its daily P&L, cumulative P&L, and true realized account balance come from one fresh $1,000 ledger; research is excluded."
-              />
-              <Reveal>
-                <OverviewEquity s={s} />
-              </Reveal>
-            </section>
-
-            {/* ---- One profile at a time, with scoped data and progressive detail. ---- */}
-            <section className="mt-14 scroll-mt-24">
-              <SectionHeading
-                index="02"
-                eyebrow="Profile workbench"
-                title="Choose a strategy profile"
-                sub="Live Stability prioritizes win rate and consistency. Research ROI accepts more bounded paper risk to maximize return against its fixed $50 daily research KPI."
+                eyebrow="Active books"
+                title="Inspect the running ledgers"
+                sub="Choose Live Stability or Research ROI. Each view keeps its balance, dated curve, gates, open positions, pending limits, and closed-position evidence in one account-scoped workbench."
               />
               <Reveal>
                 <ProfileExplorer s={s} />
               </Reveal>
             </section>
 
-            <section className="mt-14 scroll-mt-24">
+            <section id="research-lineage" className="mt-14 scroll-mt-24">
               <SectionHeading
-                index="03"
-                eyebrow="Read-only history"
-                title="Achieved performance & profiles"
-                sub="The complete prior record remains inspectable without contaminating either fresh ledger. Open legacy paper positions continue to settle in place."
+                index="02"
+                eyebrow="Research lineage"
+                title="Experiments that changed the system"
+                sub="A compact switchboard of evidence-bearing experiments. Choose an era to inspect its dated attribution curve, exact resolved record, and the decision it informed; superseded profiles remain in the public artifact."
               />
-              <Reveal>
-                <ArchivedPerformance s={s} />
-              </Reveal>
+              <ArchivedPerformance s={s} />
             </section>
 
             {/* ---- System-wide results and conclusions after profile inspection. ---- */}
-            <section className="mt-14 scroll-mt-24">
+            <section id="validation-controls" className="mt-14 scroll-mt-24">
               <SectionHeading
-                index="04"
-                eyebrow="Overall outcomes"
-                title="What the system learned"
+                index="03"
+                eyebrow="Validation & controls"
+                title="What the evidence permits"
                 sub="The cross-profile conclusions, readiness verdict, and supporting evidence. High-value outcomes stay visible; deeper trading, model, and operations diagnostics unfold on demand."
               />
               <div className="space-y-6">

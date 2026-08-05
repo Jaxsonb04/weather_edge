@@ -10,7 +10,7 @@ const BAR_COLOR: Record<string, string> = {
   Persistence: "var(--color-muted)",
 };
 
-/** Held-out MAE by model — the production LSTM vs the XGBoost challenger and a
+/** Held-out MAE by model — the SFO residual-calibration LSTM vs the XGBoost challenger and a
     naive persistence baseline. Lower is better. */
 export function ModelCompareChart({ diag }: { diag: Diagnostics }) {
   const series = modelCompareSeries(diag);
@@ -20,7 +20,7 @@ export function ModelCompareChart({ diag }: { diag: Diagnostics }) {
       <Widget.Header>
         <div>
           <Widget.Title>Forecast error by model</Widget.Title>
-          <Widget.Description>Held-out mean absolute error (°F) · lower is better · LSTM in production</Widget.Description>
+          <Widget.Description>Held-out SFO residual-model error (°F) · lower is better</Widget.Description>
         </div>
         <Widget.Legend>
           <Widget.LegendItem color="var(--accent)">LSTM</Widget.LegendItem>

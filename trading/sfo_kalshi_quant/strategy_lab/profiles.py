@@ -148,6 +148,14 @@ def _profile_daily_summary(
                 "forecast_error_f": row.get("forecast_error_f"),
             }
         )
+    if days:
+        # Daily rows are already publication-rounded upstream, so their sum can
+        # drift a cent from the canonical order-level profile total. The curve's
+        # terminal point must reconcile to the same attribution total used by
+        # the summary and account-scoped balance surfaces.
+        terminal_attribution = _round(all_time_pnl, 2)
+        days[-1]["cumulative_realized"] = terminal_attribution
+        days[-1]["closing_attributed_pnl"] = terminal_attribution
     resolved = int(_to_float(profile_total.get("resolved")))
     wins = int(_to_float(profile_total.get("wins")))
     losses = int(_to_float(profile_total.get("losses")))
@@ -489,15 +497,15 @@ def _profile_label(name: str) -> str:
     if name == "live":
         return "Live Stability"
     if name == "live-legacy":
-        return "Legacy live achieved performance"
+        return "Prior readiness benchmark"
     if name == "research":
         return "Legacy research (archived)"
     if name == "research-target":
-        return "Research ROI · 5% daily KPI"
+        return "Research ROI · fixed daily objective"
     if name == "research-target-v1":
         return "Research target v1 (archived control)"
     if name == "research-target-v2":
-        return "Research target v2 (archived $16 experiment)"
+        return "Research target v2 (archived)"
     if name == "research-target-v3":
         return "Research ROI v3 (archived oversize experiment)"
     if name == "research-target-v4":

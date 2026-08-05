@@ -40,6 +40,9 @@ from ..research_policy import (
     TARGET_POLICY,
     TARGET_POLICY_V1,
     TARGET_POLICY_V2,
+    TARGET_POLICY_V3,
+    TARGET_POLICY_V4,
+    TARGET_POLICY_V5,
 )
 from ..replay import replay_from_database
 from ..summary import build_paper_summary
@@ -322,7 +325,8 @@ def build_strategy_research(
         "research_notes": _research_notes(),
         "disclaimer": (
             "Paper-trading research only — no real-money orders are ever placed. "
-            "Forecasts use a per-city NWP-ensemble EMOS model (San Francisco adds an LSTM blend)."
+            "Forecasts use per-city NWP/EMOS; San Francisco can add its residual-calibration blend "
+            "when optional inputs are available, and each target publishes its current served method."
         ),
     }
     # The frequent builder treats the cache as read-only input. Emitting a
@@ -729,6 +733,30 @@ def _accounting_payload(
             "research-target-v2",
         ),
         (
+            "research_target_v3",
+            "research-target-v3",
+            "Research target v3 achieved performance",
+            TARGET_POLICY_V3.account_id,
+            "research_target_archived",
+            "research-target-v3",
+        ),
+        (
+            "research_target_v4",
+            "research-target-v4",
+            "Research target v4 achieved performance",
+            TARGET_POLICY_V4.account_id,
+            "research_target_archived",
+            "research-target-v4",
+        ),
+        (
+            "research_target_v5",
+            "research-target-v5",
+            "Research target v5 achieved performance",
+            TARGET_POLICY_V5.account_id,
+            "research_target_archived",
+            "research-target-v5",
+        ),
+        (
             "research_motion",
             "research-motion",
             "Research motion achieved performance",
@@ -816,6 +844,9 @@ def _accounting_payload(
             RESEARCH_ACCOUNT_ID,
             TARGET_POLICY_V1.account_id,
             TARGET_POLICY_V2.account_id,
+            TARGET_POLICY_V3.account_id,
+            TARGET_POLICY_V4.account_id,
+            TARGET_POLICY_V5.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
         ],
@@ -1164,8 +1195,11 @@ def _bind_accounting_to_profiles(
         "live-legacy": 0,
         "research-target-v1": 1,
         "research-target-v2": 2,
-        "research-motion": 3,
-        "research": 4,
+        "research-target-v3": 3,
+        "research-target-v4": 4,
+        "research-target-v5": 5,
+        "research-motion": 6,
+        "research": 7,
     }
     if accounting.get("available") is False:
         archived_rows = [
@@ -1191,7 +1225,7 @@ def _bind_accounting_to_profiles(
         ("live", "Live Stability", "primary", "live_stability"),
         (
             "research-target",
-            "Research ROI · 5% daily KPI",
+            "Research ROI · fixed daily objective",
             "experimental",
             "research_roi",
         ),
@@ -1481,7 +1515,7 @@ def _research_notes() -> list[dict[str, str]]:
         {"term": "Backtest", "note": "Replay historical rows to see how probabilities scored after outcomes were known."},
         {"term": "Look-ahead bias", "note": "Using information that was not available at trade time; Strategy Lab separates pre-resolution rows."},
         {"term": "Pre-resolution", "note": "A signal recorded before market close or an observed-high lock."},
-        {"term": "Dedupe", "note": "Repeated 15-minute scans are reduced to one sampled row per target, market, and side."},
+        {"term": "Dedupe", "note": "Repeated scheduled scans are reduced to one sampled row per target, market, and side."},
         {"term": "Calibration", "note": "How closely stated probabilities match observed win frequencies."},
         {"term": "Brier score", "note": "Squared probability error; lower is better."},
         {"term": "Log loss", "note": "Penalty for assigning low probability to what happened; lower is better."},

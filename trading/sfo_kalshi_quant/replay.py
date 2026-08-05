@@ -1049,6 +1049,9 @@ def _readiness_root_profile_class(
         "research",
         "research-target-v1",
         "research-target-v2",
+        "research-target-v3",
+        "research-target-v4",
+        "research-target-v5",
         "research-target",
         "research-motion",
     }:

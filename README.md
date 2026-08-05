@@ -6,7 +6,7 @@ brackets — converting every candidate trade to fee-aware edge behind risk gate
 
 [**▶ Live dashboard**](https://jaxsonb04.github.io/weather_edge/) ·
 [Methodology](https://jaxsonb04.github.io/weather_edge/#/methodology) ·
-[Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/strategy) ·
+[Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) ·
 [Architecture](docs/architecture.md)
 
 [![Verify](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml/badge.svg)](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml)
@@ -23,14 +23,15 @@ brackets — converting every candidate trade to fee-aware edge behind risk gate
 
 **Forecast model — San Francisco flagship, held out-of-sample**
 
-| Model | MAE | Gap vs. LSTM |
+| Paired model | MAE | Difference vs. LSTM |
 |---|---:|---:|
-| **LSTM** (production) | **3.3°F** | — |
-| XGBoost challenger | 3.9°F | −15.8% |
-| Persistence baseline | 4.0°F | −17% |
+| **SFO LSTM residual model** | **3.12°F** | — |
+| XGBoost challenger | 3.71°F | +0.59°F |
 
 *n = 442 held-out days. Diebold–Mariano p < 0.001; the LSTM wins 63% of days
-head-to-head. Significance is tested, not asserted.*
+head-to-head, with a 15.8% MAE reduction. In the separate baseline summary,
+LSTM MAE is 3.30°F versus persistence at 3.97°F. Significance is tested, not
+asserted.*
 
 **Probability engine — San Francisco, scored outcomes**
 
@@ -46,25 +47,27 @@ across 10 years. Skill varies sharply by regime — strongest in the cold (<60°
 cohort, weakest in the normal 60–69°F band — and the risk gates size positions
 accordingly.*
 
-**What is not proven yet.** The LSTM, the Google Weather blend, and the
-marine-layer features are San Francisco–only extras, not the universal method.
-The other fourteen cities run the shared Tier-1 EMOS pipeline and are
-**backtest-grade with only a short live history**, so they do not yet carry a
-comparable live track record. The paper book's lifetime result is a small
-negative; see [Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/strategy)
-for the current standing.
+**What is not proven yet.** The LSTM residual-calibration study, optional Google
+Weather input, and marine-layer features are San Francisco–only evidence layers,
+not the universal point-forecast method. The current SFO point forecast can fall
+back to the shared EMOS weighted mean when optional inputs are absent. The other
+fourteen cities run that shared EMOS pipeline and have only a short operational
+record. Active paper ledgers and archived strategy
+attribution are reported separately; see
+[Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) for the current
+evidence and account-scoped standing.
 
 ## How It Works
 
 ```text
 Open-Meteo previous-runs archive        ─┐
-  (9 NWP models, leads 1–3,              │
+  (8 NWP members, leads 1–3,             │
    leakage-free: only cycles that        ├─► per-city EMOS ─► calibrated
    existed before the target)            │   post-processing   Gaussian (μ, σ)
                                          │
 NOAA/KSFO 10-year station history       ─┤                          │
-Google Weather (budgeted)  ── SFO only  ─┤                          ▼
-LSTM + marine-layer        ── SFO only  ─┘            bracket probability engine
+Google Weather (optional)  ── SFO only  ─┤                          ▼
+LSTM residual + marine     ── SFO only  ─┘            bracket probability engine
                                                                     │
                                                                     ▼
 NWS Climatological Report (CLI)  ──► settlement truth   fee-aware edge + risk gates
@@ -79,8 +82,9 @@ never grades itself — settlement truth comes from the official CLI product.
 
 **Design decisions worth noting.** The NWP archive is pulled leakage-free (only
 model cycles that were actually available before the target time). EMOS is
-fitted rolling-origin per station rather than pooled. The trade engine is
-maker-first with fee-aware edge, and the whole book is gated on a readiness
+fitted rolling-origin per station rather than pooled. The trade engine uses
+reservation-price limit execution with gated taker crosses where configured,
+and the whole book is gated on a readiness
 check that has not yet passed — which is why it remains paper-only.
 
 ## Stack
@@ -91,9 +95,7 @@ check that has not yet passed — which is why it remains paper-only.
 | Trading engine | Python, fee-aware edge, risk gates, paper journal |
 | Web | React, TypeScript, Vite, HeroUI Pro, bun |
 | Infra | AWS EC2, systemd timers, S3 archive, GitHub Pages |
-| Quality | pytest (122 test files), semgrep, oxlint, hash-pinned deps, CI bundle budget |
-
-The Python surface is ~65k lines against ~56k lines of tests.
+| Quality | pytest (132 test files), semgrep, oxlint, hash-pinned deps, CI bundle budget |
 
 ## Engineering Notes
 
@@ -128,10 +130,12 @@ offset.
 
 Forecasting is two-tier:
 
-- **SFO** keeps the full legacy blend: Google Weather (budgeted), LSTM,
-  marine-layer features, plus the NWP/EMOS archive.
+- **SFO** is blend-capable: it can add a fresh budgeted Google Weather value,
+  LSTM residual-calibration evidence, and marine-layer features to the shared
+  NWP/EMOS base. Its operational point forecast falls back to EMOS when optional
+  inputs are unavailable.
 - **All other cities** run the station-agnostic NWP→EMOS→CLI path only:
-  Open-Meteo previous-runs archive (9 models, leads 1-3), rolling-origin EMOS
+  Open-Meteo previous-runs archive (8 members, leads 1-3), rolling-origin EMOS
   per city, and settlement truth in the station-keyed `cli_settlements` table
   fed by live CLI scans plus the IEM archive backfill
   (`forecaster/city_truth.py`).
@@ -190,10 +194,11 @@ Without installing first:
 bash scripts/paper_analyze.sh
 ```
 
-Paper analysis defaults to the `live` paper-research profile (the stricter,
-real-trading-candidate book, paper-only until a readiness gate passes). Use
-`--risk-profile research` when you want the loosest paper-only gates at the
-smallest size so the journal fills faster with the full opportunity set:
+Paper analysis defaults to the `live` paper-readiness profile. The
+`--risk-profile research` option evaluates the research candidate path; with
+`--place-paper`, the current policy routes admitted entries into the active
+versioned Research ROI sleeve. Archived motion and superseded policy rows are
+read-only evidence:
 
 ```bash
 python -m sfo_kalshi_quant.cli --no-color --risk-profile live analyze --target-date both
@@ -249,8 +254,8 @@ bun run build # outputs dist/
 > **Note for reviewers:** the SPA depends on `@heroui-pro/react`, a commercially
 > licensed component library. Without a HeroUI Pro token the web build cannot be
 > reproduced locally. The Python forecasting and trading packages have no such
-> restriction and build and test freely — and the deployed site is always live at
-> the link above.
+> restriction and build and test freely. Publication freshness at the link above
+> is reported by the public manifest.
 
 Before releasing a new SPA build, capture the initial hard-load resource list
 with browser automation and run both bundle views. The manifest report is
@@ -298,10 +303,10 @@ python -m sfo_kalshi_quant.cli paper-settle --target-date YYYY-MM-DD --settlemen
 `daily-report` is read-only dashboard input; it does not record DB snapshots or
 place paper orders.
 
-Strategy Lab defaults to the `live` profile view, so the wider-net
-`research` results do not contaminate the `live` headline P&L, hit rate,
-open risk, daily rows, signals, actions, or learnings. The AWS
-strategy-lab refresh timer republishes those trading results every fifteen
+Strategy Lab defaults to the Live Stability paper-readiness view. The active
+versioned Research ROI sleeve and every archive remain economically separate,
+so their balances, positions, and P&L are never presented as one account. The
+AWS strategy-lab refresh timer republishes those results every five
 minutes without calling the paid Google Weather refresh path.
 
 `backtest-calibration --source clean-blend` validates the archived live blend on

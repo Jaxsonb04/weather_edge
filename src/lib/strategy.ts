@@ -94,12 +94,14 @@ export interface DayRow {
   trades_opened?: number;
   opened?: number;
   closed?: number;
+  resolved?: number;
   wins?: number;
   losses?: number;
   hit_rate?: number | null;
   signals?: number;
   approved_signals?: number;
   opened_spend?: number;
+  resolved_spend?: number;
   settled?: number;
   roi?: number | null;
   forecast_predicted_high_f?: number | null;
@@ -182,6 +184,10 @@ export interface ProfileDailySummary {
     capital_resolved?: number;
   };
   days?: DayRow[];
+  window_start?: string;
+  window_end?: string;
+  opening_attributed_pnl?: number;
+  current_attributed_pnl?: number;
   exit_reasons?: Record<string, number>;
   side_performance?: Record<string, SideStats>;
   window_days?: number;
@@ -428,7 +434,9 @@ export interface AccountSnapshot {
 export interface StrategyLab {
   schema_version?: number;
   available: boolean;
+  reason?: string;
   mode: string;
+  live_orders_enabled?: boolean;
   disclaimer?: string;
   generated_at?: string;
   analysis_generated_at?: string | null;
@@ -631,6 +639,46 @@ export function archivedProfiles(s: StrategyLab): ProfileEntry[] {
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi)
         || a.risk_profile.localeCompare(b.risk_profile);
     });
+}
+
+const FEATURED_ARCHIVED_PROFILE_ORDER = [
+  "live-legacy",
+  "research-target-v1",
+  "research-target-v3",
+  "research-target-v4",
+] as const;
+
+/** Recruiter-facing research lineage. The full archive remains published and
+    queryable, while this projection intentionally keeps the documented eras
+    that changed the live/ROI design. */
+export function featuredArchivedProfiles(s: StrategyLab): ProfileEntry[] {
+  const archived = new Map(
+    archivedProfiles(s).map((profile) => [profile.risk_profile, profile] as const),
+  );
+  return FEATURED_ARCHIVED_PROFILE_ORDER.flatMap((name) => {
+    const profile = archived.get(name);
+    return profile ? [profile] : [];
+  });
+}
+
+const PROFILE_DISPLAY_LABELS: Record<string, string> = {
+  live: "Live Stability",
+  "live-legacy": "Prior readiness benchmark",
+  research: "Legacy research",
+  "research-target": "Research ROI",
+  "research-target-v1": "Research ROI v1 · archived control",
+  "research-target-v2": "Research ROI v2 · archived",
+  "research-target-v3": "Research ROI v3 · rejected",
+  "research-target-v4": "Research ROI v4 · adopted revision",
+  "research-target-v5": "Research ROI v5 · superseded probe",
+  "research-motion": "Research motion · archived",
+};
+
+/** Stable recruiter-facing identity. Runtime labels remain available in the
+    raw artifact, but presentation does not inherit obsolete KPI or "live"
+    wording from an older publisher. */
+export function profileDisplayLabel(profile: Pick<ProfileEntry, "risk_profile" | "label">): string {
+  return PROFILE_DISPLAY_LABELS[profile.risk_profile] ?? profile.label;
 }
 
 /** Resolve the target evidence from the profile first, then the top-level
