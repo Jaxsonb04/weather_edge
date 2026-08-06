@@ -26,6 +26,8 @@ MANIFEST_PATH="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_mani
 ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-/opt/weatheredge/.locks/artifact-generation.lock}"
 ARTIFACT_LOCK_WAIT_SECONDS="${SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-60}"
 PAGES_LOCK_WAIT_SECONDS="${SFO_PAGES_LOCK_WAIT_SECONDS:-60}"
+PROPAGATION_WAITER="${SFO_PAGES_PROPAGATION_WAITER:-$TRADING_DIR/deploy/aws/wait_for_publication_manifest.sh}"
+PENDING_PROPAGATION_TIMEOUT_SECONDS="${SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS:-420}"
 
 # The manifest validator always emits these required files. It emits the
 # strategy_research.json artifact only when the manifest records a validated
@@ -59,29 +61,100 @@ elif [[ ! -x "$PYTHON_BIN" ]]; then
   echo "missing trading Python runtime: $PYTHON_BIN" >&2
   exit 1
 fi
-
-if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" != "1" ]]; then
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "flock is required for artifact publication" >&2
-    exit 1
-  fi
-  mkdir -p "$(dirname "$ARTIFACT_LOCK")"
-  exec 8>"$ARTIFACT_LOCK"
-  if ! flock -w "$ARTIFACT_LOCK_WAIT_SECONDS" 8; then
-    echo "timed out waiting for artifact generation lock: $ARTIFACT_LOCK" >&2
-    exit 1
-  fi
-  export SFO_ARTIFACT_LOCK_HELD=1
-  export SFO_ARTIFACT_LOCK_FD=8
+if [[ ! -f "$PROPAGATION_WAITER" ]]; then
+  echo "missing Pages propagation waiter: $PROPAGATION_WAITER" >&2
+  exit 1
+fi
+if [[ ! "$PENDING_PROPAGATION_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Pages pending propagation timeout must be a positive integer" >&2
+  exit 1
+fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "flock is required for artifact publication" >&2
+  exit 1
 fi
 
-case "${SFO_ARTIFACT_LOCK_FD:-}" in
-  7|8) ;;
-  *)
-    echo "artifact lock marker is missing a supported inherited descriptor" >&2
-    exit 1
-    ;;
-esac
+# The operational runner hands us its generation lock after building. Release
+# it before waiting for the previous Pages deployment, then reacquire it for a
+# fresh, coherent snapshot. This keeps Strategy Lab promotion unblocked while
+# GitHub exposes the already-pushed branch head.
+if [[ "${SFO_ARTIFACT_LOCK_HELD:-0}" == "1" ]]; then
+  case "${SFO_ARTIFACT_LOCK_FD:-}" in
+    7)
+      flock -u 7
+      exec 7>&-
+      ;;
+    8)
+      flock -u 8
+      exec 8>&-
+      ;;
+    *)
+      echo "artifact lock marker is missing a supported inherited descriptor" >&2
+      exit 1
+      ;;
+  esac
+  unset SFO_ARTIFACT_LOCK_HELD SFO_ARTIFACT_LOCK_FD
+fi
+
+snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-snapshot.XXXXXX")"
+publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-pages.XXXXXX")"
+trap 'rm -rf "$snapshot_dir" "$publish_dir"' EXIT
+
+export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+# Keep the Pages Git lock across the delivery gate, snapshot, and push so no
+# same-host publisher can overtake the branch head we just checked.
+PAGES_LOCK="${SFO_PAGES_LOCK:-$BASE_DIR/.locks/pages-publish.lock}"
+mkdir -p "$(dirname "$PAGES_LOCK")"
+exec 9>"$PAGES_LOCK"
+if ! flock -w "$PAGES_LOCK_WAIT_SECONDS" 9; then
+  echo "timed out waiting for Pages publication lock: $PAGES_LOCK" >&2
+  exit 1
+fi
+
+git init -b "$PAGES_BRANCH" "$publish_dir" >/dev/null
+cd "$publish_dir"
+git remote add origin "$REMOTE_URL"
+git config user.name "${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}"
+git config user.email "${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}"
+
+wait_for_remote_publication() {
+  local remote_manifest="$snapshot_dir/remote-publication-manifest.json"
+  if ! git show "origin/$PAGES_BRANCH:publication_manifest.json" >"$remote_manifest"; then
+    echo "remote Pages branch is missing publication_manifest.json" >&2
+    return 1
+  fi
+  if ! SFO_PUBLICATION_MANIFEST_PATH="$remote_manifest" \
+    SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS="$PENDING_PROPAGATION_TIMEOUT_SECONDS" \
+    /bin/bash "$PROPAGATION_WAITER"; then
+    echo "refusing to overtake the Pages branch while its current snapshot is still pending" >&2
+    return 1
+  fi
+}
+
+prepare_pages_branch() {
+  if git fetch origin "$PAGES_BRANCH" >/dev/null 2>&1; then
+    wait_for_remote_publication
+    git checkout -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH" >/dev/null
+  else
+    git checkout --orphan "$PAGES_BRANCH" >/dev/null 2>&1 \
+      || git checkout -B "$PAGES_BRANCH" >/dev/null
+  fi
+}
+
+# Do not snapshot new data until the currently pushed branch head is public.
+# This is the key backpressure rule: GitHub cannot cancel an in-flight Pages
+# deployment because this publisher will not push its successor yet.
+prepare_pages_branch
+
+mkdir -p "$(dirname "$ARTIFACT_LOCK")"
+exec 8>"$ARTIFACT_LOCK"
+if ! flock -w "$ARTIFACT_LOCK_WAIT_SECONDS" 8; then
+  echo "timed out waiting for artifact generation lock: $ARTIFACT_LOCK" >&2
+  exit 1
+fi
+export SFO_ARTIFACT_LOCK_HELD=1
+export SFO_ARTIFACT_LOCK_FD=8
 
 validate_args=(
   -m sfo_kalshi_quant.publication validate
@@ -112,10 +185,6 @@ for required in "${REQUIRED_JSON_ARTIFACTS[@]}"; do
   fi
 done
 
-snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-snapshot.XXXXXX")"
-publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/sfo-weather-pages.XXXXXX")"
-trap 'rm -rf "$snapshot_dir" "$publish_dir"' EXIT
-
 # Copy exactly the validator's list while the generation lock is held. There is
 # no existence-based skip: a vanished or unreadable configured file fails here.
 for artifact in "${JSON_ARTIFACTS[@]}"; do
@@ -133,42 +202,15 @@ for artifact in "${JSON_ARTIFACTS[@]}"; do
   cp "$source_path" "$snapshot_dir/$artifact"
 done
 
-flock -u "$SFO_ARTIFACT_LOCK_FD"
-case "$SFO_ARTIFACT_LOCK_FD" in
-  7) exec 7>&- ;;
-  8) exec 8>&- ;;
-esac
+flock -u 8
+exec 8>&-
 unset SFO_ARTIFACT_LOCK_HELD SFO_ARTIFACT_LOCK_FD
-
-export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-
-# Keep the pages Git lock distinct from the artifact-generation lock. The
-# artifact snapshot above is already immutable, so slow fetch/push retries do
-# not block the next generator.
-PAGES_LOCK="${SFO_PAGES_LOCK:-$BASE_DIR/.locks/pages-publish.lock}"
-if command -v flock >/dev/null 2>&1; then
-  mkdir -p "$(dirname "$PAGES_LOCK")"
-  exec 9>"$PAGES_LOCK"
-  if ! flock -w "$PAGES_LOCK_WAIT_SECONDS" 9; then
-    echo "timed out waiting for Pages publication lock: $PAGES_LOCK" >&2
-    exit 1
-  fi
-fi
-
-git init -b "$PAGES_BRANCH" "$publish_dir" >/dev/null
-cd "$publish_dir"
-git remote add origin "$REMOTE_URL"
-git config user.name "${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}"
-git config user.email "${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}"
 
 attempts="${SFO_PAGES_PUSH_ATTEMPTS:-4}"
 attempt=1
 while true; do
-  if git fetch origin "$PAGES_BRANCH" >/dev/null 2>&1; then
-    git checkout -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH" >/dev/null
-  else
-    git checkout --orphan "$PAGES_BRANCH" >/dev/null 2>&1 \
-      || git checkout -B "$PAGES_BRANCH" >/dev/null
+  if (( attempt > 1 )); then
+    prepare_pages_branch
   fi
 
   find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +

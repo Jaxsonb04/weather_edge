@@ -118,7 +118,12 @@ exit 0
     final_health = tmp_path / "final-health"
     _write_executable(final_health, "#!/usr/bin/env bash\nexit 0\n")
     propagation_waiter = tmp_path / "propagation-waiter"
-    _write_executable(propagation_waiter, "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        propagation_waiter,
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "${SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS:-}" '
+        '>"$PROPAGATION_TIMEOUT_LOG"\n',
+    )
     flock = tmp_path / "flock"
     _write_executable(
         flock,
@@ -163,6 +168,7 @@ exec "$@"
         "SFO_SCHEDULER_REPAIR_STATE_DIR": str(tmp_path / "repair-state"),
         "SFO_SCHEDULER_FINAL_HEALTH_CHECK": str(final_health),
         "SFO_SCHEDULER_PROPAGATION_WAITER": str(propagation_waiter),
+        "PROPAGATION_TIMEOUT_LOG": str(tmp_path / "propagation-timeout.log"),
         "SFO_SCHEDULER_FLOCK_BIN": str(flock),
         "SFO_FLOCK_LOG": str(tmp_path / "flock.log"),
     }
@@ -391,6 +397,7 @@ def test_scheduler_health_repairs_public_staleness_with_publication_only(
     assert not any(
         line.startswith("start sfo-kalshi-paper-") for line in calls
     )
+    assert (tmp_path / "propagation-timeout.log").read_text().strip() == "420"
 
 
 def test_scheduler_health_cooldown_blocks_repeated_repair(

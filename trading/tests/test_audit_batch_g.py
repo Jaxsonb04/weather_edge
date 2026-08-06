@@ -605,6 +605,9 @@ raise SystemExit(0)
         "SFO_TRADING_PYTHON": str(python),
         "SFO_WEBDIST_DIR": str(webdist),
         "SFO_PAGES_DEPLOY_KEY": str(key),
+        "SFO_PAGES_PROPAGATION_WAITER": str(
+            AWS_DIR / "wait_for_publication_manifest.sh"
+        ),
         "SFO_ARTIFACT_GENERATION_LOCK": str(base / ".locks" / "artifact-generation.lock"),
         "GIT_LOG": str(tmp_path / "git.log"),
         "OVERLAP_LOG": str(tmp_path / "overlap.log"),

@@ -1002,6 +1002,133 @@ print(json.dumps({{
     assert "public publication snapshot matches local manifest" in result.stdout
 
 
+@pytest.mark.parametrize("remote_delivered", (False, True))
+def test_pages_publisher_waits_for_remote_delivery_before_push(
+    tmp_path: Path,
+    remote_delivered: bool,
+) -> None:
+    base = tmp_path / "weatheredge"
+    forecaster = base / "forecaster"
+    trading = base / "trading"
+    webdist = base / "webdist"
+    for directory in (forecaster, trading, webdist):
+        directory.mkdir(parents=True)
+    (webdist / "index.html").write_text("app", encoding="utf-8")
+    for artifact in (
+        "trading_signal.json",
+        "forecast_data.json",
+        "weather_story_data.json",
+        "cities_data.json",
+        "publication_manifest.json",
+    ):
+        (forecaster / artifact).write_text("{}\n", encoding="utf-8")
+    deploy_key = tmp_path / "deploy-key"
+    deploy_key.touch()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "flock", "#!/bin/sh\nexit 0\n")
+    git_log = tmp_path / "git.log"
+    _write_executable(
+        fake_bin / "git",
+        f"""#!{sys.executable}
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(os.environ["GIT_LOG"], "a", encoding="utf-8") as handle:
+    handle.write(" ".join(args) + "\\n")
+if args[:1] == ["init"]:
+    (Path(args[-1]) / ".git").mkdir(exist_ok=True)
+elif args[:1] == ["show"]:
+    print(json.dumps({{
+        "snapshot_id": "remote-pending",
+        "provenance": {{"source_sha": "abc1234"}},
+    }}))
+elif args[:3] == ["diff", "--cached", "--quiet"]:
+    raise SystemExit(1)
+raise SystemExit(0)
+""",
+    )
+    _write_executable(
+        fake_bin / "curl",
+        f"""#!{sys.executable}
+import json
+print(json.dumps({{
+    "snapshot_id": "public-older",
+    "provenance": {{"source_sha": "abc1234"}},
+}}))
+""",
+    )
+    python_stub = tmp_path / "python-stub"
+    _write_executable(
+        python_stub,
+        f"""#!{sys.executable}
+import os
+import sys
+
+if sys.argv[1:2] == ["-"]:
+    raise SystemExit(0 if os.environ["REMOTE_DELIVERED"] == "1" else 1)
+if "--print-artifacts" in sys.argv:
+    print("trading_signal.json")
+    print("forecast_data.json")
+    print("weather_story_data.json")
+    print("cities_data.json")
+    print("publication_manifest.json")
+raise SystemExit(0)
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "publish_forecaster_pages.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_PUBLISH_PAGES": "1",
+            "SFO_BASE_DIR": str(base),
+            "SFO_FORECASTER_ROOT": str(forecaster),
+            "SFO_TRADING_ROOT": str(trading),
+            "SFO_TRADING_PYTHON": str(python_stub),
+            "SFO_WEBDIST_DIR": str(webdist),
+            "SFO_PAGES_DEPLOY_KEY": str(deploy_key),
+            "SFO_FORECASTER_GIT_REMOTE": "git@example.test:weatheredge.git",
+            "SFO_PAGES_PROPAGATION_WAITER": str(
+                AWS_DIR / "wait_for_publication_manifest.sh"
+            ),
+            "SFO_PUBLICATION_MANIFEST_URL": (
+                "https://pages.example/publication_manifest.json"
+            ),
+            "SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS": "1",
+            "SFO_PUBLICATION_PROPAGATION_POLL_SECONDS": "1",
+            "SFO_ARTIFACT_GENERATION_LOCK": str(base / ".locks" / "artifact.lock"),
+            "SFO_PAGES_LOCK": str(base / ".locks" / "pages.lock"),
+            "GIT_LOG": str(git_log),
+            "REMOTE_DELIVERED": "1" if remote_delivered else "0",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    pushes = [
+        line
+        for line in git_log.read_text().splitlines()
+        if line.startswith("push ")
+    ]
+    if remote_delivered:
+        assert result.returncode == 0, result.stderr
+        assert pushes == ["push origin HEAD:gh-pages"]
+    else:
+        assert result.returncode == 1
+        assert (
+            "timed out waiting for the public publication snapshot"
+            in result.stderr
+        )
+        assert pushes == []
+
+
 @pytest.mark.parametrize(
     "remote_base",
     [
