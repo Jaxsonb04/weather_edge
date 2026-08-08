@@ -10,9 +10,10 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
+from email.message import Message
 from io import StringIO, TextIOWrapper
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -181,6 +182,53 @@ class DatasetResult:
     source: str
     rows_written: int
     detail: str
+
+
+class DatasetSourceUnavailableError(RuntimeError):
+    """Every upstream cycle for a source was unavailable.
+
+    Reporting success with zero rows hides a source that has stopped serving
+    entirely, so a total blackout is raised instead of silently recorded.
+    """
+
+
+class NoaaGuidanceCache:
+    """Share NOAA bulletin fetches across cities within one backfill run.
+
+    Every city parses the same per-cycle bulletin, so fetching once per city
+    multiplied NOMADS requests by the city count and tripped its rate limiter,
+    which answers with HTTP 403. Caching both the bodies and the unavailable
+    cycles collapses those duplicates back to one request per cycle.
+    """
+
+    def __init__(self, *, max_entries: int = 1024) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
+        self._max_entries = max_entries
+        self._text: dict[str, str] = {}
+        self._unavailable: dict[str, int] = {}
+
+    def fetch_text(self, url: str, *, timeout: int) -> str:
+        cached = self._text.get(url)
+        if cached is not None:
+            return cached
+        cached_code = self._unavailable.get(url)
+        if cached_code is not None:
+            raise HTTPError(url, cached_code, "cached unavailable cycle", Message(), None)
+        try:
+            text = _http_text(url, timeout=timeout)
+        except HTTPError as exc:
+            if exc.code in NOAA_GUIDANCE_UNAVAILABLE_HTTP_CODES:
+                self._store(self._unavailable, url, exc.code)
+            raise
+        self._store(self._text, url, text)
+        return text
+
+    def _store(self, target: dict[str, Any], url: str, value: Any) -> None:
+        if len(self._text) + len(self._unavailable) >= self._max_entries:
+            self._text.clear()
+            self._unavailable.clear()
+        target[url] = value
 
 
 class DatasetStore:
@@ -975,6 +1023,61 @@ def open_meteo_hourly_daily_high_features(
     return rows
 
 
+def _backfill_noaa_station_guidance(
+    store: DatasetStore,
+    *,
+    source: str,
+    model: str,
+    cycles: tuple[int, ...],
+    cycle_minute: int,
+    url_for_cycle: Callable[[date, int], str],
+    start: date,
+    end: date,
+    station_id: str,
+    standard_utc_offset_hours: int,
+    timeout: int,
+    cache: NoaaGuidanceCache | None,
+) -> DatasetResult:
+    fetcher = cache if cache is not None else NoaaGuidanceCache()
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    attempted = 0
+    for cycle_date in _date_range(start, end):
+        for cycle_hour in cycles:
+            attempted += 1
+            url = url_for_cycle(cycle_date, cycle_hour)
+            try:
+                text = fetcher.fetch_text(url, timeout=timeout)
+            except HTTPError as exc:
+                if exc.code in NOAA_GUIDANCE_UNAVAILABLE_HTTP_CODES:
+                    failures.append(
+                        f"{cycle_date.isoformat()}T{cycle_hour:02d}:{cycle_minute:02d}Z HTTP {exc.code}"
+                    )
+                    continue
+                raise
+            rows.extend(
+                parse_noaa_station_guidance_text(
+                    text,
+                    source=source,
+                    model=model,
+                    source_url=url,
+                    station_id=station_id,
+                    settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
+                )
+            )
+    if attempted > 0 and len(failures) == attempted:
+        raise DatasetSourceUnavailableError(
+            f"{source}: all {attempted} cycle(s) were unavailable for {station_id}: "
+            f"{_summarize_failures(failures)}"
+        )
+    rows = _dedupe_feature_rows(rows)
+    written = store.upsert_forecast_features(rows)
+    detail = f"{len(rows)} station guidance feature rows for {station_id}"
+    if failures:
+        detail += f"; skipped {len(failures)} unavailable cycle(s): {_summarize_failures(failures)}"
+    return DatasetResult(source, written, detail)
+
+
 def backfill_lamp(
     store: DatasetStore,
     *,
@@ -983,37 +1086,22 @@ def backfill_lamp(
     station_id: str = "KSFO",
     standard_utc_offset_hours: int = -8,
     timeout: int = 30,
+    cache: NoaaGuidanceCache | None = None,
 ) -> DatasetResult:
-    rows: list[dict[str, Any]] = []
-    failures: list[str] = []
-    for cycle_date in _date_range(start, end):
-        for cycle_hour in NOAA_LAMP_CYCLES_3H:
-            url = _lamp_text_url(cycle_date, cycle_hour)
-            try:
-                text = _http_text(url, timeout=timeout)
-            except HTTPError as exc:
-                if exc.code in NOAA_GUIDANCE_UNAVAILABLE_HTTP_CODES:
-                    failures.append(
-                        f"{cycle_date.isoformat()}T{cycle_hour:02d}:30Z HTTP {exc.code}"
-                    )
-                    continue
-                raise
-            rows.extend(
-                parse_noaa_station_guidance_text(
-                    text,
-                    source="noaa-lamp",
-                    model="lamp",
-                    source_url=url,
-                    station_id=station_id,
-                    settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
-                )
-            )
-    rows = _dedupe_feature_rows(rows)
-    written = store.upsert_forecast_features(rows)
-    detail = f"{len(rows)} station guidance feature rows for {station_id}"
-    if failures:
-        detail += f"; skipped {len(failures)} unavailable cycle(s): {_summarize_failures(failures)}"
-    return DatasetResult("noaa-lamp", written, detail)
+    return _backfill_noaa_station_guidance(
+        store,
+        source="noaa-lamp",
+        model="lamp",
+        cycles=NOAA_LAMP_CYCLES_3H,
+        cycle_minute=30,
+        url_for_cycle=_lamp_text_url,
+        start=start,
+        end=end,
+        station_id=station_id,
+        standard_utc_offset_hours=standard_utc_offset_hours,
+        timeout=timeout,
+        cache=cache,
+    )
 
 
 def backfill_gfs_mos(
@@ -1024,37 +1112,22 @@ def backfill_gfs_mos(
     station_id: str = "KSFO",
     standard_utc_offset_hours: int = -8,
     timeout: int = 30,
+    cache: NoaaGuidanceCache | None = None,
 ) -> DatasetResult:
-    rows: list[dict[str, Any]] = []
-    failures: list[str] = []
-    for cycle_date in _date_range(start, end):
-        for cycle_hour in NOAA_GUIDANCE_CYCLES_6H:
-            url = _gfs_mos_text_url(cycle_date, cycle_hour)
-            try:
-                text = _http_text(url, timeout=timeout)
-            except HTTPError as exc:
-                if exc.code in NOAA_GUIDANCE_UNAVAILABLE_HTTP_CODES:
-                    failures.append(
-                        f"{cycle_date.isoformat()}T{cycle_hour:02d}:00Z HTTP {exc.code}"
-                    )
-                    continue
-                raise
-            rows.extend(
-                parse_noaa_station_guidance_text(
-                    text,
-                    source="gfs-mos",
-                    model="gfs-mos",
-                    source_url=url,
-                    station_id=station_id,
-                    settlement_timezone=timezone(timedelta(hours=standard_utc_offset_hours)),
-                )
-            )
-    rows = _dedupe_feature_rows(rows)
-    written = store.upsert_forecast_features(rows)
-    detail = f"{len(rows)} station guidance feature rows for {station_id}"
-    if failures:
-        detail += f"; skipped {len(failures)} unavailable cycle(s): {_summarize_failures(failures)}"
-    return DatasetResult("gfs-mos", written, detail)
+    return _backfill_noaa_station_guidance(
+        store,
+        source="gfs-mos",
+        model="gfs-mos",
+        cycles=NOAA_GUIDANCE_CYCLES_6H,
+        cycle_minute=0,
+        url_for_cycle=_gfs_mos_text_url,
+        start=start,
+        end=end,
+        station_id=station_id,
+        standard_utc_offset_hours=standard_utc_offset_hours,
+        timeout=timeout,
+        cache=cache,
+    )
 
 
 def _summarize_failures(failures: list[str], *, limit: int = 3) -> str:

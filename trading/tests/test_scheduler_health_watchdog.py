@@ -93,6 +93,7 @@ def _run(
     public_manifest: Path | None = None,
     failed_start: str = "",
     artifact_lock: Path | None = None,
+    propagation_fails: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     command_log = tmp_path / "systemctl.log"
     systemctl = tmp_path / "systemctl"
@@ -122,7 +123,8 @@ exit 0
         propagation_waiter,
         "#!/usr/bin/env bash\n"
         'printf \'%s\\n\' "${SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS:-}" '
-        '>"$PROPAGATION_TIMEOUT_LOG"\n',
+        '>"$PROPAGATION_TIMEOUT_LOG"\n'
+        f"exit {1 if propagation_fails else 0}\n",
     )
     flock = tmp_path / "flock"
     _write_executable(
@@ -400,7 +402,7 @@ def test_scheduler_health_repairs_public_staleness_with_publication_only(
     assert (tmp_path / "propagation-timeout.log").read_text().strip() == "420"
 
 
-def test_scheduler_health_cooldown_blocks_repeated_repair(
+def test_scheduler_health_cooldown_blocks_repeated_repair_without_failing(
     tmp_path: Path,
 ) -> None:
     root, public_manifest = _fresh_root(tmp_path, strategy_minutes=25)
@@ -417,10 +419,71 @@ def test_scheduler_health_cooldown_blocks_repeated_repair(
         public_manifest=public_manifest,
     )
 
-    assert result.returncode == 1
-    assert "inside the repair cooldown" in result.stderr
+    # The repair that set the cooldown already owns the alerting decision, so
+    # re-reporting the same incident here would multiply one lag into several
+    # failed runs.
+    assert result.returncode == 0, result.stderr
+    assert "inside the repair cooldown" in result.stdout
     calls = (tmp_path / "systemctl.log").read_text(encoding="utf-8").splitlines()
     assert not any(line.startswith("start ") for line in calls)
+
+
+def test_scheduler_health_tolerates_a_single_propagation_miss(
+    tmp_path: Path,
+) -> None:
+    root, public_manifest = _fresh_root(tmp_path, strategy_minutes=25)
+
+    result = _run(
+        tmp_path,
+        root=root,
+        public_manifest=public_manifest,
+        propagation_fails=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "miss 1/2" in result.stdout
+    misses = tmp_path / "repair-state" / "propagation-miss-count"
+    assert misses.read_text(encoding="utf-8").strip() == "1"
+
+
+def test_scheduler_health_fails_after_consecutive_propagation_misses(
+    tmp_path: Path,
+) -> None:
+    root, public_manifest = _fresh_root(tmp_path, strategy_minutes=25)
+    state = tmp_path / "repair-state"
+    state.mkdir()
+    (state / "propagation-miss-count").write_text("1\n", encoding="utf-8")
+
+    result = _run(
+        tmp_path,
+        root=root,
+        public_manifest=public_manifest,
+        propagation_fails=True,
+    )
+
+    assert result.returncode == 1
+    assert "did not converge across 2 consecutive repair(s)" in result.stderr
+    assert (state / "propagation-miss-count").read_text(encoding="utf-8").strip() == "2"
+
+
+def test_scheduler_health_clears_propagation_misses_once_healthy(
+    tmp_path: Path,
+) -> None:
+    root, public_manifest = _fresh_root(tmp_path)
+    state = tmp_path / "repair-state"
+    state.mkdir()
+    misses = state / "propagation-miss-count"
+    misses.write_text("1\n", encoding="utf-8")
+
+    result = _run(
+        tmp_path,
+        root=root,
+        public_manifest=public_manifest,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "scheduler and publication health verified" in result.stdout
+    assert not misses.exists()
 
 
 def test_scheduler_health_stops_when_strategy_repair_fails(

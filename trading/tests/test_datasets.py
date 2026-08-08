@@ -12,7 +12,9 @@ import pytest
 
 from sfo_kalshi_quant import datasets as datasets_module
 from sfo_kalshi_quant.datasets import (
+    DatasetSourceUnavailableError,
     DatasetStore,
+    NoaaGuidanceCache,
     OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS,
     backfill_gfs_mos,
     backfill_hrrr,
@@ -299,21 +301,102 @@ def test_lamp_and_gfs_mos_backfills_store_station_guidance_features():
     assert ("gfs-mos", "gfs-mos", "temperature_2m_max", 61.0) in rows
 
 
-def test_station_guidance_backfills_skip_unavailable_http_cycles():
-    def unavailable(url: str, *, timeout: int = 30):
-        raise HTTPError(url=url, code=403, msg="Forbidden", hdrs=None, fp=None)
+GUIDANCE_BULLETIN = """
+FOUS11 KWNO 261230
+KSFO   GFS LAMP GUIDANCE   6/26/2026  1230 UTC
+HR     01 02 03 04 05
+TMP    58 60 MM 63 61
+"""
 
-    with TemporaryDirectory() as tmp, patch("sfo_kalshi_quant.datasets._http_text", unavailable):
+
+def _serve_only_first_cycle(url: str, *, timeout: int = 30) -> str:
+    """Serve the 00Z cycle and report every later cycle as unavailable."""
+    if "t0030z" in url or "t00z" in url:
+        return GUIDANCE_BULLETIN
+    raise HTTPError(url=url, code=403, msg="Forbidden", hdrs=None, fp=None)
+
+
+def test_station_guidance_backfills_skip_unavailable_http_cycles():
+    with TemporaryDirectory() as tmp, patch(
+        "sfo_kalshi_quant.datasets._http_text", _serve_only_first_cycle
+    ):
         store = DatasetStore(Path(tmp) / "dataset.db")
         lamp = backfill_lamp(store, start=date(2026, 6, 26), end=date(2026, 6, 26), timeout=1)
         mos = backfill_gfs_mos(store, start=date(2026, 6, 26), end=date(2026, 6, 26), timeout=1)
 
-    assert lamp.rows_written == 0
-    assert mos.rows_written == 0
-    assert "skipped" in lamp.detail
+    assert lamp.rows_written == 5
+    assert mos.rows_written == 5
+    assert "skipped 7 unavailable cycle(s)" in lamp.detail
     assert "HTTP 403" in lamp.detail
-    assert "skipped" in mos.detail
+    assert "skipped 3 unavailable cycle(s)" in mos.detail
     assert "HTTP 403" in mos.detail
+
+
+def test_station_guidance_backfills_raise_when_every_cycle_is_unavailable():
+    def unavailable(url: str, *, timeout: int = 30):
+        raise HTTPError(url=url, code=403, msg="Forbidden", hdrs=None, fp=None)
+
+    with TemporaryDirectory() as tmp, patch(
+        "sfo_kalshi_quant.datasets._http_text", unavailable
+    ):
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        with pytest.raises(DatasetSourceUnavailableError, match="all 8 cycle"):
+            backfill_lamp(store, start=date(2026, 6, 26), end=date(2026, 6, 26), timeout=1)
+        with pytest.raises(DatasetSourceUnavailableError, match="all 4 cycle"):
+            backfill_gfs_mos(store, start=date(2026, 6, 26), end=date(2026, 6, 26), timeout=1)
+
+
+def test_station_guidance_cache_fetches_each_cycle_once_across_stations():
+    requested: list[str] = []
+
+    def counting_fetch(url: str, *, timeout: int = 30) -> str:
+        requested.append(url)
+        return GUIDANCE_BULLETIN
+
+    cache = NoaaGuidanceCache()
+    with TemporaryDirectory() as tmp, patch(
+        "sfo_kalshi_quant.datasets._http_text", counting_fetch
+    ):
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        for station_id in ("KSFO", "KLAX", "KBOS"):
+            backfill_gfs_mos(
+                store,
+                start=date(2026, 6, 26),
+                end=date(2026, 6, 26),
+                station_id=station_id,
+                timeout=1,
+                cache=cache,
+            )
+
+    # Four 6-hourly cycles fetched once each, not once per station.
+    assert len(requested) == 4
+    assert len(set(requested)) == 4
+
+
+def test_station_guidance_cache_does_not_refetch_unavailable_cycles():
+    requested: list[str] = []
+
+    def unavailable(url: str, *, timeout: int = 30) -> str:
+        requested.append(url)
+        raise HTTPError(url=url, code=403, msg="Forbidden", hdrs=None, fp=None)
+
+    cache = NoaaGuidanceCache()
+    with TemporaryDirectory() as tmp, patch(
+        "sfo_kalshi_quant.datasets._http_text", unavailable
+    ):
+        store = DatasetStore(Path(tmp) / "dataset.db")
+        for station_id in ("KSFO", "KLAX", "KBOS"):
+            with pytest.raises(DatasetSourceUnavailableError):
+                backfill_gfs_mos(
+                    store,
+                    start=date(2026, 6, 26),
+                    end=date(2026, 6, 26),
+                    station_id=station_id,
+                    timeout=1,
+                    cache=cache,
+                )
+
+    assert len(requested) == 4
 
 
 def test_nbm_and_hrrr_backfills_use_model_specific_previous_run_sources():
