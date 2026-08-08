@@ -36,6 +36,22 @@ SERVICES = tuple(timer.removesuffix(".timer") + ".service" for timer in TIMERS)
 PAPER_SCAN_RUNNER = AWS_DIR / "run_paper_scan_profiles.sh"
 
 
+def _load_read_version_helper() -> str:
+    """Extract the provenance-reading helper verbatim from sync_to_box.sh.
+
+    The tests exercise the deploy script's real implementation rather than a
+    copy, so drift between the two is impossible by construction.
+    """
+
+    text = (AWS_DIR / "sync_to_box.sh").read_text(encoding="utf-8")
+    start = text.index("read_source_version_constant() {")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    return text[start:end]
+
+
+_READ_VERSION_HELPER = _load_read_version_helper()
+
+
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -2009,3 +2025,75 @@ def test_backup_hands_back_the_copy_that_survived_the_round_trip() -> None:
 
 def _read_backup_helper() -> str:
     return (AWS_DIR / "backup_paper_db.sh").read_text()
+
+
+def _extract_shell_version_constant(source_file: Path, constant_name: str) -> str:
+    """Run the deploy script's own extraction helper against a source file."""
+
+    script = f"""
+set -euo pipefail
+{_READ_VERSION_HELPER}
+read_source_version_constant "$1" "$2"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(source_file), constant_name],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_deploy_provenance_versions_match_imported_constants() -> None:
+    """Audit F-07: the literal read must equal what importing would have given.
+
+    sync_to_box.sh stamps build provenance by reading these constants out of the
+    source files with sed rather than importing them, because importing needed a
+    local interpreter and macOS resolves `python3` to a 3.9 build that cannot
+    import this package at all. That trade is only safe while the literal read
+    and the real constant agree, so pin them together here: if someone reformats
+    either assignment (single quotes, a type annotation, a computed value), this
+    fails instead of silently stamping an empty or stale version.
+    """
+
+    sys.path.insert(0, str(ROOT / "trading"))
+    try:
+        from sfo_kalshi_quant.account import ACCOUNTING_POLICY_VERSION
+        from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION
+    finally:
+        sys.path.remove(str(ROOT / "trading"))
+
+    execution = _extract_shell_version_constant(
+        ROOT / "trading" / "sfo_kalshi_quant" / "maker_fills.py",
+        "EXECUTION_MODEL_VERSION",
+    )
+    accounting = _extract_shell_version_constant(
+        ROOT / "trading" / "sfo_kalshi_quant" / "account.py",
+        "ACCOUNTING_POLICY_VERSION",
+    )
+
+    assert execution == EXECUTION_MODEL_VERSION
+    assert accounting == ACCOUNTING_POLICY_VERSION
+    assert execution, "execution model version must never stamp empty"
+    assert accounting, "accounting policy version must never stamp empty"
+
+
+def test_deploy_provenance_extraction_fails_loudly_on_missing_constant(
+    tmp_path: Path,
+) -> None:
+    """A renamed or reformatted constant must abort the deploy, not stamp empty."""
+
+    source = tmp_path / "module.py"
+    source.write_text("SOMETHING_ELSE = \"x\"\n", encoding="utf-8")
+    script = f"""
+set -euo pipefail
+{_READ_VERSION_HELPER}
+read_source_version_constant "$1" "$2"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(source), "EXECUTION_MODEL_VERSION"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "could not read EXECUTION_MODEL_VERSION" in result.stderr
