@@ -18,6 +18,7 @@ from ..datasets import (
     KSFO_ISD_STATION,
     DatasetResult,
     DatasetStore,
+    NoaaGuidanceCache,
     backfill_gfs_mos,
     backfill_hrrr,
     backfill_iem_asos,
@@ -137,20 +138,24 @@ def cmd_dataset_backfill(args: argparse.Namespace) -> int:
                     for city in cities
                 )
             elif source == "lamp":
+                # One cache per source keeps every city reading the same
+                # fetched bulletin instead of re-requesting it per city.
+                guidance_cache = NoaaGuidanceCache()
                 result = _combine_dataset_results(
                     backfill_lamp(
                         store, start=start, end=end, station_id=city.nws_station_id,
                         standard_utc_offset_hours=city.standard_utc_offset_hours,
-                        timeout=args.timeout,
+                        timeout=args.timeout, cache=guidance_cache,
                     )
                     for city in cities
                 )
             elif source == "gfs-mos":
+                guidance_cache = NoaaGuidanceCache()
                 result = _combine_dataset_results(
                     backfill_gfs_mos(
                         store, start=start, end=end, station_id=city.nws_station_id,
                         standard_utc_offset_hours=city.standard_utc_offset_hours,
-                        timeout=args.timeout,
+                        timeout=args.timeout, cache=guidance_cache,
                     )
                     for city in cities
                 )

@@ -67,6 +67,12 @@ PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
 REPAIR_COOLDOWN_SECONDS="${SFO_SCHEDULER_REPAIR_COOLDOWN_SECONDS:-900}"
 PROPAGATION_TIMEOUT_SECONDS="${SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS:-420}"
+# GitHub Pages CDN propagation is variable, so a single overrun of the
+# propagation deadline is a normal upstream delay rather than a scheduler
+# defect. Alert only once consecutive repair cycles fail to converge; a real
+# outage still surfaces one cooldown later (~15-20 minutes), while an isolated
+# CDN lag resolves silently.
+PROPAGATION_FAILURE_THRESHOLD="${SFO_SCHEDULER_PROPAGATION_FAILURE_THRESHOLD:-2}"
 if (( TEST_MODE == 1 )); then
   FLOCK_BIN="${SFO_SCHEDULER_FLOCK_BIN:-flock}"
 else
@@ -106,6 +112,42 @@ publication_validate() {
   )
 }
 
+# Consecutive propagation misses are tracked as a single file inside the repair
+# state directory. Absence of the file means zero, so the healthy path never has
+# to create the directory or write anything.
+propagation_miss_file() {
+  printf '%s' "$REPAIR_STATE_DIR/propagation-miss-count"
+}
+
+read_propagation_misses() {
+  local file
+  file="$(propagation_miss_file)"
+  local value=""
+  if [[ -f "$file" ]]; then
+    value="$(<"$file")"
+  fi
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    value=0
+  fi
+  printf '%s' "$value"
+}
+
+record_propagation_misses() {
+  local value="$1"
+  local file tmp
+  file="$(propagation_miss_file)"
+  tmp="$REPAIR_STATE_DIR/.propagation-miss-count.$$"
+  printf '%s\n' "$value" >"$tmp"
+  mv -f "$tmp" "$file"
+}
+
+clear_propagation_misses() {
+  local file
+  file="$(propagation_miss_file)"
+  [[ -f "$file" ]] || return 0
+  rm -f "$file"
+}
+
 validate_configuration() {
   validate_number SFO_FORECAST_MAX_AGE_HOURS "$MAX_AGE_HOURS"
   validate_number SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES "$OPERATIONAL_MAX_MINUTES"
@@ -115,6 +157,11 @@ validate_configuration() {
   validate_integer SFO_SCHEDULER_VALIDATION_LOCK_WAIT_SECONDS "$VALIDATION_LOCK_WAIT_SECONDS"
   validate_integer SFO_SCHEDULER_REPAIR_COOLDOWN_SECONDS "$REPAIR_COOLDOWN_SECONDS"
   validate_integer SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS "$PROPAGATION_TIMEOUT_SECONDS"
+  validate_integer SFO_SCHEDULER_PROPAGATION_FAILURE_THRESHOLD "$PROPAGATION_FAILURE_THRESHOLD"
+  if (( PROPAGATION_FAILURE_THRESHOLD < 1 )); then
+    echo "scheduler health configuration is invalid: SFO_SCHEDULER_PROPAGATION_FAILURE_THRESHOLD=$PROPAGATION_FAILURE_THRESHOLD" >&2
+    exit 1
+  fi
   if (( DISK_MAX_PERCENT < 1 || DISK_MAX_PERCENT > 100 )); then
     echo "scheduler health configuration is invalid: SFO_DISK_USAGE_MAX_PERCENT=$DISK_MAX_PERCENT" >&2
     exit 1
@@ -407,8 +454,12 @@ if (( local_operational_stale || local_strategy_stale || public_operational_stal
     previous_repair="$(<"$repair_stamp")"
     if [[ "$previous_repair" =~ ^[0-9]+$ ]] \
       && (( repair_epoch - previous_repair < REPAIR_COOLDOWN_SECONDS )); then
-      echo "scheduler health remains stale inside the repair cooldown; no services started" >&2
-      exit 1
+      # A repair already ran and published; remaining staleness here is that
+      # publish still propagating. The repair path owns the alerting decision
+      # via the consecutive-miss counter, so re-reporting it from inside the
+      # cooldown only multiplies one incident into several failed runs.
+      echo "OK: scheduler health remains stale inside the repair cooldown; awaiting the previous repair"
+      exit 0
     fi
   fi
   repair_stamp_tmp="$REPAIR_STATE_DIR/.last-repair-epoch.$$"
@@ -428,9 +479,16 @@ if (( local_operational_stale || local_strategy_stale || public_operational_stal
   if ! run_as_app /usr/bin/env \
     "SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS=$PROPAGATION_TIMEOUT_SECONDS" \
     /bin/bash "$PROPAGATION_WAITER"; then
-    echo "scheduler repair failed: public propagation did not converge" >&2
-    exit 1
+    propagation_misses=$(($(read_propagation_misses) + 1))
+    record_propagation_misses "$propagation_misses"
+    if (( propagation_misses >= PROPAGATION_FAILURE_THRESHOLD )); then
+      echo "scheduler repair failed: public propagation did not converge across $propagation_misses consecutive repair(s)" >&2
+      exit 1
+    fi
+    echo "OK: public propagation has not converged yet (miss ${propagation_misses}/${PROPAGATION_FAILURE_THRESHOLD}); the publish succeeded and the next cycle will re-check"
+    exit 0
   fi
+  clear_propagation_misses
   if ! run_as_app /bin/bash "$FINAL_HEALTH_CHECK"; then
     echo "scheduler repair failed: final forecast/publication health check failed" >&2
     exit 1
@@ -444,4 +502,5 @@ if ! run_as_app /bin/bash "$FINAL_HEALTH_CHECK"; then
   exit 1
 fi
 
+clear_propagation_misses
 echo "OK: scheduler and publication health verified"

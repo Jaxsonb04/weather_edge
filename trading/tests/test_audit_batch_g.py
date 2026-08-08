@@ -328,6 +328,12 @@ def _backfill_result(tmp_path: Path, sources: str, **extra: str) -> subprocess.C
             "SFO_DATASET_DB": str(tmp_path / "data" / "paper.db"),
             "SFO_FORECASTER_ROOT": str(tmp_path / "forecaster"),
             "CALL_LOG": str(tmp_path / "calls"),
+            # These cases exercise lock-retry and partial-commit behaviour and
+            # use a nonzero exit as the signal that a source failed. Failing on
+            # the first miss keeps that signal immediate; the consecutive-run
+            # tolerance policy is covered by
+            # test_dataset_backfill_failure_tolerance.py.
+            "SFO_DATASET_SOURCE_FAILURE_THRESHOLD": "1",
             **extra,
         },
         capture_output=True,
@@ -338,7 +344,8 @@ def _backfill_result(tmp_path: Path, sources: str, **extra: str) -> subprocess.C
 def test_backfill_partial_failure_commits_success_then_exits_nonzero(tmp_path: Path) -> None:
     result = _backfill_result(tmp_path, "good,bad,also-good", FAIL_SOURCES="bad")
     assert result.returncode != 0
-    assert "ERROR: 1 dataset source(s) failed: bad" in result.stderr
+    assert "ERROR: 1 dataset source(s) failed" in result.stderr
+    assert "bad(1)" in result.stderr
     calls = (tmp_path / "calls").read_text()
     assert calls.count("dataset-backfill") == 3
     assert "dataset-research" in calls
@@ -485,7 +492,8 @@ with open(os.environ['FAKE_SLEEP_LOG'], 'a') as stream: stream.write(sys.argv[1]
 def test_backfill_all_fail_and_research_failure_exit_nonzero(tmp_path: Path) -> None:
     all_fail = _backfill_result(tmp_path / "all", "bogus,invalid", FAIL_SOURCES="bogus,invalid")
     assert all_fail.returncode != 0
-    assert "ERROR: 2 dataset source(s) failed: bogus,invalid" in all_fail.stderr
+    assert "ERROR: 2 dataset source(s) failed" in all_fail.stderr
+    assert "bogus(1),invalid(1)" in all_fail.stderr
     research = _backfill_result(tmp_path / "research", "good", FAIL_RESEARCH="1")
     assert research.returncode != 0
     assert "dataset research failed" in research.stderr

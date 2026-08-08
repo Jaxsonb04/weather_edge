@@ -659,8 +659,9 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     assert "Persistent=true" not in timer
     assert "Unit=sfo-dataset-backfill.service" in timer
 
-    assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"' in runner
-    default_sources = "SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history"
+    # `lamp` is excluded: NOMADS no longer serves the product tree at all.
+    assert 'SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,gfs-mos,nbm,hrrr,kalshi-history}"' in runner
+    default_sources = "SFO_DATASET_SOURCES=iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,gfs-mos,nbm,hrrr,kalshi-history"
     assert default_sources in example_env
     assert (
         "SFO_DATASET_RESEARCH_PATH=/opt/weatheredge/forecaster/dataset_research.json"
@@ -670,7 +671,11 @@ def test_dataset_backfill_timer_is_production_safe_and_installed():
     assert "--source noaa-isd" not in runner
     assert 'SFO_DATASET_DB:-${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}' in runner
     assert "failed_sources=()" in runner
-    assert "failed; continuing" in runner
+    assert "continuing" in runner
+    # A single bad night from an upstream provider must not fail the unit; only
+    # a source failing on consecutive runs does.
+    assert 'FAILURE_THRESHOLD="${SFO_DATASET_SOURCE_FAILURE_THRESHOLD:-2}"' in runner
+    assert "sustained_failures" in runner
     assert 'KALSHI_LOOKBACK_DAYS="${SFO_DATASET_KALSHI_LOOKBACK_DAYS:-90}"' in runner
     assert "SFO_DATASET_KALSHI_LOOKBACK_DAYS=90" in example_env
     assert 'SFO_DATASET_KALSHI_CANDLES:-0' in runner

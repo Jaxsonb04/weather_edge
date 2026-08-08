@@ -4,7 +4,12 @@ set -euo pipefail
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB_PATH="${SFO_DATASET_DB:-${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}}"
-SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,lamp,gfs-mos,nbm,hrrr,kalshi-history}"
+# `lamp` is deliberately absent: NOMADS stopped serving /pub/data/nccf/com/lamp
+# (the whole product tree answers HTTP 403, not just individual cycles), so it
+# has never written a row while spending ~1,300 requests a night that pushed
+# gfs-mos into the same rate limiter. The source stays supported and can be
+# re-enabled here once a working endpoint is identified.
+SFO_DATASET_SOURCES="${SFO_DATASET_SOURCES:-iem-asos,open-meteo-previous-runs,open-meteo-historical-forecast,gfs-mos,nbm,hrrr,kalshi-history}"
 LOOKBACK_DAYS="${SFO_DATASET_LOOKBACK_DAYS:-10}"
 KALSHI_LOOKBACK_DAYS="${SFO_DATASET_KALSHI_LOOKBACK_DAYS:-90}"
 TIMEOUT="${SFO_DATASET_TIMEOUT:-30}"
@@ -161,8 +166,62 @@ run_dataset_source() {
 mkdir -p "$(dirname "$DB_PATH")"
 cd "$TRADING_DIR"
 
+# Upstream providers (IEM, NOMADS, Open-Meteo) return transient 5xx often enough
+# that a single bad night is noise, not a defect. The backfill window is a
+# rolling lookback, so the next run re-covers any night a source missed and no
+# data hole survives. Only a source that fails on consecutive runs represents a
+# real outage worth failing the unit for.
+FAILURE_THRESHOLD="${SFO_DATASET_SOURCE_FAILURE_THRESHOLD:-2}"
+STATE_DIR="${SFO_DATASET_STATE_DIR:-$(dirname "$DB_PATH")/.dataset-state}"
+
+if [[ ! "$FAILURE_THRESHOLD" =~ ^[1-9][0-9]?$ ]]; then
+  echo "SFO_DATASET_SOURCE_FAILURE_THRESHOLD must be a canonical integer from 1 to 99" >&2
+  exit 2
+fi
+FAILURE_THRESHOLD=$((10#$FAILURE_THRESHOLD))
+
+if ! mkdir -p "$STATE_DIR"; then
+  echo "unable to create dataset source failure state directory: $STATE_DIR" >&2
+  exit 1
+fi
+
+# Source names come from configuration, so constrain them to a safe filename
+# before they are used as a path component.
+source_state_file() {
+  local safe="${1//[^A-Za-z0-9._-]/_}"
+  printf '%s' "$STATE_DIR/consecutive-failures-$safe"
+}
+
+read_consecutive_failures() {
+  local file value=""
+  file="$(source_state_file "$1")"
+  if [[ -f "$file" ]]; then
+    value="$(<"$file")"
+  fi
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    value=0
+  fi
+  printf '%s' "$value"
+}
+
+record_consecutive_failures() {
+  local file tmp
+  file="$(source_state_file "$1")"
+  tmp="$STATE_DIR/.consecutive-failures.$$"
+  printf '%s\n' "$2" >"$tmp"
+  mv -f "$tmp" "$file"
+}
+
+clear_consecutive_failures() {
+  local file
+  file="$(source_state_file "$1")"
+  [[ -f "$file" ]] || return 0
+  rm -f "$file"
+}
+
 IFS=',' read -r -a sources <<< "$SFO_DATASET_SOURCES"
 failed_sources=()
+sustained_failures=()
 for raw_source in "${sources[@]}"; do
   source="${raw_source//[[:space:]]/}"
   if [[ -z "$source" ]]; then
@@ -208,9 +267,18 @@ for raw_source in "${sources[@]}"; do
   esac
 
   echo "running dataset backfill source=$source start=$source_start end=$source_end db=$DB_PATH"
-  if ! run_dataset_source "${args[@]}"; then
+  if run_dataset_source "${args[@]}"; then
+    clear_consecutive_failures "$source"
+  else
     failed_sources+=("$source")
-    echo "warning: dataset backfill source=$source failed; continuing" >&2
+    consecutive="$(($(read_consecutive_failures "$source") + 1))"
+    record_consecutive_failures "$source" "$consecutive"
+    if (( consecutive >= FAILURE_THRESHOLD )); then
+      sustained_failures+=("$source($consecutive)")
+      echo "warning: dataset backfill source=$source failed $consecutive consecutive run(s); continuing" >&2
+    else
+      echo "warning: dataset backfill source=$source failed ${consecutive}/${FAILURE_THRESHOLD} consecutive run(s); continuing" >&2
+    fi
   fi
 done
 
@@ -233,9 +301,14 @@ fi
 
 if [[ "${#failed_sources[@]}" -gt 0 ]]; then
   failed_list="$(IFS=,; echo "${failed_sources[*]}")"
-  echo "ERROR: ${#failed_sources[@]} dataset source(s) failed: $failed_list" >&2
+  if [[ "${#sustained_failures[@]}" -gt 0 ]]; then
+    sustained_list="$(IFS=,; echo "${sustained_failures[*]}")"
+    echo "ERROR: ${#sustained_failures[@]} dataset source(s) failed on $FAILURE_THRESHOLD or more consecutive runs: $sustained_list" >&2
+  else
+    echo "warning: ${#failed_sources[@]} dataset source(s) failed this run and will be retried next run: $failed_list" >&2
+  fi
 fi
 
-if (( ${#failed_sources[@]} > 0 || research_failed > 0 )); then
+if (( ${#sustained_failures[@]} > 0 || research_failed > 0 )); then
   exit 1
 fi

@@ -169,7 +169,7 @@ def test_dataset_backfill_cli_accepts_lamp_source_choice():
 
         def fake_lamp(
             store, *, start, end, station_id="KSFO",
-            standard_utc_offset_hours=-8, timeout=30,
+            standard_utc_offset_hours=-8, timeout=30, cache=None,
         ):
             calls.append((store.db_path, start, end, station_id, timeout))
             return DatasetResult("noaa-lamp", 0, "test")
