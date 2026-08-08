@@ -25,9 +25,20 @@ DEPLOY_KEY="${SFO_PAGES_DEPLOY_KEY:-$HOME/.ssh/sfo_weather_pages_deploy}"
 MANIFEST_PATH="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
 ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-/opt/weatheredge/.locks/artifact-generation.lock}"
 ARTIFACT_LOCK_WAIT_SECONDS="${SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-60}"
+# The Pages lock is now held across the delivery gate as well as the push, but
+# the wait deliberately stays short. Holding it means another publisher is
+# already delivering current data, so this cycle gains nothing by queueing
+# behind it -- and a wait long enough to cover the gate would consume the whole
+# TimeoutStartSec=900 service deadline before any work began. Short wait, then
+# defer.
 PAGES_LOCK_WAIT_SECONDS="${SFO_PAGES_LOCK_WAIT_SECONDS:-60}"
 PROPAGATION_WAITER="${SFO_PAGES_PROPAGATION_WAITER:-$TRADING_DIR/deploy/aws/wait_for_publication_manifest.sh}"
 PENDING_PROPAGATION_TIMEOUT_SECONDS="${SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS:-420}"
+MAX_GATE_DEFERRALS="${SFO_PAGES_MAX_GATE_DEFERRALS:-3}"
+PUBLISH_DEADLINE_SECONDS="${SFO_PAGES_PUBLISH_DEADLINE_SECONDS:-780}"
+GATE_STATE_DIR="${SFO_PAGES_GATE_STATE_DIR:-$BASE_DIR/.locks}"
+GATE_DEFERRAL_FILE="$GATE_STATE_DIR/pages-gate-deferrals"
+PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 
 # The manifest validator always emits these required files. It emits the
 # strategy_research.json artifact only when the manifest records a validated
@@ -69,6 +80,14 @@ if [[ ! "$PENDING_PROPAGATION_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "Pages pending propagation timeout must be a positive integer" >&2
   exit 1
 fi
+if [[ ! "$MAX_GATE_DEFERRALS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Pages gate deferral limit must be a positive integer" >&2
+  exit 1
+fi
+if [[ ! "$PUBLISH_DEADLINE_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Pages publish deadline must be a positive integer" >&2
+  exit 1
+fi
 if ! command -v flock >/dev/null 2>&1; then
   echo "flock is required for artifact publication" >&2
   exit 1
@@ -108,8 +127,11 @@ PAGES_LOCK="${SFO_PAGES_LOCK:-$BASE_DIR/.locks/pages-publish.lock}"
 mkdir -p "$(dirname "$PAGES_LOCK")"
 exec 9>"$PAGES_LOCK"
 if ! flock -w "$PAGES_LOCK_WAIT_SECONDS" 9; then
-  echo "timed out waiting for Pages publication lock: $PAGES_LOCK" >&2
-  exit 1
+  # A concurrent publisher holds the lock and is delivering a newer snapshot
+  # than this one. Deferring is correct and is not a unit failure; the next
+  # five-minute timer picks up whatever is current then.
+  echo "another publisher holds $PAGES_LOCK; deferring this cycle" >&2
+  exit 0
 fi
 
 git init -b "$PAGES_BRANCH" "$publish_dir" >/dev/null
@@ -118,23 +140,74 @@ git remote add origin "$REMOTE_URL"
 git config user.name "${SFO_PAGES_GIT_AUTHOR_NAME:-JaxsonB04}"
 git config user.email "${SFO_PAGES_GIT_AUTHOR_EMAIL:-JaxsonB04@users.noreply.github.com}"
 
+gate_deferrals() {
+  local value=0
+  if [[ -f "$GATE_DEFERRAL_FILE" ]]; then
+    value="$(<"$GATE_DEFERRAL_FILE")"
+    [[ "$value" =~ ^[0-9]+$ ]] || value=0
+  fi
+  printf '%s' "$value"
+}
+
+record_gate_deferrals() {
+  local value="$1"
+  mkdir -p "$GATE_STATE_DIR"
+  local tmp="$GATE_DEFERRAL_FILE.$$"
+  printf '%s\n' "$value" >"$tmp"
+  mv -f "$tmp" "$GATE_DEFERRAL_FILE"
+}
+
+# Returns 0 to proceed with publication, 1 to defer this cycle without error.
+# A gate that can only ever block would turn a genuinely failed or disabled
+# Pages build into a permanent publication outage, because the commit that
+# unsticks Pages is exactly the commit the gate refuses to push. After
+# MAX_GATE_DEFERRALS consecutive misses we publish anyway: at that point the
+# prior deployment is not "in flight", it is broken.
 wait_for_remote_publication() {
   local remote_manifest="$snapshot_dir/remote-publication-manifest.json"
-  if ! git show "origin/$PAGES_BRANCH:publication_manifest.json" >"$remote_manifest"; then
-    echo "remote Pages branch is missing publication_manifest.json" >&2
-    return 1
+  local budget=$((PUBLISH_DEADLINE_SECONDS - SECONDS))
+  local started deferrals
+
+  if [[ -z "$PUBLIC_MANIFEST_URL" ]]; then
+    echo "no public manifest URL configured; Pages delivery gate skipped" >&2
+    return 0
   fi
-  if ! SFO_PUBLICATION_MANIFEST_PATH="$remote_manifest" \
-    SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS="$PENDING_PROPAGATION_TIMEOUT_SECONDS" \
+  if ! git show "origin/$PAGES_BRANCH:publication_manifest.json" >"$remote_manifest" 2>/dev/null; then
+    echo "remote Pages branch has no publication_manifest.json; delivery gate skipped" >&2
+    return 0
+  fi
+  if (( budget > PENDING_PROPAGATION_TIMEOUT_SECONDS )); then
+    budget="$PENDING_PROPAGATION_TIMEOUT_SECONDS"
+  fi
+  if (( budget < 1 )); then
+    budget=1
+  fi
+
+  started="$SECONDS"
+  if SFO_PUBLICATION_MANIFEST_PATH="$remote_manifest" \
+    SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS="$budget" \
     /bin/bash "$PROPAGATION_WAITER"; then
-    echo "refusing to overtake the Pages branch while its current snapshot is still pending" >&2
-    return 1
+    echo "prior Pages snapshot became public after $((SECONDS - started))s; publishing successor"
+    record_gate_deferrals 0
+    return 0
   fi
+
+  deferrals=$(( $(gate_deferrals) + 1 ))
+  if (( deferrals >= MAX_GATE_DEFERRALS )); then
+    echo "prior Pages snapshot still not public after $deferrals consecutive deferrals; publishing anyway to unstick GitHub Pages" >&2
+    record_gate_deferrals 0
+    return 0
+  fi
+  record_gate_deferrals "$deferrals"
+  echo "prior Pages snapshot is still deploying (deferral $deferrals/$MAX_GATE_DEFERRALS); skipping this publication cycle"
+  return 1
 }
 
 prepare_pages_branch() {
   if git fetch origin "$PAGES_BRANCH" >/dev/null 2>&1; then
-    wait_for_remote_publication
+    if ! wait_for_remote_publication; then
+      return 1
+    fi
     git checkout -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH" >/dev/null
   else
     git checkout --orphan "$PAGES_BRANCH" >/dev/null 2>&1 \
@@ -145,7 +218,9 @@ prepare_pages_branch() {
 # Do not snapshot new data until the currently pushed branch head is public.
 # This is the key backpressure rule: GitHub cannot cancel an in-flight Pages
 # deployment because this publisher will not push its successor yet.
-prepare_pages_branch
+if ! prepare_pages_branch; then
+  exit 0
+fi
 
 mkdir -p "$(dirname "$ARTIFACT_LOCK")"
 exec 8>"$ARTIFACT_LOCK"
@@ -210,7 +285,9 @@ attempts="${SFO_PAGES_PUSH_ATTEMPTS:-4}"
 attempt=1
 while true; do
   if (( attempt > 1 )); then
-    prepare_pages_branch
+    if ! prepare_pages_branch; then
+      exit 0
+    fi
   fi
 
   find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
@@ -239,6 +316,10 @@ while true; do
     exit 0
   fi
 
+  if (( SECONDS >= PUBLISH_DEADLINE_SECONDS )); then
+    echo "gh-pages publication budget exhausted after ${SECONDS}s" >&2
+    exit 1
+  fi
   if (( attempt >= attempts )); then
     echo "gh-pages push failed after $attempt attempts" >&2
     exit 1

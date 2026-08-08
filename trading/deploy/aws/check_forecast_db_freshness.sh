@@ -18,7 +18,13 @@ MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
 MARKER="${SFO_FORECAST_STALE_MARKER:-$FORECASTER_DIR/STALE_FORECAST}"
 MANIFEST="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
 OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
-PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-10}"
+# Audit F-01: this watchdog measures the same public artifact age as
+# check_scheduler_health.sh and must use the same ceiling. Public age is
+# measured from the artifact's own generated_at, so with a five-minute
+# publish cadence and a ~five-minute Pages deployment the artifact visitors
+# receive is ~5-11 minutes old for the whole interval between landings. Left
+# at 10 this fires the shared alert webhook continuously by construction.
+PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-20}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"

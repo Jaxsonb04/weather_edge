@@ -103,11 +103,16 @@ def test_installers_migrate_only_obsolete_publication_threshold_defaults():
             "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15$/"
             "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10/"
         ) in installer
-        assert 'grep -qx "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20"' in installer
+        assert 'grep -qx "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10"' in installer
         assert (
-            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20$/"
-            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10/"
+            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10$/"
+            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20/"
         ) in installer
+        # The Pages lock wait must NOT be migrated upward. Holding that lock
+        # means another publisher is already delivering, so this cycle defers
+        # instead of queueing; a longer wait would eat the whole
+        # TimeoutStartSec=900 service deadline before any work began.
+        assert "SFO_PAGES_LOCK_WAIT_SECONDS=900" not in installer
         assert 'grep -qx "SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=180"' in installer
         assert (
             "SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=180$/"
@@ -426,7 +431,9 @@ def test_publication_cycle_releases_generation_lock_during_pages_delivery_wait()
     inherited_close_idx = publisher.index("exec 7>&-")
     git_init_idx = publisher.index("git init")
     fetch_idx = publisher.index("git fetch")
-    delivery_gate_idx = publisher.index("\nprepare_pages_branch\n")
+    # The gate is invoked in a conditional now: a deferral must return to the
+    # caller as a clean exit 0, not abort the publisher under `set -e`.
+    delivery_gate_idx = publisher.index("if ! prepare_pages_branch; then")
     reacquire_idx = publisher.index('exec 8>"$ARTIFACT_LOCK"')
     snapshot_copy_idx = publisher.index('cp "$source_path"')
     final_unlock_idx = publisher.rindex("flock -u 8")
@@ -840,7 +847,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
 
     assert "sfo_kalshi_quant.publication validate" in watchdog
     assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
-    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10" in example_env
+    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20" in example_env
     assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
     assert (
         "SFO_PUBLICATION_MANIFEST_URL="

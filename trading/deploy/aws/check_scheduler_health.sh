@@ -56,7 +56,12 @@ VALIDATION_LOCK_WAIT_SECONDS="${SFO_SCHEDULER_VALIDATION_LOCK_WAIT_SECONDS:-10}"
 MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
 DISK_MAX_PERCENT="${SFO_DISK_USAGE_MAX_PERCENT:-85}"
 OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
-PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-10}"
+# Public age is measured from the artifact's own generated_at. With a
+# five-minute publish cadence and a ~five-minute Pages deployment, the artifact
+# visitors receive is between ~5 and ~11 minutes old for the entire interval
+# between landings. A 10-minute ceiling is therefore unmeetable by
+# construction and produces continuous false staleness repairs.
+PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-20}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"

@@ -1137,11 +1137,8 @@ raise SystemExit(0)
         assert result.returncode == 0, result.stderr
         assert pushes == ["push origin HEAD:gh-pages"]
     else:
-        assert result.returncode == 1
-        assert (
-            "timed out waiting for the public publication snapshot"
-            in result.stderr
-        )
+        assert result.returncode == 0, result.stderr
+        assert "skipping this publication cycle" in result.stdout
         assert pushes == []
 
 

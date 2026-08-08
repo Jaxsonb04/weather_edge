@@ -22,4 +22,6 @@ MemoryHigh=120M
 MemoryMax=180M
 # One bounded Strategy build (120s), one operational publication (900s), a
 # 420-second propagation check, and final validation all fit below this cap.
+# The publisher additionally self-bounds at SFO_PAGES_PUBLISH_DEADLINE_SECONDS
+# so its delivery gate plus push retries cannot outlive that 900s allowance.
 TimeoutStartSec=1500
