@@ -42,6 +42,11 @@ jobs:
 
       - name: Run full verification gate
         if: matrix.python-version == '3.13'
+        env:
+          # Audit F-08: semgrep degrades to a WARN on developer machines that do
+          # not have it installed. CI must never take that path -- state the
+          # requirement explicitly rather than relying on the implicit CI var.
+          SFO_REQUIRE_SEMGREP: "1"
         run: bash scripts/verify_project.sh
 
       - name: Run Python tests

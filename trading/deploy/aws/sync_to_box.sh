@@ -39,6 +39,13 @@ FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
+
+# Audit F-07: this script deliberately needs NO local interpreter. It used to
+# stamp build provenance by importing two package constants, and discovering
+# Xcode's Python 3.9 at that point -- roughly 90 lines after production timers
+# were already quiesced -- stranded the box mid-deploy with every writer
+# stopped. Those constants are now read literally from source further down, so
+# there is nothing left to resolve and nothing left to fail on.
 DEPLOY_MAINTENANCE_MARKER="/run/weatheredge-deploy-maintenance"
 SSH_OPTS=(
   -i "$HOST_KEY"
@@ -238,8 +245,39 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" rm -f -- "${REMOTE_RETIRED_PATHS[@]
 # public site can identify the exact source that generated its artifacts.
 BUILD_INFO_TMP="$(mktemp)"
 SOURCE_DIRTY=false
-EXECUTION_MODEL_VERSION="$(PYTHONPATH="$WEATHEREDGE_ROOT/trading" python3 -c 'from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION; print(EXECUTION_MODEL_VERSION)')"
-ACCOUNTING_POLICY_VERSION="$(PYTHONPATH="$WEATHEREDGE_ROOT/trading" python3 -c 'from sfo_kalshi_quant.account import ACCOUNTING_POLICY_VERSION; print(ACCOUNTING_POLICY_VERSION)')"
+# Audit F-07: read the version constants literally instead of importing them.
+# Importing required a local interpreter, and `python3` resolves to the Xcode
+# system build (3.9) on macOS, which fails on `from datetime import UTC` and
+# aborted the deploy *after* the box had already been quiesced. Both constants
+# are module-level string literals, so a literal read needs no interpreter at
+# all and cannot be broken by an unrelated import error elsewhere in the
+# package. `test_deploy_provenance_versions_match_imported_constants` asserts
+# these stay identical to the imported values, so a format change is caught.
+read_source_version_constant() {
+  local source_file="$1"
+  local constant_name="$2"
+  local value
+  value="$(
+    sed -n "s/^${constant_name} = \"\([^\"]*\)\"\$/\1/p" "$source_file" \
+      | head -n 1
+  )"
+  if [[ -z "$value" ]]; then
+    echo "could not read $constant_name from $source_file" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+EXECUTION_MODEL_VERSION="$(
+  read_source_version_constant \
+    "$WEATHEREDGE_ROOT/trading/sfo_kalshi_quant/maker_fills.py" \
+    EXECUTION_MODEL_VERSION
+)"
+ACCOUNTING_POLICY_VERSION="$(
+  read_source_version_constant \
+    "$WEATHEREDGE_ROOT/trading/sfo_kalshi_quant/account.py" \
+    ACCOUNTING_POLICY_VERSION
+)"
 cat > "$BUILD_INFO_TMP" <<JSON
 {
   "source_sha": "$SOURCE_SHA",

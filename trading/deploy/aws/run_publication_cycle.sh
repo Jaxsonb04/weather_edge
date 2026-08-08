@@ -71,9 +71,9 @@ if ! flock -w "$LOCK_WAIT_SECONDS" 7; then
   exit 1
 fi
 
-# Keep one lock across generation, manifest validation, and the publisher's
-# snapshot copy. The publisher inherits this descriptor, unlocks it only after
-# copying the validated snapshot, then takes the separate Pages Git lock.
+# Hand the build lock to the publisher. It releases the descriptor before the
+# Pages delivery gate, then reacquires the same lock to validate and copy a
+# coherent snapshot after the prior branch head is public.
 export SFO_ARTIFACT_LOCK_HELD=1
 export SFO_ARTIFACT_LOCK_FD=7
 /bin/bash "$BUILDER"

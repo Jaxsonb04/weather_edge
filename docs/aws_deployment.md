@@ -171,10 +171,13 @@ The environment installed at `/etc/weatheredge.env` is based on
   starts scan, monitor, settlement, or any trading action.
 
 The operational publication path holds `SFO_ARTIFACT_GENERATION_LOCK` while
-building, validating, and copying. Strategy Lab builds in staging and takes
-that lock only for atomic artifact/cache promotion and manifest rebuild.
-`SFO_PAGES_LOCK` separately serializes Git updates. The publisher retries
-bounded non-fast-forward failures with `SFO_PAGES_PUSH_ATTEMPTS`.
+building, releases it while the prior Pages branch head finishes deployment,
+then reacquires it to validate and copy a coherent snapshot. Strategy Lab
+builds in staging and takes that lock only for atomic artifact/cache promotion
+and manifest rebuild. `SFO_PAGES_LOCK` serializes the delivery gate and Git
+update so a newer push cannot cancel an in-flight Pages deployment. The
+publisher retries bounded non-fast-forward failures with
+`SFO_PAGES_PUSH_ATTEMPTS`.
 Strategy lock acquisition is capped at 30 seconds; operational artifact and
 Pages lock acquisition are capped at 60 seconds each, leaving service-deadline
 headroom for generation and network publication.

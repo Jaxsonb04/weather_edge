@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import shutil
+import site
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -329,7 +330,8 @@ def check_git_state(root: Path) -> CheckResult:
 
 def check_optional_tools(root: Path) -> CheckResult:
     missing = []
-    user_semgrep = (
+    user_semgrep = Path(site.USER_BASE) / "bin" / "semgrep"
+    legacy_semgrep = (
         Path.home()
         / "Library"
         / "Python"
@@ -337,10 +339,24 @@ def check_optional_tools(root: Path) -> CheckResult:
         / "bin"
         / "semgrep"
     )
-    if shutil.which("semgrep") is None and not user_semgrep.exists():
+    if (
+        shutil.which("semgrep") is None
+        and not user_semgrep.exists()
+        and not legacy_semgrep.exists()
+    ):
         missing.append("semgrep")
     if missing:
-        return CheckResult("optional quality tools", "WARN", "not installed on PATH: " + ", ".join(missing))
+        # Audit F-08: this stays a WARN and scripts/run_semgrep.sh now agrees --
+        # it skips the scan locally and hard-fails only under
+        # SFO_REQUIRE_SEMGREP=1, which CI sets. Previously this said OPTIONAL
+        # while the very next step of the same gate treated it as mandatory.
+        return CheckResult(
+            "optional quality tools",
+            "WARN",
+            "not installed on PATH: "
+            + ", ".join(missing)
+            + " (local semgrep scan will be SKIPPED; CI enforces it)",
+        )
     return CheckResult("optional quality tools", "PASS", "optional quality tools are available")
 
 

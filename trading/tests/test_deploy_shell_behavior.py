@@ -36,6 +36,22 @@ SERVICES = tuple(timer.removesuffix(".timer") + ".service" for timer in TIMERS)
 PAPER_SCAN_RUNNER = AWS_DIR / "run_paper_scan_profiles.sh"
 
 
+def _load_read_version_helper() -> str:
+    """Extract the provenance-reading helper verbatim from sync_to_box.sh.
+
+    The tests exercise the deploy script's real implementation rather than a
+    copy, so drift between the two is impossible by construction.
+    """
+
+    text = (AWS_DIR / "sync_to_box.sh").read_text(encoding="utf-8")
+    start = text.index("read_source_version_constant() {")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    return text[start:end]
+
+
+_READ_VERSION_HELPER = _load_read_version_helper()
+
+
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -1002,6 +1018,130 @@ print(json.dumps({{
     assert "public publication snapshot matches local manifest" in result.stdout
 
 
+@pytest.mark.parametrize("remote_delivered", (False, True))
+def test_pages_publisher_waits_for_remote_delivery_before_push(
+    tmp_path: Path,
+    remote_delivered: bool,
+) -> None:
+    base = tmp_path / "weatheredge"
+    forecaster = base / "forecaster"
+    trading = base / "trading"
+    webdist = base / "webdist"
+    for directory in (forecaster, trading, webdist):
+        directory.mkdir(parents=True)
+    (webdist / "index.html").write_text("app", encoding="utf-8")
+    for artifact in (
+        "trading_signal.json",
+        "forecast_data.json",
+        "weather_story_data.json",
+        "cities_data.json",
+        "publication_manifest.json",
+    ):
+        (forecaster / artifact).write_text("{}\n", encoding="utf-8")
+    deploy_key = tmp_path / "deploy-key"
+    deploy_key.touch()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "flock", "#!/bin/sh\nexit 0\n")
+    git_log = tmp_path / "git.log"
+    _write_executable(
+        fake_bin / "git",
+        f"""#!{sys.executable}
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(os.environ["GIT_LOG"], "a", encoding="utf-8") as handle:
+    handle.write(" ".join(args) + "\\n")
+if args[:1] == ["init"]:
+    (Path(args[-1]) / ".git").mkdir(exist_ok=True)
+elif args[:1] == ["show"]:
+    print(json.dumps({{
+        "snapshot_id": "remote-pending",
+        "provenance": {{"source_sha": "abc1234"}},
+    }}))
+elif args[:3] == ["diff", "--cached", "--quiet"]:
+    raise SystemExit(1)
+raise SystemExit(0)
+""",
+    )
+    _write_executable(
+        fake_bin / "curl",
+        f"""#!{sys.executable}
+import json
+print(json.dumps({{
+    "snapshot_id": "public-older",
+    "provenance": {{"source_sha": "abc1234"}},
+}}))
+""",
+    )
+    python_stub = tmp_path / "python-stub"
+    _write_executable(
+        python_stub,
+        f"""#!{sys.executable}
+import os
+import sys
+
+if sys.argv[1:2] == ["-"]:
+    raise SystemExit(0 if os.environ["REMOTE_DELIVERED"] == "1" else 1)
+if "--print-artifacts" in sys.argv:
+    print("trading_signal.json")
+    print("forecast_data.json")
+    print("weather_story_data.json")
+    print("cities_data.json")
+    print("publication_manifest.json")
+raise SystemExit(0)
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "publish_forecaster_pages.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_PUBLISH_PAGES": "1",
+            "SFO_BASE_DIR": str(base),
+            "SFO_FORECASTER_ROOT": str(forecaster),
+            "SFO_TRADING_ROOT": str(trading),
+            "SFO_TRADING_PYTHON": str(python_stub),
+            "SFO_WEBDIST_DIR": str(webdist),
+            "SFO_PAGES_DEPLOY_KEY": str(deploy_key),
+            "SFO_FORECASTER_GIT_REMOTE": "git@example.test:weatheredge.git",
+            "SFO_PAGES_PROPAGATION_WAITER": str(
+                AWS_DIR / "wait_for_publication_manifest.sh"
+            ),
+            "SFO_PUBLICATION_MANIFEST_URL": (
+                "https://pages.example/publication_manifest.json"
+            ),
+            "SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS": "1",
+            "SFO_PUBLICATION_PROPAGATION_POLL_SECONDS": "1",
+            "SFO_ARTIFACT_GENERATION_LOCK": str(base / ".locks" / "artifact.lock"),
+            "SFO_PAGES_LOCK": str(base / ".locks" / "pages.lock"),
+            "GIT_LOG": str(git_log),
+            "REMOTE_DELIVERED": "1" if remote_delivered else "0",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    pushes = [
+        line
+        for line in git_log.read_text().splitlines()
+        if line.startswith("push ")
+    ]
+    if remote_delivered:
+        assert result.returncode == 0, result.stderr
+        assert pushes == ["push origin HEAD:gh-pages"]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "skipping this publication cycle" in result.stdout
+        assert pushes == []
+
+
 @pytest.mark.parametrize(
     "remote_base",
     [
@@ -1882,3 +2022,75 @@ def test_backup_hands_back_the_copy_that_survived_the_round_trip() -> None:
 
 def _read_backup_helper() -> str:
     return (AWS_DIR / "backup_paper_db.sh").read_text()
+
+
+def _extract_shell_version_constant(source_file: Path, constant_name: str) -> str:
+    """Run the deploy script's own extraction helper against a source file."""
+
+    script = f"""
+set -euo pipefail
+{_READ_VERSION_HELPER}
+read_source_version_constant "$1" "$2"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(source_file), constant_name],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_deploy_provenance_versions_match_imported_constants() -> None:
+    """Audit F-07: the literal read must equal what importing would have given.
+
+    sync_to_box.sh stamps build provenance by reading these constants out of the
+    source files with sed rather than importing them, because importing needed a
+    local interpreter and macOS resolves `python3` to a 3.9 build that cannot
+    import this package at all. That trade is only safe while the literal read
+    and the real constant agree, so pin them together here: if someone reformats
+    either assignment (single quotes, a type annotation, a computed value), this
+    fails instead of silently stamping an empty or stale version.
+    """
+
+    sys.path.insert(0, str(ROOT / "trading"))
+    try:
+        from sfo_kalshi_quant.account import ACCOUNTING_POLICY_VERSION
+        from sfo_kalshi_quant.maker_fills import EXECUTION_MODEL_VERSION
+    finally:
+        sys.path.remove(str(ROOT / "trading"))
+
+    execution = _extract_shell_version_constant(
+        ROOT / "trading" / "sfo_kalshi_quant" / "maker_fills.py",
+        "EXECUTION_MODEL_VERSION",
+    )
+    accounting = _extract_shell_version_constant(
+        ROOT / "trading" / "sfo_kalshi_quant" / "account.py",
+        "ACCOUNTING_POLICY_VERSION",
+    )
+
+    assert execution == EXECUTION_MODEL_VERSION
+    assert accounting == ACCOUNTING_POLICY_VERSION
+    assert execution, "execution model version must never stamp empty"
+    assert accounting, "accounting policy version must never stamp empty"
+
+
+def test_deploy_provenance_extraction_fails_loudly_on_missing_constant(
+    tmp_path: Path,
+) -> None:
+    """A renamed or reformatted constant must abort the deploy, not stamp empty."""
+
+    source = tmp_path / "module.py"
+    source.write_text("SOMETHING_ELSE = \"x\"\n", encoding="utf-8")
+    script = f"""
+set -euo pipefail
+{_READ_VERSION_HELPER}
+read_source_version_constant "$1" "$2"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(source), "EXECUTION_MODEL_VERSION"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "could not read EXECUTION_MODEL_VERSION" in result.stderr

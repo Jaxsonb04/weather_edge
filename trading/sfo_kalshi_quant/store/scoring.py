@@ -294,22 +294,34 @@ def signal_backtest_summary(
             "approved_capital_at_risk": 0.0,
             "approved_roi": 0.0,
             "approved_hit_rate": 0.0,
+            "scored_observations": 0.0,
+            "collapsed_complement_signals": 0.0,
             "quality_buckets": [],
             "probability_streams": {},
         }
 
-    outcomes = []
-    for row in settled_rows:
-        settlement = settlement_for_market(
-            normalized_settlements, str(row["market_ticker"]), row["target_date"]
-        )
-        if settlement is None:  # guarded by settled_rows; keeps typing honest
-            continue
-        position_won = _decision_row_position_won(row, settlement)
-        probability = float(row["probability"])
-        outcomes.append((row, 1.0 if position_won else 0.0, probability))
+    scored_rows = collapse_complementary_sides(settled_rows)
 
-    approved = [(row, outcome, probability) for row, outcome, probability in outcomes if int(row["approved"])]
+    def _score(rows: list[sqlite3.Row]) -> list[tuple[sqlite3.Row, float, float]]:
+        scored: list[tuple[sqlite3.Row, float, float]] = []
+        for row in rows:
+            settlement = settlement_for_market(
+                normalized_settlements, str(row["market_ticker"]), row["target_date"]
+            )
+            if settlement is None:  # guarded by settled_rows; keeps typing honest
+                continue
+            position_won = _decision_row_position_won(row, settlement)
+            scored.append((row, 1.0 if position_won else 0.0, float(row["probability"])))
+        return scored
+
+    # Probabilistic-skill metrics score each underlying market ONCE (see
+    # collapse_complementary_sides). Approved metrics stay on the FULL settled
+    # set on purpose: every approved snapshot is a position the book actually
+    # took, and its capital/PnL must not vanish because its complement won the
+    # collapse. This keeps approved_paper_pnl / approved_capital_at_risk /
+    # approved_roi / approved_hit_rate byte-identical to the pre-fix artifact.
+    outcomes = _score(scored_rows)
+    approved = [item for item in _score(settled_rows) if int(item[0]["approved"])]
     capital = sum(float(row["recommended_spend"]) for row, _, _ in approved)
     pnl = sum(_decision_row_pnl(row, bool(outcome)) for row, outcome, _ in approved)
     return {
@@ -339,7 +351,12 @@ def signal_backtest_summary(
         "approved_capital_at_risk": capital,
         "approved_roi": pnl / capital if capital else 0.0,
         "approved_hit_rate": _safe_div(sum(outcome for _, outcome, _ in approved), len(approved)),
-        "quality_buckets": _quality_buckets(outcomes),
+        # Denominator behind brier_score/log_loss/win_rate/avg_probability:
+        # unique markets, after the YES/NO complement collapse. settled_signals
+        # above still counts raw snapshots, so the funnel stays readable.
+        "scored_observations": float(len(outcomes)),
+        "collapsed_complement_signals": float(len(settled_rows) - len(scored_rows)),
+        "quality_buckets": _quality_buckets(outcomes, approved),
         "probability_streams": _probability_stream_metrics(outcomes),
     }
 
@@ -404,6 +421,71 @@ def _entry_decision_rows(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
 
 def _row_sort_time(row: sqlite3.Row) -> tuple[str, int]:
     return (str(row["created_at"]), int(row["id"]))
+
+
+def _complement_key(row: sqlite3.Row) -> tuple[str, str, str]:
+    """Identity of the underlying market EVENT, ignoring the contract side."""
+
+    return (
+        str(row["target_date"]),
+        str(row["market_ticker"]),
+        _normalize_row_profile(row),
+    )
+
+
+def _complement_rank(row: sqlite3.Row) -> tuple[float, int, str, int]:
+    """Ordering that picks the surviving side of a complementary pair.
+
+    Lowest wins: the model's favoured direction first (highest recorded
+    probability), then YES for a genuine 0.50/0.50 tie, then the earlier row.
+    Deterministic, so the published number is reproducible.
+    """
+
+    return (
+        -float(row["probability"]),
+        0 if _row_side(row) == "YES" else 1,
+        str(row["created_at"]),
+        int(row["id"]),
+    )
+
+
+def collapse_complementary_sides(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
+    """One scored observation per underlying market, not one per contract side.
+
+    Production scans with ``analyze --side both`` (the argparse default and what
+    ``scripts/paper_analyze.sh`` passes), so ``TradeEvaluator.rank`` evaluates
+    EVERY listed bin as both a BUY_YES and a BUY_NO candidate and
+    ``record_decisions`` persists both. ``sampled_decision_rows`` partitions its
+    dedup by side, so a single Kalshi binary market reaches the scorer twice --
+    once at ``p`` and once at ``1 - p`` (``risk._side_probability``) -- with
+    complementary outcomes (``_decision_row_position_won`` negates for NO).
+
+    Those two rows are ONE observation. Exactly one of them always wins, so
+    ``win_rate`` and ``avg_probability`` are pinned to ~0.5 no matter how good
+    the model is, the settled count is doubled (halving the effective sample
+    size behind every interval), and NO-frame edge/quality values are mixed
+    into the YES-frame averages.
+
+    Brier and log loss are frame-invariant -- ``(p - y)**2 ==
+    ((1-p) - (1-y))**2`` -- so this collapse changes their sample size, not
+    their point estimate. That half of the original audit note was wrong.
+
+    Scoring-time only: it reads rows and writes nothing, and it is deliberately
+    NOT applied inside ``sampled_decision_rows`` because the config rescorer
+    re-decides each recorded snapshot and a recorded BUY_NO snapshot is a real
+    candidate trade in that path.
+    """
+
+    best: dict[tuple[str, str, str], sqlite3.Row] = {}
+    for row in rows:
+        key = _complement_key(row)
+        current = best.get(key)
+        if current is None or _complement_rank(row) < _complement_rank(current):
+            best[key] = row
+    return sorted(
+        best.values(),
+        key=lambda row: (str(row["target_date"]), str(row["created_at"]), int(row["id"])),
+    )
 
 
 def _normalize_sample_profile(value: object) -> str:
@@ -510,7 +592,18 @@ def _row_optional_float(row: sqlite3.Row, key: str) -> float | None:
     return None if value is None else float(value)
 
 
-def _quality_buckets(rows: list[tuple[sqlite3.Row, float, float]]) -> list[dict[str, float]]:
+def _quality_buckets(
+    scored: list[tuple[sqlite3.Row, float, float]],
+    approved_rows: list[tuple[sqlite3.Row, float, float]],
+) -> list[dict[str, float]]:
+    """Per-quality-band skill and approved economics.
+
+    ``scored`` is complement-collapsed (one row per market) so count/win_rate/
+    avg_probability/brier_score are not the ~0.5 artifact of scoring both
+    contract sides. ``approved_rows`` is the full settled approved set so the
+    approved PnL/ROI per band stays identical to the pre-collapse artifact.
+    """
+
     buckets = [
         ("0-20", 0.0, 20.0),
         ("20-40", 20.0, 40.0),
@@ -522,12 +615,16 @@ def _quality_buckets(rows: list[tuple[sqlite3.Row, float, float]]) -> list[dict[
     for label, lower, upper in buckets:
         bucket = [
             (row, outcome, probability)
-            for row, outcome, probability in rows
+            for row, outcome, probability in scored
             if lower <= float(row["trade_quality_score"]) < upper
         ]
         if not bucket:
             continue
-        approved = [item for item in bucket if int(item[0]["approved"])]
+        approved = [
+            item
+            for item in approved_rows
+            if lower <= float(item[0]["trade_quality_score"]) < upper
+        ]
         capital = sum(float(row["recommended_spend"]) for row, _, _ in approved)
         pnl = sum(_decision_row_pnl(row, bool(outcome)) for row, outcome, _ in approved)
         output.append(

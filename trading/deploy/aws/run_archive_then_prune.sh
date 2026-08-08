@@ -65,8 +65,16 @@ if [[ -n "$missing_indexes" ]]; then
 fi
 
 # 6. Only now may retention delete anything.
+# Batch geometry is a LATENCY contract with the 24/7 scan (5 min) and monitor
+# (2 min), not just a throughput knob: a batch that holds the write lock past
+# their 30 s busy_timeout costs them a whole tick (audit F-02). Time-bounding
+# the batch trades some total prune runtime for that guarantee; the unit's
+# TimeoutStartSec=1800 has ample room over the measured 255 s.
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
-  paper-prune --full-days "${SFO_PRUNE_FULL_DAYS:-1}" --dedup-days "${SFO_PRUNE_DEDUP_DAYS:-45}"
+  paper-prune --full-days "${SFO_PRUNE_FULL_DAYS:-1}" --dedup-days "${SFO_PRUNE_DEDUP_DAYS:-45}" \
+  --batch-limit "${SFO_PRUNE_BATCH_LIMIT:-5000}" \
+  --max-batch-seconds "${SFO_PRUNE_MAX_BATCH_SECONDS:-2}" \
+  --batch-pause-seconds "${SFO_PRUNE_BATCH_PAUSE_SECONDS:-0.15}"
 
 # 7. Ring buffer: drop local copies >keep-days old ONLY if verifiably uploaded.
 $PY -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \

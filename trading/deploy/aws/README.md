@@ -148,11 +148,14 @@ dependencies do not belong on the production box.
 - Dataset/backfill: nightly, including NWP leads 1 and 2. Lead 3 is manual.
 
 Publication is finality-aware and race-safe: builders share
-`SFO_ARTIFACT_GENERATION_LOCK`; the publisher validates the manifest before it
-copies exact artifacts, then serializes Git work with `SFO_PAGES_LOCK`.
-Strategy promotion waits at most 30 seconds for the artifact lock; operational
-generation and Pages serialization each wait at most 60 seconds. These bounds
-leave generation and push headroom inside their systemd deadlines.
+`SFO_ARTIFACT_GENERATION_LOCK`; the publisher serializes the Pages delivery
+gate with `SFO_PAGES_LOCK`, then reacquires the artifact lock to validate and
+copy the exact snapshot before pushing. It will not push a successor until the
+current branch snapshot is public, preventing GitHub from canceling an
+in-flight deployment. Strategy promotion waits at most 30 seconds for the
+artifact lock; operational generation and lock acquisition each wait at most
+60 seconds, while prior-branch propagation is bounded at seven minutes. These
+bounds leave generation and push headroom inside their systemd deadlines.
 Both publisher and paper-scan locks default under `/opt/weatheredge/.locks` so
 reboots clean temporary storage without weakening overlap protection. Configure
 the deploy key as `/home/ubuntu/.ssh/sfo_weather_pages_deploy` and the Git source

@@ -22,7 +22,7 @@ export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signa
     { icon: "solar:radar-2-bold", title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct", hint: "SFO modal bracket" },
     { icon: "solar:checklist-minimalistic-bold", title: "Settled bins", value: c?.n ?? null, kind: "count", hint: "SFO scored outcomes" },
     { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} KSFO days` },
-    { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: "SFO held-out residual" },
+    { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: forecast.lstm_sigma_days ? `SFO held-out residual · ${forecast.lstm_sigma_days} days` : "SFO held-out residual" },
   ];
 
   return (

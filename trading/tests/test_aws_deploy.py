@@ -103,10 +103,20 @@ def test_installers_migrate_only_obsolete_publication_threshold_defaults():
             "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=15$/"
             "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10/"
         ) in installer
-        assert 'grep -qx "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20"' in installer
+        assert 'grep -qx "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10"' in installer
         assert (
-            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20$/"
-            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10/"
+            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10$/"
+            "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20/"
+        ) in installer
+        # The Pages lock wait must NOT be migrated upward. Holding that lock
+        # means another publisher is already delivering, so this cycle defers
+        # instead of queueing; a longer wait would eat the whole
+        # TimeoutStartSec=900 service deadline before any work began.
+        assert "SFO_PAGES_LOCK_WAIT_SECONDS=900" not in installer
+        assert 'grep -qx "SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=180"' in installer
+        assert (
+            "SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=180$/"
+            "SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=420/"
         ) in installer
         assert "cp " not in installer[installer.index("# Migrate only"):installer.index("render_unit()")]
 
@@ -405,7 +415,7 @@ def test_operational_publication_serializes_builder_and_snapshot_under_shared_lo
     assert "SFO_ARTIFACT_GENERATION_LOCK=/opt/weatheredge/.locks/artifact-generation.lock" in example_env
 
 
-def test_publication_cycle_hands_generation_lock_to_snapshot_copy_then_releases_before_network():
+def test_publication_cycle_releases_generation_lock_during_pages_delivery_wait():
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
     publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
 
@@ -417,14 +427,28 @@ def test_publication_cycle_hands_generation_lock_to_snapshot_copy_then_releases_
     assert held_idx < fd_idx < build_idx < publish_idx
     assert "flock -u 7" not in operational_cycle
 
-    snapshot_copy_idx = publisher.index('cp "$source_path"')
-    publisher_unlock_idx = publisher.index('flock -u "$SFO_ARTIFACT_LOCK_FD"')
-    close_idx = publisher.index("exec 7>&-")
-    unset_idx = publisher.index("unset SFO_ARTIFACT_LOCK_HELD SFO_ARTIFACT_LOCK_FD")
+    inherited_unlock_idx = publisher.index("flock -u 7")
+    inherited_close_idx = publisher.index("exec 7>&-")
     git_init_idx = publisher.index("git init")
     fetch_idx = publisher.index("git fetch")
-    assert snapshot_copy_idx < publisher_unlock_idx < close_idx < unset_idx < git_init_idx < fetch_idx
-    assert "exec 8>&-" in publisher
+    # The gate is invoked in a conditional now: a deferral must return to the
+    # caller as a clean exit 0, not abort the publisher under `set -e`.
+    delivery_gate_idx = publisher.index("if ! prepare_pages_branch; then")
+    reacquire_idx = publisher.index('exec 8>"$ARTIFACT_LOCK"')
+    snapshot_copy_idx = publisher.index('cp "$source_path"')
+    final_unlock_idx = publisher.rindex("flock -u 8")
+    push_idx = publisher.index("git push")
+    assert (
+        inherited_unlock_idx
+        < inherited_close_idx
+        < git_init_idx
+        < fetch_idx
+        < delivery_gate_idx
+        < reacquire_idx
+        < snapshot_copy_idx
+        < final_unlock_idx
+        < push_idx
+    )
 
 
 def test_strategy_cycle_rebuilds_manifest_but_never_competes_with_operational_publisher():
@@ -823,7 +847,7 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
 
     assert "sfo_kalshi_quant.publication validate" in watchdog
     assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
-    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=10" in example_env
+    assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20" in example_env
     assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
     assert (
         "SFO_PUBLICATION_MANIFEST_URL="
@@ -1280,6 +1304,10 @@ def test_full_strategy_analysis_refresh_is_explicit_and_never_recurring():
 def test_publication_wait_exits_on_signals_and_cleans_on_exit():
     waiter = _read(AWS_DIR / "wait_for_publication_manifest.sh")
 
+    assert (
+        'TIMEOUT_SECONDS="${SFO_PUBLICATION_PROPAGATION_TIMEOUT_SECONDS:-420}"'
+        in waiter
+    )
     assert "trap cleanup EXIT" in waiter
     assert "trap 'exit 129' HUP" in waiter
     assert "trap 'exit 130' INT" in waiter
