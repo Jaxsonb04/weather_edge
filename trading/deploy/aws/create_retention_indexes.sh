@@ -16,9 +16,10 @@ TRADING_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DB="${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}"
 
 cd "$TRADING_DIR"
-PY="${PYTHON:-.venv/bin/python}"
-if [[ ! -x "$PY" ]]; then
-  PY=python3
+# shellcheck source=trading/deploy/aws/lib/resolve_python.sh
+. "$SCRIPT_DIR/lib/resolve_python.sh"
+if ! PY="$(weatheredge_resolve_python "${PYTHON:-}" "$TRADING_DIR/.venv/bin/python")"; then
+  exit 1
 fi
 
 # Every unit that writes the paper book. An index build holds the write lock for

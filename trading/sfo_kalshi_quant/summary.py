@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ._util import _parse_timestamp, _row_value, _table_exists
+from .store.diagnostics import _row_side
 from .config import SFO_TZ, StrategyConfig
 from .exit_audit import audited_exit_reason
 from .forecast import ForecastDataError, SfoForecasterAdapter
@@ -670,9 +671,13 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
             if "policy_fingerprint" in columns
             else "NULL AS policy_fingerprint"
         )
+        side_expr = "side" if "side" in columns else "NULL AS side"
+        action_expr = "action" if "action" in columns else "NULL AS action"
         rows = conn.execute(
             f"""
-            SELECT created_at, approved, {signal_approved_expr},
+            SELECT created_at, target_date, market_ticker,
+                   {side_expr}, {action_expr},
+                   approved, {signal_approved_expr},
                    {entry_block_expr}, model_probability, market_probability,
                    reasons_json, COALESCE(risk_profile, 'unknown') AS risk_profile,
                    {account_id_expr}, {research_sleeve_expr},
@@ -689,6 +694,10 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
     category_counts: dict[str, int] = {"no_data": 0, "edge": 0, "other": 0}
     approved_total = 0
     gaps: list[float] = []
+    # One probability observation per (scan, market, profile): the scanner
+    # records a YES and a NO snapshot for the same binary market in the same
+    # batch (same created_at), and the NO row stores the complement.
+    seen_market_scans: set[tuple[str, str, str, str]] = set()
     by_profile: dict[str, dict[str, Any]] = {}
     for row in rows:
         profile = row_published_profile_key(row)
@@ -767,10 +776,28 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
         model_p = row["model_probability"]
         market_p = row["market_probability"]
         if model_p is not None and market_p is not None:
-            stats["model_p_sum"] += float(model_p)
-            stats["market_p_sum"] += float(market_p)
-            stats["p_count"] += 1
-            gaps.append(abs(float(model_p) - float(market_p)))
+            # A Kalshi binary market is scanned as BOTH a BUY_YES and a BUY_NO
+            # candidate (analyze --side both), and the NO snapshot stores the
+            # complement of the YES probability. Summing both halves raw pins
+            # avg_model_probability/avg_market_probability to exactly 0.5 and
+            # doubles model_vs_market.samples. Restate in the YES frame and
+            # count each (scan, market) once. mean_abs_gap is unaffected either
+            # way -- |p_m - p_k| == |(1-p_m) - (1-p_k)| -- so only the averages
+            # and the sample count move.
+            market_key = (
+                str(row["created_at"]),
+                str(row["target_date"]),
+                str(row["market_ticker"]),
+                profile,
+            )
+            if market_key not in seen_market_scans:
+                seen_market_scans.add(market_key)
+                yes_model_p = _yes_frame_probability(float(model_p), row)
+                yes_market_p = _yes_frame_probability(float(market_p), row)
+                stats["model_p_sum"] += yes_model_p
+                stats["market_p_sum"] += yes_market_p
+                stats["p_count"] += 1
+                gaps.append(abs(yes_model_p - yes_market_p))
 
     for stats in per_day.values():
         count = stats.pop("p_count")
@@ -812,6 +839,18 @@ def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:
             "max_abs_gap": round(max(gaps), 4) if gaps else None,
         },
     }
+
+
+def _yes_frame_probability(value: float, row: sqlite3.Row) -> float:
+    """Restate a stored side-frame probability in the YES frame.
+
+    ``record_decisions`` persists the TRADED-side probability, so a BUY_NO row
+    carries ``1 - p_yes`` (``risk._side_probability``). Mirrors
+    ``backtest_rescore._to_yes_frame``; kept local so ``summary`` does not take
+    a dependency on the rescorer.
+    """
+
+    return value if _row_side(row) == "YES" else max(0.0, min(1.0, 1.0 - value))
 
 
 def _empty_decision_stats() -> dict[str, Any]:

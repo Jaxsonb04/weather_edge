@@ -10,5 +10,5 @@ for raw_profile in "${profiles[@]}"; do
     continue
   fi
   echo "running paper analysis profile=$profile"
-  PYTHONPATH=trading python3 -m sfo_kalshi_quant.cli --no-color --risk-profile "$profile" analyze --target-date both --side both "$@"
+  PYTHONPATH=trading "$PYTHON_BIN" -m sfo_kalshi_quant.cli --no-color --risk-profile "$profile" analyze --target-date both --side both "$@"
 done

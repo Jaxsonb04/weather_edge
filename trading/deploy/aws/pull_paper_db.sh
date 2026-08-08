@@ -141,4 +141,4 @@ mv -f -- "$LOCAL_TMP" "$LOCAL_DB"
 LOCAL_TMP=""
 
 echo "Pulled verified snapshot $REMOTE_USER@$HOST_IP:$REMOTE_DB -> $LOCAL_DB"
-echo "Next: PYTHONPATH=trading python3 -m sfo_kalshi_quant.cli backtest-rescore --db-path \"$LOCAL_DB\""
+echo "Next: PYTHONPATH=trading .venv-dev/bin/python -m sfo_kalshi_quant.cli backtest-rescore --db-path \"$LOCAL_DB\""

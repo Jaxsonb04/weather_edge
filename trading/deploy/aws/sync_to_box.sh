@@ -39,6 +39,13 @@ FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
+
+# Audit F-07: this script deliberately needs NO local interpreter. It used to
+# stamp build provenance by importing two package constants, and discovering
+# Xcode's Python 3.9 at that point -- roughly 90 lines after production timers
+# were already quiesced -- stranded the box mid-deploy with every writer
+# stopped. Those constants are now read literally from source further down, so
+# there is nothing left to resolve and nothing left to fail on.
 DEPLOY_MAINTENANCE_MARKER="/run/weatheredge-deploy-maintenance"
 SSH_OPTS=(
   -i "$HOST_KEY"

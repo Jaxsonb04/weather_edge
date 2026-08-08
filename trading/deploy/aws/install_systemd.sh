@@ -58,7 +58,7 @@ sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
 mkdir -p "$TRADING_DIR/data" "$TRADING_DIR/logs" "$FORECASTER_DIR/logs"
 
 if [[ ! -d "$TRADING_DIR/.venv" ]]; then
-  python3 -m venv "$TRADING_DIR/.venv"
+  "$WEATHEREDGE_VENV_PYTHON" -m venv "$TRADING_DIR/.venv"
 fi
 APP_GROUP="${APP_GROUP:-$(id -gn "$APP_USER" 2>/dev/null || printf '%s' "$APP_USER")}"
 sudo chown -R "$APP_USER:$APP_GROUP" "$TRADING_DIR/.venv"

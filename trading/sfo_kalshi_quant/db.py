@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from functools import partial
+from time import monotonic as _monotonic, sleep as _sleep
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -575,6 +576,16 @@ def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
     return {field: row[field] for field in LOGICAL_IDENTITY_FIELDS}
 
 
+# Every process that touches paper_trading.db waits this long for SQLite's
+# write lock before giving up. Kept identical to
+# datasets.DATASET_SQLITE_BUSY_TIMEOUT_MILLISECONDS so no writer is the weak
+# link, and deliberately NOT raised above 30 s (audit F-02): the paper monitor
+# fires every 120 s and the scan every 300 s, so a tick that waits longer than
+# this has already lost its meaning and should yield to the next one. The fix
+# for contention is to shorten the lock HOLDER, not to lengthen the waiter.
+PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
+
+
 class PaperStore:
     def __init__(
         self,
@@ -599,7 +610,9 @@ class PaperStore:
         )
         try:
             conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute(
+                f"PRAGMA busy_timeout = {PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS}"
+            )
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
         except sqlite3.DatabaseError:
@@ -5961,7 +5974,10 @@ class PaperStore:
         *,
         full_days: int = 7,
         dedup_days: int = 45,
-        batch_limit: int = 25_000,
+        batch_limit: int = 5_000,
+        min_batch_limit: int = 500,
+        max_batch_seconds: float | None = 2.0,
+        batch_pause_seconds: float = 0.15,
     ) -> dict[str, int]:
         """Retention for the archive-backed snapshot journal.
 
@@ -6022,23 +6038,73 @@ class PaperStore:
             raise ValueError("need dedup_days > full_days >= 1")
         if batch_limit < 1:
             raise ValueError("batch_limit must be >= 1")
+        if min_batch_limit < 1:
+            raise ValueError("min_batch_limit must be >= 1")
+        if max_batch_seconds is not None and max_batch_seconds <= 0:
+            raise ValueError("max_batch_seconds must be positive when set")
+        if batch_pause_seconds < 0:
+            raise ValueError("batch_pause_seconds must be >= 0")
+        # A floor above the ceiling would make the shrink a no-op AND silently
+        # raise a caller's deliberately tiny batch_limit.
+        min_batch_limit = min(min_batch_limit, batch_limit)
+
+        # Shared across all seven delete statements below. Resetting the learned
+        # limit per statement would make every statement pay its own overrunning
+        # batch -- seven chances per night to blow a monitor tick instead of one.
+        adaptive_limit = [batch_limit]
 
         def _batched_delete(conn, sql: str, params: tuple) -> int:
-            """Run a bounded DELETE until it stops matching, committing each batch."""
+            """Run a bounded DELETE until it stops matching, committing each batch.
+
+            LOCK-HOLD BUDGET (audit F-02, 2026-08-07). Each batch holds SQLite's
+            write lock for its entire duration. The 2-minute paper monitor and
+            5-minute scan wait on that lock with a 30 s busy_timeout
+            (PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS). A batch that outlives a
+            waiter's remaining wait returns SQLITE_BUSY, which cli.main maps to
+            exit 75 and systemd turns into a FAILED oneshot -- the tick is LOST,
+            not deferred, because Type=oneshot cannot carry Restart=.
+
+            Row count is the wrong knob for that budget. The same 25,000 rows
+            take longer every night as the journal grows (13 GB and rising, on a
+            box whose page cache holds a fraction of it), which is exactly the
+            widening window the audit observed. So bound the batch by TIME:
+            measure each batch and halve the row limit whenever it overruns
+            `max_batch_seconds`, down to `min_batch_limit`.
+
+            Shrink-only, deliberately. The limit never rises above the caller's
+            `batch_limit`, so this can only ever reduce lock-hold, never increase
+            it, and callers that pass a small batch_limit (including the
+            batching-equivalence tests) keep their exact behaviour. Outcome is
+            unaffected either way: batch size is a performance knob and the
+            surviving row set is identical, which
+            test_prune_batching_is_equivalent_to_a_single_pass already pins.
+            """
 
             total = 0
             while True:
-                cursor = conn.execute(sql, (*params, batch_limit))
+                # Capture the limit THIS batch uses. `adaptive_limit` may change
+                # below, and comparing `removed` against a changed value would
+                # either stop early or spin forever.
+                limit = adaptive_limit[0]
+                started = _monotonic()
+                cursor = conn.execute(sql, (*params, limit))
                 # sqlite3 reports -1 when a statement's affected-row count is
                 # unavailable. -1 is truthy, so `rowcount or 0` would add a
-                # negative to the total and then exit on `-1 < batch_limit`,
+                # negative to the total and then exit on `-1 < limit`,
                 # reporting fewer than zero deletions. Treat it as no progress.
                 raw = cursor.rowcount
                 removed = raw if raw and raw > 0 else 0
                 total += removed
                 conn.commit()
-                if removed < batch_limit:
+                held_seconds = _monotonic() - started
+                if removed < limit:
                     return total
+                if max_batch_seconds is not None and held_seconds > max_batch_seconds:
+                    adaptive_limit[0] = max(min_batch_limit, limit // 2)
+                if batch_pause_seconds > 0:
+                    # commit() has already released the write lock; this gap is
+                    # what lets a waiting scan/monitor connection win it.
+                    _sleep(batch_pause_seconds)
 
         with self.connect() as conn:
             # Resolve the window ONCE. Re-evaluating datetime('now', ...) inside

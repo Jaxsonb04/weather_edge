@@ -15,6 +15,7 @@ export function BacktestStats({ s }: { s: StrategyLab }) {
     { label: "Deduped", value: fmt(c.deduped_signals) },
     { label: "Approved", value: fmt(c.approved_signals) },
     { label: "Settled", value: fmt(c.settled_signals) },
+    { label: "Scored markets", value: fmt(c.scored_observations) },
   ];
   const dedupeExplanation = (
     s.backtest_summary?.dedupe_explanation ??
@@ -28,7 +29,7 @@ export function BacktestStats({ s }: { s: StrategyLab }) {
           {dedupeExplanation}
         </p>
       </div>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
         {tiles.map((t) => (
           <Stat key={t.label} label={t.label} value={t.value} />
         ))}
@@ -53,7 +54,7 @@ export function BacktestStats({ s }: { s: StrategyLab }) {
               value={m.approved_roi == null ? "—" : pct(m.approved_roi, 1)}
               tone={(m.approved_roi ?? 0) > 0 ? "pos" : (m.approved_roi ?? 0) < 0 ? "neg" : "default"}
             />
-            <Stat label="Brier (all deduped)" value={m.brier_score == null ? "—" : m.brier_score.toFixed(3)} />
+            <Stat label="Brier (scored markets)" value={m.brier_score == null ? "—" : m.brier_score.toFixed(3)} />
           </div>
         </div>
       )}

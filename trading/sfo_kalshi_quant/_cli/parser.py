@@ -818,6 +818,28 @@ def register_paper_commands(sub) -> None:
     )
     prune.add_argument("--full-days", type=int, default=7)
     prune.add_argument("--dedup-days", type=int, default=45)
+    prune.add_argument(
+        "--batch-limit",
+        type=int,
+        default=5_000,
+        help="Upper bound on rows deleted per committed batch (shrinks on overrun)",
+    )
+    prune.add_argument(
+        "--max-batch-seconds",
+        type=float,
+        default=2.0,
+        help=(
+            "Halve --batch-limit whenever a batch holds SQLite's write lock "
+            "longer than this, so the 2-minute paper monitor stays well inside "
+            "its 30 s busy_timeout instead of exiting 75 and losing the tick"
+        ),
+    )
+    prune.add_argument(
+        "--batch-pause-seconds",
+        type=float,
+        default=0.15,
+        help="Idle gap between batches so a waiting scan/monitor writer can take the lock",
+    )
     prune.set_defaults(func=cmd_paper_prune)
 
     fk_check = sub.add_parser(

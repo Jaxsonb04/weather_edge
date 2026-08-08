@@ -6,6 +6,7 @@ set -euo pipefail
 # finishes; WAL keeps the DB consistent but does not stop two scans doing
 # duplicate logical work or both placing paper entries. flock is a no-op where
 # unavailable (local macOS dev).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-$(dirname "$TRADING_DIR")}}"
 SCAN_LOCK="${SFO_PAPER_SCAN_LOCK:-$BASE_DIR/.locks/paper-scan.lock}"
@@ -135,5 +136,10 @@ for profile in "${canonical_profiles[@]}"; do
   profile_index=$((profile_index + 1))
 
   echo "running portfolio paper scan profile=$profile db=$DB_PATH"
-  "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}"
+  # Retry inside the flock, so a retried attempt still cannot interleave with a
+  # second scan process. Invoked via `bash <path>` rather than executing the
+  # script directly, matching the units' `/usr/bin/env bash` style so the
+  # deploy does not have to carry an exec bit for a new file.
+  bash "$SCRIPT_DIR/retry_on_sqlite_lock.sh" \
+    "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}"
 done

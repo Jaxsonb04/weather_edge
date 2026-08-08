@@ -24,7 +24,15 @@ def forecast_unit_dates(index: pd.DatetimeIndex, target: str) -> pd.Series:
         local_dates = pd.Series(local.date, index=index)
         return (pd.to_datetime(local_dates) + pd.Timedelta(days=1)).dt.date
     if target == "target_temp_next_24h":
-        return pd.Series(local + pd.Timedelta(hours=24), index=index)
+        # The 24h-ahead spot target is still ~24 autocorrelated hourly rows per
+        # settlement day. Returning the hour itself as the atomic unit let
+        # chronological_unit_split_masks cut a split boundary mid-day (adjacent
+        # near-identical rows landing on both sides of train/val/test) and let
+        # ab_test.run_ab_test run its paired t-test, bootstrap CI and Wilcoxon
+        # over hourly rows while printing them as "experiment units (days)" --
+        # roughly sqrt(24) too-tight error bars. Collapse to the forecast's
+        # target local day, exactly as the daily-high branch above does.
+        return pd.Series((local + pd.Timedelta(hours=24)).date, index=index)
     return pd.Series(local, index=index)
 
 

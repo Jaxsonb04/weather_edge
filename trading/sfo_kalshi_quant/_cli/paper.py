@@ -344,8 +344,16 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
 def cmd_paper_prune(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
+    # These batching knobs carry argparse defaults, so the CLI path is
+    # unchanged. This entry point is also called programmatically with a
+    # hand-built Namespace, so fall back to the same defaults the store
+    # declares rather than requiring every caller to know them.
     result = store.prune_decision_snapshots(
-        full_days=args.full_days, dedup_days=args.dedup_days
+        full_days=args.full_days,
+        dedup_days=args.dedup_days,
+        batch_limit=getattr(args, "batch_limit", 5_000),
+        max_batch_seconds=getattr(args, "max_batch_seconds", 2.0),
+        batch_pause_seconds=getattr(args, "batch_pause_seconds", 0.15),
     )
     print(
         color.cyan(

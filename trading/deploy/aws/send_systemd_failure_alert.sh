@@ -16,7 +16,17 @@ export FAILED_UNIT ALERT_UNIT ALERT_URL HOST_NAME TIMESTAMP
 
 # Feed both the webhook URL and JSON body over stdin so endpoint credentials do
 # not appear in process arguments or journal output.
-if ! python3 - <<'PY' | curl --fail --silent --show-error --max-time 15 \
+# Audit F-07: prefer the pinned runtime, but NEVER let interpreter policy
+# silence an alert -- fall back to bare python3 (the payload builder uses only
+# json and os, which every Python 3.x provides).
+# shellcheck source=trading/deploy/aws/lib/resolve_python.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/resolve_python.sh"
+ALERT_PYTHON="$(
+  weatheredge_resolve_python \
+    "${SFO_TRADING_ROOT:-/opt/weatheredge/trading}/.venv/bin/python" 2>/dev/null
+)" || ALERT_PYTHON=python3
+
+if ! "$ALERT_PYTHON" - <<'PY' | curl --fail --silent --show-error --max-time 15 \
     --request POST --header "Content-Type: application/json" --config - >/dev/null
 import json
 import os

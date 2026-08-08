@@ -15,6 +15,9 @@ export interface ClimatologyDay {
 export interface ForecastData {
   lstm_sigma: number;
   lstm_bias: number;
+  /** Independent held-out forecast days behind lstm_sigma (not hourly rows). */
+  lstm_sigma_days?: number;
+  lstm_sigma_se?: number;
   n_years: number;
   years: number[];
   n_days_observed?: number;

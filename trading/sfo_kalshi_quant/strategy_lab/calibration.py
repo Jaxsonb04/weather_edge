@@ -333,6 +333,8 @@ def _signal_backtest_payload(
             "deduped_signals": 0,
             "excluded_post_resolution_signals": 0,
             "settled_signals": 0,
+            "scored_observations": 0,
+            "collapsed_complement_signals": 0,
             "approved_signals": 0,
             "approved_raw_signals": 0,
             "approved_pre_resolution_signals": 0,
@@ -367,6 +369,11 @@ def _signal_backtest_payload(
         "deduped_signals": int(summary["signals"]),
         "excluded_post_resolution_signals": int(summary["excluded_post_resolution_signals"]),
         "settled_signals": int(summary["settled_signals"]),
+        # Unique markets behind the skill metrics: a Kalshi binary is scanned as
+        # both a YES and a NO candidate, and those two snapshots are one
+        # observation. settled_signals stays the raw snapshot count.
+        "scored_observations": int(summary.get("scored_observations", summary["settled_signals"])),
+        "collapsed_complement_signals": int(summary.get("collapsed_complement_signals", 0)),
         "approved_signals": int(summary["approved_signals"]),
         "approved_raw_signals": int(summary.get("approved_raw_signals", summary["approved_signals"])),
         "approved_pre_resolution_signals": int(
@@ -383,7 +390,15 @@ def _signal_backtest_payload(
         "dedupe_explanation": (
             "Repeated scheduled AWS scans are counted once per target, market, "
             "and side, using the first approved (entry) snapshot so approved "
-            "metrics reflect trades actually taken, not the decayed last scan."
+            "metrics reflect trades actually taken, not the decayed last scan. "
+            "Scanning runs both sides of each binary market, so the YES and NO "
+            "snapshots of one market are then collapsed to a single scored "
+            "observation (the model's favoured side) before Brier, log loss, "
+            "hit rate and average probability are computed. Approved P&L still "
+            "counts every approved snapshot. Figures published before "
+            "2026-08-07 scored both halves, which held hit rate and average "
+            "probability near 0.50 and doubled the reported sample size; "
+            "Brier and log loss are unchanged by the collapse."
         ),
         "counts": counts,
         "metrics": {
