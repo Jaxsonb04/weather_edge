@@ -33,8 +33,14 @@ ARTIFACT_LOCK_WAIT_SECONDS="${SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-60}"
 # defer.
 PAGES_LOCK_WAIT_SECONDS="${SFO_PAGES_LOCK_WAIT_SECONDS:-60}"
 PROPAGATION_WAITER="${SFO_PAGES_PROPAGATION_WAITER:-$TRADING_DIR/deploy/aws/wait_for_publication_manifest.sh}"
-PENDING_PROPAGATION_TIMEOUT_SECONDS="${SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS:-420}"
-MAX_GATE_DEFERRALS="${SFO_PAGES_MAX_GATE_DEFERRALS:-3}"
+# Workflow-based Pages deploys (pages-deploy-workflow.yml) complete in ~40-60s
+# and cancel superseded runs, so a prior snapshot that is not public after 150s
+# is broken, not in flight. One deferral, then force-publish: this keeps the
+# worst wedge to about one cycle instead of the ~25-minute outage the
+# 420s/3-deferral gate produced under the legacy Jekyll builder's intermittent
+# "Page build failed." errors.
+PENDING_PROPAGATION_TIMEOUT_SECONDS="${SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS:-150}"
+MAX_GATE_DEFERRALS="${SFO_PAGES_MAX_GATE_DEFERRALS:-2}"
 PUBLISH_DEADLINE_SECONDS="${SFO_PAGES_PUBLISH_DEADLINE_SECONDS:-780}"
 GATE_STATE_DIR="${SFO_PAGES_GATE_STATE_DIR:-$BASE_DIR/.locks}"
 GATE_DEFERRAL_FILE="$GATE_STATE_DIR/pages-gate-deferrals"
@@ -74,6 +80,13 @@ elif [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 if [[ ! -f "$PROPAGATION_WAITER" ]]; then
   echo "missing Pages propagation waiter: $PROPAGATION_WAITER" >&2
+  exit 1
+fi
+# Anchored to this script's own directory (not $SFO_TRADING_ROOT) so sandboxed
+# callers that stub the trading root still find the real template.
+PAGES_WORKFLOW_TEMPLATE="${SFO_PAGES_WORKFLOW_TEMPLATE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pages-deploy-workflow.yml}"
+if [[ ! -f "$PAGES_WORKFLOW_TEMPLATE" ]]; then
+  echo "missing Pages deploy workflow template: $PAGES_WORKFLOW_TEMPLATE" >&2
   exit 1
 fi
 if [[ ! "$PENDING_PROPAGATION_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
@@ -299,6 +312,11 @@ while true; do
     cp "$snapshot_dir/$artifact" "./$artifact"
   done
   touch .nojekyll
+  # 3) the Pages deploy workflow. The branch is wiped and regenerated on every
+  # push, so the workflow must be re-emitted each cycle or GitHub loses it and
+  # deploys stop entirely under build_type=workflow.
+  mkdir -p .github/workflows
+  cp "$PAGES_WORKFLOW_TEMPLATE" .github/workflows/pages-deploy.yml
 
   git add -A
 

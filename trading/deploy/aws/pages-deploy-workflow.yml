@@ -1,0 +1,44 @@
+# Deploys the gh-pages branch content via the Pages workflow pipeline instead
+# of the legacy Jekyll builder. The legacy builder intermittently failed with
+# an opaque "Page build failed." (~3/day at a 5-minute publish cadence), and a
+# failed legacy build cannot be cancelled or superseded — it wedged the site
+# until the publisher force-pushed past its delivery gate ~25 minutes later.
+#
+# This file is emitted into every published tree by
+# trading/deploy/aws/publish_forecaster_pages.sh (the branch is regenerated on
+# each push, so the workflow must ride along or GitHub loses it). The source of
+# truth is trading/deploy/aws/pages-deploy-workflow.yml in the WeatherEdge repo.
+#
+# concurrency.cancel-in-progress makes rapid successive publishes safe: a
+# superseded deploy is cancelled instead of queueing, so the newest snapshot
+# always wins and the publisher's delivery gate never waits on a doomed build.
+name: Deploy GitHub Pages
+on:
+  push:
+    branches: [gh-pages]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout published tree
+        uses: actions/checkout@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
