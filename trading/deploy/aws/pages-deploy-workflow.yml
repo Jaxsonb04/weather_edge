@@ -29,6 +29,9 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # A deploy that has not finished in 5 minutes is hung (healthy runs take
+    # ~40-60s). Time it out so it cannot occupy the concurrency group.
+    timeout-minutes: 5
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
