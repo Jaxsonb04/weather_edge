@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-08-09T10:00:54+00:00",
+  "generated_at": "2026-08-09T10:06:05+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-08-09T10:00:58+00:00",
+  "market_data_at": "2026-08-09T10:06:09+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -526,7 +526,7 @@
           "side": "NO",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26AUG09-B76.5",
-          "trade_quality_score": 41.0
+          "trade_quality_score": 41.6
         },
         {
           "action": "BUY_NO",
@@ -555,7 +555,40 @@
           "side": "NO",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26AUG09-B80.5",
-          "trade_quality_score": 40.5
+          "trade_quality_score": 37.1
+        },
+        {
+          "action": "BUY_YES",
+          "approved": false,
+          "ask": 0.15,
+          "bid": 0.14,
+          "decision": "NO_TRADE",
+          "edge": -0.0861,
+          "edge_lcb": -0.159,
+          "ensemble_probability": 0.0,
+          "expected_profit": -0.0,
+          "intraday_probability": 0.0847,
+          "label": "76\u00b0 to 77\u00b0",
+          "market_probability": 0.1408,
+          "model_probability": 0.05,
+          "probability": 0.0729,
+          "probability_lcb": 0.0,
+          "reasons": [
+            "forecast source spread 23.3F exceeds max 10.0F; point blend is unreliable",
+            "YES price 0.15 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "edge -0.086 below min 0.012",
+            "lower-bound edge -0.159 below min 0.000",
+            "1c/2c tail requires exceptional support (YES): bid size 3.27<10.00, p_lcb 0.000<0.090, edge_lcb -0.159<0.030, model/market gap 0.091>0.080, ensemble p 0.000<0.080",
+            "YES lower-bound edge -0.159 is not positive"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": 0.1224,
+          "residual_probability": 0.0659,
+          "side": "YES",
+          "spread": 0.01,
+          "ticker": "KXHIGHTSFO-26AUG09-B76.5",
+          "trade_quality_score": 34.8
         },
         {
           "action": "BUY_NO",
@@ -587,40 +620,7 @@
           "side": "NO",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26AUG09-T76",
-          "trade_quality_score": 39.6
-        },
-        {
-          "action": "BUY_YES",
-          "approved": false,
-          "ask": 0.15,
-          "bid": 0.14,
-          "decision": "NO_TRADE",
-          "edge": -0.0861,
-          "edge_lcb": -0.159,
-          "ensemble_probability": 0.0,
-          "expected_profit": -0.0,
-          "intraday_probability": 0.0847,
-          "label": "76\u00b0 to 77\u00b0",
-          "market_probability": 0.1408,
-          "model_probability": 0.05,
-          "probability": 0.0729,
-          "probability_lcb": 0.0,
-          "reasons": [
-            "forecast source spread 23.3F exceeds max 10.0F; point blend is unreliable",
-            "YES price 0.15 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.086 below min 0.012",
-            "lower-bound edge -0.159 below min 0.000",
-            "1c/2c tail requires exceptional support (YES): bid size 2.00<10.00, p_lcb 0.000<0.090, edge_lcb -0.159<0.030, model/market gap 0.091>0.080, ensemble p 0.000<0.080",
-            "YES lower-bound edge -0.159 is not positive"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": 0.1224,
-          "residual_probability": 0.0659,
-          "side": "YES",
-          "spread": 0.01,
-          "ticker": "KXHIGHTSFO-26AUG09-B76.5",
-          "trade_quality_score": 34.5
+          "trade_quality_score": 26.2
         }
       ],
       "ensemble": {
@@ -682,7 +682,7 @@
           },
           {
             "center_f": 78.5,
-            "implied_probability": 0.1143,
+            "implied_probability": 0.1048,
             "label": "78\u00b0 to 79\u00b0",
             "model_probability": 0.0281,
             "ticker": "KXHIGHTSFO-26AUG09-B78.5"
@@ -703,28 +703,28 @@
           },
           {
             "center_f": 84.5,
-            "implied_probability": 0.0286,
+            "implied_probability": 0.0381,
             "label": "84\u00b0 or above",
             "model_probability": 0.0191,
             "ticker": "KXHIGHTSFO-26AUG09-T83"
           }
         ],
-        "implied_high_f": 76.44,
-        "implied_stdev_f": 2.7666,
+        "implied_high_f": 76.5,
+        "implied_stdev_f": 2.8685,
         "liquid_bin_count": 6,
         "median_f": 75.25,
         "modal_bin_label": "75\u00b0 or below",
         "modal_bin_ticker": "KXHIGHTSFO-26AUG09-T76",
         "modal_probability": 0.5714,
         "model_high_f": 71.72,
-        "model_minus_market_f": -4.72,
+        "model_minus_market_f": -4.78,
         "overround": 0.05,
         "p10_f": 73.85,
         "p25_f": 74.375,
-        "p75_f": 77.9583,
-        "p90_f": 80.9444
+        "p75_f": 78.0,
+        "p90_f": 81.1667
       },
-      "market_data_at": "2026-08-09T10:00:56+00:00",
+      "market_data_at": "2026-08-09T10:06:07+00:00",
       "target_date": "2026-08-09",
       "target_status": "settlement_day",
       "warnings": []
@@ -1177,7 +1177,7 @@
       "market_consensus": {
         "available": false
       },
-      "market_data_at": "2026-08-09T10:00:58+00:00",
+      "market_data_at": "2026-08-09T10:06:09+00:00",
       "target_date": "2026-08-10",
       "target_status": "upcoming",
       "warnings": []
