@@ -212,6 +212,75 @@ def test_no_side_stop_fires_when_model_read_present_and_below_floor():
     assert signal.action == "STOP_LOSS"
 
 
+# --- veto dollar floor: bound the tail in account dollars, not just ROI ---
+
+def test_veto_holds_below_the_dollar_floor():
+    """Order 2098 (2026-08-05): -$25.96 at first veto, worst dip -$33.29, held
+    to +$35.69. The $35 dollar floor must NOT cut this recovery."""
+    signal = decide_exit(
+        side="NO",
+        entry_cost=0.61,
+        net_exit=0.28,  # roi ~ -0.54: past the stop floor, inside the 60% ROI floor
+        stop_loss_net=0.61 * 0.65,
+        model_side_probability=0.83,
+        model_veto_max_loss_roi=0.60,
+        model_veto_max_loss_dollars=35.0,
+        position_loss_dollars=-33.29,
+    )
+    assert signal.action == "HOLD_MODEL_VETO"
+
+
+def test_veto_lapses_past_the_dollar_floor_inside_the_roi_floor():
+    """Order 2147 (2026-08-07): the ROI floor tolerated a -$40.65 grind because
+    it scales with position cost. At -$36 the dollar floor must fire the stop
+    even though ROI (-53%) is still inside the 60% ROI floor and the model
+    still favors the side."""
+    signal = decide_exit(
+        side="NO",
+        entry_cost=0.75,
+        net_exit=0.35,  # roi ~ -0.53: inside the 60% ROI floor
+        stop_loss_net=0.75 * 0.65,
+        model_side_probability=0.79,
+        model_veto_max_loss_roi=0.60,
+        model_veto_max_loss_dollars=35.0,
+        position_loss_dollars=-36.0,
+    )
+    assert signal.action == "STOP_LOSS"
+    assert signal.catastrophic
+    assert "veto dollar floor" in signal.reason
+
+
+def test_dollar_floor_cuts_even_with_no_model_read():
+    """The no-read fail-safe holds price noise, never an unbounded dollar tail."""
+    signal = decide_exit(
+        side="NO",
+        entry_cost=0.75,
+        net_exit=0.35,
+        stop_loss_net=0.75 * 0.65,
+        model_side_probability=None,
+        model_veto_max_loss_roi=0.60,
+        model_veto_max_loss_dollars=35.0,
+        position_loss_dollars=-36.0,
+    )
+    assert signal.action == "STOP_LOSS"
+    assert signal.catastrophic
+
+
+def test_dollar_floor_ignored_when_position_loss_unknown():
+    """Without a computed dollar loss the veto semantics are unchanged."""
+    signal = decide_exit(
+        side="NO",
+        entry_cost=0.75,
+        net_exit=0.35,
+        stop_loss_net=0.75 * 0.65,
+        model_side_probability=0.79,
+        model_veto_max_loss_roi=0.60,
+        model_veto_max_loss_dollars=35.0,
+        position_loss_dollars=None,
+    )
+    assert signal.action == "HOLD_MODEL_VETO"
+
+
 # --- helpers ---
 
 def test_net_exit_per_contract_guards_invalid_bids():

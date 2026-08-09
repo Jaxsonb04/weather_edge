@@ -1080,6 +1080,135 @@ def test_paper_monitor_no_stop_loss_can_model_veto_before_hard_floor():
         assert "HOLD order" in out.getvalue()
 
 
+def test_paper_monitor_research_target_dollar_floor_overrides_model_veto():
+    """Order 2147 (2026-08-07) reproduced: a research-target NO position the
+    model still supports grinds past the sleeve's veto dollar floor (70% of the
+    $50 daily target). The stop must fire and close as catastrophic even though
+    ROI (~-46%) is inside the 60% ROI floor and the model read vetoes on price."""
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order("2026-06-12", _stopped_no_decision())
+        from sfo_kalshi_quant.research_policy import TARGET_POLICY
+
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET account_id=?, contracts=100, "
+                "research_sleeve=?, research_policy_version=?, policy_fingerprint=? "
+                "WHERE id=?",
+                (
+                    TARGET_POLICY.account_id,
+                    TARGET_POLICY.sleeve.value,
+                    TARGET_POLICY.policy_version,
+                    TARGET_POLICY.policy_fingerprint,
+                    order_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+                ("paper-research-roi-v6", order_id),
+            )
+        store.record_probabilities(
+            "2026-06-12",
+            [_probability("KXHIGHTSFO-TEST-B82.5", 0.10)],
+        )
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoStopClient), redirect_stdout(out):
+            code = main(
+                [
+                    "--db-path",
+                    str(db_path),
+                    "--no-color",
+                    "paper-monitor",
+                    "--model-veto-max-loss-pct",
+                    "60",
+                ]
+            )
+
+        assert code == 0
+        # The depth-aware exit sells the displayed size and keeps the remainder
+        # open, so assert on the decision itself: the stop CLOSED (not held)
+        # for the dollar-floor reason, with no veto anywhere in the run.
+        with store.connect() as conn:
+            action, reason = conn.execute(
+                """
+                SELECT action, reason
+                FROM paper_monitor_snapshots
+                WHERE order_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+        assert action == "CLOSE_STOP_LOSS"
+        assert "veto dollar floor" in reason
+        assert "catastrophic" in reason
+        assert "HOLD_MODEL_VETO" not in out.getvalue()
+        assert "closed 1" in out.getvalue()
+
+
+def test_paper_monitor_research_target_small_position_still_vetoes():
+    """The dollar floor must not change small-position veto semantics: the same
+    stopped NO at 3 contracts loses about $1, far inside the floor, and holds."""
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order("2026-06-12", _stopped_no_decision())
+        from sfo_kalshi_quant.research_policy import TARGET_POLICY
+
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET account_id=?, "
+                "research_sleeve=?, research_policy_version=?, policy_fingerprint=? "
+                "WHERE id=?",
+                (
+                    TARGET_POLICY.account_id,
+                    TARGET_POLICY.sleeve.value,
+                    TARGET_POLICY.policy_version,
+                    TARGET_POLICY.policy_fingerprint,
+                    order_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+                ("paper-research-roi-v6", order_id),
+            )
+        store.record_probabilities(
+            "2026-06-12",
+            [_probability("KXHIGHTSFO-TEST-B82.5", 0.10)],
+        )
+
+        out = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoStopClient), redirect_stdout(out):
+            code = main(
+                [
+                    "--db-path",
+                    str(db_path),
+                    "--no-color",
+                    "paper-monitor",
+                    "--model-veto-max-loss-pct",
+                    "60",
+                ]
+            )
+
+        assert code == 0
+        row = store.paper_orders(1)[0]
+        assert row["status"] == "PAPER_FILLED"
+        with store.connect() as conn:
+            action = conn.execute(
+                """
+                SELECT action
+                FROM paper_monitor_snapshots
+                WHERE order_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()[0]
+        assert action == "HOLD_MODEL_VETO"
+
+
 def test_same_day_no_basket_noncatastrophic_stop_is_held_without_crystallizing():
     """A losing-but-not-catastrophic research NO leg the model still supports is
     HELD, not crystallized. With catastrophic priority enforced (audit RK-01)
