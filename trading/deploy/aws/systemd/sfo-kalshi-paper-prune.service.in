@@ -17,8 +17,19 @@ Nice=10
 # Contain a runaway process to this unit instead of letting the kernel
 # OOM-killer pick an arbitrary victim (4 GB box: containment, not
 # thrash-protection).
-MemoryHigh=1200M
-MemoryMax=1600M
+#
+# MemoryHigh sizing (2026-08-09): cgroup memory accounting INCLUDES the page
+# cache of every DB page this job reads. Walking the retention windows of a
+# 14+ GB journal needs well over the old 1200M ceiling, and once the cgroup
+# crosses MemoryHigh the kernel reclaims the job's own cache continuously --
+# observed as 3m49s of CPU across 21 minutes of wall clock ("available: 488K",
+# swapping) followed by the TimeoutStartSec kill two nights running. Page
+# cache is reclaimable, so a higher MemoryHigh does not starve the box; the
+# anonymous-memory disaster case is still fenced by MemoryMax.
+MemoryHigh=2600M
+MemoryMax=3000M
 # The archive-then-prune chain legitimately runs long on backlog days; raise
 # the start timeout above the 90 s oneshot default so it is not killed mid-run.
-TimeoutStartSec=1800
+# 3600 covers a cold-cache catch-up night on the current journal; the batched
+# prune commits per batch, so even a kill leaves durable progress.
+TimeoutStartSec=3600
