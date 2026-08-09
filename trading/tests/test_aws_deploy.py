@@ -697,9 +697,10 @@ def test_paper_prune_unit_is_installed_and_archive_gated():
     assert installer.count("sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer") == 2
     assert "run_archive_then_prune.sh" in service
     assert "EnvironmentFile=__ENV_FILE__" in service
-    # The archive-then-prune chain runs long; it must outlive the 90 s default.
-    assert "TimeoutStartSec=1800" in service
-    assert "OnCalendar=*-*-* 09:20:00 UTC" in timer
+    # The archive-then-prune chain runs long; it must outlive the 90 s default,
+    # with room for a cold-cache catch-up night on the 14+ GB journal.
+    assert "TimeoutStartSec=3600" in service
+    assert "OnCalendar=*-*-* 08:20:00 UTC" in timer
     assert "Persistent=false" in timer
     assert "Persistent=true" not in timer
     assert "Unit=sfo-kalshi-paper-prune.service" in timer

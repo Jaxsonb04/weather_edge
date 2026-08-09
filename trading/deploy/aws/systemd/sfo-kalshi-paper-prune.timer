@@ -5,7 +5,10 @@ Description=Run SFO decision-journal retention daily
 # Decorrelate firing so the sfo units don't all spike together
 RandomizedDelaySec=300
 AccuracySec=1
-OnCalendar=*-*-* 09:20:00 UTC
+# 08:20 (moved from 09:20 when TimeoutStartSec grew to 3600): the dataset
+# backfill at 10:01 UTC requires 300 s of headroom after this unit's latest
+# possible finish (start + RandomizedDelaySec + TimeoutStartSec).
+OnCalendar=*-*-* 08:20:00 UTC
 # A missed retention run is safe to defer one day. Replaying it on timer
 # restoration can overlap other persistent database writers.
 Persistent=false
