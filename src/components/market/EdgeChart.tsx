@@ -11,14 +11,14 @@ export function EdgeChart({ target }: { target: Target }) {
   if (!series.length || !mc) return null;
   return (
     <Widget className="w-full">
-      <Widget.Header>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
         <div>
           <Widget.Title>Model vs market — bin probabilities</Widget.Title>
           <Widget.Description>
             model high {f1(mc.model_high_f)} · market implies {f1(mc.implied_high_f)} · modal bin {mc.modal_bin_label}
           </Widget.Description>
         </div>
-        <Widget.Legend>
+        <Widget.Legend className="shrink-0 flex-wrap">
           <Widget.LegendItem color="var(--accent)">model</Widget.LegendItem>
           <Widget.LegendItem color="var(--series-market)">market</Widget.LegendItem>
         </Widget.Legend>
@@ -31,11 +31,15 @@ export function EdgeChart({ target }: { target: Target }) {
           <BarChart.Bar dataKey="model" name="Model" fill="var(--accent)" radius={[4, 4, 0, 0]} barSize={14} />
           <BarChart.Bar dataKey="market" name="Market" fill="var(--series-market)" radius={[4, 4, 0, 0]} barSize={14} />
           <BarChart.Tooltip
-            content={({ active, label, payload }) => {
+            content={({ active, payload }) => {
               if (!active || !payload?.length) return null;
+              // The market's own bracket title. Two of these brackets are
+              // open-ended ("75° or below"), so appending a "°F bin" suffix to an
+              // abbreviated tick produced "75 or below°F bin".
+              const row = payload[0]?.payload as { rawLabel: string };
               return (
                 <ChartTooltip>
-                  <ChartTooltip.Header>{label}°F bin</ChartTooltip.Header>
+                  <ChartTooltip.Header>{row.rawLabel}</ChartTooltip.Header>
                   <ChartTooltip.Item>
                     <ChartTooltip.Indicator color="var(--accent)" />
                     <ChartTooltip.Label>Model</ChartTooltip.Label>

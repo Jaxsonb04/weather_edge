@@ -1,7 +1,9 @@
 /* Overview components loaded with the default route. */
 @reference "../index.css";
+/* Imports are layered: an unlayered Pro sheet outranks every @layer, so
+   Tailwind utilities written on a Pro slot would silently do nothing. */
 @import "@heroui/styles/components/list-box-item.css" layer(components);
 @import "@heroui/styles/components/progress-bar.css" layer(components);
-@import "@heroui-pro/react/css/components/kpi.css";
-@import "@heroui-pro/react/css/components/kpi-group.css";
-@import "@heroui-pro/react/css/components/trend-chip.css";
+@import "@heroui-pro/react/css/components/kpi.css" layer(components);
+@import "@heroui-pro/react/css/components/kpi-group.css" layer(components);
+@import "@heroui-pro/react/css/components/trend-chip.css" layer(components);

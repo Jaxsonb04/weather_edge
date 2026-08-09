@@ -18,6 +18,15 @@ FEATURES_PATH = "weather_features.csv"
 PLOTS_DIR     = Path("plots")
 PLOTS_DIR.mkdir(exist_ok=True)
 
+# The NWS climate report -- and therefore the Kalshi settlement day -- buckets
+# observations by the station's fixed standard time, never civil time. Same
+# convention as research/forecast_tomorrow.py and forecaster/settlement_calendar.py.
+SETTLEMENT_TZ = "Etc/GMT+8"
+# A settlement day missing a chunk of its afternoon can have a maximum that is
+# not that day's high, so sparse days do not enter the published distribution.
+# Same floor research/forecast_tomorrow.py uses for the climatology table.
+MIN_HOURS_FOR_DAILY_HIGH = 18
+
 
 def get_features(use_cache=True):
     """Load engineered features, building them if the cache is missing."""
@@ -195,15 +204,42 @@ def plot_temp_distribution(df):
     print("saved: plots/6_distribution.png")
 
 
+def daily_high_series(df):
+    """One observed daily high per settlement day, sparse days excluded.
+
+    ``temp_f`` is the raw hourly observation series, so a histogram of it is a
+    distribution of temperatures (~24 readings per day, centered on the daily
+    mean) -- not a distribution of daily highs. The dashboard captions this
+    series as recorded KSFO daily highs, so it has to be aggregated to one
+    maximum per fixed-UTC-8 settlement day before it is binned.
+    """
+    hourly = df["temp_f"].dropna()
+    settlement_day = hourly.index.tz_convert(SETTLEMENT_TZ).date
+    by_day = hourly.groupby(settlement_day).agg(["max", "count"])
+    return by_day.loc[by_day["count"] >= MIN_HOURS_FOR_DAILY_HIGH, "max"]
+
+
 def write_dashboard_weather_data(df):
-    temp = df["temp_f"].dropna()
-    counts, edges = np.histogram(temp, bins=np.arange(35, 106, 2.5))
+    daily_high = daily_high_series(df)
+    counts, edges = np.histogram(daily_high, bins=np.arange(35, 106, 2.5))
     centers = (edges[:-1] + edges[1:]) / 2
+    binned = int(counts.sum())
+    if binned != int(daily_high.size):
+        print(f"  WARNING: {int(daily_high.size) - binned} daily high(s) fell "
+              f"outside the {edges[0]:.0f}-{edges[-1]:.0f}F histogram range "
+              "and are not published; widen the bins.")
 
     monthly = df.groupby("month")["temp_f"].agg(["mean", "min", "max"]).round(2)
 
     payload = {
         "temperature_histogram": {
+            # Explicit basis marker: consumers caption this series as daily
+            # highs, and an artifact that predates this field is the old hourly
+            # distribution. Absent marker => hourly; never assume daily_max.
+            "basis": "daily_max",
+            "settlement_day_tz": SETTLEMENT_TZ,
+            "min_hours_per_day": MIN_HOURS_FOR_DAILY_HIGH,
+            "n_days": binned,
             "labels": [round(float(v), 1) for v in centers],
             "counts": [int(v) for v in counts],
         },
@@ -218,7 +254,8 @@ def write_dashboard_weather_data(df):
         ],
     }
     Path("weather_story_data.json").write_text(json.dumps(payload, indent=2))
-    print("wrote weather_story_data.json")
+    print(f"wrote weather_story_data.json ({binned:,} daily highs, "
+          f"mean {float(daily_high.mean()):.1f}F)")
 
 
 def print_summary(df):

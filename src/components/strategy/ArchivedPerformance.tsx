@@ -296,7 +296,7 @@ function ArchiveEvidenceCard({
               <Icon icon={story.icon} className="size-5" aria-hidden="true" />
             </span>
             <div className="min-w-0">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent-text)]">
                 {story.stage}
               </p>
               <Card.Title className="mt-1 break-words text-balance text-lg leading-tight">
@@ -494,6 +494,8 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
             const story = ARCHIVE_STORIES[profile.risk_profile];
             if (!story) return null;
             const summary = profile.paper_trading?.summary;
+            // Only the selected era's panel is mounted, so an unselected tab must
+            // not advertise aria-controls for an element that does not exist.
             const selectedTab = profile.risk_profile === effectiveKey;
             return (
               <button
@@ -503,7 +505,7 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
                 type="button"
                 role="tab"
                 aria-selected={selectedTab}
-                aria-controls={`archive-panel-${profile.risk_profile}`}
+                aria-controls={selectedTab ? `archive-panel-${profile.risk_profile}` : undefined}
                 tabIndex={selectedTab ? 0 : -1}
                 data-archive-option={profile.risk_profile}
                 onClick={() => setSelectedKey(profile.risk_profile)}
@@ -514,7 +516,7 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
                     : "border-border/60 bg-surface/65 text-muted hover:border-border hover:bg-surface-secondary"
                 }`}
               >
-                <span className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-semibold text-accent">
+                <span className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-semibold text-[color:var(--accent-text)]">
                   <span>{String(index + 1).padStart(2, "0")} · {story.stage}</span>
                   <Icon
                     icon={story.icon}

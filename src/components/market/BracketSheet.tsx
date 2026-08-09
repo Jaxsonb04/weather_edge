@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@heroui/react/button";
 import { Chip } from "@heroui/react/chip";
 import { Separator } from "@heroui/react/separator";
@@ -16,7 +16,21 @@ interface BracketSheetProps {
 
 /** Right-side detail drawer for one bracket — rendered into a portal by Sheet. */
 export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetProps) {
-  const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
+  // The sheet is mounted once and reused for every bracket, so a copy result is
+  // recorded against the ticker it belongs to and derived back out. Reading it
+  // from state alone would let a failed copy latch red for the session and then
+  // announce, through a live region, that a ticker the user never touched
+  // failed to copy.
+  const [copyResult, setCopyResult] = useState<{ ticker: string; outcome: "success" | "error" } | null>(null);
+  const copyOutcome = copyResult && copyResult.ticker === decision?.ticker ? copyResult.outcome : null;
+
+  // Both outcomes clear themselves; the error lingers longer so it can be read.
+  useEffect(() => {
+    if (!copyResult) return;
+    const timer = window.setTimeout(() => setCopyResult(null), copyResult.outcome === "success" ? 1_500 : 6_000);
+    return () => window.clearTimeout(timer);
+  }, [copyResult]);
+
   return (
     <Sheet isOpen={isOpen} onOpenChange={onOpenChange} placement="right">
       <Sheet.Backdrop variant="blur">
@@ -72,22 +86,25 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                   </div>
                 </Sheet.Body>
                 <Sheet.Footer>
-                  <Separator className="mb-3" />
-                  <Button
-                    variant="outline"
-                    fullWidth
-                    onPress={async () => {
-                      const copied = await copyText(decision.ticker);
-                      setCopyStatus(copied ? "success" : "error");
-                      if (copied) window.setTimeout(() => setCopyStatus("idle"), 1_500);
-                    }}
-                  >
-                    <Icon icon="solar:copy-bold" className="size-4" aria-hidden="true" />
-                    <span>{copyStatus === "success" ? "Copied ticker" : "Copy ticker"}</span>
-                  </Button>
-                  <p role="status" aria-live="polite" className={copyStatus === "error" ? "mt-2 text-xs text-danger" : "sr-only"}>
-                    {copyStatus === "error" ? `Couldn't copy the ticker. Select ${decision.ticker} above and copy it manually.` : copyStatus === "success" ? "Ticker copied." : ""}
-                  </p>
+                  {/* .sheet__footer is a justify-end flex ROW, so these three
+                      blocks need their own column to stack inside the drawer. */}
+                  <div className="flex w-full flex-col">
+                    <Separator className="mb-3" />
+                    <Button
+                      variant="outline"
+                      fullWidth
+                      onPress={async () => {
+                        const copied = await copyText(decision.ticker);
+                        setCopyResult({ ticker: decision.ticker, outcome: copied ? "success" : "error" });
+                      }}
+                    >
+                      <Icon icon="solar:copy-bold" className="size-4" aria-hidden="true" />
+                      <span>{copyOutcome === "success" ? "Copied ticker" : "Copy ticker"}</span>
+                    </Button>
+                    <p role="status" aria-live="polite" className={copyOutcome === "error" ? "mt-2 text-xs text-danger" : "sr-only"}>
+                      {copyOutcome === "error" ? `Couldn't copy the ticker. Select ${decision.ticker} above and copy it manually.` : copyOutcome === "success" ? "Ticker copied." : ""}
+                    </p>
+                  </div>
                 </Sheet.Footer>
               </>
             )}

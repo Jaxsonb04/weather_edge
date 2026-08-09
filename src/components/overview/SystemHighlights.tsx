@@ -8,7 +8,20 @@ interface Pillar {
   points: string[];
 }
 
-const PILLARS: Pillar[] = [
+interface SystemHighlightsProps {
+  /** `strategy_research.real_money_readiness.checks.length`, when a run publishes
+      that block. The readiness gate is built dynamically per traded cohort and
+      side, so its size is not a constant — and the recurring public artifact
+      defers the block entirely (`available: false`, no `checks` array). Absent a
+      published count, the copy stays count-free rather than inventing one. */
+  readinessCheckCount?: number | null;
+}
+
+const readinessPoint = (checkCount: number | null) =>
+  `${checkCount != null && checkCount > 0 ? `A ${checkCount}-check` : "A multi-check"} readiness gate` +
+  " keeps live orders disabled; the UI renders whatever verdict the published artifact carries, never an override";
+
+const buildPillars = (checkCount: number | null): Pillar[] => [
   {
     icon: "solar:cpu-bolt-bold",
     title: "Forecasting stack",
@@ -33,17 +46,18 @@ const PILLARS: Pillar[] = [
     points: [
       "Unattended AWS timers scan every city's markets every 5 minutes and publish the runtime artifacts",
       "SQLite paper journal with rule-based monitor exits (take-profit, stop-loss, model veto)",
-      "A 12-check readiness gate keeps live orders disabled; the current runtime verdict is published without UI overrides",
+      readinessPoint(checkCount),
     ],
   },
 ];
 
 /** Systems summary: what is engineered here, one level below the charts. */
-export function SystemHighlights() {
+export function SystemHighlights({ readinessCheckCount = null }: SystemHighlightsProps) {
+  const pillars = buildPillars(readinessCheckCount);
   return (
     <>
       <div className="grid gap-5 lg:grid-cols-3">
-        {PILLARS.map((p) => (
+        {pillars.map((p) => (
           <Card key={p.title} className="h-full rounded-2xl">
             <Card.Header className="flex flex-row items-center gap-2.5">
               <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent ring-1 ring-accent/25">

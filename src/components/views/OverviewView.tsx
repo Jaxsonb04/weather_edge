@@ -105,8 +105,18 @@ export function OverviewView({ data }: { data: DashboardData }) {
   const targets = useMemo(() => selectCurrentTargets(data.signal.targets ?? []), [data.signal.targets]);
 
   if (!targets.length) {
+    // The Hero carries the page's only <h1> on the happy path, and <main> always
+    // points aria-labelledby at it — so this branch has to publish the same id
+    // rather than leaving that reference dangling.
     return (
       <div className="mx-auto grid min-h-[60vh] w-full max-w-6xl content-center gap-4 px-5 sm:px-8">
+        <h1
+          id="overview-page-title"
+          tabIndex={-1}
+          className="scroll-mt-24 text-center font-display text-3xl font-bold tracking-tight text-balance focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)] sm:text-4xl"
+        >
+          WeatherEdge overview
+        </h1>
         <TargetStatusWarning targets={data.signal.targets ?? []} />
         <p className="text-center text-sm text-muted">No current forecast targets are published right now.</p>
       </div>

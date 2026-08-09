@@ -6,8 +6,10 @@ import { pct } from "../../lib/data";
 import {
   activeProfiles,
   archivedProfiles,
+  deferralReason,
   findProfile,
   gateCounts,
+  gateDeferred,
   money,
   openForProfile,
   pendingForProfile,
@@ -59,25 +61,45 @@ export function TrackRecordFinding({ s }: { s: StrategyLab }) {
   );
 }
 
+const SELECTIVITY_DESIGN_NOTE =
+  "Live Stability keeps those gates binding; Research ROI takes more bounded paper risk without contributing to real-money readiness.";
+
 function SelectivityFinding({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
   const { approved, total } = gateCounts(gate);
+  // The bounded public refresh publishes the gate section unpopulated. Its zeros
+  // mean "not evaluated in this artifact", not "nothing survived", so the
+  // deferral is stated in place of any survival rate.
+  if (gateDeferred(gate) || total === 0) {
+    return (
+      <Finding label="Deferred" icon="solar:hourglass-line-bold">
+        Gate evaluation counts for this window are not published in this artifact, so no approval or rejection rate
+        is claimed here. {deferralReason(gate)} {SELECTIVITY_DESIGN_NOTE}
+      </Finding>
+    );
+  }
   const live = gate.by_profile?.find((g) => g.risk_profile === "live");
+  const liveSignals = live?.signals ?? 0;
   const liveTop = live?.top_rejections?.[0];
   return (
     <Finding>
       Of <strong>{total.toLocaleString()}</strong> gate evaluations this window only{" "}
-      <strong>{approved.toLocaleString()}</strong> ({pct(total ? approved / total : 0, 2)}) survived. The live book
-      approved {live?.approved ?? 0} of {live?.signals?.toLocaleString() ?? "—"}
-      {liveTop && (
+      <strong>{approved.toLocaleString()}</strong> ({pct(approved / total, 2)}) survived.
+      {liveSignals > 0 && (
         <>
-          {" "}
-          — its most common published rejection is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections)
+          {" "}The live book approved <strong>{(live?.approved ?? 0).toLocaleString()}</strong> of{" "}
+          {liveSignals.toLocaleString()}
+          {liveTop && (
+            <>
+              {" "}
+              — its most common published rejection is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections)
+            </>
+          )}
+          .
         </>
       )}
-      . Live Stability keeps those gates binding; Research ROI takes more bounded
-      paper risk without contributing to real-money readiness.
+      {" "}{SELECTIVITY_DESIGN_NOTE}
     </Finding>
   );
 }
@@ -85,6 +107,10 @@ function SelectivityFinding({ s }: { s: StrategyLab }) {
 export function ReadinessFinding({ s }: { s: StrategyLab }) {
   if (s.accounting?.available === false) return null;
   const r = s.real_money_readiness;
+  // This finding exists only to report the check tally. When the checklist is
+  // deferred there is no tally to report, and inventing one would be the defect
+  // this page is trying to avoid — ReadinessPanel below carries the runtime's
+  // published status instead.
   if (!r?.available) return null;
   const total = r.checks_total ?? r.checks?.length ?? 0;
   return (
@@ -332,9 +358,12 @@ export function EvidenceDossier({ s }: { s: StrategyLab }) {
   const policy = policyName(target?.policy_version);
   const policyMarker = target?.policy_version?.match(/(?:^|-)v(\d+)(?:$|-)/i)?.[1];
   const checks = s.real_money_readiness;
+  // A deferred checklist still publishes the runtime's own status; that answer
+  // is more informative than degrading the whole field to "Not published".
+  const publishedStatus = (checks?.status ?? checks?.verdict ?? "").replace(/_/g, " ").trim();
   const readiness = checks?.available
     ? `${checks.checks_passed ?? 0}/${checks.checks_total ?? checks.checks?.length ?? 0} checks`
-    : "Not published";
+    : publishedStatus || "Not published";
   const explicitLiveOrders = s.live_orders_enabled;
   const paperOnly = explicitLiveOrders === false
     || (explicitLiveOrders == null && /paper/i.test(s.mode));
@@ -443,7 +472,7 @@ export function EvidenceDossier({ s }: { s: StrategyLab }) {
               >
                 <span className={`grid size-7 shrink-0 place-items-center rounded-full border font-mono text-[10px] font-semibold ${
                   index === rows.length - 1
-                    ? "border-accent/40 bg-accent-soft text-accent"
+                    ? "border-accent/40 bg-accent-soft text-[color:var(--accent-text)]"
                     : "border-border bg-background text-foreground"
                 }`}>
                   {version}

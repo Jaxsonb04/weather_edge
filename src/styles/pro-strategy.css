@@ -1,18 +1,20 @@
 /* Pro components used anywhere in the Strategy Lab route. */
 @reference "../index.css";
+/* Imports are layered: an unlayered Pro sheet outranks every @layer, so
+   Tailwind utilities written on a Pro slot would silently do nothing. */
 @import "@heroui/styles/components/accordion.css" layer(components);
 @import "@heroui/styles/components/checkbox.css" layer(components);
 @import "@heroui/styles/components/table.css" layer(components);
-@import "@heroui-pro/react/css/components/bar-chart.css";
-@import "@heroui-pro/react/css/components/chart-tooltip.css";
-@import "@heroui-pro/react/css/components/data-grid.css";
-@import "@heroui-pro/react/css/components/item-card.css";
-@import "@heroui-pro/react/css/components/item-card-group.css";
-@import "@heroui-pro/react/css/components/kpi.css";
-@import "@heroui-pro/react/css/components/kpi-group.css";
-@import "@heroui-pro/react/css/components/line-chart.css";
-@import "@heroui-pro/react/css/components/segment.css";
-@import "@heroui-pro/react/css/components/widget.css";
+@import "@heroui-pro/react/css/components/bar-chart.css" layer(components);
+@import "@heroui-pro/react/css/components/chart-tooltip.css" layer(components);
+@import "@heroui-pro/react/css/components/data-grid.css" layer(components);
+@import "@heroui-pro/react/css/components/item-card.css" layer(components);
+@import "@heroui-pro/react/css/components/item-card-group.css" layer(components);
+@import "@heroui-pro/react/css/components/kpi.css" layer(components);
+@import "@heroui-pro/react/css/components/kpi-group.css" layer(components);
+@import "@heroui-pro/react/css/components/line-chart.css" layer(components);
+@import "@heroui-pro/react/css/components/segment.css" layer(components);
+@import "@heroui-pro/react/css/components/widget.css" layer(components);
 
 .item-card-group--grid > [data-slot="item-card"],
 .item-card-group--grid [data-slot="item-card-content"],

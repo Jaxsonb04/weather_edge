@@ -41,12 +41,14 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, route, repoUrl, liv
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-xl">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-5 sm:px-8">
+        {/* aria-controls is conditional because the mobile <nav> it names only
+            exists while the menu is open; a reference to a missing id is broken. */}
         <button
           ref={menuButtonRef}
           type="button"
           aria-label={menuOpen ? "Close menu" : "Open menu"}
           aria-expanded={menuOpen}
-          aria-controls="mobile-navigation"
+          aria-controls={menuOpen ? "mobile-navigation" : undefined}
           className={`${iconButton} -ml-2 lg:hidden`}
           onClick={() => setMenuOpen((open) => !open)}
         >

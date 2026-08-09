@@ -3,7 +3,7 @@ import { Skeleton } from "@heroui/react/skeleton";
 import { selectCurrentTargets, type CitiesData, type City, type DashboardData } from "../../lib/data";
 import { SkillStrip } from "../kpi/SkillStrip";
 import { SystemHighlights } from "../overview/SystemHighlights";
-import { CityGrid } from "../overview/CityGrid";
+import { CityGrid, flagshipIntradayLock } from "../overview/CityGrid";
 import { TargetStatusWarning } from "../overview/TargetStatusWarning";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
@@ -83,6 +83,10 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
 
   // The bracket-level market surfaces are San-Francisco-only (trading_signal.json).
   const flagshipTarget = currentTargets[0];
+  // That same artifact republishes SFO's settlement-day high after the intraday
+  // update, so the coverage grid and the city drill-down reconcile against it
+  // rather than showing the plain EMOS issue the hero contradicts.
+  const intradayLock = useMemo(() => flagshipIntradayLock(currentTargets), [currentTargets]);
 
   return (
       <div className="mx-auto w-full max-w-6xl px-5 pb-20 sm:px-8">
@@ -101,7 +105,13 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
             sub="Every market settles on its own official NWS climate report and runs the same NWP/EMOS forecast. Select any city to drill into its call — San Francisco is the flagship, with the full market microstructure."
           />
           <Reveal>
-            <CityGrid data={citiesData} error={citiesError} selected={selected} onSelect={onSelect} />
+            <CityGrid
+              data={citiesData}
+              error={citiesError}
+              selected={selected}
+              onSelect={onSelect}
+              intradayLock={intradayLock}
+            />
           </Reveal>
         </section>
 
@@ -118,9 +128,21 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
                 <CityDetail
                   city={activeCity}
                   flagshipTarget={flagshipTarget}
+                  intradayLock={intradayLock}
                 />
               </Suspense>
             </DeferredOverviewSlab>
+          ) : citiesError ? (
+            /* A failed fetch is not a pre-publication state — say which one it is. */
+            <Reveal>
+              <p
+                role="alert"
+                className="rounded-2xl border border-dashed border-danger/40 px-4 py-6 text-center text-sm text-muted"
+              >
+                Couldn't load city coverage, so per-city detail is unavailable in this session.
+                Reload the page to try again.
+              </p>
+            </Reveal>
           ) : (
             <Reveal>
               <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">

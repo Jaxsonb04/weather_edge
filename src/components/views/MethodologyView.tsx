@@ -1,6 +1,6 @@
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-methodology.css";
-import { pct, round1, useCitiesData, type DashboardData } from "../../lib/data";
+import { pct, round1, useCitiesData, type Cohort, type DashboardData } from "../../lib/data";
 import { useDiagnostics, type Diagnostics } from "../../lib/diagnostics";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
@@ -36,32 +36,79 @@ function ModelProofFinding({ diag }: { diag: Diagnostics }) {
   );
 }
 
+/** The scored ladder is fixed at six markets — four 2°F brackets spanning
+    66–73°F plus an open-ended tail at each end. Every scored day below 60°F
+    therefore lands in the open-bottom tail by construction, so that cohort's
+    perfect top-bin score is a property of the ladder, not of the model. We name
+    it rather than let it inflate the headline silently. */
+const TAIL_COHORT = "cold_below_60f";
+/** The one cohort the live San Francisco risk profile refuses to trade at all —
+    a hard block on the forecast regime, not a smaller position. The block is
+    dropped for the other cities, where 80°+ is an ordinary summer day. */
+const BLOCKED_COHORT = "hot_80f_plus";
+
 function AccuracyFinding({ data, otherCityCount }: { data: DashboardData; otherCityCount: number | null }) {
   const { forecast, signal } = data;
   const cal = signal.calibration;
   if (!cal) return null;
   const cohorts = cal.cohorts ?? [];
-  const best = [...cohorts].sort((a, b) => b.ranked_probability_skill - a.ranked_probability_skill)[0];
-  const worst = [...cohorts].sort((a, b) => a.ranked_probability_skill - b.ranked_probability_skill)[0];
+  const tail: Cohort | null = cohorts.find((c) => c.name === TAIL_COHORT) ?? null;
+  const blocked: Cohort | null = cohorts.find((c) => c.name === BLOCKED_COHORT) ?? null;
+  // Rank on top-bin accuracy, not ranked-probability skill: RPS skill is scored
+  // against climatology, which is easiest to beat exactly where the regime is
+  // rare, so it flatters the warm/hot cohorts the model is genuinely worst at.
+  // The open-bottom tail cohort is excluded — it is unbeatable by construction.
+  const offTail = cohorts.filter((c) => c.name !== TAIL_COHORT);
+  const ranked = [...offTail].sort((a, b) => b.top_bin_accuracy - a.top_bin_accuracy);
+  const best: Cohort | null = ranked[0] ?? null;
+  const worst: Cohort | null = ranked.length > 1 ? ranked[ranked.length - 1] ?? null : null;
+  const offTailDays = offTail.reduce((sum, c) => sum + c.count, 0);
+  const offTailAccuracy =
+    offTailDays > 0 ? offTail.reduce((sum, c) => sum + c.count * c.top_bin_accuracy, 0) / offTailDays : null;
+  const otherCities = otherCityCount != null && otherCityCount > 0 ? `the other ${otherCityCount} cities` : "the other cities";
   return (
     <Finding>
-      This is held-out San Francisco probability research, not a live trading track record. Across <strong>{cal.n.toLocaleString()}</strong> scored outcomes,
+      This is held-out San Francisco probability research, not a live trading track record. Across <strong>{cal.n.toLocaleString()}</strong> scored settlement days,
       the probability engine carries a{" "}
-      <strong>{pct(cal.ranked_probability_skill, 0)} ranked-probability skill</strong> over climatology and calls the exact
-      settlement bin {pct(cal.top_bin_accuracy, 0)} of the time — against roughly a dozen 2°F-wide brackets. The reliability
-      curve shows where predicted probabilities match or miss observed frequencies.
+      <strong>{pct(cal.ranked_probability_skill, 0)} ranked-probability skill</strong> over climatology and calls the
+      settling bracket {pct(cal.top_bin_accuracy, 0)} of the time — against a fixed six-market ladder: four 2°F
+      brackets spanning 66–73°F, plus an open-ended tail below and above.
+      {tail && offTailAccuracy != null && (
+        <>
+          {" "}
+          Those open tails carry more of that number than it looks. All{" "}
+          <strong className="tnum">{tail.count.toLocaleString()}</strong> days that settled below 60°F land in the
+          open-bottom bracket by construction, and that cohort scores {pct(tail.top_bin_accuracy, 0)}; across the
+          remaining{" "}
+          <strong className="tnum">{offTailDays.toLocaleString()}</strong> days, bracket accuracy is{" "}
+          <strong>{pct(offTailAccuracy, 0)}</strong>.
+        </>
+      )}{" "}
+      The reliability curve shows where predicted probabilities match or miss observed frequencies.
       {!!cal.warnings?.length && <> The current publication flags calibration limitations in one or more probability buckets.</>}
       {best && worst && best.name !== worst.name && (
         <>
           {" "}
-          Skill varies by regime — strongest in the <strong>{cohortLabel(best.name)}</strong> cohort (
-          {pct(best.ranked_probability_skill, 0)}) and weakest in <strong>{cohortLabel(worst.name)}</strong> (
-          {pct(worst.ranked_probability_skill, 0)}), which the risk gates account for when sizing positions. All of it rests
-          on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years.
-          {otherCityCount != null && otherCityCount > 0 && (
-            <> The other {otherCityCount} cities run the same EMOS post-processing against their own settlement stations, without the same SFO-specific held-out study.</>
-          )}
+          Judged on that same bracket accuracy, the regimes separate sharply: strongest in{" "}
+          <strong>{cohortLabel(best.name)}</strong> at{" "}
+          {pct(best.top_bin_accuracy, 0)} over {best.count.toLocaleString()} days, weakest in{" "}
+          <strong>{cohortLabel(worst.name)}</strong> at {pct(worst.top_bin_accuracy, 0)} over{" "}
+          {worst.count.toLocaleString()} days. Ranked-probability skill orders those cohorts differently only because
+          it is measured against climatology, which is itself weakest where the regime is rare.
         </>
+      )}
+      {blocked && (
+        <>
+          {" "}
+          Exactly one regime is gated in production, and it is a block rather than a dial: a San Francisco target
+          forecast into <strong>{cohortLabel(blocked.name)}</strong> — a regime with only{" "}
+          {blocked.count.toLocaleString()} settled days in the whole study — is refused outright, not merely sized
+          down. That block is lifted for {otherCities}, where 80°+ is an ordinary summer day.
+        </>
+      )}{" "}
+      All of it rests on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years.
+      {otherCityCount != null && otherCityCount > 0 && (
+        <> The other {otherCityCount} cities run the same EMOS post-processing against their own settlement stations, without the same SFO-specific held-out study.</>
       )}
     </Finding>
   );
@@ -95,7 +142,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
         icon="solar:graph-up-bold"
         eyebrow="Methodology & diagnostics"
         title="How the forecast is built and tested"
-        sub={`The current ${cityCount}-city coverage artifact uses ${ensemblePhrase}, leakage-free and EMOS-calibrated per station, then settles against each city's NWS Climatological Report. San Francisco is blend-capable, with residual-calibration, marine-layer, and optional external evidence; its served point forecast can fall back to EMOS.`}
+        sub={`The current ${cityCount}-city coverage artifact serves ${ensemblePhrase} taken from each model's freshest run, EMOS-calibrated per station on a leakage-free rolling-origin fit, then settles against each city's NWS Climatological Report. San Francisco is blend-capable, with residual-calibration, marine-layer, and optional external evidence; its served point forecast can fall back to EMOS.`}
       />
       <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <section className="scroll-mt-24">
@@ -103,7 +150,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="01"
             eyebrow="The production pipeline"
             title="One method, running in every city"
-            sub={`${ensembleSentence} is pulled leakage-free from Open-Meteo previous-runs, post-processed per city with rolling-origin EMOS into a calibrated Gaussian, then settled against each city's official NWS Climatological Report.`}
+            sub={`${ensembleSentence} is pulled per city from each model's freshest current run, then post-processed with rolling-origin EMOS into a calibrated Gaussian — the coefficients themselves are fitted on the pre-target previous-runs archive, so no evaluation day is scored against a model cycle that did not exist yet — and settled against each city's official NWS Climatological Report.`}
           />
           <ForecastPipeline />
         </section>

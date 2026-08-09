@@ -1,5 +1,32 @@
 import { cityForTicker, useResource } from "./data";
 
+/** Sections the bounded public refresh publishes as an unpopulated stub rather
+    than a measurement. `fast_public` is the permanent public mode, so a deferred
+    section is a standing state, not an outage: its zeros must never be rendered
+    as a measured result. Where the publisher stamps the stub it carries
+    `available: false` plus a `reason`; older stubs carry neither, so each
+    consumer also detects the empty shape. */
+export interface DeferrableSection {
+  available?: boolean;
+  reason?: string;
+}
+
+/** Used when a deferred section publishes no reason of its own. */
+const DEFERRED_WITHOUT_REASON =
+  "Not published in this bounded public refresh, which defers the full decision-journal analytics behind it.";
+
+/** The reason a section gives for being deferred, or a neutral stand-in. */
+export function deferralReason(section: DeferrableSection | undefined): string {
+  const published = section?.reason?.trim();
+  return published ? published : DEFERRED_WITHOUT_REASON;
+}
+
+/** Outcome vocabulary emitted by the paper runtime (`paper_card.py` writes
+    good/bad/warn). The HeroUI colour names are kept as accepted aliases so an
+    older artifact still renders, and the union makes a future vocabulary change
+    fail type-check instead of degrading to a grey chip. */
+export type PositionStatusTone = "good" | "bad" | "warn" | "success" | "danger" | "warning";
+
 export interface ClosedPosition {
   id: number;
   ticker: string;
@@ -13,7 +40,8 @@ export interface ClosedPosition {
   quality_score: number;
   risk_profile: string;
   target_date: string;
-  closed_at: string;
+  /** Null for every position held to settlement — those carry `settled_at`. */
+  closed_at: string | null;
   settled_at?: string | null;
   filled_at?: string | null;
   cancelled_at?: string | null;
@@ -23,7 +51,7 @@ export interface ClosedPosition {
   sleeve?: string | null;
   fill_model?: string | null;
   position_status_label?: string;
-  position_status_tone?: string;
+  position_status_tone?: PositionStatusTone;
   outcome_reason?: string | null;
   exit_rule_reason?: string | null;
   entry_mode?: string | null;
@@ -132,7 +160,7 @@ export interface ProfileGateStats {
   top_rejections?: RejectionReason[];
   top_rejections_all?: RejectionReason[];
 }
-export interface GateBehavior {
+export interface GateBehavior extends DeferrableSection {
   approved?: number;
   rejected?: number;
   by_profile?: ProfileGateStats[];
@@ -284,10 +312,12 @@ export interface ReadinessCheck {
   evidence_boundary?: string | null;
   source_cohort?: string | null;
 }
-export interface RealMoneyReadiness {
+export interface RealMoneyReadiness extends DeferrableSection {
   available: boolean;
   verdict?: string;
   status?: string;
+  /** Published beside `status` when the checklist itself is deferred. */
+  status_reasons?: string[];
   summary?: string;
   ready?: boolean;
   readiness_pct?: number;
@@ -556,6 +586,8 @@ export interface StrategyLab {
   };
   backtest_summary: {
     available: boolean;
+    /** Why the historical analytics are absent when `available` is false. */
+    reason?: string;
     counts: Record<string, number>;
     metrics?: BacktestMetrics;
     metrics_available?: boolean;
@@ -723,10 +755,18 @@ export function equitySeries(s: StrategyLab) {
   return equitySeriesFromDays(s.daily_summary?.days, startingBankroll);
 }
 
-/** Full closed ledger, newest first. */
+/** When a position actually resolved. A trade held to settlement carries
+    `settled_at` and never `closed_at`, so ordering on `closed_at` alone sorts
+    every settlement to the bottom as if it were undated. Mirrors the runtime's
+    own resolution chain in `paper_card.py`. */
+export function resolutionTime(p: ClosedPosition): string {
+  return p.settled_at ?? p.closed_at ?? p.cancelled_at ?? "";
+}
+
+/** Full closed ledger, newest resolution first. */
 export function closedLedger(s: StrategyLab): ClosedPosition[] {
   return [...(s.paper_trading?.closed_positions ?? [])].sort((a, b) =>
-    (b.closed_at ?? "").localeCompare(a.closed_at ?? ""),
+    resolutionTime(b).localeCompare(resolutionTime(a)),
   );
 }
 
@@ -739,6 +779,17 @@ export function gateCounts(gate: GateBehavior | undefined) {
   const approved = gate?.approved ?? 0;
   const rejected = gate?.rejected ?? 0;
   return { approved, rejected, total: approved + rejected };
+}
+
+/** True when the gate section carries no measurement: the bounded public
+    refresh emits `{approved: 0, rejected: 0, by_profile: []}`, which means "not
+    evaluated in this artifact", not "nothing survived". An explicit
+    `available: false` is authoritative; today's artifact omits the flag, so the
+    empty shape counts too. */
+export function gateDeferred(gate: GateBehavior | undefined): boolean {
+  if (!gate || gate.available === false) return true;
+  if (gateCounts(gate).total > 0) return false;
+  return !(gate.by_profile ?? []).some((g) => (g.signals ?? 0) > 0 || (g.approved ?? 0) > 0);
 }
 
 export function profileGateCounts(gate: ProfileGateStats | undefined) {

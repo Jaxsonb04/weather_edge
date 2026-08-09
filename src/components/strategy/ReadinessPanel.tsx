@@ -1,9 +1,71 @@
 import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
-import { money, type ReadinessCheck, type StrategyLab } from "../../lib/strategy";
+import {
+  deferralReason,
+  money,
+  type ReadinessCheck,
+  type RealMoneyReadiness,
+  type StrategyLab,
+} from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
 import { DetailDisclosure } from "../ui/DetailDisclosure";
+
+/** The bounded public refresh defers the per-check evidence but still publishes
+    the runtime's own status. That answer is only meaningful if it is shown. */
+const hasPublishedStatus = (r: RealMoneyReadiness) =>
+  Boolean(r.status || r.verdict || r.status_reasons?.length);
+
+const statusText = (r: RealMoneyReadiness) =>
+  (r.status ?? r.verdict ?? "").replace(/_/g, " ").trim() || "STATUS UNPUBLISHED";
+
+/** Degraded verdict: the published status carried unchanged, with the reasons
+    the runtime gave, and no invented check count. */
+function DeferredVerdict({ r, compact = false }: { r: RealMoneyReadiness; compact?: boolean }) {
+  const status = statusText(r);
+  const ready = r.ready === true || /^READY$/i.test(status);
+  const reasons = r.status_reasons?.length ? r.status_reasons : [deferralReason(r)];
+  return (
+    <Card className="h-full rounded-2xl">
+      <Card.Header>
+        <Card.Title className="text-base">{compact ? "Go-live readiness" : "Verdict"}</Card.Title>
+        <Card.Description className="text-sm text-muted">
+          Published status only — the per-check evidence is deferred from this refresh
+        </Card.Description>
+      </Card.Header>
+      <Card.Content className="space-y-4 pt-0">
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            className={`font-display font-bold tracking-tight ${compact ? "text-2xl" : "text-3xl"} ${
+              ready ? "text-success" : "text-danger"
+            }`}
+          >
+            {status}
+          </span>
+          <Chip size="sm" variant="soft" color="warning">
+            <Chip.Label>Checklist deferred</Chip.Label>
+          </Chip>
+        </div>
+        <ul className="space-y-2">
+          {reasons.map((reason) => (
+            <li key={reason} className="flex gap-2 text-sm leading-relaxed text-muted">
+              <Icon
+                icon="solar:hourglass-line-bold"
+                className="mt-0.5 size-4 shrink-0 text-warning"
+                aria-hidden="true"
+              />
+              <span>{reason}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs leading-relaxed text-muted">
+          This is the status the runtime published, carried unchanged. No check count is shown because the
+          checklist behind it is not part of this artifact.
+        </p>
+      </Card.Content>
+    </Card>
+  );
+}
 
 function CheckRow({ c }: { c: ReadinessCheck }) {
   const progress = Math.max(0, Math.min(1, c.progress ?? 0));
@@ -36,7 +98,8 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
 export function ReadinessVerdict({ s }: { s: StrategyLab }) {
   if (s.accounting?.available === false) return null;
   const r = s.real_money_readiness;
-  if (!r?.available) return null;
+  if (!r) return null;
+  if (!r.available) return hasPublishedStatus(r) ? <DeferredVerdict r={r} compact /> : null;
   const checks = r.checks ?? [];
   const passed = r.checks_passed ?? checks.filter((c) => c.passed).length;
   const total = r.checks_total ?? checks.length;
@@ -77,7 +140,8 @@ export function ReadinessVerdict({ s }: { s: StrategyLab }) {
 export function ReadinessPanel({ s }: { s: StrategyLab }) {
   if (s.accounting?.available === false) return null;
   const r = s.real_money_readiness;
-  if (!r?.available) return null;
+  if (!r) return null;
+  if (!r.available) return hasPublishedStatus(r) ? <DeferredVerdict r={r} /> : null;
   const checks = r.checks ?? [];
   const passed = r.checks_passed ?? checks.filter((c) => c.passed).length;
   const total = r.checks_total ?? checks.length;

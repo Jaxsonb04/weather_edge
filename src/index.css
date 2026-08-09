@@ -17,8 +17,12 @@
 @import "@heroui/styles/components/separator.css" layer(components);
 @import "@heroui/styles/components/skeleton.css" layer(components);
 @import "@heroui/styles/components/tooltip.css" layer(components);
-/* ForecastDial is above the fold, so its Segment layout must ship eagerly. */
-@import "@heroui-pro/react/css/components/segment.css";
+/* ForecastDial is above the fold, so its Segment layout must ship eagerly.
+   Every @heroui-pro sheet is imported into layer(components), exactly like the
+   @heroui/styles ones above: an UNLAYERED declaration outranks every @layer no
+   matter its specificity, so a Pro sheet left unlayered silently beats every
+   Tailwind utility (those land in @layer utilities) written on a Pro slot. */
+@import "@heroui-pro/react/css/components/segment.css" layer(components);
 @import "@heroui/styles/themes/default" layer(theme);
 @import "@heroui/styles/utilities";
 @import "@heroui/styles/variants";
@@ -58,9 +62,38 @@
   --accent: oklch(0.8 0.16 86);
   --accent-foreground: oklch(0.22 0.03 70);
 
-  /* AA-contrast accent for small text on a light surface (~4.6:1 on white).
-     Overridden to the bright accent in dark mode below. */
-  --accent-text: oklch(0.54 0.14 84);
+  /* AA-contrast accent for small text on a light surface, and the source of the
+     focus ring below. Sits inside the sRGB gamut at this lightness (max chroma
+     at L 0.50 / hue 84 is 0.103), reads 5.3–6.1:1 on the three light canvases,
+     and still clears 4.5:1 when it sits on --accent-soft (4.87:1 over
+     --surface-secondary). Overridden to the bright accent in dark mode below. */
+  --accent-text: oklch(0.5 0.1 84);
+
+  /* Keyboard focus ring. HeroUI derives --focus from --accent, and the bright
+     gold is only 1.64–1.73:1 against the light canvases — SC 1.4.11 wants 3:1.
+     The AA accent is the same hue at 5.3–6.1:1. Dark mode keeps --accent. */
+  --focus: var(--accent-text);
+
+  /* STATUS colours — LIGHT canvas. HeroUI's light defaults are display tints
+     (#17c964 / #f5a524 / #ff383c → 1.8–3.6:1 as text), but on this site every
+     P&L figure, ROI, hit-rate tone, edge value and warning banner is
+     status-coloured TEXT. Re-cut at ~L 0.50 on the same hues so they clear
+     4.5:1 on all three light canvases — --surface (#fff), --background
+     (#f5f5f5) and --surface-secondary (#efeff0). Worst case is the last one:
+     5.13 success, 5.11 warning, 5.32 danger.
+     The bright display values are restored in .dark below. */
+  --success: oklch(0.49 0.13 150.8);
+  --warning: oklch(0.51 0.108 72.3);
+  --danger: oklch(0.52 0.2 25.7);
+  /* A dark fill needs light text: HeroUI pairs these tokens with --eclipse,
+     which was only legible while the fills were bright. */
+  --success-foreground: var(--snow);
+  --warning-foreground: var(--snow);
+
+  /* Secondary text. HeroUI's light --muted (#71717a) is 4.20:1 on
+     --surface-secondary and 4.43:1 on --background; text-muted carries most of
+     the prose on every route, so it is re-cut to 5.2–6.0:1. */
+  --muted: oklch(0.5 0.014 286);
 
   /* SERIES palette — for comparison series (model vs market / observed).
      Deliberately separate from the TEMPERATURE ramp; an indigo so it never reads
@@ -71,10 +104,16 @@
   /* THERMAL ramp — a tight cool→warm→hot progression (NO green/cyan). Gradients
      interpolate in oklab (see .temp-text / tempColor) so the midpoint is a muted
      neutral, not a rainbow sweep. --temp-mild is a neutral steel used only as a
-     categorical source color, never in the gradient. */
-  --temp-cold: oklch(0.68 0.13 252);
-  --temp-mild: oklch(0.72 0.035 248);
-  --temp-warm: oklch(0.81 0.14 74);
+     categorical source color, never in the gradient.
+     These are the LIGHT-canvas values. The ramp is not decoration: it colours
+     the 5.5rem dial, the text-3xl/5xl city highs and the gradient headline, so
+     every point of the 48→86 °F ramp — including the near-neutral cold→warm
+     midpoint — has to clear the 3:1 large-text floor. Measured worst point is
+     3.15:1 on --surface-secondary, 3.62:1 on --surface. The lighter display
+     ramp is restored in .dark below; --temp-hot already passed and is shared. */
+  --temp-cold: oklch(0.62 0.14 252);
+  --temp-mild: oklch(0.63 0.035 248);
+  --temp-warm: oklch(0.62 0.13 74);
   --temp-hot: oklch(0.6 0.21 30);
 
   --font-display: "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
@@ -87,8 +126,24 @@
   --accent-foreground: oklch(0.2 0.03 70);
   /* bright gold already clears AA on the dark canvas */
   --accent-text: var(--accent);
+  --focus: var(--accent);
   /* a touch deeper + cooler than the default dark canvas, for an instrument feel */
   --background: oklch(0.142 0.006 264);
+
+  /* The light block above re-cuts the status palette, the secondary text colour
+     and the cool/warm end of the thermal ramp for a near-white canvas. Those
+     declarations are unlayered, so they would also win here — restore HeroUI's
+     dark values (and our own display ramp) verbatim. Dark mode already passes
+     contrast everywhere; nothing in this group is a new value. */
+  --muted: oklch(70.5% 0.015 286.067);
+  --success: oklch(0.7329 0.1935 150.81);
+  --success-foreground: var(--eclipse);
+  --warning: oklch(0.8203 0.1388 76.34);
+  --warning-foreground: var(--eclipse);
+  --danger: oklch(0.594 0.1967 24.63);
+  --temp-cold: oklch(0.68 0.13 252);
+  --temp-mild: oklch(0.72 0.035 248);
+  --temp-warm: oklch(0.81 0.14 74);
 
   /* Card/surface edge. In light mode HeroUI's native --surface-shadow is a real
      drop shadow; in dark mode it resolves to a transparent inset, which would

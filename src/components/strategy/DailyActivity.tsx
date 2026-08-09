@@ -1,5 +1,5 @@
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
-import { money, type DayRow, type StrategyLab } from "../../lib/strategy";
+import { gateDeferred, money, type DayRow, type StrategyLab } from "../../lib/strategy";
 
 const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
 
@@ -9,6 +9,13 @@ const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
 export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) {
   const rows = [...(days ?? s.daily_summary?.days ?? [])].sort((a, b) => b.date.localeCompare(a.date));
   if (!rows.length) return null;
+  // The per-day scan/approval counters come from the same decision-journal
+  // replay the bounded public refresh defers. When that section is unpopulated
+  // every day reports 0 scans beside a day that demonstrably opened trades, so
+  // those two columns report "no measurement" instead of a stub zero.
+  const scanCountsDeferred = gateDeferred(s.daily_summary?.gate_behavior);
+  const scanCount = (value: number | null | undefined) =>
+    scanCountsDeferred ? "—" : value?.toLocaleString() ?? "—";
 
   const columns: DataGridColumn<DayRow>[] = [
     {
@@ -25,14 +32,14 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
       header: "Scans",
       align: "end",
       headerClassName: HEAD,
-      cell: (d) => <span className="tnum text-muted">{d.signals?.toLocaleString() ?? "—"}</span>,
+      cell: (d) => <span className="tnum text-muted">{scanCount(d.signals)}</span>,
     },
     {
       id: "approved",
       header: "Approved",
       align: "end",
       headerClassName: HEAD,
-      cell: (d) => <span className="tnum">{d.approved_signals ?? 0}</span>,
+      cell: (d) => <span className="tnum">{scanCount(d.approved_signals)}</span>,
     },
     {
       id: "opened",
@@ -103,15 +110,23 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
   ];
 
   return (
-    <div className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-2xl" role="region" aria-label="Scrollable daily activity table" tabIndex={0}>
-    <DataGrid
-      aria-label="Daily trading and forecast activity"
-      columns={columns}
-      data={rows}
-      getRowId={(d) => d.date}
-      variant="secondary"
-      className="min-w-[48rem] rounded-2xl"
-    />
+    <div className="min-w-0 space-y-2">
+      <div className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-2xl" role="region" aria-label="Scrollable daily activity table" tabIndex={0}>
+        <DataGrid
+          aria-label="Daily trading and forecast activity"
+          columns={columns}
+          data={rows}
+          getRowId={(d) => d.date}
+          variant="secondary"
+          className="min-w-[48rem] rounded-2xl"
+        />
+      </div>
+      {scanCountsDeferred && (
+        <p className="text-[11px] leading-relaxed text-muted">
+          Scans and Approved are deferred from this bounded public refresh and show no value. Entries, exits, P&amp;L
+          and forecast verification are measured.
+        </p>
+      )}
     </div>
   );
 }

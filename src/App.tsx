@@ -36,6 +36,11 @@ export default function App() {
   const { mode, toggle } = useTheme();
   const { route, navigate } = useHashRoute();
   const [cmdOpen, setCmdOpen] = useState(false);
+  // Once opened the palette stays mounted. Unmounting the overlay subtree in the
+  // same commit that closes it tears down React Aria's focus scope before it can
+  // restore focus, dropping focus to <body>. Command.Backdrop's isOpen is what
+  // drives visibility, so a mounted-but-closed palette renders nothing.
+  const [cmdMounted, setCmdMounted] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
   const hasValidSignal = data != null && typeof data.signal === "object" && data.signal !== null;
 
@@ -47,9 +52,15 @@ export default function App() {
       mounted.current = true;
       return;
     }
+    // A first visit to a route waits on its chunk, so this poll can still be
+    // running a second after navigation. Whoever holds focus when the heading
+    // finally appears must have been put there by the navigation itself — if the
+    // user has moved on (tabbed to the theme toggle, say), leave them alone.
+    const origin = document.activeElement;
     let attempts = 0;
     let timer = 0;
     const focusHeading = () => {
+      if (document.activeElement !== origin) return;
       const heading = document.getElementById(`${route}-page-title`);
       if (heading) heading.focus({ preventScroll: true });
       else if (attempts++ < 50) timer = window.setTimeout(focusHeading, 20);
@@ -57,6 +68,10 @@ export default function App() {
     timer = window.setTimeout(focusHeading, 0);
     return () => window.clearTimeout(timer);
   }, [route]);
+
+  useEffect(() => {
+    if (cmdOpen) setCmdMounted(true);
+  }, [cmdOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -91,7 +106,7 @@ export default function App() {
         liveUrl={LIVE}
       />
       <PublicationStatusBanner />
-      {cmdOpen && (
+      {cmdMounted && (
         <Suspense fallback={null}>
           <CommandPalette
             open={cmdOpen}

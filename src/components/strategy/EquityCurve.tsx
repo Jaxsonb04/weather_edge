@@ -63,7 +63,7 @@ export function EquityCurve({
         <Widget.Header className="flex-col items-start gap-2 py-1 sm:flex-row sm:justify-between">
           <div className="min-w-0">
             {eyebrow && (
-              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">{eyebrow}</span>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent-text)]">{eyebrow}</span>
             )}
             <Widget.Title className={emphasis === "headline" ? "text-base" : undefined}>
               {title ?? "Paper equity curve"}
@@ -106,7 +106,7 @@ export function EquityCurve({
       <Widget.Header className="flex-col items-start gap-3 py-1 sm:flex-row sm:justify-between">
         <div className="flex min-w-0 flex-col gap-0.5">
           {eyebrow && (
-            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">{eyebrow}</span>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent-text)]">{eyebrow}</span>
           )}
           <Widget.Title className={emphasis === "headline" ? "text-base" : undefined}>
             {title ?? "Paper equity curve"}
