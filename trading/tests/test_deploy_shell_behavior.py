@@ -1137,9 +1137,11 @@ raise SystemExit(0)
         assert result.returncode == 0, result.stderr
         assert pushes == ["push origin HEAD:gh-pages"]
     else:
+        # With workflow deploys, the successor push is what cancels a hung
+        # deploy -- the gate waits briefly but never skips the cycle.
         assert result.returncode == 0, result.stderr
-        assert "skipping this publication cycle" in result.stdout
-        assert pushes == []
+        assert "publishing anyway" in result.stderr + result.stdout
+        assert pushes == ["push origin HEAD:gh-pages"]
 
 
 @pytest.mark.parametrize(

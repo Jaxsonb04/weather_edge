@@ -34,13 +34,16 @@ ARTIFACT_LOCK_WAIT_SECONDS="${SFO_OPERATIONAL_ARTIFACT_LOCK_WAIT_SECONDS:-60}"
 PAGES_LOCK_WAIT_SECONDS="${SFO_PAGES_LOCK_WAIT_SECONDS:-60}"
 PROPAGATION_WAITER="${SFO_PAGES_PROPAGATION_WAITER:-$TRADING_DIR/deploy/aws/wait_for_publication_manifest.sh}"
 # Workflow-based Pages deploys (pages-deploy-workflow.yml) complete in ~40-60s
-# and cancel superseded runs, so a prior snapshot that is not public after 150s
-# is broken, not in flight. One deferral, then force-publish: this keeps the
-# worst wedge to about one cycle instead of the ~25-minute outage the
-# 420s/3-deferral gate produced under the legacy Jekyll builder's intermittent
-# "Page build failed." errors.
-PENDING_PROPAGATION_TIMEOUT_SECONDS="${SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS:-150}"
-MAX_GATE_DEFERRALS="${SFO_PAGES_MAX_GATE_DEFERRALS:-2}"
+# and cancel superseded runs, so the successor push IS the recovery mechanism:
+# pushing cancels a hung or queued deploy and replaces it with fresher data.
+# Deferring a cycle therefore makes things WORSE, not safer -- observed
+# 2026-08-09 05:28Z, a deploy run hung for 13 minutes and the gate's deferral
+# delayed the unsticking push, stretching public staleness to ~19 minutes.
+# Wait briefly for the ordinary in-flight deploy to land (churn hygiene), then
+# always publish. MAX_GATE_DEFERRALS=1 means "publish anyway on the first
+# miss"; it is kept configurable only for emergencies.
+PENDING_PROPAGATION_TIMEOUT_SECONDS="${SFO_PAGES_PENDING_PROPAGATION_TIMEOUT_SECONDS:-60}"
+MAX_GATE_DEFERRALS="${SFO_PAGES_MAX_GATE_DEFERRALS:-1}"
 PUBLISH_DEADLINE_SECONDS="${SFO_PAGES_PUBLISH_DEADLINE_SECONDS:-780}"
 GATE_STATE_DIR="${SFO_PAGES_GATE_STATE_DIR:-$BASE_DIR/.locks}"
 GATE_DEFERRAL_FILE="$GATE_STATE_DIR/pages-gate-deferrals"
