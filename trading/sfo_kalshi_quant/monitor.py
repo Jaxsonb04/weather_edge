@@ -38,12 +38,30 @@ from .kalshi import KalshiPublicClient, KalshiUnavailable
 from .maker_fills import EXECUTION_MODEL_VERSION
 from .models import MarketBin
 from .probability import ResidualCalibrator
+from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
 from .settlement_day import settlement_clock
 
 
 DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
 DEFAULT_MODEL_VETO_MAX_LOSS_PCT = 60.0
 DEFAULT_MODEL_VETO_BUFFER = 0.08
+# The ROI-based catastrophic floor scales with position cost, so on a research
+# target sleeve's largest positions the veto could ride a single loser through
+# most of a $50 objective day (order 2147, 2026-08-07: -$40.65 realized).
+# Bound the veto's tolerated drawdown in account dollars too: 70% of the
+# sleeve's daily target. Calibrated against the deepest recovered veto hold to
+# date (order 2098, 2026-08-05: -$33.29 trough on the way to +$35.69), which
+# stays inside the floor.
+MODEL_VETO_MAX_LOSS_TARGET_FRACTION = 0.70
+
+# Execution-safety bound, deliberately outside the fingerprinted policy
+# identity (like the ROI catastrophic floor): per-account veto dollar caps for
+# every research TARGET sleeve with a real daily objective.
+RESEARCH_VETO_DOLLAR_CAPS: dict[str, float] = {
+    policy.account_id: policy.target_pnl * MODEL_VETO_MAX_LOSS_TARGET_FRACTION
+    for policy in ALL_RESEARCH_POLICIES
+    if policy.sleeve is ResearchSleeve.TARGET and policy.target_pnl > 0
+}
 SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES = 90.0
 
 
@@ -455,6 +473,10 @@ def run_paper_monitor(
             model_side_probability=model_side_p,
             model_veto_buffer=args.model_veto_buffer,
             model_veto_max_loss_roi=model_veto_max_loss,
+            model_veto_max_loss_dollars=RESEARCH_VETO_DOLLAR_CAPS.get(
+                str(row["account_id"] or "")
+            ),
+            position_loss_dollars=pnl_dollars,
             legacy_take_profit_net=entry_cost * (1.0 + take_profit),
             stop_loss_pct=stop_loss_pct,
             settlement_first_no_min_cost=_settlement_first_no_min_cost_for_order(row),

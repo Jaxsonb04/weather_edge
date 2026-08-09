@@ -102,7 +102,8 @@ describe("PublicationProvider", () => {
     await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByText("Operational").nextElementSibling).toHaveTextContent("fresh");
 
-    await act(async () => vi.advanceTimersByTimeAsync(6 * 60_000));
+    // age 17m: past the 15-minute operational threshold, inside strategy 20.
+    await act(async () => vi.advanceTimersByTimeAsync(12 * 60_000));
 
     expect(screen.getByText("Operational").nextElementSibling).toHaveTextContent("stale");
     expect(screen.getByText("Strategy").nextElementSibling).toHaveTextContent("fresh");

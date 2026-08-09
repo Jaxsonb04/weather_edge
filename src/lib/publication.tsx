@@ -47,7 +47,11 @@ export interface PublicationContextValue {
 }
 
 const POLL_INTERVAL_MS = 60_000;
-const OPERATIONAL_MAX_AGE_MINUTES = 10;
+// One publish cycle is 5 minutes and Pages delivery adds ~1-2 more, so a
+// healthy feed presents ages up to ~7 minutes. 15 tolerates exactly one
+// missed or force-republished cycle; two consecutive misses is a real
+// pipeline problem and should surface.
+const OPERATIONAL_MAX_AGE_MINUTES = 15;
 const STRATEGY_MAX_AGE_MINUTES = 20;
 const BASE = import.meta.env.BASE_URL ?? "./";
 const UNKNOWN: PublicationFreshness = {

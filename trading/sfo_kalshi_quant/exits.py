@@ -179,6 +179,8 @@ def decide_exit(
     model_veto_enabled: bool = True,
     model_veto_buffer: float = 0.0,
     model_veto_max_loss_roi: float | None = None,
+    model_veto_max_loss_dollars: float | None = None,
+    position_loss_dollars: float | None = None,
     edge_based_take_profit: bool = True,
     legacy_take_profit_net: float | None = None,
     stop_loss_pct: float | None = None,
@@ -198,6 +200,16 @@ def decide_exit(
     realize intraday noise. Once the loss crosses the catastrophic floor
     (``model_veto_max_loss_roi``) the veto lapses and discipline wins.
 
+    The catastrophic floor is also expressible in account dollars
+    (``model_veto_max_loss_dollars``, compared against ``position_loss_dollars``):
+    the ROI floor scales with position cost, so on the sleeve's largest positions
+    a 60% drawdown is a materially bigger slice of the daily objective than on a
+    small one. Production order 2147 (2026-08-07) rode the ROI veto from -$23 to
+    -$40.65 -- most of a $50 target day -- while order 2098 (2026-08-05) never
+    dipped past -$33.29 on its way to +$35.69. A dollar floor between those two
+    paths bounds every future veto tail without giving up the recoveries the
+    veto exists for.
+
     Fail-safe: for a NO side with NO fresh model read available, the stop now
     HOLDS (``HOLD_NO_MODEL_READ``) instead of firing. A daily weather high is
     monotonic and settles at a known time, so an intraday NO mark is noise until
@@ -207,6 +219,15 @@ def decide_exit(
     present and has dropped below the veto floor, the thesis IS confirmed dead
     and the stop fires as before.)
     """
+
+    def _catastrophic(roi: float) -> bool:
+        if model_veto_max_loss_roi is not None and roi <= -model_veto_max_loss_roi:
+            return True
+        return (
+            model_veto_max_loss_dollars is not None
+            and position_loss_dollars is not None
+            and position_loss_dollars <= -model_veto_max_loss_dollars
+        )
 
     # Prefer the edge-based convergence target when a fresh model read exists;
     # otherwise fall back to the legacy %-of-cost target (reachable for cheap
@@ -243,10 +264,7 @@ def decide_exit(
             "STOP_LOSS",
             f"edge reversed: fair value {tp_net:.3f} fell to/below net exit "
             f"{net_exit:.3f}, under entry {entry_cost:.3f}",
-            catastrophic=(
-                model_veto_max_loss_roi is not None
-                and reversal_roi <= -model_veto_max_loss_roi
-            ),
+            catastrophic=_catastrophic(reversal_roi),
         )
 
     if net_exit <= stop_loss_net:
@@ -254,9 +272,7 @@ def decide_exit(
         # A catastrophic drawdown stops unconditionally -- past this floor the
         # position is a genuine disaster, not intraday noise, and discipline wins
         # even with no model read.
-        catastrophic = (
-            model_veto_max_loss_roi is not None and roi <= -model_veto_max_loss_roi
-        )
+        catastrophic = _catastrophic(roi)
         if model_veto_enabled and side.upper() == "NO" and not catastrophic:
             if model_side_probability is None:
                 # FAIL-SAFE: the daily high is monotonic and settles at a known
@@ -284,9 +300,21 @@ def decide_exit(
                 )
         pct_suffix = f" ({stop_loss_pct:.1f}%)" if stop_loss_pct is not None else ""
         prefix = "catastrophic " if catastrophic else ""
+        dollar_suffix = ""
+        if (
+            catastrophic
+            and model_veto_max_loss_dollars is not None
+            and position_loss_dollars is not None
+            and position_loss_dollars <= -model_veto_max_loss_dollars
+        ):
+            dollar_suffix = (
+                f"; position loss ${position_loss_dollars:.2f} breached the "
+                f"${model_veto_max_loss_dollars:.2f} veto dollar floor"
+            )
         return ExitSignal(
             "STOP_LOSS",
-            f"{prefix}{side} stop-loss: net exit {net_exit:.3f} <= floor {stop_loss_net:.3f}{pct_suffix}",
+            f"{prefix}{side} stop-loss: net exit {net_exit:.3f} <= floor "
+            f"{stop_loss_net:.3f}{pct_suffix}{dollar_suffix}",
             catastrophic=catastrophic,
         )
 
