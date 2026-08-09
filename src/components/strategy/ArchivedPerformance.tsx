@@ -147,9 +147,13 @@ function ArchiveSparkline({ days }: { days: DayRow[] }) {
   const span = Math.max(high - low, 1);
   const width = 56;
   const height = 18;
+  // The stroke is centred on the path and does not scale, so a point mapped
+  // flush to 0 or to `height` loses its outer half to the viewBox edge. Inset
+  // the plot band by half the stroke to keep the extremes fully drawn.
+  const inset = 1;
   const points = values.map((value, index) => {
     const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
-    const y = height - ((value - low) / span) * height;
+    const y = height - inset - ((value - low) / span) * (height - inset * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   const last = values.at(-1) ?? 0;
@@ -271,20 +275,11 @@ function ArchiveEvidenceCard({
   const activity = activeDays.length
     ? `Visible activity ${dateRange(activeDays[0].date, activeDays.at(-1)?.date)}`
     : activityFieldsPublished
-      ? "No activity recorded throughout this published tail"
-      : "Activity fields unavailable for this published tail";
+      ? "No activity recorded across this published run"
+      : "Activity fields unavailable for this published run";
   const open = summary?.open_positions ?? 0;
   const pending = summary?.pending_limit_orders ?? 0;
   const settling = open > 0 || pending > 0;
-  const publishedDailyPnl = days.filter(
-    (day) => typeof day.realized_pnl === "number" && Number.isFinite(day.realized_pnl),
-  );
-  const canonicalWindowPnl = profile.daily_summary?.totals?.realized_pnl;
-  const windowPnl = typeof canonicalWindowPnl === "number" && Number.isFinite(canonicalWindowPnl)
-    ? canonicalWindowPnl
-    : publishedDailyPnl.length
-      ? publishedDailyPnl.reduce((total, day) => total + day.realized_pnl!, 0)
-      : null;
 
   return (
     <Card
@@ -332,8 +327,8 @@ function ArchiveEvidenceCard({
                 emphasis="secondary"
                 height={176}
                 eyebrow="Attribution only"
-                title={`${story.title} — published P&L tail`}
-                description={`${dateRange(evidenceStart, evidenceEnd)} · rolling published window, not account equity`}
+                title={`${story.title} — full-run P&L`}
+                description={`${dateRange(evidenceStart, evidenceEnd)} · this experiment's full run, attribution not account equity`}
                 className="min-w-0 max-w-full"
               />
             </div>
@@ -366,9 +361,8 @@ function ArchiveEvidenceCard({
                   tone={(summary?.roi ?? 0) > 0 ? "pos" : (summary?.roi ?? 0) < 0 ? "neg" : "default"}
                 />
                 <Stat
-                  label="Window change"
-                  value={windowPnl == null ? "—" : money(windowPnl)}
-                  tone={windowPnl == null ? "default" : windowPnl > 0 ? "pos" : windowPnl < 0 ? "neg" : "default"}
+                  label="Days traded"
+                  value={activeDays.length ? `${activeDays.length} of ${days.length}` : "—"}
                 />
                 <Stat label="Open · resting" value={`${open} · ${pending}`} />
               </div>
