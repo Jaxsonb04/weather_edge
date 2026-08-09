@@ -16,7 +16,7 @@ function tier1Steps(modelSample: number | null): Step[] {
     {
       icon: "solar:cloud-storm-bold",
       title: modelSample == null ? "Multi-model NWP ensemble" : `${modelSample}-member NWP ensemble`,
-      desc: "Pulled from Open-Meteo previous-runs — only model cycles that were available before the target, so the evaluation does not leak future runs.",
+      desc: "Each model's freshest current run for the target date, fetched per city from the live forecast API — the served forecast is never a lagged reconstruction.",
     },
     {
       icon: "solar:graph-up-bold",
@@ -100,6 +100,15 @@ export function ForecastPipeline() {
               <StepCard key={s.title} step={s} index={i} />
             ))}
           </div>
+          {/* The serving feed and the fitting feed are deliberately different
+              endpoints; conflating them reads as "the live forecast is stale by
+              design", which is the opposite of what the code does. */}
+          <p className="mt-3 text-xs leading-relaxed text-muted">
+            <span className="font-semibold text-foreground">Two feeds, on purpose.</span> Serving reads the freshest
+            current run. Fitting reads a different endpoint — the Open-Meteo previous-runs archive, each cycle exactly
+            as it stood before its own target date — so the rolling-origin EMOS coefficients are never fitted or
+            scored on a model run that did not exist yet.
+          </p>
         </section>
 
         <div className="flex items-center gap-3" aria-hidden="true">
@@ -139,11 +148,12 @@ export function ForecastPipeline() {
       </Reveal>
 
       <Finding>
-        The same leakage-free {modelSample == null ? "multi-model" : <><strong className="tnum">{modelSample}</strong>-member</>} NWP ensemble runs in{" "}
+        The same {modelSample == null ? "multi-model" : <><strong className="tnum">{modelSample}</strong>-member</>} NWP ensemble runs in{" "}
         <strong>
           {typeof cityCount === "number" ? <span className="tnum">{cityCount}</span> : "every"}
         </strong>{" "}
-        market, EMOS-calibrated per city and settled against each station's official NWS Climatological Report. The
+        market, EMOS-calibrated per city on a leakage-free rolling-origin fit and settled against each station's
+        official NWS Climatological Report. The
         LSTM calibration study, marine-layer features, and optional external input are <strong>{flagshipName}-only evidence layers</strong>,
         not the universal point-forecast method. The current SFO publication may serve the shared EMOS weighted mean as an operational fallback.
         {nonFlagshipCount != null && nonFlagshipCount > 0 && (

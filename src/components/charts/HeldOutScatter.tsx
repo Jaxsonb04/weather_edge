@@ -1,31 +1,52 @@
 import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
+import { round1 } from "../../lib/data";
 import { heldOutSeries, type Diagnostics } from "../../lib/diagnostics";
 
-/** Held-out predicted (LSTM) vs actual high — points hugging the dashed y=x line
-    mean the model tracks reality across the full temperature range. */
+/** Residual size that counts as a large miss in the summary, in °F. */
+const BIG_MISS_F = 5;
+
+/** The alt text is derived from the plotted points. A hand-written verdict
+    ("clustering tightly along the diagonal") would read the same whatever the
+    residuals did, and on the current held-out series it would be wrong. */
+function scatterLabel(points: { actual: number; lstm: number }[]): string {
+  if (!points.length) {
+    return "Predicted-versus-actual scatter: the published diagnostics carry no held-out days.";
+  }
+  const residuals = points.map((p) => p.lstm - p.actual);
+  const mae = residuals.reduce((sum, r) => sum + Math.abs(r), 0) / residuals.length;
+  const worst = residuals.reduce((held, r) => (Math.abs(r) > Math.abs(held) ? r : held), residuals[0]);
+  const misses = residuals.filter((r) => Math.abs(r) > BIG_MISS_F).length;
+  return (
+    `Scatter of ${points.length} held-out days: LSTM-predicted high on the vertical axis against the ` +
+    `settled actual high on the horizontal, with a dashed diagonal marking a perfect prediction. ` +
+    `Mean absolute error ${round1(mae)} degrees; ${misses} of ${points.length} days miss by more than ` +
+    `${BIG_MISS_F} degrees; the largest residual is ${round1(Math.abs(worst))} degrees ` +
+    `${worst < 0 ? "below" : "above"} the settled high.`
+  );
+}
+
+/** Held-out predicted (LSTM) vs actual high — vertical distance from the dashed
+    y=x line is that day's residual. */
 export function HeldOutScatter({ diag }: { diag: Diagnostics }) {
   const data = heldOutSeries(diag);
   const lo = 35;
   const hi = 100;
   return (
     <Widget className="h-full w-full">
-      <Widget.Header>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
         <div>
           <Widget.Title>Predicted vs actual</Widget.Title>
           <Widget.Description>{data.length} held-out days · LSTM prediction against the settled high</Widget.Description>
         </div>
-        <Widget.Legend>
+        <Widget.Legend className="shrink-0 flex-wrap">
           <Widget.LegendItem color="var(--accent)">held-out day</Widget.LegendItem>
           <Widget.LegendItem color="var(--color-muted)">perfect</Widget.LegendItem>
         </Widget.Legend>
       </Widget.Header>
       <Widget.Content>
-        <div
-          role="img"
-          aria-label={`Scatter of ${data.length} held-out days: LSTM-predicted high versus the settled actual high, with points clustering tightly along the perfect-prediction diagonal.`}
-        >
+        <div role="img" aria-label={scatterLabel(data)}>
           <ResponsiveContainer width="100%" height={260}>
             <ScatterChart margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
               <CartesianGrid stroke="var(--color-border)" strokeOpacity={0.5} vertical={false} />

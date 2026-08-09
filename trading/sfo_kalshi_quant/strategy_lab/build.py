@@ -212,16 +212,18 @@ def build_strategy_research(
         forecast_scorecards = build_forecast_scorecards(
             forecaster_root / "weather.db"
         )
-    daily_summary = _daily_summary_payload(
-        db_path=db_path,
-        forecaster_root=forecaster_root,
-        config=cfg,
-        allow_decision_scan=not fast_publication,
-        decision_analysis=(
-            analysis_cache.get("daily_summary_analysis")
-            if isinstance(analysis_cache, dict)
-            else None
-        ),
+    daily_summary = _mark_deferred_decision_counts(
+        _daily_summary_payload(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=cfg,
+            allow_decision_scan=not fast_publication,
+            decision_analysis=(
+                analysis_cache.get("daily_summary_analysis")
+                if isinstance(analysis_cache, dict)
+                else None
+            ),
+        )
     )
     accounting = _accounting_payload(daily_summary, paper, db_path=db_path)
     if accounting.get("available") is False:
@@ -247,6 +249,10 @@ def build_strategy_research(
         ),
         accounting,
     )
+    # The profile views re-derive their own counters from the parent summary
+    # with ``0`` defaults, so the deferral marker has to be re-applied after
+    # they are built or each book would re-publish the zeros.
+    profiles = _clear_deferred_profile_counts(profiles, daily_summary)
     status = _status_payload(
         config=cfg,
         db_path=db_path,
@@ -375,6 +381,147 @@ def _deferred_config_rescore_payload(reason: str) -> dict[str, Any]:
         "sampled_snapshots": 0,
         "reason": reason,
     }
+
+
+# The recurring public cycle is permanently bounded (run_publication_cycle.sh
+# forces the fast flag), so the decision journal is never scanned on this path.
+# ``build_paper_summary`` still returns its empty accumulators, and publishing
+# those as 0 next to real order counts reads as a measured "0 of 0 approved".
+# The artifact has to say the number does not exist instead of printing a zero.
+DEFERRED_DECISION_ANALYTICS_REASON = (
+    "Decision-journal analytics are not computed on the bounded recurring "
+    "public path; these fields are unpopulated, not zero."
+)
+
+_DEFERRED_DAY_COUNT_FIELDS = ("signals", "approved_signals")
+
+
+def _deferred_gate_behavior_payload(
+    gate: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    """Keep the section's shape but drop counters that were never measured.
+
+    Every value under ``gate_behavior`` is decision-journal derived, so on the
+    deferred path each count becomes null and each collection empties. Walking
+    the existing keys instead of listing them keeps the summary-level and
+    profile-level shapes stable as either one grows.
+    """
+
+    emptied: dict[str, Any] = {}
+    for key, value in gate.items():
+        if isinstance(value, bool):
+            emptied[key] = value
+        elif isinstance(value, (int, float)):
+            emptied[key] = None
+        elif isinstance(value, list):
+            emptied[key] = []
+        elif isinstance(value, dict):
+            emptied[key] = {}
+        else:
+            emptied[key] = value
+    return {
+        **emptied,
+        "available": False,
+        "analysis_deferred": True,
+        "reason": reason,
+    }
+
+
+def _decision_analytics_deferred(daily_summary: dict[str, Any]) -> bool:
+    analytics = daily_summary.get("decision_analytics")
+    return (
+        isinstance(analytics, dict)
+        and analytics.get("status") == "deferred"
+    )
+
+
+def _day_without_deferred_counts(row: dict[str, Any]) -> dict[str, Any]:
+    """Null one published day's decision counters, per-profile rows included."""
+
+    if not isinstance(row, dict):
+        return row
+    cleared = {
+        **row,
+        **{field: None for field in _DEFERRED_DAY_COUNT_FIELDS if field in row},
+    }
+    profiles = row.get("profiles")
+    if isinstance(profiles, dict):
+        cleared["profiles"] = {
+            name: (
+                {
+                    **profile,
+                    **{
+                        field: None
+                        for field in _DEFERRED_DAY_COUNT_FIELDS
+                        if field in profile
+                    },
+                }
+                if isinstance(profile, dict)
+                else profile
+            )
+            for name, profile in profiles.items()
+        }
+    return cleared
+
+
+def _mark_deferred_decision_counts(daily_summary: dict[str, Any]) -> dict[str, Any]:
+    """Replace unpopulated decision counters with an explicit unavailable marker.
+
+    Only fires when the summary itself reports the journal as deferred, so a
+    fresh full-research build and a cache-backed fast build both keep their real
+    measured counts.
+    """
+
+    if daily_summary.get("available") is not True or not _decision_analytics_deferred(
+        daily_summary
+    ):
+        return daily_summary
+    payload = dict(daily_summary)
+    gate = payload.get("gate_behavior")
+    if isinstance(gate, dict):
+        payload["gate_behavior"] = _deferred_gate_behavior_payload(
+            gate, DEFERRED_DECISION_ANALYTICS_REASON
+        )
+    if isinstance(payload.get("model_vs_market"), dict):
+        payload["model_vs_market"] = {
+            "available": False,
+            "analysis_deferred": True,
+            "reason": DEFERRED_DECISION_ANALYTICS_REASON,
+        }
+    if "days" in payload:
+        payload["days"] = [
+            _day_without_deferred_counts(row) for row in payload["days"] or []
+        ]
+    return payload
+
+
+def _clear_deferred_profile_counts(
+    profiles: list[dict[str, Any]],
+    daily_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Carry the same deferral marker into every per-profile book."""
+
+    if not _decision_analytics_deferred(daily_summary):
+        return profiles
+    rows: list[dict[str, Any]] = []
+    for profile in profiles:
+        daily = profile.get("daily_summary")
+        if not isinstance(daily, dict):
+            rows.append(profile)
+            continue
+        updated = dict(daily)
+        gate = updated.get("gate_behavior")
+        if isinstance(gate, dict):
+            updated["gate_behavior"] = _deferred_gate_behavior_payload(
+                gate, DEFERRED_DECISION_ANALYTICS_REASON
+            )
+        if "days" in updated:
+            updated["days"] = [
+                _day_without_deferred_counts(row) for row in updated["days"] or []
+            ]
+        rows.append({**profile, "daily_summary": updated})
+    return rows
 
 
 def _cached_analysis_section(

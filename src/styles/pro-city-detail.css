@@ -1,13 +1,15 @@
 /* Pro components behind the below-fold CityDetail boundary. */
 @reference "../index.css";
+/* Imports are layered: an unlayered Pro sheet outranks every @layer, so
+   Tailwind utilities written on a Pro slot would silently do nothing. */
 @import "@heroui/styles/components/accordion.css" layer(components);
 @import "@heroui/styles/components/checkbox.css" layer(components);
 @import "@heroui/styles/components/close-button.css" layer(components);
 @import "@heroui/styles/components/table.css" layer(components);
-@import "@heroui-pro/react/css/components/bar-chart.css";
-@import "@heroui-pro/react/css/components/chart-tooltip.css";
-@import "@heroui-pro/react/css/components/data-grid.css";
-@import "@heroui-pro/react/css/components/hover-card.css";
-@import "@heroui-pro/react/css/components/sheet.css";
-@import "@heroui-pro/react/css/components/stepper.css";
-@import "@heroui-pro/react/css/components/widget.css";
+@import "@heroui-pro/react/css/components/bar-chart.css" layer(components);
+@import "@heroui-pro/react/css/components/chart-tooltip.css" layer(components);
+@import "@heroui-pro/react/css/components/data-grid.css" layer(components);
+@import "@heroui-pro/react/css/components/hover-card.css" layer(components);
+@import "@heroui-pro/react/css/components/sheet.css" layer(components);
+@import "@heroui-pro/react/css/components/stepper.css" layer(components);
+@import "@heroui-pro/react/css/components/widget.css" layer(components);

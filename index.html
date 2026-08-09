@@ -2,23 +2,42 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Both schemes, so an address bar / PWA chrome never contradicts the page.
+         The boot script below collapses the pair when a stored theme wins. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f5" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14151a" />
     <script>
       (() => {
+        const systemDark = () => {
+          try {
+            return matchMedia("(prefers-color-scheme: dark)").matches;
+          } catch {
+            return false;
+          }
+        };
+        let stored = null;
         try {
-          const stored = localStorage.getItem("weatheredge-theme");
-          const followsSystem = stored !== "light" && stored !== "dark";
-          const dark = stored === "dark" || (followsSystem && matchMedia("(prefers-color-scheme: dark)").matches);
-          document.documentElement.classList.toggle("dark", dark);
-          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+          stored = localStorage.getItem("weatheredge-theme");
         } catch {
-          const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-          document.documentElement.classList.toggle("dark", dark);
-          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+          stored = null;
+        }
+        const followsSystem = stored !== "light" && stored !== "dark";
+        const dark = followsSystem ? systemDark() : stored === "dark";
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        // The theme-color tags above are keyed to the OS preference, so a stored
+        // override has to reduce them to the single unconditional tag that
+        // matches the theme we just applied.
+        if (!followsSystem) {
+          const active = "(prefers-color-scheme: " + (dark ? "dark" : "light") + ")";
+          document.querySelectorAll('meta[name="theme-color"][media]').forEach((meta) => {
+            if (meta.getAttribute("media") === active) meta.removeAttribute("media");
+            else meta.remove();
+          });
         }
       })();
     </script>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" sizes="any" />
-    <meta name="theme-color" content="#14151a" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WeatherEdge — 15-City Weather Forecasting &amp; Prediction-Market Research</title>
     <meta

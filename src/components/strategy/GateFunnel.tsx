@@ -1,12 +1,50 @@
 import { Card } from "@heroui/react/card";
+import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
-import { gateCounts, type ProfileGateStats, type StrategyLab } from "../../lib/strategy";
+import {
+  deferralReason,
+  gateCounts,
+  gateDeferred,
+  type ProfileGateStats,
+  type StrategyLab,
+} from "../../lib/strategy";
 
 const CATEGORY_LABELS: Record<string, string> = {
   edge: "Edge & pricing gates",
   no_data: "Source disagreement / no data",
   other: "Other",
 };
+
+/** Shared by the measured funnel and its deferred stand-in so the section keeps
+    one identity in both states. */
+function FunnelHeader() {
+  return (
+    <Card.Header>
+      <Card.Title className="text-base">Signal filtering</Card.Title>
+      <Card.Description className="text-sm text-muted">
+        Every 5-minute scheduled scan re-checks each published bracket and side against the full filter set
+      </Card.Description>
+    </Card.Header>
+  );
+}
+
+/** The whole card is a count of gate evaluations, so when the artifact publishes
+    that section unpopulated there is no funnel to draw — only the deferral to
+    report. Rendering the stub's zeros would claim a 0.00% survival rate on the
+    same page that shows 52 trades opened. */
+function DeferredFunnel({ reason }: { reason: string }) {
+  return (
+    <Card className="w-full min-w-0 max-w-full rounded-2xl">
+      <FunnelHeader />
+      <Card.Content className="min-w-0 pt-0">
+        <p role="status" className="flex gap-2 text-sm leading-relaxed text-muted">
+          <Icon icon="solar:hourglass-line-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+          <span>Gate evaluation counts are not published in this artifact, so no approval or rejection rate is shown. {reason}</span>
+        </p>
+      </Card.Content>
+    </Card>
+  );
+}
 
 /** Why almost everything gets rejected: the window's gate evaluations, the
     approval sliver, and the top global rejection reasons. Per-book detail
@@ -15,7 +53,8 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
   const { approved, total } = gateCounts(gate);
-  const approvedPct = total ? approved / total : 0;
+  if (gateDeferred(gate) || total === 0) return <DeferredFunnel reason={deferralReason(gate)} />;
+  const approvedPct = approved / total;
   const cats = Object.entries(aggregateCategories(gate.by_profile ?? []));
   const rejections = (gate.top_rejections_all?.length ? gate.top_rejections_all : gate.top_rejections ?? []).slice(0, 8);
   const max = rejections[0]?.count ?? 1;
@@ -24,12 +63,7 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
 
   return (
     <Card className="w-full min-w-0 max-w-full rounded-2xl">
-      <Card.Header>
-        <Card.Title className="text-base">Signal filtering</Card.Title>
-        <Card.Description className="text-sm text-muted">
-          Every 5-minute scheduled scan re-checks each published bracket and side against the full filter set
-        </Card.Description>
-      </Card.Header>
+      <FunnelHeader />
       <Card.Content className="min-w-0 space-y-6 pt-0">
         <div>
           <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">

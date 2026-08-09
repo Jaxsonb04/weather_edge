@@ -26,6 +26,7 @@ import { DecisionCard } from "../market/DecisionCard";
 import { EdgeChart } from "../market/EdgeChart";
 import { MarketBook } from "../market/MarketBook";
 import { DetailDisclosure } from "../ui/DetailDisclosure";
+import { lockedHigh, type IntradayLock } from "./CityGrid";
 import "../../styles/pro-city-detail.css";
 
 const FRESH_TONE: Record<string, { dot: string; text: string }> = {
@@ -37,12 +38,29 @@ const FRESH_TONE: Record<string, { dot: string; text: string }> = {
 const methodLabel = (m: string | undefined) =>
   m === "emos_wmean" ? "EMOS weighted mean" : m ? m.replace(/_/g, " ") : "—";
 
+/** `overround` is sum(raw ladder prices) − 1, so it measures the book's balance,
+    not a cost: every market probability on this page is already divided by that
+    raw total. It also goes negative on a thin ladder, which "cost to beat"
+    phrasing renders as nonsense. */
+function ladderBalance(overround: number | undefined) {
+  if (typeof overround !== "number" || Number.isNaN(overround)) return null;
+  const thin = overround < 0;
+  return {
+    parLabel: `${((1 + overround) * 100).toFixed(1)}%`,
+    lead: thin ? "sum to only " : "sum to ",
+    descriptor: thin ? "a sign of a thin or incomplete book" : "a measure of book balance",
+  };
+}
+
 /** The lead the header foregrounds + a small table of the 1–3 published dates. */
-function ForecastPanel({ city }: { city: City }) {
+function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: IntradayLock | null }) {
   const lead = cityNextForecast(city);
   const leads = [...(city.forecasts ?? [])]
     .filter((f) => typeof f?.predicted_high_f === "number" && !!f?.target_date)
     .sort((a, b) => a.target_date.localeCompare(b.target_date));
+  // The flagship signal republishes SFO's settlement-day high after the intraday
+  // update, so this panel must show the same number the hero dial does.
+  const display = lead ? lockedHigh(city.slug, lead, intradayLock) : null;
 
   return (
     <Card className="h-full min-w-0 rounded-2xl">
@@ -54,20 +72,24 @@ function ForecastPanel({ city }: { city: City }) {
           </Card.Description>
         </div>
         <Chip size="sm" variant="soft">
-          <Chip.Label>{methodLabel(lead?.method)}</Chip.Label>
+          {/* The method the coverage artifact names is the EMOS issue; say so
+              plainly when the displayed high is the intraday-updated one. */}
+          <Chip.Label>
+            {display?.baselineF == null ? methodLabel(lead?.method) : `${methodLabel(lead?.method)} + intraday`}
+          </Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="space-y-4 pt-0">
-        {lead ? (
+        {lead && display ? (
           <>
             <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
               <div>
                 <p className="text-[11px] uppercase tracking-wide text-muted">Predicted high</p>
                 <p
                   className="tnum font-display text-5xl font-bold leading-none"
-                  style={{ color: tempColor(lead.predicted_high_f) }}
+                  style={{ color: tempColor(display.highF) }}
                 >
-                  {Math.round(lead.predicted_high_f)}°
+                  {Math.round(display.highF)}°
                 </p>
               </div>
               <dl className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
@@ -86,6 +108,17 @@ function ForecastPanel({ city }: { city: City }) {
               </dl>
             </div>
 
+            {display.baselineF != null && (
+              <p className="max-w-prose text-xs leading-relaxed text-muted">
+                Intraday-updated: the flagship market signal republishes this high after folding in
+                the day's observed high so far, so it reads{" "}
+                <span className="tnum font-medium text-foreground">{round1(display.highF)}°</span>{" "}
+                rather than the{" "}
+                <span className="tnum font-medium text-foreground">{round1(display.baselineF)}°</span>{" "}
+                EMOS issue. The sigma, spread and member count above describe that EMOS issue.
+              </p>
+            )}
+
             {leads.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[22rem] text-sm">
@@ -100,12 +133,26 @@ function ForecastPanel({ city }: { city: City }) {
                   <tbody className="divide-y divide-border/40">
                     {leads.map((f: CityForecast) => {
                       const active = f.target_date === lead.target_date;
+                      const row = lockedHigh(city.slug, f, intradayLock);
                       return (
                         <tr key={`${f.target_date}-${f.lead_days ?? ""}`} className={active ? "bg-accent-soft/50" : ""}>
-                          <td className="py-2 pr-3 text-foreground">{shortDateUTC(f.target_date)}</td>
+                          <td className="py-2 pr-3 text-foreground">
+                            {shortDateUTC(f.target_date)}
+                            {row.baselineF != null && (
+                              <span className="ml-1.5 font-mono text-[9px] uppercase tracking-wide text-muted">
+                                intraday
+                              </span>
+                            )}
+                          </td>
                           <td className="py-2 pr-3 text-right">
-                            <span className="tnum font-medium" style={{ color: tempColor(f.predicted_high_f) }}>
-                              {round1(f.predicted_high_f)}°
+                            {/* The thermal ramp is tuned for the headline
+                                figures, which are large text and clear the 3:1
+                                floor. At 14px/500 this cell is normal text
+                                needing 4.5:1, so it reads in foreground ink —
+                                the column of numbers already carries the
+                                comparison the colour would have added. */}
+                            <span className="tnum font-medium text-foreground">
+                              {round1(row.highF)}°
                             </span>
                           </td>
                           <td className="tnum py-2 pr-3 text-right text-muted">{f.sigma_f == null ? "—" : `${round1(f.sigma_f)}°`}</td>
@@ -224,12 +271,14 @@ interface CityDetailProps {
   city: City;
   /** Status-selected SF flagship market target — only meaningful for SFO. */
   flagshipTarget?: Target;
+  /** Flagship reconciliation, so this panel never contradicts the hero dial. */
+  intradayLock?: IntradayLock | null;
 }
 
 /** The selected-city drill-down. Every city publishes its calibrated forecast,
     settlement and paper-book activity; the San Francisco flagship additionally
     publishes the full bracket-level market microstructure. */
-export function CityDetail({ city, flagshipTarget }: CityDetailProps) {
+export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDetailProps) {
   const { operational } = usePublication();
   const currentStateAvailable = operational.state === "fresh";
   // The bracket-level signal artifact is San-Francisco-only, so gate on the
@@ -237,13 +286,14 @@ export function CityDetail({ city, flagshipTarget }: CityDetailProps) {
   const isFlagship = !!city.has_full_blend && city.slug === "sfo" && !!flagshipTarget;
   const showBrackets = isFlagship && currentStateAvailable;
   const mc = flagshipTarget?.market_consensus;
+  const ladder = ladderBalance(mc?.overround);
   const approvedCount = flagshipTarget?.decisions?.filter((decision) => decision.approved).length ?? 0;
 
   return (
     <div className="space-y-6">
       <Reveal>
         <div className="grid gap-6 lg:grid-cols-[1.02fr_0.98fr]">
-          <ForecastPanel city={city} />
+          <ForecastPanel city={city} intradayLock={intradayLock} />
           <BookPanel city={city} currentStateAvailable={currentStateAvailable} />
         </div>
       </Reveal>
@@ -292,8 +342,15 @@ export function CityDetail({ city, flagshipTarget }: CityDetailProps) {
                   {round1(mc.model_minus_market_f)}°F
                 </strong>{" "}
                 disagreement. The market's most-likely bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
-                {pct(mc.modal_probability, 0)}, and the book carries a {pct(mc.overround, 1)} overround —
-                the cost any edge has to beat. This report marks{" "}
+                {pct(mc.modal_probability, 0)}.
+                {ladder && (
+                  <>
+                    {" "}The book's raw ladder prices {ladder.lead}
+                    <strong>{ladder.parLabel}</strong> of par — {ladder.descriptor}, not a cost to
+                    beat: the market probabilities shown here are already normalized by that total.
+                  </>
+                )}{" "}
+                This report marks{" "}
                 <strong>{approvedCount}</strong> bracket-side candidate{approvedCount === 1 ? "" : "s"} eligible for this target;
                 the separate paper-account scan handles admission and placement.
               </Finding>

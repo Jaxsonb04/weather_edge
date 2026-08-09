@@ -356,6 +356,11 @@ def build_paper_summary(
         "learnings": _learnings(
             window_terminal_rows, decision_stats, forecast_abs_errors
         ),
+        "profile_eras": _profile_era_summaries(
+            valid_position_rows=valid_position_rows,
+            resolved_lots=resolved_lots,
+            terminal_rows=terminal_rows,
+        ),
     }
     payload["recommended_changes"] = _recommended_changes(payload)
     return payload
@@ -444,6 +449,175 @@ def _profile_keys(window_orders: list) -> set[str]:
         for order in window_orders
         if order["risk_profile"] and order["risk_profile"] != "unknown"
     }
+
+
+_MAX_ERA_DAYS = 400
+
+
+def _profile_era_summaries(
+    *,
+    valid_position_rows: list[dict[str, Any]],
+    resolved_lots: list[dict[str, Any]],
+    terminal_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Per-profile day series spanning each profile's OWN active life.
+
+    The published `days` series is one trailing window shared by every profile.
+    That is the right view for a book that still trades, but an archived
+    profile stopped trading before the window opened, so every day inside it
+    resolves nothing and the profile's curve degenerates to a horizontal line
+    pinned at its all-time total -- the shape it actually earned is erased.
+
+    These era series are keyed to the first and last day each profile really
+    resolved a position, so a frozen experiment keeps its own curve. They are
+    built from the order rows already loaded above on purpose: widening the
+    shared window instead would also widen the decision_snapshots scan, which
+    is the known refresh-timeout hazard on a large database.
+    """
+
+    resolved_days: dict[str, set[str]] = {}
+
+    def resolution_day(order: dict[str, Any], *, terminal: bool) -> str | None:
+        raw = (
+            (order.get("latest_resolved_at") or order.get("closed_at") or order.get("settled_at"))
+            if terminal
+            else (order.get("closed_at") or order.get("settled_at"))
+        )
+        if raw is None:
+            return None
+        return _local_day(raw) or None
+
+    for lot in resolved_lots:
+        name = lot["risk_profile"]
+        if not name or name == "unknown" or lot.get("realized_pnl") is None:
+            continue
+        day_key = resolution_day(lot, terminal=False)
+        if day_key:
+            resolved_days.setdefault(name, set()).add(day_key)
+
+    eras: dict[str, dict[str, Any]] = {}
+    for name, day_keys_seen in resolved_days.items():
+        first = date.fromisoformat(min(day_keys_seen))
+        last = date.fromisoformat(max(day_keys_seen))
+        span = (last - first).days + 1
+        truncated = span > _MAX_ERA_DAYS
+        if truncated:
+            # Bound the artifact: keep the tail ending at the last resolution.
+            first = last - timedelta(days=_MAX_ERA_DAYS - 1)
+            span = _MAX_ERA_DAYS
+        day_keys = [(first + timedelta(days=offset)).isoformat() for offset in range(span)]
+        per_day = {key: _empty_day(key) for key in day_keys}
+        # A truncated era still has to open at the level the profile had
+        # already reached, or every point on the visible tail understates it.
+        realized_before_era = 0.0
+        if truncated:
+            era_start = day_keys[0]
+            for lot in resolved_lots:
+                if lot["risk_profile"] != name or lot.get("realized_pnl") is None:
+                    continue
+                day_key = resolution_day(lot, terminal=False)
+                if day_key and day_key < era_start:
+                    realized_before_era += lot["realized_pnl"]
+
+        for order in valid_position_rows:
+            if order["risk_profile"] != name:
+                continue
+            opened_at = order.get("filled_at")
+            if opened_at is None and order["status"] in {
+                "PAPER_FILLED",
+                "PAPER_PARTIALLY_FILLED",
+                "PAPER_PARTIAL_EXPIRED",
+                "PAPER_SETTLED",
+                "PAPER_CLOSED",
+            }:
+                opened_at = order["created_at"]  # legacy rows predate filled_at
+            opened_day = _local_day(opened_at) if opened_at else None
+            if opened_day in per_day:
+                day = per_day[opened_day]
+                day["opened"] += 1
+                day["opened_spend"] += order["contracts"] * order["cost_per_contract"]
+
+        for lot in resolved_lots:
+            if lot["risk_profile"] != name or lot.get("realized_pnl") is None:
+                continue
+            day_key = resolution_day(lot, terminal=False)
+            if day_key in per_day:
+                day = per_day[day_key]
+                day["realized_pnl"] += lot["realized_pnl"]
+                day["resolved_spend"] += lot["contracts"] * lot["cost_per_contract"]
+
+        for order in terminal_rows:
+            if order["risk_profile"] != name:
+                continue
+            day_key = resolution_day(order, terminal=True)
+            if day_key not in per_day:
+                continue
+            day = per_day[day_key]
+            if order["status"] == "PAPER_CLOSED":
+                day["closed"] += 1
+            else:
+                day["settled"] += 1
+            if order["logical_outcome"] == "win":
+                day["wins"] += 1
+            elif order["logical_outcome"] == "loss":
+                day["losses"] += 1
+
+        cumulative = realized_before_era
+        days_out: list[dict[str, Any]] = []
+        for key in day_keys:
+            day = per_day.pop(key)
+            day.pop("profiles", None)
+            opening = cumulative
+            cumulative += day["realized_pnl"]
+            resolved = day["closed"] + day["settled"]
+            day["resolved"] = resolved
+            day["hit_rate"] = day["wins"] / resolved if resolved else None
+            day["roi"] = (
+                day["realized_pnl"] / day["resolved_spend"]
+                if day["resolved_spend"] > 0
+                else None
+            )
+            day["realized_pnl"] = round(day["realized_pnl"], 2)
+            day["daily_realized_pnl"] = day["realized_pnl"]
+            day["opening_attributed_pnl"] = round(opening, 2)
+            day["cumulative_realized"] = round(cumulative, 2)
+            day["closing_attributed_pnl"] = round(cumulative, 2)
+            day["opened_spend"] = round(day["opened_spend"], 2)
+            day["resolved_spend"] = round(day["resolved_spend"], 2)
+            # An era is a P&L attribution series, never account equity, and the
+            # gate/forecast series are only scanned for the shared window.
+            day["opening_equity"] = None
+            day["closing_equity"] = None
+            day["signals"] = 0
+            day["approved_signals"] = 0
+            day["forecast_predicted_high_f"] = None
+            day["forecast_actual_high_f"] = None
+            day["forecast_error_f"] = None
+            days_out.append(day)
+
+        era_spend = sum(day["resolved_spend"] for day in days_out)
+        era_pnl = sum(day["realized_pnl"] for day in days_out)
+        wins = sum(day["wins"] for day in days_out)
+        losses = sum(day["losses"] for day in days_out)
+        eras[name] = {
+            "risk_profile": name,
+            "window_start": day_keys[0],
+            "window_end": day_keys[-1],
+            "window_days": len(day_keys),
+            "days": days_out,
+            "totals": {
+                "trades_opened": sum(day["opened"] for day in days_out),
+                "trades_closed": sum(day["closed"] for day in days_out),
+                "trades_settled": sum(day["settled"] for day in days_out),
+                "realized_pnl": round(era_pnl, 2),
+                "capital_resolved": round(era_spend, 2),
+                "roi": round(era_pnl / era_spend, 4) if era_spend > 0 else None,
+                "wins": wins,
+                "losses": losses,
+                "hit_rate": round(wins / (wins + losses), 4) if (wins + losses) else None,
+            },
+        }
+    return eras
 
 
 def _exit_reason_breakdown(window_orders: list) -> dict[str, int]:

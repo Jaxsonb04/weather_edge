@@ -115,7 +115,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
     <Card className="rounded-2xl">
       <Card.Header className="flex flex-row flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent-text)]">
             <Icon icon="solar:target-bold" className="size-3.5" aria-hidden="true" />
             Daily research objective
           </p>

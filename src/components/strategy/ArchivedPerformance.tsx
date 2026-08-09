@@ -147,9 +147,13 @@ function ArchiveSparkline({ days }: { days: DayRow[] }) {
   const span = Math.max(high - low, 1);
   const width = 56;
   const height = 18;
+  // The stroke is centred on the path and does not scale, so a point mapped
+  // flush to 0 or to `height` loses its outer half to the viewBox edge. Inset
+  // the plot band by half the stroke to keep the extremes fully drawn.
+  const inset = 1;
   const points = values.map((value, index) => {
     const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
-    const y = height - ((value - low) / span) * height;
+    const y = height - inset - ((value - low) / span) * (height - inset * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   const last = values.at(-1) ?? 0;
@@ -271,20 +275,11 @@ function ArchiveEvidenceCard({
   const activity = activeDays.length
     ? `Visible activity ${dateRange(activeDays[0].date, activeDays.at(-1)?.date)}`
     : activityFieldsPublished
-      ? "No activity recorded throughout this published tail"
-      : "Activity fields unavailable for this published tail";
+      ? "No activity recorded across this published run"
+      : "Activity fields unavailable for this published run";
   const open = summary?.open_positions ?? 0;
   const pending = summary?.pending_limit_orders ?? 0;
   const settling = open > 0 || pending > 0;
-  const publishedDailyPnl = days.filter(
-    (day) => typeof day.realized_pnl === "number" && Number.isFinite(day.realized_pnl),
-  );
-  const canonicalWindowPnl = profile.daily_summary?.totals?.realized_pnl;
-  const windowPnl = typeof canonicalWindowPnl === "number" && Number.isFinite(canonicalWindowPnl)
-    ? canonicalWindowPnl
-    : publishedDailyPnl.length
-      ? publishedDailyPnl.reduce((total, day) => total + day.realized_pnl!, 0)
-      : null;
 
   return (
     <Card
@@ -301,7 +296,7 @@ function ArchiveEvidenceCard({
               <Icon icon={story.icon} className="size-5" aria-hidden="true" />
             </span>
             <div className="min-w-0">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent-text)]">
                 {story.stage}
               </p>
               <Card.Title className="mt-1 break-words text-balance text-lg leading-tight">
@@ -332,8 +327,8 @@ function ArchiveEvidenceCard({
                 emphasis="secondary"
                 height={176}
                 eyebrow="Attribution only"
-                title={`${story.title} — published P&L tail`}
-                description={`${dateRange(evidenceStart, evidenceEnd)} · rolling published window, not account equity`}
+                title={`${story.title} — full-run P&L`}
+                description={`${dateRange(evidenceStart, evidenceEnd)} · this experiment's full run, attribution not account equity`}
                 className="min-w-0 max-w-full"
               />
             </div>
@@ -366,9 +361,8 @@ function ArchiveEvidenceCard({
                   tone={(summary?.roi ?? 0) > 0 ? "pos" : (summary?.roi ?? 0) < 0 ? "neg" : "default"}
                 />
                 <Stat
-                  label="Window change"
-                  value={windowPnl == null ? "—" : money(windowPnl)}
-                  tone={windowPnl == null ? "default" : windowPnl > 0 ? "pos" : windowPnl < 0 ? "neg" : "default"}
+                  label="Days traded"
+                  value={activeDays.length ? `${activeDays.length} of ${days.length}` : "—"}
                 />
                 <Stat label="Open · resting" value={`${open} · ${pending}`} />
               </div>
@@ -500,6 +494,8 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
             const story = ARCHIVE_STORIES[profile.risk_profile];
             if (!story) return null;
             const summary = profile.paper_trading?.summary;
+            // Only the selected era's panel is mounted, so an unselected tab must
+            // not advertise aria-controls for an element that does not exist.
             const selectedTab = profile.risk_profile === effectiveKey;
             return (
               <button
@@ -509,7 +505,7 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
                 type="button"
                 role="tab"
                 aria-selected={selectedTab}
-                aria-controls={`archive-panel-${profile.risk_profile}`}
+                aria-controls={selectedTab ? `archive-panel-${profile.risk_profile}` : undefined}
                 tabIndex={selectedTab ? 0 : -1}
                 data-archive-option={profile.risk_profile}
                 onClick={() => setSelectedKey(profile.risk_profile)}
@@ -520,7 +516,7 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
                     : "border-border/60 bg-surface/65 text-muted hover:border-border hover:bg-surface-secondary"
                 }`}
               >
-                <span className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-semibold text-accent">
+                <span className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-semibold text-[color:var(--accent-text)]">
                   <span>{String(index + 1).padStart(2, "0")} · {story.stage}</span>
                   <Icon
                     icon={story.icon}

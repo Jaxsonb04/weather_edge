@@ -7,6 +7,20 @@ from . import EXPERIMENTAL_PROFILES, PRIMARY_PROFILE
 from .status_alerts import _alert_level, _entry_block_reason, _strategy_alerts
 
 
+ARCHIVED_PROFILES = frozenset(
+    {
+        "live-legacy",
+        "research",
+        "research-target-v1",
+        "research-target-v2",
+        "research-target-v3",
+        "research-target-v4",
+        "research-target-v5",
+        "research-motion",
+    }
+)
+
+
 def _profile_views(
     *,
     daily_summary: dict[str, Any],
@@ -47,6 +61,10 @@ def _profile_names(
         add(row.get("risk_profile"))
     for name in (signal_quality.get("latest_candidates_by_profile") or {}):
         add(name)
+    # An archived profile resolves nothing inside the shared window, so it can
+    # be absent from every window-scoped list above. Its era keeps it visible.
+    for name in (daily_summary.get("profile_eras") or {}):
+        add(name)
     for row in signal_quality.get("latest_candidates") or []:
         add(row.get("risk_profile"))
     names.discard("unknown")
@@ -60,7 +78,12 @@ def _profile_view(
     paper: dict[str, Any],
     signal_quality: dict[str, Any],
 ) -> dict[str, Any]:
-    profile_daily = _profile_daily_summary(daily_summary, paper, name)
+    archived = name in ARCHIVED_PROFILES
+    # An archived profile no longer trades, so the shared trailing window
+    # resolves nothing for it and its curve would flatten to a single value.
+    # Its own era series carries the shape it actually earned.
+    era = (daily_summary.get("profile_eras") or {}).get(name) if archived else None
+    profile_daily = _profile_daily_summary(daily_summary, paper, name, era=era)
     profile_paper = _profile_paper_payload(paper, name)
     profile_signal = _profile_signal_quality(signal_quality, name)
     learnings = _profile_learnings(
@@ -72,16 +95,6 @@ def _profile_view(
     recommendations = _profile_recommendations(name, profile_daily)
     profile_daily["learnings"] = learnings
     profile_daily["recommended_changes"] = recommendations
-    archived = name in {
-        "live-legacy",
-        "research",
-        "research-target-v1",
-        "research-target-v2",
-        "research-target-v3",
-        "research-target-v4",
-        "research-target-v5",
-        "research-motion",
-    }
     return {
         "risk_profile": name,
         "label": _profile_label(name),
@@ -112,11 +125,23 @@ def _profile_daily_summary(
     daily_summary: dict[str, Any],
     paper: dict[str, Any],
     name: str,
+    era: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile_total = _profile_row(daily_summary.get("profiles") or [], name)
     paper_total = _profile_row(paper.get("profiles") or [], name)
     window_pnl = _to_float(profile_total.get("realized_pnl"))
     all_time_pnl = _to_float(paper_total.get("realized_pnl", window_pnl))
+    if era and (era.get("days") or []):
+        return _era_daily_summary(
+            daily_summary,
+            era,
+            name,
+            all_time_pnl=all_time_pnl,
+            # Only an actually-published paper total may override the era's own
+            # arithmetic. Without this guard a paper payload missing the
+            # profile would pin the era's terminal point to a fabricated zero.
+            reconcile_to_paper_total="realized_pnl" in paper_total,
+        )
     cumulative = all_time_pnl - window_pnl
     days = []
     for row in daily_summary.get("days") or []:
@@ -217,6 +242,87 @@ def _profile_daily_summary(
             for row in daily_summary.get("biggest_losers") or []
             if _profile_key(row.get("risk_profile")) == name
         ],
+    }
+
+
+def _era_daily_summary(
+    daily_summary: dict[str, Any],
+    era: dict[str, Any],
+    name: str,
+    *,
+    all_time_pnl: float,
+    reconcile_to_paper_total: bool,
+) -> dict[str, Any]:
+    """Daily summary for an archived profile, scoped to its own active era.
+
+    The window here is the profile's real lifetime rather than the shared
+    trailing window, so `window_start`/`window_end` state when the experiment
+    actually ran and the curve keeps its shape. Because the era spans the whole
+    life of the profile, its window P&L and its all-time P&L are the same
+    number by construction.
+    """
+
+    days = [dict(row) for row in era.get("days") or []]
+    era_totals = era.get("totals") or {}
+    # Daily rows are publication-rounded, so their sum can drift a cent from
+    # the canonical order-level total. Where the paper payload publishes that
+    # total it wins, so the curve's terminal point, the window figure, and the
+    # account-scoped balance surfaces all state one number.
+    era_pnl = (
+        _round(all_time_pnl, 2)
+        if reconcile_to_paper_total
+        else _round(_to_float(era_totals.get("realized_pnl")), 2)
+    )
+    if days:
+        days[-1]["cumulative_realized"] = era_pnl
+        days[-1]["closing_attributed_pnl"] = era_pnl
+    if not reconcile_to_paper_total:
+        all_time_pnl = era_pnl
+    resolved_capital = _to_float(era_totals.get("capital_resolved"))
+    wins = int(_to_float(era_totals.get("wins")))
+    losses = int(_to_float(era_totals.get("losses")))
+    totals = {
+        "trades_opened": int(_to_float(era_totals.get("trades_opened"))),
+        "trades_closed": int(_to_float(era_totals.get("trades_closed"))),
+        "trades_settled": int(_to_float(era_totals.get("trades_settled"))),
+        "open_positions": 0,
+        "open_risk": 0.0,
+        "realized_pnl": _round(era_pnl, 2),
+        "cumulative_realized_pnl": _round(all_time_pnl, 2),
+        "all_time_attributed_pnl": _round(all_time_pnl, 2),
+        "window_attributed_pnl": _round(era_pnl, 2),
+        "capital_resolved": _round(resolved_capital, 2),
+        "roi": era_totals.get("roi"),
+        "wins": wins,
+        "losses": losses,
+        "hit_rate": era_totals.get("hit_rate"),
+        "mean_abs_forecast_error_f": None,
+    }
+    return {
+        "available": bool(daily_summary.get("available", True)),
+        "schema_version": daily_summary.get("schema_version"),
+        "generated_at": daily_summary.get("generated_at"),
+        "window_basis": "profile_era",
+        "window_days": era.get("window_days"),
+        "window_start": era.get("window_start"),
+        "window_end": era.get("window_end"),
+        "bankroll": daily_summary.get("bankroll"),
+        # The era opens at the profile's first resolution, so it starts flat at
+        # zero attribution and closes on its all-time total.
+        "opening_attributed_pnl": 0.0,
+        "current_attributed_pnl": _round(all_time_pnl, 2),
+        "side_performance": (daily_summary.get("side_performance_by_profile") or {}).get(name)
+        or {},
+        "exit_reasons": (daily_summary.get("exit_reasons_by_profile") or {}).get(name) or {},
+        "risk_profile": name,
+        "days": days,
+        "totals": totals,
+        "profiles": [],
+        "gate_behavior": _profile_gate_behavior(daily_summary, name),
+        "model_vs_market": daily_summary.get("model_vs_market") or {},
+        "data_collected": daily_summary.get("data_collected") or {},
+        "biggest_winners": [],
+        "biggest_losers": [],
     }
 
 

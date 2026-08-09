@@ -1,15 +1,57 @@
 import { Chip } from "@heroui/react/chip";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { cityForTicker, pct, qualityColor, signedPct } from "../../lib/data";
-import { cents, closedLedger, money, type ClosedPosition, type StrategyLab } from "../../lib/strategy";
+import {
+  cents,
+  closedLedger,
+  money,
+  resolutionTime,
+  type ClosedPosition,
+  type PositionStatusTone,
+  type StrategyLab,
+} from "../../lib/strategy";
 
 const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
 
-function toneColor(tone?: string): "success" | "danger" | "warning" | "default" {
-  if (tone === "success") return "success";
-  if (tone === "danger") return "danger";
-  if (tone === "warning") return "warning";
-  return "default";
+/** The runtime emits good/bad/warn; the HeroUI colour names are accepted
+    aliases. Keyed off the union so a new tone fails type-check rather than
+    silently falling through to a grey chip. */
+const TONE_OUTCOME: Record<PositionStatusTone, { color: "success" | "danger" | "warning"; label: string }> = {
+  good: { color: "success", label: "Win" },
+  success: { color: "success", label: "Win" },
+  bad: { color: "danger", label: "Loss" },
+  danger: { color: "danger", label: "Loss" },
+  warn: { color: "warning", label: "Flat" },
+  warning: { color: "warning", label: "Flat" },
+};
+
+/** The published `position_status_label` is the constant "Resolved" on every
+    row, which makes wins and losses visually identical. The runtime's own tone
+    carries the outcome, so it decides both the colour and the word; the P&L sign
+    is only a fallback for an artifact that publishes no tone. */
+function outcomeFor(d: ClosedPosition) {
+  const mapped = d.position_status_tone ? TONE_OUTCOME[d.position_status_tone] : undefined;
+  if (mapped) return mapped;
+  return d.realized_pnl >= 0
+    ? ({ color: "success", label: "Win" } as const)
+    : ({ color: "danger", label: "Loss" } as const);
+}
+
+const resolvedFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+});
+
+/** The timestamp the ledger is ordered by, so the ordering is checkable. */
+function resolvedAt(d: ClosedPosition) {
+  const raw = resolutionTime(d);
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : resolvedFormatter.format(parsed);
 }
 
 interface LedgerTableProps {
@@ -86,6 +128,16 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
           },
         ] as DataGridColumn<ClosedPosition>[])),
     { id: "date", header: "Target", accessorKey: "target_date", allowsSorting: detailed, headerClassName: HEAD, cell: (d) => <span className="tnum text-muted">{d.target_date ? d.target_date.slice(5) : "—"}</span> },
+    ...(detailed
+      ? ([
+          {
+            id: "resolved",
+            header: "Resolved · UTC",
+            headerClassName: HEAD,
+            cell: (d) => <span className="tnum whitespace-nowrap text-xs text-muted">{resolvedAt(d) ?? "—"}</span>,
+          },
+        ] as DataGridColumn<ClosedPosition>[])
+      : []),
     { id: "contracts", header: "Qty", align: "end", headerClassName: HEAD, cell: (d) => <span className="tnum">{d.contracts}</span> },
     {
       id: "fill",
@@ -167,11 +219,16 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
       header: "Outcome",
       align: "end",
       headerClassName: HEAD,
-      cell: (d) => (
-        <Chip size="sm" variant="soft" color={toneColor(d.position_status_tone)}>
-          <Chip.Label>{d.position_status_label ?? (d.realized_pnl >= 0 ? "Win" : "Loss")}</Chip.Label>
-        </Chip>
-      ),
+      cell: (d) => {
+        const outcome = outcomeFor(d);
+        return (
+          <span title={d.outcome_reason ?? d.position_status_label ?? undefined}>
+            <Chip size="sm" variant="soft" color={outcome.color}>
+              <Chip.Label>{outcome.label}</Chip.Label>
+            </Chip>
+          </span>
+        );
+      },
     },
   ];
 
@@ -183,7 +240,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
       data={rows}
       getRowId={(d) => d.id}
       variant="secondary"
-      className="min-w-[54rem]"
+      className={detailed ? "min-w-[60rem]" : "min-w-[54rem]"}
     />
     </div>
   );

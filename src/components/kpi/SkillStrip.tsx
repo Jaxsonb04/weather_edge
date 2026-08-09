@@ -20,7 +20,10 @@ export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signa
     { icon: "solar:target-bold", title: "Brier skill", value: c?.brier_skill ?? null, kind: "pct", hint: "SFO vs climatology" },
     { icon: "solar:ranking-bold", title: "Rank-prob. skill", value: c?.ranked_probability_skill ?? null, kind: "pct", hint: "SFO ordered bins" },
     { icon: "solar:radar-2-bold", title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct", hint: "SFO modal bracket" },
-    { icon: "solar:checklist-minimalistic-bold", title: "Settled bins", value: c?.n ?? null, kind: "count", hint: "SFO scored outcomes" },
+    // `calibration.n` counts settlement DAYS, not markets: each day scores the
+    // whole six-market ladder, so the bin count is 6x this. "Bin" also collides
+    // with the market-bracket sense used everywhere else on the site.
+    { icon: "solar:checklist-minimalistic-bold", title: "Settled days", value: c?.n ?? null, kind: "count", hint: "SFO scored settlement days" },
     { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} KSFO days` },
     { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: forecast.lstm_sigma_days ? `SFO held-out residual · ${forecast.lstm_sigma_days} days` : "SFO held-out residual" },
   ];
@@ -70,7 +73,13 @@ function Metric({ m }: { m: Metric }) {
           {m.kind === "count" && m.title === "History" && <span className="text-sm text-muted">yrs</span>}
         </div>
         {isPct && m.value != null && (
+          // Decorative magnitude cue only — AnimatedNumber above already states
+          // the value in text. KPI.Progress hardcodes aria-label="Progress" on
+          // its inner bar and spreads extra props onto the wrapper, so the only
+          // way to stop three identically-named progressbars is to hide the
+          // whole subtree from assistive tech.
           <KPI.Progress
+            aria-hidden="true"
             className="mt-2"
             value={Math.max(0, Math.min(100, m.value * 100))}
             status={skillStatus(m.value * 100)}

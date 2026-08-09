@@ -31,8 +31,13 @@ export interface MonthlyTemp {
   min: number;
   max: number;
 }
+/** What a single histogram count represents. The publisher stamps this
+    explicitly; an ABSENT marker means the legacy payload, which binned raw
+    hourly readings (~24 per observed day) and must never be presented as
+    daily highs. */
+export type HistogramBasis = "daily_max" | "hourly";
 export interface WeatherStory {
-  temperature_histogram?: { labels: number[]; counts: number[] };
+  temperature_histogram?: { labels: number[]; counts: number[]; basis?: string };
   monthly_temperature?: Record<string, MonthlyTemp>;
 }
 
@@ -194,15 +199,86 @@ export interface CitiesData {
 
 const BASE = import.meta.env.BASE_URL ?? "./";
 
-async function getJSON<T>(name: string, version: string | null): Promise<T> {
+async function getJSON<T>(name: string, version: string | null, signal: AbortSignal): Promise<T> {
   const suffix = version ? `?v=${encodeURIComponent(version)}` : "";
-  const res = await fetch(`${BASE}${name}${suffix}`, { cache: "no-store" });
+  const res = await fetch(`${BASE}${name}${suffix}`, { cache: "no-store", signal });
   if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
+interface ArtifactRequest {
+  promise: Promise<unknown>;
+  controller: AbortController;
+  subscribers: number;
+  settled: boolean;
+}
+
+/** One request per published artifact VERSION. `cache: "no-store"` stops the
+    browser from collapsing identical URLs, so three simultaneously mounted
+    Methodology widgets each opened their own cities_data.json fetch and could
+    briefly render disagreeing city counts. */
+const artifactRequests = new Map<string, ArtifactRequest>();
+
+const artifactKey = (name: string, version: string | null) =>
+  version ? `${name}?v=${encodeURIComponent(version)}` : name;
+
+/** Subscribe to a published artifact. Returns the shared promise plus a release
+    for the effect cleanup: the last subscriber leaving before the body arrives
+    aborts the request outright rather than discarding a response that is still
+    on the wire. */
+function acquireArtifact<T>(
+  name: string,
+  version: string | null,
+): { promise: Promise<T>; release: () => void } {
+  const key = artifactKey(name, version);
+  let request = artifactRequests.get(key);
+  if (!request) {
+    // Exactly one version of an artifact is ever current, so opening a new key
+    // retires every older one — a long-lived tab can neither accumulate bodies
+    // nor be handed the previous publish cycle's copy after the manifest rotates.
+    for (const superseded of Array.from(artifactRequests.keys())) {
+      if (superseded === name || superseded.startsWith(`${name}?v=`)) {
+        artifactRequests.delete(superseded);
+      }
+    }
+    const controller = new AbortController();
+    const created: ArtifactRequest = {
+      promise: getJSON<T>(name, version, controller.signal),
+      controller,
+      subscribers: 0,
+      settled: false,
+    };
+    created.promise.then(
+      () => {
+        created.settled = true;
+      },
+      () => {
+        // Never cache a rejection: a transient failure has to stay retryable.
+        if (artifactRequests.get(key) === created) artifactRequests.delete(key);
+      },
+    );
+    artifactRequests.set(key, created);
+    request = created;
+  }
+  const active = request;
+  active.subscribers += 1;
+  let released = false;
+  return {
+    promise: active.promise as Promise<T>,
+    release: () => {
+      if (released) return;
+      released = true;
+      active.subscribers -= 1;
+      if (active.subscribers <= 0 && !active.settled) {
+        active.controller.abort();
+        if (artifactRequests.get(key) === active) artifactRequests.delete(key);
+      }
+    },
+  };
+}
+
 export function useDashboardData() {
-  const { acknowledgeArtifactLoaded, versionForArtifact } = usePublication();
+  const { acknowledgeArtifactLoaded, manifestSettled, versionForArtifact } = usePublication();
   const forecastVersion = versionForArtifact("forecast_data.json");
   const storyVersion = versionForArtifact("weather_story_data.json");
   const signalVersion = versionForArtifact("trading_signal.json");
@@ -210,51 +286,63 @@ export function useDashboardData() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // A bare URL (no ?v=) is exactly what the CDN may answer from a ten-minute
+    // edge-cache entry, so nothing may be fetched until the manifest has had its
+    // say. A manifest FAILURE settles too — the page then loads unversioned
+    // rather than rendering nothing at all.
+    if (!manifestSettled) return;
     let alive = true;
     setError(null);
-    Promise.all([
-      getJSON<ForecastData>("forecast_data.json", forecastVersion),
-      getJSON<WeatherStory>("weather_story_data.json", storyVersion),
-      getJSON<TradingSignal>("trading_signal.json", signalVersion),
-    ])
+    const requests = [
+      acquireArtifact<ForecastData>("forecast_data.json", forecastVersion),
+      acquireArtifact<WeatherStory>("weather_story_data.json", storyVersion),
+      acquireArtifact<TradingSignal>("trading_signal.json", signalVersion),
+    ] as const;
+    Promise.all([requests[0].promise, requests[1].promise, requests[2].promise])
       .then(([forecast, story, signal]) => {
-        if (alive) {
-          setData({ forecast, story, signal });
-          acknowledgeArtifactLoaded("forecast_data.json", forecastVersion);
-          acknowledgeArtifactLoaded("weather_story_data.json", storyVersion);
-          acknowledgeArtifactLoaded("trading_signal.json", signalVersion);
-        }
+        if (!alive) return;
+        setData({ forecast, story, signal });
+        acknowledgeArtifactLoaded("forecast_data.json", forecastVersion);
+        acknowledgeArtifactLoaded("weather_story_data.json", storyVersion);
+        acknowledgeArtifactLoaded("trading_signal.json", signalVersion);
       })
-      .catch((e) => alive && setError(String(e)));
+      .catch((e: unknown) => {
+        if (alive) setError(String(e));
+      });
     return () => {
       alive = false;
+      for (const request of requests) request.release();
     };
-  }, [acknowledgeArtifactLoaded, forecastVersion, signalVersion, storyVersion]);
+  }, [acknowledgeArtifactLoaded, forecastVersion, manifestSettled, signalVersion, storyVersion]);
 
   return { data, error };
 }
 
 /** Generic single-resource loader (used by the lazy Methodology / Strategy views). */
 export function useResource<T>(name: string) {
-  const { acknowledgeArtifactLoaded, versionForArtifact } = usePublication();
+  const { acknowledgeArtifactLoaded, manifestSettled, versionForArtifact } = usePublication();
   const version = versionForArtifact(name);
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!manifestSettled) return;
     let alive = true;
     setError(null);
-    getJSON<T>(name, version)
+    const request = acquireArtifact<T>(name, version);
+    request.promise
       .then((d) => {
-        if (alive) {
-          setData(d);
-          acknowledgeArtifactLoaded(name, version);
-        }
+        if (!alive) return;
+        setData(d);
+        acknowledgeArtifactLoaded(name, version);
       })
-      .catch((e) => alive && setError(String(e)));
+      .catch((e: unknown) => {
+        if (alive) setError(String(e));
+      });
     return () => {
       alive = false;
+      request.release();
     };
-  }, [acknowledgeArtifactLoaded, name, version]);
+  }, [acknowledgeArtifactLoaded, manifestSettled, name, version]);
   return { data, error };
 }
 
@@ -376,6 +464,14 @@ export function cityFreshness(forecasts: CityForecast[] | undefined): Freshness 
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/** Climatology table key ("03-14") → "Mar 14". Those keys carry no year. */
+export function monthDayLabel(key: string): string {
+  const [mm, dd] = key.split("-");
+  const month = MONTHS[Number(mm) - 1];
+  if (!month || !dd) return key;
+  return `${month} ${Number(dd)}`;
+}
+
 // Full-year climatology series (one point per day-of-year), evenly sampled for a
 // clean seasonal band chart.
 export function climatologySeries(forecast: ForecastData, step = 3) {
@@ -391,14 +487,19 @@ export function climatologySeries(forecast: ForecastData, step = 3) {
     record_high: number;
     record_low: number;
   }[] = [];
+  // Label the FIRST sampled day of each month. Keying the label off day-of-month
+  // 15 only coincided with the sampling stride for five of the twelve months, so
+  // the axis silently lost the other seven.
+  let labelledMonth = "";
   keys.forEach((k, i) => {
     if (i % step !== 0) return;
     const d = table[k];
     const [mm] = k.split("-");
-    const day = k.split("-")[1];
+    const startsMonth = mm !== labelledMonth;
+    if (startsMonth) labelledMonth = mm;
     out.push({
       key: k,
-      label: day === "15" ? MONTHS[Number(mm) - 1] : "",
+      label: startsMonth ? MONTHS[Number(mm) - 1] : "",
       mean: round1(d.mean),
       p10: round1(d.p10),
       band: round1(d.p90 - d.p10),
@@ -410,9 +511,37 @@ export function climatologySeries(forecast: ForecastData, step = 3) {
   return out;
 }
 
+/** How the published histogram was binned — see {@link HistogramBasis}. An
+    unmarked payload is legacy hourly data, never daily maxima. */
+export function histogramBasis(story: WeatherStory): HistogramBasis {
+  return story.temperature_histogram?.basis === "daily_max" ? "daily_max" : "hourly";
+}
+
+/** Bin EDGES reconstructed from published bin centres: an interior edge is the
+    midpoint of two adjacent centres, and the two outer edges extrapolate the
+    neighbouring bin width. Centres are published rounded to a tenth (36.2 for a
+    true 36.25), so rounding them to whole degrees turned an even 2.5° grid into
+    an uneven 36 / 39 / 41 / 44 tick sequence; the edges land on the grid. */
+function histogramEdges(labels: number[]): number[] {
+  if (labels.length === 0) return [];
+  const inner: number[] = [];
+  for (let i = 1; i < labels.length; i++) inner.push(round1((labels[i - 1] + labels[i]) / 2));
+  if (inner.length === 0) return [round1(labels[0] - 0.5), round1(labels[0] + 0.5)];
+  const lead = inner.length > 1 ? inner[1] - inner[0] : (inner[0] - labels[0]) * 2;
+  const trail =
+    inner.length > 1 ? inner[inner.length - 1] - inner[inner.length - 2] : lead;
+  return [round1(inner[0] - lead), ...inner, round1(inner[inner.length - 1] + trail)];
+}
+
 export function histogramSeries(story: WeatherStory) {
   const { labels = [], counts = [] } = story.temperature_histogram ?? {};
-  return labels.map((t, i) => ({ temp: Math.round(t), count: counts[i] ?? 0 }));
+  const edges = histogramEdges(labels);
+  return labels.map((t, i) => ({
+    temp: round1(t), // published bin centre — drives the thermal hue only
+    lo: edges[i],
+    hi: edges[i + 1],
+    count: counts[i] ?? 0,
+  }));
 }
 
 export function calibrationSeries(signal: TradingSignal) {
@@ -441,7 +570,10 @@ export const num = (r: Record<string, unknown> | undefined | null, k: string): n
 /** Quality 0–100 → a magnitude-encoding color (dual-encode alongside bar width). */
 export const qualityColor = (score: number): string =>
   score >= 66 ? "var(--color-success)"
-    : score >= 40 ? "var(--accent)"
+    // --accent is the brand yellow, tuned for the dark canvas and decoration;
+    // this paints a value in a 12px table cell, so it takes the text-legible
+    // step (aliased straight back to --accent under .dark).
+    : score >= 40 ? "var(--accent-text)"
     : score >= 20 ? "var(--color-warning)"
     : "var(--color-muted)";
 
@@ -449,12 +581,22 @@ export const qualityColor = (score: number): string =>
 export const skillStatus = (pctVal: number): "success" | "warning" | "danger" =>
   pctVal >= 50 ? "success" : pctVal >= 25 ? "warning" : "danger";
 
+/* Ramp endpoints as CSS tokens. The ramp paints values, not just decoration,
+   and its warm stops used to fall under 3:1 on a light canvas (a 78° card
+   measured 2.94:1, a 77° card 2.34:1). index.css now carries the light-canvas
+   ramp on these base tokens and restores the brighter stops under `.dark`, so
+   reading them here is enough — one definition serves the temperature text,
+   the histogram fills and the decorative glow. */
+export const TEMP_RAMP_COLD = "var(--temp-cold)";
+export const TEMP_RAMP_WARM = "var(--temp-warm)";
+export const TEMP_RAMP_HOT = "var(--temp-hot)";
+
 // Tight cool→warm→hot stops (no green). Interpolated in oklab so the midpoint is
 // a muted neutral rather than a rainbow sweep through green/cyan.
 const TEMP_STOPS: [number, string][] = [
-  [48, "var(--temp-cold)"],
-  [68, "var(--temp-warm)"],
-  [86, "var(--temp-hot)"],
+  [48, TEMP_RAMP_COLD],
+  [68, TEMP_RAMP_WARM],
+  [86, TEMP_RAMP_HOT],
 ];
 /** Temperature °F → a color along the cool→hot ramp (for temperature-valued marks). */
 export function tempColor(tempF: number): string {
@@ -522,12 +664,35 @@ export function monthlySeries(story: WeatherStory) {
     }));
 }
 
+const CLOSED_BRACKET = /^(-?\d+(?:\.\d+)?)°?\s*to\s*(-?\d+(?:\.\d+)?)°?$/i;
+const OR_BELOW_BRACKET = /^(-?\d+(?:\.\d+)?)°?\s*or\s*below$/i;
+const OR_ABOVE_BRACKET = /^(-?\d+(?:\.\d+)?)°?\s*or\s*above$/i;
+
+/** Kalshi bracket titles arrive in three shapes and the two OPEN-ENDED ones hold
+    almost all of the settlement-day probability mass, so they cannot be treated
+    as a malformed closed range: "76° to 77°" → "76–77°", "75° or below" → "≤75°",
+    "84° or above" → "≥84°". Anything unrecognised is passed through untouched
+    rather than mangled. Every form keeps its degree unit. */
+export function binTickLabel(raw: string): string {
+  const label = raw.trim();
+  const closed = CLOSED_BRACKET.exec(label);
+  if (closed) return `${closed[1]}–${closed[2]}°`;
+  const below = OR_BELOW_BRACKET.exec(label);
+  if (below) return `≤${below[1]}°`;
+  const above = OR_ABOVE_BRACKET.exec(label);
+  if (above) return `≥${above[1]}°`;
+  return label;
+}
+
 // The edge engine's core view: model probability vs market-implied probability
 // per market bin, for a given target.
 export function marketModelSeries(target: Target | undefined) {
   const dist = target?.market_consensus?.distribution ?? [];
   return dist.map((b) => ({
-    label: b.label.replace("° to ", "–").replace("°", ""),
+    label: binTickLabel(b.label),
+    // The market's own bracket title, carried through for the tooltip so the
+    // reader sees the contract wording rather than an abbreviated tick.
+    rawLabel: b.label,
     center: b.center_f,
     model: Math.round(b.model_probability * 100),
     market: Math.round(b.implied_probability * 100),

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Command } from "@heroui-pro/react/command";
 import { Icon } from "@iconify/react/offline";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
@@ -17,16 +17,9 @@ export interface CommandPaletteProps {
 /** ⌘K / Ctrl-K command palette. Renders into a portal via Command.Backdrop. */
 export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, repoUrl, liveUrl }: CommandPaletteProps) {
   const [copyError, setCopyError] = useState(false);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        onOpenChange(!open);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onOpenChange]);
+  // ⌘K is owned by App, which holds the open state and now keeps this palette
+  // mounted so React Aria can restore focus on close. A second listener here
+  // would fire on the same press.
 
   const go = (r: Route) => {
     onNavigate(r);

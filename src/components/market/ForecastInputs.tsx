@@ -40,10 +40,13 @@ export function ForecastInputs({ target }: { target: Target }) {
                 {r.hint && (
                   <HoverCard openDelay={120}>
                     <HoverCard.Trigger>
+                      {/* size-6 keeps the 14px glyph but gives the trigger the
+                          24x24 target WCAG 2.2 AA asks for — the icon alone was
+                          the only sub-24px control on any route. */}
                       <button
                         type="button"
                         aria-label={`${r.k} detail: ${r.hint}`}
-                        className="grid place-items-center rounded text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-[color:var(--focus)]"
+                        className="grid size-6 place-items-center rounded text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-[color:var(--focus)]"
                       >
                         <Icon icon="solar:info-circle-bold" className="size-3.5" />
                       </button>

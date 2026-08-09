@@ -157,7 +157,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
         {p.risk_profile === "research-target" && target && (
           <div className="rounded-xl bg-accent-soft p-3 ring-1 ring-accent/25">
             <div className="flex items-baseline justify-between gap-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[color:var(--accent-text)]">
                 {targetProgressState
                   ? `${money(target.target_pnl, { sign: "negative-only" })} daily target`
                   : "Daily target unavailable"}

@@ -32,6 +32,13 @@ export interface PublicationFreshness {
 
 export interface PublicationContextValue {
   manifest: PublicationManifest | null;
+  /** True once the first manifest request has finished, whether it succeeded or
+      failed. Artifact loaders must wait for this: before it flips,
+      `versionForArtifact` can only answer null, and a bare unversioned URL is
+      exactly what a shared CDN may satisfy from the previous publish cycle.
+      Failure settles it too, so a manifest outage degrades to unversioned
+      fetches rather than to a blank page. */
+  manifestSettled: boolean;
   snapshotVersion: string | null;
   artifactHashes: Record<string, string>;
   operational: PublicationFreshness;
@@ -150,6 +157,7 @@ function PublicationClockProvider({ children }: { children: ReactNode }) {
 
 export function PublicationProvider({ children }: { children: ReactNode }) {
   const [manifest, setManifest] = useState<PublicationManifest | null>(null);
+  const [manifestSettled, setManifestSettled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [freshnessNow, setFreshnessNow] = useState(() => Date.now());
   const [loadedArtifactVersions, setLoadedArtifactVersions] = useState<Record<string, string>>({});
@@ -191,6 +199,9 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         }
       } finally {
         if (alive) {
+          // Success or failure, the artifact loaders may now proceed — a dead
+          // manifest must degrade to unversioned fetches, never to no fetch.
+          setManifestSettled(true);
           timer = window.setTimeout(() => {
             void refresh();
           }, POLL_INTERVAL_MS);
@@ -234,6 +245,7 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
       typeof manifest?.snapshot_id === "string" && manifest.snapshot_id ? manifest.snapshot_id : null;
     return {
       manifest,
+      manifestSettled,
       snapshotVersion,
       artifactHashes,
       operational: freshnessFor(
@@ -274,7 +286,14 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
       versionForArtifact: (name: string) => artifactHashes[name] ?? snapshotVersion,
       acknowledgeArtifactLoaded,
     };
-  }, [acknowledgeArtifactLoaded, error, freshnessNow, loadedArtifactVersions, manifest]);
+  }, [
+    acknowledgeArtifactLoaded,
+    error,
+    freshnessNow,
+    loadedArtifactVersions,
+    manifest,
+    manifestSettled,
+  ]);
 
   return (
     <PublicationContext.Provider value={value}>

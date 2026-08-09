@@ -1,3 +1,5 @@
 @reference "../index.css";
+/* Imports are layered: an unlayered Pro sheet outranks every @layer, so
+   Tailwind utilities written on a Pro slot would silently do nothing. */
 @import "@heroui/styles/components/close-button.css" layer(components);
-@import "@heroui-pro/react/css/components/command.css";
+@import "@heroui-pro/react/css/components/command.css" layer(components);

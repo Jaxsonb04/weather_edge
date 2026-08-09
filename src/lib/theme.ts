@@ -4,9 +4,24 @@ const KEY = "weatheredge-theme";
 export type ThemeMode = "dark" | "light";
 type ThemePreference = ThemeMode | "system";
 
+/** Must stay in step with the two media-scoped tags in index.html. */
+const THEME_COLOR = { dark: "#14151a", light: "#f5f5f5" } as const;
+
 function applyMode(mode: ThemeMode) {
   document.documentElement.classList.toggle("dark", mode === "dark");
   document.documentElement.style.colorScheme = mode;
+  // index.html ships one media-scoped theme-color per scheme, which resolves
+  // the address bar correctly on load. A mid-session toggle contradicts the OS
+  // preference those queries key on, so collapse them to a single explicit tag.
+  const tags = document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]');
+  tags.forEach((tag, index) => {
+    if (index > 0) {
+      tag.remove();
+      return;
+    }
+    tag.removeAttribute("media");
+    tag.content = THEME_COLOR[mode];
+  });
 }
 
 function storedPreference(): ThemePreference {

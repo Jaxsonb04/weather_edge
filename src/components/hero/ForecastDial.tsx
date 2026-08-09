@@ -40,7 +40,12 @@ function CityForecastDial({ city }: { city: City }) {
   const lead = cityNextForecast(city);
   const initialIndex = Math.max(0, forecasts.findIndex((forecast) => forecast.target_date === lead?.target_date));
   const [idx, setIdx] = useState(initialIndex);
-  const forecast = forecasts[idx] ?? lead ?? forecasts[0];
+  // The published list shrinks at local-day rollover and this card is keyed by
+  // slug, so it is never remounted. A stale selection must fall back to the lead
+  // in the readout *and* in the control — clamping only one of them highlighted a
+  // day the card was not showing.
+  const activeIdx = idx < forecasts.length ? idx : initialIndex;
+  const forecast = forecasts[activeIdx] ?? lead ?? forecasts[0];
   const freshness = cityFreshness(city.forecasts);
   const freshnessColor = freshness.tone === "danger" ? "danger" : freshness.tone === "warning" ? "warning" : "success";
 
@@ -65,7 +70,7 @@ function CityForecastDial({ city }: { city: City }) {
           <Segment
             aria-label={`${city.name} forecast day`}
             size="sm"
-            selectedKey={String(Math.min(idx, forecasts.length - 1))}
+            selectedKey={String(activeIdx)}
             onSelectionChange={(key) => setIdx(Number(key))}
             className="mb-6"
           >

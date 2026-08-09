@@ -8,14 +8,14 @@ export function CalibrationChart({ signal }: { signal: TradingSignal }) {
   const calibration = signal.calibration;
   return (
     <Widget className="h-full w-full">
-      <Widget.Header>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
         <div>
           <Widget.Title>Probability calibration</Widget.Title>
           <Widget.Description>
-            Reliability over {calibration?.n ?? 0} settled bins · Brier skill {pct(calibration?.brier_skill, 1)}
+            Reliability over {calibration?.n ?? 0} settled days · Brier skill {pct(calibration?.brier_skill, 1)}
           </Widget.Description>
         </div>
-        <Widget.Legend>
+        <Widget.Legend className="shrink-0 flex-wrap">
           <Widget.LegendItem color="var(--series-market)">observed</Widget.LegendItem>
           <Widget.LegendItem color="var(--color-muted)">ideal</Widget.LegendItem>
         </Widget.Legend>

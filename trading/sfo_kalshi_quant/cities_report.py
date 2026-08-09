@@ -21,6 +21,8 @@ from ._util import _table_exists
 from .cities import CITIES, CityConfig, city_for_market_ticker
 from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, normalize_risk_profile_name
 from .emos_sources import forecast_source_precedence
+from .forecast import ForecastDataError, SfoForecasterAdapter
+from .models import ForecastSnapshot
 from .settlement_day import settlement_today
 
 
@@ -37,6 +39,8 @@ def _city_forecasts(
     conn: sqlite3.Connection,
     city: CityConfig,
     today: date,
+    *,
+    forecaster_root: Path,
 ) -> list[dict]:
     if not _table_exists(conn, "forecast_emos_daily_high"):
         return []
@@ -64,23 +68,90 @@ def _city_forecasts(
             preferred[str(target)] = (rank, row)
 
     out: list[dict] = []
+    adapter: SfoForecasterAdapter | None = None
     for target in sorted(preferred):
         _rank, row = preferred[target]
         target, lead, mu, sigma, n_models, spread, fetched_at, method, _source = row
-        out.append(
-            {
-                "target_date": target,
-                "target_status": _target_status(target, today),
-                "lead_days": lead,
-                "predicted_high_f": round(float(mu), 2),
-                "sigma_f": round(float(sigma), 2),
-                "n_models": n_models,
-                "model_spread_f": spread,
-                "fetched_at": fetched_at,
-                "method": method,
-            }
-        )
+        entry: dict = {
+            "target_date": target,
+            "target_status": _target_status(target, today),
+            "lead_days": lead,
+            "predicted_high_f": round(float(mu), 2),
+            # The EMOS mean before any intraday update. This is the value
+            # ``sigma_f`` is the spread of; ``predicted_high_f`` may have moved
+            # off it once the day started being observed.
+            "predicted_high_f_pre_intraday": round(float(mu), 2),
+            "intraday_update": None,
+            "sigma_f": round(float(sigma), 2),
+            "n_models": n_models,
+            "model_spread_f": spread,
+            "fetched_at": fetched_at,
+            "method": method,
+        }
+        if entry["target_status"] == "settlement_day":
+            if adapter is None:
+                adapter = SfoForecasterAdapter(forecaster_root, city)
+            # Feed the unrounded mu, exactly what the trading path blends, so
+            # the two artifacts round once and land on the same cent.
+            entry = _with_intraday_update(entry, adapter, city, base_high_f=float(mu))
+        out.append(entry)
     return out
+
+
+def _with_intraday_update(
+    forecast: dict,
+    adapter: SfoForecasterAdapter,
+    city: CityConfig,
+    *,
+    base_high_f: float,
+) -> dict:
+    """Serve the same intraday-updated high the trading path already serves.
+
+    Once a settlement day starts being observed, the trading path folds the
+    high-so-far into the point forecast before it quotes anything
+    (``SfoForecasterAdapter.apply_intraday_update``). Publishing the raw EMOS
+    mean here instead made this file disagree with trading_signal.json for the
+    same city and day by more than the sigma printed next to it. Reuse the
+    adapter so one number means one thing in both artifacts, and keep the
+    pre-update mean rather than dropping the evidence.
+    """
+
+    target = date.fromisoformat(forecast["target_date"])
+    try:
+        intraday = adapter.intraday_snapshot(target)
+    except (ForecastDataError, sqlite3.Error, OSError):
+        # A public snapshot must never fail on a missing observation table;
+        # the un-updated EMOS mean stays, labelled as such.
+        return forecast
+    if intraday is None or intraday.observed_high_f is None:
+        return forecast
+    updated = adapter.apply_intraday_update(
+        ForecastSnapshot(
+            target_date=target,
+            predicted_high_f=base_high_f,
+            station_id=city.nws_station_id,
+            fetched_at=forecast["fetched_at"],
+            method=str(forecast["method"] or "emos"),
+        ),
+        intraday,
+    )
+    detail = updated.raw.get("intraday_update") or {}
+    return {
+        **forecast,
+        "predicted_high_f": round(float(updated.predicted_high_f), 2),
+        "method": updated.method,
+        "intraday_update": {
+            "applied": True,
+            "observed_high_f": intraday.observed_high_f,
+            "latest_temp_f": intraday.latest_temp_f,
+            "latest_observed_at": intraday.latest_observed_at,
+            "remaining_forecast_high_f": intraday.remaining_forecast_high_f,
+            "observation_count": intraday.observation_count,
+            "observed_high_source": intraday.observed_high_source,
+            "is_complete": intraday.is_complete,
+            "weight": detail.get("intraday_weight"),
+        },
+    }
 
 
 def _city_settlement(conn: sqlite3.Connection, city: CityConfig) -> dict | None:
@@ -242,7 +313,12 @@ def build_cities_data(
                 "books": None,
             }
             if weather_conn is not None:
-                entry["forecasts"] = _city_forecasts(weather_conn, city, city_today)
+                entry["forecasts"] = _city_forecasts(
+                    weather_conn,
+                    city,
+                    city_today,
+                    forecaster_root=Path(forecaster_root),
+                )
                 entry["latest_settlement"] = _city_settlement(weather_conn, city)
             if all_books is not None:
                 entry["books"] = all_books[city.slug]
@@ -264,8 +340,11 @@ def build_cities_data(
         "cities_with_live_forecasts": len(fresh),
         "note": (
             "Paper-trading research only. Forecasts are EMOS-calibrated "
-            "multi-model NWP Gaussians per settlement station; every market "
-            "settles on its own NWS Climatological Report."
+            "multi-model NWP Gaussians per settlement station; once a "
+            "settlement day is under way its predicted_high_f also carries the "
+            "observed high-so-far update the trading path serves, with the "
+            "pre-update mean kept as predicted_high_f_pre_intraday. Every "
+            "market settles on its own NWS Climatological Report."
         ),
         "cities": cities_payload,
     }

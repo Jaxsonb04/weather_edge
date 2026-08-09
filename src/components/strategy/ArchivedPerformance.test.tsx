@@ -178,6 +178,28 @@ describe("ArchivedPerformance", () => {
     expect(container.querySelector("[data-archive-profile=\"live-legacy\"]")).toBeInTheDocument();
   });
 
+  it("keeps the sparkline extremes inside the viewBox instead of clipping them", () => {
+    const s = {
+      profiles: [
+        profile("research-target-v4", "Research ROI v4 (archived breadth restoration)", 14, 14, 0, 41.29),
+      ],
+    } as unknown as StrategyLab;
+
+    render(<ArchivedPerformance s={s} />);
+
+    const points = document
+      .querySelector("[data-archive-option] polyline")!
+      .getAttribute("points")!
+      .split(" ")
+      .map((pair) => Number(pair.split(",")[1]));
+
+    // The 2px stroke is centred on the path and does not scale, so a value
+    // mapped flush to the 0/18 viewBox edges loses its outer half.
+    expect(points.length).toBeGreaterThan(1);
+    expect(Math.min(...points)).toBeGreaterThan(0);
+    expect(Math.max(...points)).toBeLessThan(18);
+  });
+
   it("supports arrow-key navigation across the compact era tabs", () => {
     const s = {
       profiles: [
@@ -224,7 +246,7 @@ describe("ArchivedPerformance", () => {
 
     render(<ArchivedPerformance s={s} />);
 
-    expect(screen.getByText(/No activity recorded throughout this published tail/i)).toBeInTheDocument();
+    expect(screen.getByText(/No activity recorded across this published run/i)).toBeInTheDocument();
     expect(screen.getByTestId("archive-curve")).toHaveAttribute("data-days", "1");
   });
 
@@ -311,6 +333,6 @@ describe("ArchivedPerformance", () => {
     expect(row?.querySelectorAll("td")[0]).toHaveTextContent("—");
     expect(row?.querySelectorAll("td")[2]).toHaveTextContent("—");
     expect(row?.querySelectorAll("td")[3]).toHaveTextContent("—");
-    expect(screen.getByText(/activity fields unavailable for this published tail/i)).toBeInTheDocument();
+    expect(screen.getByText(/activity fields unavailable for this published run/i)).toBeInTheDocument();
   });
 });
