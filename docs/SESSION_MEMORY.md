@@ -1,13 +1,13 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-10 16:49 PDT
+Last updated: 2026-08-10 19:19 PDT
 
-Last production verification: 2026-08-05 16:22 PDT
+Last production verification: 2026-08-10 19:19 PDT
 
-Last public artifact verification: 2026-08-05 15:08 PDT
+Last public artifact verification: 2026-08-10 19:19 PDT
 
-Production status snapshot (last verified 2026-08-05): healthy and paper-only on runtime revision
-`2c7a4b25948a6bccd38d506ea27db27f0bbcf2d9`
+Production status snapshot (last verified 2026-08-10): healthy and paper-only on runtime revision
+`10b4844dd28e1008789dab5846b67e07bfeabc0c`
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
@@ -15,41 +15,58 @@ current AWS state before making an operational claim.
 
 ## Session Brief
 
-- **APPLE WEATHERKIT SOURCE IMPLEMENTED LOCALLY; ACTIVATION AND MODEL WEIGHT
-  DELIBERATELY DEFERRED (2026-08-10 code snapshot, not deployed):** WeatherEdge
-  now has a credential-ready WeatherKit REST source for all fifteen settlement
-  stations plus a dedicated four-vintage UTC timer. One bundled hourly+daily
-  call per station at each vintage is 60 scheduled calls/day. Authentication
-  is ES256 in memory; requests refuse redirects; each city fails independently;
-  settlement highs require 24 unique hourly forecasts in the registry's exact
-  fixed-standard climate window. Only complete normalized current highs may
-  enter a private mode-0600 tmpfs cache, and both refresh-start and independent
-  ten-minute purge paths make values unavailable at Apple's product expiry;
-  reads and refreshes remove them immediately, while the unattended purge
-  bounds physical deletion to the next cycle plus its short jitter.
-  The source is disabled by default and incomplete active configuration fails
-  visibly.
+- **APPLE WEATHERKIT SOURCE DEPLOYED AND ACTIVE AT ZERO TRADING WEIGHT
+  (2026-08-10, PR #93):** runtime revision
+  `10b4844dd28e1008789dab5846b67e07bfeabc0c` now runs the WeatherKit REST
+  source for all fifteen settlement stations at four fixed UTC vintages. One
+  bundled hourly+daily call per station per vintage is 60 scheduled calls/day.
+  The first manual production refresh and the next natural timer refresh each
+  completed 15/15 cities with zero failures. The independent ten-minute purge
+  also passed. Fourteen total canonical timers are enabled and active (thirteen
+  application timers plus the scheduler watchdog), zero units are failed, and
+  scheduler/publication health passed after activation. Live execution remains
+  disabled and the two paper accounts remain economically separate.
+
+  Authentication is ES256 in memory; requests refuse redirects; each city
+  fails independently; and settlement highs require 24 unique hourly forecasts
+  in the registry's exact fixed-standard climate window. Production held 30
+  complete, unexpired station-day rows across all fifteen cities in a private
+  mode-0600 tmpfs cache after activation. The source key is outside the source
+  tree, and a production audit found no key file in deployed source and no
+  credential identifiers, private-key location, tokens, or Apple temperatures
+  in service journals. No Apple table exists in `weather.db`.
 
   Apple values do **not** enter `weather.db`, `nwp_model_forecasts`, EMOS
   fitting, training archives, paper-decision snapshots, public JSON, or logs.
-  Live trading weight remains exactly zero, so this change cannot alter
-  forecast probabilities, risk gates, size, or paper decisions. This is a
-  source integration, not evidence that Apple improves the model. Under the
-  current Apple Developer Program License Agreement Attachment 8 storage
-  restrictions, Apple-only forecast vintages/residuals are not durably
-  archived; historical evaluation and any nonzero weight are deferred until
-  Apple provides written clarification or qualified counsel approves a
-  compliant evidence design. Final local verification on the completed tree:
-  **2,623 tests passed, 8 skipped**; the 37 focused WeatherKit tests passed;
-  the production dependency lock installed successfully with hash enforcement;
-  and shell syntax plus diff checks were clean.
+  Live trading weight remains exactly zero, so activation cannot alter forecast
+  probabilities, risk gates, size, or paper decisions. This is a live source,
+  not evidence that Apple improves the model. Under the current Apple Developer
+  Program License Agreement Attachment 8 storage restrictions, Apple-only
+  forecast vintages/residuals are not durably archived; historical evaluation
+  and any nonzero weight remain deferred until Apple provides written
+  clarification or qualified counsel approves a compliant evidence design.
 
-  No AWS sync, service installation, credential change, timer change, network
-  WeatherKit request, forecast-policy change, or production mutation occurred
-  in this task. The last verified production snapshot below therefore remains
-  the 2026-08-05 twelve-timer, paper-only state; do not infer that Apple is
-  active on AWS from the source tree. See `docs/APPLE-WEATHERKIT.md` for the
-  activation and licensing boundary.
+  Local evidence before merge: **2,623 tests passed, 8 skipped**; Python 3.12,
+  Python 3.13, and Web CI passed; production lock resolution, shell syntax,
+  compilation, and diff checks passed. Deployment used the full quiesced,
+  encrypted off-host backup gate: upload, independent download, checksum,
+  SQLite integrity, foreign keys, unit integrity, account cutover, exact source
+  provenance, public-manifest parity, and the bounded full Strategy analysis
+  refresh all passed before maintenance mode cleared.
+
+- **PRE-DEPLOY NIGHTLY FAILURES CAPTURED; ROOT CAUSES REMAIN OPEN
+  (2026-08-10):** fresh production preflight found two failed historical
+  oneshots before WeatherKit deployment. The dataset job failed after IEM ASOS
+  returned a second consecutive HTTP 503; its other configured sources
+  completed. The retention job archived and uploaded its day, passed its archive
+  gate and foreign-key audit, then exceeded its existing one-hour service
+  deadline during pruning. Their failed-state markers were cleared only after
+  preserving the evidence so the independent deployment health gate could run;
+  neither job, timer, threshold, or retention policy was changed in this
+  WeatherKit task. Both timers remain enabled. Revalidate their next natural
+  runs and treat recurrence as a separate production incident; do not describe
+  the underlying causes as fixed merely because final post-deploy health showed
+  zero failed units.
 
 - **RESEARCH ROI V6 NEAR-5% PAPER DAY AUDITED; POLICY HELD STEADY
   (2026-08-05 intraday snapshot):** the economically isolated Research ROI v6
@@ -309,11 +326,11 @@ current AWS state before making an operational claim.
   was `REPLAY_REQUIRED` with 5 of 12 checks passed; every research account was
   explicitly excluded. This is not real-money ready.
 - **Reliability:** Strategy Lab now uses a persistent fixed five-minute
-  wall-clock timer. An offset scheduler watchdog verifies the 11 application
+  wall-clock timer. An offset scheduler watchdog verifies the 13 application
   timers, all canonical unit definitions, database/disk health, hashes, source
   provenance, and local/public freshness. It can repair only bounded
   publication staleness and never starts scan, monitor, settlement, or another
-  trading action. A separate production canary verifies all 12 timers,
+  trading action. A separate production canary verifies all 14 timers,
   including the watchdog.
 - **Public experience:** the Strategy Lab now exposes both fresh profiles,
   achieved-performance history, daily and cumulative P&L, and true account
@@ -599,7 +616,7 @@ At the 2026-07-26 verification:
 1. Print the `Session Brief` above before taking action.
 2. Confirm the checkout is clean and compare local `HEAD` with `origin/main`.
 3. When production state matters, freshly revalidate runtime source, failed
-   units, all 12 timers, unit integrity, manifest parity/freshness, disk, active
+   units, all 14 timers, unit integrity, manifest parity/freshness, disk, active
    ledger reconciliation, readiness scope, and real-money safety flags.
 4. Keep the narrow owner SSH rule until the owner says access is finished.
 5. Continue observing later natural Strategy refreshes and archived-position
