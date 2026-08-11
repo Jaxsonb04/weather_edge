@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-10 19:19 PDT
+Last updated: 2026-08-10 19:28 PDT
 
-Last production verification: 2026-08-10 19:19 PDT
+Last production verification: 2026-08-10 19:28 PDT
 
-Last public artifact verification: 2026-08-10 19:19 PDT
+Last public artifact verification: 2026-08-10 19:28 PDT
 
 Production status snapshot (last verified 2026-08-10): healthy and paper-only on runtime revision
 `10b4844dd28e1008789dab5846b67e07bfeabc0c`
@@ -67,6 +67,19 @@ current AWS state before making an operational claim.
   runs and treat recurrence as a separate production incident; do not describe
   the underlying causes as fixed merely because final post-deploy health showed
   zero failed units.
+
+- **TRANSIENT PUBLIC-MANIFEST HTTP 503 DURING FINAL AUDIT; RECOVERED WITHOUT
+  CODE OR POLICY CHANGE (2026-08-10):** scheduler health passed immediately
+  after deployment, then one later manual audit failed solely because the
+  public Pages manifest returned HTTP 503. Unit/timer integrity, local
+  artifacts, forecast freshness, disk, source provenance, Apple refresh, and
+  paper-only safety were otherwise healthy. The same public manifest then
+  returned HTTP 200 on three workstation and three AWS probes, and the
+  unchanged scheduler service passed on rerun with zero failed units. This is
+  evidence of transient upstream publication availability, not a WeatherKit or
+  source-deploy defect. No retry threshold or watchdog behavior changed in this
+  task; treat recurrence as a separate reliability issue rather than claiming
+  it was permanently fixed.
 
 - **RESEARCH ROI V6 NEAR-5% PAPER DAY AUDITED; POLICY HELD STEADY
   (2026-08-05 intraday snapshot):** the economically isolated Research ROI v6
