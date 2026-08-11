@@ -330,7 +330,7 @@ def test_scheduler_health_watchdog_is_bounded_and_wired_everywhere():
             "if [[ -e \"$DEPLOY_MAINTENANCE_MARKER\""
         )
     ]
-    assert canonical_block.count(".timer\"") == 11
+    assert canonical_block.count(".timer\"") == 13
     assert "sfo-scheduler-health.timer" not in canonical_block
     repair_targets = set(
         re.findall(r'SYSTEMCTL\[@\]}" start ([a-z0-9@.-]+)', script)
@@ -1542,6 +1542,75 @@ def test_google_runtime_purge_service_does_not_sync_or_back_up_the_runtime_db():
     assert "backup" not in service.lower()
     assert "sync" not in service.lower()
     assert "s3" not in service.lower()
+
+
+def test_apple_weather_runtime_source_is_isolated_scheduled_and_expiry_purged():
+    service = _read(AWS_DIR / "systemd" / "weatheredge-apple-refresh.service.in")
+    timer = _read(AWS_DIR / "systemd" / "weatheredge-apple-refresh.timer")
+    apple_purge_service = _read(
+        AWS_DIR / "systemd" / "weatheredge-apple-purge.service.in"
+    )
+    apple_purge_timer = _read(
+        AWS_DIR / "systemd" / "weatheredge-apple-purge.timer"
+    )
+    google_purge_service = _read(
+        AWS_DIR / "systemd" / "weatheredge-google-runtime-purge.service.in"
+    )
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+    quiesce = _read(AWS_DIR / "disable_systemd_timers.sh")
+    health = _read(AWS_DIR / "check_scheduler_health.sh")
+    integrity = _read(AWS_DIR / "verify_systemd_unit_integrity.sh")
+    env_example = _read(AWS_DIR / "sfo-weather.env.example")
+    root_gitignore = _read(ROOT / ".gitignore")
+    runtime_filter = _read(AWS_DIR / "forecaster-runtime.rsync-filter")
+    tmpfiles = _read(AWS_DIR / "systemd" / "weatheredge-tmpfiles.conf")
+
+    assert "apple_weatherkit.py --cities all" in service
+    assert "OnFailure=sfo-alert@%n.service" in service
+    assert "EnvironmentFile=__ENV_FILE__" in service
+    assert "User=__APP_USER__" in service
+    assert "OnCalendar=*-*-* 02,08,14,20:17:00 UTC" in timer
+    assert "AccuracySec=1s" in timer
+    assert "Unit=weatheredge-apple-refresh.service" in timer
+    assert "apple_weatherkit.py --purge-only" in apple_purge_service
+    assert "OnFailure=sfo-alert@%n.service" in apple_purge_service
+    assert "OnCalendar=*:1/10" in apple_purge_timer
+    assert "AccuracySec=1s" in apple_purge_timer
+    assert "Unit=weatheredge-apple-purge.service" in apple_purge_timer
+    assert "apple_weatherkit.py" not in google_purge_service
+
+    for script in (installer, notimers):
+        assert "weatheredge-apple-refresh.service.in" in script
+        assert "weatheredge-apple-refresh.timer" in script
+        assert "weatheredge-apple-purge.service.in" in script
+        assert "weatheredge-apple-purge.timer" in script
+    assert "weatheredge-apple-refresh.timer" in installer[
+        installer.index("systemctl enable --now") :
+    ]
+    assert (
+        "weatheredge-apple-refresh.timer weatheredge-apple-refresh.service"
+        in quiesce
+    )
+    assert "weatheredge-apple-purge.timer weatheredge-apple-purge.service" in quiesce
+    assert '"weatheredge-apple-refresh.timer"' in health
+    assert '"weatheredge-apple-purge.timer"' in health
+    assert '"weatheredge-apple-refresh.service"' in integrity
+    assert '"weatheredge-apple-refresh.timer"' in integrity
+    assert '"weatheredge-apple-purge.service"' in integrity
+    assert '"weatheredge-apple-purge.timer"' in integrity
+    assert "bash -s probe weatheredge-apple-refresh.timer" in deployer
+    assert "bash -s probe weatheredge-apple-purge.timer" in deployer
+    assert 'ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")' in deployer
+    assert 'ENABLED_TIMERS+=("weatheredge-apple-purge.timer")' in deployer
+    assert "ENABLE_APPLE_WEATHER=0" in env_example
+    assert "APPLE_WEATHER_PRIVATE_KEY_PATH=" in env_example
+    assert "*.p8" in root_gitignore
+    for private_key_glob in ("*.p8", "*.pem", "*.key"):
+        assert private_key_glob in runtime_filter
+        assert f"--exclude '{private_key_glob}'" in deployer
+    assert "Apple Weather" in tmpfiles
 
 
 # ---------------------------------------------------------------------------

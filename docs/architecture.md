@@ -23,6 +23,8 @@ Responsibilities:
 - ingest KSFO station history
 - archive NWS observations and daily highs
 - fetch/cache Google Weather within the event budget (SFO only)
+- fetch Apple WeatherKit for all station coordinates into a private,
+  provider-expiring tmpfs cache (optional research source, weight zero)
 - blend Google, NWS, Open-Meteo, and SFO history (SFO only)
 - run the station-agnostic NWP→EMOS→CLI path for the other fourteen cities:
   Open-Meteo previous-runs archive (8 models) and rolling-origin EMOS per city.
@@ -45,6 +47,11 @@ Main interface consumed by trading:
 - `weather.db`
 - `google_weather_cache.json`
 - `ab_test_results.json`
+
+The Apple runtime cache is deliberately **not** an interface consumed by the
+trading module. It cannot enter `nwp_model_forecasts`, `weather.db`, public
+artifacts, or decision snapshots. The full contract and current licensing
+constraint are documented in [APPLE-WEATHERKIT.md](APPLE-WEATHERKIT.md).
 
 ## Trading Module
 

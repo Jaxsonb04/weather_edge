@@ -118,6 +118,8 @@ render_unit() {
 
 render_unit "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.service.in" /etc/systemd/system/sfo-forecaster-refresh.service
 render_unit "$SCRIPT_DIR/systemd/weatheredge-google-nonsfo-refresh.service.in" /etc/systemd/system/weatheredge-google-nonsfo-refresh.service
+render_unit "$SCRIPT_DIR/systemd/weatheredge-apple-refresh.service.in" /etc/systemd/system/weatheredge-apple-refresh.service
+render_unit "$SCRIPT_DIR/systemd/weatheredge-apple-purge.service.in" /etc/systemd/system/weatheredge-apple-purge.service
 render_unit "$SCRIPT_DIR/systemd/weatheredge-google-runtime-purge.service.in" /etc/systemd/system/weatheredge-google-runtime-purge.service
 render_unit "$SCRIPT_DIR/systemd/sfo-operational-publish.service.in" /etc/systemd/system/sfo-operational-publish.service
 render_unit "$SCRIPT_DIR/systemd/sfo-strategy-lab-refresh.service.in" /etc/systemd/system/sfo-strategy-lab-refresh.service
@@ -137,16 +139,18 @@ sudo install -m 755 "$SCRIPT_DIR/verify_systemd_unit_integrity.sh" /usr/local/li
 
 # Task 8 item 1: /run/weatheredge is created, owned, and permission-enforced
 # by a static tmpfiles.d entry rather than a per-unit RuntimeDirectory=,
-# because multiple independent units (the SFO refresh, the non-SFO refresh,
-# and the purge unit) all read/write the same runtime database and
+# because multiple independent units (the SFO refresh, non-SFO refresh, Apple
+# refresh, and provider purge) share the private runtime directory and
 # RuntimeDirectory= ties a directory's lifecycle to a single owning unit.
 # `--create` applies it immediately so a fresh install does not have to wait
-# for a reboot before the first Google refresh can open the runtime store.
+# for a reboot before the first provider refresh can open its runtime store.
 render_unit "$SCRIPT_DIR/systemd/weatheredge-tmpfiles.conf" /etc/tmpfiles.d/weatheredge.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/weatheredge.conf
 
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.timer" /etc/systemd/system/sfo-forecaster-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-google-nonsfo-refresh.timer" /etc/systemd/system/weatheredge-google-nonsfo-refresh.timer
+sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-apple-refresh.timer" /etc/systemd/system/weatheredge-apple-refresh.timer
+sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-apple-purge.timer" /etc/systemd/system/weatheredge-apple-purge.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-google-runtime-purge.timer" /etc/systemd/system/weatheredge-google-runtime-purge.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-operational-publish.timer" /etc/systemd/system/sfo-operational-publish.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-strategy-lab-refresh.timer" /etc/systemd/system/sfo-strategy-lab-refresh.timer

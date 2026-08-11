@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh temporary Apple Weather data at four fixed UTC vintages
+
+[Timer]
+# Four requests per city/day = 60 calls/day for the 15-city registry. Keep the
+# vintages fixed in UTC so DST cannot silently move the research cutoffs.
+RandomizedDelaySec=60
+AccuracySec=1s
+OnCalendar=*-*-* 02,08,14,20:17:00 UTC
+Persistent=true
+Unit=weatheredge-apple-refresh.service
+
+[Install]
+WantedBy=timers.target

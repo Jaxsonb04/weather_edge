@@ -1,0 +1,14 @@
+[Unit]
+Description=Purge expired Apple WeatherKit runtime content every 10 minutes
+
+[Timer]
+# Offset from the Google purge so the two independent provider stores never
+# need to share failure or alert behavior.
+RandomizedDelaySec=30
+AccuracySec=1s
+OnCalendar=*:1/10
+Persistent=true
+Unit=weatheredge-apple-purge.service
+
+[Install]
+WantedBy=timers.target

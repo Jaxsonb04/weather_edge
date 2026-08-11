@@ -76,6 +76,13 @@ NWS Climatological Report (CLI)  ──► settlement truth   fee-aware edge + r
                                                         paper journal ─► React SPA
 ```
 
+Apple WeatherKit is also available as a private, temporary research source for
+all fifteen station coordinates. It is intentionally outside the diagram's
+prediction path: its live weight is zero, its values expire in tmpfs at Apple's
+provider deadline, and it does not enter `weather.db`, EMOS training, trading
+decisions, or public JSON. See
+[the WeatherKit boundary](docs/APPLE-WEATHERKIT.md).
+
 Every market settles on its own NWS Climatological Report, and each city's
 climate day runs midnight-to-midnight in local standard time. The forecaster
 never grades itself — settlement truth comes from the official CLI product.
@@ -235,6 +242,12 @@ python google_weather_cache.py
 Refreshing Google Weather requires `GOOGLE_WEATHER_API_KEY`. The project keeps
 Google usage disciplined with an 8,000/month and 260/day default event budget,
 below the 10,000 free monthly cap.
+
+The optional Apple source runs separately with `python apple_weatherkit.py
+--cities all`. It is safe-off until the WeatherKit REST credentials and
+`ENABLE_APPLE_WEATHER=1` are configured. The canonical schedule uses one
+bundled hourly+daily request per city at four UTC vintages per day. This source
+is shadow-only and cannot alter the forecast or trading engine.
 
 These commands drive the SFO legacy blend. The other fourteen cities run
 through the NWP→EMOS path (`nwp_archive.py`, `emos_forecast.py`) with CLI

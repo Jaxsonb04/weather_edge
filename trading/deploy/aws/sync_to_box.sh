@@ -138,6 +138,38 @@ case "$scheduler_probe_status" in
     ;;
 esac
 
+# Preserve an intentional pause once either Apple unit exists, but enable each
+# timer on the first deploy that introduces it. Otherwise the timerless install
+# would create a disabled unit that the canonical scheduler check immediately
+# reports as missing from the established host's captured policy.
+APPLE_REFRESH_WAS_ABSENT=0
+apple_refresh_probe_status=0
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  bash -s probe weatheredge-apple-refresh.timer < "$QUIESCE_HELPER" \
+  || apple_refresh_probe_status=$?
+case "$apple_refresh_probe_status" in
+  0) ;;
+  10) APPLE_REFRESH_WAS_ABSENT=1 ;;
+  *)
+    echo "failed to inspect Apple refresh timer before quiescence (status=$apple_refresh_probe_status)" >&2
+    exit "$apple_refresh_probe_status"
+    ;;
+esac
+
+APPLE_PURGE_WAS_ABSENT=0
+apple_purge_probe_status=0
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  bash -s probe weatheredge-apple-purge.timer < "$QUIESCE_HELPER" \
+  || apple_purge_probe_status=$?
+case "$apple_purge_probe_status" in
+  0) ;;
+  10) APPLE_PURGE_WAS_ABSENT=1 ;;
+  *)
+    echo "failed to inspect Apple purge timer before quiescence (status=$apple_purge_probe_status)" >&2
+    exit "$apple_purge_probe_status"
+    ;;
+esac
+
 # Capture the established host's timer policy before quiescing it. Stream the
 # current helper because the remote source tree may be older than this deploy.
 # A failed transfer or install deliberately leaves the box quiesced; only a
@@ -151,6 +183,12 @@ while IFS= read -r timer; do
 done <<<"$enabled_timer_output"
 if (( SCHEDULER_WATCHDOG_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("sfo-scheduler-health.timer")
+fi
+if (( APPLE_REFRESH_WAS_ABSENT == 1 )); then
+  ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")
+fi
+if (( APPLE_PURGE_WAS_ABSENT == 1 )); then
+  ENABLED_TIMERS+=("weatheredge-apple-purge.timer")
 fi
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
@@ -209,6 +247,9 @@ rsync -av \
   --exclude '.pytest_cache' \
   --exclude '.DS_Store' \
   --exclude '.env' \
+  --exclude '*.p8' \
+  --exclude '*.pem' \
+  --exclude '*.key' \
   --exclude '.venv' \
   --exclude '.venv-dev' \
   --exclude 'venv' \

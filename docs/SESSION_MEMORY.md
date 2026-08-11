@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-05 16:22 PDT
+Last updated: 2026-08-10 16:49 PDT
 
 Last production verification: 2026-08-05 16:22 PDT
 
@@ -14,6 +14,42 @@ verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **APPLE WEATHERKIT SOURCE IMPLEMENTED LOCALLY; ACTIVATION AND MODEL WEIGHT
+  DELIBERATELY DEFERRED (2026-08-10 code snapshot, not deployed):** WeatherEdge
+  now has a credential-ready WeatherKit REST source for all fifteen settlement
+  stations plus a dedicated four-vintage UTC timer. One bundled hourly+daily
+  call per station at each vintage is 60 scheduled calls/day. Authentication
+  is ES256 in memory; requests refuse redirects; each city fails independently;
+  settlement highs require 24 unique hourly forecasts in the registry's exact
+  fixed-standard climate window. Only complete normalized current highs may
+  enter a private mode-0600 tmpfs cache, and both refresh-start and independent
+  ten-minute purge paths make values unavailable at Apple's product expiry;
+  reads and refreshes remove them immediately, while the unattended purge
+  bounds physical deletion to the next cycle plus its short jitter.
+  The source is disabled by default and incomplete active configuration fails
+  visibly.
+
+  Apple values do **not** enter `weather.db`, `nwp_model_forecasts`, EMOS
+  fitting, training archives, paper-decision snapshots, public JSON, or logs.
+  Live trading weight remains exactly zero, so this change cannot alter
+  forecast probabilities, risk gates, size, or paper decisions. This is a
+  source integration, not evidence that Apple improves the model. Under the
+  current Apple Developer Program License Agreement Attachment 8 storage
+  restrictions, Apple-only forecast vintages/residuals are not durably
+  archived; historical evaluation and any nonzero weight are deferred until
+  Apple provides written clarification or qualified counsel approves a
+  compliant evidence design. Final local verification on the completed tree:
+  **2,623 tests passed, 8 skipped**; the 37 focused WeatherKit tests passed;
+  the production dependency lock installed successfully with hash enforcement;
+  and shell syntax plus diff checks were clean.
+
+  No AWS sync, service installation, credential change, timer change, network
+  WeatherKit request, forecast-policy change, or production mutation occurred
+  in this task. The last verified production snapshot below therefore remains
+  the 2026-08-05 twelve-timer, paper-only state; do not infer that Apple is
+  active on AWS from the source tree. See `docs/APPLE-WEATHERKIT.md` for the
+  activation and licensing boundary.
 
 - **RESEARCH ROI V6 NEAR-5% PAPER DAY AUDITED; POLICY HELD STEADY
   (2026-08-05 intraday snapshot):** the economically isolated Research ROI v6

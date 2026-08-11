@@ -21,6 +21,8 @@ MANAGED_UNITS=(
   "sfo-scheduler-health.service"
   "sfo-strategy-lab-refresh.service"
   "weatheredge-google-nonsfo-refresh.service"
+  "weatheredge-apple-refresh.service"
+  "weatheredge-apple-purge.service"
   "weatheredge-google-runtime-purge.service"
   "sfo-dataset-backfill.timer"
   "sfo-forecast-freshness.timer"
@@ -33,6 +35,8 @@ MANAGED_UNITS=(
   "sfo-scheduler-health.timer"
   "sfo-strategy-lab-refresh.timer"
   "weatheredge-google-nonsfo-refresh.timer"
+  "weatheredge-apple-refresh.timer"
+  "weatheredge-apple-purge.timer"
   "weatheredge-google-runtime-purge.timer"
 )
 

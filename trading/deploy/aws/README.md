@@ -125,14 +125,19 @@ The full sync accepts only canonical conservative absolute `REMOTE_BASE` paths:
 no root path, repeated or trailing slash, or `.`/`..` component reaches SSH or
 rsync.
 
-The forecaster runtime installs only `certifi numpy pandas`; the correctly
-formed command is a hash-verified install from `requirements/production.lock`. Heavy training
+The forecaster runtime installs only `certifi`, `numpy`, `pandas`, and the
+PyJWT/cryptography ES256 signing stack; the correctly formed command is a
+hash-verified install from `requirements/production.lock`. Heavy training
 dependencies do not belong on the production box.
 
 ## Cadence And Responsibilities
 
 - Forecast refresh: twice hourly from 05:10 through 18:40 PT and hourly
   overnight; all fifteen cities, SFO flagship.
+- Apple WeatherKit research refresh: four fixed UTC vintages/day, one bundled
+  hourly+daily request per city. It is disabled by default, temporary-only,
+  and has zero live trading weight. See `docs/APPLE-WEATHERKIT.md`.
+- Provider runtime purge: every ten minutes, independent of refresh success.
 - Operational publication: every five minutes; builds
   `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.
 - Strategy Lab publication: fixed wall-clock five-minute cadence; bounded
@@ -162,7 +167,7 @@ the deploy key as `/home/ubuntu/.ssh/sfo_weather_pages_deploy` and the Git sourc
 as `git@github.com:Jaxsonb04/weather_edge.git`.
 
 `sfo-scheduler-health.timer` runs on an offset five-minute wall clock. Its
-root-owned helper verifies that the eleven application timers are enabled and
+root-owned helper verifies that the thirteen application timers are enabled and
 active, rejects effective unit drift, stale/missing forecast state, checksum or
 source-provenance mismatches, and validates both local and public artifact
 freshness. Only age-only failures are eligible for repair: it may start the

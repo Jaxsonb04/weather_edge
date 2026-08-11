@@ -138,10 +138,10 @@ Break it manually, in this order:
 2. Delete the orphaned same-day snapshot and `.restore-check.*` dir it left behind
    (~11 GB each; they space-block the next attempt).
 3. `systemctl start sfo-forecaster-refresh.service` to make `weather.db` fresh.
-4. Re-enable the canonical 12-timer set (the list is in `install_systemd.sh`).
+4. Re-enable the canonical 14-timer set (the list is in `install_systemd.sh`).
 5. Let `sfo-operational-publish` run once, then confirm the freshness watchdog returns
    `success`.
 
 Related trap: because the deploy *captures* the enabled timer set at start, running a
 deploy from an already-quiesced box records an **empty** policy and would leave the box
-dead on success. Always restore the 12 timers before the next deploy.
+dead on success. Always restore the 14 timers before the next deploy.
