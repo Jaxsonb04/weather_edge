@@ -55,6 +55,24 @@ events/day, both below the 10,000 monthly free usage cap. The dashboard only
 uses the cached Google value when it is for the current SFO tomorrow date and
 less than 24 hours old.
 
+## Apple WeatherKit Shadow Source
+
+`apple_weatherkit.py` is an optional, all-city WeatherKit REST source. It asks
+for hourly and daily forecasts together at four fixed UTC vintages/day, derives
+complete 24-hour highs in each station's fixed-standard settlement window, and
+keeps only the current normalized values in a private mode-0600 tmpfs cache.
+Apple's daily maximum is a diagnostic; the settlement contributor is always
+derived from hourly points. Only complete future settlement days are cached;
+same-day elapsed hours are not reconstructed from forecast data.
+
+This is not a live blend input. Its weight is zero and it never writes to
+`weather.db`, `nwp_model_forecasts`, training archives, decision snapshots, or
+public JSON. Provider expiry is a hard boundary, with a separate ten-minute
+purge safety net. Historical scoring and promotion are deferred under the
+current Apple Weather data-storage terms. See
+[`docs/APPLE-WEATHERKIT.md`](../docs/APPLE-WEATHERKIT.md) for the complete
+runtime and licensing boundary.
+
 Each successful Google refresh is also archived in `weather.db`:
 
 - `forecast_google_daily_high`: one row per Google forecast snapshot, including

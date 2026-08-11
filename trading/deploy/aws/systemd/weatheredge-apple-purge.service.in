@@ -1,0 +1,16 @@
+[Unit]
+Description=Purge expired Apple WeatherKit runtime content
+OnFailure=sfo-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__FORECASTER_DIR__
+EnvironmentFile=__ENV_FILE__
+# No WeatherKit credentials are needed. The command physically removes expired
+# or unverifiable Apple data even when refresh is disabled or unavailable.
+ExecStart=__FORECASTER_DIR__/.venv/bin/python apple_weatherkit.py --purge-only
+Nice=15
+MemoryHigh=40M
+MemoryMax=80M
+TimeoutStartSec=60

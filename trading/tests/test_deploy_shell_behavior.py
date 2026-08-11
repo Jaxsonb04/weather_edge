@@ -21,6 +21,8 @@ PULL_SCRIPT = AWS_DIR / "pull_paper_db.sh"
 TIMERS = (
     "sfo-forecaster-refresh.timer",
     "weatheredge-google-nonsfo-refresh.timer",
+    "weatheredge-apple-refresh.timer",
+    "weatheredge-apple-purge.timer",
     "weatheredge-google-runtime-purge.timer",
     "sfo-operational-publish.timer",
     "sfo-strategy-lab-refresh.timer",
@@ -618,12 +620,14 @@ exit 0
     actions = action_log.read_text().splitlines()
     assert actions[0].endswith("bash -s preflight /opt/weatheredge/trading/data/paper_trading.db")
     assert actions[1].endswith("bash -s probe sfo-scheduler-health.timer")
-    assert actions[2].endswith("bash -s capture")
-    assert "weatheredge-deploy-maintenance" in actions[3]
-    assert actions[4].endswith("bash -s quiesce")
-    assert actions[5].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
-    assert "mkdir -p" in actions[6] and "chown" in actions[6]
-    assert actions[7].startswith("rsync|")
+    assert actions[2].endswith("bash -s probe weatheredge-apple-refresh.timer")
+    assert actions[3].endswith("bash -s probe weatheredge-apple-purge.timer")
+    assert actions[4].endswith("bash -s capture")
+    assert "weatheredge-deploy-maintenance" in actions[5]
+    assert actions[6].endswith("bash -s quiesce")
+    assert actions[7].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
+    assert "mkdir -p" in actions[8] and "chown" in actions[8]
+    assert actions[9].startswith("rsync|")
     assert not any("enable" in action or "start" in action for action in actions)
 
 
@@ -645,7 +649,12 @@ data = sys.stdin.read()
 with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:
     handle.write('ssh|' + ' '.join(args) + '\\n')
 
-if args[-3:] == ['bash', '-s', 'capture']:
+if args[-4:] in (
+    ['bash', '-s', 'probe', 'weatheredge-apple-refresh.timer'],
+    ['bash', '-s', 'probe', 'weatheredge-apple-purge.timer'],
+):
+    raise SystemExit(10)
+elif args[-3:] == ['bash', '-s', 'capture']:
     print('sfo-operational-publish.timer')
     print('sfo-strategy-lab-refresh.timer')
     print('sfo-forecast-freshness.timer')
@@ -692,10 +701,13 @@ elif 'restore' in args:
         i for i, line in enumerate(actions) if "install_systemd_notimers.sh" in line
     )
     restore_indexes = [i for i, line in enumerate(actions) if line.startswith("restore|")]
-    assert len(restore_indexes) == 3
-    initial_writer_restore_idx, watchdog_restore_idx, post_writer_restore_idx = (
-        restore_indexes
-    )
+    assert len(restore_indexes) == 4
+    (
+        apple_restore_idx,
+        initial_writer_restore_idx,
+        watchdog_restore_idx,
+        post_writer_restore_idx,
+    ) = restore_indexes
     seed_indexes = [
         i for i, line in enumerate(actions) if "sfo-strategy-lab-refresh.service" in line
         and "systemctl start" in line
@@ -725,6 +737,7 @@ elif 'restore' in args:
     assert first_rsync_idx < install_idx
     assert (
         install_idx
+        < apple_restore_idx
         < seed_indexes[0]
         < public_wait_indexes[0]
         < initial_writer_restore_idx
@@ -736,6 +749,10 @@ elif 'restore' in args:
         < public_wait_indexes[1]
         < post_writer_restore_idx
     )
+    assert actions[apple_restore_idx] == (
+        "restore|weatheredge-apple-refresh.timer "
+        "weatheredge-apple-purge.timer"
+    )
     assert actions[initial_writer_restore_idx] == (
         "restore|sfo-strategy-lab-refresh.timer "
         "sfo-operational-publish.timer"
@@ -745,7 +762,7 @@ elif 'restore' in args:
         "restore|sfo-strategy-lab-refresh.timer "
         "sfo-operational-publish.timer"
     )
-    assert "restored 0 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+    assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
 
 
 def test_full_sync_restores_writers_when_post_analysis_drain_fails(

@@ -1,0 +1,19 @@
+[Unit]
+Description=WeatherEdge Apple WeatherKit temporary research refresh
+Wants=network-online.target
+After=network-online.target
+OnFailure=sfo-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__FORECASTER_DIR__
+EnvironmentFile=__ENV_FILE__
+# One bundled hourly+daily WeatherKit request per configured settlement
+# station. Apple values remain only in the expiring /run/weatheredge cache;
+# this service never writes weather.db, public JSON, or trading decisions.
+ExecStart=__FORECASTER_DIR__/.venv/bin/python apple_weatherkit.py --cities all
+Nice=10
+MemoryHigh=160M
+MemoryMax=240M
+TimeoutStartSec=300

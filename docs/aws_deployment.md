@@ -114,6 +114,8 @@ new operator commands and automation must use `sync_to_box.sh` directly.
 /opt/weatheredge/webdist
 /opt/weatheredge/.cache/main
 /opt/weatheredge/.locks
+/run/weatheredge/google_runtime.db
+/run/weatheredge/apple_weather_runtime.json  # only while enabled and unexpired
 ```
 
 Publication and paper-scan locks default under `/opt/weatheredge/.locks`, so
@@ -134,13 +136,26 @@ slashes or `.`/`..` components) before build; protect-args mode still permits
 spaces within otherwise canonical path components.
 
 The environment installed at `/etc/weatheredge.env` is based on
-`trading/deploy/aws/sfo-weather.env.example`.
+`trading/deploy/aws/sfo-weather.env.example`. Apple WeatherKit remains
+safe-off until an operator configures a WeatherKit Service ID and private key,
+then explicitly sets `ENABLE_APPLE_WEATHER=1`. Never place the `.p8` inside the
+source tree; the service rejects keys that are not mode 0600.
 
 ## Timers
 
 - `sfo-forecaster-refresh.timer`: twice hourly from 05:10 through 18:40 PT and
   hourly overnight; refreshes NWS truth, Google Weather within budget, NWP/EMOS
   forecast state for all fifteen cities, and no public artifacts.
+- `weatheredge-google-nonsfo-refresh.timer`: one daily budgeted Google runtime
+  refresh for the fourteen non-SFO stations.
+- `weatheredge-apple-refresh.timer`: four fixed UTC vintages/day for all fifteen
+  stations. It exits without a request by default, retains only provider-valid
+  temporary data in `/run/weatheredge`, and has zero trading weight.
+- `weatheredge-apple-purge.timer`: every ten minutes, offset from Google;
+  physically removes expired or unverifiable Apple values even when refresh is
+  disabled or unavailable.
+- `weatheredge-google-runtime-purge.timer`: every ten minutes; physically
+  expires Google runtime rows independently of Apple.
 - `sfo-operational-publish.timer`: every five minutes; builds and validates the
   operational JSON snapshot, then publishes it.
 - `sfo-strategy-lab-refresh.timer`: fixed wall-clock five-minute cadence;
@@ -163,7 +178,7 @@ The environment installed at `/etc/weatheredge.env` is based on
   persistent runtime timers after a deploy or reboot.
 - `sfo-forecast-freshness.timer`: publication and forecast health checks.
 - `sfo-scheduler-health.timer`: offset five-minute independent scheduler check.
-  It requires the eleven application timers to be enabled and active, verifies
+  It requires the thirteen application timers to be enabled and active, verifies
   canonical systemd units, forecast DB safety, artifact checksums and source
   provenance, and local/public Strategy and operational freshness. It repairs
   only age-only failures by starting Strategy Lab and/or operational

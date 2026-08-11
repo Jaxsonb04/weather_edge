@@ -28,6 +28,8 @@ fi
 CANONICAL_TIMERS=(
   "sfo-forecaster-refresh.timer"
   "weatheredge-google-nonsfo-refresh.timer"
+  "weatheredge-apple-refresh.timer"
+  "weatheredge-apple-purge.timer"
   "weatheredge-google-runtime-purge.timer"
   "sfo-operational-publish.timer"
   "sfo-strategy-lab-refresh.timer"

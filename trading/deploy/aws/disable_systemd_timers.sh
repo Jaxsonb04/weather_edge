@@ -9,6 +9,8 @@ fi
 UNIT_PAIRS=(
   "sfo-forecaster-refresh.timer sfo-forecaster-refresh.service"
   "weatheredge-google-nonsfo-refresh.timer weatheredge-google-nonsfo-refresh.service"
+  "weatheredge-apple-refresh.timer weatheredge-apple-refresh.service"
+  "weatheredge-apple-purge.timer weatheredge-apple-purge.service"
   "weatheredge-google-runtime-purge.timer weatheredge-google-runtime-purge.service"
   "sfo-operational-publish.timer sfo-operational-publish.service"
   "sfo-strategy-lab-refresh.timer sfo-strategy-lab-refresh.service"
