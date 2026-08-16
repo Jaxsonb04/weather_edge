@@ -1,23 +1,68 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-15 22:06 PDT
+Last updated: 2026-08-16 05:24 PDT
 
-Last production verification: 2026-08-15 19:02 PDT
+Last production verification: 2026-08-16 05:24 PDT
 
-Last public artifact verification: 2026-08-15 19:02 PDT
+Last public artifact verification: 2026-08-16 05:24 PDT
 
-Production status snapshot (last verified 2026-08-15): publishing and scanning in
-paper-only mode on runtime revision
-`10b4844dd28e1008789dab5846b67e07bfeabc0c`, but not fully healthy because the
-nightly retention prune has timed out on five consecutive natural runs. Live
-execution remains disabled, dry-run remains enabled, and no authenticated order
-client or live-order service is deployed.
+Production status snapshot (last verified 2026-08-16): healthy and paper-only on
+runtime revision `c82a67e0fb0a138ce42b86f22fbff6282590718f`. All fourteen
+canonical timers are enabled and active, all twenty-nine canonical units match
+their templates, scheduler health passes, and no unit is failed. Live execution
+is disabled, dry-run is enabled, and no authenticated order client or live-order
+service is deployed.
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **PAPER-READINESS HARDENING DEPLOYED; LIVE TRADING REMAINS IMPOSSIBLE
+  (2026-08-16, PR #96):** runtime and public SPA revision
+  `c82a67e0fb0a138ce42b86f22fbff6282590718f` are deployed with clean source
+  provenance. The deploy created an off-host encrypted database backup, then
+  downloaded and re-verified its checksum, full SQLite integrity, and foreign
+  keys before installing source. Both complete integrity scans took roughly an
+  hour on this I/O-constrained host, and the immutable-snapshot Strategy Lab
+  refresh added about eighteen minutes. This is slow but produced a tested
+  rollback image; redesign deploy-time verification only with equivalent
+  recovery proof. A first SPA attempt from a clean public dependency install
+  failed locally before publication because the registry HeroUI Pro stub omits
+  authenticated subpath modules. Rebuilding with the documented authenticated
+  Mac toolchain passed and the current asset is public.
+
+  Production now has fourteen active canonical timers, twenty-nine units with
+  no drift or daemon-reload debt, zero failed units, no maintenance marker, and
+  a successful scheduler watchdog. The full analysis cache and private evidence
+  were regenerated from the verified immutable snapshot, then the public
+  artifact was rebuilt and matched its exact manifest. During the retention
+  canary, five monitor and two scan activations started and completed normally.
+  Disk use was 45% with about 34 GiB available; the paper database was about
+  18.4 GB.
+
+  The scheduled retention service now defaults to archive-only and its canary
+  succeeded: archive coverage and foreign keys passed, the wrapper emitted the
+  expected `DEGRADED` no-delete diagnostic, and no live-database prune ran. It
+  removed only old local archive partitions whose uploaded copies were verified;
+  those partitions remain recoverable off-host. The canary used about 2m09s CPU,
+  peaked at 2.5 GB memory with no swap, and cleared the five-day failed-unit
+  marker. Live-journal rows were not deleted, so database growth remains an
+  explicit operational risk. Keep disk monitoring active and use
+  `quiesced-delete` only under supervised writer shutdown; never leave that mode
+  enabled for the timer.
+
+  Future-live limits now resolve from a configured risk bankroll: current
+  defaults are $1,000 capital, 1% per order ($10), 2% daily loss ($20), and 5%
+  total pilot loss ($50). The host migrated only the historical exact
+  $50/$20/$10 defaults. Live remains `enabled=0` and `dry_run=1`, and the code
+  still has no authenticated write client. Fresh strict readiness is
+  `REPLAY_REQUIRED`, **4/12 checks, 43.6%, four complete post-boundary settlement
+  days**. The older 8/12 and seventeen-day available-case result is superseded
+  and must not be quoted as current evidence. The economically separate Live
+  Stability and Research ROI paper ledgers reconciled during installation and
+  must never be combined.
 
 - **SCHEDULED LIVE-JOURNAL DELETION DEFERRED SAFE-OFF LOCALLY; NOT DEPLOYED
   (2026-08-15):** the retention wrapper now defaults to
