@@ -31,6 +31,7 @@ def _artifact_root(
     parent: Path,
     *,
     strategy_generated_at: str = "2026-07-09T11:45:00+00:00",
+    strategy_analysis_generated_at: str = "2026-07-09T11:00:00+00:00",
     include_strategy: bool = True,
 ) -> Path:
     root = parent / "forecaster"
@@ -45,7 +46,11 @@ def _artifact_root(
     if include_strategy:
         _write_json(
             root / "strategy_research.json",
-            {"generated_at": strategy_generated_at, "available": True},
+            {
+                "generated_at": strategy_generated_at,
+                "analysis_generated_at": strategy_analysis_generated_at,
+                "available": True,
+            },
         )
     return root
 
@@ -85,6 +90,9 @@ def test_manifest_hashes_json_and_preserves_artifact_generation_times():
     )
     assert manifest["artifacts"]["strategy_research.json"]["generated_at"] == (
         "2026-07-09T11:45:00+00:00"
+    )
+    assert manifest["artifacts"]["strategy_research.json"]["analysis_generated_at"] == (
+        "2026-07-09T11:00:00+00:00"
     )
     for name in (*FAST_ARTIFACTS, "strategy_research.json"):
         assert manifest["artifacts"][name]["sha256"] == expected_hashes[name]
@@ -263,6 +271,61 @@ def test_manifest_validation_enforces_operational_and_strategy_ages():
                 max_strategy_age_minutes=20,
             ),
             "strategy_research.json is stale",
+        )
+
+
+def test_manifest_validation_enforces_inner_strategy_analysis_age():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(
+            Path(tmp),
+            strategy_generated_at="2026-07-09T11:59:00+00:00",
+            strategy_analysis_generated_at="2026-07-07T11:59:00+00:00",
+        )
+        module.build_manifest(root, now=NOW)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(
+                root,
+                now=NOW,
+                max_strategy_analysis_age_minutes=36 * 60,
+            ),
+            "strategy_research.json analysis is stale",
+        )
+
+
+def test_manifest_validation_requires_inner_strategy_analysis_timestamp_when_limited():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(Path(tmp))
+        strategy_path = root / "strategy_research.json"
+        strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        strategy.pop("analysis_generated_at")
+        _write_json(strategy_path, strategy)
+        module.build_manifest(root, now=NOW)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(
+                root,
+                now=NOW,
+                max_strategy_analysis_age_minutes=36 * 60,
+            ),
+            "missing timestamp: strategy_research.json.analysis_generated_at",
+        )
+
+
+def test_manifest_validation_rejects_inner_strategy_analysis_timestamp_in_future():
+    module = _publication()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _artifact_root(
+            Path(tmp),
+            strategy_analysis_generated_at=(NOW + timedelta(minutes=6)).isoformat(),
+        )
+        module.build_manifest(root, now=NOW)
+
+        _assert_publication_error(
+            lambda: module.validate_manifest(root, now=NOW),
+            "strategy_research.json.analysis_generated_at is in the future",
         )
 
 

@@ -4,6 +4,8 @@ import tempfile
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from sfo_kalshi_quant.cli import _enforce_live_forecast_freshness
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
@@ -117,7 +119,7 @@ def test_latest_blend_reads_extended_forecaster_metadata():
         assert forecast.raw["google_components"]["hourly_local_day_high_f"] == 65.3
 
 
-def test_intraday_snapshot_prefers_official_daily_high_table():
+def test_intraday_snapshot_keeps_observation_daily_high_nonfinal_without_cli_truth():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         db_path = root / "weather.db"
@@ -173,7 +175,7 @@ def test_intraday_snapshot_prefers_official_daily_high_table():
                     observation_count, is_complete, updated_at, source
                 )
                 VALUES ('KSFO', 'USW00023234', '2026-06-03', 69.8,
-                    '2026-06-03T21:15:00+00:00', 200, 0,
+                    '2026-06-03T21:15:00+00:00', 200, 1,
                     '2026-06-03T22:13:38+00:00', 'NWS KSFO observed daily high')
                 """
             )
@@ -185,6 +187,60 @@ def test_intraday_snapshot_prefers_official_daily_high_table():
         assert intraday.latest_observed_at == "2026-06-03T21:15:00+00:00"
         assert intraday.observation_count == 200
         assert intraday.observed_high_source == "NWS KSFO observed daily high"
+        assert intraday.is_complete is False
+
+
+def test_intraday_snapshot_uses_only_final_cli_truth_for_exact_high():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.executescript(
+                """
+                CREATE TABLE nws_daily_high_ground_truth (
+                    station_id TEXT,
+                    local_date TEXT,
+                    high_f REAL,
+                    high_observed_at TEXT,
+                    observation_count INTEGER,
+                    is_complete INTEGER,
+                    source TEXT
+                );
+                CREATE TABLE nws_station_observations (
+                    station_id TEXT,
+                    local_date TEXT,
+                    observed_at TEXT,
+                    temp_f REAL
+                );
+                CREATE TABLE forecast_google_hourly (
+                    fetched_at TEXT,
+                    target_date TEXT,
+                    forecast_hour_utc TEXT,
+                    temperature_f REAL
+                );
+                CREATE TABLE cli_settlements (
+                    station_id TEXT,
+                    local_date TEXT,
+                    max_temperature_f REAL,
+                    is_final INTEGER
+                );
+                INSERT INTO nws_daily_high_ground_truth VALUES (
+                    'KSFO', '2026-06-03', 69.8,
+                    '2026-06-03T21:15:00+00:00', 200, 1,
+                    'NWS KSFO observed daily high'
+                );
+                INSERT INTO nws_station_observations VALUES (
+                    'KSFO', '2026-06-03', '2026-06-03T22:00:00+00:00', 69.8
+                );
+                INSERT INTO cli_settlements VALUES ('KSFO', '2026-06-03', 71, 1);
+                """
+            )
+
+        intraday = SfoForecasterAdapter(root).intraday_snapshot(date(2026, 6, 3))
+
+        assert intraday is not None
+        assert intraday.observed_high_f == 71.0
+        assert intraday.observed_high_source == "NWS CLI final settlement"
+        assert intraday.is_complete is True
 
 
 def test_live_forecast_freshness_rejects_stale_snapshot():
@@ -203,6 +259,23 @@ def test_live_forecast_freshness_rejects_stale_snapshot():
         assert "stale" in str(exc)
     else:
         raise AssertionError("stale live forecasts must be rejected")
+
+
+def test_live_forecast_freshness_rejects_snapshot_far_in_the_future():
+    future_fetched_at = (datetime.now(UTC) + timedelta(hours=48)).isoformat()
+    target = datetime.now(SFO_TZ).date() + timedelta(days=1)
+    forecast = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=70.0,
+        fetched_at=future_fetched_at,
+        method="test",
+    )
+
+    with pytest.raises(ForecastDataError, match="future"):
+        _enforce_live_forecast_freshness(
+            forecast,
+            StrategyConfig(max_forecast_age_hours=30.0),
+        )
 
 
 def _write_sfo_live_forecast_sources(

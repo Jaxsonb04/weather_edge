@@ -94,6 +94,26 @@ def test_high_confidence_secret_pattern_is_a_failure():
         )
 
 
+def test_rsa_private_key_downloaded_as_txt_is_a_failure():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _make_minimal_project(Path(tmp))
+        begin = "-----BEGIN " + "RSA " + "PRIVATE KEY-----"
+        end = "-----END " + "RSA " + "PRIVATE KEY-----"
+        _write(
+            root,
+            "prediction-market-key.txt",
+            f"{begin}\nnot-a-real-key\n{end}\n",
+        )
+
+        results = health.run_checks(root)
+
+        secret_scan = next(
+            result for result in results if result.name == "secret pattern scan"
+        )
+        assert secret_scan.status == "FAIL"
+        assert "private key" in secret_scan.details.lower()
+
+
 def test_generated_frontend_dependencies_are_excluded_from_secret_scan():
     with tempfile.TemporaryDirectory() as tmp:
         root = _make_minimal_project(Path(tmp))

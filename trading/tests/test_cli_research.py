@@ -18,7 +18,9 @@ from pathlib import Path
 import pytest
 
 from sfo_kalshi_quant import cli
+from sfo_kalshi_quant._cli.research import _print_report
 from sfo_kalshi_quant.cities import city_for_station
+from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.db import PaperStore
 
 STATION = "KSFO"
@@ -111,6 +113,56 @@ def _base_argv(db_path: Path, forecaster_root: Path) -> list[str]:
         "--db-path", str(db_path),
         "--forecaster-root", str(forecaster_root),
     ]
+
+
+def test_research_report_cli_formats_the_published_target_value(capsys) -> None:
+    report = {
+        "experiment_identity": {
+            "hypothesis_family": "test",
+            "candidate_key": "candidate",
+            "candidate_version": "v1",
+            "experiment_id": "exp-1",
+            "evidence_role": "confirmatory",
+            "predicted_edge_scope": "none",
+        },
+        "fold_coverage": {
+            "folds": 0,
+            "unavailable_folds": 0,
+            "skipped_historical_rows": 0,
+            "skipped_historical_row_load_count": 0,
+        },
+        "replay_completeness": {
+            "paired_case_count": 0,
+            "coverage_exclusion_count": 0,
+        },
+        "google_evidence_join": {"matched_row_count": 0, "vintage_mismatch_count": 0},
+        "persistence": {
+            "persisted_fold_count": 0,
+            "pre_declaration_fold_count": 0,
+            "stale_evidence_fold_count": 0,
+        },
+        "daily_target_kpi": {
+            "label": "$62.50/day is observed, never guaranteed",
+            "target_pnl": 62.5,
+            "observed_days": 0,
+            "observed_hit_rate": None,
+            "observed_mean_daily_pnl": None,
+            "observed_shortfall_vs_target": None,
+        },
+        "promotion_gate": {
+            "eligible_for_target_paper": False,
+            "effect_classification": "no_effect",
+            "block_reasons": [],
+            "live_activation_allowed": False,
+            "independent_confirmatory_days": 0,
+            "distinct_calendar_target_days": 0,
+            "holm_adjusted_significant": False,
+        },
+    }
+
+    _print_report(report, color=Color(enabled=False))
+
+    assert "$62.50/day target" in capsys.readouterr().out
 
 
 def test_research_evaluate_requires_declare_on_first_run(db_paths, capsys) -> None:

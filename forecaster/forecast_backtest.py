@@ -910,12 +910,15 @@ def clisfo_nws_divergence(conn: sqlite3.Connection) -> dict:
     truth_filter = "AND c.station_id = 'KSFO'" if has_new else ""
     if has_new and _has_column(conn, "cli_settlements", "is_final"):
         truth_filter += " AND c.is_final = 1"
+    # This is a divergence diagnostic, not a settlement source. A final CLI
+    # row supplies the comparison cutoff; the observation-derived high remains
+    # deliberately nonfinal so calendar time cannot promote it to truth.
     rows = conn.execute(
         f"""
         SELECT c.local_date, c.max_temperature_f AS clisfo, n.high_f AS nws
         FROM {truth_table} c
         JOIN nws_daily_high_ground_truth n
-          ON n.local_date = c.local_date AND n.station_id = 'KSFO' AND n.is_complete = 1
+          ON n.local_date = c.local_date AND n.station_id = 'KSFO'
         WHERE c.max_temperature_f IS NOT NULL AND n.high_f IS NOT NULL {truth_filter}
         ORDER BY c.local_date
         """

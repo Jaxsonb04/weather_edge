@@ -273,6 +273,16 @@ def build_manifest(
                 previous_entry=prior_strategy,
                 sha256=strategy_hash,
             ),
+            "analysis_generated_at": (
+                _format_timestamp(
+                    _parse_timestamp(
+                        strategy_payload.get("analysis_generated_at"),
+                        label=f"{STRATEGY_ARTIFACT}.analysis_generated_at",
+                    )
+                )
+                if strategy_payload.get("analysis_generated_at") not in (None, "")
+                else None
+            ),
             "sha256": strategy_hash,
             "status": "preserved" if preserved else "ready",
         }
@@ -384,6 +394,7 @@ def validate_manifest_metadata(
     require_strategy: bool = False,
     max_operational_age_minutes: float | None = None,
     max_strategy_age_minutes: float | None = None,
+    max_strategy_analysis_age_minutes: float | None = None,
 ) -> dict:
     """Validate manifest structure and freshness without local artifact files."""
 
@@ -431,6 +442,14 @@ def validate_manifest_metadata(
             strategy_entry.get("generated_at"),
             label=f"{STRATEGY_ARTIFACT}.generated_at",
         )
+        analysis_generated_at = strategy_entry.get("analysis_generated_at")
+        if analysis_generated_at not in (None, ""):
+            parsed_analysis_generated_at = _parse_timestamp(
+                analysis_generated_at,
+                label=f"{STRATEGY_ARTIFACT}.analysis_generated_at",
+            )
+        else:
+            parsed_analysis_generated_at = None
 
     expected_snapshot_id = _snapshot_id_for_artifacts(manifest["artifacts"])
     if snapshot_id != expected_snapshot_id:
@@ -449,6 +468,12 @@ def validate_manifest_metadata(
             generated_at,
             now=checked_at,
             label=f"{name}.generated_at",
+        )
+    if strategy_present and parsed_analysis_generated_at is not None:
+        _validate_not_future(
+            parsed_analysis_generated_at,
+            now=checked_at,
+            label=f"{STRATEGY_ARTIFACT}.analysis_generated_at",
         )
     if max_operational_age_minutes is not None:
         age_minutes = (checked_at - published_at).total_seconds() / 60.0
@@ -473,6 +498,19 @@ def validate_manifest_metadata(
             max_minutes=max_strategy_age_minutes,
             label=STRATEGY_ARTIFACT,
         )
+    if max_strategy_analysis_age_minutes is not None:
+        if not strategy_present:
+            raise PublicationError(f"strategy artifact missing: {STRATEGY_ARTIFACT}")
+        if parsed_analysis_generated_at is None:
+            raise PublicationError(
+                f"missing timestamp: {STRATEGY_ARTIFACT}.analysis_generated_at"
+            )
+        _validate_age(
+            strategy_entry.get("analysis_generated_at"),
+            now=checked_at,
+            max_minutes=max_strategy_analysis_age_minutes,
+            label=f"{STRATEGY_ARTIFACT} analysis",
+        )
     return manifest
 
 
@@ -484,6 +522,7 @@ def validate_manifest(
     require_strategy: bool = False,
     max_operational_age_minutes: float | None = None,
     max_strategy_age_minutes: float | None = None,
+    max_strategy_analysis_age_minutes: float | None = None,
 ) -> dict:
     """Validate manifest structure, JSON inputs, checksums, and optional ages."""
 
@@ -498,6 +537,7 @@ def validate_manifest(
         require_strategy=require_strategy,
         max_operational_age_minutes=max_operational_age_minutes,
         max_strategy_age_minutes=max_strategy_age_minutes,
+        max_strategy_analysis_age_minutes=max_strategy_analysis_age_minutes,
     )
 
     for name in REQUIRED_FAST_ARTIFACTS:
@@ -546,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--require-strategy", action="store_true")
     validate.add_argument("--max-operational-age-minutes", type=float)
     validate.add_argument("--max-strategy-age-minutes", type=float)
+    validate.add_argument("--max-strategy-analysis-age-minutes", type=float)
     validate.add_argument("--print-artifacts", action="store_true")
     validate.add_argument("--now", help=argparse.SUPPRESS)
 
@@ -557,6 +598,7 @@ def build_parser() -> argparse.ArgumentParser:
     metadata.add_argument("--require-strategy", action="store_true")
     metadata.add_argument("--max-operational-age-minutes", type=float)
     metadata.add_argument("--max-strategy-age-minutes", type=float)
+    metadata.add_argument("--max-strategy-analysis-age-minutes", type=float)
     metadata.add_argument("--now", help=argparse.SUPPRESS)
     return parser
 
@@ -584,6 +626,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 require_strategy=args.require_strategy,
                 max_operational_age_minutes=args.max_operational_age_minutes,
                 max_strategy_age_minutes=args.max_strategy_age_minutes,
+                max_strategy_analysis_age_minutes=(
+                    args.max_strategy_analysis_age_minutes
+                ),
             )
             print(f"valid publication manifest metadata {manifest['snapshot_id']}")
             return 0
@@ -595,6 +640,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             require_strategy=args.require_strategy,
             max_operational_age_minutes=args.max_operational_age_minutes,
             max_strategy_age_minutes=args.max_strategy_age_minutes,
+            max_strategy_analysis_age_minutes=args.max_strategy_analysis_age_minutes,
         )
         if args.print_artifacts:
             print("\n".join((*published_artifacts(manifest), MANIFEST_NAME)))

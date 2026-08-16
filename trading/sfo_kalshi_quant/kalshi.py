@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from http.client import IncompleteRead
 from pathlib import Path
 from typing import Any, Iterator
@@ -251,16 +251,58 @@ class KalshiPublicClient:
                 limit=limit,
                 cursor=cursor,
             )
-            for trade in payload.get("trades", []):
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("trades"), list
+            ):
+                raise KalshiUnavailable(
+                    "trade pagination returned an invalid trades collection"
+                )
+            if "cursor" not in payload or (
+                payload["cursor"] is not None
+                and not isinstance(payload["cursor"], str)
+            ):
+                raise KalshiUnavailable(
+                    "trade pagination returned an invalid cursor contract"
+                )
+            for trade in payload["trades"]:
                 if not isinstance(trade, dict):
-                    continue
+                    raise KalshiUnavailable(
+                        "trade pagination returned a non-object trade payload"
+                    )
+                if str(trade.get("ticker") or "") != ticker:
+                    raise KalshiUnavailable(
+                        "trade pagination returned a missing or mismatched ticker"
+                    )
+                if "is_block_trade" not in trade or not isinstance(
+                    trade["is_block_trade"], bool
+                ):
+                    raise KalshiUnavailable(
+                        "trade pagination returned an invalid block-trade flag"
+                    )
+                try:
+                    created_at = datetime.fromisoformat(
+                        str(trade.get("created_time") or "").replace(
+                            "Z", "+00:00"
+                        )
+                    )
+                except ValueError as exc:
+                    raise KalshiUnavailable(
+                        "trade pagination returned an invalid trade timestamp"
+                    ) from exc
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                created_second = int(created_at.astimezone(UTC).timestamp())
+                if not min_ts <= created_second <= max_ts:
+                    raise KalshiUnavailable(
+                        "trade pagination returned an out-of-window trade"
+                    )
                 trade_id = str(trade.get("trade_id") or "")
                 if trade_id and trade_id in seen_trade_ids:
                     continue
                 if trade_id:
                     seen_trade_ids.add(trade_id)
                 yield trade
-            next_cursor = str(payload.get("cursor") or "")
+            next_cursor = str(payload["cursor"] or "")
             if not next_cursor:
                 return
             if next_cursor in seen_cursors:

@@ -18,9 +18,12 @@ from .._util import (
 from ..config import (
     DEFAULT_DB_PATH,
     DEFAULT_FORECASTER_ROOT,
+    SFO_TZ,
     StrategyConfig,
+    config_for_city,
     strategy_config_for_profile,
 )
+from ..cities import CITIES
 from ..account import (
     INITIAL_CAPITAL,
     LIVE_STABILITY_ACCOUNT_ID,
@@ -168,17 +171,39 @@ def build_strategy_research(
         )
         chronological_replay_full = chronological_replay
     else:
+        live_config = strategy_config_for_profile("live")
+        entry_mode = _current_paper_entry_mode()
         chronological_replay_full = replay_from_database(
             db_path,
             settlements,
             initial_capital=cfg.paper_bankroll,
+            required_strategy_fingerprint={
+                city.series_ticker: strategy_fingerprint(
+                    config_for_city(live_config, city),
+                    entry_mode=entry_mode,
+                )
+                for city in CITIES
+            },
         )
         chronological_replay = _bounded_replay(chronological_replay_full)
+    readiness_now = datetime.now(UTC)
+    if fast_publication:
+        analysis_generated_at = (
+            str(analysis_cache["analysis_generated_at"])
+            if analysis_cache is not None
+            else None
+        )
+    else:
+        analysis_generated_at = readiness_now.isoformat()
     # These sections combine the expensive rescore with fresh calibration,
     # replay, policy environment, and pilot/account state. Cache only the
     # expensive input and always derive the public verdict on this refresh.
     real_money_readiness = _real_money_readiness_payload(
-        config_rescore, active_calibration, chronological_replay
+        config_rescore,
+        active_calibration,
+        chronological_replay,
+        analysis_generated_at=analysis_generated_at,
+        now=readiness_now,
     )
     live_frequency_tuning = _live_frequency_tuning_payload(
         config_rescore, strategy_config_for_profile("live")
@@ -262,15 +287,7 @@ def build_strategy_research(
         paper=paper,
         forecast_health=forecast_health,
     )
-    generated_at = datetime.now(UTC).isoformat()
-    if fast_publication:
-        analysis_generated_at = (
-            str(analysis_cache["analysis_generated_at"])
-            if analysis_cache is not None
-            else None
-        )
-    else:
-        analysis_generated_at = generated_at
+    generated_at = readiness_now.isoformat()
     if not fast_publication:
         analysis_cache = {
             "schema_version": 2,
@@ -436,6 +453,22 @@ def _decision_analytics_deferred(daily_summary: dict[str, Any]) -> bool:
     )
 
 
+def _cached_counts_stale_from(daily_summary: dict[str, Any]) -> str | None:
+    analytics = daily_summary.get("decision_analytics")
+    if not isinstance(analytics, dict) or analytics.get("status") != "cached":
+        return None
+    raw = analytics.get("analysis_generated_at")
+    if raw in (None, ""):
+        return None
+    try:
+        generated = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=UTC)
+    return generated.astimezone(SFO_TZ).date().isoformat()
+
+
 def _day_without_deferred_counts(row: dict[str, Any]) -> dict[str, Any]:
     """Null one published day's decision counters, per-profile rows included."""
 
@@ -473,25 +506,44 @@ def _mark_deferred_decision_counts(daily_summary: dict[str, Any]) -> dict[str, A
     measured counts.
     """
 
-    if daily_summary.get("available") is not True or not _decision_analytics_deferred(
-        daily_summary
-    ):
+    deferred = _decision_analytics_deferred(daily_summary)
+    stale_from = _cached_counts_stale_from(daily_summary)
+    if daily_summary.get("available") is not True or (not deferred and stale_from is None):
         return daily_summary
     payload = dict(daily_summary)
-    gate = payload.get("gate_behavior")
-    if isinstance(gate, dict):
-        payload["gate_behavior"] = _deferred_gate_behavior_payload(
-            gate, DEFERRED_DECISION_ANALYTICS_REASON
+    if deferred:
+        gate = payload.get("gate_behavior")
+        if isinstance(gate, dict):
+            payload["gate_behavior"] = _deferred_gate_behavior_payload(
+                gate, DEFERRED_DECISION_ANALYTICS_REASON
+            )
+        if isinstance(payload.get("model_vs_market"), dict):
+            payload["model_vs_market"] = {
+                "available": False,
+                "analysis_deferred": True,
+                "reason": DEFERRED_DECISION_ANALYTICS_REASON,
+            }
+    elif stale_from is not None:
+        analytics = dict(payload.get("decision_analytics") or {})
+        analytics["counts_stale_from"] = stale_from
+        analytics["reason"] = (
+            f"Decision counts on and after {stale_from} are unavailable from "
+            "the older analysis cache."
         )
-    if isinstance(payload.get("model_vs_market"), dict):
-        payload["model_vs_market"] = {
-            "available": False,
-            "analysis_deferred": True,
-            "reason": DEFERRED_DECISION_ANALYTICS_REASON,
-        }
+        payload["decision_analytics"] = analytics
     if "days" in payload:
         payload["days"] = [
-            _day_without_deferred_counts(row) for row in payload["days"] or []
+            (
+                _day_without_deferred_counts(row)
+                if deferred
+                or (
+                    stale_from is not None
+                    and isinstance(row, dict)
+                    and str(row.get("date") or "") >= stale_from
+                )
+                else row
+            )
+            for row in payload["days"] or []
         ]
     return payload
 
@@ -502,7 +554,9 @@ def _clear_deferred_profile_counts(
 ) -> list[dict[str, Any]]:
     """Carry the same deferral marker into every per-profile book."""
 
-    if not _decision_analytics_deferred(daily_summary):
+    deferred = _decision_analytics_deferred(daily_summary)
+    stale_from = _cached_counts_stale_from(daily_summary)
+    if not deferred and stale_from is None:
         return profiles
     rows: list[dict[str, Any]] = []
     for profile in profiles:
@@ -512,13 +566,23 @@ def _clear_deferred_profile_counts(
             continue
         updated = dict(daily)
         gate = updated.get("gate_behavior")
-        if isinstance(gate, dict):
+        if deferred and isinstance(gate, dict):
             updated["gate_behavior"] = _deferred_gate_behavior_payload(
                 gate, DEFERRED_DECISION_ANALYTICS_REASON
             )
         if "days" in updated:
             updated["days"] = [
-                _day_without_deferred_counts(row) for row in updated["days"] or []
+                (
+                    _day_without_deferred_counts(row)
+                    if deferred
+                    or (
+                        stale_from is not None
+                        and isinstance(row, dict)
+                        and str(row.get("date") or "") >= stale_from
+                    )
+                    else row
+                )
+                for row in updated["days"] or []
             ]
         rows.append({**profile, "daily_summary": updated})
     return rows
@@ -545,6 +609,15 @@ def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _current_paper_entry_mode() -> str:
+    """Mirror the scanner's canonical entry mode for strategy identity."""
+
+    raw = os.getenv("PAPER_ENTRY_MODE", "market").strip().lower().replace("_", "-")
+    if raw in {"limit", "limit-order", "paper-limit"}:
+        return "limit"
+    return "market"
+
+
 def _analysis_source_sha(forecaster_root: Path) -> str | None:
     build_info = _load_json_optional(forecaster_root / "build_info.json")
     if not isinstance(build_info, dict):
@@ -557,9 +630,9 @@ def _analysis_source_sha(forecaster_root: Path) -> str | None:
 
 
 def _analysis_config_fingerprint(*, calibration_min_train: int) -> str:
-    entry_mode = str(os.getenv("PAPER_ENTRY_MODE", "limit")).strip().lower()
+    entry_mode = _current_paper_entry_mode()
     payload = {
-        "cache_contract": "strategy-analysis-v3",
+        "cache_contract": "strategy-analysis-v5-exact-city-fingerprints",
         "calibration_min_train": calibration_min_train,
         "entry_mode": entry_mode,
         "execution_model_version": EXECUTION_MODEL_VERSION,

@@ -104,8 +104,7 @@ def main():
     args = parser.parse_args()
 
     if args.cities is not None:
-        _multicity_refresh.run_cli(args.cities)
-        return
+        return _multicity_refresh.run_cli(args.cities)
 
     target_iso = target_date()
     cache = read_json(CACHE_PATH, {})
@@ -225,4 +224,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

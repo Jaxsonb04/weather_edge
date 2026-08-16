@@ -49,6 +49,7 @@ def _fresh_root(
     *,
     operational_minutes: int = 1,
     strategy_minutes: int = 1,
+    strategy_analysis_minutes: int | None = None,
 ) -> tuple[Path, Path]:
     now = datetime.now(timezone.utc)
     root = parent / "forecaster"
@@ -77,6 +78,16 @@ def _fresh_root(
         {
             "available": True,
             "generated_at": _iso(now - timedelta(minutes=strategy_minutes)),
+            "analysis_generated_at": _iso(
+                now
+                - timedelta(
+                    minutes=(
+                        strategy_minutes
+                        if strategy_analysis_minutes is None
+                        else strategy_analysis_minutes
+                    )
+                )
+            ),
         },
     )
     build_manifest(root, now=now)
@@ -190,6 +201,7 @@ exec "$@"
                 "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES": "10",
                 "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES": "10",
                 "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES": "20",
+                "SFO_PUBLICATION_MAX_STRATEGY_ANALYSIS_AGE_MINUTES": "2160",
                 "SFO_PUBLISH_PAGES": "1",
                 "SFO_PUBLICATION_MANIFEST_URL": (
                     public_manifest.as_uri() if public_manifest else ""
@@ -264,6 +276,27 @@ def test_scheduler_health_accepts_fresh_local_and_public_artifacts(
         assert f"is-enabled --quiet {timer}" in calls
         assert f"is-active --quiet {timer}" in calls
     assert " start " not in f" {calls}"
+
+
+def test_scheduler_does_not_loop_fast_repair_for_stale_offline_analysis(
+    tmp_path: Path,
+) -> None:
+    root, public_manifest = _fresh_root(
+        tmp_path,
+        strategy_minutes=1,
+        strategy_analysis_minutes=2161,
+    )
+
+    result = _run(
+        tmp_path,
+        root=root,
+        public_manifest=public_manifest,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "systemctl.log").read_text(encoding="utf-8")
+    assert "start sfo-strategy-lab-refresh.service" not in calls
+    assert "start sfo-operational-publish.service" not in calls
 
 
 def test_scheduler_health_does_not_truncate_app_controlled_lock_symlink(

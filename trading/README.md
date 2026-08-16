@@ -124,6 +124,13 @@ probability forecast in one run.
 There is no live order placement code. API keys are intentionally not required
 for this phase.
 
+The dormant live-policy wrapper uses a configured risk-capital boundary rather
+than universal dollar constants. Its defaults are 5% maximum pilot loss, 2%
+daily loss, and 1% per order; at $1,000 that resolves to $50/$20/$10. Operators
+may set explicit dollar overrides for compatibility, but every cap remains
+mandatory and the wrapper still rejects all non-dry orders because no
+authenticated client exists.
+
 Before live trading is considered, this project should accumulate enough market
 snapshots and CLISFO settlements to run a true entry-price PnL backtest.
 

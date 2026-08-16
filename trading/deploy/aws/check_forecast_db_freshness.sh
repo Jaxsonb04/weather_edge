@@ -26,6 +26,9 @@ OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
 # at 10 this fires the shared alert webhook continuously by construction.
 PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-20}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
+# Historical-analysis age is deliberately not an operational watchdog input.
+# Strategy Lab itself fails stale readiness evidence closed; this fast service
+# cannot regenerate the immutable-snapshot analysis and must not claim it can.
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
 DISK_MAX_PERCENT="${SFO_DISK_USAGE_MAX_PERCENT:-85}"

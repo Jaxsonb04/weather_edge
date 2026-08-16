@@ -367,7 +367,7 @@ def test_clisfo_nws_divergence_is_reported_not_averaged():
                     (local_date, clisfo),
                 )
                 conn.execute(
-                    "INSERT INTO nws_daily_high_ground_truth VALUES ('KSFO', ?, ?, 1)",
+                    "INSERT INTO nws_daily_high_ground_truth VALUES ('KSFO', ?, ?, 0)",
                     (local_date, nws),
                 )
             report = fb.clisfo_nws_divergence(conn)

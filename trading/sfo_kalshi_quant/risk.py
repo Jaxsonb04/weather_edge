@@ -735,6 +735,8 @@ def _side_probability(probability: BucketProbability, side: str) -> float:
 def _side_probability_lcb(probability: BucketProbability, side: str) -> float:
     if side == "YES":
         return probability.lower_confidence
+    if probability.upper_confidence is not None:
+        return _unit(1.0 - probability.upper_confidence)
     yes_uncertainty = max(0.0, probability.probability - probability.lower_confidence)
     return _unit(1.0 - probability.probability - yes_uncertainty)
 

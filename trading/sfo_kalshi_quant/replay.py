@@ -11,6 +11,7 @@ order; missing evidence leaves the order unfilled.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import sqlite3
 
@@ -19,7 +20,7 @@ from dataclasses import asdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal, Mapping, Sequence
 
 from ._util import _json_object, _row_value, _table_exists
 from .account import (
@@ -33,6 +34,7 @@ from .logical_positions import LogicalPaperPosition, group_logical_positions
 from .maker_fills import (
     EXECUTION_MODEL_VERSION,
     PublicAggressorTrade,
+    maker_tape_reconciliation_covers_expiry,
     maker_trade_reaches_price,
     normalize_public_trade,
     uses_current_maker_semantics,
@@ -52,6 +54,66 @@ _MAKER_SIDE_BY_TAKER_BOOK_SIDE = {"bid": "NO", "ask": "YES"}
 READINESS_LIVE_ACCOUNT_IDS = frozenset(
     {SHARED_ACCOUNT_ID, LIVE_STABILITY_ACCOUNT_ID}
 )
+StrategyFingerprintRequirement = str | Mapping[str, str]
+
+
+def _normalize_strategy_fingerprint_requirement(
+    requirement: StrategyFingerprintRequirement | None,
+) -> str | dict[str, str] | None:
+    if requirement is None:
+        return None
+    if isinstance(requirement, str):
+        normalized = requirement.strip()
+        if not normalized:
+            raise ValueError(
+                "required_strategy_fingerprint must be non-empty"
+            )
+        return normalized
+    if not isinstance(requirement, Mapping) or not requirement:
+        raise ValueError(
+            "required_strategy_fingerprint must be a non-empty string or "
+            "non-empty series-to-fingerprint mapping"
+        )
+    normalized_map: dict[str, str] = {}
+    for series, fingerprint in requirement.items():
+        if not isinstance(series, str) or not series.strip():
+            raise ValueError("strategy fingerprint series keys must be non-empty")
+        if not isinstance(fingerprint, str) or not fingerprint.strip():
+            raise ValueError("strategy fingerprint values must be non-empty")
+        normalized_map[series.strip().upper()] = fingerprint.strip()
+    return normalized_map
+
+
+def _expected_strategy_fingerprint(
+    row: Mapping[str, object],
+    requirement: str | Mapping[str, str],
+) -> str | None:
+    if isinstance(requirement, str):
+        return requirement
+    series = str(_row_value(row, "market_ticker") or "").split("-", 1)[0].upper()
+    return requirement.get(series)
+
+
+def _row_matches_strategy_fingerprint(
+    row: Mapping[str, object],
+    requirement: str | Mapping[str, str],
+) -> bool:
+    expected = _expected_strategy_fingerprint(row, requirement)
+    return expected is not None and str(
+        _row_value(row, "strategy_fingerprint") or ""
+    ) == expected
+
+
+def _strategy_requirement_identity(
+    requirement: str | Mapping[str, str],
+) -> str:
+    if isinstance(requirement, str):
+        return requirement
+    canonical = "|".join(
+        f"{series}:{fingerprint}"
+        for series, fingerprint in sorted(requirement.items())
+    )
+    return "series-map-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
 
 
 def _positive_integral_id(value: object) -> int | None:
@@ -441,11 +503,29 @@ def replay_from_database(
     initial_capital: float = 1000.0,
     max_orders: int | None = None,
     max_trades: int | None = None,
+    required_strategy_fingerprint: StrategyFingerprintRequirement | None = None,
 ) -> dict[str, object]:
-    """Build replay events from persisted orders/trades and authoritative truth."""
+    """Build replay events from persisted orders/trades and authoritative truth.
+
+    ``required_strategy_fingerprint`` makes the readiness cohort exact-current.
+    A scalar preserves single-policy callers; production passes an exact
+    series-to-fingerprint mapping because city-adapted configs intentionally
+    have different identities.  The clock starts at the first matching live
+    root and only fully qualified target-weather days can contribute orders,
+    counts, or economics.  The optional default preserves historical/offline
+    callers that cannot supply a current live configuration identity.
+    """
 
     if not Path(db_path).exists():
         return {"available": False, "reason": f"paper database not found: {db_path}"}
+    required_strategy_fingerprint = _normalize_strategy_fingerprint_requirement(
+        required_strategy_fingerprint
+    )
+    strategy_requirement_identity = (
+        _strategy_requirement_identity(required_strategy_fingerprint)
+        if required_strategy_fingerprint is not None
+        else None
+    )
     for label, limit in (("max_orders", max_orders), ("max_trades", max_trades)):
         if limit is not None and (
             isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
@@ -565,19 +645,30 @@ def replay_from_database(
                 in READINESS_LIVE_ACCOUNT_IDS
                 and str(_row_value(row, "execution_model_version") or "")
                 == EXECUTION_MODEL_VERSION
-                and str(row["created_at"] or "") >= str(semantics_boundary)
+                and _at_or_after_boundary(row["created_at"], semantics_boundary)
             ]
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+    evidence_boundary = (
+        _strategy_fingerprint_evidence_boundary(
+            all_orders,
+            semantics_boundary=semantics_boundary,
+            required_strategy_fingerprint=required_strategy_fingerprint,
+        )
+        if required_strategy_fingerprint is not None
+        else semantics_boundary
+    )
     eligible_root_ids = _eligible_readiness_root_ids(
         all_orders,
-        semantics_boundary,
+        evidence_boundary,
+        required_strategy_fingerprint=required_strategy_fingerprint,
     )
     eligible_order_ids = _eligible_readiness_order_ids(
         all_orders,
-        semantics_boundary,
+        evidence_boundary,
         eligible_root_ids=eligible_root_ids,
+        required_strategy_fingerprint=required_strategy_fingerprint,
     )
     event_orders = [
         row
@@ -638,6 +729,32 @@ def replay_from_database(
     event_orders = [
         row for row in event_orders if int(row["id"]) not in invalid_logical_lot_ids
     ]
+
+    strict_qualified_days: set[str] | None = None
+    strict_disqualified_days: set[str] = set()
+    strict_fingerprint_mismatch_days: set[str] = set()
+    strict_unverified_live_decisions: set[int] = set()
+    if required_strategy_fingerprint is not None:
+        (
+            strict_qualified_days,
+            strict_disqualified_days,
+            strict_fingerprint_mismatch_days,
+            strict_unverified_live_decisions,
+        ) = _strict_readiness_weather_days(
+            all_orders,
+            evidence_boundary=evidence_boundary,
+            required_strategy_fingerprint=required_strategy_fingerprint,
+            verified_order_ids=verified_order_ids,
+            eligible_root_ids=eligible_root_ids,
+        )
+        # A target day's evidence is atomic.  Even an otherwise valid exact-
+        # fingerprint decision cannot contribute replay P&L when another live
+        # decision makes that weather day mixed or incomplete.
+        event_orders = [
+            row
+            for row in event_orders
+            if str(row["target_date"]) in strict_qualified_days
+        ]
 
     truth = normalize_settlement_truth(settlements)
     events: list[ReplayEvent] = []
@@ -785,63 +902,88 @@ def replay_from_database(
 
     result = asdict(run_replay(events, initial_capital=initial_capital))
     reasons = set(result["promotion_block_reasons"])
-    if legacy_orders:
+    if legacy_orders and required_strategy_fingerprint is None:
         reasons.add(f"{legacy_orders} legacy orders lack a current strategy fingerprint")
     if not trades:
         reasons.add("no persisted public trade events for maker fill validation")
-    # Promotion-clock reset at the semantics boundary: resolved trading days
-    # count only when every order of that day was placed under the corrected
-    # execution/accounting semantics and its execution evidence restates as
-    # verified under those semantics.
-    resolved_days: dict[str, bool] = {}
-    unverified_live_decisions: set[int] = set()
-    for group in group_logical_positions(all_orders):
-        root = group.root
-        profile_class = _readiness_root_profile_class(root)
-        # Canonically valid research history is never part of the live
-        # promotion clock, regardless of whether it predates the live
-        # execution-semantics boundary. Timing on an excluded profile must not
-        # disqualify an otherwise verified live day. Invalid/crossed research
-        # identities still fall through and fail the day closed.
-        if profile_class == "research" and group.valid:
-            continue
-        if str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
-            continue
-        execution_verified = bool(group.resolved_lots) and all(
-            int(row["id"]) in verified_order_ids for row in group.resolved_lots
-        )
-        if (
-            profile_class == "live"
-            and semantics_boundary
-            and (
-                _parse_time(root["created_at"]) is None
-                or str(root["created_at"] or "") >= semantics_boundary
+    if required_strategy_fingerprint is None:
+        # Compatibility path for offline and historical callers that cannot
+        # name a current strategy. Public readiness always supplies one.
+        resolved_days: dict[str, bool] = {}
+        unverified_live_decisions: set[int] = set()
+        for group in group_logical_positions(all_orders):
+            root = group.root
+            profile_class = _readiness_root_profile_class(root)
+            # Canonically valid research history is never part of the live
+            # promotion clock. Invalid/crossed identities still fail the day.
+            if profile_class == "research" and group.valid:
+                continue
+            if str(root["status"]) not in ("PAPER_SETTLED", "PAPER_CLOSED"):
+                continue
+            execution_verified = bool(group.resolved_lots) and all(
+                int(row["id"]) in verified_order_ids
+                for row in group.resolved_lots
             )
-            and not execution_verified
-        ):
-            unverified_live_decisions.add(group.logical_order_id)
-        day = str(root["target_date"])
-        qualified = (
-            profile_class == "live"
-            and group.logical_order_id in eligible_root_ids
-            and group.terminal
-            and _readiness_group_has_consistent_scope(
-                group, semantics_boundary
+            if (
+                profile_class == "live"
+                and semantics_boundary
+                and (
+                    _parse_time(root["created_at"]) is None
+                    or str(root["created_at"] or "") >= semantics_boundary
+                )
+                and not execution_verified
+            ):
+                unverified_live_decisions.add(group.logical_order_id)
+            day = str(root["target_date"])
+            qualified = (
+                profile_class == "live"
+                and group.logical_order_id in eligible_root_ids
+                and group.terminal
+                and _readiness_group_has_consistent_scope(
+                    group, semantics_boundary
+                )
+                and execution_verified
             )
-            and execution_verified
-        )
-        resolved_days[day] = resolved_days.get(day, True) and qualified
-    post_boundary_days = sum(1 for qualified in resolved_days.values() if qualified)
+            resolved_days[day] = resolved_days.get(day, True) and qualified
+        qualified_days = {
+            day for day, qualified in resolved_days.items() if qualified
+        }
+    else:
+        qualified_days = strict_qualified_days or set()
+        unverified_live_decisions = strict_unverified_live_decisions
+        if evidence_boundary is None:
+            reasons.add(
+                "no live root matches required strategy fingerprint "
+                f"scope {strategy_requirement_identity}"
+            )
+    post_boundary_days = len(qualified_days)
     if unverified_live_decisions:
         reasons.add(
             f"{len(unverified_live_decisions)} resolved live decision(s) have "
             "unverified execution evidence"
         )
-    if post_boundary_days < 30:
+    if post_boundary_days < 30 and required_strategy_fingerprint is not None:
+        reasons.add(
+            f"only {post_boundary_days} fully qualified independent target "
+            "weather days under exact policy fingerprint scope "
+            f"{strategy_requirement_identity} (need 30); cohort boundary is "
+            "the first matching live root"
+        )
+    elif post_boundary_days < 30:
         reasons.add(
             f"only {post_boundary_days} independent trading days under "
             f"{EXECUTION_MODEL_VERSION}/{ACCOUNTING_POLICY_VERSION} (need 30); "
             "promotion clock restarted at the corrected-semantics boundary"
+        )
+    if required_strategy_fingerprint is not None:
+        # strategy_fingerprint currently hashes policy/configuration and entry
+        # mode, not the forecast code revision, fit/training vintage,
+        # calibration lineage, or source composition.  Until that immutable
+        # model identity is persisted per decision, this cohort can support
+        # diagnosis but must never authorize live-money promotion by itself.
+        reasons.add(
+            "persisted policy fingerprint lacks immutable forecast/model/"
+            "calibration lineage"
         )
     result["promotion_block_reasons"] = sorted(reasons)
     result["promotion_eligible"] = not reasons
@@ -851,13 +993,25 @@ def replay_from_database(
     result["execution_model_version"] = EXECUTION_MODEL_VERSION
     result["accounting_policy_version"] = ACCOUNTING_POLICY_VERSION
     result["semantics_boundary"] = semantics_boundary
+    result["evidence_boundary"] = evidence_boundary
     result["post_boundary_days"] = post_boundary_days
+    source_cohort = (
+        f"live_strategy_{strategy_requirement_identity}_complete_weather_days"
+        if required_strategy_fingerprint is not None
+        else "post_exec_v4_live"
+    )
     result["verified_decisions"] = len(
         _verified_resolved_decision_groups(
             all_orders,
             verified_order_ids,
             eligible_root_ids=eligible_root_ids,
-            semantics_boundary=semantics_boundary,
+            semantics_boundary=evidence_boundary,
+            required_strategy_fingerprint=required_strategy_fingerprint,
+            qualified_days=(
+                qualified_days
+                if required_strategy_fingerprint is not None
+                else None
+            ),
         )
     )
     result["evidence_scope"] = {
@@ -866,14 +1020,51 @@ def replay_from_database(
         "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
         "pre_boundary_excluded": True,
         "research_excluded": True,
+        "strategy_fingerprint": (
+            required_strategy_fingerprint
+            if isinstance(required_strategy_fingerprint, str)
+            else None
+        ),
+        "required_strategy_fingerprint": (
+            required_strategy_fingerprint
+            if isinstance(required_strategy_fingerprint, str)
+            else None
+        ),
+        "strategy_fingerprints_by_series": (
+            dict(required_strategy_fingerprint)
+            if isinstance(required_strategy_fingerprint, Mapping)
+            else None
+        ),
+        "strategy_fingerprint_scope": strategy_requirement_identity,
+        "strategy_fingerprint_semantics": "policy_config_and_entry_mode_only",
+        "immutable_model_lineage_persisted": False,
+        "evidence_boundary": evidence_boundary,
+        "source_cohort": source_cohort,
+        "cohort_identity": source_cohort,
+        "boundary_kind": (
+            "first_matching_live_root"
+            if required_strategy_fingerprint is not None
+            else "execution_semantics_transition"
+        ),
+        "complete_target_days_only": required_strategy_fingerprint is not None,
+        "disqualified_target_days": len(strict_disqualified_days),
+        "fingerprint_mismatch_target_days": len(
+            strict_fingerprint_mismatch_days
+        ),
     }
     result["readiness_metrics"] = _post_boundary_readiness_metrics(
         all_orders,
         promotion_eligible=bool(result["promotion_eligible"]),
         semantics_boundary=semantics_boundary,
+        evidence_boundary=evidence_boundary,
         initial_capital=initial_capital,
         verified_order_ids=verified_order_ids,
         eligible_root_ids=eligible_root_ids,
+        required_strategy_fingerprint=required_strategy_fingerprint,
+        qualified_days=(
+            qualified_days if required_strategy_fingerprint is not None else None
+        ),
+        source_cohort=source_cohort,
     )
     return result
 
@@ -886,14 +1077,23 @@ def _post_boundary_readiness_metrics(
     initial_capital: float,
     verified_order_ids: set[int],
     eligible_root_ids: set[int],
+    evidence_boundary: str | None = None,
+    required_strategy_fingerprint: (
+        str | Mapping[str, str] | None
+    ) = None,
+    qualified_days: set[str] | None = None,
+    source_cohort: str = "post_exec_v4_live",
 ) -> dict[str, object]:
     """Economic readiness inputs from chronological post-boundary live rows."""
 
+    cohort_boundary = evidence_boundary or semantics_boundary
     groups = _verified_resolved_decision_groups(
         orders,
         verified_order_ids,
         eligible_root_ids=eligible_root_ids,
-        semantics_boundary=semantics_boundary,
+        semantics_boundary=cohort_boundary,
+        required_strategy_fingerprint=required_strategy_fingerprint,
+        qualified_days=qualified_days,
     )
     resolved: list[dict[str, object]] = []
     for root_id, lots in groups.items():
@@ -946,14 +1146,32 @@ def _post_boundary_readiness_metrics(
 
     cohort = side_bucket(resolved)
     cohort["source"] = (
-        "post-boundary exec-v4 chronological outcomes across valid live eras"
+        "fully qualified target-weather days under the exact current live "
+        "policy fingerprint"
+        if required_strategy_fingerprint is not None
+        else "post-boundary exec-v4 chronological outcomes across valid live eras"
     )
     return {
         "evidence_kind": "chronological_account_replay",
         "promotion_eligible": promotion_eligible,
-        "config_basis": "post-boundary exec-v4 live evidence only",
+        "config_basis": (
+            "exact-current-policy-fingerprint complete live weather days only"
+            if required_strategy_fingerprint is not None
+            else "post-boundary exec-v4 live evidence only"
+        ),
         "semantics_boundary": semantics_boundary,
-        "source_cohort": "post_exec_v4_live",
+        "evidence_boundary": cohort_boundary,
+        "strategy_fingerprint": (
+            required_strategy_fingerprint
+            if isinstance(required_strategy_fingerprint, str)
+            else None
+        ),
+        "strategy_fingerprints_by_series": (
+            dict(required_strategy_fingerprint)
+            if isinstance(required_strategy_fingerprint, Mapping)
+            else None
+        ),
+        "source_cohort": source_cohort,
         "counts": {
             "settled_decisions": len(resolved),
             "independent_days": len(per_day),
@@ -970,17 +1188,228 @@ def _post_boundary_readiness_metrics(
             ),
             "max_drawdown_pct": round(max_drawdown, 6),
         },
-        "by_forecast_cohort": {"post_exec_v4_live": cohort} if resolved else {},
-        "by_cohort": {"post_exec_v4_live": cohort} if resolved else {},
+        "by_forecast_cohort": {source_cohort: cohort} if resolved else {},
+        "by_cohort": {source_cohort: cohort} if resolved else {},
         "by_side": {
             side: side_bucket(rows) for side, rows in sorted(by_side_rows.items())
         },
     }
 
 
+def _strategy_fingerprint_evidence_boundary(
+    orders: list[sqlite3.Row],
+    *,
+    semantics_boundary: str | None,
+    required_strategy_fingerprint: str | Mapping[str, str],
+) -> str | None:
+    """Return the first persisted live root for the exact current strategy."""
+
+    semantics_time = _parse_time(semantics_boundary)
+    candidates: list[tuple[datetime, int]] = []
+    for group in group_logical_positions(orders):
+        root = group.root
+        created = _parse_time(root.get("created_at"))
+        if (
+            created is None
+            or semantics_time is None
+            or created < semantics_time
+            or not _readiness_root_matches_strategy(
+                root,
+                required_strategy_fingerprint=required_strategy_fingerprint,
+            )
+        ):
+            continue
+        candidates.append((created, group.logical_order_id))
+    if not candidates:
+        return None
+    first, _ = min(candidates, key=lambda item: (item[0], item[1]))
+    return first.isoformat()
+
+
+def _at_or_after_boundary(value: object, boundary: str | None) -> bool:
+    observed = _parse_time(value)
+    boundary_time = _parse_time(boundary)
+    return (
+        observed is not None
+        and boundary_time is not None
+        and observed >= boundary_time
+    )
+
+
+def _readiness_root_matches_strategy(
+    root: Mapping[str, object],
+    *,
+    required_strategy_fingerprint: str | Mapping[str, str],
+) -> bool:
+    """Whether a root can establish the exact-current live evidence cohort."""
+
+    return (
+        _readiness_root_profile_class(root) == "live"
+        and str(_row_value(root, "status") or "") != "REJECTED"
+        and str(_row_value(root, "account_id") or "")
+        in READINESS_LIVE_ACCOUNT_IDS
+        and str(_row_value(root, "execution_model_version") or "")
+        == EXECUTION_MODEL_VERSION
+        and _row_matches_strategy_fingerprint(
+            root, required_strategy_fingerprint
+        )
+    )
+
+
+def _strict_readiness_weather_days(
+    orders: list[sqlite3.Row],
+    *,
+    evidence_boundary: str | None,
+    required_strategy_fingerprint: str | Mapping[str, str],
+    verified_order_ids: set[int],
+    eligible_root_ids: set[int],
+) -> tuple[set[str], set[str], set[str], set[int]]:
+    """Qualify target-weather days atomically for exact-current readiness.
+
+    A matching root opens a candidate weather day. Every non-research live row
+    written at/after the cohort boundary for that target must preserve the same
+    fingerprint and immutable execution scope. One wrong, mixed, incomplete,
+    or unverified decision excludes the whole day from every readiness metric.
+    """
+
+    boundary_time = _parse_time(evidence_boundary)
+    if boundary_time is None:
+        return set(), set(), set(), set()
+    groups = list(group_logical_positions(orders))
+    candidate_days = {
+        str(group.root.get("target_date") or "")
+        for group in groups
+        if (created := _parse_time(group.root.get("created_at"))) is not None
+        and created >= boundary_time
+        and str(group.root.get("status") or "")
+        in {"PAPER_SETTLED", "PAPER_CLOSED"}
+        and _readiness_root_matches_strategy(
+            group.root,
+            required_strategy_fingerprint=required_strategy_fingerprint,
+        )
+    }
+    candidate_days.discard("")
+    day_qualified = {day: True for day in candidate_days}
+    fingerprint_mismatch_days: set[str] = set()
+    unverified_live_decisions: set[int] = set()
+    for group in groups:
+        root = group.root
+        day = str(root.get("target_date") or "")
+        if day not in candidate_days:
+            continue
+        profile_class = _readiness_root_profile_class(root)
+        if profile_class == "research" and group.valid:
+            continue
+        created = _parse_time(root.get("created_at"))
+        if created is not None and created < boundary_time:
+            if profile_class != "research":
+                # Do not count the boundary target date when it is only a
+                # partial current-strategy day. A weather-day cluster is one
+                # indivisible observation even when the config changed midday;
+                # an older live zero-fill request is still part of that day's
+                # policy history and cannot be erased by its terminal status.
+                day_qualified[day] = False
+            continue
+        exact_fingerprint = _row_matches_strategy_fingerprint(
+            root, required_strategy_fingerprint
+        ) and all(
+            _row_matches_strategy_fingerprint(
+                lot, required_strategy_fingerprint
+            )
+            for lot in group.lots
+        )
+        if profile_class == "live" and not exact_fingerprint:
+            fingerprint_mismatch_days.add(day)
+            day_qualified[day] = False
+        status = str(root.get("status") or "")
+        if status == "PAPER_EXPIRED":
+            # A verified request that reached its TTL with zero fill is a
+            # completed execution outcome, not missing evidence.  It remains
+            # in chronological replay as zero P&L/capital but does not poison
+            # an otherwise complete weather-day cluster.
+            lot_ids = {
+                int(lot["id"])
+                for lot in group.lots
+                if str(lot.get("id") or "").isdigit()
+            }
+            root_fill_evidence = _json_object(
+                root.get("fill_evidence_json")
+            )
+            neutral_zero_fill = (
+                profile_class == "live"
+                and exact_fingerprint
+                and group.logical_order_id in eligible_root_ids
+                and bool(lot_ids)
+                and lot_ids.issubset(verified_order_ids)
+                and all(
+                    abs(float(_row_value(lot, "filled_contracts") or 0.0))
+                    <= 1e-9
+                    for lot in group.lots
+                )
+                and maker_tape_reconciliation_covers_expiry(
+                    root_fill_evidence.get("tape_reconciled_through"),
+                    root.get("expires_at"),
+                )
+                and _readiness_group_has_consistent_scope(
+                    group,
+                    evidence_boundary,
+                    required_strategy_fingerprint=required_strategy_fingerprint,
+                )
+            )
+            day_qualified[day] = day_qualified[day] and neutral_zero_fill
+            continue
+        if status not in {
+            "PAPER_SETTLED",
+            "PAPER_CLOSED",
+        }:
+            # Available-case economics are still biased when a matching
+            # decision on the same weather day remains unresolved.  A whole
+            # target-day cohort is complete only after every in-scope root is
+            # terminal and verified.
+            day_qualified[day] = False
+            continue
+        execution_verified = bool(group.resolved_lots) and all(
+            int(row["id"]) in verified_order_ids for row in group.resolved_lots
+        )
+        qualified = (
+            created is not None
+            and profile_class == "live"
+            and exact_fingerprint
+            and group.logical_order_id in eligible_root_ids
+            and group.terminal
+            and _readiness_group_has_consistent_scope(
+                group,
+                evidence_boundary,
+                required_strategy_fingerprint=required_strategy_fingerprint,
+            )
+            and execution_verified
+        )
+        day_qualified[day] = day_qualified[day] and qualified
+        if (
+            profile_class == "live"
+            and exact_fingerprint
+            and group.terminal
+            and not execution_verified
+        ):
+            unverified_live_decisions.add(group.logical_order_id)
+    qualified_days = {
+        day for day, qualified in day_qualified.items() if qualified
+    }
+    return (
+        qualified_days,
+        candidate_days - qualified_days,
+        fingerprint_mismatch_days,
+        unverified_live_decisions,
+    )
+
+
 def _eligible_readiness_root_ids(
     orders: list[sqlite3.Row],
     semantics_boundary: str | None,
+    *,
+    required_strategy_fingerprint: (
+        str | Mapping[str, str] | None
+    ) = None,
 ) -> set[int]:
     """Select the logical roots eligible for post-boundary live evidence."""
 
@@ -995,11 +1424,12 @@ def _eligible_readiness_root_ids(
             in READINESS_LIVE_ACCOUNT_IDS
             and str(_row_value(root, "execution_model_version") or "")
             == EXECUTION_MODEL_VERSION
-            and str(root["created_at"] or "") >= semantics_boundary
+            and _at_or_after_boundary(root.get("created_at"), semantics_boundary)
             and _readiness_root_profile_class(root) == "live"
             and _readiness_group_has_consistent_scope(
                 group,
                 semantics_boundary,
+                required_strategy_fingerprint=required_strategy_fingerprint,
             )
         ):
             eligible.add(group.logical_order_id)
@@ -1011,13 +1441,20 @@ def _eligible_readiness_order_ids(
     semantics_boundary: str | None,
     *,
     eligible_root_ids: set[int] | None = None,
+    required_strategy_fingerprint: (
+        str | Mapping[str, str] | None
+    ) = None,
 ) -> set[int]:
     """Return every root/child lot allowed to influence readiness replay."""
 
     roots = (
         eligible_root_ids
         if eligible_root_ids is not None
-        else _eligible_readiness_root_ids(orders, semantics_boundary)
+        else _eligible_readiness_root_ids(
+            orders,
+            semantics_boundary,
+            required_strategy_fingerprint=required_strategy_fingerprint,
+        )
     )
     eligible: set[int] = set()
     for group in group_logical_positions(orders):
@@ -1026,6 +1463,7 @@ def _eligible_readiness_order_ids(
             or not _readiness_group_has_consistent_scope(
                 group,
                 semantics_boundary,
+                required_strategy_fingerprint=required_strategy_fingerprint,
             )
         ):
             continue
@@ -1062,6 +1500,10 @@ def _readiness_root_profile_class(
 def _readiness_group_has_consistent_scope(
     group: LogicalPaperPosition,
     semantics_boundary: str | None,
+    *,
+    required_strategy_fingerprint: (
+        str | Mapping[str, str] | None
+    ) = None,
 ) -> bool:
     """Require every lot to preserve its eligible root's evidence scope."""
 
@@ -1071,11 +1513,24 @@ def _readiness_group_has_consistent_scope(
     root_version = str(
         _row_value(group.root, "execution_model_version") or ""
     )
+    if (
+        required_strategy_fingerprint is not None
+        and not _row_matches_strategy_fingerprint(
+            group.root, required_strategy_fingerprint
+        )
+    ):
+        return False
     return all(
         str(_row_value(lot, "account_id") or "") == root_account
         and str(_row_value(lot, "execution_model_version") or "")
         == root_version
-        and str(lot["created_at"] or "") >= semantics_boundary
+        and _at_or_after_boundary(lot.get("created_at"), semantics_boundary)
+        and (
+            required_strategy_fingerprint is None
+            or _row_matches_strategy_fingerprint(
+                lot, required_strategy_fingerprint
+            )
+        )
         for lot in group.lots
     )
 
@@ -1086,6 +1541,10 @@ def _verified_resolved_decision_groups(
     *,
     eligible_root_ids: set[int] | None = None,
     semantics_boundary: str | None = None,
+    required_strategy_fingerprint: (
+        str | Mapping[str, str] | None
+    ) = None,
+    qualified_days: set[str] | None = None,
 ) -> dict[int, list[dict[str, object]]]:
     """Group immutable partial-close lots into their originating decision."""
 
@@ -1099,8 +1558,15 @@ def _verified_resolved_decision_groups(
         if (
             eligible_root_ids is not None
             and not _readiness_group_has_consistent_scope(
-                group, semantics_boundary
+                group,
+                semantics_boundary,
+                required_strategy_fingerprint=required_strategy_fingerprint,
             )
+        ):
+            continue
+        if (
+            qualified_days is not None
+            and str(group.root.get("target_date") or "") not in qualified_days
         ):
             continue
         if not group.terminal:

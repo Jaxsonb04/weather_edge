@@ -35,7 +35,7 @@ from .forecast import (
     has_forecaster_observed_high_adjustment,
 )
 from .kalshi import KalshiPublicClient, KalshiUnavailable
-from .maker_fills import EXECUTION_MODEL_VERSION
+from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
 from .models import MarketBin
 from .probability import ResidualCalibrator
 from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
@@ -328,8 +328,20 @@ def run_paper_monitor(
     _validate_monitor_args(args)
 
     client = client_factory()
-    expired = store.expire_stale_resting_orders()
-    filled = _fill_resting_orders_against_live_book(store, client, color)
+    # Public tape can arrive after the local TTL even though the trade itself
+    # occurred while the order was resting.  Reconcile timestamp-bounded tape
+    # first, then cancel only the unfilled remainder.  The allocator receives
+    # each order's expires_at and rejects trades after that instant.
+    tape_reconciled_through: dict[str, str] = {}
+    filled = _fill_resting_orders_against_live_book(
+        store,
+        client,
+        color,
+        tape_reconciled_through=tape_reconciled_through,
+    )
+    expired = store.expire_stale_resting_orders(
+        reconciled_through_by_ticker=tape_reconciled_through
+    )
 
     rows = store.open_paper_orders(args.limit if args.limit > 0 else None)
     if not rows:
@@ -690,6 +702,15 @@ def _all_public_trades_for_ticker(
         )
         for trade in payload.get("trades", []):
             if not isinstance(trade, dict):
+                trades.append({"_weatheredge_invalid_trade_payload": True})
+                continue
+            # The production iterator requires the response ticker.  This
+            # compatibility path still accepts a missing ticker for legacy
+            # injected clients, but a present mismatch is never eligible to
+            # create a fill or prove the queried interval complete.
+            payload_ticker = str(trade.get("ticker") or "")
+            if payload_ticker and payload_ticker != ticker:
+                trades.append({"_weatheredge_invalid_trade_payload": True})
                 continue
             trade_id = str(trade.get("trade_id") or "")
             if trade_id and trade_id in seen_trade_ids:
@@ -707,7 +728,11 @@ def _all_public_trades_for_ticker(
 
 
 def _fill_resting_orders_against_live_book(
-    store: PaperStore, client: KalshiPublicClient, color: Color
+    store: PaperStore,
+    client: KalshiPublicClient,
+    color: Color,
+    *,
+    tape_reconciled_through: dict[str, str] | None = None,
 ) -> int:
     """Conservative maker fill via the shared single-aggressor allocator.
 
@@ -725,7 +750,6 @@ def _fill_resting_orders_against_live_book(
     by_ticker: dict[str, list] = {}
     for row in store.resting_paper_orders():
         by_ticker.setdefault(str(row["market_ticker"]), []).append(row)
-    max_ts = int(datetime.now(UTC).timestamp())
     for ticker, rows in by_ticker.items():
         created_times = []
         for row in rows:
@@ -736,15 +760,48 @@ def _fill_resting_orders_against_live_book(
                 created_at = created_at.replace(tzinfo=UTC)
             created_times.append(created_at)
         try:
+            # Capture a separate completed interval for every ticker.  A slow
+            # earlier fetch must not let a later ticker cross its TTL and be
+            # expired without querying the intervening tape.
+            max_ts = int(datetime.now(UTC).timestamp())
             trade_payloads = _all_public_trades_for_ticker(
                 client,
                 ticker=ticker,
                 min_ts=int(min(created_times).timestamp()),
                 max_ts=max_ts,
             )
-        except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError):
+        except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+            print(
+                color.yellow(
+                    f"maker tape reconciliation deferred for {ticker}: "
+                    f"{type(exc).__name__}; TTL remainder kept reconcilable"
+                ),
+                file=sys.stderr,
+            )
             continue
         updates = store.apply_maker_trade_batch(ticker, trade_payloads)
+        ambiguous_payloads = sum(
+            1
+            for payload in trade_payloads
+            if not isinstance(payload, dict)
+            or (
+                payload.get("is_block_trade") is not True
+                and normalize_public_trade(payload) is None
+            )
+        )
+        if ambiguous_payloads:
+            print(
+                color.yellow(
+                    f"maker tape reconciliation incomplete for {ticker}: "
+                    f"{ambiguous_payloads} ambiguous trade payload(s); "
+                    "TTL remainder kept reconcilable"
+                ),
+                file=sys.stderr,
+            )
+        elif tape_reconciled_through is not None:
+            tape_reconciled_through[ticker] = datetime.fromtimestamp(
+                max_ts, UTC
+            ).isoformat()
         for update in updates:
             updated = store.paper_order(int(update["order_id"]))
             if updated is None:

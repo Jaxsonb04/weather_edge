@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 import subprocess
 from pathlib import Path
+
+import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +40,37 @@ def test_lightweight_research_helpers_import_from_package():
     validation = importlib.import_module("research.forecast_validation")
     assert callable(features.engineer_features)
     assert callable(validation.forecast_unit_dates)
+
+
+def test_forecast_tomorrow_main_writes_day_level_sigma_uncertainty(monkeypatch, tmp_path):
+    module = importlib.import_module("research.forecast_tomorrow")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "daily_highs",
+        lambda: pd.DataFrame({"date": pd.to_datetime(["2025-01-01"])}),
+    )
+    monkeypatch.setattr(module, "lstm_residual_sigma", lambda: (2.0, 0.5, 9))
+    row = {
+        "mean": 65.0,
+        "std": 2.0,
+        "p10": 62.0,
+        "p90": 68.0,
+        "record_high": 70.0,
+        "record_low": 60.0,
+        "n": 10,
+    }
+    monkeypatch.setattr(
+        module,
+        "build_table",
+        lambda _daily: {key: row for key in ("05-31", "08-01", "01-01")},
+    )
+
+    module.main()
+
+    payload = json.loads((tmp_path / "forecast_data.json").read_text())
+    assert payload["lstm_sigma_days"] == 9
+    assert payload["lstm_sigma_se"] == 0.5
 
 
 def test_production_source_sync_keeps_research_tree():

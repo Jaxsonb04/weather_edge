@@ -3,8 +3,10 @@ from __future__ import annotations
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 
+import pytest
+
 import sfo_kalshi_quant.cli as cli_module
-from sfo_kalshi_quant.kalshi import KalshiPublicClient
+from sfo_kalshi_quant.kalshi import KalshiPublicClient, KalshiUnavailable
 from sfo_kalshi_quant.models import MarketBin
 
 
@@ -174,9 +176,24 @@ def test_monitor_falls_back_only_for_market_missing_from_batch_response():
 def test_iter_trades_follows_cursors_and_deduplicates_trade_ids(monkeypatch):
     client = KalshiPublicClient()
     calls = []
-    trade_a = {"trade_id": "A"}
-    trade_b = {"trade_id": "B"}
-    trade_c = {"trade_id": "C"}
+    trade_a = {
+        "trade_id": "A",
+        "ticker": "TICKER-A",
+        "created_time": "1970-01-01T00:00:01Z",
+        "is_block_trade": False,
+    }
+    trade_b = {
+        "trade_id": "B",
+        "ticker": "TICKER-A",
+        "created_time": "1970-01-01T00:00:01Z",
+        "is_block_trade": False,
+    }
+    trade_c = {
+        "trade_id": "C",
+        "ticker": "TICKER-A",
+        "created_time": "1970-01-01T00:00:02Z",
+        "is_block_trade": False,
+    }
 
     def fake_get_trades(**kwargs):
         calls.append(kwargs.get("cursor"))
@@ -192,3 +209,113 @@ def test_iter_trades_follows_cursors_and_deduplicates_trade_ids(monkeypatch):
 
     assert calls == [None, "next-page"]
     assert [trade["trade_id"] for trade in trades] == ["A", "B", "C"]
+
+
+def test_iter_trades_rejects_non_object_trade_payload(monkeypatch):
+    client = KalshiPublicClient()
+    monkeypatch.setattr(
+        client,
+        "get_trades",
+        lambda **_kwargs: {
+            "trades": [
+                {
+                    "trade_id": "A",
+                    "ticker": "TICKER-A",
+                    "created_time": "1970-01-01T00:00:01Z",
+                    "is_block_trade": False,
+                },
+                "malformed",
+            ],
+            "cursor": "",
+        },
+    )
+
+    with pytest.raises(KalshiUnavailable, match="non-object trade"):
+        list(client.iter_trades(ticker="TICKER-A", min_ts=1, max_ts=2))
+
+
+def test_iter_trades_rejects_missing_or_mismatched_ticker(monkeypatch):
+    client = KalshiPublicClient()
+
+    for returned_ticker in (None, "TICKER-B"):
+        monkeypatch.setattr(
+            client,
+            "get_trades",
+            lambda **_kwargs: {
+                "trades": [{"trade_id": "A", "ticker": returned_ticker}],
+                "cursor": "",
+            },
+        )
+
+        with pytest.raises(KalshiUnavailable, match="missing or mismatched ticker"):
+            list(client.iter_trades(ticker="TICKER-A", min_ts=1, max_ts=2))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"trades": None, "cursor": ""},
+        {"trades": [], "cursor": 123},
+        {"trades": []},
+    ],
+)
+def test_iter_trades_rejects_incomplete_page_contract(monkeypatch, payload):
+    client = KalshiPublicClient()
+    monkeypatch.setattr(client, "get_trades", lambda **_kwargs: payload)
+
+    with pytest.raises(KalshiUnavailable, match="invalid (trades|cursor)"):
+        list(client.iter_trades(ticker="TICKER-A", min_ts=1, max_ts=2))
+
+
+@pytest.mark.parametrize(
+    ("created_time", "reason"),
+    [
+        ("not-a-time", "invalid trade timestamp"),
+        ("1970-01-01T00:00:03Z", "out-of-window trade"),
+    ],
+)
+def test_iter_trades_rejects_invalid_or_out_of_window_time(
+    monkeypatch, created_time, reason
+):
+    client = KalshiPublicClient()
+    monkeypatch.setattr(
+        client,
+        "get_trades",
+        lambda **_kwargs: {
+            "trades": [
+                {
+                    "trade_id": "A",
+                    "ticker": "TICKER-A",
+                    "created_time": created_time,
+                    "is_block_trade": False,
+                }
+            ],
+            "cursor": "",
+        },
+    )
+
+    with pytest.raises(KalshiUnavailable, match=reason):
+        list(client.iter_trades(ticker="TICKER-A", min_ts=1, max_ts=2))
+
+
+@pytest.mark.parametrize("block_flag", [None, 0, 1, "false", "true"])
+def test_iter_trades_rejects_missing_or_non_boolean_block_flag(
+    monkeypatch, block_flag
+):
+    client = KalshiPublicClient()
+    trade = {
+        "trade_id": "A",
+        "ticker": "TICKER-A",
+        "created_time": "1970-01-01T00:00:01Z",
+    }
+    if block_flag is not None:
+        trade["is_block_trade"] = block_flag
+    monkeypatch.setattr(
+        client,
+        "get_trades",
+        lambda **_kwargs: {"trades": [trade], "cursor": ""},
+    )
+
+    with pytest.raises(KalshiUnavailable, match="invalid block-trade flag"):
+        list(client.iter_trades(ticker="TICKER-A", min_ts=1, max_ts=2))

@@ -9,10 +9,42 @@ from sfo_kalshi_quant import archive, db, strategy_research
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.models import MarketBin
 from sfo_kalshi_quant.settlement_truth import (
+    load_final_cli_high_for_station_date,
     load_cli_settlement_truth,
     normalize_settlement_truth,
     settlement_for_market,
 )
+
+
+def test_single_cli_truth_lookup_uses_station_and_date_key() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE cli_settlements ("
+        "station_id TEXT, local_date TEXT, max_temperature_f REAL, "
+        "is_final INTEGER NOT NULL, PRIMARY KEY (station_id, local_date))"
+    )
+    conn.executemany(
+        "INSERT INTO cli_settlements VALUES (?, ?, ?, ?)",
+        [
+            ("KSFO", "2026-07-08", 67.0, 1),
+            ("KNYC", "2026-07-08", 89.0, 1),
+            ("KSFO", "2026-07-09", 68.0, 0),
+        ],
+    )
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    high = load_final_cli_high_for_station_date(
+        conn,
+        station_id="KSFO",
+        local_date=date(2026, 7, 8),
+    )
+
+    assert high == 67.0
+    select = next(statement for statement in statements if statement.startswith("SELECT"))
+    assert "station_id =" in select
+    assert "local_date =" in select
+    assert "is_final = 1" in select
 
 
 def test_date_only_legacy_truth_can_only_settle_sfo() -> None:

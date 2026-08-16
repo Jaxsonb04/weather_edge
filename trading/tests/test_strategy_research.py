@@ -13,12 +13,21 @@ from pathlib import Path
 import pytest
 
 from sfo_kalshi_quant import strategy_research as strategy_research_module
-from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID, RESEARCH_ACCOUNT_ID
+from sfo_kalshi_quant.account import (
+    LIVE_STABILITY_ACCOUNT_ID,
+    RESEARCH_ACCOUNT_ID,
+    strategy_fingerprint,
+)
 from sfo_kalshi_quant.cities import CITIES
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
-from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig, strategy_config_for_profile
+from sfo_kalshi_quant.config import (
+    SFO_TZ,
+    StrategyConfig,
+    config_for_city,
+    strategy_config_for_profile,
+)
 from sfo_kalshi_quant.exits import convergence_take_profit_net, exit_bid_for_net, net_exit_per_contract
 from sfo_kalshi_quant.strategy_research import (
     _dataset_research_summary,
@@ -218,6 +227,18 @@ def test_strategy_research_does_not_create_missing_paper_db(monkeypatch):
         missing_db = Path(tmp) / "missing" / "paper.db"
         _write_lstm_fixture(root)
         monkeypatch.delenv("SFO_STRATEGY_FAST_PUBLICATION", raising=False)
+        monkeypatch.setenv("PAPER_ENTRY_MODE", "paper_limit")
+        replay_kwargs: dict[str, object] = {}
+
+        def capture_replay(*args, **kwargs):
+            replay_kwargs.update(kwargs)
+            return {"available": False, "reason": "test replay", "events": []}
+
+        monkeypatch.setattr(
+            strategy_build_module,
+            "replay_from_database",
+            capture_replay,
+        )
 
         payload = build_strategy_research(
             forecaster_root=root,
@@ -231,6 +252,13 @@ def test_strategy_research_does_not_create_missing_paper_db(monkeypatch):
         assert payload["calibration_comparison"]["active"]["available"] is True
         assert payload["status"]["active_calibration_source"] == "lstm"
         assert not missing_db.exists()
+        live_config = strategy_config_for_profile("live")
+        assert replay_kwargs["required_strategy_fingerprint"] == {
+            city.series_ticker: strategy_fingerprint(
+                config_for_city(live_config, city), entry_mode="limit"
+            )
+            for city in CITIES
+        }
 
 
 def test_fast_publication_defers_full_decision_journal_analytics(
@@ -551,6 +579,125 @@ def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch)
     assert json.loads(private_output.read_text(encoding="utf-8")) == {
         "sentinel": "full"
     }
+
+
+def test_real_money_readiness_fails_closed_when_inner_analysis_is_stale() -> None:
+    now = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
+
+    readiness = strategy_research_module._real_money_readiness_payload(
+        {},
+        {},
+        analysis_generated_at=(now - timedelta(hours=48)).isoformat(),
+        now=now,
+    )
+
+    assert readiness["available"] is False
+    assert readiness["status"] == "ANALYSIS_STALE"
+    assert readiness["analysis_age_hours"] == pytest.approx(48.0)
+    assert "stale" in readiness["reason"].lower()
+
+
+def test_real_money_readiness_publishes_exact_strategy_evidence_boundary() -> None:
+    readiness = strategy_research_module._real_money_readiness_payload(
+        {"available": True, "by_profile": {"live": {"counts": {}}}},
+        {},
+        {
+            "evidence_boundary": "2026-08-01T12:00:00+00:00",
+            "semantics_boundary": "2026-07-17T12:00:00+00:00",
+            "readiness_metrics": {
+                "source_cohort": "live_strategy_current_complete_weather_days"
+            },
+            "promotion_block_reasons": [],
+        },
+    )
+
+    assert readiness["evidence_boundary"] == "2026-08-01T12:00:00+00:00"
+    assert all(
+        check["evidence_boundary"] == "2026-08-01T12:00:00+00:00"
+        for check in readiness["checks"]
+    )
+
+
+def test_real_money_readiness_publishes_capital_relative_live_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "SFO_LIVE_PILOT_MAX_LOSS",
+        "SFO_LIVE_DAILY_LOSS",
+        "SFO_LIVE_PER_TRADE_RISK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SFO_LIVE_RISK_CAPITAL", "2500")
+    monkeypatch.setenv("SFO_LIVE_PILOT_MAX_LOSS_PCT", "0.05")
+    monkeypatch.setenv("SFO_LIVE_DAILY_LOSS_PCT", "0.02")
+    monkeypatch.setenv("SFO_LIVE_PER_TRADE_RISK_PCT", "0.01")
+
+    readiness = strategy_research_module._real_money_readiness_payload(
+        {"available": True, "by_profile": {"live": {"counts": {}}}},
+        {},
+        {
+            "readiness_metrics": {},
+            "promotion_block_reasons": [],
+        },
+    )
+
+    assert readiness["live_policy"] == {
+        "enabled": False,
+        "dry_run": True,
+        "risk_capital": 2500.0,
+        "pilot_max_loss_pct": 0.05,
+        "daily_loss_pct": 0.02,
+        "per_trade_risk_pct": 0.01,
+        "pilot_max_loss": 125.0,
+        "daily_loss": 50.0,
+        "per_trade_risk": 25.0,
+    }
+
+
+@pytest.mark.parametrize("value", ["", "not-a-number", "nan", "inf"])
+def test_real_money_readiness_rejects_invalid_pilot_pnl_state(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("SFO_LIVE_REALIZED_PILOT_PNL", value)
+
+    readiness = strategy_research_module._real_money_readiness_payload(
+        {"available": True, "by_profile": {"live": {"counts": {}}}},
+        {},
+        {
+            "readiness_metrics": {},
+            "promotion_block_reasons": [],
+        },
+    )
+
+    assert readiness["available"] is False
+    assert readiness["status"] == "NOT_READY"
+    assert "pilot pnl" in readiness["reason"].lower()
+
+
+def test_cached_daily_summary_does_not_publish_post_cache_missing_days_as_zero() -> None:
+    summary = {
+        "available": True,
+        "decision_analytics": {
+            "status": "cached",
+            "analysis_generated_at": "2026-08-11T02:00:00+00:00",
+        },
+        "days": [
+            {"date": "2026-08-09", "signals": 3, "approved_signals": 1},
+            {"date": "2026-08-10", "signals": 0, "approved_signals": 0},
+            {"date": "2026-08-11", "signals": 0, "approved_signals": 0},
+        ],
+        "gate_behavior": {"approved": 1, "rejected": 2},
+        "model_vs_market": {"samples": 3},
+    }
+
+    marked = strategy_build_module._mark_deferred_decision_counts(summary)
+
+    assert marked["days"][0]["signals"] == 3
+    assert marked["days"][1]["signals"] is None
+    assert marked["days"][2]["signals"] is None
+    assert marked["decision_analytics"]["counts_stale_from"] == "2026-08-10"
+    assert marked["gate_behavior"]["approved"] == 1
 
 
 def test_unavailable_full_daily_summary_cannot_become_cached_analysis(

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.error import URLError
 
+from ..account import account_for_profile
 from ..arbitrage import build_arbitrage_opportunities
 from ..cities import CityConfig, get_city, parse_city_slugs
 from ..colors import Color
@@ -124,6 +125,11 @@ def _enforce_live_forecast_freshness(forecast, config: StrategyConfig) -> None:
     age_hours = forecast.age_hours()
     if age_hours is None:
         raise ForecastDataError("forecast snapshot has no readable fetched_at timestamp")
+    if age_hours < -(5.0 / 60.0):
+        raise ForecastDataError(
+            f"forecast snapshot for {forecast.target_date.isoformat()} is in the future "
+            f"({-age_hours * 60.0:.1f}m ahead; maximum clock skew 5m)"
+        )
     if age_hours > config.max_forecast_age_hours:
         raise ForecastDataError(
             f"forecast snapshot for {forecast.target_date.isoformat()} is stale "
@@ -205,7 +211,12 @@ def _sizing_bankroll(store: PaperStore, config: StrategyConfig, risk_profile: st
     """
 
     if config.size_against_live_equity:
-        equity = store.paper_equity(config.paper_bankroll, risk_profile=risk_profile)
+        profile = normalize_risk_profile_name(risk_profile)
+        equity = store.paper_equity(
+            config.paper_bankroll,
+            risk_profile=profile,
+            account_id=account_for_profile(profile) if profile == "live" else None,
+        )
         return _clamp_sizing_equity(equity, config.paper_bankroll)
     return config.paper_bankroll
 
@@ -1672,7 +1683,7 @@ def cmd_analyze(
                 )
     if not scanned_any:
         print(color.yellow("no city produced an analyzable target"))
-    return 0
+    return 0 if scanned_any else 1
 
 
 def cmd_tail_basket(
@@ -1845,4 +1856,4 @@ def cmd_portfolio_scan(
                 )
     if not scanned_any:
         print(color.yellow("no city produced a scannable target"))
-    return 1 if fatal_containment else 0
+    return 1 if fatal_containment or not scanned_any else 0

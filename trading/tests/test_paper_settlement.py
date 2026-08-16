@@ -1984,6 +1984,35 @@ def test_paper_stake_caps_contracts_at_visible_ask_size():
         assert adjusted.recommended_contracts == 20.0
 
 
+def test_market_entry_rejects_explicit_zero_displayed_ask_depth():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, entry_mode="market")
+        decision = TradeDecision(
+            ticker="KXHIGHTSFO-TEST-T66",
+            label="65° or below",
+            action="BUY_YES",
+            approved=True,
+            probability=0.75,
+            probability_lcb=0.65,
+            yes_bid=0.39,
+            yes_ask=0.40,
+            spread=0.01,
+            fee_per_contract=0.01,
+            cost_per_contract=0.41,
+            edge=0.34,
+            edge_lcb=0.24,
+            kelly_fraction=0.03,
+            recommended_contracts=10.0,
+            expected_profit=3.4,
+            reasons=[],
+            entry_ask_size=0.0,
+        )
+
+        assert trader.place_approved("2026-07-10", [decision]) == []
+        assert store.paper_orders() == []
+
+
 def test_daily_budget_caps_approved_trade_risk():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")

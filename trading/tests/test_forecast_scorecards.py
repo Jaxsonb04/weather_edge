@@ -359,6 +359,19 @@ def test_report_never_labels_the_50_dollar_target_as_guaranteed() -> None:
     assert "observed" in label.lower()
 
 
+def test_report_formats_the_research_target_from_policy_evidence() -> None:
+    evidence = build_paired_evidence_report(
+        (),
+        (),
+        challenger_candidate_key=GAUSSIAN_PIT_CANDIDATE_KEY,
+        target_pnl=62.5,
+    )
+
+    report = build_research_evaluation_report(_evaluation_run(report=evidence))
+
+    assert "$62.50/day" in report["daily_target_kpi"]["label"]
+
+
 def test_report_shows_observed_hit_rate_and_shortfall_when_data_exists() -> None:
     records, exclusions = (), ()
     report_evidence = build_paired_evidence_report(

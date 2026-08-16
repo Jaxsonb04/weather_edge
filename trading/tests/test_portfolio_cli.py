@@ -15,6 +15,7 @@ from sfo_kalshi_quant.cli import (
     _place_portfolio_orders,
     _print_portfolio_scan,
     build_parser,
+    cmd_analyze,
     cmd_portfolio_scan,
 )
 from sfo_kalshi_quant.colors import Color
@@ -270,6 +271,48 @@ def test_portfolio_scan_returns_nonzero_after_fatal_containment_but_continues_ci
 
     assert code == 1
     assert scan_target.call_count == 2
+
+
+def test_portfolio_scan_returns_nonzero_when_no_city_has_an_eligible_target():
+    args = build_parser().parse_args(
+        ["--risk-profile", "live", "portfolio-scan", "--cities", "sfo,nyc"]
+    )
+    with (
+        patch(
+            "sfo_kalshi_quant.cli._cities_for_args",
+            return_value=(get_city("sfo"), get_city("nyc")),
+        ),
+        patch(
+            "sfo_kalshi_quant.cli._resolve_analysis_targets",
+            return_value=([], {}),
+        ),
+        patch("sfo_kalshi_quant.cli.KalshiPublicClient"),
+        patch("sfo_kalshi_quant.cli.PaperStore"),
+    ):
+        code = cmd_portfolio_scan(args)
+
+    assert code == 1
+
+
+def test_analyze_returns_nonzero_when_no_city_has_an_eligible_target():
+    args = build_parser().parse_args(
+        ["--risk-profile", "live", "analyze", "--cities", "sfo,nyc"]
+    )
+    with (
+        patch(
+            "sfo_kalshi_quant.cli._cities_for_args",
+            return_value=(get_city("sfo"), get_city("nyc")),
+        ),
+        patch(
+            "sfo_kalshi_quant.cli._resolve_analysis_targets",
+            return_value=([], {}),
+        ),
+        patch("sfo_kalshi_quant.cli.KalshiPublicClient"),
+        patch("sfo_kalshi_quant.cli.PaperStore"),
+    ):
+        code = cmd_analyze(args)
+
+    assert code == 1
 
 
 def test_portfolio_scan_hoists_emos_and_sizing_model_once_per_city():

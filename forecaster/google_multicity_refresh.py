@@ -145,7 +145,6 @@ def _default_archive_baseline() -> None:
         check=True,
         cwd=str(_BASELINE_SCRIPT.parent),
         timeout=_BASELINE_SUBPROCESS_TIMEOUT_SECONDS,
-        capture_output=True,
     )
 
 
@@ -425,7 +424,7 @@ def build_compatibility_status(report: MulticityRefreshReport) -> dict:
     }
 
 
-def run_cli(cities_arg: str) -> None:
+def run_cli(cities_arg: str) -> int:
     """The ``--cities`` CLI entry point wired from ``google_weather_cache.main``."""
 
     cities = parse_city_slugs(cities_arg)
@@ -444,3 +443,7 @@ def run_cli(cities_arg: str) -> None:
         f"month: {report.monthly_events}/{report.monthly_event_budget}; "
         f"runtime rows purged: {report.purged_rows}"
     )
+    # Google refreshes remain per-city fail-soft, but the EMOS baseline is the
+    # production forecast for all cities.  Finish the independent Google work,
+    # persist its sanitized status, then report a failed baseline to systemd.
+    return 0 if report.baseline.succeeded else 1

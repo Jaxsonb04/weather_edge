@@ -65,6 +65,9 @@ OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
 # construction and produces continuous false staleness repairs.
 PUBLIC_OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES:-20}"
 STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
+# The scheduler can rebuild only the cache-backed public wrapper. Readiness
+# rejects stale inner analysis itself; do not enter a repair loop for evidence
+# that requires a separately bounded immutable-snapshot producer.
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
 REPAIR_COOLDOWN_SECONDS="${SFO_SCHEDULER_REPAIR_COOLDOWN_SECONDS:-900}"

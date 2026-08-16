@@ -140,6 +140,9 @@ The environment installed at `/etc/weatheredge.env` is based on
 safe-off until an operator configures a WeatherKit Service ID and private key,
 then explicitly sets `ENABLE_APPLE_WEATHER=1`. Never place the `.p8` inside the
 source tree; the service rejects keys that are not mode 0600.
+The dormant live-risk policy scales its pilot, daily, and per-order limits from
+`SFO_LIVE_RISK_CAPITAL`. Established hosts migrate only the historical exact
+$50/$20/$10 defaults; custom absolute overrides are retained.
 
 ## Timers
 
@@ -173,9 +176,9 @@ source tree; the service rejects keys that are not mode 0600.
 - `sfo-kalshi-paper-monitor.timer`: every two minutes; monitors paper exits and
   maker-limit proxy fills.
 - `sfo-kalshi-paper-settle.timer`: finality-gated, series-scoped settlement.
-- `sfo-kalshi-paper-prune.timer`: archive, verify, FK-check, then prune. A
-  missed run waits for the next nightly window instead of replaying alongside
-  persistent runtime timers after a deploy or reboot.
+- `sfo-kalshi-paper-prune.timer`: archive, upload, verify, and FK-check. Its
+  interim default is archive-only, so a missed run waits for the next nightly
+  window and the scheduled unit never deletes from the live journal.
 - `sfo-forecast-freshness.timer`: publication and forecast health checks.
 - `sfo-scheduler-health.timer`: offset five-minute independent scheduler check.
   It requires the thirteen application timers to be enabled and active, verifies
@@ -212,8 +215,19 @@ The journal archive defaults to
 SHA-256, exact ID coverage, and decision-to-context references for each
 compressed daily partition. `run_archive_then_prune.sh` performs lossless
 export, feature rollup, optional S3 upload, exact-ID/reference gate, explicit FK
-audit, prune, and upload-backed local cleanup in that order. A failed archive or
-gate prevents deletion.
+audit, and upload-backed local cleanup in that order. Scheduled runs default to
+`SFO_PRUNE_MODE=archive-only`: they log a degraded warning, exit successfully,
+and never enter the write-heavy prune. A failed archive or gate still fails the
+unit.
+
+Archive-only mode deliberately trades write availability for live-journal
+growth. The disk watchdog remains active and fails at its configured ceiling
+(85% by default), but it does not delete data automatically. Plan a quiesced
+maintenance window before reaching that ceiling. The exact opt-in is
+`SFO_PRUNE_MODE=quiesced-delete`; stop every paper-journal writer first and
+restore archive-only before timers resume. Deletion creates reusable SQLite
+pages but does not shrink the database file; use the separately quiesced
+`compact_paper_db.sh` workflow when filesystem space must be reclaimed.
 
 S3 is safe-off until `SFO_ARCHIVE_S3_BUCKET` is configured; the related
 variables are `SFO_ARCHIVE_S3_PREFIX`, `SFO_ARCHIVE_AWS_CLI`, and

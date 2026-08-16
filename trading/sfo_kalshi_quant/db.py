@@ -56,6 +56,7 @@ from .maker_fills import (
     allocate_maker_fills,
     apply_volume_claims,
     depth_observation_is_contemporaneous,
+    maker_tape_reconciliation_covers_expiry,
     normalize_public_trade,
 )
 from .profile_identity import row_published_profile_key
@@ -4816,6 +4817,18 @@ class PaperStore:
                 )
                 if created_at.tzinfo is None:
                     created_at = created_at.replace(tzinfo=UTC)
+                active_until = None
+                if row["expires_at"]:
+                    try:
+                        active_until = datetime.fromisoformat(
+                            str(row["expires_at"]).replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        # An invalid terminal timestamp cannot safely admit
+                        # unbounded future tape into paper-fill evidence.
+                        continue
+                    if active_until.tzinfo is None:
+                        active_until = active_until.replace(tzinfo=UTC)
                 limit_price = (
                     row["limit_price"]
                     if row["limit_price"] is not None
@@ -4845,6 +4858,7 @@ class PaperStore:
                     queue_price=Decimal(
                         str(round(float(queue_price), 6))
                     ),
+                    active_until=active_until,
                 )
                 if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID:
                     shadow_orders.append(order)
@@ -5112,7 +5126,13 @@ class PaperStore:
                     )
         return claims
 
-    def cancel_resting_limit_order(self, order_id: int, *, reason: str) -> sqlite3.Row | None:
+    def cancel_resting_limit_order(
+        self,
+        order_id: int,
+        *,
+        reason: str,
+        tape_reconciled_through: str | None = None,
+    ) -> sqlite3.Row | None:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
@@ -5126,24 +5146,52 @@ class PaperStore:
             cancelled_at = _now()
             filled = float(row["filled_contracts"] or 0.0)
             next_status = "PAPER_PARTIAL_EXPIRED" if filled > 0 else "PAPER_EXPIRED"
+            try:
+                fill_evidence = json.loads(row["fill_evidence_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                fill_evidence = {}
+            if not isinstance(fill_evidence, dict):
+                fill_evidence = {}
+            if tape_reconciled_through is not None:
+                requested = float(
+                    row["requested_contracts"] or row["contracts"] or 0.0
+                )
+                remaining = float(row["remaining_contracts"] or 0.0)
+                fill_evidence.update(
+                    {
+                        "model": "maker_allocator_price_time_v4",
+                        "execution_model_version": EXECUTION_MODEL_VERSION,
+                        "requested_quantity": requested,
+                        "filled_quantity": filled,
+                        "remaining_quantity": remaining,
+                        "queue_remaining": float(row["queue_remaining"] or 0.0),
+                        "tape_reconciled_through": tape_reconciled_through,
+                        "trade_ids": fill_evidence.get("trade_ids") or [],
+                        "allocations": fill_evidence.get("allocations") or {},
+                        "consumptions": fill_evidence.get("consumptions") or {},
+                    }
+                )
+            outcome_details = {
+                "event": "cancellation",
+                "reason": reason,
+                "unfilled_quantity_cancelled": float(
+                    row["remaining_contracts"] or 0.0
+                ),
+                "filled_quantity_retained": filled,
+            }
+            if tape_reconciled_through is not None:
+                outcome_details["tape_reconciled_through"] = (
+                    tape_reconciled_through
+                )
             conn.execute(
                 "UPDATE paper_orders SET status=?, cancelled_at=?, "
                 "remaining_contracts=0, queue_remaining=0, reserved_cost=0, "
-                "outcome_diagnostics_json=? WHERE id=?",
+                "outcome_diagnostics_json=?, fill_evidence_json=? WHERE id=?",
                 (
                     next_status,
                     cancelled_at,
-                    json.dumps(
-                        {
-                            "event": "cancellation",
-                            "reason": reason,
-                            "unfilled_quantity_cancelled": float(
-                                row["remaining_contracts"] or 0.0
-                            ),
-                            "filled_quantity_retained": filled,
-                        },
-                        sort_keys=True,
-                    ),
+                    json.dumps(outcome_details, sort_keys=True),
+                    json.dumps(fill_evidence, sort_keys=True),
                     order_id,
                 ),
             )
@@ -5199,18 +5247,78 @@ class PaperStore:
                     (degraded_group_id, json.dumps(details, sort_keys=True), row["id"]),
                 )
 
-    def expire_stale_resting_orders(self, *, now: str | None = None) -> int:
+    def expire_stale_resting_orders(
+        self,
+        *,
+        now: str | None = None,
+        reconciled_through_by_ticker: Mapping[str, str] | None = None,
+    ) -> int:
+        """Cancel TTL-expired remainder only after its final tape was queried.
+
+        Direct maintenance callers that omit ``reconciled_through_by_ticker``
+        retain the legacy unconditional cutoff.  The live paper monitor passes
+        a per-ticker watermark and therefore fails closed on network errors or
+        a polling interval that ended before the order's expiry instant.
+        """
+
         cutoff = now or _now()
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT id FROM paper_orders WHERE status IN "
+                "SELECT id, market_ticker, expires_at FROM paper_orders WHERE status IN "
                 "('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
                 "AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at, id",
                 (cutoff,),
             ).fetchall()
+
+        if reconciled_through_by_ticker is not None:
+            eligible_rows = []
+            try:
+                cutoff_time = datetime.fromisoformat(
+                    str(cutoff).replace("Z", "+00:00")
+                )
+            except ValueError:
+                cutoff_time = None
+            if cutoff_time is not None and cutoff_time.tzinfo is None:
+                cutoff_time = cutoff_time.replace(tzinfo=UTC)
+            for row in rows:
+                watermark_raw = reconciled_through_by_ticker.get(str(row[1]))
+                if not watermark_raw:
+                    continue
+                try:
+                    expiry = datetime.fromisoformat(
+                        str(row[2]).replace("Z", "+00:00")
+                    )
+                    watermark = datetime.fromisoformat(
+                        str(watermark_raw).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=UTC)
+                if watermark.tzinfo is None:
+                    watermark = watermark.replace(tzinfo=UTC)
+                if (
+                    cutoff_time is not None
+                    and maker_tape_reconciliation_covers_expiry(
+                        cutoff_time, expiry
+                    )
+                    and maker_tape_reconciliation_covers_expiry(
+                        watermark, expiry
+                    )
+                ):
+                    eligible_rows.append(row)
+            rows = eligible_rows
         expired = 0
-        for (order_id,) in rows:
-            row = self.cancel_resting_limit_order(int(order_id), reason="15-minute maker TTL expired")
+        for order_id, ticker, _expires_at in rows:
+            row = self.cancel_resting_limit_order(
+                int(order_id),
+                reason="15-minute maker TTL expired",
+                tape_reconciled_through=(
+                    reconciled_through_by_ticker.get(str(ticker))
+                    if reconciled_through_by_ticker is not None
+                    else None
+                ),
+            )
             expired += int(
                 row is not None
                 and row["status"] in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}

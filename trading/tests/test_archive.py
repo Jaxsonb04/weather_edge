@@ -1,7 +1,10 @@
 import gzip
 import hashlib
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile as stdlib_tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,7 +40,105 @@ def _utc_day(days_ago: int) -> str:
 def test_archive_prune_wrapper_runs_explicit_fk_audit_before_prune() -> None:
     script = ARCHIVE_PRUNE_SCRIPT.read_text()
     assert "paper-check-foreign-keys" in script
-    assert script.index("paper-check-foreign-keys") < script.index("\n  paper-prune --")
+    assert script.index("paper-check-foreign-keys") < script.index("paper-prune --")
+
+
+def _run_scheduled_retention(
+    tmp_path: Path,
+    *,
+    mode: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+    trading_root = tmp_path / "trading"
+    trading_root.mkdir()
+    call_log = tmp_path / "retention-calls.jsonl"
+    python_stub = tmp_path / "python-stub"
+    python_stub.write_text(
+        f"""#!{sys.executable}
+import json
+import os
+import sys
+
+with open(os.environ["RETENTION_CALL_LOG"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1:2] == ["-"]:
+    sys.stdin.read()
+""",
+        encoding="utf-8",
+    )
+    python_stub.chmod(0o755)
+    env = {
+        **os.environ,
+        "SFO_TRADING_ROOT": str(trading_root),
+        "SFO_TRADING_PYTHON": str(python_stub),
+        "SFO_KALSHI_DB": str(tmp_path / "paper.db"),
+        "SFO_ARCHIVE_DIR": str(tmp_path / "archive"),
+        "RETENTION_CALL_LOG": str(call_log),
+    }
+    if mode is None:
+        env.pop("SFO_PRUNE_MODE", None)
+    else:
+        env["SFO_PRUNE_MODE"] = mode
+
+    result = subprocess.run(
+        ["bash", str(ARCHIVE_PRUNE_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = (
+        [json.loads(line) for line in call_log.read_text().splitlines()]
+        if call_log.exists()
+        else []
+    )
+    return result, [call for call in calls if "-m" in call]
+
+
+def test_scheduled_retention_defaults_to_archive_only_with_degraded_diagnostics(
+    tmp_path: Path,
+) -> None:
+    result, cli_calls = _run_scheduled_retention(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert any("paper-archive" in call for call in cli_calls)
+    assert any("--upload" in call for call in cli_calls)
+    assert any("--check-gate" in call for call in cli_calls)
+    assert any("paper-check-foreign-keys" in call for call in cli_calls)
+    assert not any("paper-prune" in call for call in cli_calls)
+    assert "DEGRADED" in result.stderr
+    assert "live-DB deletion skipped" in result.stderr
+
+
+def test_scheduled_retention_preserves_explicit_quiesced_delete_mode(
+    tmp_path: Path,
+) -> None:
+    result, cli_calls = _run_scheduled_retention(
+        tmp_path,
+        mode="quiesced-delete",
+    )
+
+    assert result.returncode == 0, result.stderr
+    fk_index = next(
+        index
+        for index, call in enumerate(cli_calls)
+        if "paper-check-foreign-keys" in call
+    )
+    prune_index = next(
+        index for index, call in enumerate(cli_calls) if "paper-prune" in call
+    )
+    assert fk_index < prune_index
+    assert sum("paper-prune" in call for call in cli_calls) == 1
+    assert "quiesced live-DB deletion explicitly enabled" in result.stderr
+    assert "scheduled live-DB deletion skipped" not in result.stderr
+
+
+def test_scheduled_retention_fails_closed_on_unknown_mode(tmp_path: Path) -> None:
+    result, cli_calls = _run_scheduled_retention(tmp_path, mode="delete")
+
+    assert result.returncode == 0, result.stderr
+    assert not any("paper-prune" in call for call in cli_calls)
+    assert "unrecognized SFO_PRUNE_MODE=delete" in result.stderr
+    assert "live-DB deletion skipped" in result.stderr
 
 
 def _insert_decision(conn: sqlite3.Connection, **overrides) -> int:

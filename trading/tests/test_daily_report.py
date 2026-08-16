@@ -8,11 +8,29 @@ from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant import report
 from sfo_kalshi_quant.config import StrategyConfig
-from sfo_kalshi_quant.models import EventSnapshot, MarketBin
+from sfo_kalshi_quant.forecast import ForecastDataError
+from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, MarketBin
 from sfo_kalshi_quant.report import _best_signal, build_daily_report
+
+
+def test_report_forecast_freshness_rejects_snapshot_far_in_the_future() -> None:
+    forecast = ForecastSnapshot(
+        target_date=datetime.now(timezone.utc).date() + timedelta(days=1),
+        predicted_high_f=70.0,
+        fetched_at=(datetime.now(timezone.utc) + timedelta(hours=48)).isoformat(),
+        method="test",
+    )
+
+    with pytest.raises(ForecastDataError, match="future"):
+        report._enforce_live_forecast_freshness(
+            forecast,
+            StrategyConfig(max_forecast_age_hours=30.0),
+        )
 
 
 def _write_forecaster_fixture(root: Path, target: date) -> None:

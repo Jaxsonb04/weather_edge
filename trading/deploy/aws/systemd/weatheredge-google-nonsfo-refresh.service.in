@@ -27,7 +27,9 @@ EnvironmentFile=__ENV_FILE__
 # CITIES' own declared order. trading/tests/test_aws_deploy.py's
 # test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily
 # fails if this list and cities.py ever drift apart.
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities mia,lax,chi,atl,nyc,dal,sea,phl,phx,aus,hou,okc,bos,den
+# Google endpoint failures stay per-city fail-soft; only failure of the
+# production EMOS baseline makes the orchestrator return nonzero.
+ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities mia,lax,chi,atl,nyc,dal,sea,phl,phx,aus,hou,okc,bos,den
 Nice=10
 MemoryHigh=800M
 MemoryMax=1100M

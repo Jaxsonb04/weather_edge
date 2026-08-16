@@ -12,6 +12,33 @@ def _bin(label: str, **overrides):
     return replace(market, status="active", **overrides)
 
 
+def test_no_lower_bound_uses_unclipped_yes_upper_bound():
+    market = _bin(
+        "66° to 67°",
+        yes_bid=0.05,
+        yes_ask=0.06,
+        yes_bid_size=100.0,
+        yes_ask_size=100.0,
+    )
+    probability = BucketProbability(
+        ticker=market.ticker,
+        label=market.yes_sub_title,
+        probability=0.05,
+        lower_confidence=0.0,
+        upper_confidence=0.08,
+        empirical_probability=0.05,
+        normal_probability=0.05,
+        effective_n=100,
+    )
+
+    decision = TradeEvaluator(
+        StrategyConfig(min_probability_uncertainty=0.0)
+    ).evaluate_market(market, probability, bankroll=1000.0, side="NO")
+
+    assert decision.probability == 0.95
+    assert decision.probability_lcb == 0.92
+
+
 def test_no_bid_support_blocks_penny_tail_trade():
     market = _bin(
         "66° to 67°",

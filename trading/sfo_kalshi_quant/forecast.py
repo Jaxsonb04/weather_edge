@@ -21,6 +21,7 @@ from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
 from .settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
+    load_final_cli_high_for_station_date,
     load_cli_settlement_truth,
 )
 
@@ -196,6 +197,11 @@ class SfoForecasterAdapter:
             return None
         try:
             with _sqlite.connect(self.weather_db) as conn:
+                final_cli_high = load_final_cli_high_for_station_date(
+                    conn,
+                    station_id=self.station_id,
+                    local_date=target,
+                )
                 official_row = None
                 if _table_exists(conn, "nws_daily_high_ground_truth"):
                     official_row = conn.execute(
@@ -266,8 +272,15 @@ class SfoForecasterAdapter:
                 observed_high_f = official_high
                 latest_observed_at = official_row[1] or latest_observed_at
                 observation_count = int(official_row[2] or observation_count)
-                is_complete = bool(official_row[3])
+                # This table is derived from station observations.  A finished
+                # calendar day does not turn those observations into the final
+                # contract-linked CLI settlement value.
+                is_complete = False
                 observed_high_source = official_row[4] or "nws_daily_high_ground_truth"
+        if final_cli_high is not None:
+            observed_high_f = float(final_cli_high)
+            observed_high_source = "NWS CLI final settlement"
+            is_complete = True
         if observed_high_f is None and remaining_high_f is None:
             return None
         return IntradaySnapshot(

@@ -11,9 +11,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
+from sfo_kalshi_quant.account import (
+    LIVE_STABILITY_ACCOUNT_ID,
+    strategy_fingerprint,
+)
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book
 from sfo_kalshi_quant.colors import Color
+from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.maker_fills import (
     EXECUTION_MODEL_VERSION,
@@ -739,6 +743,384 @@ def _verified_terminal_readiness_root(
     assert store.settle_paper_orders("2026-07-14", 85.0) == 1
     _verify_final_truth(store)
     return order_id
+
+
+def test_readiness_strict_fingerprint_uses_only_complete_target_day_cohorts() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        required_fingerprint = strategy_fingerprint(
+            StrategyConfig(), entry_mode="limit"
+        )
+        required_fingerprints = {
+            "KXHIGHTSEA": required_fingerprint,
+            "KXHIGHTSFO": "sfo-current-fingerprint",
+        }
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_account_ledger SET created_at=? "
+                "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION'",
+                ((T0 - timedelta(minutes=1)).isoformat(),),
+            )
+
+        def seed_terminal_root(
+            target_date: str,
+            *,
+            created_at: datetime,
+            ticker: str,
+            trade_id: str,
+            floor: float,
+            cap: float,
+            fingerprint: str = required_fingerprint,
+        ) -> int:
+            order_id = _resting_order(
+                store,
+                target_date,
+                _decision(
+                    ticker,
+                    side="NO",
+                    limit_price=0.72,
+                    contracts=4.0,
+                    floor=floor,
+                    cap=cap,
+                ),
+                created_at=created_at,
+            )
+            payload = _trade(
+                trade_id,
+                yes_price=0.28,
+                quantity=4.0,
+                taker_book_side="bid",
+                created_time=created_at + timedelta(minutes=1),
+            )
+            _fill_resting_orders_against_live_book(
+                store, _TradesClient([payload]), Color.from_no_color(True)
+            )
+            assert store.settle_paper_orders(target_date, 85.0) == 1
+            series = ticker.split("-", 1)[0]
+            verification = store.verify_paper_settlements(
+                {(series, target_date): 85.0},
+                intervals={series: (target_date, target_date)},
+            )
+            assert verification["mismatches"] == 0
+            with store.connect() as conn:
+                conn.execute(
+                    "UPDATE paper_orders SET strategy_fingerprint=? WHERE id=?",
+                    (fingerprint, order_id),
+                )
+            return order_id
+
+        # An earlier live generation cannot establish the current cohort boundary.
+        seed_terminal_root(
+            "2026-07-14",
+            created_at=T0,
+            ticker="KXHIGHTSEA-26JUL14-B82.5",
+            trade_id="T-OLD-FINGERPRINT",
+            floor=82.0,
+            cap=83.0,
+            fingerprint="previous-live-fingerprint",
+        )
+        first_matching_at = T0 + timedelta(days=1)
+        seed_terminal_root(
+            "2026-07-15",
+            created_at=first_matching_at,
+            ticker="KXHIGHTSEA-26JUL15-B82.5",
+            trade_id="T-CURRENT-MIXED-DAY",
+            floor=82.0,
+            cap=83.0,
+        )
+        seed_terminal_root(
+            "2026-07-15",
+            created_at=first_matching_at + timedelta(seconds=1),
+            ticker="KXHIGHTSEA-26JUL15-B84.5",
+            trade_id="T-WRONG-MIXED-DAY",
+            floor=84.0,
+            cap=85.0,
+            fingerprint="different-live-fingerprint",
+        )
+        seed_terminal_root(
+            "2026-07-16",
+            created_at=T0 + timedelta(days=2),
+            ticker="KXHIGHTSEA-26JUL16-B82.5",
+            trade_id="T-CURRENT-INCOMPLETE-DAY",
+            floor=82.0,
+            cap=83.0,
+        )
+        # A same-fingerprint root that has not resolved makes the weather day
+        # incomplete; the resolved sibling must not contribute available-case
+        # economics on its own.
+        incomplete_order_id = _resting_order(
+            store,
+            "2026-07-16",
+            _decision(
+                "KXHIGHTSEA-26JUL16-B84.5",
+                side="NO",
+                limit_price=0.72,
+                contracts=4.0,
+                floor=84.0,
+                cap=85.0,
+            ),
+            created_at=T0 + timedelta(days=2, seconds=1),
+        )
+        _fill_resting_orders_against_live_book(
+            store,
+            _TradesClient(
+                [
+                    _trade(
+                        "T-CURRENT-STILL-OPEN",
+                        yes_price=0.28,
+                        quantity=4.0,
+                        taker_book_side="bid",
+                        created_time=T0 + timedelta(days=2, minutes=1),
+                    )
+                ]
+            ),
+            Color.from_no_color(True),
+        )
+        assert store.paper_order(incomplete_order_id)["status"] == "PAPER_FILLED"
+        pure_order_id = seed_terminal_root(
+            "2026-07-17",
+            created_at=T0 + timedelta(days=3),
+            ticker="KXHIGHTSEA-26JUL17-B82.5",
+            trade_id="T-CURRENT-PURE-DAY",
+            floor=82.0,
+            cap=83.0,
+        )
+        sfo_order_id = seed_terminal_root(
+            "2026-07-17",
+            created_at=T0 + timedelta(days=3, seconds=1),
+            ticker="KXHIGHTSFO-26JUL17-B82.5",
+            trade_id="T-CURRENT-PURE-SFO",
+            floor=82.0,
+            cap=83.0,
+            fingerprint=required_fingerprints["KXHIGHTSFO"],
+        )
+        zero_fill_created_at = T0 + timedelta(days=3, seconds=2)
+        zero_fill_order_id = _resting_order(
+            store,
+            "2026-07-17",
+            _decision(
+                "KXHIGHTSEA-26JUL17-B86.5",
+                side="NO",
+                limit_price=0.72,
+                contracts=4.0,
+                floor=86.0,
+                cap=87.0,
+            ),
+            created_at=zero_fill_created_at,
+        )
+        assert (
+            store.expire_stale_resting_orders(
+                now=(zero_fill_created_at + timedelta(minutes=21)).isoformat(),
+                reconciled_through_by_ticker={
+                    "KXHIGHTSEA-26JUL17-B86.5": (
+                        zero_fill_created_at + timedelta(minutes=21)
+                    ).isoformat()
+                },
+            )
+            == 1
+        )
+        assert store.paper_order(zero_fill_order_id)["status"] == "PAPER_EXPIRED"
+        with store.connect() as conn:
+            expected_pnl = float(
+                conn.execute(
+                    "SELECT SUM(realized_pnl) FROM paper_orders WHERE id IN (?, ?)",
+                    (pure_order_id, sfo_order_id),
+                ).fetchone()[0]
+            )
+            watermarked_evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (zero_fill_order_id,),
+                ).fetchone()[0]
+            )
+
+        settlements = {
+            ("KXHIGHTSEA", "2026-07-14"): 85.0,
+            ("KXHIGHTSEA", "2026-07-15"): 85.0,
+            ("KXHIGHTSEA", "2026-07-16"): 85.0,
+            ("KXHIGHTSEA", "2026-07-17"): 85.0,
+            ("KXHIGHTSFO", "2026-07-17"): 85.0,
+        }
+        unwatermarked_evidence = dict(watermarked_evidence)
+        unwatermarked_evidence.pop("tape_reconciled_through")
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                (json.dumps(unwatermarked_evidence), zero_fill_order_id),
+            )
+        unwatermarked = replay_from_database(
+            db_path,
+            settlements,
+            required_strategy_fingerprint=required_fingerprints,
+        )
+        assert unwatermarked["post_boundary_days"] == 0
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                (json.dumps(watermarked_evidence), zero_fill_order_id),
+            )
+
+        result = replay_from_database(
+            db_path,
+            settlements,
+            required_strategy_fingerprint=required_fingerprints,
+        )
+
+        assert result["evidence_boundary"] == first_matching_at.isoformat()
+        assert result["post_boundary_days"] == 1
+        assert result["source_orders"] == 3
+        assert result["verified_decisions"] == 2
+        metrics = result["readiness_metrics"]
+        assert metrics["counts"] == {
+            "settled_decisions": 2,
+            "independent_days": 1,
+        }
+        assert metrics["candidate"]["realized_pnl"] == round(expected_pnl, 4)
+        assert metrics["semantics_boundary"] == (
+            T0 - timedelta(minutes=1)
+        ).isoformat()
+        assert metrics["evidence_boundary"] == first_matching_at.isoformat()
+        assert metrics["source_cohort"] == result["evidence_scope"]["source_cohort"]
+        assert result["evidence_scope"]["strategy_fingerprint"] is None
+        assert result["evidence_scope"]["strategy_fingerprints_by_series"] == (
+            required_fingerprints
+        )
+        assert result["evidence_scope"]["evidence_boundary"] == (
+            first_matching_at.isoformat()
+        )
+        assert result["evidence_scope"]["complete_target_days_only"] is True
+        assert result["evidence_scope"]["strategy_fingerprint_semantics"] == (
+            "policy_config_and_entry_mode_only"
+        )
+        assert result["evidence_scope"]["immutable_model_lineage_persisted"] is False
+        assert any(
+            "immutable forecast/model/calibration lineage" in reason
+            for reason in result["promotion_block_reasons"]
+        )
+        assert any(
+            "fingerprint" in reason
+            for reason in result["promotion_block_reasons"]
+        )
+
+        # A zero-fill request from the prior policy still makes the target day
+        # a mixed-policy observation. Its creation predates the current cohort
+        # boundary, and its lack of PnL must not make it disappear from the
+        # atomic weather-day inclusion rule.
+        pre_boundary_expired_id = _resting_order(
+            store,
+            "2026-07-17",
+            _decision(
+                "KXHIGHTSEA-26JUL17-B88.5",
+                side="NO",
+                limit_price=0.72,
+                contracts=4.0,
+                floor=88.0,
+                cap=89.0,
+            ),
+            created_at=T0,
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET strategy_fingerprint=? WHERE id=?",
+                ("previous-live-fingerprint", pre_boundary_expired_id),
+            )
+        pre_boundary_row = store.paper_order(pre_boundary_expired_id)
+        pre_boundary_expiry = datetime.fromisoformat(
+            str(pre_boundary_row["expires_at"])
+        )
+        pre_boundary_watermark = pre_boundary_expiry + timedelta(
+            minutes=5, seconds=1
+        )
+        assert store.expire_stale_resting_orders(
+            now=pre_boundary_watermark.isoformat(),
+            reconciled_through_by_ticker={
+                str(pre_boundary_row["market_ticker"]): (
+                    pre_boundary_watermark.isoformat()
+                )
+            },
+        ) == 1
+
+        mixed_policy_day = replay_from_database(
+            db_path,
+            settlements,
+            required_strategy_fingerprint=required_fingerprints,
+        )
+        assert mixed_policy_day["evidence_boundary"] == first_matching_at.isoformat()
+        assert mixed_policy_day["post_boundary_days"] == 0
+        assert mixed_policy_day["readiness_metrics"]["counts"] == {
+            "settled_decisions": 0,
+            "independent_days": 0,
+        }
+
+
+def test_readiness_strict_fingerprint_rejects_mixed_child_lot_day() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        required_fingerprint = strategy_fingerprint(
+            StrategyConfig(), entry_mode="limit"
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_account_ledger SET created_at=? "
+                "WHERE event_type='EXECUTION_SEMANTICS_TRANSITION'",
+                ((T0 - timedelta(minutes=1)).isoformat(),),
+            )
+        order_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(side="NO", limit_price=0.72, contracts=4.0),
+            created_at=T0,
+        )
+        _fill_resting_orders_against_live_book(
+            store,
+            _TradesClient(
+                [
+                    _trade(
+                        "T-MIXED-FINGERPRINT-CHILD",
+                        yes_price=0.28,
+                        quantity=4.0,
+                        taker_book_side="bid",
+                        created_time=T0 + timedelta(minutes=1),
+                    )
+                ]
+            ),
+            Color.from_no_color(True),
+        )
+        child = store.close_paper_order(
+            order_id,
+            0.80,
+            max_quantity=2.0,
+            liquidity_evidence={
+                "displayed_depth": 2.0,
+                "source": "test_depth",
+                "observed_at": (T0 + timedelta(minutes=2)).isoformat(),
+            },
+        )
+        assert store.settle_paper_orders("2026-07-14", 85.0) == 1
+        _verify_final_truth(store)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET strategy_fingerprint=? WHERE id=?",
+                ("different-live-fingerprint", child["id"]),
+            )
+
+        result = replay_from_database(
+            db_path,
+            {("KXHIGHTSEA", "2026-07-14"): 85.0},
+            required_strategy_fingerprint=required_fingerprint,
+        )
+
+        assert result["evidence_boundary"] == T0.isoformat()
+        assert result["post_boundary_days"] == 0
+        assert result["source_orders"] == 0
+        assert result["verified_decisions"] == 0
+        assert result["readiness_metrics"]["counts"] == {
+            "settled_decisions": 0,
+            "independent_days": 0,
+        }
+        assert result["evidence_scope"]["fingerprint_mismatch_target_days"] == 1
 
 
 def test_exec_v4_boundary_excludes_v3_evidence_without_rewriting() -> None:

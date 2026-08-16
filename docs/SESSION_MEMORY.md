@@ -1,19 +1,124 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-10 19:28 PDT
+Last updated: 2026-08-15 22:06 PDT
 
-Last production verification: 2026-08-10 19:28 PDT
+Last production verification: 2026-08-15 19:02 PDT
 
-Last public artifact verification: 2026-08-10 19:28 PDT
+Last public artifact verification: 2026-08-15 19:02 PDT
 
-Production status snapshot (last verified 2026-08-10): healthy and paper-only on runtime revision
-`10b4844dd28e1008789dab5846b67e07bfeabc0c`
+Production status snapshot (last verified 2026-08-15): publishing and scanning in
+paper-only mode on runtime revision
+`10b4844dd28e1008789dab5846b67e07bfeabc0c`, but not fully healthy because the
+nightly retention prune has timed out on five consecutive natural runs. Live
+execution remains disabled, dry-run remains enabled, and no authenticated order
+client or live-order service is deployed.
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
 verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **SCHEDULED LIVE-JOURNAL DELETION DEFERRED SAFE-OFF LOCALLY; NOT DEPLOYED
+  (2026-08-15):** the retention wrapper now defaults to
+  `SFO_PRUNE_MODE=archive-only`, including on established hosts whose preserved
+  environment does not yet contain the key. Nightly archive export, feature
+  rollup, optional upload, exact archive gate, foreign-key audit, and
+  upload-backed archive cleanup still run, but the wrapper skips `paper-prune`,
+  emits explicit `DEGRADED` diagnostics, and exits successfully so it does not
+  take the long live-database write lock or repeatedly fail the unit. Unknown
+  mode values fail closed to the same no-delete behavior. The only retained
+  opt-in is the exact `quiesced-delete` mode for an operator-supervised run
+  after all journal writers are stopped; restore archive-only before timers
+  resume. This deliberately allows the live SQLite journal to grow. The disk
+  watchdog remains the safety alarm (85% default ceiling) but does not delete
+  data, and deletion alone makes pages reusable without shrinking the file;
+  filesystem reclamation still requires the separately quiesced compaction
+  workflow. Focused validation: **122 retention/deployment tests passed**,
+  changed shell syntax passed, and the diff check passed. No production timer,
+  service, database, ledger, order, or live-trading flag was changed.
+
+- **REAL-MONEY READINESS AUDIT: NO-GO; LOCAL EVIDENCE HARDENING IS NOT DEPLOYED
+  (2026-08-15):** WeatherEdge has more than two months of project/paper journal
+  history, but the two current comparable paper ledgers have not each run for a
+  month. Live Stability began July 26 (about 20 days at this snapshot) and
+  Research ROI began August 1 (about 15 days). Live Stability held $1,047.81
+  realized equity, four open positions, no pending requests, and $1,048.11
+  marked equity. Research ROI held $1,002.78 realized equity, ten open
+  positions, one $89.88 pending reservation, and $1,021.93 marked equity.
+  These remain economically separate simulated ledgers and must never be added
+  into one bankroll or described as customer funds.
+
+  Production was clean and paper-only on `10b4844...`; all fourteen canonical
+  timers were enabled and active, twenty-nine canonical units matched their
+  templates, and the natural scheduler, forecast freshness, publication, and
+  disk checks passed. The only failed unit was retention pruning. The August
+  11--15 jobs each completed archive/upload/gate/foreign-key work and then hit
+  the one-hour prune timeout. On the two directly inspected incidents this
+  displaced 58 monitor/scan ticks in total. The database was about 17 GiB
+  (whole volume about 18.25 GiB), disk use was 45%, and core financial-table
+  quick checks plus the natural foreign-key audit passed. A whole-file forecast
+  database quick check was stopped after 30 seconds, so full-file integrity is
+  unproven, not known bad. The probable prune causes are a non-enforced
+  per-batch deadline, a poor competing SQLite plan under stale statistics, and
+  insufficient phase instrumentation; do not mask this with a larger service
+  timeout.
+
+  The fresh public wrapper still reported `REPLAY_REQUIRED` (8/12, 17/30 days,
+  0.210 calibration gap versus the 0.100 ceiling), but its inner analysis was
+  generated August 11 and was about five days old. The watchdog checked only
+  the fresh wrapper timestamp, so those numbers are a stale snapshot rather
+  than current readiness proof. The prior replay also mixed policy eras and
+  calculated economics from partially observed target days: only six dates
+  were wholly qualified while favorable P&L/CI metrics used seventeen. Local
+  code now fails stale inner analysis closed, qualifies whole weather days,
+  requires exact per-series policy fingerprints, rejects mixed eras, and
+  explicitly blocks promotion because those fingerprints still omit immutable
+  model/source/training/calibration lineage. A recurring full-analysis producer
+  does not yet exist, so the new 36-hour freshness gate will eventually become
+  `ANALYSIS_STALE` until that producer is added.
+
+  Local, undeployed hardening also corrected observation-versus-final settlement
+  authority, future-dated forecast acceptance, multi-city failure propagation,
+  all-skip false success, NO-side bound math, live-ledger scoping, seven-day P&L
+  window inconsistencies, private-key hygiene, invalid live intent/aggregate
+  batch risk, zero-depth taker fills, and maker TTL/tape reconciliation. Maker
+  expiry now reconciles before cancellation, retains a five-minute ingestion
+  grace and per-ticker watermark, rejects malformed/wrong-ticker/out-of-window
+  payloads, preserves coverage through settlement/partial close, and replays
+  late pre-TTL tape. The fixed five-minute grace is provisional: production lag
+  telemetry and periodic terminal-ticker backfill are still required before its
+  zero-fill evidence can support real money. A maker root closed directly after
+  a partial fill also has no durable post-close reconciliation queue today; the
+  stricter restatement correctly excludes it instead of inventing completeness.
+
+  Real-money execution remains structurally unavailable. There is no signed
+  authenticated client, persisted client/exchange/fill ID state machine,
+  timeout-after-accept recovery, restart reconciliation, private user stream,
+  exchange-authoritative balance/position/settlement comparison, atomic
+  pending-risk reservation, sticky kill/cancel-all path, credential-isolated
+  executor, canary/deploy/incident runbook, or send-time quote/market/clock/
+  tick/depth revalidation. The valid enabled + non-dry `PILOT_READY` test still
+  stops at `authenticated live order client is not implemented`. Do not add an
+  API key or enable production writes until the demo fault/chaos suite,
+  reconciliation, kill drills, current-policy complete-day evidence, model
+  lineage, calibration, and operational blockers all pass.
+
+  The undeployed future-live policy no longer embeds one universal $50 ceiling.
+  Its defaults now resolve from a deliberately isolated $1,000 risk bankroll:
+  1% per order ($10), 2% daily loss ($20), and 5% total pilot loss ($50).
+  Capital and percentages are operator-configurable, explicit dollar overrides
+  remain backward compatible, contradictory/nonfinite/blank configuration
+  fails closed, and the guarded host migration changes only the historical
+  exact $50/$20/$10 defaults. These controls do not enable live execution.
+
+  Fresh local verification after the audit: **2,721 Python tests passed, 8
+  skipped**; **166 frontend tests passed across 38 files**; the production SPA
+  build, Python compilation, changed-shell syntax, and diff checks passed.
+  Frontend lint exited successfully with two pre-existing Fast Refresh warnings
+  in `CityGrid.tsx`. No production service, timer, database, order, ledger,
+  credential, execution flag, or policy was mutated, and these local changes
+  were not deployed.
 
 - **APPLE WEATHERKIT SOURCE DEPLOYED AND ACTIVE AT ZERO TRADING WEIGHT
   (2026-08-10, PR #93):** runtime revision

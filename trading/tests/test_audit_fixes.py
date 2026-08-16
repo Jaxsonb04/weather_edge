@@ -305,6 +305,46 @@ def test_paper_equity_tracks_realized_pnl_and_sizing_flag():
         assert abs(_sizing_bankroll(store, equity_cfg, None) - equity) < 1e-9
 
 
+def test_live_sizing_bankroll_excludes_archived_shared_account_pnl():
+    from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID, SHARED_ACCOUNT_ID
+    from sfo_kalshi_quant.cli import _sizing_bankroll
+    from sfo_kalshi_quant.config import StrategyConfig
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        live_id = store.record_paper_order(
+            "2026-06-12",
+            _yes_decision("KXHIGHTSFO-LIVE-B75.5"),
+            risk_profile="live",
+        )
+        legacy_id = store.record_paper_order(
+            "2026-06-12",
+            _yes_decision("KXHIGHTSFO-LEGACY-B76.5"),
+            risk_profile="live",
+        )
+        store.close_paper_order(live_id, 0.20)
+        store.close_paper_order(legacy_id, 0.90)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET account_id=? WHERE id=?",
+                (SHARED_ACCOUNT_ID, legacy_id),
+            )
+
+        expected = store.paper_equity(
+            1000.0,
+            risk_profile="live",
+            account_id=LIVE_STABILITY_ACCOUNT_ID,
+        )
+        contaminated = store.paper_equity(1000.0, risk_profile="live")
+
+        assert contaminated != expected
+        assert _sizing_bankroll(
+            store,
+            StrategyConfig(size_against_live_equity=True),
+            "live",
+        ) == expected
+
+
 def test_resting_limit_order_expires_at_settlement():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"

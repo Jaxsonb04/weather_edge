@@ -243,7 +243,12 @@ class ResidualCalibrator:
         # when the conditional window was sparse, weakening the edge_lcb gate
         # that is the primary real-money defense. Cap the SE sample size at the
         # conditional support so the band widens when conditioning is thin.
-        se_sample_n = min(cond.n, effective_n)
+        conditional_support = (
+            min(cond.n, self.config.min_conditional_samples)
+            if cond is glob
+            else cond.n
+        )
+        se_sample_n = min(conditional_support, effective_n)
         model_risk_penalty = min(0.08, max(0.0, source_spread_f - 3.0) * 0.0075)
         residual_by_ticker = {market.ticker: p for market, p, _, _ in residual_probs}
         for market, model_p, p_emp, p_norm, ensemble_p in weather_probs:
@@ -272,14 +277,14 @@ class ResidualCalibrator:
                 )
             p = max(0.0, min(1.0, p))
             standard_error = math.sqrt(max(0.0, p * (1.0 - p)) / max(1.0, se_sample_n))
-            lower_confidence = max(
-                0.0,
-                p
-                - self.config.confidence_z * standard_error
-                - model_risk_penalty
-                - disagreement_penalty
-                - ensemble_disagreement_penalty,
+            confidence_deduction = (
+                self.config.confidence_z * standard_error
+                + model_risk_penalty
+                + disagreement_penalty
+                + ensemble_disagreement_penalty
             )
+            lower_confidence = max(0.0, p - confidence_deduction)
+            upper_confidence = min(1.0, p + confidence_deduction)
             results[market.ticker] = BucketProbability(
                 ticker=market.ticker,
                 label=market.yes_sub_title,
@@ -288,6 +293,7 @@ class ResidualCalibrator:
                 empirical_probability=p_emp,
                 normal_probability=p_norm,
                 effective_n=effective_n,
+                upper_confidence=upper_confidence,
                 residual_probability=residual_p,
                 ensemble_probability=ensemble_p,
                 model_probability=model_p,

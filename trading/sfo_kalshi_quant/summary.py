@@ -212,22 +212,20 @@ def build_paper_summary(
         day["forecast_error_f"] = forecast["error"] if forecast else None
         days_out.append(day)
 
-    window_terminal_rows = [
-        order
-        for order in terminal_rows
-        if (
-            resolved := order["latest_resolved_at"]
-            or order["closed_at"]
-            or order["settled_at"]
-        )
-        is not None
-        and _local_day(resolved) >= window_start.isoformat()
-    ]
+    window_day_keys = set(day_keys)
+    window_terminal_rows = _window_scoped_position_rows(
+        terminal_positions,
+        window_day_keys,
+    )
+    window_learning_rows = _window_scoped_position_rows(
+        valid_positions,
+        window_day_keys,
+    )
     window_resolved_lots = [
         order
         for order in resolved_lots
         if (resolved := order["closed_at"] or order["settled_at"]) is not None
-        and _local_day(resolved) >= window_start.isoformat()
+        and _local_day(resolved) in window_day_keys
     ]
     window_pnl = sum(order["realized_pnl"] for order in window_resolved_lots)
     window_spend = sum(
@@ -321,14 +319,14 @@ def build_paper_summary(
         "biggest_winners": [
             _order_brief(order)
             for order in ranked[:3]
-            if order["logical_outcome"] == "win"
+            if order["realized_pnl"] > 0
         ],
         "biggest_losers": [
             _order_brief(order)
             for order in sorted(
                 window_terminal_rows, key=lambda order: order["realized_pnl"]
             )[:3]
-            if order["logical_outcome"] == "loss"
+            if order["realized_pnl"] < 0
         ],
         "gate_behavior": decision_stats["gate_behavior"],
         "model_vs_market": decision_stats["model_vs_market"],
@@ -354,7 +352,7 @@ def build_paper_summary(
             ),
         },
         "learnings": _learnings(
-            window_terminal_rows, decision_stats, forecast_abs_errors
+            window_learning_rows, decision_stats, forecast_abs_errors
         ),
         "profile_eras": _profile_era_summaries(
             valid_position_rows=valid_position_rows,
@@ -1154,7 +1152,7 @@ def _learnings(
             cheap_wins = sum(1 for order in cheap if order["realized_pnl"] > 0)
             cheap_p = sum(order["probability"] for order in cheap) / len(cheap)
             notes.append(
-                f"Sub-5c entries: {cheap_wins}/{len(cheap)} won vs an average modeled "
+                f"Sub-5c entries: {cheap_wins}/{len(cheap)} net positive vs an average modeled "
                 f"probability of {cheap_p:.1%}. Tail probabilities remain the main "
                 "calibration risk; the edge_lcb >= 0 gate exists to filter these."
             )
@@ -1174,7 +1172,8 @@ def _learnings(
         for side, pnls in sorted(by_side.items()):
             wins = sum(1 for value in pnls if value > 0)
             notes.append(
-                f"{side} side: {wins}/{len(pnls)} won, net ${sum(pnls):+.2f} this window."
+                f"{side} side: {wins}/{len(pnls)} net positive, "
+                f"net ${sum(pnls):+.2f} this window."
             )
         by_profile: dict[str, list[float]] = {}
         for order in resolved:
@@ -1183,7 +1182,10 @@ def _learnings(
             parts = []
             for profile, pnls in sorted(by_profile.items()):
                 wins = sum(1 for value in pnls if value > 0)
-                parts.append(f"{profile} {wins}/{len(pnls)} won (${sum(pnls):+.2f})")
+                parts.append(
+                    f"{profile} {wins}/{len(pnls)} net positive "
+                    f"(${sum(pnls):+.2f})"
+                )
             notes.append(
                 "Profile split: " + "; ".join(parts) + ". Judge each gate set on its "
                 "own book; research-profile losses are expected data-collection cost."
@@ -1201,6 +1203,36 @@ def _learnings(
     if not notes:
         notes.append("No resolved trades in this window yet; gates are collecting decision snapshots only.")
     return notes
+
+
+def _window_scoped_position_rows(
+    positions: list[Any],
+    window_day_keys: set[str],
+) -> list[dict[str, Any]]:
+    """Project one row per position using only lots resolved in the window."""
+
+    rows: list[dict[str, Any]] = []
+    for position in positions:
+        lots = []
+        for lot in position.resolved_lots:
+            resolved_at = lot.get("closed_at") or lot.get("settled_at")
+            if (
+                resolved_at is not None
+                and _local_day(resolved_at) in window_day_keys
+                and lot.get("realized_pnl") is not None
+            ):
+                lots.append(lot)
+        if not lots:
+            continue
+        row = position.as_row()
+        row["realized_pnl"] = sum(float(lot["realized_pnl"]) for lot in lots)
+        row["capital_resolved"] = sum(
+            float(lot["contracts"]) * float(lot["cost_per_contract"])
+            for lot in lots
+        )
+        row["resolved_lot_count"] = len(lots)
+        rows.append(row)
+    return rows
 
 
 def _recommended_changes(payload: dict[str, Any]) -> list[str]:

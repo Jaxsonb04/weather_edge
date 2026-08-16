@@ -4,6 +4,7 @@ on the favorite band, and the monitor fills crossed resting limits."""
 import io
 from contextlib import redirect_stdout
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -142,6 +143,10 @@ def test_monitor_fills_resting_limit_when_later_trade_clears_queue():
             "2026-07-08", decision, status="PAPER_LIMIT_RESTING", entry_mode="limit"
         )
         assert order_id is not None
+        order = store.paper_order(order_id)
+        trade_time = datetime.fromisoformat(str(order["created_at"])) + timedelta(
+            seconds=1
+        )
         crossed = _market(0.71, 0.72)
 
         with patch(
@@ -154,7 +159,7 @@ def test_monitor_fills_resting_limit_when_later_trade_clears_queue():
                     "yes_price_dollars": "0.72",
                     # Ask-side (NO) takers fill resting YES bids.
                     "taker_book_side": "ask",
-                    "created_time": "2099-07-08T12:00:00Z",
+                    "created_time": trade_time.isoformat(),
                 }]
             }
             client_cls.return_value.get_market.return_value = crossed
