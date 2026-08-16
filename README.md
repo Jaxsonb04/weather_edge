@@ -7,7 +7,8 @@ brackets — converting every candidate trade to fee-aware edge behind risk gate
 [**▶ Live dashboard**](https://jaxsonb04.github.io/weather_edge/) ·
 [Methodology](https://jaxsonb04.github.io/weather_edge/#/methodology) ·
 [Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) ·
-[Architecture](docs/architecture.md)
+[Architecture](docs/architecture.md) ·
+[Codebase walkthrough](docs/CODEBASE-WALKTHROUGH.md)
 
 [![Verify](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml/badge.svg)](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml)
 
