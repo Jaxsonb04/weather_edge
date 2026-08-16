@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import os
+from datetime import UTC, datetime
 from typing import Any
 
 from .._util import _env_float, _round, _to_float
@@ -8,10 +11,59 @@ from ..config import StrategyConfig
 from ..live_execution import LiveExecutionPolicy, readiness_status_from_checks
 
 
+MAX_READINESS_ANALYSIS_AGE_HOURS = 36.0
+
+
+def _stale_analysis_readiness(
+    analysis_generated_at: str,
+    *,
+    now: datetime,
+) -> dict[str, Any] | None:
+    try:
+        generated = datetime.fromisoformat(analysis_generated_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return {
+            "available": False,
+            "status": "ANALYSIS_STALE",
+            "status_reasons": ["historical analysis timestamp is unreadable"],
+            "reason": "historical analysis timestamp is unreadable",
+            "analysis_generated_at": analysis_generated_at,
+            "max_analysis_age_hours": MAX_READINESS_ANALYSIS_AGE_HOURS,
+        }
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    age_hours = (
+        now.astimezone(UTC) - generated.astimezone(UTC)
+    ).total_seconds() / 3600.0
+    if age_hours < -(5.0 / 60.0):
+        reason = "historical analysis timestamp is in the future"
+    elif age_hours > MAX_READINESS_ANALYSIS_AGE_HOURS:
+        reason = (
+            f"historical analysis is stale ({age_hours:.1f}h old; "
+            f"max {MAX_READINESS_ANALYSIS_AGE_HOURS:.1f}h)"
+        )
+    else:
+        return None
+    return {
+        "available": False,
+        "status": "ANALYSIS_STALE",
+        "status_reasons": [reason],
+        "reason": reason,
+        "analysis_generated_at": analysis_generated_at,
+        "analysis_age_hours": round(age_hours, 2),
+        "max_analysis_age_hours": MAX_READINESS_ANALYSIS_AGE_HOURS,
+    }
+
+
 def _real_money_readiness_payload(
     config_rescore: dict[str, Any],
     active_calibration: dict[str, Any],
     chronological_replay: dict[str, Any] | None = None,
+    *,
+    analysis_generated_at: str | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Single go/no-go gauge for promoting the LIVE profile to real money.
 
@@ -20,6 +72,14 @@ def _real_money_readiness_payload(
     per-check breakdown. Judges ONLY the live (real-money-intent) profile; the
     research collector is never promoted. Diagnostic only.
     """
+
+    if analysis_generated_at is not None:
+        stale = _stale_analysis_readiness(
+            analysis_generated_at,
+            now=now or datetime.now(UTC),
+        )
+        if stale is not None:
+            return stale
 
     if not config_rescore.get("available"):
         return {
@@ -68,6 +128,9 @@ def _real_money_readiness_payload(
     live_rescore["promotion_block_reason"] = "; ".join(
         str(reason) for reason in replay.get("promotion_block_reasons") or []
     )
+    evidence_boundary = replay.get("evidence_boundary") or replay.get(
+        "semantics_boundary"
+    )
     readiness = compute_real_money_readiness(
         live_rescore,
         calibration_cohort_brier=cohort_brier or None,
@@ -75,10 +138,22 @@ def _real_money_readiness_payload(
         max_abs_calibration_gap=max_gap,
     )
     for check in readiness.get("checks", []):
-        check["evidence_boundary"] = replay.get("semantics_boundary")
+        check["evidence_boundary"] = evidence_boundary
         check["source_cohort"] = live_rescore.get("source_cohort")
     policy = LiveExecutionPolicy.from_env()
+    pilot_pnl_raw = os.getenv("SFO_LIVE_REALIZED_PILOT_PNL")
     pilot_pnl_value = _env_float("SFO_LIVE_REALIZED_PILOT_PNL")
+    if pilot_pnl_raw is not None and (
+        pilot_pnl_value is None or not math.isfinite(pilot_pnl_value)
+    ):
+        reason = "configured live pilot PnL is invalid"
+        return {
+            "available": False,
+            "profile": "live",
+            "status": "NOT_READY",
+            "status_reasons": [reason],
+            "reason": reason,
+        }
     pilot_pnl = pilot_pnl_value if pilot_pnl_value is not None else 0.0
     failed = [
         str(check.get("label") or check.get("name"))
@@ -95,7 +170,7 @@ def _real_money_readiness_payload(
     return {
         "available": True,
         "profile": "live",
-        "evidence_boundary": replay.get("semantics_boundary"),
+        "evidence_boundary": evidence_boundary,
         "post_boundary_settlement_days": replay.get("post_boundary_days", 0),
         "evidence_scope": replay.get("evidence_scope"),
         "source_cohort": live_rescore.get("source_cohort"),
@@ -110,6 +185,10 @@ def _real_money_readiness_payload(
         "live_policy": {
             "enabled": policy.enabled,
             "dry_run": policy.dry_run,
+            "risk_capital": policy.risk_capital,
+            "pilot_max_loss_pct": policy.pilot_max_loss / policy.risk_capital,
+            "daily_loss_pct": policy.daily_loss / policy.risk_capital,
+            "per_trade_risk_pct": policy.per_trade_risk / policy.risk_capital,
             "pilot_max_loss": policy.pilot_max_loss,
             "daily_loss": policy.daily_loss,
             "per_trade_risk": policy.per_trade_risk,

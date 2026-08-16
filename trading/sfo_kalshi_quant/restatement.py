@@ -65,6 +65,7 @@ from .maker_fills import (
     allocate_maker_fills,
     apply_volume_claims,
     depth_observation_is_contemporaneous,
+    maker_tape_reconciliation_covers_expiry,
     normalize_public_trade,
     uses_current_maker_semantics,
 )
@@ -214,25 +215,58 @@ def _order_active_until(
         closed_at = _parse_replay_time(_row_value(row, "closed_at"))
         if closed_at is None:
             return None, "EXEC_V4_ORDER_CLOSED_AT_INVALID"
-        if cancelled_at is None:
-            return closed_at, None
-        cancelled = _parse_replay_time(cancelled_at)
-        if cancelled is None:
-            return None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID"
-        return min(cancelled, closed_at), None
+        terminal_candidates = [closed_at]
+        if cancelled_at is not None:
+            cancelled = _parse_replay_time(cancelled_at)
+            if cancelled is None:
+                return None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID"
+            terminal_candidates.append(cancelled)
+            requested = _finite_number(
+                _row_value(row, "requested_contracts"), minimum=0
+            )
+            filled = _finite_number(
+                _row_value(row, "filled_contracts"), minimum=0
+            )
+            if (
+                requested not in {None, 0.0}
+                and filled is not None
+                and filled < requested
+                and _row_value(row, "expires_at") is not None
+            ):
+                expires_at = _parse_replay_time(_row_value(row, "expires_at"))
+                if expires_at is None:
+                    return None, "EXEC_V4_ORDER_EXPIRES_AT_INVALID"
+                terminal_candidates.append(expires_at)
+        return min(terminal_candidates), None
     if cancelled_at is not None or status in {
         "PAPER_CANCELLED",
         "PAPER_EXPIRED",
         "PAPER_PARTIAL_EXPIRED",
     }:
-        parsed = _parse_replay_time(cancelled_at)
-        if parsed is None:
+        cancelled = _parse_replay_time(cancelled_at)
+        if cancelled is None:
             return None, "EXEC_V4_ORDER_CANCELLED_AT_INVALID"
-        if status in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}:
+        requested = _finite_number(
+            _row_value(row, "requested_contracts"), minimum=0
+        )
+        filled = _finite_number(_row_value(row, "filled_contracts"), minimum=0)
+        cancelled_remainder = (
+            requested not in {None, 0.0}
+            and filled is not None
+            and filled < requested
+        )
+        if status in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"} or (
+            cancelled_remainder and _row_value(row, "expires_at") is not None
+        ):
             expires_at = _parse_replay_time(_row_value(row, "expires_at"))
             if expires_at is None:
                 return None, "EXEC_V4_ORDER_EXPIRES_AT_INVALID"
-        return parsed, None
+            # Production allocation never consumes tape after the configured
+            # TTL.  Cancellation can happen later (for example after the
+            # ingestion grace), and settlement can hide the prior expired
+            # status, so replay uses the same earliest terminal instant.
+            return min(cancelled, expires_at), None
+        return cancelled, None
     return None, None
 
 
@@ -646,11 +680,10 @@ def _exec_v4_replay_findings(
                 tape_invalid = True
                 continue
             normalized_trades.append(trade)
-        if tape_invalid or not normalized_trades:
+        if tape_invalid:
             for order_id in candidate_ids:
                 _append_finding(findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE")
-            if tape_invalid:
-                continue
+            continue
 
         if isolation == "capital":
             external_claims: dict[str, float] = defaultdict(float)
@@ -869,13 +902,15 @@ def _entry_findings(
     status = str(row["status"])
     entry_mode = str(row["entry_mode"] or "market")
     fill_model = str(row["fill_model"] or "")
-    if status in ("PAPER_LIMIT_RESTING", "PAPER_EXPIRED", "PAPER_CANCELLED"):
+    model = str(evidence.get("model") or "")
+    if status in ("PAPER_LIMIT_RESTING", "PAPER_CANCELLED"):
         return []  # never filled -> no entry evidence needed
+    if status == "PAPER_EXPIRED" and model != "maker_allocator_price_time_v4":
+        return []  # legacy zero-fill rows have no replayable tape contract
     if entry_mode != "limit" or fill_model == "immediate_visible_quote":
         if str(row["created_at"] or "") < TAKER_SIZING_FIX_DATE:
             return ["TAKER_PRE_SIZING_FIX"]
         return []
-    model = str(evidence.get("model") or "")
     if model == "maker_allocator_price_time_v4":
         return list(current_findings or [])
     if model == "maker_allocator_price_time_v3":
@@ -1359,7 +1394,6 @@ def _logical_maker_authority_findings(
         != "maker_trade_through_required"
     ):
         findings.append("EXEC_V4_FILL_MODEL_MISMATCH")
-
     requested = _finite_number(root.get("requested_contracts"), minimum=0)
     filled = _finite_number(root.get("filled_contracts"), minimum=0)
     row_remaining = _finite_number(root.get("remaining_contracts"), minimum=0)
@@ -1402,6 +1436,29 @@ def _logical_maker_authority_findings(
             findings.append("EXEC_V4_REQUESTED_QUANTITY_BALANCE_MISMATCH")
         if not _close_number(requested, filled + authoritative_unfilled):
             findings.append("EXEC_V4_REQUESTED_QUANTITY_BALANCE_MISMATCH")
+
+    # A later close or settlement rewrites PAPER_PARTIAL_EXPIRED to a terminal
+    # position status, but it does not make the cancelled maker remainder
+    # observable.  Require a public-tape watermark whenever requested volume
+    # was cancelled, independent of the row's current status.  The quote stops
+    # at the earlier of its configured expiry and actual cancellation.
+    if (
+        requested not in {None, 0.0}
+        and filled is not None
+        and filled < requested
+        and root.get("cancelled_at") is not None
+    ):
+        cancelled_at = _parse_replay_time(root.get("cancelled_at"))
+        expires_at = _parse_replay_time(root.get("expires_at"))
+        terminal_candidates = [
+            value for value in (cancelled_at, expires_at) if value is not None
+        ]
+        active_terminal = min(terminal_candidates) if terminal_candidates else None
+        if not maker_tape_reconciliation_covers_expiry(
+            evidence.get("tape_reconciled_through"),
+            active_terminal,
+        ):
+            findings.append("EXEC_V4_TAPE_RECONCILIATION_INCOMPLETE")
 
     quote = _json_object(root.get("quote_snapshot_json"))
     entry_price = _finite_number(root.get("entry_price"), minimum=0, maximum=1)
@@ -1718,8 +1775,6 @@ def restate(db_path: Path) -> dict[str, Any]:
             continue
         findings: list[str] = []
         order_allocations = allocations_by_order.get(order_id, [])
-        if not order_allocations:
-            findings.append("EXEC_V4_ALLOCATION_MISSING")
         expected_fill = _finite_number(
             row["filled_contracts"]
             if "filled_contracts" in row.keys() and row["filled_contracts"] is not None

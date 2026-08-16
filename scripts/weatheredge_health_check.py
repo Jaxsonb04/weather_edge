@@ -68,6 +68,10 @@ SECRET_FILE_NAMES = {".env", ".google_weather_usage.json"}
 SECRET_FILE_SUFFIXES = (".pem", ".key", ".p8")
 
 SECRET_PATTERNS = (
+    (
+        "private key",
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    ),
     ("AWS access key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("GitHub token", re.compile(r"ghp_[A-Za-z0-9_]{36}")),
     ("AI API token", re.compile(r"sk-[A-Za-z0-9]{20,}")),

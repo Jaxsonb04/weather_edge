@@ -81,6 +81,8 @@ def test_normalize_refuses_unprovable_trades() -> None:
     assert normalize_public_trade({**base, "count_fp": "0"}) is None
     assert normalize_public_trade({**base, "yes_price_dollars": "1.50"}) is None
     assert normalize_public_trade({**base, "is_block_trade": True}) is None
+    assert normalize_public_trade({**base, "is_block_trade": 1}) is None
+    assert normalize_public_trade({**base, "is_block_trade": "true"}) is None
     assert normalize_public_trade({**base, "created_time": "not-a-time"}) is None
 
 

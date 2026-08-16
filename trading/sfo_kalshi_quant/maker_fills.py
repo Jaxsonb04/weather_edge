@@ -18,7 +18,7 @@ never be credited again by a later pass or a restart.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -35,6 +35,7 @@ MakerSide = Literal["YES", "NO"]
 #     before a below-bid order becomes fill-eligible.
 EXECUTION_MODEL_VERSION = "exec-v4-2026-07-17"
 EXIT_DEPTH_MAX_AGE_SECONDS = 120.0
+MAKER_TAPE_RECONCILIATION_GRACE_SECONDS = 300.0
 
 _MAKER_SIDE_BY_TAKER_BOOK_SIDE: dict[str, MakerSide] = {"bid": "NO", "ask": "YES"}
 _MAKER_SIDE_BY_TAKER_OUTCOME: dict[str, MakerSide] = {"yes": "NO", "no": "YES"}
@@ -94,6 +95,23 @@ def _parse_time(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def maker_tape_reconciliation_covers_expiry(
+    reconciled_through: object,
+    expires_at: object,
+    *,
+    grace_seconds: float = MAKER_TAPE_RECONCILIATION_GRACE_SECONDS,
+) -> bool:
+    """Whether public tape was queried beyond an order's ingestion grace."""
+
+    watermark = _parse_time(reconciled_through)
+    expiry = _parse_time(expires_at)
+    return (
+        watermark is not None
+        and expiry is not None
+        and watermark >= expiry + timedelta(seconds=grace_seconds)
+    )
 
 
 @dataclass(frozen=True)
@@ -191,7 +209,12 @@ def normalize_public_trade(payload: dict[str, object]) -> PublicAggressorTrade |
     never create a fill (audit stop condition: do not invent fills).
     """
 
-    if not isinstance(payload, dict) or payload.get("is_block_trade") is True:
+    if not isinstance(payload, dict):
+        return None
+    block_flag = payload.get("is_block_trade")
+    if block_flag is not None and not isinstance(block_flag, bool):
+        return None
+    if block_flag is True:
         return None
     trade_id = str(payload.get("trade_id") or "")
     created_at = _parse_time(payload.get("created_time"))

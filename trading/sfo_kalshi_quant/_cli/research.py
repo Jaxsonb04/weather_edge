@@ -129,7 +129,8 @@ def _print_report(report: dict, *, color: Color) -> None:
     print("")
     print(color.gray(kpi["label"]))
     print(
-        f"$50/day target: observed_days={kpi['observed_days']} "
+        f"${float(kpi['target_pnl']):,.2f}/day target: "
+        f"observed_days={kpi['observed_days']} "
         f"hit_rate={kpi['observed_hit_rate']!r} "
         f"mean_daily_pnl={kpi['observed_mean_daily_pnl']!r} "
         f"shortfall_vs_target={kpi['observed_shortfall_vs_target']!r}"

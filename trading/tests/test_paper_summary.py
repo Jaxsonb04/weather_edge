@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -480,6 +480,96 @@ def test_paper_summary_counts_three_close_lots_as_one_logical_position():
         assert days[second_close_date.isoformat()]["closed"] == 0
         assert days[final_close_date.isoformat()]["closed"] == 1
         assert days[final_close_date.isoformat()]["wins"] == 1
+
+
+def test_paper_summary_learnings_use_window_lots_once_per_logical_position():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        forecaster_root = Path(tmp) / "forecaster"
+        forecaster_root.mkdir()
+        local_now = _now_local()
+        before_window = local_now.date() - timedelta(days=2)
+        today = local_now.date()
+
+        live_root = store.record_paper_order(
+            today.isoformat(),
+            _decision("KXHIGHTPHX-WINDOW-LIVE-B110.5"),
+            risk_profile="live",
+        )
+        live_old_lot = store.close_paper_order(live_root, 0.70, max_quantity=2.0)
+        live_window_lot = store.close_paper_order(live_root, 0.50)
+
+        research_root = _seed_profile_order(
+            store,
+            today.isoformat(),
+            _decision("KXHIGHTPHX-WINDOW-RESEARCH-B112.5"),
+            risk_profile="research",
+            account_id=RESEARCH_ACCOUNT_ID,
+        )
+        research_window_lot = store.close_paper_order(
+            research_root,
+            0.10,
+            max_quantity=2.0,
+        )
+
+        def local_noon(day: date) -> str:
+            return datetime.combine(
+                day,
+                datetime.min.time(),
+                tzinfo=SFO_TZ,
+            ).replace(hour=12).isoformat()
+
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET closed_at=? WHERE id=?",
+                (local_noon(before_window), int(live_old_lot["id"])),
+            )
+            conn.executemany(
+                "UPDATE paper_orders SET closed_at=? WHERE id=?",
+                [
+                    (local_noon(today), int(live_window_lot["id"])),
+                    (local_noon(today), int(research_window_lot["id"])),
+                ],
+            )
+            live_window_pnl = float(
+                conn.execute(
+                    "SELECT realized_pnl FROM paper_orders WHERE id=?",
+                    (int(live_window_lot["id"]),),
+                ).fetchone()[0]
+            )
+            research_window_pnl = float(
+                conn.execute(
+                    "SELECT realized_pnl FROM paper_orders WHERE id=?",
+                    (int(research_window_lot["id"]),),
+                ).fetchone()[0]
+            )
+            live_lifetime_pnl = float(
+                conn.execute(
+                    "SELECT SUM(realized_pnl) FROM paper_orders "
+                    "WHERE id=? OR parent_order_id=?",
+                    (live_root, live_root),
+                ).fetchone()[0]
+            )
+
+        payload = build_paper_summary(
+            db_path=db_path,
+            forecaster_root=forecaster_root,
+            config=StrategyConfig(paper_bankroll=1000.0),
+            days=2,
+            now=local_now,
+        )
+
+        profile_note = next(
+            note for note in payload["learnings"] if note.startswith("Profile split:")
+        )
+        assert payload["totals"]["realized_pnl"] == round(
+            live_window_pnl + research_window_pnl,
+            2,
+        )
+        assert f"live 1/1 net positive (${live_window_pnl:+.2f})" in profile_note
+        assert f"research 0/1 net positive (${research_window_pnl:+.2f})" in profile_note
+        assert f"${live_lifetime_pnl:+.2f}" not in profile_note
 
 
 def test_paper_summary_keeps_partially_realized_open_root_undecided():

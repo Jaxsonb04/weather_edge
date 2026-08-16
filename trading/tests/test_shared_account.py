@@ -1,9 +1,10 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from sfo_kalshi_quant.account import strategy_fingerprint
-from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book
+from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book, main
 from sfo_kalshi_quant.colors import Color
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
@@ -138,12 +139,164 @@ def test_resting_ttl_releases_reservation() -> None:
         assert row["status"] == "PAPER_LIMIT_RESTING"
         assert row["expires_at"] is not None
 
-        future = (datetime.fromisoformat(row["expires_at"]) + timedelta(seconds=1)).isoformat()
-        assert store.expire_stale_resting_orders(now=future) == 1
+        future = (
+            datetime.fromisoformat(row["expires_at"]) + timedelta(minutes=5, seconds=1)
+        ).isoformat()
+        not_yet_reconciled = (
+            datetime.fromisoformat(row["expires_at"]) + timedelta(minutes=4, seconds=59)
+        ).isoformat()
+        fully_reconciled = (
+            datetime.fromisoformat(row["expires_at"]) + timedelta(minutes=5)
+        ).isoformat()
+        assert (
+            store.expire_stale_resting_orders(
+                now=future,
+                reconciled_through_by_ticker={
+                    str(row["market_ticker"]): not_yet_reconciled
+                },
+            )
+            == 0
+        )
+        assert store.paper_order(ids[0])["status"] == "PAPER_LIMIT_RESTING"
+        assert (
+            store.expire_stale_resting_orders(
+                now=future,
+                reconciled_through_by_ticker={
+                    str(row["market_ticker"]): fully_reconciled
+                },
+            )
+            == 1
+        )
         expired = store.paper_order(ids[0])
         assert expired["status"] == "PAPER_EXPIRED"
         assert expired["cancelled_at"] is not None
         assert store.live_account_state()["available_cash"] == 1000.0
+
+
+def test_monitor_applies_delayed_pre_expiry_tape_before_expiring_remainder() -> None:
+    """A late poll must preserve a trade that occurred while the order was live.
+
+    The monitor can first observe public tape after the local maker TTL.  It
+    must allocate only tape at or before the TTL, then cancel the unfilled
+    remainder; tape after the TTL is never eligible.
+    """
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        order_id = store.record_paper_order(
+            "2026-07-10",
+            _decision(recommended_contracts=10.0),
+            status="PAPER_LIMIT_RESTING",
+            entry_mode="limit",
+            strategy_config=StrategyConfig(),
+        )
+        assert order_id is not None
+        expires_at = datetime.now(UTC) - timedelta(minutes=6)
+        created_at = expires_at - timedelta(minutes=15)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET created_at=?, expires_at=?, "
+                "queue_remaining=0 WHERE id=?",
+                (created_at.isoformat(), expires_at.isoformat(), order_id),
+            )
+
+        class FailingClient:
+            def get_trades(self, **_kwargs):
+                raise OSError("public tape temporarily unavailable")
+
+        # A failed tape fetch cannot make the order terminal: that would erase
+        # any as-yet-unobserved trade from its final valid interval forever.
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", FailingClient):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+        assert store.paper_order(order_id)["status"] == "PAPER_LIMIT_RESTING"
+
+        class AmbiguousClient:
+            def get_trades(self, **_kwargs):
+                return {
+                    "trades": [
+                        {
+                            "trade_id": "AMBIGUOUS-PRE-TTL",
+                            "count_fp": "5.00",
+                            "yes_price_dollars": "0.29",
+                            # Missing aggressor direction: it might fill this
+                            # order, so the interval is not reconciled.
+                            "created_time": (
+                                expires_at - timedelta(seconds=1)
+                            ).isoformat(),
+                        }
+                    ],
+                    "cursor": "",
+                }
+
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", AmbiguousClient):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+        assert store.paper_order(order_id)["status"] == "PAPER_LIMIT_RESTING"
+
+        class WrongTickerClient:
+            def get_trades(self, **_kwargs):
+                return {
+                    "trades": [
+                        {
+                            "ticker": "KXHIGHTSEA-WRONG-MARKET",
+                            "trade_id": "WRONG-TICKER-PRE-TTL",
+                            "count_fp": "100.00",
+                            "yes_price_dollars": "0.29",
+                            "taker_book_side": "ask",
+                            "created_time": (
+                                expires_at - timedelta(seconds=1)
+                            ).isoformat(),
+                        }
+                    ],
+                    "cursor": "",
+                }
+
+        # A structurally valid trade from a different market must neither fill
+        # this order nor certify the requested market's tape interval.
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", WrongTickerClient):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+        row = store.paper_order(order_id)
+        assert row["status"] == "PAPER_LIMIT_RESTING"
+        assert row["filled_contracts"] == 0.0
+
+        class Client:
+            def get_trades(self, **_kwargs):
+                return {
+                    "trades": [
+                        {
+                            "trade_id": "PRE-TTL",
+                            "count_fp": "5.00",
+                            "yes_price_dollars": "0.29",
+                            "taker_book_side": "ask",
+                            "created_time": (
+                                expires_at - timedelta(seconds=1)
+                            ).isoformat(),
+                        },
+                        {
+                            "trade_id": "POST-TTL",
+                            "count_fp": "100.00",
+                            "yes_price_dollars": "0.29",
+                            "taker_book_side": "ask",
+                            "created_time": (
+                                expires_at + timedelta(seconds=1)
+                            ).isoformat(),
+                        },
+                    ],
+                    "cursor": "",
+                }
+
+            def get_market(self, _ticker):
+                raise OSError("monitor quote unavailable in focused test")
+
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", Client):
+            assert main(["--db-path", str(db_path), "--no-color", "paper-monitor"]) == 0
+
+        row = store.paper_order(order_id)
+        assert row["status"] == "PAPER_PARTIAL_EXPIRED"
+        assert row["filled_contracts"] == 5.0
+        assert row["remaining_contracts"] == 0.0
+        assert "PRE-TTL" in row["fill_evidence_json"]
+        assert "POST-TTL" not in row["fill_evidence_json"]
 
 
 def test_generic_research_position_fails_closed_after_cutover() -> None:

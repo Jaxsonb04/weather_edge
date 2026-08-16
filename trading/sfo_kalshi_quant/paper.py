@@ -1232,7 +1232,12 @@ def _clamp_to_displayed_ask(decision: TradeDecision) -> TradeDecision | None:
     """
 
     ask_size = float(decision.ask_size or 0.0)
-    if ask_size <= 0 or decision.recommended_contracts <= ask_size:
+    if ask_size <= 0:
+        # Runtime decisions carry entry_ask_size explicitly.  A zero there is
+        # observed zero liquidity, not an unknown legacy field, and an
+        # immediate paper fill would invent executable volume.
+        return None if decision.entry_ask_size is not None else decision
+    if decision.recommended_contracts <= ask_size:
         return decision
     contracts = float(int(ask_size))
     if contracts <= 0:

@@ -76,6 +76,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
   sudo install -m 600 "$SCRIPT_DIR/sfo-weather.env.example" "$ENV_FILE"
   echo "created $ENV_FILE"
 fi
+sudo install -d -m 755 /usr/local/libexec/weatheredge
+sudo install -m 755 "$SCRIPT_DIR/migrate_weatheredge_env.py" "/usr/local/libexec/weatheredge/migrate_weatheredge_env.py"
 
 # Migrate only the superseded publication defaults. Preserve any operator-set
 # custom thresholds rather than replacing the environment file wholesale.
@@ -94,6 +96,7 @@ if sudo grep -qx "SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=180" "$ENV_FILE"; th
     "s/^SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=180$/SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS=420/" \
     "$ENV_FILE"
 fi
+sudo /usr/bin/python3 -I "/usr/local/libexec/weatheredge/migrate_weatheredge_env.py" "$ENV_FILE"
 
 render_unit() {
   local src="$1"
@@ -124,7 +127,6 @@ render_unit "$SCRIPT_DIR/systemd/sfo-scheduler-health.service.in" /etc/systemd/s
 render_unit "$SCRIPT_DIR/systemd/sfo-alert@.service.in" /etc/systemd/system/sfo-alert@.service
 
 chmod +x "$SCRIPT_DIR/check_forecast_db_freshness.sh" "$SCRIPT_DIR/wait_for_publication_manifest.sh" "$SCRIPT_DIR/send_systemd_failure_alert.sh" 2>/dev/null || true
-sudo install -d -m 755 /usr/local/libexec/weatheredge
 sudo install -m 755 "$SCRIPT_DIR/check_scheduler_health.sh" /usr/local/libexec/weatheredge/check_scheduler_health.sh
 sudo install -m 755 "$SCRIPT_DIR/verify_systemd_unit_integrity.sh" /usr/local/libexec/weatheredge/verify_systemd_unit_integrity.sh
 

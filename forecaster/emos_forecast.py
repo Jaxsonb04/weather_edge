@@ -483,8 +483,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"live EMOS rolling summary: served={served} targets={total_targets} "
                 f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1}"
             )
-        # Fail loud only when an explicit single --serve produced nothing.
-        if args.serve and not args.serve_rolling and served == 0:
+        # A scheduled serve is only healthy when every requested city/target
+        # was refreshed. Partial coverage is still a forecast outage: a single
+        # successful row must not hide dozens of missing live distributions.
+        if (args.serve or args.serve_rolling) and served != total_targets:
             return 1
     return 0
 

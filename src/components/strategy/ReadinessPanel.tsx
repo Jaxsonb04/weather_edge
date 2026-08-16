@@ -19,6 +19,15 @@ const hasPublishedStatus = (r: RealMoneyReadiness) =>
 const statusText = (r: RealMoneyReadiness) =>
   (r.status ?? r.verdict ?? "").replace(/_/g, " ").trim() || "STATUS UNPUBLISHED";
 
+const riskLimit = (dollars?: number, fraction?: number) => {
+  const amount = money(dollars, { sign: "negative-only" });
+  if (fraction == null || !Number.isFinite(fraction)) return amount;
+  return `${amount} · ${new Intl.NumberFormat("en-US", {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(fraction)}`;
+};
+
 /** Degraded verdict: the published status carried unchanged, with the reasons
     the runtime gave, and no invented check count. */
 function DeferredVerdict({ r, compact = false }: { r: RealMoneyReadiness; compact?: boolean }) {
@@ -176,12 +185,17 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
               <div className="grid grid-cols-2 gap-4">
                 <Stat label="Live orders" value={policy.enabled ? "Enabled" : "Disabled"} tone={policy.enabled ? "pos" : "default"} />
                 <Stat label="Dry run" value={policy.dry_run ? "On" : "Off"} />
-                <Stat label="Per-trade risk" value={money(policy.per_trade_risk, { sign: "negative-only" })} />
-                <Stat label="Daily loss cap" value={money(policy.daily_loss, { sign: "negative-only" })} />
+                {policy.risk_capital != null && (
+                  <Stat label="Risk capital" value={money(policy.risk_capital, { sign: "negative-only" })} />
+                )}
+                <Stat label="Per-order risk" value={riskLimit(policy.per_trade_risk, policy.per_trade_risk_pct)} />
+                <Stat label="Daily loss cap" value={riskLimit(policy.daily_loss, policy.daily_loss_pct)} />
               </div>
               {r.pilot_loss_remaining != null && policy.pilot_max_loss != null && (
                 <p className="mt-2 text-xs text-muted">
-                  Pilot kill-switch: hard stop after {money(policy.pilot_max_loss, { sign: "negative-only" })} of losses ({money(r.pilot_loss_remaining, { sign: "negative-only" })} remaining).
+                  Pilot kill-switch: {policy.pilot_max_loss_pct != null
+                    ? `${new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(policy.pilot_max_loss_pct)} of the configured risk capital (${money(policy.pilot_max_loss, { sign: "negative-only" })})`
+                    : `${money(policy.pilot_max_loss, { sign: "negative-only" })} of losses`} ({money(r.pilot_loss_remaining, { sign: "negative-only" })} remaining).
                 </p>
               )}
             </div>

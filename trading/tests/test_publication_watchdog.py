@@ -30,10 +30,16 @@ def _fresh_root(
     signal_minutes: int | None = None,
     cities_minutes: int | None = None,
     strategy_minutes: int = 1,
+    strategy_analysis_minutes: int | None = None,
 ) -> Path:
     now = datetime.now(timezone.utc)
     signal_age = operational_minutes if signal_minutes is None else signal_minutes
     cities_age = operational_minutes if cities_minutes is None else cities_minutes
+    strategy_analysis_age = (
+        strategy_minutes
+        if strategy_analysis_minutes is None
+        else strategy_analysis_minutes
+    )
     root = parent / "forecaster"
     root.mkdir()
     (root / "weather.db").write_bytes(b"sqlite-placeholder")
@@ -52,6 +58,9 @@ def _fresh_root(
         {
             "available": True,
             "generated_at": _iso(now - timedelta(minutes=strategy_minutes)),
+            "analysis_generated_at": _iso(
+                now - timedelta(minutes=strategy_analysis_age)
+            ),
         },
     )
     build_manifest(root, now=now)
@@ -77,6 +86,7 @@ def _run(
         "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES": "10",
         "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES": "10",
         "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES": "20",
+        "SFO_PUBLICATION_MAX_STRATEGY_ANALYSIS_AGE_MINUTES": "2160",
         "SFO_PUBLICATION_MANIFEST_URL": public_url,
         "SFO_PUBLISH_PAGES": "1" if publish_pages else "0",
         "SFO_FRESHNESS_ALERT_URL": "",
@@ -100,6 +110,20 @@ def test_watchdog_accepts_fresh_database_and_publication_manifest():
     assert result.returncode == 0, result.stderr
     assert "publication manifest valid" in result.stdout
     assert "forecast DB fresh" in result.stdout
+
+
+def test_operational_watchdog_does_not_treat_offline_analysis_age_as_repairable():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fresh_root(
+            Path(tmp),
+            strategy_minutes=1,
+            strategy_analysis_minutes=2161,
+        )
+
+        result = _run(root)
+
+    assert result.returncode == 0, result.stderr
+    assert "analysis is stale" not in result.stderr
 
 
 def test_watchdog_requires_public_manifest_url_when_pages_publishing_is_enabled():

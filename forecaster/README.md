@@ -96,15 +96,19 @@ NWS, Open-Meteo, and airport-observation context for the blend, archives the
 current cache if needed, and updates benchmark scores for old forecasts whose
 actual SFO high is now present in the historical table.
 
-Ground truth comes from live NWS KSFO observations:
+Intraday context and final settlement truth are intentionally separate:
 
 - `nws_station_observations`: archived observed temperatures from the official
   NWS station feed.
-- `nws_daily_high_ground_truth`: current high-so-far for today and final daily
-  highs for completed NWS/Kalshi local-standard report days.
+- `nws_daily_high_ground_truth`: observation-derived high-so-far. These rows
+  remain nonfinal even after the calendar day ends; elapsed time alone cannot
+  prove that late or corrected observations are complete.
+- `cli_settlements`: final NWS Climatological Report (Daily) highs, keyed by
+  settlement station and local-standard date. Only `is_final = 1` rows may
+  supply exact settlement truth.
 
-Forecast scoring prefers `nws_daily_high_ground_truth` once a local day is
-complete, then falls back to the historical NOAA table when needed.
+Forecast scoring and exact intraday finality prefer final `cli_settlements`,
+then use the historical NOAA table where that workflow explicitly permits it.
 
 The dashboard reports the blended forecast archive as a clean next-day track
 record. The headline score uses the last eligible archived snapshot from the
@@ -344,8 +348,9 @@ sqlite3 weather.db "SELECT target_date, predicted_high_f, actual_high_f, abs_err
 sqlite3 weather.db "SELECT target_date, predicted_high_f, actual_high_f, abs_error_f, calls_used_today FROM forecast_blend_daily_high ORDER BY fetched_at DESC;"
 ```
 
-To inspect the official high-so-far / completed daily highs:
+To inspect the nonfinal observed high-so-far and final CLI truth separately:
 
 ```bash
 sqlite3 weather.db "SELECT local_date, high_f, is_complete FROM nws_daily_high_ground_truth ORDER BY local_date DESC;"
+sqlite3 weather.db "SELECT local_date, max_temperature_f, is_final FROM cli_settlements WHERE station_id='KSFO' ORDER BY local_date DESC;"
 ```

@@ -151,3 +151,24 @@ def load_cli_settlement_truth(conn) -> dict[SettlementKey, float]:
             continue
         truth[(city.series_ticker, str(local_date))] = float(high)
     return truth
+
+
+def load_final_cli_high_for_station_date(
+    conn,
+    *,
+    station_id: str,
+    local_date: object,
+) -> float | None:
+    """Load one final CLI value by primary key; legacy schemas fail closed."""
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cli_settlements)")}
+    if "is_final" not in columns:
+        return None
+    target_iso = local_date.isoformat() if isinstance(local_date, date) else str(local_date)
+    row = conn.execute(
+        "SELECT max_temperature_f FROM cli_settlements "
+        "WHERE station_id = ? AND local_date = ? "
+        "AND max_temperature_f IS NOT NULL AND is_final = 1 LIMIT 1",
+        (str(station_id), target_iso),
+    ).fetchone()
+    return float(row[0]) if row is not None else None

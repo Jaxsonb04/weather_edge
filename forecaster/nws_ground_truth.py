@@ -206,8 +206,10 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
         """,
         (station_id, local_date),
     ).fetchall()
-    now_local_date = today_local_standard(tz=_station_tz(station_id)).isoformat()
-    is_complete = 1 if local_date < now_local_date else 0
+    # This table is derived from station observations, not the contract-linked
+    # NWS CLI report.  Calendar age cannot promote an observation maximum to
+    # exact settlement truth.
+    is_complete = 0
 
     if not rows:
         conn.execute(

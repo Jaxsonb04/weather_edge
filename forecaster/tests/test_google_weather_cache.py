@@ -285,6 +285,13 @@ def test_missing_key_cache_artifact_and_output_are_deterministic(
     )
 
 
+def test_multicity_main_propagates_baseline_failure_status(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["google_weather_cache.py", "--cities", "sfo"])
+    monkeypatch.setattr(gwc._multicity_refresh, "run_cli", lambda _cities: 1)
+
+    assert gwc.main() == 1
+
+
 def test_google_event_reservation_adjustment_is_exact(tmp_path, monkeypatch):
     monkeypatch.setattr(gwc, "USAGE_PATH", tmp_path / "usage.json")
     usage = {

@@ -331,6 +331,10 @@ export interface RealMoneyReadiness extends DeferrableSection {
   live_policy?: {
     enabled?: boolean;
     dry_run?: boolean;
+    risk_capital?: number;
+    pilot_max_loss_pct?: number;
+    daily_loss_pct?: number;
+    per_trade_risk_pct?: number;
     per_trade_risk?: number;
     daily_loss?: number;
     pilot_max_loss?: number;

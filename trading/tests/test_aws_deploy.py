@@ -7,9 +7,12 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from cities import CITIES, DEFAULT_CITY_SLUG
 from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.live_execution import LiveExecutionPolicy
 from sfo_kalshi_quant.models import TradeDecision
 
 
@@ -121,6 +124,182 @@ def test_installers_migrate_only_obsolete_publication_threshold_defaults():
         assert "cp " not in installer[installer.index("# Migrate only"):installer.index("render_unit()")]
 
 
+def test_env_migration_replaces_only_the_exact_legacy_live_risk_defaults(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / "weatheredge.env"
+    env_path.write_text(
+        "SFO_LIVE_TRADING_ENABLED=0\n"
+        "SFO_LIVE_TRADING_DRY_RUN=1\n"
+        "SFO_LIVE_PILOT_MAX_LOSS=50\n"
+        "SFO_LIVE_DAILY_LOSS=20\n"
+        "SFO_LIVE_PER_TRADE_RISK=10\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(AWS_DIR / "migrate_weatheredge_env.py"),
+            str(env_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "migrated legacy live risk defaults"
+    migrated = env_path.read_text(encoding="utf-8")
+    assert "SFO_LIVE_RISK_CAPITAL=1000" in migrated
+    assert "SFO_LIVE_PILOT_MAX_LOSS_PCT=0.05" in migrated
+    assert "SFO_LIVE_DAILY_LOSS_PCT=0.02" in migrated
+    assert "SFO_LIVE_PER_TRADE_RISK_PCT=0.01" in migrated
+    assert "SFO_LIVE_PILOT_MAX_LOSS=50" not in migrated
+    assert "SFO_LIVE_DAILY_LOSS=20" not in migrated
+    assert "SFO_LIVE_PER_TRADE_RISK=10" not in migrated
+    assert "SFO_LIVE_TRADING_ENABLED=0" in migrated
+    assert "SFO_LIVE_TRADING_DRY_RUN=1" in migrated
+
+
+def test_env_migration_preserves_custom_operator_live_risk_caps(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / "weatheredge.env"
+    original = (
+        "SFO_LIVE_TRADING_ENABLED=0\n"
+        "SFO_LIVE_TRADING_DRY_RUN=1\n"
+        "SFO_LIVE_PILOT_MAX_LOSS=75\n"
+        "SFO_LIVE_DAILY_LOSS=30\n"
+        "SFO_LIVE_PER_TRADE_RISK=12\n"
+    )
+    env_path.write_text(original, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(AWS_DIR / "migrate_weatheredge_env.py"),
+            str(env_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "live risk defaults unchanged"
+    assert env_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "original",
+    (
+        (
+            " SFO_LIVE_PILOT_MAX_LOSS=50\n"
+            "SFO_LIVE_DAILY_LOSS=20\n"
+            "SFO_LIVE_PER_TRADE_RISK=10\n"
+        ),
+        (
+            "SFO_LIVE_PILOT_MAX_LOSS=50\n"
+            "SFO_LIVE_DAILY_LOSS=20\n"
+            "SFO_LIVE_PER_TRADE_RISK=10\n"
+            "SFO_LIVE_PILOT_MAX_LOSS=75\n"
+        ),
+        (
+            "SFO_LIVE_PILOT_MAX_LOSS=75\n"
+            "SFO_LIVE_PILOT_MAX_LOSS=50\n"
+            "SFO_LIVE_DAILY_LOSS=20\n"
+            "SFO_LIVE_PER_TRADE_RISK=10\n"
+        ),
+    ),
+)
+def test_env_migration_preserves_ambiguous_legacy_assignments(
+    tmp_path: Path,
+    original: str,
+) -> None:
+    env_path = tmp_path / "weatheredge.env"
+    env_path.write_text(original, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(AWS_DIR / "migrate_weatheredge_env.py"), str(env_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "live risk defaults unchanged"
+    assert env_path.read_text(encoding="utf-8") == original
+
+
+def test_installers_run_the_guarded_runtime_env_migration() -> None:
+    installed_helper = "/usr/local/libexec/weatheredge/migrate_weatheredge_env.py"
+    invocation = f'sudo /usr/bin/python3 -I "{installed_helper}" "$ENV_FILE"'
+    for name in ("install_systemd.sh", "install_systemd_notimers.sh"):
+        installer = _read(AWS_DIR / name)
+        assert (
+            'sudo install -m 755 "$SCRIPT_DIR/migrate_weatheredge_env.py" '
+            f'"{installed_helper}"'
+        ) in installer
+        assert invocation in installer
+        assert installer.index(invocation) < installer.index("render_unit()")
+        assert 'sudo "$TRADING_DIR/.venv/bin/python"' not in installer
+
+
+def test_live_risk_defaults_stay_aligned_across_runtime_example_and_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_path = tmp_path / "weatheredge.env"
+    env_path.write_text(
+        "SFO_LIVE_PILOT_MAX_LOSS=50\n"
+        "SFO_LIVE_DAILY_LOSS=20\n"
+        "SFO_LIVE_PER_TRADE_RISK=10\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [sys.executable, str(AWS_DIR / "migrate_weatheredge_env.py"), str(env_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    relative_keys = (
+        "SFO_LIVE_RISK_CAPITAL",
+        "SFO_LIVE_PILOT_MAX_LOSS_PCT",
+        "SFO_LIVE_DAILY_LOSS_PCT",
+        "SFO_LIVE_PER_TRADE_RISK_PCT",
+    )
+
+    def assignments(text: str) -> dict[str, str]:
+        return {
+            key: value
+            for line in text.splitlines()
+            if line and not line.startswith("#") and "=" in line
+            for key, value in [line.split("=", 1)]
+        }
+
+    migrated = assignments(env_path.read_text(encoding="utf-8"))
+    example = assignments(_read(AWS_DIR / "sfo-weather.env.example"))
+    assert {key: migrated[key] for key in relative_keys} == {
+        key: example[key] for key in relative_keys
+    }
+
+    for name in (
+        "SFO_LIVE_PILOT_MAX_LOSS",
+        "SFO_LIVE_DAILY_LOSS",
+        "SFO_LIVE_PER_TRADE_RISK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for key in relative_keys:
+        monkeypatch.setenv(key, migrated[key])
+
+    policy = LiveExecutionPolicy.from_env()
+    assert policy.pilot_max_loss == pytest.approx(50.0)
+    assert policy.daily_loss == pytest.approx(20.0)
+    assert policy.per_trade_risk == pytest.approx(10.0)
+
+
 def test_backup_provisioner_enforces_bucket_controls_and_least_privilege_prefixes():
     provisioner = _read(AWS_DIR / "provision_backup_bucket.sh")
 
@@ -167,6 +346,21 @@ def test_sfo_refresh_unit_uses_the_cities_sfo_orchestrator_not_legacy_flags():
     assert "google_weather_cache.py --cities sfo" in text
     assert "google_weather_cache.py --refresh" not in text
     assert text.count("google_weather_cache.py") == 1
+
+
+def test_google_refresh_units_do_not_hide_emos_baseline_failure():
+    for service_name in (
+        "sfo-forecaster-refresh.service.in",
+        "weatheredge-google-nonsfo-refresh.service.in",
+    ):
+        text = _read(AWS_DIR / "systemd" / service_name)
+        google_exec = next(
+            line
+            for line in text.splitlines()
+            if line.startswith("ExecStart=") and "google_weather_cache.py" in line
+        )
+
+        assert not google_exec.startswith("ExecStart=-")
 
 
 def test_sfo_refresh_unit_does_not_duplicate_the_emos_baseline_serve():
@@ -720,7 +914,11 @@ def test_only_dedicated_service_template_runs_paper_prune():
 
 def test_paper_prune_retention_is_explicit_in_canonical_environment():
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
+    wrapper = _read(AWS_DIR / "run_archive_then_prune.sh")
 
+    assert "SFO_PRUNE_MODE=archive-only" in example_env
+    assert 'PRUNE_MODE="${SFO_PRUNE_MODE:-archive-only}"' in wrapper
+    assert '[[ "$PRUNE_MODE" == "quiesced-delete" ]]' in wrapper
     assert "SFO_PRUNE_FULL_DAYS=1" in example_env
 
 
@@ -855,6 +1053,9 @@ def test_freshness_watchdog_configuration_documents_manifest_thresholds():
     assert "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES=10" in example_env
     assert "SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES=20" in example_env
     assert "SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES=20" in example_env
+    # Offline historical analysis fails closed inside Strategy Lab itself. The
+    # operational watchdog must not promise a fast repair it cannot perform.
+    assert "SFO_PUBLICATION_MAX_STRATEGY_ANALYSIS_AGE_MINUTES" not in example_env
     assert (
         "SFO_PUBLICATION_MANIFEST_URL="
         "https://jaxsonb04.github.io/weather_edge/publication_manifest.json"

@@ -1,5 +1,5 @@
 [Unit]
-Description=SFO paper decision-journal retention prune
+Description=SFO paper decision-journal archive and retention maintenance
 Wants=network-online.target
 After=network-online.target
 OnFailure=sfo-alert@%n.service
@@ -9,9 +9,9 @@ Type=oneshot
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
-# Keep the highest-volume table bounded: full fidelity for the last day,
-# per-day dedup back to 45 days, approved rows never deleted. The lossless
-# archive export gate runs first; a failed archive aborts before the prune.
+# Scheduled runs archive, verify, and FK-audit the journal. Live-DB deletion is
+# safe-off unless an operator explicitly selects quiesced-delete after stopping
+# journal writers; a failed archive always aborts before that optional path.
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_archive_then_prune.sh
 Nice=10
 # Contain a runaway process to this unit instead of letting the kernel

@@ -383,10 +383,12 @@ def _load_intraday_cases(
 # achieved or guaranteed when it was not.
 # ---------------------------------------------------------------------------
 
-RESEARCH_TARGET_KPI_LABEL = (
-    "$50/day is a hard research KPI for research-target -- it is OBSERVED, "
-    "never guaranteed. A missed day is recorded as a miss, not papered over."
-)
+def _research_target_kpi_label(target_pnl: float) -> str:
+    return (
+        f"${target_pnl:,.2f}/day is a hard research KPI for research-target -- "
+        "it is OBSERVED, never guaranteed. A missed day is recorded as a miss, "
+        "not papered over."
+    )
 
 
 def _research_kpi_payload(kpis: Any) -> dict[str, Any]:
@@ -505,7 +507,7 @@ def build_research_evaluation_report(run: EvaluationRun) -> dict[str, Any]:
             "live_activation_allowed": decision.live_activation_allowed,
         },
         "daily_target_kpi": {
-            "label": RESEARCH_TARGET_KPI_LABEL,
+            "label": _research_target_kpi_label(report.target_pnl),
             "target_pnl": report.target_pnl,
             "observed_days": observed_days,
             "observed_hit_rate": hit_rate,

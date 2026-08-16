@@ -557,6 +557,11 @@ def _enforce_live_forecast_freshness(forecast, config: StrategyConfig) -> None:
     age_hours = forecast.age_hours()
     if age_hours is None:
         raise ForecastDataError("forecast snapshot has no readable fetched_at timestamp")
+    if age_hours < -(5.0 / 60.0):
+        raise ForecastDataError(
+            f"forecast snapshot for {forecast.target_date.isoformat()} is in the future "
+            f"({-age_hours * 60.0:.1f}m ahead; maximum clock skew 5m)"
+        )
     if age_hours > config.max_forecast_age_hours:
         raise ForecastDataError(
             f"forecast snapshot for {forecast.target_date.isoformat()} is stale "

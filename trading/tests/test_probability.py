@@ -13,7 +13,7 @@ from sfo_kalshi_quant.probability import (
     _model_weight,
     _normalize_weather_probabilities,
 )
-from sfo_kalshi_quant.standard_bins import standard_sfo_bins
+from sfo_kalshi_quant.standard_bins import fallback_bins, standard_sfo_bins
 
 
 def _outcomes():
@@ -39,6 +39,44 @@ def test_bucket_probabilities_sum_to_one():
     total = sum(row.probability for row in probabilities.values())
     assert abs(total - 1.0) < 1e-9
     assert all(0.0 <= row.lower_confidence <= row.probability <= 1.0 for row in probabilities.values())
+    assert all(
+        row.upper_confidence is not None
+        and row.probability <= row.upper_confidence <= 1.0
+        for row in probabilities.values()
+    )
+
+
+def test_missing_conditional_analogue_cannot_narrow_confidence_band():
+    start = date(2025, 1, 1)
+    residuals = (-2.0, -1.0, 0.0, 1.0, 2.0)
+    outcomes = [
+        ForecastOutcome(
+            local_date=start + timedelta(days=index),
+            predicted_high_f=70.0 if index < 50 else 90.0,
+            actual_high_f=(70.0 if index < 50 else 90.0) + residuals[index % 5],
+        )
+        for index in range(400)
+    ]
+    calibrator = ResidualCalibrator(
+        outcomes,
+        StrategyConfig(
+            min_conditional_samples=50,
+            shrinkage_samples=0,
+            empirical_weight=0.0,
+        ),
+    )
+
+    with_analogue = list(
+        calibrator.bucket_probabilities(fallback_bins("NEAR", 70.0), 70.0).values()
+    )[2]
+    without_analogue = list(
+        calibrator.bucket_probabilities(fallback_bins("FAR", 150.0), 150.0).values()
+    )[2]
+
+    assert abs(with_analogue.probability - without_analogue.probability) < 1e-12
+    assert without_analogue.probability - without_analogue.lower_confidence >= (
+        with_analogue.probability - with_analogue.lower_confidence
+    )
 
 
 def test_observed_high_so_far_rules_out_lower_today_bins():

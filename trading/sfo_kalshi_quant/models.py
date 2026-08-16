@@ -310,6 +310,10 @@ class BucketProbability:
     empirical_probability: float
     normal_probability: float
     effective_n: float
+    # Upper edge of the same uncertainty interval as ``lower_confidence``.
+    # Retaining it avoids reconstructing a NO-side lower bound from an already
+    # floor-clipped YES bound.
+    upper_confidence: float | None = None
     residual_probability: float | None = None
     ensemble_probability: float | None = None
     model_probability: float | None = None

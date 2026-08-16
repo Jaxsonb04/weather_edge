@@ -203,6 +203,92 @@ def test_restatement_verifies_valid_exec_v4_partial_queue_and_fill() -> None:
         assert result["findings"] == []
 
 
+def test_settled_partial_expiry_still_requires_terminal_tape_watermark() -> None:
+    """Settlement must not erase proof required for a cancelled remainder."""
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, contracts=5.0, queue_ahead=0.0)
+        _apply(store, "partial-before-expiry", no_price=0.72, quantity=2.0)
+        assert (
+            store.expire_stale_resting_orders(
+                now=(T0 + timedelta(minutes=21)).isoformat()
+            )
+            == 1
+        )
+        assert store.paper_order(order_id)["status"] == "PAPER_PARTIAL_EXPIRED"
+        _settle(store)
+        assert store.paper_order(order_id)["status"] == "PAPER_SETTLED"
+
+        _assert_unverified_and_readiness_ineligible(
+            db_path,
+            order_id,
+            "EXEC_V4_TAPE_RECONCILIATION_INCOMPLETE",
+        )
+
+        with store.connect() as conn:
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            evidence["tape_reconciled_through"] = (
+                T0 + timedelta(minutes=20)
+            ).isoformat()
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                (json.dumps(evidence, sort_keys=True), order_id),
+            )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "VERIFIED"
+        assert result["findings"] == []
+
+
+def test_zero_fill_expiry_replays_late_ingested_pre_ttl_tape() -> None:
+    """A watermark cannot neutralize contradictory archived pre-TTL tape."""
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _order(store, contracts=5.0, queue_ahead=0.0)
+        expiry = datetime.fromisoformat(str(store.paper_order(order_id)["expires_at"]))
+        watermark = expiry + timedelta(minutes=5, seconds=1)
+        assert (
+            store.expire_stale_resting_orders(
+                now=watermark.isoformat(),
+                reconciled_through_by_ticker={TICKER: watermark.isoformat()},
+            )
+            == 1
+        )
+        assert store.paper_order(order_id)["status"] == "PAPER_EXPIRED"
+
+        # Simulate delayed ingestion: this trade was timestamped while the
+        # order was active, but arrived only after the terminal row was saved.
+        assert store.apply_maker_trade_batch(
+            TICKER,
+            [
+                _trade(
+                    "late-pre-ttl",
+                    yes_price=0.28,
+                    quantity=5.0,
+                    taker_book_side="bid",
+                    created_time=expiry - timedelta(seconds=1),
+                )
+            ],
+        ) == []
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "UNVERIFIABLE"
+        assert "EXEC_V4_ALLOCATION_MISSING" in result["findings"]
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["verified_decisions"] == 0
+        assert replay["post_boundary_days"] == 0
+        assert replay["promotion_eligible"] is False
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
@@ -454,10 +540,23 @@ def test_restatement_honors_authoritative_cancelled_at_for_partial_expiry(
             conn.execute(
                 "UPDATE paper_orders SET expires_at=?, cancelled_at=? WHERE id=?",
                 (
-                    (T0 + timedelta(seconds=30)).isoformat(),
+                    (T0 + timedelta(minutes=5)).isoformat(),
                     (trade_at + cancel_offset).isoformat(),
                     order_id,
                 ),
+            )
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            evidence["tape_reconciled_through"] = (
+                trade_at + cancel_offset + timedelta(minutes=5)
+            ).isoformat()
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                (json.dumps(evidence, sort_keys=True), order_id),
             )
 
         result = _result(db_path, order_id)
@@ -1616,14 +1715,14 @@ def test_partial_open_multi_fill_quantity_balance_remains_verified() -> None:
         assert replay["verified_decisions"] == 0
 
 
-def test_closed_partial_expiry_uses_earlier_cancelled_at_boundary() -> None:
+def test_closed_partial_expiry_uses_configured_ttl_before_later_close() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = _store(db_path)
         order_id = _order(store, contracts=5.0, queue_ahead=0.0)
         first_trade_at = T0 + timedelta(minutes=1)
         cancelled_at = T0 + timedelta(minutes=20)
-        late_trade_at = T0 + timedelta(minutes=21)
+        late_trade_at = T0 + timedelta(minutes=16)
         closed_at = T0 + timedelta(minutes=22)
         _apply(
             store,
@@ -1638,6 +1737,17 @@ def test_closed_partial_expiry_uses_earlier_cancelled_at_boundary() -> None:
                 "cancelled_at=?, remaining_contracts=0, queue_remaining=0, "
                 "reserved_cost=0 WHERE id=?",
                 (cancelled_at.isoformat(), order_id),
+            )
+            evidence = json.loads(
+                conn.execute(
+                    "SELECT fill_evidence_json FROM paper_orders WHERE id=?",
+                    (order_id,),
+                ).fetchone()[0]
+            )
+            evidence["tape_reconciled_through"] = cancelled_at.isoformat()
+            conn.execute(
+                "UPDATE paper_orders SET fill_evidence_json=? WHERE id=?",
+                (json.dumps(evidence, sort_keys=True), order_id),
             )
         _apply(
             store,

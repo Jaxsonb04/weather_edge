@@ -191,8 +191,23 @@ auto-repaired.
 3. Uploads to S3 only when configured.
 4. Requires the manifest's exact-ID and context-reference coverage gate.
 5. Runs `paper-check-foreign-keys`.
-6. Runs the low-level `paper-prune` command.
+6. Defaults to `SFO_PRUNE_MODE=archive-only`, emits an explicit degraded
+   diagnostic, and skips all deletion from the live journal.
 7. Removes old local partitions only after verified upload.
+
+The archive-only unit exits successfully so it cannot hold SQLite's write lock
+or fail every night while deletion is deliberately deferred. It does **not**
+bound live-journal growth. The disk watchdog remains the last-resort alarm and
+fails at the configured usage ceiling (85% by default); schedule maintenance
+before that threshold rather than relying on automatic deletion. Archive
+cleanup removes uploaded partition files, not rows or free pages in the live
+SQLite database.
+
+The retained opt-in mode is `SFO_PRUNE_MODE=quiesced-delete`. Use it only for an
+operator-supervised run after the paper scan, monitor, settlement, dataset, and
+other journal writers are stopped. Restore `archive-only` before timers resume.
+The prune makes old pages reusable inside SQLite; reclaiming filesystem space
+still requires the separately quiesced `compact_paper_db.sh` workflow.
 
 The default archive is `/opt/weatheredge/trading/data/archive`; the manifest is
 `manifest.db`. Configure `SFO_ARCHIVE_DIR`, `SFO_ARCHIVE_KEEP_DAYS`,
@@ -256,6 +271,9 @@ The canonical environment reference is `sfo-weather.env.example`. It contains
 safe defaults for the five live-execution gates, publication paths and locks,
 dataset paths, rolling targets/cutoff, archive/S3 settings, and the Batch C
 same-day heartbeat.
+Future-live loss limits are expressed as percentages of
+`SFO_LIVE_RISK_CAPITAL`; the guarded installer migration replaces only the
+historical exact $50/$20/$10 defaults and preserves any custom operator values.
 
 See [`../../../docs/aws_deployment.md`](../../../docs/aws_deployment.md) for host
 details, security-group policy, and operator recovery.

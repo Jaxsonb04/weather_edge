@@ -1479,6 +1479,20 @@ def test_oldest_corroboration_breaks_ties_before_market_volume_order():
 # ---------------------------------------------------------------------------
 
 
+def test_default_baseline_inherits_service_stdio_for_failure_diagnostics(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(gmr.subprocess, "run", fake_run)
+
+    gmr._default_archive_baseline()
+
+    assert len(calls) == 1
+    assert calls[0][1].get("capture_output") is not True
+
+
 def test_one_city_failure_leaves_the_other_fourteen_intact(tmp_path):
     usage = _usage_ledger(tmp_path)
     runtime = _runtime_store(tmp_path)
@@ -1694,6 +1708,35 @@ def test_baseline_failure_does_not_block_google_fetching(tmp_path):
     assert report.baseline.error_kind == "RuntimeError"
     assert report.cities[0].attempted is True
     assert report.cities[0].available is True
+
+
+def test_cli_reports_baseline_failure_after_independent_google_refresh(monkeypatch):
+    report = gmr.MulticityRefreshReport(
+        generated_at=TEST_NOW,
+        baseline=gmr.BaselineResult(
+            attempted=True,
+            succeeded=False,
+            error_kind="CalledProcessError",
+        ),
+        purged_rows=0,
+        cities=(),
+        daily_events=0,
+        monthly_events=0,
+        daily_event_budget=260,
+        monthly_event_budget=8000,
+        soft_monthly_ceiling=7800,
+    )
+    monkeypatch.setattr(gmr, "api_key", lambda: TEST_KEY)
+    monkeypatch.setattr(gmr, "GoogleUsageLedger", lambda _path: object())
+    monkeypatch.setattr(
+        gmr,
+        "GoogleRuntimeStore",
+        lambda _path, production: object(),
+    )
+    monkeypatch.setattr(gmr, "refresh_all_cities", lambda **_kwargs: report)
+    monkeypatch.setattr(gmr, "write_json", lambda *_args, **_kwargs: None)
+
+    assert gmr.run_cli("sfo") == 1
 
 
 def test_google_fetch_failure_cannot_retroactively_affect_the_already_archived_baseline(tmp_path):

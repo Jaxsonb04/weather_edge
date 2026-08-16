@@ -43,7 +43,10 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py 
 # `emos_forecast.py --serve-rolling --cities all` ExecStart that used to run
 # after this line was removed (T8-3): it was calling the identical
 # Open-Meteo serve-rolling pipeline a second time, every cycle.
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities sfo
+# The Google endpoints remain isolated per city, but this command also serves
+# the production EMOS baseline first. Its final nonzero status must reach
+# systemd when that all-city baseline produces no forecast rows.
+ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities sfo
 Nice=5
 # Contain a runaway to this unit instead of letting the kernel OOM-killer
 # pick an arbitrary victim (4 GB box: containment, not thrash-protection).
