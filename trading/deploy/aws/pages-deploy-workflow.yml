@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 5
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url || steps.deployment_retry_2.outputs.page_url || steps.deployment_retry_3.outputs.page_url }}
     steps:
       - name: Checkout published tree
         uses: actions/checkout@v4
@@ -42,19 +42,37 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: .
-      # The artifact API is eventually consistent: deploy-pages can query
-      # metadata before the just-finalized upload is visible (observed
-      # 2026-08-09 05:44Z, "Found 0 artifact(s)" 0.4s after a successful
-      # finalize). Tolerate one such flake with a short in-run retry instead
-      # of losing the whole cycle.
+      # The artifact API is eventually consistent, and the Pages deployment
+      # API can also fail transiently. A single 20-second retry was not enough
+      # during the 2026-08-17 GitHub incident: both create-deployment requests
+      # returned HTTP 503. Use bounded exponential backoff so a brief upstream
+      # outage does not lose the whole publication cycle. The 20+40+80-second
+      # waits remain inside the five-minute job timeout; a newer publication
+      # still cancels this run through the workflow concurrency policy.
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
         continue-on-error: true
-      - name: Wait out artifact-registration lag
+      - name: Wait before Pages deployment retry 1
         if: steps.deployment.outcome == 'failure'
         run: sleep 20
-      - name: Deploy to GitHub Pages (retry)
+      - name: Deploy to GitHub Pages (retry 1)
         id: deployment_retry
         if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Wait before Pages deployment retry 2
+        if: steps.deployment_retry.outcome == 'failure'
+        run: sleep 40
+      - name: Deploy to GitHub Pages (retry 2)
+        id: deployment_retry_2
+        if: steps.deployment_retry.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Wait before Pages deployment retry 3
+        if: steps.deployment_retry_2.outcome == 'failure'
+        run: sleep 80
+      - name: Deploy to GitHub Pages (retry 3)
+        id: deployment_retry_3
+        if: steps.deployment_retry_2.outcome == 'failure'
         uses: actions/deploy-pages@v4

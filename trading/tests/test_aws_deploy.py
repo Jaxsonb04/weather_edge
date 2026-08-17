@@ -963,6 +963,47 @@ def test_pages_publish_ships_spa_and_fresh_jsons():
     assert "publication_manifest.json" in excludes
 
 
+def test_pages_deploy_retries_transient_api_failures_with_bounded_backoff():
+    workflow = _read(AWS_DIR / "pages-deploy-workflow.yml")
+
+    # A single 20-second retry was not enough during the 2026-08-17 GitHub
+    # incident: both deployment-creation requests received HTTP 503. Keep the
+    # retries bounded by the job timeout, but give a transient API outage more
+    # than one recovery window before abandoning the current snapshot.
+    assert workflow.count("uses: actions/deploy-pages@v4") == 4
+    assert workflow.count("continue-on-error: true") == 3
+    delays = [int(value) for value in re.findall(r"run: sleep (\d+)", workflow)]
+    assert delays == [20, 40, 80]
+    timeout = re.search(r"timeout-minutes: (\d+)", workflow)
+    assert timeout is not None
+    assert sum(delays) < int(timeout.group(1)) * 60
+    assert (
+        "url: ${{ steps.deployment.outputs.page_url || "
+        "steps.deployment_retry.outputs.page_url || "
+        "steps.deployment_retry_2.outputs.page_url || "
+        "steps.deployment_retry_3.outputs.page_url }}"
+    ) in workflow
+
+    for attempt, previous, retry, delay in (
+        (1, "deployment", "deployment_retry", 20),
+        (2, "deployment_retry", "deployment_retry_2", 40),
+        (3, "deployment_retry_2", "deployment_retry_3", 80),
+    ):
+        assert (
+            f"- name: Wait before Pages deployment retry {attempt}\n"
+            f"        if: steps.{previous}.outcome == 'failure'\n"
+            f"        run: sleep {delay}"
+        ) in workflow
+        assert (
+            f"id: {retry}\n"
+            f"        if: steps.{previous}.outcome == 'failure'\n"
+            "        uses: actions/deploy-pages@v4"
+        ) in workflow
+
+    final_attempt = workflow[workflow.index("- name: Deploy to GitHub Pages (retry 3)") :]
+    assert "continue-on-error" not in final_attempt
+
+
 def test_forecaster_filter_preserves_build_provenance():
     """Runtime exclusions keep the full deploy from replacing its own stamp."""
 

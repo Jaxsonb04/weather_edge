@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-16 05:24 PDT
+Last updated: 2026-08-17 11:17 PDT
 
 Last production verification: 2026-08-16 05:24 PDT
 
-Last public artifact verification: 2026-08-16 05:24 PDT
+Last public artifact verification: 2026-08-17 11:17 PDT
 
 Production status snapshot (last verified 2026-08-16): healthy and paper-only on
 runtime revision `c82a67e0fb0a138ce42b86f22fbff6282590718f`. All fourteen
@@ -18,6 +18,26 @@ verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **GITHUB PAGES 503 INCIDENT RECOVERED; RETRY HARDENING IS LOCAL AND NOT
+  DEPLOYED (2026-08-17):** four inspected `gh-pages` workflow failures between
+  10:28 and 11:07 PDT all uploaded and found exactly one Pages artifact, then
+  received HTTP 503 from GitHub while creating the Pages deployment on both the
+  initial request and the existing single retry. Successful runs were
+  interleaved with the failures. GitHub's official status incident reported
+  broad degradation that included Pages and Actions, so this was an upstream
+  availability incident rather than an application build or artifact defect.
+
+  The next two natural publications at 11:12 and 11:16 PDT completed
+  successfully, the Pages repository configuration reports `built`, and the
+  public manifest exactly matched the latest `gh-pages` snapshot at 11:17 PDT
+  on source revision `c82a67e...`. Local source now gives the emitted Pages
+  workflow four total deployment attempts with bounded 20/40/80-second backoff
+  inside the existing five-minute timeout, protected by a regression test. That
+  hardening has not been committed, deployed to AWS, or emitted into
+  `gh-pages`; the recovered public runs used the prior workflow. No production
+  service, timer, database, order, ledger, credential, execution flag, or
+  strategy policy was changed.
 
 - **PAPER-READINESS HARDENING DEPLOYED; LIVE TRADING REMAINS IMPOSSIBLE
   (2026-08-16, PR #96):** runtime and public SPA revision
