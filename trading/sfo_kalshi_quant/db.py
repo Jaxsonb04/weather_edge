@@ -119,6 +119,7 @@ from .store.market_day_settlements import (
     TRUTH_SOURCE_SETTLEMENT_PATH,
     backfill_market_day_settlements,
     record_market_day_settlements,
+    series_ticker_for_market,
     unrecorded_traded_target_dates,
 )
 from .store.schema import (
@@ -157,6 +158,29 @@ from .store.scoring import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _single_series_ticker(rows: tuple[sqlite3.Row, ...]) -> str | None:
+    """The one city series a settlement pass covered, or None if ambiguous.
+
+    ``settle_paper_orders`` accepts ``series_ticker=None`` (its own settle loop
+    then resolves every city's bins for the date -- a pre-existing hazard it
+    documents). The observability recorder must not inherit that: it stamps one
+    station's high onto whole market-days at the table's highest truth rank.
+    Deriving the scope from the rows the pass actually read keeps every
+    single-city caller working and makes the cross-city case record nothing.
+    """
+
+    series = {
+        found
+        for found in (
+            series_ticker_for_market(str(row["market_ticker"])) for row in rows
+        )
+        if found is not None
+    }
+    return next(iter(series)) if len(series) == 1 else None
+
+
 _decision_row_resolves_yes = _row_resolves_yes
 _row_value = partial(_shared_row_value, default_on_none=True)
 
@@ -5620,22 +5644,91 @@ class PaperStore:
             # market-day the book traded on this date, including the ones whose
             # every lot exited early. It writes one table nothing in the
             # trading path reads, so it moves no gate, policy, or P&L.
-            record_market_day_settlements(
+            self._record_market_day_settlements_isolated(
                 conn,
                 target_date=target_date,
                 settlement_high_f=settlement_high_f,
                 recorded_at=settled_at,
+                series_ticker=(
+                    series_ticker
+                    or _single_series_ticker((*rows, *resting_rows))
+                ),
+            )
+        return settled
+
+    def _record_market_day_settlements_isolated(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        target_date: str,
+        settlement_high_f: float,
+        recorded_at: str,
+        series_ticker: str | None,
+    ) -> None:
+        """Record market-day outcomes without ever deciding a settlement's fate.
+
+        Two structural hazards, neither of them observed live, both fatal if
+        they ever fire:
+
+        * **Scope.** ``series_ticker=None`` recorded every city's market-days
+          for this date stamped with one station's high, at ``settlement_path``
+          rank 3 -- the highest authority, so the upsert would overwrite each
+          city's correct outcome and nothing weaker could restore it. When the
+          pass cannot be attributed to exactly one series we record nothing
+          rather than invent an authority we do not have.
+        * **Isolation.** This runs after the settle UPDATEs and the
+          ``SETTLEMENT_PROCEEDS`` ledger writes but before the commit, so any
+          exception raised here used to roll back real settlement -- the exact
+          regression class this release exists to avoid. The write is wrapped
+          in a SAVEPOINT: a failure discards only the observability rows, is
+          logged at ERROR with a traceback, and settlement still commits. If
+          the savepoint itself cannot be unwound the transaction is genuinely
+          gone (SQLITE_FULL and friends force a rollback), the settlement did
+          NOT commit, and the original error is re-raised so the caller fails
+          honestly instead of being told rows settled that did not.
+        """
+
+        if not series_ticker:
+            logger.warning(
+                "market-day settlement recording skipped for %s: this settlement "
+                "pass covers no single series, and one station's high must never "
+                "be recorded against another city's market-days",
+                target_date,
+            )
+            return
+        conn.execute("SAVEPOINT market_day_settlements")
+        try:
+            summary = record_market_day_settlements(
+                conn,
+                target_date=target_date,
+                settlement_high_f=settlement_high_f,
+                recorded_at=recorded_at,
                 series_ticker=series_ticker,
                 truth_source=TRUTH_SOURCE_SETTLEMENT_PATH,
             )
-        return settled
+        except Exception as observability_error:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT market_day_settlements")
+                conn.execute("RELEASE SAVEPOINT market_day_settlements")
+            except sqlite3.Error as unwind_error:
+                raise observability_error from unwind_error
+            logger.exception(
+                "market-day settlement recording failed for %s (%s); the "
+                "settlement transaction itself is unaffected and still commits",
+                target_date,
+                series_ticker,
+            )
+            return
+        conn.execute("RELEASE SAVEPOINT market_day_settlements")
+        for conflict in summary["conflicts"]:
+            logger.warning("market-day settlement outcome conflict: %s", conflict)
 
     def record_market_day_settlements(
         self,
         target_date: str,
         settlement_high_f: float,
         *,
-        series_ticker: str | None = None,
+        series_ticker: str,
         truth_source: str = TRUTH_SOURCE_SETTLED_SIBLING,
     ) -> dict:
         """Record market-day outcomes without touching a single order row.

@@ -1534,6 +1534,34 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
             "account-scoped open-position guard could not be built"
         ) from exc
 
+
+def _decoded_position_won(side: object, resolved_yes: object) -> bool:
+    """Decode a stored ``resolved_yes`` exactly the way every reader decodes it.
+
+    The readers are Python -- ``db.settle_paper_orders``,
+    ``backtest_rescore``, and ``research_shadow`` all evaluate
+    ``resolved_yes if side == "YES" else not resolved_yes`` -- so the truth test
+    is Python's ``bool`` and the side default is ``str(side or "YES")``.
+
+    SQL is deliberately not used for this. SQLite's truthiness and Python's
+    disagree off the ``{0, 1}`` domain: ``1 - resolved_yes`` on a stored ``2``
+    yields ``-1``, which is truthy where the reader said False, and on the text
+    ``'bad'`` yields ``1``, again truthy where the reader said False; a plain
+    ``CASE WHEN resolved_yes`` does not fix it either, because SQLite reads
+    ``'bad'`` as 0 while ``bool('bad')`` is True. Empty-string sides differ too:
+    ``str('' or "YES")`` is ``YES`` while ``COALESCE(side, 'YES')`` leaves
+    ``''``. Out-of-domain values are not hypothetical in this project --
+    ``restatement`` raises ``RESOLVED_YES_INVALID`` for them and the exec-v4
+    replay tests parameterize ``2`` and ``'bad'`` -- so decoding here is what
+    makes the migration's "no row's win/loss can move" claim actually true.
+    """
+
+    resolves_yes = bool(resolved_yes)
+    if str(side or "YES").upper() == "YES":
+        return resolves_yes
+    return not resolves_yes
+
+
 _CLOSED_POSITION_WON_MIGRATION_KEY = "closed_row_position_won_v1"
 
 
@@ -1569,12 +1597,9 @@ def _migrate_closed_row_position_won(conn: sqlite3.Connection) -> int:
     ).fetchall()
     migrated = 0
     for order_id, side, resolved_yes, outcome_json in rows:
-        resolves_yes = bool(resolved_yes)
         # Decode with the same rule every reader used, so no row's win/loss can
         # move even if a stored value were inconsistent with its P&L sign.
-        position_won = (
-            resolves_yes if str(side or "YES").upper() == "YES" else not resolves_yes
-        )
+        position_won = _decoded_position_won(side, resolved_yes)
         cleaned_json = outcome_json
         if outcome_json:
             try:
@@ -1592,18 +1617,22 @@ def _migrate_closed_row_position_won(conn: sqlite3.Connection) -> int:
         migrated += 1
     # Settled rows keep resolved_yes (a real market outcome) and gain the
     # explicit position flag derived from it, so both columns mean one thing.
-    conn.execute(
-        """
-        UPDATE paper_orders
-        SET position_won = CASE
-            WHEN UPPER(COALESCE(side, 'YES')) = 'YES' THEN resolved_yes
-            ELSE 1 - resolved_yes
-        END
-        WHERE status = 'PAPER_SETTLED'
-          AND resolved_yes IS NOT NULL
-          AND position_won IS NULL
-        """
-    )
+    # Decoded through the same helper as the closed rows above: the set-based
+    # form this replaced agreed with the readers only on the {0, 1} domain, so
+    # a single out-of-domain stored value would have flipped a win into a loss.
+    settled_rows = conn.execute(
+        "SELECT id, side, resolved_yes FROM paper_orders "
+        "WHERE status = 'PAPER_SETTLED' AND resolved_yes IS NOT NULL "
+        "AND position_won IS NULL"
+    ).fetchall()
+    if settled_rows:
+        conn.executemany(
+            "UPDATE paper_orders SET position_won = ? WHERE id = ?",
+            [
+                (1 if _decoded_position_won(side, resolved_yes) else 0, order_id)
+                for order_id, side, resolved_yes in settled_rows
+            ],
+        )
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",
         (_CLOSED_POSITION_WON_MIGRATION_KEY, _now()),

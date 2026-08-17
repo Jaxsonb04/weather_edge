@@ -390,6 +390,52 @@ def cmd_paper_check_foreign_keys(args: argparse.Namespace) -> int:
     return 1
 
 
+# The record-only pass exists for one narrow residual: a target date whose
+# every lot exited early, so `settle_paper_orders` is never called for it and
+# nothing ever records what the market did. That residual is produced one day at
+# a time, and this pass runs unattended inside the thirty-minute settle timer
+# with no dry-run. Bounding it to a recent window keeps it a residual sweep
+# rather than an unbounded history backfill on a timer: unbounded, its first run
+# after deploy takes and releases the write lock once per (series, date) pair,
+# and production currently holds 319 such pairs across fourteen series spanning
+# 2026-06-10 to 2026-08-17. Deep history belongs to the explicit operator
+# command `paper-backfill-market-day-settlements`, which has the --dry-run this
+# unattended path structurally cannot offer.
+#
+# Seven days. A target date only becomes recordable at 06:00 local the day after
+# it completes, so one day covers the steady state and the remaining six are
+# slack for a late-finalized CLI high or a settle-timer outage; the longest unit
+# outage observed on this host was five days. Measured against the same
+# production book, the window turns that 319-pair first run into 39 pairs and
+# leaves a steady state of roughly one date per city per day. A market-day whose
+# CLI high finalizes after the window closes is not lost -- it stays in the
+# residual and the operator backfill reaches it from the settled sibling or the
+# finalized exchange result.
+RECORD_ONLY_RESIDUAL_LOOKBACK_DAYS = 7
+
+
+def _recent_target_dates(
+    target_dates: list[str],
+    *,
+    now: datetime | None = None,
+    city: CityConfig | None = None,
+    lookback_days: int = RECORD_ONLY_RESIDUAL_LOOKBACK_DAYS,
+) -> list[str]:
+    """Target dates inside the record-only residual window."""
+
+    clock = settlement_clock(now, city)
+    earliest = clock.date() - timedelta(days=lookback_days)
+    recent = []
+    for target_date in target_dates:
+        try:
+            target = parse_target_date(target_date)
+        except ValueError:
+            continue
+        if target >= earliest:
+            recent.append(target_date)
+    return recent
+
+
 def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
@@ -408,9 +454,14 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
         # never reaches settle_paper_orders at all, so the market's own outcome
         # for it was never recorded anywhere. Collect those dates too and give
         # them a record-only pass -- it writes market_day_settlements and
-        # touches no order, ledger, gate, or policy.
-        unrecorded_targets = _completed_open_target_dates(
-            store.unrecorded_traded_target_dates(series_ticker=city.series_ticker),
+        # touches no order, ledger, gate, or policy. Bounded to the recent
+        # window (see RECORD_ONLY_RESIDUAL_LOOKBACK_DAYS): this is an unattended
+        # timer, not a history backfill.
+        unrecorded_targets = _recent_target_dates(
+            _completed_open_target_dates(
+                store.unrecorded_traded_target_dates(series_ticker=city.series_ticker),
+                city=city,
+            ),
             city=city,
         )
         record_only_targets = [
@@ -430,12 +481,26 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
         for target_date in record_only_targets:
             if target_date not in settlements:
                 continue
-            summary = store.record_market_day_settlements(
-                target_date,
-                settlements[target_date],
-                series_ticker=city.series_ticker,
-                truth_source=TRUTH_SOURCE_SETTLEMENT_PATH,
-            )
+            try:
+                summary = store.record_market_day_settlements(
+                    target_date,
+                    settlements[target_date],
+                    series_ticker=city.series_ticker,
+                    truth_source=TRUTH_SOURCE_SETTLEMENT_PATH,
+                )
+            except Exception as exc:  # observability must never block settling
+                # This pass runs before the settle loop below. An exception here
+                # used to abort auto-settle for every remaining city and date --
+                # a measurement-only write deciding whether real settlement runs.
+                print(
+                    color.red(
+                        "market-day settlement recording failed for "
+                        f"[{city.slug}] {target_date}: {exc} (settlement "
+                        "continues; re-run paper-backfill-market-day-settlements)"
+                    ),
+                    file=sys.stderr,
+                )
+                continue
             outcomes_recorded += summary["market_days_recorded"]
         for target_date in open_targets:
             if target_date not in settlements:
@@ -472,7 +537,16 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
             )
         )
     if not any_open:
-        print(color.yellow("auto-settle skipped: no completed open paper target dates"))
+        # Saying "skipped" after a record-only pass just wrote rows misreports
+        # the run; the outcomes above were recorded either way.
+        print(
+            color.yellow(
+                "auto-settle: no completed open paper target dates; the "
+                "record-only outcomes above were still recorded"
+                if outcomes_recorded
+                else "auto-settle skipped: no completed open paper target dates"
+            )
+        )
         return 0
     total = db_settled
     if total:

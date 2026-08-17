@@ -61,7 +61,7 @@ enforces that with an allowlist over the package source.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Iterable
+from typing import Any
 
 from ..cities import city_for_market_ticker
 from ..settlement_truth import integer_settlement_high_f, row_resolves_yes
@@ -179,6 +179,12 @@ def _series_ticker_for(market_ticker: str) -> str | None:
     return city.series_ticker if city is not None else None
 
 
+def series_ticker_for_market(market_ticker: str) -> str | None:
+    """Public alias so callers outside this module need not import the registry."""
+
+    return _series_ticker_for(market_ticker)
+
+
 def _traded_market_days(
     conn: sqlite3.Connection,
     *,
@@ -203,20 +209,32 @@ def _traded_market_days(
 
 
 def _existing_outcomes(
-    conn: sqlite3.Connection, keys: Iterable[tuple[str, str]]
+    conn: sqlite3.Connection,
+    *,
+    target_date: str | None = None,
 ) -> dict[tuple[str, str], tuple[int, int]]:
-    """Map ``(ticker, target_date)`` to its recorded ``(resolved_yes, rank)``."""
+    """Map ``(ticker, target_date)`` to its recorded ``(resolved_yes, rank)``.
 
-    recorded: dict[tuple[str, str], tuple[int, int]] = {}
-    for ticker, target in keys:
-        row = conn.execute(
-            "SELECT resolved_yes, truth_rank FROM market_day_settlements "
-            "WHERE market_ticker = ? AND target_date = ?",
-            (ticker, target),
-        ).fetchone()
-        if row is not None:
-            recorded[(ticker, target)] = (int(row[0]), int(row[1]))
-    return recorded
+    One set-based read, never one point SELECT per market-day. The loop this
+    replaced was an unbounded N+1: ``unrecorded_traded_target_dates`` ran it
+    over every traded market-day of every city on every auto-settle tick (every
+    thirty minutes), and approved rows here live forever, so its cost grew with
+    the whole history of the book rather than with the work in front of it.
+    """
+
+    query = (
+        "SELECT market_ticker, target_date, resolved_yes, truth_rank "
+        "FROM market_day_settlements"
+    )
+    params: list[Any] = []
+    if target_date is not None:
+        # Served by idx_market_day_settlements_target (target_date, series).
+        query += " WHERE target_date = ?"
+        params.append(target_date)
+    return {
+        (str(ticker), str(target)): (int(resolved_yes), int(truth_rank))
+        for ticker, target, resolved_yes, truth_rank in conn.execute(query, params)
+    }
 
 
 def record_market_day_settlements(
@@ -225,7 +243,7 @@ def record_market_day_settlements(
     target_date: str,
     settlement_high_f: float,
     recorded_at: str,
-    series_ticker: str | None = None,
+    series_ticker: str,
     truth_source: str = TRUTH_SOURCE_SETTLEMENT_PATH,
 ) -> dict[str, Any]:
     """Record the outcome of every market-day traded on ``target_date``.
@@ -233,18 +251,32 @@ def record_market_day_settlements(
     Idempotent: re-running with the same truth rewrites the same values.  Safe
     to call inside the settlement transaction -- it only writes
     ``market_day_settlements`` and reads ``paper_orders``.
+
+    ``series_ticker`` is required, and deliberately so: ``settlement_high_f`` is
+    one station's number.  Left unscoped, this recorded EVERY city's
+    market-days for the date stamped with that one high, at
+    ``settlement_path``'s rank 3 -- the highest authority in the table, so the
+    upsert would overwrite each city's correct value with another city's and no
+    later source could put it back.  The same rule the settle loop states for
+    ``paper_orders`` ("a settlement high is one station's number; it must never
+    resolve another city's bins") applies here.
     """
 
     if truth_source not in TRUTH_SOURCE_RANKS:
         raise ValueError(f"unknown settlement truth source {truth_source!r}")
+    series_scope = str(series_ticker or "").strip().upper()
+    if not series_scope:
+        raise ValueError(
+            "record_market_day_settlements requires a series_ticker: a settlement "
+            "high belongs to one station and must never be recorded against "
+            "another city's market-days"
+        )
     rank = TRUTH_SOURCE_RANKS[truth_source]
     high = integer_settlement_high_f(settlement_high_f)
     rows = _traded_market_days(
-        conn, series_ticker=series_ticker, target_date=target_date
+        conn, series_ticker=series_scope, target_date=target_date
     )
-    existing = _existing_outcomes(
-        conn, ((str(row["market_ticker"]), str(row["target_date"])) for row in rows)
-    )
+    existing = _existing_outcomes(conn, target_date=target_date)
     written = 0
     skipped_unknown_series = 0
     conflicts: list[dict[str, Any]] = []
@@ -291,13 +323,24 @@ def record_market_day_settlements(
         written += 1
     return {
         "target_date": target_date,
-        "series_ticker": series_ticker,
+        "series_ticker": series_scope,
         "settlement_high_f": high,
         "truth_source": truth_source,
         "market_days_recorded": written,
         "skipped_unknown_series": skipped_unknown_series,
         "conflicts": conflicts,
     }
+
+
+_UNRECORDED_TARGET_DATE_SQL = f"""
+SELECT DISTINCT paper_orders.target_date
+FROM paper_orders
+LEFT JOIN market_day_settlements
+    ON market_day_settlements.market_ticker = paper_orders.market_ticker
+   AND market_day_settlements.target_date = paper_orders.target_date
+WHERE paper_orders.status IN ({_TRADED_PLACEHOLDERS})
+  AND market_day_settlements.market_ticker IS NULL
+"""
 
 
 def unrecorded_traded_target_dates(
@@ -308,18 +351,22 @@ def unrecorded_traded_target_dates(
     This is the residual of the live path: ``settle_paper_orders`` covers a
     whole ``(series, target_date)`` the moment *anything* on it settles, but a
     day where every single lot exited early never reaches that path at all.
+
+    One set-based anti-join.  The previous form aggregated every traded
+    market-day and then issued a point SELECT per row, once per city, on every
+    thirty-minute auto-settle tick.  The join side is served by the
+    ``market_day_settlements`` primary key ``(market_ticker, target_date)``, and
+    the ``paper_orders`` side is covered by ``idx_paper_orders_market_side
+    (target_date, market_ticker, side, status)``.
     """
 
-    rows = _traded_market_days(conn, series_ticker=series_ticker)
-    recorded = _existing_outcomes(
-        conn, ((str(row["market_ticker"]), str(row["target_date"])) for row in rows)
-    )
-    missing = {
-        str(row["target_date"])
-        for row in rows
-        if (str(row["market_ticker"]), str(row["target_date"])) not in recorded
-    }
-    return sorted(missing)
+    query = _UNRECORDED_TARGET_DATE_SQL
+    params: list[Any] = list(TRADED_STATUSES)
+    if series_ticker:
+        query += " AND paper_orders.market_ticker LIKE ?"
+        params.append(f"{series_ticker}-%")
+    query += " ORDER BY paper_orders.target_date"
+    return [str(row[0]) for row in conn.execute(query, params)]
 
 
 def _settled_sibling_highs(conn: sqlite3.Connection) -> dict[tuple[str, str], float]:
@@ -368,9 +415,7 @@ def backfill_market_day_settlements(
     """
 
     rows = _traded_market_days(conn)
-    existing = _existing_outcomes(
-        conn, ((str(row["market_ticker"]), str(row["target_date"])) for row in rows)
-    )
+    existing = _existing_outcomes(conn)
     sibling_highs = _settled_sibling_highs(conn)
     dataset_results = _dataset_market_results(conn)
 
