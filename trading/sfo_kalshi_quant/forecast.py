@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 
 from . import _sqlite
@@ -28,6 +29,53 @@ from .settlement_truth import (
 
 class ForecastDataError(RuntimeError):
     pass
+
+
+def matching_emos_distribution(
+    forecast: ForecastSnapshot,
+    *,
+    enabled: bool,
+) -> tuple[float, float] | None:
+    """Return the distribution coupled to an EMOS point, or fail closed.
+
+    An EMOS point forecast is only priceable against the EMOS residual law that
+    was fitted with it. SFO's operational fallback swaps the legacy blend point
+    for a live EMOS row while the live profile still keeps
+    ``emos_distribution_enabled`` off, so the EMOS point would be priced through
+    the blend's residual calibration -- a different model's law, measured ~1.8x
+    too wide. There is no safe way to reconcile the two, so refuse the target
+    rather than emit mispriced bucket probabilities.
+
+    Returns ``None`` for any non-EMOS point (the legacy blend path is untouched).
+    Callers must invoke this BEFORE any intraday re-centering: the ``isclose``
+    coupling check compares against the raw EMOS mu, which an intraday update
+    deliberately moves.
+    """
+
+    if forecast.raw.get("source") != "forecast_emos_daily_high":
+        return None
+    if not enabled:
+        raise ForecastDataError(
+            "EMOS point forecast requires its matching EMOS distribution; "
+            "residual calibration from another forecast model is disabled"
+        )
+    emos = forecast.raw.get("emos") or {}
+    try:
+        mu = float(emos["mu"])
+        sigma = float(emos["sigma"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ForecastDataError(
+            "EMOS point forecast is missing its matching EMOS distribution"
+        ) from exc
+    if not math.isfinite(mu) or not math.isfinite(sigma) or sigma <= 0:
+        raise ForecastDataError(
+            "EMOS point forecast has an invalid matching EMOS distribution"
+        )
+    if not math.isclose(mu, forecast.predicted_high_f, abs_tol=1e-9):
+        raise ForecastDataError(
+            "EMOS point forecast and matching EMOS distribution disagree"
+        )
+    return mu, sigma
 
 
 def parse_target_date(value: str | date | None) -> date:

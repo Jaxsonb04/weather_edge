@@ -33,6 +33,7 @@ from ..forecast import (
     ForecastDataError,
     SfoForecasterAdapter,
     has_forecaster_observed_high_adjustment,
+    matching_emos_distribution,
     parse_target_date,
     parse_target_dates,
 )
@@ -339,6 +340,13 @@ def build_scan_context(
         max_age_hours=config.max_forecast_age_hours,
     )
     _enforce_live_forecast_freshness(forecast, config)
+    # PRE-intraday by construction: the coupling check compares the EMOS mu to
+    # the raw point, and `apply_intraday_update` below deliberately moves that
+    # point. Moving this call after the update breaks every EMOS city.
+    matching_emos = matching_emos_distribution(
+        forecast,
+        enabled=config.emos_distribution_enabled,
+    )
     intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
@@ -384,6 +392,8 @@ def build_scan_context(
             if config.emos_distribution_enabled
             else {}
         )
+    if matching_emos is not None:
+        emos_lookup = {**emos_lookup, target: matching_emos}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -1177,6 +1187,13 @@ def _tail_basket_one_target(
         max_age_hours=config.max_forecast_age_hours,
     )
     _enforce_live_forecast_freshness(forecast, config)
+    # PRE-intraday by construction: the coupling check compares the EMOS mu to
+    # the raw point, and `apply_intraday_update` below deliberately moves that
+    # point. Moving this call after the update breaks every EMOS city.
+    matching_emos = matching_emos_distribution(
+        forecast,
+        enabled=config.emos_distribution_enabled,
+    )
     intraday = _intraday_for_target(args, target, adapter, city=city)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
@@ -1223,6 +1240,8 @@ def _tail_basket_one_target(
             if config.emos_distribution_enabled
             else {}
         )
+    if matching_emos is not None:
+        emos_lookup = {**emos_lookup, target: matching_emos}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
