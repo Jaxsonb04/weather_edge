@@ -22,6 +22,7 @@ from ..kalshi import KalshiPublicClient
 from ..models import target_date_from_event_ticker
 from ..report import build_daily_report, write_report
 from ..settlement_day import settlement_clock, settlement_today
+from ..store.market_day_settlements import TRUTH_SOURCE_SETTLEMENT_PATH
 from ..summary import (
     build_paper_summary,
     write_paper_summary,
@@ -397,14 +398,27 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     db_settled = 0
     verification_truth: dict[tuple[str, str], float] = {}
     settled_intervals: dict[str, tuple[str, str]] = {}
+    outcomes_recorded = 0
     for city in cities:
         open_targets = _completed_open_target_dates(
             store.open_paper_target_dates(series_ticker=city.series_ticker),
             city=city,
         )
-        if not open_targets:
+        # Observability residual: a target date whose every lot exited early
+        # never reaches settle_paper_orders at all, so the market's own outcome
+        # for it was never recorded anywhere. Collect those dates too and give
+        # them a record-only pass -- it writes market_day_settlements and
+        # touches no order, ledger, gate, or policy.
+        unrecorded_targets = _completed_open_target_dates(
+            store.unrecorded_traded_target_dates(series_ticker=city.series_ticker),
+            city=city,
+        )
+        record_only_targets = [
+            target for target in unrecorded_targets if target not in set(open_targets)
+        ]
+        if not open_targets and not record_only_targets:
             continue
-        any_open = True
+        any_open = any_open or bool(open_targets)
         # Primary truth: weather.db rows explicitly classified final. This
         # prevents an older preliminary product version fetched from the live
         # endpoint from shadowing a corrected final already archived.
@@ -413,6 +427,16 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
             target.isoformat(): high
             for target, high in adapter.load_cli_settlement_highs().items()
         }
+        for target_date in record_only_targets:
+            if target_date not in settlements:
+                continue
+            summary = store.record_market_day_settlements(
+                target_date,
+                settlements[target_date],
+                series_ticker=city.series_ticker,
+                truth_source=TRUTH_SOURCE_SETTLEMENT_PATH,
+            )
+            outcomes_recorded += summary["market_days_recorded"]
         for target_date in open_targets:
             if target_date not in settlements:
                 continue
@@ -440,6 +464,13 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
                     max(upper, target_date),
                 )
 
+    if outcomes_recorded:
+        print(
+            color.cyan(
+                f"recorded {outcomes_recorded} fully-exited market-day settlement "
+                "outcome(s) that no open position would have captured"
+            )
+        )
     if not any_open:
         print(color.yellow("auto-settle skipped: no completed open paper target dates"))
         return 0
@@ -476,6 +507,49 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
         )
     else:
         print(color.yellow("auto-settle: completed open targets remain but no CLI truth is available yet"))
+    return 0
+
+
+def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
+    """Reconstruct historical market-day outcomes from validated truth only.
+
+    Two sources are accepted, both independently verified: the
+    ``settlement_high_f`` persisted on a settled order for the same
+    ``(series, target_date)``, and the exchange's own finalized result in
+    ``dataset_kalshi_markets``. Days neither source covers are unrecoverable
+    from this database and are reported, never guessed. See
+    ``store/market_day_settlements.py`` for the sources that were tested and
+    rejected.
+    """
+
+    color = Color.from_no_color(args.no_color)
+    store = PaperStore(args.db_path)
+    summary = store.backfill_market_day_settlements(dry_run=args.dry_run)
+    unrecoverable = summary["unrecoverable"]
+    prefix = "would record" if summary["dry_run"] else "recorded"
+    print(
+        color.cyan(
+            f"market-day settlement backfill: {summary['traded_market_days']} traded "
+            f"market-day(s); {summary['already_recorded']} already recorded; "
+            f"{prefix} {summary['recorded_from_settled_sibling']} from settled "
+            f"siblings and {summary['recorded_from_dataset_markets']} from finalized "
+            f"exchange results; {len(unrecoverable)} unrecoverable"
+        )
+    )
+    for entry in unrecoverable[: args.show_unrecoverable]:
+        print(
+            color.yellow(
+                f"unrecoverable: {entry['market_ticker']} {entry['target_date']} "
+                f"({entry['reason']})"
+            )
+        )
+    if len(unrecoverable) > args.show_unrecoverable:
+        print(
+            color.yellow(
+                f"... {len(unrecoverable) - args.show_unrecoverable} more unrecoverable "
+                "market-day(s) not shown"
+            )
+        )
     return 0
 
 

@@ -114,6 +114,13 @@ from .store.diagnostics import (
     _strategy_config_snapshot,
     _win_loss_reason,
 )
+from .store.market_day_settlements import (
+    TRUTH_SOURCE_SETTLED_SIBLING,
+    TRUTH_SOURCE_SETTLEMENT_PATH,
+    backfill_market_day_settlements,
+    record_market_day_settlements,
+    unrecorded_traded_target_dates,
+)
 from .store.schema import (
     DECISION_AUDIT_COLUMNS,
     DECISION_SNAPSHOT_REPORT_INDEX,
@@ -5573,6 +5580,7 @@ class PaperStore:
                         settled_at = ?,
                         settlement_high_f = ?,
                         resolved_yes = ?,
+                        position_won = ?,
                         realized_pnl = ?,
                         status = 'PAPER_SETTLED',
                         outcome_diagnostics_json = ?
@@ -5589,6 +5597,7 @@ class PaperStore:
                         settled_at,
                         settlement_high_f,
                         1 if resolved_yes else 0,
+                        1 if position_wins else 0,
                         realized_pnl,
                         outcome_json,
                         row["id"],
@@ -5605,7 +5614,99 @@ class PaperStore:
                             details={"position_won": position_wins},
                         )
                 settled += cursor.rowcount
+            # Observability only (see store/market_day_settlements.py). The
+            # settle loop above can only ever stamp an outcome onto rows that
+            # were still open; this records what the market did on EVERY
+            # market-day the book traded on this date, including the ones whose
+            # every lot exited early. It writes one table nothing in the
+            # trading path reads, so it moves no gate, policy, or P&L.
+            record_market_day_settlements(
+                conn,
+                target_date=target_date,
+                settlement_high_f=settlement_high_f,
+                recorded_at=settled_at,
+                series_ticker=series_ticker,
+                truth_source=TRUTH_SOURCE_SETTLEMENT_PATH,
+            )
         return settled
+
+    def record_market_day_settlements(
+        self,
+        target_date: str,
+        settlement_high_f: float,
+        *,
+        series_ticker: str | None = None,
+        truth_source: str = TRUTH_SOURCE_SETTLED_SIBLING,
+    ) -> dict:
+        """Record market-day outcomes without touching a single order row.
+
+        Used for the residual case the settlement path structurally cannot
+        reach: a target date on which every position was already closed, so
+        ``settle_paper_orders`` is never called for it at all.
+        """
+
+        recorded_at = _now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            summary = record_market_day_settlements(
+                conn,
+                target_date=target_date,
+                settlement_high_f=settlement_high_f,
+                recorded_at=recorded_at,
+                series_ticker=series_ticker,
+                truth_source=truth_source,
+            )
+        for conflict in summary["conflicts"]:
+            logger.warning("market-day settlement outcome conflict: %s", conflict)
+        return summary
+
+    def unrecorded_traded_target_dates(
+        self, *, series_ticker: str | None = None
+    ) -> list[str]:
+        """Traded target dates with at least one market-day lacking an outcome."""
+
+        with self.connect() as conn:
+            return unrecorded_traded_target_dates(conn, series_ticker=series_ticker)
+
+    def backfill_market_day_settlements(self, *, dry_run: bool = False) -> dict:
+        """Backfill historical market-day outcomes from validated truth only."""
+
+        recorded_at = _now()
+        with self.connect() as conn:
+            if dry_run:
+                return backfill_market_day_settlements(
+                    conn, recorded_at=recorded_at, dry_run=True
+                )
+            conn.execute("BEGIN IMMEDIATE")
+            return backfill_market_day_settlements(
+                conn, recorded_at=recorded_at, dry_run=False
+            )
+
+    def market_day_settlements(
+        self,
+        *,
+        target_date: str | None = None,
+        series_ticker: str | None = None,
+        limit: int = 500,
+    ) -> list[sqlite3.Row]:
+        """Read back recorded market-day outcomes. Measurement only."""
+
+        filters: list[str] = []
+        params: list[object] = []
+        if target_date is not None:
+            filters.append("target_date = ?")
+            params.append(target_date)
+        if series_ticker is not None:
+            filters.append("series_ticker = ?")
+            params.append(series_ticker)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"SELECT * FROM market_day_settlements {where} "
+                "ORDER BY target_date DESC, market_ticker LIMIT ?",
+                (*params, limit),
+            ).fetchall()
 
     def verify_paper_settlements(
         self,
@@ -5726,25 +5827,26 @@ class PaperStore:
         realized_pnl = closed_position_pnl(
             executed, entry_cost, exit_price, exit_fee
         )
-        # Persist resolved_yes on close so a closed order is classified by the
-        # same resolved_yes-driven path as a settled order (db.py settle path),
-        # not the realized_pnl > 0 fallback in _row_position_won. A break-even
-        # close (realized_pnl == 0) is recorded as resolved_yes = NULL so it is
-        # treated as undecided rather than silently bucketed as a loss.
+        # An early exit decides THIS POSITION, not the market. Record that in
+        # position_won and leave resolved_yes NULL: resolved_yes means "the
+        # market resolved YES" and is only knowable once a settlement high
+        # exists, which at close time it does not. Encoding the P&L sign there
+        # made a field named after the market outcome disagree with the actual
+        # market outcome on ~40% of the closed rows where truth is obtainable.
+        # A break-even close (realized_pnl == 0) stays undecided: position_won
+        # is NULL so it is neither a win nor a loss.
         side = _row_side(row)
-        if abs(realized_pnl) < 1e-9:
-            resolved_yes: int | None = None
-        else:
-            position_won = realized_pnl > 0.0
-            resolved_yes = 1 if (position_won if side == "YES" else not position_won) else 0
+        position_won: int | None = (
+            None if abs(realized_pnl) < 1e-9 else (1 if realized_pnl > 0.0 else 0)
+        )
         closed_at = _now()
         payload = _outcome_diagnostics_payload(
             row,
             event="close",
             resolved_at=closed_at,
             settlement_high_f=None,
-            resolved_yes=bool(resolved_yes) if resolved_yes is not None else None,
-            position_won=None if abs(realized_pnl) < 1e-9 else realized_pnl > 0.0,
+            resolved_yes=None,
+            position_won=None if position_won is None else bool(position_won),
             realized_pnl=realized_pnl,
             exit_price=exit_price,
             exit_fee_per_contract=exit_fee,
@@ -5851,7 +5953,7 @@ class PaperStore:
                         closed_at = ?,
                         exit_price = ?,
                         exit_fee_per_contract = ?,
-                        resolved_yes = ?,
+                        position_won = ?,
                         realized_pnl = ?,
                         outcome_diagnostics_json = ?,
                         remaining_contracts = 0,
@@ -5871,7 +5973,7 @@ class PaperStore:
                         closed_at,
                         exit_price,
                         exit_fee,
-                        resolved_yes,
+                        position_won,
                         realized_pnl,
                         outcome_json,
                         closed_at,
@@ -5897,7 +5999,7 @@ class PaperStore:
                     exit_price=exit_price,
                     exit_fee=exit_fee,
                     realized_pnl=realized_pnl,
-                    resolved_yes=resolved_yes,
+                    position_won=position_won,
                     outcome_json=outcome_json,
                 )
             if row["status"] == "PAPER_PARTIALLY_FILLED" and row["account_id"]:
@@ -5943,7 +6045,7 @@ class PaperStore:
         exit_price: float,
         exit_fee: float,
         realized_pnl: float,
-        resolved_yes: int | None,
+        position_won: int | None,
         outcome_json: str,
     ) -> int:
         """Materialize the executed slice of a partial close as its own row.
@@ -5967,7 +6069,10 @@ class PaperStore:
                 "closed_at": closed_at,
                 "exit_price": exit_price,
                 "exit_fee_per_contract": exit_fee,
-                "resolved_yes": resolved_yes,
+                # The child lot is an exit, exactly like its parent: it carries
+                # the position outcome and never claims a market outcome.
+                "resolved_yes": None,
+                "position_won": position_won,
                 "realized_pnl": realized_pnl,
                 "outcome_diagnostics_json": outcome_json,
                 "reserved_cost": 0,

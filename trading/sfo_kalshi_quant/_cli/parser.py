@@ -38,6 +38,7 @@ _COMMAND_NAMES = (
     "cmd_dataset_status",
     "cmd_paper_archive",
     "cmd_paper_auto_settle",
+    "cmd_paper_backfill_market_day_settlements",
     "cmd_paper_buy",
     "cmd_paper_check_foreign_keys",
     "cmd_paper_close",
@@ -895,6 +896,24 @@ def register_paper_commands(sub) -> None:
         help="'all' or comma-separated city slugs (default: env PAPER_CITIES or all)",
     )
     auto_settle.set_defaults(func=cmd_paper_auto_settle)
+
+    backfill_outcomes = sub.add_parser(
+        "paper-backfill-market-day-settlements",
+        help=(
+            "Reconstruct historical market-day settlement outcomes from settled "
+            "siblings and finalized exchange results; measurement only, writes no "
+            "order, ledger, or policy"
+        ),
+    )
+    backfill_outcomes.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would be recorded without writing anything",
+    )
+    backfill_outcomes.add_argument(
+        "--show-unrecoverable", type=int, default=20,
+        help="How many unrecoverable market-days to list (0 for none)",
+    )
+    backfill_outcomes.set_defaults(func=cmd_paper_backfill_market_day_settlements)
 
 def register_backtest_commands(sub) -> None:
     market_backtest = sub.add_parser("backtest-market", help="Summarize settled paper-trading PnL")

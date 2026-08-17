@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -7,6 +8,10 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from ..account import LIVE_STABILITY_ACCOUNT_ID
+from .market_day_settlements import (
+    MARKET_DAY_SETTLEMENT_INDEXES,
+    MARKET_DAY_SETTLEMENT_SCHEMA,
+)
 from ..research_policy import (
     ALL_RESEARCH_POLICIES,
     TARGET_POLICY,
@@ -490,7 +495,7 @@ CREATE TABLE IF NOT EXISTS google_challenger_snapshots (
   action TEXT NOT NULL,
   PRIMARY KEY(station_id, target_date, issued_at, policy_version)
 );
-"""
+""" + MARKET_DAY_SETTLEMENT_SCHEMA
 
 # Created after column migrations in init() so they can reference late-added
 # columns (e.g. group_id) on databases that predate them.
@@ -542,7 +547,7 @@ CREATE INDEX IF NOT EXISTS idx_research_shadow_monitor_order
     ON research_shadow_monitor_snapshots (shadow_order_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_paper_account_ledger_account
     ON paper_account_ledger (account_id, created_at, id);
-"""
+""" + MARKET_DAY_SETTLEMENT_INDEXES
 
 # Fresh databases can build this covering report index cheaply during normal
 # initialization. Existing journals deliberately skip it: production creates it
@@ -744,7 +749,13 @@ PAPER_ORDER_AUDIT_COLUMNS = {
     "settled_at": "TEXT",
     "settlement_high_f": "REAL",
     "resolved_yes": "INTEGER",
+    # The market's own outcome ("the bin resolved YES"), written only when a
+    # settlement high is known. Never a restatement of this position's P&L.
     "realized_pnl": "REAL",
+    # Whether THIS position won, which for an early close is a P&L fact and not
+    # a market fact. Split out of resolved_yes so neither field has to lie:
+    # see _migrate_closed_row_position_won below.
+    "position_won": "INTEGER",
     "closed_at": "TEXT",
     "exit_price": "REAL",
     "exit_fee_per_contract": "REAL",
@@ -1397,6 +1408,7 @@ def _init_store_locked(self) -> None:
             {"station_id": "TEXT DEFAULT 'KSFO'"},
         )
         _migrate_legacy_profile_names(conn)
+        _migrate_closed_row_position_won(conn)
         scan_context_index = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' "
             "AND name='idx_decision_snapshots_scan_context'"
@@ -1521,6 +1533,83 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
         raise sqlite3.IntegrityError(
             "account-scoped open-position guard could not be built"
         ) from exc
+
+_CLOSED_POSITION_WON_MIGRATION_KEY = "closed_row_position_won_v1"
+
+
+def _migrate_closed_row_position_won(conn: sqlite3.Connection) -> int:
+    """Stop `resolved_yes` from meaning "this position made money" on closes.
+
+    ``close_paper_order`` used to derive ``resolved_yes`` from
+    ``sign(realized_pnl)`` and the side, so on a ``PAPER_CLOSED`` row the column
+    named after the *market's* outcome actually recorded the *position's* P&L
+    sign. On production those two things disagree on roughly 40% of the closed
+    rows whose true market outcome is obtainable, and 45 ticker-days carry both
+    labels across their own lots.
+
+    The transform is lossless. The stored value carries no information beyond
+    the P&L sign, and the P&L is already in ``realized_pnl``; every reader
+    decoded it back to a win/loss flag, so this migration writes exactly that
+    decoded flag into the new explicit ``position_won`` column and clears
+    ``resolved_yes`` back to NULL. Win/loss and hit-rate are unchanged by
+    construction. The same key is removed from the persisted
+    ``outcome_diagnostics_json`` outcome block, which the payload builder now
+    omits on close as well; ``position_won`` and ``win_loss_reason`` were
+    already correct there and are left untouched.
+    """
+
+    if conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_key=?",
+        (_CLOSED_POSITION_WON_MIGRATION_KEY,),
+    ).fetchone() is not None:
+        return 0
+    rows = conn.execute(
+        "SELECT id, side, resolved_yes, outcome_diagnostics_json FROM paper_orders "
+        "WHERE status = 'PAPER_CLOSED' AND resolved_yes IS NOT NULL"
+    ).fetchall()
+    migrated = 0
+    for order_id, side, resolved_yes, outcome_json in rows:
+        resolves_yes = bool(resolved_yes)
+        # Decode with the same rule every reader used, so no row's win/loss can
+        # move even if a stored value were inconsistent with its P&L sign.
+        position_won = (
+            resolves_yes if str(side or "YES").upper() == "YES" else not resolves_yes
+        )
+        cleaned_json = outcome_json
+        if outcome_json:
+            try:
+                payload = json.loads(outcome_json)
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("outcome"), dict):
+                if payload["outcome"].pop("resolved_yes", None) is not None:
+                    cleaned_json = json.dumps(payload, sort_keys=True)
+        conn.execute(
+            "UPDATE paper_orders SET position_won = ?, resolved_yes = NULL, "
+            "outcome_diagnostics_json = ? WHERE id = ?",
+            (1 if position_won else 0, cleaned_json, order_id),
+        )
+        migrated += 1
+    # Settled rows keep resolved_yes (a real market outcome) and gain the
+    # explicit position flag derived from it, so both columns mean one thing.
+    conn.execute(
+        """
+        UPDATE paper_orders
+        SET position_won = CASE
+            WHEN UPPER(COALESCE(side, 'YES')) = 'YES' THEN resolved_yes
+            ELSE 1 - resolved_yes
+        END
+        WHERE status = 'PAPER_SETTLED'
+          AND resolved_yes IS NOT NULL
+          AND position_won IS NULL
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",
+        (_CLOSED_POSITION_WON_MIGRATION_KEY, _now()),
+    )
+    return migrated
+
 
 # One-time rename of stored risk_profile strings written before the 4->2 profile
 # collapse, so raw-SQL filters (which compare against the literal new names)

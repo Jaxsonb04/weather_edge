@@ -297,6 +297,10 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     return _paper_dispatch("cmd_paper_auto_settle", args)
 
 
+def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
+    return _paper_dispatch("cmd_paper_backfill_market_day_settlements", args)
+
+
 def _completed_open_target_dates(*args, **kwargs):
     return _paper_dispatch("_completed_open_target_dates", *args, **kwargs)
 

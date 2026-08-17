@@ -392,8 +392,10 @@ def test_break_even_close_is_undecided_not_counted_as_a_loss():
         be_row = store.close_paper_order(be_id, hi)
 
         assert abs(be_row["realized_pnl"]) < 1e-9
-        # Break-even is undecided: resolved_yes stays NULL instead of being
+        # Break-even is undecided: position_won stays NULL instead of being
         # coerced to a loss by the old realized_pnl > 0 fallback.
+        assert be_row["position_won"] is None
+        # A close never knows the market outcome, break-even or not.
         assert be_row["resolved_yes"] is None
 
         summary = store.market_backtest_summary()
@@ -405,7 +407,18 @@ def test_break_even_close_is_undecided_not_counted_as_a_loss():
         assert summary["hit_rate"] == 1.0
 
 
-def test_decided_close_records_resolved_yes_per_side():
+def test_decided_close_records_position_won_and_never_a_market_outcome():
+    """A close decides the POSITION, not the market.
+
+    This test used to assert the opposite: that a winning YES close recorded
+    ``resolved_yes = 1`` and a winning NO close recorded ``resolved_yes = 0``.
+    That encoding made a column named after the market's outcome carry
+    ``sign(realized_pnl)`` instead, and it disagreed with the actual market
+    outcome on ~40% of the production closed rows whose truth is obtainable --
+    including 45 ticker-days that ended up carrying BOTH labels across their own
+    lots. The win/loss fact those rows really held now lives in ``position_won``.
+    """
+
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         yes_id = store.record_paper_order("2026-06-12", _one_contract_yes("KXHIGHTSFO-TEST-Y", 0.30))
@@ -420,9 +433,18 @@ def test_decided_close_records_resolved_yes_per_side():
         yes_row = store.close_paper_order(yes_id, 0.50)  # YES position profits
         no_row = store.close_paper_order(no_id, 0.50)  # NO position profits
 
-        # A winning YES close resolved YES; a winning NO close resolved NO (0).
-        assert yes_row["realized_pnl"] > 0 and yes_row["resolved_yes"] == 1
-        assert no_row["realized_pnl"] > 0 and no_row["resolved_yes"] == 0
+        # Both positions won: that is a P&L fact and it is recorded as one.
+        assert yes_row["realized_pnl"] > 0 and yes_row["position_won"] == 1
+        assert no_row["realized_pnl"] > 0 and no_row["position_won"] == 1
+        # Neither knows what the market did, so neither claims to.
+        assert yes_row["resolved_yes"] is None
+        assert no_row["resolved_yes"] is None
+
+        # Both sides still count as wins, exactly as before the split.
+        summary = store.market_backtest_summary()
+        assert summary["wins"] == 2.0
+        assert summary["losses"] == 0.0
+        assert summary["hit_rate"] == 1.0
 
 
 def test_settle_is_noop_when_filled_order_already_closed():
