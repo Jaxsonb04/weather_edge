@@ -11,6 +11,7 @@ from ..account import LIVE_STABILITY_ACCOUNT_ID
 from .market_day_settlements import (
     MARKET_DAY_SETTLEMENT_INDEXES,
     MARKET_DAY_SETTLEMENT_SCHEMA,
+    TRUTH_SOURCE_RANKS,
 )
 from ..research_policy import (
     ALL_RESEARCH_POLICIES,
@@ -1409,6 +1410,7 @@ def _init_store_locked(self) -> None:
         )
         _migrate_legacy_profile_names(conn)
         _migrate_closed_row_position_won(conn)
+        _migrate_market_day_truth_ranks(conn)
         scan_context_index = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' "
             "AND name='idx_decision_snapshots_scan_context'"
@@ -1536,12 +1538,19 @@ def ensure_open_position_guard_index(self, conn: sqlite3.Connection) -> None:
 
 
 def _decoded_position_won(side: object, resolved_yes: object) -> bool:
-    """Decode a stored ``resolved_yes`` exactly the way every reader decodes it.
+    """Decode a stored ``resolved_yes`` the way the settlement path decodes it.
 
-    The readers are Python -- ``db.settle_paper_orders``,
-    ``backtest_rescore``, and ``research_shadow`` all evaluate
-    ``resolved_yes if side == "YES" else not resolved_yes`` -- so the truth test
-    is Python's ``bool`` and the side default is ``str(side or "YES")``.
+    The rule mirrored here is ``db.settle_paper_orders``: evaluate
+    ``resolved_yes if side == "YES" else not resolved_yes`` with Python's
+    ``bool`` as the truth test and ``str(side or "YES")`` as the side default.
+
+    It is deliberately *not* claimed to be every reader's rule verbatim. The
+    stored-column readers ``store/diagnostics.py::_row_side`` and
+    ``strategy_lab/paper_card.py::_side_from_row`` add a step this helper does
+    not: when ``side`` is not in ``{YES, NO}`` they fall back to the ``action``
+    column before defaulting. Production holds only ``YES``/``NO`` in ``side``
+    (2,388 NO and 103 YES, all text), so the two agree on every row that exists;
+    the divergence is confined to sides this database has never contained.
 
     SQL is deliberately not used for this. SQLite's truthiness and Python's
     disagree off the ``{0, 1}`` domain: ``1 - resolved_yes`` on a stored ``2``
@@ -1560,6 +1569,43 @@ def _decoded_position_won(side: object, resolved_yes: object) -> bool:
     if str(side or "YES").upper() == "YES":
         return resolves_yes
     return not resolves_yes
+
+
+_MARKET_DAY_TRUTH_RANK_MIGRATION_KEY = "market_day_settlement_truth_rank_v2"
+
+
+def _migrate_market_day_truth_ranks(conn: sqlite3.Connection) -> int:
+    """Re-derive every stored ``truth_rank`` from its ``truth_source``.
+
+    ``market_day_settlements.truth_rank`` is a cached projection of
+    ``TRUTH_SOURCE_RANKS``, and the upsert's no-downgrade rule compares those
+    integers directly. Inserting ``cli_settlement`` into the ladder shifted the
+    two booked sources up by one, so a row written before that carries a number
+    whose *relative* order is now wrong: a stale rank-3 ``settlement_path`` row
+    would tie with a fresh rank-3 ``settled_sibling`` write and be overwritten
+    by it -- exactly the downgrade the ladder exists to prevent.
+
+    The source name is the durable key, so the rank is fully recoverable from
+    it and this rewrites no outcome, only the integer that orders them.
+    """
+
+    if conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_key=?",
+        (_MARKET_DAY_TRUTH_RANK_MIGRATION_KEY,),
+    ).fetchone() is not None:
+        return 0
+    updated = 0
+    for source, rank in TRUTH_SOURCE_RANKS.items():
+        updated += conn.execute(
+            "UPDATE market_day_settlements SET truth_rank = ? "
+            "WHERE truth_source = ? AND truth_rank <> ?",
+            (rank, source, rank),
+        ).rowcount
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",
+        (_MARKET_DAY_TRUTH_RANK_MIGRATION_KEY, _now()),
+    )
+    return updated
 
 
 _CLOSED_POSITION_WON_MIGRATION_KEY = "closed_row_position_won_v1"

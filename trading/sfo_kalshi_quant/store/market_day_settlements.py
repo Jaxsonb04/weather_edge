@@ -23,13 +23,34 @@ Truth sources
 Only sources that were independently validated are accepted, in this order of
 authority:
 
-``settlement_path`` (rank 3)
+``settlement_path`` (rank 4)
     The integer °F high handed to :meth:`PaperStore.settle_paper_orders` at the
     moment the day settled.  Same number the ledger booked against.
 
-``settled_sibling`` (rank 2)
+``settled_sibling`` (rank 3)
     ``settlement_high_f`` persisted on a ``PAPER_SETTLED`` order for the same
     ``(series_ticker, target_date)``.  Verified to have zero internal conflicts.
+
+``cli_settlement`` (rank 2)
+    The forecaster archive's own final NWS CLI maximum for the station, keyed
+    by ``(series_ticker, target_date)`` and read straight from
+    ``weather.db.cli_settlements`` with ``is_final = 1``.  This is the same
+    instrument Kalshi settles on and the *upstream* of both ranks above: the
+    number ``settle_paper_orders`` is handed comes from exactly this table.
+
+    It ranks **below** the two booked sources on purpose.  Where a lot actually
+    settled, the ledger paid out against the high it was handed at the time; a
+    later CLI correction must not silently rewrite the observability table to
+    disagree with the journal, because ``verify_paper_settlements`` already
+    exists to surface booked-vs-final divergence as an incident and an
+    overwrite here would hide that signal.
+
+    It ranks **above** the exchange dataset because it carries the actual
+    temperature -- so it fills ``settlement_high_f`` and resolves the strike
+    through the same :func:`row_resolves_yes` rule as every other source -- and
+    because its coverage strictly dominates: 2015-01-01 to the last finalized
+    day across all fifteen stations, against a dataset whose finalized rows
+    stop at ``26MAY31``, before this book placed its first order.
 
 ``dataset_kalshi_markets`` (rank 1)
     The exchange's own finalized ``result`` for the exact ticker.  Verified to
@@ -41,15 +62,36 @@ Sources that were tested and **rejected** -- do not reintroduce them:
 1.5% of days), station METAR daily max (27.4% exact and systematically 1°F low),
 and ``market_snapshots.result`` (only ever the string ``active``).
 
+Why the CLI source is not optional
+----------------------------------
+A **wholly-exited** series-day -- every lot on it closed early -- has no settled
+sibling *by construction*, and those are precisely the market-days this table
+exists to make visible.  With only the two order-derived sources, the operator
+backfill could reach a wholly-exited day only through the exchange dataset,
+which covered 3 of the 154 wholly-exited market-days in the production book
+(2026-06-10 onward).  Adding the CLI high takes that to 140 of 154; the
+remaining 14 are days whose CLI has not finalized yet and which the live
+record-only pass picks up as soon as it does.
+
 Unrecoverable history
 ---------------------
-A traded market-day is **unrecoverable** when neither surviving source covers
-it: no ``PAPER_SETTLED`` order exists for its ``(series_ticker, target_date)``
-and ``dataset_kalshi_markets`` holds no finalized ``yes``/``no`` result for its
-ticker.  Those days predate any durable capture of the outcome and cannot be
-reconstructed from this database; :func:`backfill_market_day_settlements`
-reports them explicitly rather than guessing.  Every future day is covered,
-because the live settlement path now records the whole traded market-day.
+A traded market-day is **unrecoverable** when no surviving source covers it: no
+``PAPER_SETTLED`` order exists for its ``(series_ticker, target_date)``, the CLI
+archive holds no final maximum for that station-day, and
+``dataset_kalshi_markets`` holds no finalized ``yes``/``no`` result for its
+ticker.  :func:`backfill_market_day_settlements` reports those explicitly
+rather than guessing.  Every future day is covered, because the live settlement
+path now records the whole traded market-day.
+
+Ranks are derived, never stored independently
+---------------------------------------------
+``truth_rank`` is a pure function of ``truth_source`` (:data:`TRUTH_SOURCE_RANKS`).
+The ladder gained a level when ``cli_settlement`` was inserted, so a database
+written before that carries stale integers whose *relative* order is wrong --
+an old rank-3 ``settlement_path`` row would tie with a new rank-3
+``settled_sibling`` write and lose to it.  ``schema._migrate_market_day_truth_ranks``
+re-derives every stored rank from its source name so the no-downgrade rule in
+:data:`_UPSERT_SQL` keeps meaning what it says.
 
 Read-only by contract
 ---------------------
@@ -61,7 +103,7 @@ enforces that with an allowlist over the package source.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Any, Mapping
 
 from ..cities import city_for_market_ticker
 from ..settlement_truth import integer_settlement_high_f, row_resolves_yes
@@ -94,11 +136,17 @@ ON market_day_settlements (target_date, series_ticker);
 
 TRUTH_SOURCE_SETTLEMENT_PATH = "settlement_path"
 TRUTH_SOURCE_SETTLED_SIBLING = "settled_sibling"
+TRUTH_SOURCE_CLI_SETTLEMENT = "cli_settlement"
 TRUTH_SOURCE_DATASET_MARKET = "dataset_kalshi_markets"
 
+# The authority ladder. See the module docstring for why the CLI archive sits
+# below the two booked sources and above the exchange dataset. Rank is derived
+# from the source name and never edited in isolation; changing a number here
+# needs a matching bump of the schema migration that re-derives stored ranks.
 TRUTH_SOURCE_RANKS: dict[str, int] = {
-    TRUTH_SOURCE_SETTLEMENT_PATH: 3,
-    TRUTH_SOURCE_SETTLED_SIBLING: 2,
+    TRUTH_SOURCE_SETTLEMENT_PATH: 4,
+    TRUTH_SOURCE_SETTLED_SIBLING: 3,
+    TRUTH_SOURCE_CLI_SETTLEMENT: 2,
     TRUTH_SOURCE_DATASET_MARKET: 1,
 }
 
@@ -406,20 +454,31 @@ def backfill_market_day_settlements(
     *,
     recorded_at: str,
     dry_run: bool = False,
+    cli_settlement_highs: Mapping[tuple[str, str], float] | None = None,
 ) -> dict[str, Any]:
-    """Populate historical market-days from the two validated truth sources.
+    """Populate historical market-days from the validated truth sources.
 
-    Idempotent and additive.  Market-days already recorded by a stronger source
-    are left alone.  Days that neither source covers are returned under
+    Idempotent and additive.  Market-days already recorded by an equal-or-
+    stronger source are left alone.  Days no source covers are returned under
     ``unrecoverable`` rather than being filled with a guess.
+
+    ``cli_settlement_highs`` maps ``(series_ticker, target_date)`` to the
+    station's final NWS CLI maximum -- the shape
+    :func:`settlement_truth.load_cli_settlement_truth` already returns.  It
+    lives in the forecaster's ``weather.db``, not in this database, so it is
+    passed in rather than read here; the caller owns that connection.  Omitting
+    it degrades this command back to the order-derived sources, which cannot
+    reach a wholly-exited series-day at all (see the module docstring).
     """
 
     rows = _traded_market_days(conn)
     existing = _existing_outcomes(conn)
     sibling_highs = _settled_sibling_highs(conn)
+    cli_highs: Mapping[tuple[str, str], float] = cli_settlement_highs or {}
     dataset_results = _dataset_market_results(conn)
 
     from_sibling = 0
+    from_cli = 0
     from_dataset = 0
     already_recorded = 0
     unrecoverable: list[dict[str, Any]] = []
@@ -436,33 +495,54 @@ def backfill_market_day_settlements(
                 }
             )
             continue
-        high = sibling_highs.get((series, target))
+        sibling_high = sibling_highs.get((series, target))
+        cli_high = cli_highs.get((series, target))
         dataset_resolved = dataset_results.get(ticker)
-        if high is not None:
+        high = sibling_high if sibling_high is not None else cli_high
+        prior = existing.get((ticker, target))
+        if sibling_high is not None:
             truth_source = TRUTH_SOURCE_SETTLED_SIBLING
-            resolved_yes = row_resolves_yes(row, integer_settlement_high_f(high))
+        elif cli_high is not None:
+            truth_source = TRUTH_SOURCE_CLI_SETTLEMENT
         elif dataset_resolved is not None:
             truth_source = TRUTH_SOURCE_DATASET_MARKET
-            resolved_yes = dataset_resolved
+        elif prior is not None:
+            # The live record-only pass already captured this market-day from
+            # the settlement path. Calling it "unrecoverable" because no
+            # *backfill* source can re-derive it would make "0 unrecoverable"
+            # unreachable in steady state and hide the days that really are
+            # dark behind a permanent floor of ones that are not.
+            already_recorded += 1
+            continue
         else:
             unrecoverable.append(
                 {
                     "market_ticker": ticker,
                     "target_date": target,
                     "reason": (
-                        "no settled sibling for this series-day and no finalized "
+                        "no settled sibling for this series-day, no final CLI "
+                        "maximum for this station-day, and no finalized "
                         "dataset_kalshi_markets result for this ticker"
                     ),
                 }
             )
             continue
+        # A high resolves the strike through the one shared rule; only the
+        # exchange dataset states the outcome directly, and it carries no
+        # temperature, so its rows keep settlement_high_f NULL.
+        resolved_yes = (
+            row_resolves_yes(row, integer_settlement_high_f(high))
+            if high is not None
+            else dataset_resolved
+        )
         rank = TRUTH_SOURCE_RANKS[truth_source]
-        prior = existing.get((ticker, target))
         if prior is not None and prior[1] >= rank:
             already_recorded += 1
             continue
         if truth_source == TRUTH_SOURCE_SETTLED_SIBLING:
             from_sibling += 1
+        elif truth_source == TRUTH_SOURCE_CLI_SETTLEMENT:
+            from_cli += 1
         else:
             from_dataset += 1
         if dry_run:
@@ -491,7 +571,9 @@ def backfill_market_day_settlements(
         "traded_market_days": len(rows),
         "already_recorded": already_recorded,
         "recorded_from_settled_sibling": from_sibling,
+        "recorded_from_cli_settlements": from_cli,
         "recorded_from_dataset_markets": from_dataset,
+        "cli_settlement_days_available": len(cli_highs),
         "unrecoverable": unrecoverable,
         "dry_run": dry_run,
     }

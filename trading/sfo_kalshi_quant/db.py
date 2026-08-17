@@ -5686,6 +5686,13 @@ class PaperStore:
           gone (SQLITE_FULL and friends force a rollback), the settlement did
           NOT commit, and the original error is re-raised so the caller fails
           honestly instead of being told rows settled that did not.
+
+        Opening the savepoint is itself guarded. It used to sit outside the
+        try, so a failure of the ``SAVEPOINT`` statement -- the one statement
+        the isolation depends on -- would propagate and abort settlement, which
+        is the precise outcome this method exists to make impossible. Nothing
+        has been written at that point and there is no savepoint to unwind, so
+        the only correct response is to log and skip the measurement.
         """
 
         if not series_ticker:
@@ -5696,7 +5703,17 @@ class PaperStore:
                 target_date,
             )
             return
-        conn.execute("SAVEPOINT market_day_settlements")
+        try:
+            conn.execute("SAVEPOINT market_day_settlements")
+        except sqlite3.Error:
+            logger.exception(
+                "market-day settlement recording could not open its savepoint for "
+                "%s (%s); nothing was written and the settlement transaction "
+                "itself is unaffected and still commits",
+                target_date,
+                series_ticker,
+            )
+            return
         try:
             summary = record_market_day_settlements(
                 conn,
@@ -5761,18 +5778,37 @@ class PaperStore:
         with self.connect() as conn:
             return unrecorded_traded_target_dates(conn, series_ticker=series_ticker)
 
-    def backfill_market_day_settlements(self, *, dry_run: bool = False) -> dict:
-        """Backfill historical market-day outcomes from validated truth only."""
+    def backfill_market_day_settlements(
+        self,
+        *,
+        dry_run: bool = False,
+        cli_settlement_highs: Mapping[tuple[str, str], float] | None = None,
+    ) -> dict:
+        """Backfill historical market-day outcomes from validated truth only.
+
+        ``cli_settlement_highs`` carries the forecaster archive's final CLI
+        maxima keyed by ``(series_ticker, target_date)``. It lives in
+        ``weather.db``, which this store does not own, so the CLI caller loads
+        it and passes it down. Without it the backfill cannot reach a
+        wholly-exited series-day at all -- there is no settled sibling to read
+        by construction.
+        """
 
         recorded_at = _now()
         with self.connect() as conn:
             if dry_run:
                 return backfill_market_day_settlements(
-                    conn, recorded_at=recorded_at, dry_run=True
+                    conn,
+                    recorded_at=recorded_at,
+                    dry_run=True,
+                    cli_settlement_highs=cli_settlement_highs,
                 )
             conn.execute("BEGIN IMMEDIATE")
             return backfill_market_day_settlements(
-                conn, recorded_at=recorded_at, dry_run=False
+                conn,
+                recorded_at=recorded_at,
+                dry_run=False,
+                cli_settlement_highs=cli_settlement_highs,
             )
 
     def market_day_settlements(

@@ -396,21 +396,30 @@ def cmd_paper_check_foreign_keys(args: argparse.Namespace) -> int:
 # a time, and this pass runs unattended inside the thirty-minute settle timer
 # with no dry-run. Bounding it to a recent window keeps it a residual sweep
 # rather than an unbounded history backfill on a timer: unbounded, its first run
-# after deploy takes and releases the write lock once per (series, date) pair,
-# and production currently holds 319 such pairs across fourteen series spanning
-# 2026-06-10 to 2026-08-17. Deep history belongs to the explicit operator
-# command `paper-backfill-market-day-settlements`, which has the --dry-run this
-# unattended path structurally cannot offer.
+# after deploy takes and releases the write lock once per completed (series,
+# date) pair, and production currently holds 308 completed pairs (319 traded in
+# total, 2026-06-10 to 2026-08-17) across fourteen series. Deep history belongs
+# to the explicit operator command `paper-backfill-market-day-settlements`,
+# which has the --dry-run this unattended path structurally cannot offer.
+#
+# That division of labour is only honest because the operator command can
+# actually reach deep history. It could not until the final CLI maximum became
+# its third truth source: a wholly-exited series-day has no settled sibling by
+# construction, and the exchange dataset covers 3 of the 154 wholly-exited
+# market-days in this book. With the CLI source the same command reaches 140 of
+# the 154; the 14 it does not are days whose CLI has not finalized yet, and the
+# pass below picks those up in the window as soon as it does.
 #
 # Seven days. A target date only becomes recordable at 06:00 local the day after
 # it completes, so one day covers the steady state and the remaining six are
 # slack for a late-finalized CLI high or a settle-timer outage; the longest unit
 # outage observed on this host was five days. Measured against the same
-# production book, the window turns that 319-pair first run into 39 pairs and
-# leaves a steady state of roughly one date per city per day. A market-day whose
-# CLI high finalizes after the window closes is not lost -- it stays in the
-# residual and the operator backfill reaches it from the settled sibling or the
-# finalized exchange result.
+# production book, the window turns that 308-pair first run into 42 pairs inside
+# the window, 31 of them completed and therefore actually swept, and leaves a
+# steady state of roughly one date per city per day. A market-day whose CLI high
+# finalizes after the window closes is not lost -- it stays in the residual and
+# the operator backfill reaches it from the settled sibling, the final CLI
+# maximum, or the finalized exchange result.
 RECORD_ONLY_RESIDUAL_LOOKBACK_DAYS = 7
 
 
@@ -587,18 +596,32 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
 def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
     """Reconstruct historical market-day outcomes from validated truth only.
 
-    Two sources are accepted, both independently verified: the
+    Three sources are accepted, all independently verified: the
     ``settlement_high_f`` persisted on a settled order for the same
-    ``(series, target_date)``, and the exchange's own finalized result in
-    ``dataset_kalshi_markets``. Days neither source covers are unrecoverable
-    from this database and are reported, never guessed. See
-    ``store/market_day_settlements.py`` for the sources that were tested and
-    rejected.
+    ``(series, target_date)``, the forecaster archive's final NWS CLI maximum
+    for that station-day, and the exchange's own finalized result in
+    ``dataset_kalshi_markets``. Days no source covers are unrecoverable and are
+    reported, never guessed. See ``store/market_day_settlements.py`` for the
+    authority ladder and for the sources that were tested and rejected.
+
+    The CLI archive is what makes this command able to reach deep history at
+    all. A series-day whose every lot exited early has no settled sibling by
+    construction -- and those are exactly the market-days this table exists to
+    make visible -- so without it the only route to a wholly-exited day was the
+    exchange dataset, whose finalized rows stop before this book's first order.
     """
 
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
-    summary = store.backfill_market_day_settlements(dry_run=args.dry_run)
+    # weather.db truth, all fifteen stations at once. The adapter's city only
+    # selects a station for the per-city readers; this one is station-agnostic
+    # and returns every (series, target_date) it holds.
+    cli_settlement_highs = SfoForecasterAdapter(
+        args.forecaster_root
+    ).load_cli_settlement_truth()
+    summary = store.backfill_market_day_settlements(
+        dry_run=args.dry_run, cli_settlement_highs=cli_settlement_highs
+    )
     unrecoverable = summary["unrecoverable"]
     prefix = "would record" if summary["dry_run"] else "recorded"
     print(
@@ -606,8 +629,10 @@ def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
             f"market-day settlement backfill: {summary['traded_market_days']} traded "
             f"market-day(s); {summary['already_recorded']} already recorded; "
             f"{prefix} {summary['recorded_from_settled_sibling']} from settled "
-            f"siblings and {summary['recorded_from_dataset_markets']} from finalized "
-            f"exchange results; {len(unrecoverable)} unrecoverable"
+            f"siblings, {summary['recorded_from_cli_settlements']} from final CLI "
+            f"maxima, and {summary['recorded_from_dataset_markets']} from finalized "
+            f"exchange results; {len(unrecoverable)} unrecoverable "
+            f"({summary['cli_settlement_days_available']} CLI station-day(s) available)"
         )
     )
     for entry in unrecoverable[: args.show_unrecoverable]:
