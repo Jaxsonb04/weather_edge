@@ -2,9 +2,12 @@
 
 from datetime import date, timedelta
 
+import pytest
+
 import sfo_kalshi_quant.probability as probability_module
 from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
-from sfo_kalshi_quant.models import ForecastOutcome
+from sfo_kalshi_quant.forecast import ForecastDataError, matching_emos_distribution
+from sfo_kalshi_quant.models import ForecastOutcome, ForecastSnapshot
 from sfo_kalshi_quant.probability import ResidualCalibrator, interval_probability_normal
 from sfo_kalshi_quant.standard_bins import standard_sfo_bins
 
@@ -119,3 +122,81 @@ def test_intraday_model_centers_on_emos_mean_when_active():
         assert abs(captured["center"] - 69.0) < 1e-9  # flag off -> blend point, emos ignored
     finally:
         probability_module._intraday_probability_model = original
+
+
+# --- PR-52: EMOS point / EMOS residual-law coupling guard --------------------
+# An EMOS point forecast is only priceable against the EMOS residual law fitted
+# with it. SFO's operational fallback substitutes a live EMOS row for the legacy
+# blend point while the live profile keeps ``emos_distribution_enabled`` off, so
+# the EMOS point was priced through the blend's residual calibration -- another
+# model's law, measured ~1.8-2.0x too wide (4.8F versus the EMOS 2.54F).
+
+_UNSET_EMOS = object()
+
+
+def _emos_forecast(*, mu=71.5, sigma=2.54, point=None, emos=_UNSET_EMOS):
+    payload = {"mu": mu, "sigma": sigma} if emos is _UNSET_EMOS else emos
+    raw = {"source": "forecast_emos_daily_high"}
+    if payload is not None:
+        raw["emos"] = payload
+    return ForecastSnapshot(
+        target_date=date(2026, 8, 16),
+        predicted_high_f=mu if point is None else point,
+        method="emos-wmean (live NWP ensemble) [SFO operational fallback]",
+        raw=raw,
+    )
+
+
+def test_matching_emos_distribution_ignores_a_non_emos_point():
+    # The legacy blend path is untouched in both flag states.
+    blend = ForecastSnapshot(
+        target_date=date(2026, 8, 16),
+        predicted_high_f=68.0,
+        method="legacy SFO blend",
+        raw={"source": "forecast_blend_daily_high"},
+    )
+    assert matching_emos_distribution(blend, enabled=False) is None
+    assert matching_emos_distribution(blend, enabled=True) is None
+    bare = ForecastSnapshot(target_date=date(2026, 8, 16), predicted_high_f=68.0)
+    assert matching_emos_distribution(bare, enabled=False) is None
+
+
+def test_matching_emos_distribution_fails_closed_when_the_distribution_is_disabled():
+    # THE DEFECT: an EMOS point with the EMOS distribution switched off would be
+    # priced against another model's residual law. Refuse the target instead.
+    with pytest.raises(ForecastDataError, match="matching EMOS distribution"):
+        matching_emos_distribution(_emos_forecast(), enabled=False)
+
+
+def test_matching_emos_distribution_returns_the_same_row_pair():
+    assert matching_emos_distribution(_emos_forecast(), enabled=True) == (71.5, 2.54)
+
+
+@pytest.mark.parametrize(
+    "emos",
+    [
+        None,
+        {},
+        {"mu": 71.5},
+        {"sigma": 2.54},
+        {"mu": 71.5, "sigma": None},
+        {"mu": "x", "sigma": 2.54},
+    ],
+)
+def test_matching_emos_distribution_rejects_a_missing_distribution(emos):
+    with pytest.raises(ForecastDataError, match="missing its matching EMOS distribution"):
+        matching_emos_distribution(_emos_forecast(emos=emos), enabled=True)
+
+
+@pytest.mark.parametrize("sigma", [0.0, -2.54, float("nan"), float("inf")])
+def test_matching_emos_distribution_rejects_a_nonpositive_or_nonfinite_sigma(sigma):
+    with pytest.raises(ForecastDataError, match="invalid matching EMOS distribution"):
+        matching_emos_distribution(_emos_forecast(sigma=sigma), enabled=True)
+
+
+def test_matching_emos_distribution_rejects_a_point_that_left_its_distribution():
+    # mu and the point must be the same number: once they diverge the pair is no
+    # longer a coupled (point, residual law), which is the whole invariant. This
+    # is also what pins the guard's PRE-intraday call site in the scan path.
+    with pytest.raises(ForecastDataError, match="disagree"):
+        matching_emos_distribution(_emos_forecast(mu=71.5, point=76.0), enabled=True)
