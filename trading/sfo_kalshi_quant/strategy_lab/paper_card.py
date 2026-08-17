@@ -747,28 +747,35 @@ def _paper_exit_reason(row: dict[str, Any]) -> str:
     return audited_exit_reason(row)
 
 
+def _row_optional_flag(row: Any, column: str) -> bool | None:
+    value = _sqlite_row_value(row, column)
+    return None if value is None else bool(value)
+
+
 def _paper_order_won(row: Any) -> bool:
+    """Whether THIS position won. See scoring._row_position_won for the split
+    between ``position_won`` (this position) and ``resolved_yes`` (the market).
+    """
+
     logical_outcome = _sqlite_row_value(row, "logical_outcome")
     if logical_outcome in {"win", "loss"}:
         return logical_outcome == "win"
-    try:
-        resolved_yes = row["resolved_yes"]
-    except (IndexError, KeyError):
-        resolved_yes = None
+    position_won = _row_optional_flag(row, "position_won")
+    if position_won is not None:
+        return position_won
+    resolved_yes = _row_optional_flag(row, "resolved_yes")
     if resolved_yes is None:
         return _to_float(row["realized_pnl"]) > 0.0
     side = _side_from_row(row)
-    return bool(resolved_yes) if side == "YES" else not bool(resolved_yes)
+    return resolved_yes if side == "YES" else not resolved_yes
 
 
 def _paper_order_decided(row: Any) -> bool:
     if _sqlite_row_value(row, "logical_outcome") in {"win", "loss"}:
         return True
-    try:
-        resolved_yes = row["resolved_yes"]
-    except (IndexError, KeyError):
-        resolved_yes = None
-    if resolved_yes is not None:
+    if _row_optional_flag(row, "position_won") is not None:
+        return True
+    if _row_optional_flag(row, "resolved_yes") is not None:
         return True
     return abs(_to_float(row["realized_pnl"])) > 1e-9
 
@@ -1363,7 +1370,14 @@ def _paper_row(
         ),
         "stop_loss_bid": exit_bid_for_net(stop_loss_net, contracts, **exit_fee_kwargs),
         "settlement_high_f": _round(row["settlement_high_f"], 1),
-        "resolved_yes": row["resolved_yes"],
+        # Public artifact field. It is named after the MARKET's outcome, so it
+        # is emitted only when a settlement high proves one. Closed rows exit
+        # before settlement and therefore have no market outcome to report;
+        # their win/loss lives in position_won / realized_pnl instead.
+        "resolved_yes": (
+            row["resolved_yes"] if row["settlement_high_f"] is not None else None
+        ),
+        "position_won": _sqlite_row_value(row, "position_won"),
         "exit_price": _round(row["exit_price"], 4),
         "exit_fee_per_contract": _round(row["exit_fee_per_contract"], 4),
         "exit_fill_count": _sqlite_row_value(row, "exit_fill_count"),

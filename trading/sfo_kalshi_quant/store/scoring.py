@@ -504,33 +504,48 @@ def _normalize_row_profile(row: sqlite3.Row) -> str:
     return _normalize_sample_profile(value)
 
 
-def _row_position_won(row: sqlite3.Row) -> bool:
+def _row_optional_flag(row: sqlite3.Row, column: str) -> bool | None:
     try:
-        resolved_yes = row["resolved_yes"]
+        value = row[column]
     except (IndexError, KeyError):
-        resolved_yes = None
+        return None
+    return None if value is None else bool(value)
+
+
+def _row_position_won(row: sqlite3.Row) -> bool:
+    """Whether THIS position won, read from the field that means exactly that.
+
+    ``position_won`` is the explicit answer: settlement writes it from the
+    resolved market side, an early close writes it from the realized P&L sign.
+    ``resolved_yes`` is a market fact and is only consulted for rows written
+    before ``position_won`` existed, using the same decode those rows were
+    always read with -- so this returns what it has always returned.
+    """
+
+    position_won = _row_optional_flag(row, "position_won")
+    if position_won is not None:
+        return position_won
+    resolved_yes = _row_optional_flag(row, "resolved_yes")
     if resolved_yes is None:
         return float(row["realized_pnl"] or 0.0) > 0.0
     side = _row_side(row)
-    return bool(resolved_yes) if side == "YES" else not bool(resolved_yes)
+    return resolved_yes if side == "YES" else not resolved_yes
 
 
 def _row_position_decided(row: sqlite3.Row) -> bool:
     """Whether a realized row has a decided win/loss outcome.
 
-    A break-even early close stores ``resolved_yes = NULL`` with
+    A break-even early close stores ``position_won = NULL`` with
     ``realized_pnl == 0`` (see ``close_paper_order``); it is genuinely undecided
     and must be excluded from the hit-rate denominator rather than counted as a
-    loss. Any row with a recorded ``resolved_yes`` (settled, or a decided close)
-    is decided; a NULL-``resolved_yes`` legacy row is decided iff its PnL is
-    non-zero (its win/loss can still be read from the PnL sign).
+    loss. Any row with a recorded ``position_won`` (settled, or a decided close)
+    is decided, as is any legacy row that still carries ``resolved_yes``; a row
+    with neither is decided iff its PnL is non-zero.
     """
 
-    try:
-        resolved_yes = row["resolved_yes"]
-    except (IndexError, KeyError):
-        resolved_yes = None
-    if resolved_yes is not None:
+    if _row_optional_flag(row, "position_won") is not None:
+        return True
+    if _row_optional_flag(row, "resolved_yes") is not None:
         return True
     return abs(float(row["realized_pnl"] or 0.0)) > 1e-9
 

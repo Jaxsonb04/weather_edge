@@ -1339,6 +1339,55 @@ def _settled_accounting_findings(
     return findings
 
 
+def _closed_outcome_semantics_findings(
+    row: sqlite3.Row,
+    outcome: dict[str, Any],
+    realized_pnl: float,
+) -> list[str]:
+    """Validate what a closed row is allowed to claim about the market.
+
+    This existed nowhere before. The only place the harness reconciled
+    ``resolved_yes`` against real market truth was
+    ``_settled_accounting_findings``, which is reached only for
+    ``PAPER_SETTLED`` rows and then returns early unless ``settled_at`` parses.
+    A closed row has no ``settled_at`` by definition, so the project's strictest
+    integrity harness structurally could not see a closed-row outcome defect --
+    which is how ``resolved_yes`` spent months meaning "this position made
+    money" on every early exit without a single finding being raised.
+
+    A position closed before settlement has no market outcome: nobody knows the
+    day's high yet. So the row must not carry one, and its win/loss must be the
+    sign of its own realized P&L.
+    """
+
+    findings: list[str] = []
+    if _binary_flag(_row_value(row, "resolved_yes")) is not None:
+        findings.append("CLOSED_ROW_CLAIMS_MARKET_OUTCOME")
+    recorded_outcome = outcome.get("outcome")
+    recorded_outcome = (
+        recorded_outcome if isinstance(recorded_outcome, dict) else {}
+    )
+    if recorded_outcome.get("resolved_yes") is not None:
+        findings.append("CLOSED_OUTCOME_CLAIMS_MARKET_OUTCOME")
+
+    expected_won: bool | None = (
+        None if abs(realized_pnl) < 1e-9 else realized_pnl > 0.0
+    )
+    if _binary_flag(_row_value(row, "position_won")) is not expected_won:
+        findings.append("CLOSED_POSITION_WON_MISMATCH")
+    if not recorded_outcome:
+        return findings
+    if recorded_outcome.get("event") != "close":
+        findings.append("CLOSED_OUTCOME_EVENT_MISMATCH")
+    closed_at = _parse_replay_time(_row_value(row, "closed_at"))
+    recorded_at = _parse_replay_time(recorded_outcome.get("resolved_at"))
+    if closed_at is None or recorded_at != closed_at:
+        findings.append("CLOSED_OUTCOME_RESOLVED_AT_MISMATCH")
+    if recorded_outcome.get("position_won") is not expected_won:
+        findings.append("CLOSED_OUTCOME_POSITION_WON_MISMATCH")
+    return findings
+
+
 def _closed_accounting_findings(
     row: sqlite3.Row,
     outcome: dict[str, Any],
@@ -1359,9 +1408,14 @@ def _closed_accounting_findings(
         or exit_fee is None
         or recorded_pnl is None
     ):
-        return []
+        return _closed_outcome_semantics_findings(
+            row, outcome, recorded_pnl if recorded_pnl is not None else 0.0
+        )
     expected_pnl = closed_position_pnl(contracts, cost, exit_price, exit_fee)
-    return [] if _close_number(recorded_pnl, expected_pnl) else ["REALIZED_PNL_MISMATCH"]
+    findings = _closed_outcome_semantics_findings(row, outcome, recorded_pnl)
+    if not _close_number(recorded_pnl, expected_pnl):
+        findings.append("REALIZED_PNL_MISMATCH")
+    return findings
 
 
 def _row_uses_current_maker_semantics(row: object) -> bool:
