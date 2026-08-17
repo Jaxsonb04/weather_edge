@@ -22,6 +22,7 @@ import json
 import sqlite3
 from contextlib import redirect_stdout
 from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -127,7 +128,10 @@ def test_recording_is_idempotent_and_never_downgrades_authority():
 
         # A weaker backfill source cannot overwrite the settlement path's value.
         store.record_market_day_settlements(
-            "2026-06-12", 90.0, truth_source=TRUTH_SOURCE_DATASET_MARKET
+            "2026-06-12",
+            90.0,
+            series_ticker="KXHIGHTSFO",
+            truth_source=TRUTH_SOURCE_DATASET_MARKET,
         )
         preserved = _rows(store)["KXHIGHTSFO-TEST-B66.5"]
         assert preserved["settlement_high_f"] == 67.0
@@ -261,7 +265,9 @@ def test_recording_does_not_alter_orders_ledger_or_pnl():
             return orders, ledger, accounts
 
         before = snapshot()
-        store.record_market_day_settlements("2026-06-12", 67.0)
+        store.record_market_day_settlements(
+            "2026-06-12", 67.0, series_ticker="KXHIGHTSFO"
+        )
         store.backfill_market_day_settlements()
         assert snapshot() == before
         assert store.market_day_settlements()
@@ -494,9 +500,16 @@ def test_auto_settle_records_a_target_date_where_every_lot_exited_early():
     so it never reached ``settle_paper_orders`` at all and the market's own
     outcome for it was never recorded anywhere. The record-only pass covers it
     without touching a single order.
+
+    The target date is now taken relative to today: the record-only pass is
+    bounded to a recent window (review finding F2), because on an unattended
+    thirty-minute timer it must sweep the live residual, not backfill history.
+    ``test_observability_hardening.py`` covers the window boundary itself.
     """
 
     from sfo_kalshi_quant.cli import main as cli_main
+
+    target = (date.today() - timedelta(days=2)).isoformat()
 
     with TemporaryDirectory() as tmp:
         root = Path(tmp) / "forecaster"
@@ -507,18 +520,18 @@ def test_auto_settle_records_a_target_date_where_every_lot_exited_early():
                 "max_temperature_f INTEGER, is_final INTEGER NOT NULL DEFAULT 1)"
             )
             conn.execute(
-                "INSERT INTO cli_settlements VALUES ('KSFO', '2026-01-10', 71, 1)"
+                "INSERT INTO cli_settlements VALUES ('KSFO', ?, 71, 1)", (target,)
             )
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
         order_id = store.record_paper_order(
-            "2026-01-10", _decision("KXHIGHTSFO-TEST-B70.5", floor=70.0, cap=71.0)
+            target, _decision("KXHIGHTSFO-TEST-B70.5", floor=70.0, cap=71.0)
         )
         store.close_paper_order(order_id, 0.50)
 
         orders_before = _order_snapshot(db_path)
         assert store.open_paper_target_dates() == []
-        assert store.unrecorded_traded_target_dates() == ["2026-01-10"]
+        assert store.unrecorded_traded_target_dates() == [target]
 
         out = io.StringIO()
         with patch(

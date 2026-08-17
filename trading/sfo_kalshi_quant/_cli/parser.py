@@ -901,8 +901,8 @@ def register_paper_commands(sub) -> None:
         "paper-backfill-market-day-settlements",
         help=(
             "Reconstruct historical market-day settlement outcomes from settled "
-            "siblings and finalized exchange results; measurement only, writes no "
-            "order, ledger, or policy"
+            "siblings, final CLI maxima, and finalized exchange results; "
+            "measurement only, writes no order, ledger, or policy"
         ),
     )
     backfill_outcomes.add_argument(
