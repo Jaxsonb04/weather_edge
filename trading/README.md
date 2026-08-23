@@ -56,9 +56,11 @@ python3 -m sfo_kalshi_quant.cli backtest-signals
 
 The scheduled entry path is `portfolio-scan`, not a legacy single-market
 diagnostic. It evaluates all configured cities through the shared allocator.
-Production paper entry is maker-first: `PAPER_ENTRY_MODE=limit` records a
-resting limit at the reservation price, and the monitor marks a proxy fill only
-when the visible ask crosses. That proxy does not model queue position.
+Production paper entry is reservation-first: `PAPER_ENTRY_MODE=limit` normally
+records a resting limit at the reservation price. Configured profiles may take
+a bounded whole-contract slice of displayed depth only when exact after-fee
+point and lower-bound edge floors still pass; otherwise the order remains
+maker. The resting-fill proxy does not model queue position.
 
 Use `--target-date both` to show today's tradable market and tomorrow's
 probability forecast in one run.

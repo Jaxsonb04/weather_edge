@@ -79,9 +79,11 @@ Responsibilities:
 - evaluate YES/NO sides after fees, spread, confidence, and liquidity gates;
   the live profile additionally gates entries to the favorite band
   [0.70, 0.97], while research trades the whole price curve
-- enter maker-first: production entry mode rests limit orders that pay the
-  maker fee (25% of the quadratic taker rate); the monitor fills a resting
-  limit when the visible ask crosses (a proxy fill model, no queue position)
+- enter reservation-first: production entry mode normally rests limits at the
+  reservation price, while profile-scoped guarded taker crosses may capture a
+  displayed whole-contract slice only when exact after-fee point and
+  lower-bound edge still pass; resting fills use a tape-based proxy with no
+  queue-position simulation
 - keep exposure caps and settlement series-scoped, so one city's high can
   never settle another city's bins; auto-settle uses only durable
   `cli_settlements.is_final=1` truth after the next-day 06:00 fixed-standard

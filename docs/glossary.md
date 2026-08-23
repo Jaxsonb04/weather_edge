@@ -46,11 +46,12 @@
   before the target date, with no same-day observed-high lock/floor.
 - **Cheap-tail gate**: special guardrail for 1c/2c contracts with weak bid
   support.
-- **Maker-first entry**: the production entry mode (`PAPER_ENTRY_MODE=limit`)
-  that rests limit orders instead of crossing the spread. Resting quotes pay
-  the maker fee (25% of the 0.07 quadratic taker rate); the monitor fills a
-  resting limit when the visible ask crosses it — a proxy fill model with no
-  queue-position simulation.
+- **Reservation-first entry**: the production entry mode
+  (`PAPER_ENTRY_MODE=limit`) normally rests limits at the reservation price.
+  Profile-scoped guarded taker crosses may capture displayed whole-contract
+  depth only when exact after-fee point and lower-bound edge still pass;
+  otherwise the order remains maker. Resting fills use a tape-based proxy with
+  no queue-position simulation.
 - **Favorite band**: the live profile's entry price gate [0.70, 0.97],
   concentrating on high-probability favorites per the favorite-longshot-bias
   evidence. The research profile still trades the whole price curve.

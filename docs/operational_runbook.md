@@ -65,9 +65,11 @@ override:
 python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --cities sfo,lax
 ```
 
-Production entry mode is maker-first resting limits (`PAPER_ENTRY_MODE=limit`);
-resting quotes pay the maker fee, and the 2-minute monitor fills a resting
-limit when the visible ask crosses it (a proxy fill model, no queue position):
+Production entry mode is reservation-first (`PAPER_ENTRY_MODE=limit`): it
+normally rests limits, while configured paper profiles may take a bounded
+whole-contract slice of displayed depth only when their exact after-fee point
+and lower-bound edge floors still pass. The 2-minute monitor applies the
+tape-based proxy fill model to orders that remain resting:
 
 ```bash
 PAPER_ENTRY_MODE=limit python -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --place-paper

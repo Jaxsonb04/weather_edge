@@ -35,10 +35,11 @@ flagship.
   per city.
 - **Balanced profile**: paper-research risk profile; statistically conservative
   (lower-bound edge must be non-negative) with structural liquidity gates.
-- **Maker-first entry**: production entry mode (`PAPER_ENTRY_MODE=limit`) rests
-  limit orders that pay the maker fee (25% of the 0.07 quadratic taker rate);
-  the monitor fills a resting limit when the visible ask crosses it — a proxy
-  fill model with no queue-position simulation.
+- **Reservation-first entry**: production entry mode (`PAPER_ENTRY_MODE=limit`)
+  normally rests limits at the reservation price. Profile-scoped guarded
+  taker crosses may instead capture displayed whole-contract depth when exact
+  after-fee point and lower-bound edge still pass; otherwise the order remains
+  maker. Resting fills use a tape-based proxy with no queue-position simulation.
 - **Favorite band**: the live profile's price gate [0.70, 0.97], concentrating
   on high-probability favorites per the favorite-longshot-bias evidence; the
   research profile still trades the whole price curve.
