@@ -200,11 +200,12 @@ def _live_frequency_tuning_payload(
     config_rescore: dict[str, Any],
     live_config: StrategyConfig,
 ) -> dict[str, Any]:
-    """Guarded frequency report for the live real-money-candidate profile.
+    """Guarded candidate-frequency report for the live profile.
 
-    This does not loosen gates. It reports whether the current live config is
-    producing the desired paper frequency and explicitly publishes the guardrails
-    that a future retune must preserve.
+    Rescore rows are candidate approvals, not orders or fills. Keep that
+    distinction explicit so this diagnostic can never claim the execution
+    target was met while the paper account is idle. This does not loosen gates;
+    it publishes the guardrails that a future retune must preserve.
     """
 
     target_min = 2.0
@@ -220,7 +221,8 @@ def _live_frequency_tuning_payload(
             "available": False,
             "status": "RESCORE_UNAVAILABLE",
             "reason": config_rescore.get("reason", "config rescore unavailable"),
-            "target_trades_per_day": [target_min, target_max],
+            "metric_scope": "rescored_candidate_approvals_not_executed_trades",
+            "target_approved_candidates_per_day": [target_min, target_max],
             "safe_config_change": None,
             "guardrails": guardrails,
         }
@@ -231,35 +233,39 @@ def _live_frequency_tuning_payload(
     considered = int(_to_float(counts.get("considered")))
     approved_per_day = approved / days if days > 0 else 0.0
     if days <= 0 or approved < 30:
-        status = "BELOW_TARGET_COLLECT_ONLY"
+        status = "BELOW_TARGET_CANDIDATES_COLLECT_ONLY"
         recommendation = (
             "Current live gates do not yet produce enough settled, independent "
-            "evidence to tune toward 2-3 paper entries/day without weakening "
+            "evidence to tune toward 2-3 approved candidates/day without weakening "
             "the lower-bound edge or pause guardrails."
         )
     elif target_min <= approved_per_day <= target_max:
-        status = "ON_TARGET"
-        recommendation = "Current live gates are within the target paper frequency band."
-    elif approved_per_day < target_min:
-        status = "BELOW_TARGET_COLLECT_ONLY"
+        status = "CANDIDATE_APPROVALS_ON_TARGET"
         recommendation = (
-            "Live frequency is below target; inspect profile-scoped rejection "
+            "Candidate approvals are within the target band; actual order and "
+            "fill activity must be evaluated separately."
+        )
+    elif approved_per_day < target_min:
+        status = "BELOW_TARGET_CANDIDATES_COLLECT_ONLY"
+        recommendation = (
+            "Live candidate frequency is below target; inspect profile-scoped rejection "
             "diagnostics before considering any guarded retune."
         )
     else:
-        status = "ABOVE_TARGET_REVIEW_RISK"
+        status = "CANDIDATE_APPROVALS_ABOVE_TARGET_REVIEW_EXECUTION"
         recommendation = (
-            "Live frequency is above target; review drawdown and exposure before "
-            "raising any limits."
+            "Candidate approvals are above target; do not infer executed trades. "
+            "Review placement, fill, drawdown, and exposure evidence separately."
         )
     return {
         "available": True,
         "status": status,
-        "target_trades_per_day": [target_min, target_max],
+        "metric_scope": "rescored_candidate_approvals_not_executed_trades",
+        "target_approved_candidates_per_day": [target_min, target_max],
         "approved_under_current_live_config": approved,
         "considered_snapshots": considered,
         "independent_days": days,
-        "approved_per_independent_day": _round(approved_per_day, 4),
+        "approved_candidates_per_independent_day": _round(approved_per_day, 4),
         "safe_config_change": None,
         "guardrails": guardrails,
         "recommendation": recommendation,

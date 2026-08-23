@@ -140,9 +140,10 @@ class StrategyConfig:
     # cross can only be MORE conservative than today's resting placement.
     limit_taker_cross_enabled: bool = False
     limit_taker_cross_min_edge_lcb: float = 0.02
-    # A crossing fill is capped at displayed ask depth; below this notional the
-    # $5 executable minimum in the account policy would reject the order, so
-    # fall back to the resting quote instead of burning the candidate.
+    # Minimum executable notional for profile-scoped paper placement. A
+    # crossing fill is capped at displayed ask depth; when the displayed slice
+    # is below this floor, fall back to the resting quote instead of burning
+    # the candidate. The frozen/default profile keeps the historical $5 floor.
     limit_taker_cross_min_notional: float = 5.0
     # When bid+1 violates the LCB buffer, rest deeper at the highest tick that
     # preserves the buffer by construction instead of dropping the candidate.
@@ -540,6 +541,15 @@ LIVE_PROFILE_OVERRIDES = {
     # band, spread, depth, model/market gap) are UNCHANGED; this only stops
     # discarding trades those gates already approved.
     "limit_taker_cross_min_edge_lcb": 0.0,
+    # THIN-DEPTH CAPTURE (2026-08-22). The exchange-facing unit is a whole
+    # contract, but the paper account historically required $5 of displayed
+    # notional before taking an already-approved favorite. That forced many
+    # 1-4 contract quotes back into the low-fill maker path even though the
+    # exact taker fee and non-negative after-fee LCB floor still held. A
+    # point-in-time replay over the 2026-07-29..08-21 depth window moved the
+    # capped Live book from 62 to 84 fills (+35%, 79-5) at a $1 floor, without
+    # changing any signal, exposure, loss, liquidity, or position-size cap.
+    "limit_taker_cross_min_notional": 1.0,
     "limit_resting_reservation_fallback": True,
 }
 

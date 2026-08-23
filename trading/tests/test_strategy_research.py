@@ -2394,10 +2394,51 @@ def test_live_frequency_tuning_report_does_not_loosen_guardrails_without_evidenc
     )
 
     assert report["available"] is True
-    assert report["status"] == "BELOW_TARGET_COLLECT_ONLY"
+    assert report["status"] == "BELOW_TARGET_CANDIDATES_COLLECT_ONLY"
+    assert report["metric_scope"] == "rescored_candidate_approvals_not_executed_trades"
+    assert "target_trades_per_day" not in report
+    assert report["target_approved_candidates_per_day"] == [2.0, 3.0]
     assert report["safe_config_change"] is None
     assert report["guardrails"]["min_edge_lcb"] == 0.0
     assert report["guardrails"]["blocked_forecast_cohorts"] == ["warm"]
+
+
+def test_live_frequency_tuning_reports_candidate_statuses_not_trade_statuses():
+    live_config = StrategyConfig()
+
+    unavailable = _live_frequency_tuning_payload(
+        {"available": False, "reason": "offline"},
+        live_config,
+    )
+    assert unavailable["status"] == "RESCORE_UNAVAILABLE"
+    assert unavailable["metric_scope"] == (
+        "rescored_candidate_approvals_not_executed_trades"
+    )
+
+    cases = (
+        (30, 20, "BELOW_TARGET_CANDIDATES_COLLECT_ONLY"),
+        (60, 30, "CANDIDATE_APPROVALS_ON_TARGET"),
+        (120, 30, "CANDIDATE_APPROVALS_ABOVE_TARGET_REVIEW_EXECUTION"),
+    )
+    for approved, days, expected_status in cases:
+        report = _live_frequency_tuning_payload(
+            {
+                "available": True,
+                "by_profile": {
+                    "live": {
+                        "counts": {
+                            "approved_under_candidate_config": approved,
+                            "considered": approved * 2,
+                            "independent_days": days,
+                        }
+                    }
+                },
+            },
+            live_config,
+        )
+        assert report["status"] == expected_status
+        assert "target_trades_per_day" not in report
+        assert "approved_per_independent_day" not in report
 
 
 def test_strategy_research_surfaces_resting_limit_orders():

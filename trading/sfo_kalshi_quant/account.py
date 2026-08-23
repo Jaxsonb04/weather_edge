@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import time
 from zoneinfo import ZoneInfo
 from dataclasses import asdict
@@ -88,6 +89,7 @@ def policy_capacity(
     market_ticker: str,
     risk_profile: str | None,
     requested_spend: float,
+    minimum_notional: float = MIN_EXECUTABLE_NOTIONAL,
 ) -> dict[str, object]:
     """Apply shared-account risk policy to already-loaded account state.
 
@@ -143,10 +145,28 @@ def policy_capacity(
         REGION_DAY_PCT * equity - region_risk,
         float(state["available_cash"]),
     )
-    if requested_spend < MIN_EXECUTABLE_NOTIONAL:
-        return {"allowed_spend": 0.0, "reason": "recommendation below $5 executable minimum"}
-    if allowed < MIN_EXECUTABLE_NOTIONAL:
-        return {"allowed_spend": 0.0, "reason": "account risk room below $5 executable minimum"}
+    try:
+        minimum_notional = float(minimum_notional)
+    except (TypeError, ValueError):
+        return {"allowed_spend": 0.0, "reason": "minimum executable notional is invalid"}
+    if not math.isfinite(minimum_notional) or minimum_notional <= 0:
+        return {"allowed_spend": 0.0, "reason": "minimum executable notional is invalid"}
+    if requested_spend + 1e-9 < minimum_notional:
+        return {
+            "allowed_spend": 0.0,
+            "reason": (
+                "recommendation below "
+                f"${minimum_notional:g} executable minimum"
+            ),
+        }
+    if allowed + 1e-9 < minimum_notional:
+        return {
+            "allowed_spend": 0.0,
+            "reason": (
+                "account risk room below "
+                f"${minimum_notional:g} executable minimum"
+            ),
+        }
     return {"allowed_spend": max(0.0, allowed), "reason": None}
 
 

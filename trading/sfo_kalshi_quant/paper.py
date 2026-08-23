@@ -745,6 +745,7 @@ class PaperTrader:
             market_ticker=decision.ticker,
             risk_profile=self.risk_profile,
             requested_spend=requested,
+            minimum_notional=self.config.limit_taker_cross_min_notional,
         )
         allowed = float(capacity["allowed_spend"])
         if allowed <= 0:
@@ -768,7 +769,11 @@ class PaperTrader:
             if contracts * exact_cost <= allowed + 1e-9:
                 break
             contracts = contracts - 1.0 if not self.config.allow_fractional_contracts else allowed / exact_cost
-        if contracts <= 0 or contracts * exact_cost < 5.0 - 1e-9:
+        if (
+            contracts <= 0
+            or contracts * exact_cost
+            < self.config.limit_taker_cross_min_notional - 1e-9
+        ):
             return None
         edge = decision.probability - exact_cost
         edge_lcb = decision.probability_lcb - exact_cost

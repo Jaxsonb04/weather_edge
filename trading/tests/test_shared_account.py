@@ -3,10 +3,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from sfo_kalshi_quant.account import strategy_fingerprint
+from sfo_kalshi_quant.account import (
+    LIVE_STABILITY_ACCOUNT_ID,
+    policy_capacity,
+    strategy_fingerprint,
+)
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book, main
 from sfo_kalshi_quant.colors import Color
-from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.paper import PaperTrader
@@ -65,6 +69,104 @@ def test_shared_account_caps_position_and_rejects_sub_five_dollar_dust() -> None
         assert row["strategy_fingerprint"] == strategy_fingerprint(
             StrategyConfig(), entry_mode="market"
         )
+
+
+def test_live_profile_admits_replay_selected_one_dollar_positions() -> None:
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        config = strategy_config_for_profile("live")
+        trader = PaperTrader(store, config)
+
+        order_ids = trader.place_approved(
+            "2026-07-11",
+            [_decision(recommended_contracts=4.0)],
+            bankroll=1000.0,
+        )
+
+        assert len(order_ids) == 1
+        row = store.paper_order(order_ids[0])
+        assert row is not None
+        assert 1.0 <= row["contracts"] * row["cost_per_contract"] < 5.0
+        assert row["strategy_fingerprint"] == strategy_fingerprint(
+            config, entry_mode="market"
+        )
+
+
+def test_live_profile_records_one_dollar_crossing_limit_in_ledger() -> None:
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        config = strategy_config_for_profile("live")
+        trader = PaperTrader(
+            store,
+            config,
+            risk_profile="live",
+            entry_mode="limit",
+        )
+
+        order_ids = trader.place_approved(
+            "2026-07-11",
+            [_decision(recommended_contracts=4.0)],
+            bankroll=1000.0,
+        )
+
+        assert len(order_ids) == 1
+        row = store.paper_order(order_ids[0])
+        assert row is not None
+        assert row["status"] == "PAPER_FILLED"
+        assert row["entry_mode"] == "limit"
+        assert row["entry_price"] == 0.40
+        assert 1.0 <= row["contracts"] * row["cost_per_contract"] < 5.0
+        with store.connect() as conn:
+            events = conn.execute(
+                "SELECT event_type FROM paper_account_ledger "
+                "WHERE account_id=? AND order_id=? ORDER BY id",
+                (LIVE_STABILITY_ACCOUNT_ID, order_ids[0]),
+            ).fetchall()
+        assert [str(event[0]) for event in events] == ["ENTRY_FILL"]
+        reconciliation = store.account_order_ledger_reconciliation(
+            LIVE_STABILITY_ACCOUNT_ID
+        )
+        assert reconciliation["status"] == "reconciled"
+
+
+def test_profile_minimum_notional_fails_invalid_values_closed() -> None:
+    state = {
+        "realized_equity": 1000.0,
+        "drawdown": 0.0,
+        "available_cash": 1000.0,
+    }
+    for minimum in (None, 0.0, -1.0, float("nan"), float("inf"), "bad"):
+        capacity = policy_capacity(
+            state=state,
+            active_rows=[],
+            daily_pnl=0.0,
+            target_date="2026-07-11",
+            market_ticker="KXHIGHTSFO-TEST-B68",
+            risk_profile="live",
+            requested_spend=10.0,
+            minimum_notional=minimum,  # type: ignore[arg-type]
+        )
+        assert capacity == {
+            "allowed_spend": 0.0,
+            "reason": "minimum executable notional is invalid",
+        }
+
+
+def test_live_profile_rejects_when_exact_fee_repricing_falls_below_one_dollar() -> None:
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        config = strategy_config_for_profile("live")
+        trader = PaperTrader(store, config)
+
+        # The recommendation's approximate cost clears $1, but exact taker-fee
+        # repricing reduces the safe whole-contract quantity to two ($0.84).
+        order_ids = trader.place_approved(
+            "2026-07-11",
+            [_decision(recommended_contracts=3.0)],
+            bankroll=1000.0,
+        )
+
+        assert order_ids == []
 
 
 def test_ledger_reserves_fills_and_settles_cash_idempotently() -> None:

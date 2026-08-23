@@ -140,10 +140,10 @@ def test_high_bar_config_still_refuses_the_thin_candidate():
 
 
 def test_executable_minimum_still_blocks_a_too_thin_book():
-    """Depth of 4 at ~0.95 is $3.81 -- below the $5 account minimum."""
+    """One contract at ~0.95 remains below the live profile's $1 floor."""
 
     live = strategy_config_for_profile("live")
-    assert buy_limit_for_decision(_decision(entry_ask_size=4.0), live) is None
+    assert buy_limit_for_decision(_decision(entry_ask_size=1.0), live) is None
 
 
 def test_wide_spread_still_prefers_the_improving_maker_quote_when_it_qualifies():

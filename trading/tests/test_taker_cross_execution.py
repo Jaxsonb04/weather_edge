@@ -97,6 +97,7 @@ def test_live_profile_enables_taker_cross_and_reservation_fallback():
     # win rate and +$3.47/day (see the LIVE_PROFILE_OVERRIDES rationale).
     assert live.limit_taker_cross_min_edge_lcb == 0.0
     assert live.limit_taker_cross_min_edge_lcb < live.limit_price_edge_lcb_buffer
+    assert live.limit_taker_cross_min_notional == 1.0
 
 
 def test_research_profile_scopes_capture_to_the_target_book():
@@ -242,14 +243,39 @@ def test_target_research_taker_cross_crosses_wide_spread_at_zero_floor():
     assert quote.edge_lcb >= -1e-12
 
 
-def test_target_research_taker_cross_rests_when_depth_cannot_absorb_full_size():
-    # A candidate larger than the displayed ask keeps resting so the policy
-    # allocator's zero-fee up-sizing path stays available.
+def test_target_research_taker_cross_takes_a_bounded_partial_visible_fill():
+    # The visible slice may fill immediately even when the policy request is
+    # larger. Exact taker fees and both non-negative edge floors still bind.
     decision = _decision(recommended_contracts=12.0, entry_ask_size=10.0)
+    quote = target_research_quote(decision, _research_cross_config())
+    assert quote is not None
+    assert quote.would_cross is True
+    assert quote.price == 0.90
+    assert quote.contracts == 10.0
+
+
+def test_target_research_partial_cross_keeps_the_one_dollar_floor():
+    # One 90c contract is real displayed liquidity but remains below the
+    # replay-selected $1 minimum, so the larger request keeps its maker path.
+    decision = _decision(recommended_contracts=12.0, entry_ask_size=1.0)
     quote = target_research_quote(decision, _research_cross_config())
     assert quote is not None
     assert quote.would_cross is False
     assert quote.price == 0.89
+
+
+def test_target_research_natural_cross_keeps_the_one_dollar_floor():
+    decision = _decision(
+        entry_bid=0.89,
+        entry_ask=0.90,
+        entry_ask_size=1.0,
+        recommended_contracts=12.0,
+    )
+    quote = target_research_quote(decision, _research_cross_config())
+    assert quote is not None
+    assert quote.would_cross is False
+    assert quote.price == 0.89
+    assert quote.contracts == 12.0
 
 
 def test_target_research_taker_cross_falls_back_when_floor_fails():
@@ -262,7 +288,24 @@ def test_target_research_taker_cross_falls_back_when_floor_fails():
     assert quote.price == 0.89
 
 
+def test_target_research_partial_cross_keeps_the_point_probability_floor():
+    decision = _decision(model_probability=0.90)
+    quote = target_research_quote(decision, _research_cross_config())
+    assert quote is not None
+    assert quote.would_cross is False
+    assert quote.price == 0.89
+
+
 def test_target_research_taker_cross_requires_displayed_depth():
     quote = target_research_quote(_decision(entry_ask_size=0.4), _research_cross_config())
+    assert quote is not None
+    assert quote.would_cross is False
+
+
+def test_target_research_partial_cross_rejects_nonfinite_negative_depth():
+    quote = target_research_quote(
+        _decision(entry_ask_size=float("-inf")),
+        _research_cross_config(),
+    )
     assert quote is not None
     assert quote.would_cross is False

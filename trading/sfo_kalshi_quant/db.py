@@ -27,6 +27,7 @@ from .account import (
     ACCOUNTING_POLICY_VERSION,
     INITIAL_CAPITAL,
     LIVE_STABILITY_ACCOUNT_ID,
+    MIN_EXECUTABLE_NOTIONAL,
     RESEARCH_ACCOUNT_ID,
     RESEARCH_VIRTUAL_CAPITAL,
     REGION_BY_SERIES,
@@ -2069,6 +2070,7 @@ class PaperStore:
         risk_profile: str | None,
         requested_spend: float,
         account_id: str | None = None,
+        minimum_notional: float = MIN_EXECUTABLE_NOTIONAL,
     ) -> dict[str, object]:
         """Maximum safe new notional under the paper account policy.
 
@@ -2166,6 +2168,7 @@ class PaperStore:
             market_ticker=market_ticker,
             risk_profile=risk_profile,
             requested_spend=requested_spend,
+            minimum_notional=minimum_notional,
         )
 
     def _research_capacity_on_connection(

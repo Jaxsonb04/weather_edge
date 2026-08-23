@@ -272,8 +272,12 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # daily budget in the allocator, capping live at one leg per allocation
     # (measured 1103/1106). Sizing at placement is unchanged; the allocator
     # simply stops double-charging risk the book never takes.
-    assert strategy_fingerprint(config, entry_mode="limit") == "dd8002d07a4944f2b90ccce0"
-    assert strategy_fingerprint(config, entry_mode="market") == "184c4a8ed01260f0e61d39cd"
+    # 2026-08-22: the profile-scoped executable minimum moved from $5 to $1 so
+    # thin but already-approved displayed slices can be captured. Signal and
+    # account risk gates are unchanged, but this is intentionally a new
+    # execution identity.
+    assert strategy_fingerprint(config, entry_mode="limit") == "dceac4d4125c6faeb878a038"
+    assert strategy_fingerprint(config, entry_mode="market") == "e0300ed55c4ebbafde6189cd"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1222,7 +1226,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "184c4a8ed01260f0e61d39cd"
+    assert row["strategy_fingerprint"] == "e0300ed55c4ebbafde6189cd"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
@@ -1336,7 +1340,11 @@ def test_atomic_admission_rolls_back_on_ledger_key_collision(
         tmp_path / f"ledger-collision-{resting}.db",
         research_clock=_fixed_research_clock,
     )
-    decision = _atomic_decision("KXHIGHTSFO-LEDGER-COLLISION", resting=resting)
+    decision = _atomic_decision(
+        "KXHIGHTSFO-LEDGER-COLLISION",
+        contracts=1.0 if resting else 2.0,
+        resting=resting,
+    )
     admission = _linked_admission(
         store,
         TARGET_POLICY,
@@ -2033,6 +2041,7 @@ def test_atomic_admission_accepts_canonical_resting_and_crossing_quotes(
     )
     decision = _atomic_decision(
         f"KXHIGHTSFO-CANONICAL-QUOTE-{resting}",
+        contracts=1.0 if resting else 2.0,
         resting=resting,
     )
     admission = _linked_admission(
@@ -2592,9 +2601,10 @@ def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() 
         limit_edge_lcb=None,
         model_probability=None,
     )
+    target_contracts = 2.0
     fee = quadratic_fee_average_per_contract(
         raw.ask,
-        1.0,
+        target_contracts,
         maker=False,
         fee_multiplier=config.fee_multiplier,
         taker_rate=config.taker_fee_rate,
@@ -2609,8 +2619,8 @@ def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() 
         model_probability=point_probability,
         edge=0.003,
         edge_lcb=0.003,
-        recommended_contracts=1.0,
-        expected_profit=0.003,
+        recommended_contracts=target_contracts,
+        expected_profit=0.003 * target_contracts,
         reasons=[],
         approved=True,
     )
@@ -2620,7 +2630,16 @@ def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() 
     assert target[0].approved is True
     assert target[0].edge == pytest.approx(0.003)
     assert motion[0].approved is True
-    assert motion[0].edge == pytest.approx(0.003)
+    motion_fee = quadratic_fee_average_per_contract(
+        raw.ask,
+        1.0,
+        maker=False,
+        fee_multiplier=config.fee_multiplier,
+        taker_rate=config.taker_fee_rate,
+        maker_rate=config.maker_fee_rate,
+        series_ticker=raw.ticker,
+    )
+    assert motion[0].edge == pytest.approx(point_probability - raw.ask - motion_fee)
 
 
 def test_target_uses_maker_when_taker_lcb_is_negative_but_maker_lcb_is_nonnegative() -> None:
@@ -2847,7 +2866,7 @@ def test_target_maker_quote_does_not_downsize_to_visible_ask_depth() -> None:
     candidate = replace(
         _crossing_target_candidate(
             "KXHIGHTSFO-TARGET-MAKER-DEPTH",
-            ask_size=5.0,
+            ask_size=1.0,
         ),
         entry_bid=0.88,
         spread=0.02,
@@ -2916,12 +2935,22 @@ def test_target_depth_downsize_is_exact_in_evidence_and_order_ledger(
             "FROM paper_orders WHERE id=?",
             (result.target_order_ids[0],),
         ).fetchone()
+        events = conn.execute(
+            "SELECT event_type FROM paper_account_ledger "
+            "WHERE account_id=? AND order_id=? ORDER BY id",
+            (TARGET_POLICY.account_id, result.target_order_ids[0]),
+        ).fetchall()
     assert evidence[0] == pytest.approx(5.0)
     assert evidence[1] == pytest.approx(target_decisions[0].cost_per_contract * 5.0)
     assert order[0] == pytest.approx(5.0)
     assert order[1] == pytest.approx(5.0)
     assert order[2] == pytest.approx(0.90)
     assert order[3] == "PAPER_FILLED"
+    assert [str(event[0]) for event in events] == ["ENTRY_FILL"]
+    reconciliation = store.account_order_ledger_reconciliation(
+        TARGET_POLICY.account_id
+    )
+    assert reconciliation["status"] == "reconciled"
 
 
 def test_research_scan_batches_one_shared_context_for_all_dispositions(
@@ -3384,7 +3413,7 @@ def test_atomic_admission_crosses_wide_spread_when_depth_covers_full_size(
         research_clock=_fixed_research_clock,
     )
     raw = replace(
-        _atomic_decision("KXHIGHTSFO-WIDE-CROSS", resting=True),
+        _atomic_decision("KXHIGHTSFO-WIDE-CROSS", contracts=2.0, resting=True),
         probability_lcb=0.88,
         limit_price=None,
         limit_fee_per_contract=None,
