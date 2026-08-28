@@ -725,6 +725,12 @@ elif 'restore' in args:
         for i, line in enumerate(actions)
         if "refresh_strategy_analysis_cache.sh" in line
     )
+    snapshot_removal_idx = next(
+        i
+        for i, line in enumerate(actions)
+        if "rm -f -- '/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3'"
+        in line
+    )
     publisher_stop_idx = next(
         i
         for i, line in enumerate(actions)
@@ -737,13 +743,14 @@ elif 'restore' in args:
     assert first_rsync_idx < install_idx
     assert (
         install_idx
+        < analysis_idx
+        < snapshot_removal_idx
         < apple_restore_idx
         < seed_indexes[0]
         < public_wait_indexes[0]
         < initial_writer_restore_idx
         < freshness_idx
         < watchdog_restore_idx
-        < analysis_idx
         < publisher_stop_idx
         < seed_indexes[1]
         < public_wait_indexes[1]

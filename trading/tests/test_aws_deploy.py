@@ -1130,7 +1130,7 @@ def test_deploy_builds_decision_indexes_while_services_are_quiesced():
     analysis_idx = deployer.index(
         "bash deploy/aws/refresh_strategy_analysis_cache.sh"
     )
-    assert quiesce_idx < index_idx < restore_idx < publication_idx < analysis_idx
+    assert quiesce_idx < index_idx < analysis_idx < restore_idx < publication_idx
     assert "WEATHEREDGE_BACKUP_SNAPSHOT=" in deployer
     assert "SFO_STRATEGY_ANALYSIS_DB_PATH=" in deployer
 
@@ -1847,4 +1847,22 @@ def test_deploy_removes_the_verified_snapshot_after_the_analysis_refresh() -> No
     assert analysis_idx < removal_idx, (
         "the snapshot feeds the Strategy Lab refresh; it may only be removed "
         "after that step has consumed it"
+    )
+
+
+def test_deploy_removes_the_verified_snapshot_before_runtime_health_restoration() -> None:
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    analysis_idx = deployer.index("bash deploy/aws/refresh_strategy_analysis_cache.sh")
+    removal_idx = deployer.index("rm -f -- '$ANALYSIS_DB_SNAPSHOT'")
+    producer_restore_idx = deployer.index(
+        'bash -s restore "${PRODUCER_TIMERS[@]}" < "$QUIESCE_HELPER"'
+    )
+    freshness_idx = deployer.index(
+        "sudo systemctl start sfo-forecast-freshness.service"
+    )
+
+    assert analysis_idx < removal_idx < producer_restore_idx < freshness_idx, (
+        "the immutable snapshot must be consumed and removed while deployment "
+        "maintenance still holds producers; otherwise a near-capacity snapshot "
+        "can trip the restored runtime's disk-health gate"
     )
