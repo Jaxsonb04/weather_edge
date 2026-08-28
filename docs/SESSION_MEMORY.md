@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-22 22:34 PDT
+Last updated: 2026-08-27 20:23 PDT
 
 Last production verification: 2026-08-16 05:24 PDT
 
@@ -18,6 +18,40 @@ verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **THIN-LIQUIDITY RETUNE MERGED; FIRST DEPLOY ABORTED SAFE BEFORE SOURCE
+  INSTALL (2026-08-27, PR #105):** the paper-only `$1` executable-notional
+  floor and guarded Research ROI partial taker slice merged as
+  `fc3ed57e73f3fc5df5db138c9ca6bb4a6d7f69eb`. Fresh production evidence for
+  August 23--27 separated the two economically independent paper accounts:
+  Live Stability had zero new roots because no signals passed its existing
+  signal and safety policy, while Research ROI submitted thirteen roots, only
+  four received any fill, and 27.66 of 1,610 requested contracts filled. The
+  retune addresses the Research ROI execution bottleneck; it does not weaken
+  Live Stability signal, forecast-spread, liquidity, edge, or risk gates and
+  cannot manufacture qualifying live-profile trades.
+
+  The first deployment attempt was deliberately interrupted before source
+  installation after its fully verified database snapshot temporarily raised
+  disk use to 95%, above the host's 85% runtime health ceiling. The incomplete
+  local snapshot was removed, the exact fourteen captured timers were restored,
+  the maintenance marker was released, scheduler health passed, and the live
+  database, ledgers, orders, execution flags, and public artifacts were not
+  changed. Production therefore remained on runtime revision
+  `c82a67e0fb0a138ce42b86f22fbff6282590718f`; this was an incident recovery
+  check, not a complete production/public re-verification, so the timestamps
+  above remain unchanged.
+
+  Root cause was deploy ordering: the workflow retained the large verified
+  snapshot while restoring producers and running the explicit freshness check,
+  even though historical Strategy analysis was its final consumer. The local
+  deployment fix now refreshes historical analysis and removes that snapshot
+  while maintenance still holds every producer, before producer restoration or
+  freshness validation. Deployment-focused validation passes with **154 tests**
+  and clean shell syntax. The retune remains undeployed until this blocker fix
+  passes the full suite, lands, and a fresh audited deployment completes. Live
+  execution remains disabled, dry-run remains enabled, and no authenticated
+  order client exists.
 
 - **THIN-LIQUIDITY TRADE-CAPTURE RETUNE VALIDATED LOCALLY; NOT DEPLOYED
   (2026-08-22):** a fresh read-only runtime check found the deployed checkout

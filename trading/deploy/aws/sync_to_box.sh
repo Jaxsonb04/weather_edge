@@ -412,6 +412,35 @@ trap 'recover_deploy_runtime 130' INT
 trap 'recover_deploy_runtime 143' TERM
 trap 'recover_deploy_runtime $?' EXIT
 
+# Historical analysis is diagnostic and the frequent builder has an explicit
+# deferred state. Run it while deployment maintenance still holds every
+# producer: the verified snapshot may temporarily push the runtime volume above
+# its normal disk-health threshold, so it must be consumed and removed before
+# any producer or freshness check is restored. The helper reads the immutable,
+# integrity-checked deploy snapshot instead of the live journal.
+ANALYSIS_CACHE_REFRESHED=0
+if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+  "cd '$REMOTE_BASE/trading' && SFO_STRATEGY_ANALYSIS_DB_PATH='$ANALYSIS_DB_SNAPSHOT' bash deploy/aws/refresh_strategy_analysis_cache.sh"; then
+  ANALYSIS_CACHE_REFRESHED=1
+else
+  echo "warning: historical Strategy Lab cache refresh failed; continuing with deferred analysis" >&2
+  # The helper uses a stable transient-unit name and normally cleans it up via
+  # its trap. This best-effort second guard covers an abruptly dropped SSH
+  # transport before the remote shell can run that trap.
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "sudo systemctl stop weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true; sudo systemctl reset-failed weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true" \
+    || echo "warning: could not confirm Strategy Lab analysis unit cleanup" >&2
+fi
+
+# The analysis refresh was the last consumer of the verified snapshot. Drop it
+# before restoring runtime health checks. It is redundant because this deploy
+# already round-tripped it through S3 and re-verified the download.
+if [[ -n "$ANALYSIS_DB_SNAPSHOT" ]]; then
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "rm -f -- '$ANALYSIS_DB_SNAPSHOT'" \
+    || echo "warning: could not remove verified local snapshot $ANALYSIS_DB_SNAPSHOT" >&2
+fi
+
 # Restore producers first, seed and validate one complete publication, then
 # restore the persistent watchdog last so it cannot race the first fresh build.
 PRODUCER_TIMERS=()
@@ -510,35 +539,6 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 if (( WATCHDOG_ENABLED == 1 )); then
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
     bash -s restore sfo-forecast-freshness.timer < "$QUIESCE_HELPER"
-fi
-
-# Historical analysis is diagnostic and the frequent builder has an explicit
-# deferred state. Production is already restored before this optional work
-# starts. The helper reads the immutable, integrity-checked deploy snapshot
-# instead of holding a live-WAL read transaction against active producers.
-ANALYSIS_CACHE_REFRESHED=0
-if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  "cd '$REMOTE_BASE/trading' && SFO_STRATEGY_ANALYSIS_DB_PATH='$ANALYSIS_DB_SNAPSHOT' bash deploy/aws/refresh_strategy_analysis_cache.sh"; then
-  ANALYSIS_CACHE_REFRESHED=1
-else
-  echo "warning: historical Strategy Lab cache refresh failed; continuing with deferred analysis" >&2
-  # The helper uses a stable transient-unit name and normally cleans it up via
-  # its trap. This best-effort second guard covers an abruptly dropped SSH
-  # transport before the remote shell can run that trap.
-  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-    "sudo systemctl stop weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true; sudo systemctl reset-failed weatheredge-strategy-analysis-cache.service >/dev/null 2>&1 || true" \
-    || echo "warning: could not confirm Strategy Lab analysis unit cleanup" >&2
-fi
-
-# The analysis refresh was the last consumer of the verified snapshot. Drop it
-# now: it is redundant (this deploy already round-tripped it through S3 and
-# re-verified the download) and leaving it behind consumes exactly the space the
-# NEXT deploy's backup preflight requires, which is how a deploy blocks its own
-# successor. Non-fatal -- a stale snapshot is a disk problem, not a deploy one.
-if [[ -n "$ANALYSIS_DB_SNAPSHOT" ]]; then
-  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-    "rm -f -- '$ANALYSIS_DB_SNAPSHOT'" \
-    || echo "warning: could not remove verified local snapshot $ANALYSIS_DB_SNAPSHOT" >&2
 fi
 
 # A successful full analysis only updates the private cache. Rebuild the
