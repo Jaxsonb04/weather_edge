@@ -23,9 +23,11 @@ It does four jobs:
    risk gates.
 
 It does not place real-money orders. The scheduled EC2 scanner runs two paper
-profiles (`live` and `research`) over `PAPER_CITIES=all`. It enters maker-first
-with resting paper limits; a visible-ask crossing is only a proxy fill and does
-not model queue position.
+profiles (`live` and `research`) over `PAPER_CITIES=all`. Entry is
+reservation-first: it normally rests paper limits, but a configured profile may
+take a bounded whole-contract slice of displayed depth when exact after-fee
+point and lower-bound edge still pass. Resting fills use a tape-based proxy with
+no queue-position simulation.
 
 ## Data Sources
 
@@ -240,7 +242,7 @@ Inspect all cities without recording orders:
 python3 -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --cities all
 ```
 
-Run the actual maker-first portfolio path locally in dry paper mode:
+Run the actual reservation-first portfolio path locally in dry paper mode:
 
 ```bash
 PAPER_RISK_PROFILES=live,research PAPER_ENTRY_MODE=limit PAPER_CITIES=all \

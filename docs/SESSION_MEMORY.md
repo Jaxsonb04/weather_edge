@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-16 05:24 PDT
+Last updated: 2026-08-22 22:34 PDT
 
 Last production verification: 2026-08-16 05:24 PDT
 
@@ -18,6 +18,47 @@ verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **THIN-LIQUIDITY TRADE-CAPTURE RETUNE VALIDATED LOCALLY; NOT DEPLOYED
+  (2026-08-22):** a fresh read-only runtime check found the deployed checkout
+  still clean on `c82a67e0fb0a138ce42b86f22fbff6282590718f`, with no failed
+  units and paper-only artifacts generated around 05:05 UTC. This was not a
+  complete production re-verification, so the production-verification timestamp
+  above remains 2026-08-16. Live Stability held `$1,051.40` realized equity but
+  opened no new positions from August 17 through August 22; its only August 16
+  root closed `+$0.84`. Research ROI held `$1,084.16`, opened nine positions
+  from August 16 through August 22, and had achieved its `$50/day` research KPI
+  on only 1 of 23 observed days. These are economically separate paper accounts
+  and the figures must never be combined into one bankroll.
+
+  The root execution bottleneck was displayed liquidity and the maker fill
+  path, not unused capital or a missing risk exception. The existing live
+  frequency diagnostic was also semantically wrong: it called 407 rescored
+  candidate approvals over 45 independent days "trades" even though actual
+  recent live orders were zero. Local code now labels that diagnostic as
+  candidate approvals, never executed trades. For the paper profiles, an
+  evidence-selected `$1` executable-notional floor replaces the historical `$5`
+  floor while the frozen/default configuration retains `$5`. The Research ROI
+  target sleeve may take a whole-contract partial slice of the displayed ask
+  when exact taker fees and its non-negative point/LCB edge floors still pass;
+  insufficient or invalid depth keeps the prior maker path. Signal approval,
+  favorite-band, source-spread, after-fee lower-bound edge, position, account,
+  city, region, aggregate exposure, daily-loss, and drawdown controls are
+  unchanged.
+
+  Point-in-time settlement replay over the captured depth window supported the
+  narrow change but did not prove profitability. The capped Live replay moved
+  from 62 fills at the `$5` floor to 84 at `$1` (`+35%`), with modeled outcomes
+  moving from 57-5 and `+$12.48` to 79-5 and `+$17.73`; its day-clustered 95%
+  P&L interval still crossed zero (`-$2.54` to `+$3.35` per day). Research ROI's
+  `$1` partial-cross hybrid modeled 85 fills versus 54 maker-only fills, with
+  `+$250.53` versus `+$156.97` and a less-negative worst day (`-$44.93` versus
+  `-$69.97`); its daily interval also crossed zero (`-$2.08` to `+$27.82`).
+  Longer maker TTL, deeper-price crossing, and same-day entry were rejected by
+  the evidence rather than used to manufacture volume. Validation passed with
+  **2,795 tests passed, 8 skipped**, plus a clean diff check. No production
+  source, service, timer, database, ledger, order, execution flag, or public
+  artifact was changed. Deployment remains a separate audited operation.
 
 - **PAPER-READINESS HARDENING DEPLOYED; LIVE TRADING REMAINS IMPOSSIBLE
   (2026-08-16, PR #96):** runtime and public SPA revision

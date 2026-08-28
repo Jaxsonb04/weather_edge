@@ -234,6 +234,7 @@ def target_research_quote(
         or tick <= 0
     ):
         return None
+    requested_contracts = contracts
     point_probability = (
         float(decision.model_probability)
         if config.edge_gate_uses_model_probability
@@ -245,26 +246,28 @@ def target_research_quote(
     if not crosses and config.research_target_taker_cross:
         # The target book's documented floor is exactly non-negative after-fee
         # point and LCB edge. When that floor holds at the displayed ask AND
-        # the displayed depth absorbs the ENTIRE intended size, an immediate
-        # whole-contract taker fill realizes the edge now instead of gambling
-        # a resting quote on sparse aggressor flow. Candidates larger than the
-        # displayed ask keep resting so the policy allocator's zero-fee
-        # up-sizing path stays intact; the floor check below runs against the
-        # taker cost, so nothing is weakened.
+        # at least the configured executable notional is displayed, an
+        # immediate whole-contract taker fill realizes that bounded slice now
+        # instead of requiring the thin top level to absorb the ENTIRE policy
+        # request. The floor check runs against the exact taker cost of the
+        # partial quantity, so signal and risk gates remain unchanged. If the
+        # slice is too small or either edge floor fails, the full request keeps
+        # the existing maker path.
         try:
             displayed_ask_size = float(decision.ask_size)
         except (TypeError, ValueError, OverflowError):
             displayed_ask_size = 0.0
-        full_size = float(math.floor(contracts + 1e-12))
-        if (
-            math.isfinite(displayed_ask_size)
-            and full_size >= 1.0
-            and displayed_ask_size >= full_size
-        ):
+        if math.isfinite(displayed_ask_size) and displayed_ask_size > 0.0:
+            displayed_size = float(
+                math.floor(min(contracts, displayed_ask_size) + 1e-12)
+            )
+        else:
+            displayed_size = 0.0
+        if displayed_size >= 1.0:
             taker_price = _floor_to_tick(visible_ask, tick)
             taker_fee = quadratic_fee_average_per_contract(
                 taker_price,
-                full_size,
+                displayed_size,
                 maker=False,
                 fee_multiplier=config.fee_multiplier,
                 taker_rate=config.taker_fee_rate,
@@ -273,7 +276,9 @@ def target_research_quote(
             )
             taker_cost = taker_price + taker_fee
             if (
-                point_probability - taker_cost >= -1e-12
+                displayed_size * taker_cost + 1e-9
+                >= config.limit_taker_cross_min_notional
+                and point_probability - taker_cost >= -1e-12
                 and float(decision.probability_lcb) - taker_cost >= -1e-12
             ):
                 crosses = True
@@ -300,6 +305,30 @@ def target_research_quote(
         series_ticker=decision.ticker,
     )
     cost = price + fee
+    if (
+        crosses
+        and config.research_target_taker_cross
+        and contracts * cost + 1e-9 < config.limit_taker_cross_min_notional
+    ):
+        # A natural one-tick cross can be executable yet still fall below the
+        # profile's notional floor (for example one 90c contract). Keep the
+        # full policy request alive as a maker at the next lower tick instead
+        # of bypassing the minimum or dropping the candidate.
+        crosses = False
+        contracts = requested_contracts
+        price = _floor_to_tick(visible_ask - tick, tick)
+        if price < tick - 1e-12:
+            return None
+        fee = quadratic_fee_average_per_contract(
+            price,
+            contracts,
+            maker=True,
+            fee_multiplier=config.fee_multiplier,
+            taker_rate=config.taker_fee_rate,
+            maker_rate=config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
+        cost = price + fee
     edge = point_probability - cost
     edge_lcb = float(decision.probability_lcb) - cost
     if edge < -1e-12 or edge_lcb < -1e-12:

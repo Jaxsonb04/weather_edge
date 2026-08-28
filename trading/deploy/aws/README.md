@@ -147,8 +147,9 @@ dependencies do not belong on the production box.
   `sync_to_box.sh` has restored and validated production. It reads the verified
   immutable deploy snapshot rather than the live journal.
 - Paper scan: every five minutes, all configured cities, two profiles
-  (`PAPER_RISK_PROFILES=live,research`), maker-first with
-  `PAPER_ENTRY_MODE=limit` and `PAPER_CITIES=all`.
+  (`PAPER_RISK_PROFILES=live,research`), reservation-first with guarded
+  profile-scoped taker crosses under `PAPER_ENTRY_MODE=limit`, and
+  `PAPER_CITIES=all`.
 - Paper monitor: every two minutes.
 - Dataset/backfill: nightly, including NWP leads 1 and 2. Lead 3 is manual.
 

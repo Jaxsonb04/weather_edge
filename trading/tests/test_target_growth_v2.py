@@ -107,7 +107,7 @@ def _structural_target_candidate(*, bid: float, ask: float, ask_size: float) -> 
 
 def test_resting_structural_target_uses_the_active_policy_position_budget() -> None:
     prepared = with_target_research_execution(
-        _structural_target_candidate(bid=0.74, ask=0.76, ask_size=5.0),
+        _structural_target_candidate(bid=0.74, ask=0.76, ask_size=1.0),
         strategy_config_for_profile("research"),
     )
     assert prepared is not None
@@ -128,7 +128,7 @@ def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
 
     config = strategy_config_for_profile("research")
     prepared = with_target_research_execution(
-        _structural_target_candidate(bid=0.74, ask=0.76, ask_size=5.0),
+        _structural_target_candidate(bid=0.74, ask=0.76, ask_size=1.0),
         config,
     )
     assert prepared is not None
