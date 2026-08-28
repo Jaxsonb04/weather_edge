@@ -1,13 +1,13 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-27 20:23 PDT
+Last updated: 2026-08-28 00:06 PDT
 
-Last production verification: 2026-08-16 05:24 PDT
+Last production verification: 2026-08-28 00:06 PDT
 
-Last public artifact verification: 2026-08-16 05:24 PDT
+Last public artifact verification: 2026-08-28 00:06 PDT
 
-Production status snapshot (last verified 2026-08-16): healthy and paper-only on
-runtime revision `c82a67e0fb0a138ce42b86f22fbff6282590718f`. All fourteen
+Production status snapshot (last verified 2026-08-28): healthy and paper-only on
+runtime revision `f617b200c06216322bacc75f1b7560a90794028d`. All fourteen
 canonical timers are enabled and active, all twenty-nine canonical units match
 their templates, scheduler health passes, and no unit is failed. Live execution
 is disabled, dry-run is enabled, and no authenticated order client or live-order
@@ -19,39 +19,50 @@ current AWS state before making an operational claim.
 
 ## Session Brief
 
-- **THIN-LIQUIDITY RETUNE MERGED; FIRST DEPLOY ABORTED SAFE BEFORE SOURCE
-  INSTALL (2026-08-27, PR #105):** the paper-only `$1` executable-notional
-  floor and guarded Research ROI partial taker slice merged as
-  `fc3ed57e73f3fc5df5db138c9ca6bb4a6d7f69eb`. Fresh production evidence for
-  August 23--27 separated the two economically independent paper accounts:
-  Live Stability had zero new roots because no signals passed its existing
-  signal and safety policy, while Research ROI submitted thirteen roots, only
-  four received any fill, and 27.66 of 1,610 requested contracts filled. The
-  retune addresses the Research ROI execution bottleneck; it does not weaken
-  Live Stability signal, forecast-spread, liquidity, edge, or risk gates and
-  cannot manufacture qualifying live-profile trades.
+- **THIN-LIQUIDITY PAPER RETUNE DEPLOYED; SAFETY GATES STILL DETERMINE
+  FREQUENCY (2026-08-28, PRs #105 and #107):** clean runtime and public
+  provenance now match `f617b200c06216322bacc75f1b7560a90794028d`. Production
+  evidence for August 23--27 separated the two economically independent paper
+  accounts: Live Stability had zero new roots because no signals passed its
+  existing policy, while Research ROI submitted thirteen roots, only four
+  received any fill, and 27.66 of 1,610 requested contracts filled. The
+  deployed execution retune gives both paper profiles a `$1` executable-
+  notional floor and lets the Research ROI target sleeve take a whole-contract
+  partial slice of displayed ask depth only when its exact-fee non-negative
+  point and LCB edge floors still pass. Signal, forecast-spread, favorite-band,
+  liquidity, exposure, loss, drawdown, and entry-edge controls are unchanged.
 
   The first deployment attempt was deliberately interrupted before source
-  installation after its fully verified database snapshot temporarily raised
-  disk use to 95%, above the host's 85% runtime health ceiling. The incomplete
-  local snapshot was removed, the exact fourteen captured timers were restored,
-  the maintenance marker was released, scheduler health passed, and the live
-  database, ledgers, orders, execution flags, and public artifacts were not
-  changed. Production therefore remained on runtime revision
-  `c82a67e0fb0a138ce42b86f22fbff6282590718f`; this was an incident recovery
-  check, not a complete production/public re-verification, so the timestamps
-  above remain unchanged.
+  installation when a verified database snapshot temporarily raised disk use
+  to 95%, above the host's 85% runtime ceiling. Its incomplete local snapshot
+  was removed, the exact fourteen captured timers were restored, maintenance
+  was released, and scheduler health passed without changing the live database,
+  ledgers, orders, execution flags, or public artifacts. Root cause was deploy
+  ordering: the large snapshot remained present while producers and freshness
+  health were restored even though historical Strategy analysis was its final
+  consumer. PR #107 moved analysis and exact snapshot removal ahead of all
+  producer restoration and freshness validation.
 
-  Root cause was deploy ordering: the workflow retained the large verified
-  snapshot while restoring producers and running the explicit freshness check,
-  even though historical Strategy analysis was its final consumer. The local
-  deployment fix now refreshes historical analysis and removes that snapshot
-  while maintenance still holds every producer, before producer restoration or
-  freshness validation. Deployment-focused validation passes with **154 tests**
-  and clean shell syntax. The retune remains undeployed until this blocker fix
-  passes the full suite, lands, and a fresh audited deployment completes. Live
-  execution remains disabled, dry-run remains enabled, and no authenticated
-  order client exists.
+  The retry created an off-host backup and re-verified its checksum, full SQLite
+  integrity, and foreign keys after download. Source and twenty-nine canonical
+  units installed cleanly; both fixed-capital paper ledgers reconciled; full
+  Strategy analysis completed from the immutable snapshot; the snapshot was
+  removed before runtime restoration; disk returned to 56% with about 28 GiB
+  available; maintenance is absent; all fourteen timers are enabled and active;
+  no unit is failed; and explicit scheduler health passes. Public publication
+  at 07:01 UTC and Strategy analysis at 06:55 UTC carry the exact clean deployed
+  revision. Local validation passed with **2,796 tests, 8 skipped**; the PR and
+  post-merge Python 3.12, Python 3.13, and web verification matrices passed.
+
+  Natural post-deploy scan and monitor cycles both completed successfully. The
+  scan wrote 336 Live Stability and 360 Research ROI decision rows. Live had
+  zero signal approvals. Research had 194 signal approvals but zero final entry
+  approvals because every one failed the unchanged non-negative point and
+  after-fee LCB edge rule; no new order was manufactured to inflate frequency.
+  Thus the execution bottleneck is fixed for the next qualifying thin-depth
+  opportunity, but zero Live Stability trades can still be the correct safety
+  outcome. Live execution remains disabled, dry-run remains enabled, and no
+  authenticated order client exists.
 
 - **THIN-LIQUIDITY TRADE-CAPTURE RETUNE VALIDATED LOCALLY; NOT DEPLOYED
   (2026-08-22):** a fresh read-only runtime check found the deployed checkout
