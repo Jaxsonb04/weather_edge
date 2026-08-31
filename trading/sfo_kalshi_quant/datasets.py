@@ -39,6 +39,13 @@ OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS = (
     "gfs_hrrr",
     "gfs_global",
     "ecmwf_ifs",
+    # AI-NWP members added 2026-08-31 (IDs verified live against the
+    # previous-runs API). Collect-only: they become dataset-research candidate
+    # features and cannot influence trading until they clear the matched-row
+    # and holdout promotion gates. Open-Meteo's archive for both starts
+    # ~April 2026, so expect a warm-up before enough matched settlements.
+    "ecmwf_aifs025_single",
+    "gfs_graphcast025",
 )
 OPEN_METEO_PREVIOUS_RUN_MODEL_PRESETS = {
     "research_core": OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS,
