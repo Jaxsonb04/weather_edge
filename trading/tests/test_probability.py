@@ -1,3 +1,4 @@
+import math
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -46,7 +47,14 @@ def test_bucket_probabilities_sum_to_one():
     )
 
 
-def test_missing_conditional_analogue_cannot_narrow_confidence_band():
+def test_global_fallback_confidence_band_rests_on_global_support():
+    # Replaces test_missing_conditional_analogue_cannot_narrow_confidence_band
+    # (2026-08-16), retired 2026-08-30 with the cap it pinned: pricing the
+    # global-fallback estimate as a min_conditional_samples-sized sample drove
+    # production edge_lcb deductions to 0.16-0.22 at mid-range p and cut paper
+    # entries ~10x while public tape volume was unchanged. The fallback
+    # probability IS the global estimate, so its sampling error must rest on
+    # the global window's support, not a synthetic small n.
     start = date(2025, 1, 1)
     residuals = (-2.0, -1.0, 0.0, 1.0, 2.0)
     outcomes = [
@@ -74,9 +82,21 @@ def test_missing_conditional_analogue_cannot_narrow_confidence_band():
     )[2]
 
     assert abs(with_analogue.probability - without_analogue.probability) < 1e-12
-    assert without_analogue.probability - without_analogue.lower_confidence >= (
+    fallback_width = without_analogue.probability - without_analogue.lower_confidence
+    p = without_analogue.probability
+    # 400 global outcomes support a band far tighter than the retired
+    # min_conditional_samples cap would allow; guard against the cap coming
+    # back by bounding the width below the n=min_conditional_samples value.
+    capped_width = 1.96 * math.sqrt(p * (1.0 - p) / 50.0)
+    honest_width = 1.96 * math.sqrt(p * (1.0 - p) / 400.0)
+    assert fallback_width < capped_width * 0.75
+    assert fallback_width >= honest_width * 0.99
+    # A real conditional window still prices its own (smaller) support: the
+    # 50-sample analogue band must stay at least as wide as the 400-sample
+    # global fallback band.
+    assert (
         with_analogue.probability - with_analogue.lower_confidence
-    )
+    ) >= fallback_width
 
 
 def test_observed_high_so_far_rules_out_lower_today_bins():

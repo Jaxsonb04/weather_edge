@@ -237,18 +237,19 @@ class ResidualCalibrator:
             market_probs = {market.ticker: p for market, p, _, _ in conditioned_market}
         effective_n = (cond_weight * cond.n) + ((1.0 - cond_weight) * glob.n)
         # The lower-confidence band must reflect the precision of the estimate
-        # that actually carries the conditioning, which rests on the conditional
-        # window (cond.n), not the much larger global count that dominates the
-        # blended effective_n. Using effective_n understated the SE ~3x exactly
-        # when the conditional window was sparse, weakening the edge_lcb gate
-        # that is the primary real-money defense. Cap the SE sample size at the
-        # conditional support so the band widens when conditioning is thin.
-        conditional_support = (
-            min(cond.n, self.config.min_conditional_samples)
-            if cond is glob
-            else cond.n
-        )
-        se_sample_n = min(conditional_support, effective_n)
+        # that actually carries the conditioning. A real conditional window
+        # rests on cond.n, not the much larger global count that dominates the
+        # blended effective_n. When conditioning falls back to the global
+        # window (cond is glob) the served probability IS the global estimate,
+        # so its sampling error rests on the full global support: pricing that
+        # case as a min_conditional_samples-sized sample (2026-08-16..08-30)
+        # inflated the SE ~5x on every fallback bucket, drove edge_lcb
+        # deductions to 0.16-0.22 at mid-range p, and cut paper entries from
+        # ~13/day to ~1/day while public tape volume was unchanged.
+        # Missing-analogue risk is a bias question, not a sampling-error
+        # question -- if evidence shows fallback days run hotter residuals,
+        # price that as an explicit additive penalty, never as a fake small n.
+        se_sample_n = min(cond.n, effective_n)
         model_risk_penalty = min(0.08, max(0.0, source_spread_f - 3.0) * 0.0075)
         residual_by_ticker = {market.ticker: p for market, p, _, _ in residual_probs}
         for market, model_p, p_emp, p_norm, ensemble_p in weather_probs:
