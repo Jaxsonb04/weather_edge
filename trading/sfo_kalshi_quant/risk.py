@@ -735,8 +735,20 @@ def _side_probability(probability: BucketProbability, side: str) -> float:
 def _side_probability_lcb(probability: BucketProbability, side: str) -> float:
     if side == "YES":
         return probability.lower_confidence
-    if probability.upper_confidence is not None:
-        return _unit(1.0 - probability.upper_confidence)
+    # NO-side bound restored 2026-08-31 to the pre-2026-08-16 rule after a
+    # settlement replay against canonical CLI truth. The 8/16 change priced the
+    # NO bound off the symmetric interval (1 - upper_confidence), which at deep
+    # favorites (p_yes < deduction d) tightened the bound by (d - p_yes) and cut
+    # approvals ~500x while public tape volume was unchanged. The replay showed
+    # that regime WAS the profitable core: 1,163/1,370 pre-8/16 approved NO
+    # decisions sat there and won 91.2-92.5% at settlement (+2.8-3.3c/contract
+    # after fees), and the 92 post-8/16 markets only the symmetric bound blocked
+    # would have won 91.3%. Capping the NO deduction at p_yes prices small-p
+    # model risk multiplicatively -- "the YES probability may be up to double
+    # the estimate" -- which measured calibration supports; an additive SE that
+    # exceeds p_yes itself is refuted by those outcomes. The principled
+    # successor is audit A.11 (derive the band from the predictive
+    # distribution); until that lands, this empirically validated cap stands.
     yes_uncertainty = max(0.0, probability.probability - probability.lower_confidence)
     return _unit(1.0 - probability.probability - yes_uncertainty)
 
