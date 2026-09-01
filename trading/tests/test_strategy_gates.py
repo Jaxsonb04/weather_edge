@@ -12,7 +12,16 @@ def _bin(label: str, **overrides):
     return replace(market, status="active", **overrides)
 
 
-def test_no_lower_bound_uses_unclipped_yes_upper_bound():
+def test_no_lower_bound_caps_deduction_at_yes_probability():
+    # Replaces test_no_lower_bound_uses_unclipped_yes_upper_bound (2026-08-16),
+    # retired 2026-08-31 with the symmetric bound it pinned: at deep favorites
+    # (p_yes < deduction) that bound tightened NO by (d - p_yes) and blocked
+    # the book's profitable core -- a settlement replay showed the affected
+    # cohort won 91.2-92.5% (+2.8-3.3c/contract after fees) across 1,163
+    # pre-8/16 approved decisions, and the 92 post-8/16 markets only the
+    # symmetric bound blocked would have won 91.3%. The restored rule prices
+    # small-p model risk multiplicatively: the NO deduction is capped at p_yes
+    # ("the YES probability may be up to double the estimate").
     market = _bin(
         "66° to 67°",
         yes_bid=0.05,
@@ -36,7 +45,10 @@ def test_no_lower_bound_uses_unclipped_yes_upper_bound():
     ).evaluate_market(market, probability, bankroll=1000.0, side="NO")
 
     assert decision.probability == 0.95
-    assert decision.probability_lcb == 0.92
+    # Deduction min(p_yes, d) = 0.05, NOT the upper_confidence reflection
+    # (which would give 0.92): the bound must never charge NO more than the
+    # entire YES probability.
+    assert abs(decision.probability_lcb - 0.90) < 1e-9
 
 
 def test_no_bid_support_blocks_penny_tail_trade():
