@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-09-02T05:35:55+00:00",
+  "generated_at": "2026-09-02T05:41:06+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-09-02T05:35:59+00:00",
+  "market_data_at": "2026-09-02T05:41:10+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -659,7 +659,7 @@
         "cell_selection": "land",
         "member_count": 31,
         "source": "open_meteo_gfs_ensemble",
-        "station_bias_f": 3.57,
+        "station_bias_f": 3.72,
         "station_mean_high_f": 71.6,
         "station_std_high_f": 0.74,
         "warning": null
@@ -688,7 +688,7 @@
         "is_complete": false,
         "latest_observed_at": "2026-09-01T21:15:00+00:00",
         "latest_temp_f": 62.6,
-        "observation_count": 266,
+        "observation_count": 280,
         "observed_high_f": 71.6,
         "observed_high_source": "NWS station observations",
         "remaining_forecast_high_f": null,
@@ -756,7 +756,7 @@
         "p75_f": 71.9949,
         "p90_f": 72.3101
       },
-      "market_data_at": "2026-09-02T05:35:57+00:00",
+      "market_data_at": "2026-09-02T05:41:08+00:00",
       "target_date": "2026-09-01",
       "target_status": "settlement_day",
       "warnings": []
@@ -775,7 +775,7 @@
         "intraday_probability": null,
         "label": "66\u00b0 or below",
         "market_probability": 0.9949,
-        "model_probability": 0.977,
+        "model_probability": 0.9771,
         "probability": 0.9886,
         "probability_lcb": 0.96,
         "reasons": [
@@ -807,7 +807,7 @@
           "intraday_probability": null,
           "label": "66\u00b0 or below",
           "market_probability": 0.9949,
-          "model_probability": 0.977,
+          "model_probability": 0.9771,
           "probability": 0.9886,
           "probability_lcb": 0.96,
           "reasons": [
@@ -824,6 +824,35 @@
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP02-T67",
           "trade_quality_score": 50.8
+        },
+        {
+          "action": "BUY_NO",
+          "approved": false,
+          "ask": 0.71,
+          "bid": 0.7,
+          "decision": "NO_TRADE",
+          "edge": -0.0083,
+          "edge_lcb": -0.2339,
+          "ensemble_probability": 0.6774,
+          "expected_profit": -0.0,
+          "intraday_probability": null,
+          "label": "71\u00b0 to 72\u00b0",
+          "market_probability": 0.6974,
+          "model_probability": 0.751,
+          "probability": 0.7162,
+          "probability_lcb": 0.4906,
+          "reasons": [
+            "edge -0.008 below min 0.012",
+            "lower-bound edge -0.234 below min 0.000"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": null,
+          "residual_probability": 0.7825,
+          "side": "NO",
+          "spread": 0.01,
+          "ticker": "KXHIGHTSFO-26SEP02-B71.5",
+          "trade_quality_score": 47.0
         },
         {
           "action": "BUY_NO",
@@ -854,35 +883,6 @@
           "spread": 0.02,
           "ticker": "KXHIGHTSFO-26SEP02-B67.5",
           "trade_quality_score": 46.8
-        },
-        {
-          "action": "BUY_NO",
-          "approved": false,
-          "ask": 0.71,
-          "bid": 0.7,
-          "decision": "NO_TRADE",
-          "edge": -0.0117,
-          "edge_lcb": -0.2409,
-          "ensemble_probability": 0.6452,
-          "expected_profit": -0.0,
-          "intraday_probability": null,
-          "label": "71\u00b0 to 72\u00b0",
-          "market_probability": 0.6974,
-          "model_probability": 0.7413,
-          "probability": 0.7128,
-          "probability_lcb": 0.4836,
-          "reasons": [
-            "edge -0.012 below min 0.012",
-            "lower-bound edge -0.241 below min 0.000"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": null,
-          "residual_probability": 0.7825,
-          "side": "NO",
-          "spread": 0.01,
-          "ticker": "KXHIGHTSFO-26SEP02-B71.5",
-          "trade_quality_score": 46.5
         },
         {
           "action": "BUY_YES",
@@ -923,19 +923,19 @@
           "ask": 0.35,
           "bid": 0.34,
           "decision": "NO_TRADE",
-          "edge": -0.0226,
+          "edge": -0.0192,
           "edge_lcb": -0.3178,
-          "ensemble_probability": 0.6452,
+          "ensemble_probability": 0.6774,
           "expected_profit": -0.0,
           "intraday_probability": null,
           "label": "73\u00b0 to 74\u00b0",
           "market_probability": 0.3538,
-          "model_probability": 0.3241,
-          "probability": 0.3434,
+          "model_probability": 0.3338,
+          "probability": 0.3468,
           "probability_lcb": 0.0482,
           "reasons": [
             "YES price 0.35 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.023 below min 0.012",
+            "edge -0.019 below min 0.012",
             "lower-bound edge -0.318 below min 0.000",
             "YES lower-bound edge -0.318 is not positive"
           ],
@@ -946,7 +946,7 @@
           "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP02-B73.5",
-          "trade_quality_score": 44.1
+          "trade_quality_score": 44.6
         },
         {
           "action": "BUY_YES",
@@ -1049,21 +1049,21 @@
           "ask": 0.3,
           "bid": 0.29,
           "decision": "NO_TRADE",
-          "edge": -0.0275,
-          "edge_lcb": -0.2566,
-          "ensemble_probability": 0.3548,
+          "edge": -0.0309,
+          "edge_lcb": -0.2565,
+          "ensemble_probability": 0.3226,
           "expected_profit": -0.0,
           "intraday_probability": null,
           "label": "71\u00b0 to 72\u00b0",
           "market_probability": 0.3026,
-          "model_probability": 0.2587,
-          "probability": 0.2872,
-          "probability_lcb": 0.0581,
+          "model_probability": 0.249,
+          "probability": 0.2838,
+          "probability_lcb": 0.0582,
           "reasons": [
             "YES price 0.30 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.027 below min 0.012",
-            "lower-bound edge -0.257 below min 0.000",
-            "YES lower-bound edge -0.257 is not positive"
+            "edge -0.031 below min 0.012",
+            "lower-bound edge -0.256 below min 0.000",
+            "YES lower-bound edge -0.256 is not positive"
           ],
           "recommended_contracts": 0.0,
           "recommended_spend": 0.0,
@@ -1072,7 +1072,7 @@
           "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP02-B71.5",
-          "trade_quality_score": 33.4
+          "trade_quality_score": 33.8
         },
         {
           "action": "BUY_NO",
@@ -1109,20 +1109,20 @@
           "ask": 0.66,
           "bid": 0.65,
           "decision": "NO_TRADE",
-          "edge": -0.0192,
-          "edge_lcb": -0.3145,
-          "ensemble_probability": 0.3548,
+          "edge": -0.0226,
+          "edge_lcb": -0.3213,
+          "ensemble_probability": 0.3226,
           "expected_profit": -0.0,
           "intraday_probability": null,
           "label": "73\u00b0 to 74\u00b0",
           "market_probability": 0.6462,
-          "model_probability": 0.6759,
-          "probability": 0.6566,
-          "probability_lcb": 0.3613,
+          "model_probability": 0.6662,
+          "probability": 0.6532,
+          "probability_lcb": 0.3545,
           "reasons": [
             "NO price 0.66 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.019 below min 0.012",
-            "lower-bound edge -0.314 below min 0.000"
+            "edge -0.023 below min 0.012",
+            "lower-bound edge -0.321 below min 0.000"
           ],
           "recommended_contracts": 0.0,
           "recommended_spend": 0.0,
@@ -1131,7 +1131,7 @@
           "side": "NO",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP02-B73.5",
-          "trade_quality_score": 30.4
+          "trade_quality_score": 30.9
         },
         {
           "action": "BUY_YES",
@@ -1146,7 +1146,7 @@
           "intraday_probability": null,
           "label": "66\u00b0 or below",
           "market_probability": 0.0051,
-          "model_probability": 0.023,
+          "model_probability": 0.0229,
           "probability": 0.0114,
           "probability_lcb": 0.0,
           "reasons": [
@@ -1175,9 +1175,9 @@
         "cell_selection": "land",
         "member_count": 31,
         "source": "open_meteo_gfs_ensemble",
-        "station_bias_f": 2.17,
+        "station_bias_f": 2.44,
         "station_mean_high_f": 72.83,
-        "station_std_high_f": 0.8,
+        "station_std_high_f": 0.75,
         "warning": null
       },
       "event_title": "Highest temperature in San Francisco on Sep 2, 2026?",
@@ -1208,7 +1208,7 @@
             "center_f": 65.5,
             "implied_probability": 0.0099,
             "label": "66\u00b0 or below",
-            "model_probability": 0.023,
+            "model_probability": 0.0229,
             "ticker": "KXHIGHTSFO-26SEP02-T67"
           },
           {
@@ -1229,14 +1229,14 @@
             "center_f": 71.5,
             "implied_probability": 0.3069,
             "label": "71\u00b0 to 72\u00b0",
-            "model_probability": 0.2587,
+            "model_probability": 0.249,
             "ticker": "KXHIGHTSFO-26SEP02-B71.5"
           },
           {
             "center_f": 73.5,
             "implied_probability": 0.3564,
             "label": "73\u00b0 to 74\u00b0",
-            "model_probability": 0.3241,
+            "model_probability": 0.3338,
             "ticker": "KXHIGHTSFO-26SEP02-B73.5"
           },
           {
@@ -1262,7 +1262,7 @@
         "p75_f": 74.4306,
         "p90_f": 75.6583
       },
-      "market_data_at": "2026-09-02T05:35:59+00:00",
+      "market_data_at": "2026-09-02T05:41:10+00:00",
       "target_date": "2026-09-02",
       "target_status": "upcoming",
       "warnings": []
