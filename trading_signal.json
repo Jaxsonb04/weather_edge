@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-09-05T22:32:25+00:00",
+  "generated_at": "2026-09-05T22:42:25+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-09-05T22:32:29+00:00",
+  "market_data_at": "2026-09-05T22:42:29+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -680,7 +680,7 @@
       "event_title": "Highest temperature in San Francisco on Sep 5, 2026?",
       "forecast": {
         "calls_used_today": null,
-        "fetched_at": "2026-09-05T22:11:33+00:00",
+        "fetched_at": "2026-09-05T22:41:35+00:00",
         "fresh_station_count": null,
         "lead_hours": 0.0,
         "max_calls_per_day": null,
@@ -700,8 +700,8 @@
         "forecast_fetched_at": null,
         "is_complete": false,
         "latest_observed_at": "2026-09-05T19:00:00+00:00",
-        "latest_temp_f": 71.06,
-        "observation_count": 184,
+        "latest_temp_f": 71.6,
+        "observation_count": 190,
         "observed_high_f": 73.4,
         "observed_high_source": "NWS station observations",
         "remaining_forecast_high_f": null,
@@ -769,7 +769,7 @@
         "p75_f": 73.9949,
         "p90_f": 74.3101
       },
-      "market_data_at": "2026-09-05T22:32:27+00:00",
+      "market_data_at": "2026-09-05T22:42:27+00:00",
       "target_date": "2026-09-05",
       "target_status": "settlement_day",
       "warnings": []
@@ -938,34 +938,36 @@
           "trade_quality_score": 43.0
         },
         {
-          "action": "BUY_NO",
+          "action": "BUY_YES",
           "approved": false,
-          "ask": 0.68,
-          "bid": 0.67,
+          "ask": 0.33,
+          "bid": 0.32,
           "decision": "NO_TRADE",
-          "edge": 0.0859,
-          "edge_lcb": -0.1214,
-          "ensemble_probability": 0.7097,
-          "expected_profit": 0.0,
+          "edge": -0.078,
+          "edge_lcb": -0.2925,
+          "ensemble_probability": 0.2903,
+          "expected_profit": -0.0,
           "intraday_probability": null,
           "label": "71\u00b0 to 72\u00b0",
-          "market_probability": 0.6875,
-          "model_probability": 0.8033,
-          "probability": 0.7859,
-          "probability_lcb": 0.5786,
+          "market_probability": 0.3125,
+          "model_probability": 0.1967,
+          "probability": 0.272,
+          "probability_lcb": 0.0575,
           "reasons": [
             "forecast source spread 10.5F exceeds max 10.0F; point blend is unreliable",
-            "NO price 0.68 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "lower-bound edge -0.121 below min 0.000"
+            "YES price 0.33 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "edge -0.078 below min 0.012",
+            "lower-bound edge -0.292 below min 0.000",
+            "YES lower-bound edge -0.292 is not positive"
           ],
           "recommended_contracts": 0.0,
           "recommended_spend": 0.0,
           "remaining_heat_risk": null,
-          "residual_probability": 0.8434,
-          "side": "NO",
+          "residual_probability": 0.1566,
+          "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP06-B71.5",
-          "trade_quality_score": 40.2
+          "trade_quality_score": 41.6
         },
         {
           "action": "BUY_YES",
@@ -1032,7 +1034,7 @@
           "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP06-B69.5",
-          "trade_quality_score": 35.9
+          "trade_quality_score": 35.0
         },
         {
           "action": "BUY_NO",
@@ -1097,6 +1099,36 @@
         {
           "action": "BUY_NO",
           "approved": false,
+          "ask": 0.68,
+          "bid": 0.67,
+          "decision": "NO_TRADE",
+          "edge": 0.028,
+          "edge_lcb": -0.1864,
+          "ensemble_probability": 0.7097,
+          "expected_profit": 0.0,
+          "intraday_probability": null,
+          "label": "71\u00b0 to 72\u00b0",
+          "market_probability": 0.6875,
+          "model_probability": 0.8033,
+          "probability": 0.728,
+          "probability_lcb": 0.5136,
+          "reasons": [
+            "forecast source spread 10.5F exceeds max 10.0F; point blend is unreliable",
+            "NO price 0.68 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "lower-bound edge -0.186 below min 0.000"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": null,
+          "residual_probability": 0.8434,
+          "side": "NO",
+          "spread": 0.01,
+          "ticker": "KXHIGHTSFO-26SEP06-B71.5",
+          "trade_quality_score": 31.7
+        },
+        {
+          "action": "BUY_NO",
+          "approved": false,
           "ask": 0.86,
           "bid": 0.85,
           "decision": "NO_TRADE",
@@ -1123,38 +1155,6 @@
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP06-T72",
           "trade_quality_score": 30.8
-        },
-        {
-          "action": "BUY_YES",
-          "approved": false,
-          "ask": 0.33,
-          "bid": 0.32,
-          "decision": "NO_TRADE",
-          "edge": -0.1359,
-          "edge_lcb": -0.3433,
-          "ensemble_probability": 0.2903,
-          "expected_profit": -0.0,
-          "intraday_probability": null,
-          "label": "71\u00b0 to 72\u00b0",
-          "market_probability": 0.3125,
-          "model_probability": 0.1967,
-          "probability": 0.2141,
-          "probability_lcb": 0.0067,
-          "reasons": [
-            "forecast source spread 10.5F exceeds max 10.0F; point blend is unreliable",
-            "YES price 0.33 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.136 below min 0.012",
-            "lower-bound edge -0.343 below min 0.000",
-            "YES lower-bound edge -0.343 is not positive"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": null,
-          "residual_probability": 0.1566,
-          "side": "YES",
-          "spread": 0.01,
-          "ticker": "KXHIGHTSFO-26SEP06-B71.5",
-          "trade_quality_score": 29.9
         },
         {
           "action": "BUY_YES",
@@ -1205,7 +1205,7 @@
       "event_title": "Highest temperature in San Francisco on Sep 6, 2026?",
       "forecast": {
         "calls_used_today": null,
-        "fetched_at": "2026-09-05T22:11:34+00:00",
+        "fetched_at": "2026-09-05T22:41:35+00:00",
         "fresh_station_count": null,
         "lead_hours": 24.0,
         "max_calls_per_day": null,
@@ -1284,7 +1284,7 @@
         "p75_f": 71.7121,
         "p90_f": 72.9
       },
-      "market_data_at": "2026-09-05T22:32:29+00:00",
+      "market_data_at": "2026-09-05T22:42:29+00:00",
       "target_date": "2026-09-06",
       "target_status": "upcoming",
       "warnings": []
