@@ -142,25 +142,29 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+backup_phase() {
+  # Keep command-substitution stdout reserved for the caller's result marker.
+  # Deliberately omit paths, object names and digests from progress messages.
+  printf 'database backup: %s\n' "$1" >&2
+}
+
+backup_phase "creating SQLite snapshot"
 escaped_snapshot="${snapshot//\\/\\\\}"
 escaped_snapshot="${escaped_snapshot//\"/\\\"}"
 sqlite3 "$DB_PATH" ".backup \"$escaped_snapshot\""
 chmod 600 "$snapshot"
 
-integrity="$(sqlite3 -batch -noheader "$snapshot" 'PRAGMA integrity_check;')"
-if [[ "$integrity" != "ok" ]]; then
-  echo "database snapshot failed integrity_check: $integrity" >&2
-  exit 1
-fi
-if [[ -n "$(sqlite3 -batch -noheader "$snapshot" 'PRAGMA foreign_key_check;')" ]]; then
-  echo "database snapshot failed foreign_key_check" >&2
-  exit 1
-fi
+# Hash the snapshot now, then run the expensive full SQLite checks once on the
+# independently downloaded, checksum-identical copy. Checking the same bytes
+# before upload adds no recovery proof and can double a large journal's pause.
+# An unusable upload must never be promoted or reported as a verified backup.
+backup_phase "hashing snapshot"
 sha256sum "$snapshot" > "$checksum"
 chmod 600 "$checksum"
 expected_sha="$(awk '{print $1}' "$checksum")"
 
 object_key="$PREFIX/$(basename "$snapshot")"
+backup_phase "uploading snapshot and checksum"
 "$AWS_CLI" s3 cp "$snapshot" "s3://$BUCKET/$object_key" \
   --sse AES256 --only-show-errors
 "$AWS_CLI" s3 cp "$checksum" "s3://$BUCKET/$object_key.sha256" \
@@ -171,22 +175,31 @@ object_key="$PREFIX/$(basename "$snapshot")"
 # safe -- the object is in S3 and the live database was never touched.
 rm -f -- "$snapshot"
 
+backup_phase "downloading restore copy"
 "$AWS_CLI" s3 cp "s3://$BUCKET/$object_key" "$restore_copy" --only-show-errors
 
+backup_phase "verifying restored checksum"
 restored_sha="$(sha256sum "$restore_copy" | awk '{print $1}')"
 if [[ "$restored_sha" != "$expected_sha" ]]; then
   echo "downloaded backup checksum mismatch" >&2
   exit 1
 fi
+backup_phase "checking restored SQLite integrity"
 restored_integrity="$(sqlite3 -batch -noheader "$restore_copy" 'PRAGMA integrity_check;')"
 if [[ "$restored_integrity" != "ok" ]]; then
   echo "downloaded backup failed integrity_check: $restored_integrity" >&2
   exit 1
 fi
-if [[ -n "$(sqlite3 -batch -noheader "$restore_copy" 'PRAGMA foreign_key_check;')" ]]; then
+backup_phase "checking restored foreign keys"
+if ! restored_foreign_keys="$(sqlite3 -batch -noheader "$restore_copy" 'PRAGMA foreign_key_check;')"; then
+  echo "downloaded backup foreign_key_check command failed" >&2
+  exit 1
+fi
+if [[ -n "$restored_foreign_keys" ]]; then
   echo "downloaded backup failed foreign_key_check" >&2
   exit 1
 fi
+backup_phase "verification complete"
 
 # The sweep now runs before the free-space check above; repeating it here would
 # be a no-op on the snapshot just written. The CALLER owns this snapshot's

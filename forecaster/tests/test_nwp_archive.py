@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from urllib.parse import parse_qs, urlparse
 
 import nwp_archive
 from nwp_archive import (
@@ -121,6 +122,96 @@ def test_upsert_keys_on_source():
         "SELECT predicted_high_f FROM nwp_model_forecasts WHERE source = 'openmeteo_previous_runs'"
     ).fetchone()
     assert updated[0] == 72.0
+
+
+def test_archive_batches_lead_variables_without_mixing_their_values(monkeypatch):
+    requests = []
+
+    def fake_get(url, timeout=45.0):
+        query = parse_qs(urlparse(url).query)
+        requests.append(query)
+        return {
+            "hourly": {
+                "time": ["2025-06-10T14:00", "2025-06-11T14:00"],
+                "temperature_2m_previous_day1": [70.0, 71.0],
+                "temperature_2m_previous_day2": [72.0, 73.0],
+                "temperature_2m": [99.0, 99.0],
+            }
+        }
+
+    monkeypatch.setattr(nwp_archive, "_http_get_json", fake_get)
+    conn = sqlite3.connect(":memory:")
+    summary = nwp_archive.archive_range(
+        conn, "2025-06-10", "2025-06-11",
+        models=("gfs_seamless",), leads=(1, 2), fetched_at="test-time",
+    )
+
+    assert len(requests) == 1
+    assert requests[0]["hourly"] == [
+        "temperature_2m_previous_day1,temperature_2m_previous_day2"
+    ]
+    assert summary == {"gfs_seamless@lead1": 2, "gfs_seamless@lead2": 2}
+    assert conn.execute(
+        "SELECT target_date, lead_days, predicted_high_f "
+        "FROM nwp_model_forecasts ORDER BY lead_days, target_date"
+    ).fetchall() == [
+        ("2025-06-10", 1, 70.0), ("2025-06-11", 1, 71.0),
+        ("2025-06-10", 2, 72.0), ("2025-06-11", 2, 73.0),
+    ]
+
+
+def test_archive_batch_keeps_present_lead_when_other_is_missing(monkeypatch):
+    requests = []
+
+    def fake_get(url, timeout=45.0):
+        requests.append(url)
+        return {"hourly": {
+            "time": ["2025-06-10T14:00"],
+            "temperature_2m_previous_day1": [70.0],
+            "temperature_2m": [99.0],
+        }}
+
+    monkeypatch.setattr(nwp_archive, "_http_get_json", fake_get)
+    conn = sqlite3.connect(":memory:")
+    summary = nwp_archive.archive_range(
+        conn, "2025-06-10", "2025-06-10",
+        models=("gfs_seamless",), leads=(1, 2),
+    )
+
+    assert len(requests) == 1
+    assert summary == {"gfs_seamless@lead1": 1, "gfs_seamless@lead2": 0}
+    assert conn.execute(
+        "SELECT lead_days, predicted_high_f FROM nwp_model_forecasts"
+    ).fetchall() == [(1, 70.0)]
+
+
+def test_archive_batch_failure_isolated_to_model_and_chunk(monkeypatch):
+    requests = []
+
+    def fake_get(url, timeout=45.0):
+        query = parse_qs(urlparse(url).query)
+        requests.append(query)
+        if query["models"] == ["unavailable"]:
+            raise NwpArchiveError("upstream unavailable")
+        return {"hourly": {
+            "time": [query["start_date"][0] + "T14:00"],
+            "temperature_2m_previous_day1": [70.0],
+            "temperature_2m_previous_day2": [72.0],
+        }}
+
+    monkeypatch.setattr(nwp_archive, "_http_get_json", fake_get)
+    conn = sqlite3.connect(":memory:")
+    summary = nwp_archive.archive_range(
+        conn, "2025-01-01", "2025-12-31",
+        models=("unavailable", "gfs_seamless"), leads=(1, 2),
+    )
+
+    assert len(requests) == 4  # two models x two date chunks, both leads per call
+    assert summary == {
+        "unavailable@lead1": 0, "unavailable@lead2": 0,
+        "gfs_seamless@lead1": 2, "gfs_seamless@lead2": 2,
+    }
+    assert conn.execute("SELECT COUNT(*) FROM nwp_model_forecasts").fetchone()[0] == 4
 
 
 def test_date_chunks_single_day():

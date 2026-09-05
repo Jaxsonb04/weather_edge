@@ -454,7 +454,7 @@ def test_goal_report_bounds_activity_to_window_and_uses_lifecycle_indexes(
     assert report["realized_pnl"] == 10.0
     assert report["mean_daily_pnl"] == 5.0
     assert report["logical_decisions"] == 1
-    assert report["exit_breakdown"]["take_profit"]["realized_pnl"] == 10.0
+    assert report["exit_breakdown"]["unclassified"]["realized_pnl"] == 10.0
 
     lower = datetime(2026, 7, 17, tzinfo=UTC).isoformat()
     upper = datetime(2026, 7, 19, tzinfo=UTC).isoformat()
@@ -565,7 +565,7 @@ def test_partial_lot_money_uses_actual_pacific_day_and_counts_one_logical_decisi
     assert report["lead_split"]["day-ahead"]["resolved_lots"] == 2
     assert report["execution"]["partial_exit_positions"] == 1
     assert report["execution"]["total_fees"] > 0
-    assert report["exit_breakdown"]["take_profit"]["logical_decisions"] == 1
+    assert report["exit_breakdown"]["unclassified"]["logical_decisions"] == 1
 
 
 def test_daily_goal_summary_reports_day_clustered_statistics_without_a_guarantee() -> None:
@@ -794,9 +794,7 @@ def test_report_exit_breakdown_uses_exact_audited_terminal_categories(tmp_path) 
         reason: bucket["logical_decisions"]
         for reason, bucket in report["exit_breakdown"].items()
     } == {
-        "take_profit": 1,
-        "stop_loss": 1,
-        "break_even": 1,
+        "unclassified": 3,
         "held_to_settlement": 1,
         "expired_unfilled": 1,
     }

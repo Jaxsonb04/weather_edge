@@ -1349,7 +1349,7 @@ def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position()
         assert diagnostics["resolved_positions"] == 1
         assert diagnostics["by_profile"]["live"]["resolved"] == 1
         assert diagnostics["by_side"]["YES"]["resolved"] == 1
-        assert diagnostics["by_exit_reason"]["take_profit"]["resolved"] == 1
+        assert diagnostics["by_exit_reason"]["unclassified"]["resolved"] == 1
         assert diagnostics["worst_segments"][0]["resolved"] == 1
 
         daily = payload["daily_summary"]
@@ -1358,7 +1358,7 @@ def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position()
         assert daily["totals"]["realized_pnl"] == expected_pnl
         assert daily["totals"]["capital_resolved"] == expected_capital
         assert daily["side_performance"]["YES"]["trades"] == 1
-        assert daily["exit_reasons"]["closed_take_profit"] == 1
+        assert daily["exit_reasons"]["closed_unclassified"] == 1
         assert len(daily["biggest_winners"]) == 1
         assert daily["biggest_winners"][0]["id"] == root_id
         assert daily["biggest_losers"] == []
@@ -1379,7 +1379,7 @@ def test_strategy_research_card_counts_three_exit_lots_as_one_logical_position()
             "KXHIGHTPHX-"
         )
         assert live["daily_summary"]["side_performance"]["YES"]["trades"] == 1
-        assert live["daily_summary"]["exit_reasons"]["closed_take_profit"] == 1
+        assert live["daily_summary"]["exit_reasons"]["closed_unclassified"] == 1
         assert len(live["daily_summary"]["biggest_winners"]) == 1
 
 
@@ -1594,7 +1594,7 @@ def test_data_bearing_research_sleeves_publish_distinct_metrics_everywhere(tmp_p
     motion = profiles["research-motion"]
     assert motion["daily_summary"]["side_performance"]["NO"]["trades"] == 1
     assert motion["daily_summary"]["side_performance"]["YES"]["trades"] == 0
-    assert motion["daily_summary"]["exit_reasons"]["closed_stop_loss"] == 1
+    assert motion["daily_summary"]["exit_reasons"]["closed_unclassified"] == 1
     assert [
         row["ticker"] for row in motion["signal_quality"]["latest_candidates"]
     ] == [motion_decision.ticker]
@@ -3094,7 +3094,7 @@ def test_config_rescore_replays_only_each_profiles_matching_snapshots(
     assert "counterfactual" not in payload
 
 
-def test_paper_card_audits_all_five_exit_categories_including_unfilled_expiry(
+def test_paper_card_keeps_unknown_exit_causes_and_unfilled_expiry(
     tmp_path,
 ) -> None:
     db_path = tmp_path / "paper.db"
@@ -3132,9 +3132,7 @@ def test_paper_card_audits_all_five_exit_categories_including_unfilled_expiry(
     diagnostics = strategy_paper_card_module._paper_diagnostics(db_path)
 
     assert set(diagnostics["by_exit_reason"]) == {
-        "take_profit",
-        "stop_loss",
-        "break_even",
+        "unclassified",
         "held_to_settlement",
         "expired_unfilled",
     }

@@ -114,6 +114,20 @@ if ! git -C "$WEATHEREDGE_ROOT" diff --quiet \
   exit 1
 fi
 
+verify_deploy_source_unchanged() {
+  local phase="$1"
+  # Backup verification can run for hours while another task edits this shared
+  # checkout. Never install those edits with the revision captured before it.
+  if [[ "$(git -C "$WEATHEREDGE_ROOT" rev-parse HEAD)" != "$SOURCE_SHA" \
+     || "$(git -C "$WEATHEREDGE_ROOT" branch --show-current)" != "main" ]] \
+    || ! git -C "$WEATHEREDGE_ROOT" diff --quiet \
+    || ! git -C "$WEATHEREDGE_ROOT" diff --cached --quiet \
+    || [[ -n "$(git -C "$WEATHEREDGE_ROOT" ls-files --others --exclude-standard)" ]]; then
+    echo "Deploy source changed during $phase; refusing to stamp or resume this deployment. Runtime remains quiesced." >&2
+    exit 1
+  fi
+}
+
 # Prove the database, AWS identity, and encrypted/versioned backup target are
 # usable before stopping a single service. The same audited local helper is
 # streamed for preflight and backup so an old remote source tree cannot weaken
@@ -215,6 +229,8 @@ for component in "${ANALYSIS_DB_COMPONENTS[@]}"; do
   fi
 done
 
+verify_deploy_source_unchanged "backup verification"
+
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo mkdir -p '$REMOTE_BASE/requirements' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE' '$REMOTE_BASE/requirements'"
 
@@ -279,6 +295,8 @@ REMOTE_RETIRED_PATHS=(
   "$REMOTE_BASE/forecaster/fetch_inland_history.py"
 )
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" rm -f -- "${REMOTE_RETIRED_PATHS[@]}"
+
+verify_deploy_source_unchanged "source transfer"
 
 # Audit PR-01: immutable build provenance. The host tree is an rsync copy with
 # no .git, so the deployed source revision must be stamped at sync time; the
@@ -365,6 +383,15 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 # the host again while retaining the marker. This prevents a split-brain state
 # where timers run but the independent scheduler watchdog remains suppressed.
 RUNTIME_RECOVERY_REQUIRED=1
+# Recovery can run during historical analysis, before the normal timer split
+# below. Resolve the watchdog now so set -u cannot abort that recovery, while
+# preserving an operator's deliberately disabled watchdog.
+SCHEDULER_WATCHDOG_ENABLED=0
+for timer in ${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"}; do
+  if [[ "$timer" == "sfo-scheduler-health.timer" ]]; then
+    SCHEDULER_WATCHDOG_ENABLED=1
+  fi
+done
 recover_deploy_runtime() {
   local interrupted_status="${1:-$?}"
   local restore_status=0

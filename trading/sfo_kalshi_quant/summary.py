@@ -626,6 +626,7 @@ def _exit_reason_breakdown(window_orders: list) -> dict[str, int]:
         "closed_take_profit": 0,
         "closed_stop_loss": 0,
         "closed_break_even": 0,
+        "closed_unclassified": 0,
         "expired_unfilled": 0,
     }
     published_key = {
@@ -636,7 +637,13 @@ def _exit_reason_breakdown(window_orders: list) -> dict[str, int]:
         "expired_unfilled": "expired_unfilled",
     }
     for order in window_orders:
-        key = published_key.get(audited_exit_reason(order))
+        reason = audited_exit_reason(order)
+        key = published_key.get(reason)
+        if reason == "unclassified" and (
+            str(order["status"]).upper() == "PAPER_CLOSED"
+            or ("closed_at" in order.keys() and order["closed_at"])
+        ):
+            key = "closed_unclassified"
         if key is not None:
             counts[key] += 1
     return counts

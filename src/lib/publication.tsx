@@ -54,10 +54,8 @@ export interface PublicationContextValue {
 }
 
 const POLL_INTERVAL_MS = 60_000;
-// One publish cycle is 5 minutes and Pages delivery adds ~1-2 more, so a
-// healthy feed presents ages up to ~7 minutes. 15 tolerates exactly one
-// missed or force-republished cycle; two consecutive misses is a real
-// pipeline problem and should surface.
+// The publisher runs every 10 minutes and Pages delivery adds ~1-2 more.
+// Fifteen minutes allows normal delivery while exposing a missed cycle.
 const OPERATIONAL_MAX_AGE_MINUTES = 15;
 const STRATEGY_MAX_AGE_MINUTES = 20;
 const BASE = import.meta.env.BASE_URL ?? "./";
@@ -94,6 +92,7 @@ function freshnessFor(
   maxAgeMinutes: number,
   now: number,
   requireLoaded = true,
+  clock: "publication" | "artifact" = "publication",
 ): PublicationFreshness {
   if (!manifest?.artifacts) return UNKNOWN;
 
@@ -113,6 +112,8 @@ function freshnessFor(
     const artifactTime = Date.parse(artifactIso ?? "");
     if (typeof artifactIso === "string" && !Number.isNaN(artifactTime)) {
       artifactTimes.push({ iso: artifactIso, time: artifactTime });
+    } else if (clock === "artifact") {
+      return UNKNOWN;
     }
   }
   // Artifact generation begins before the publication cycle and the manifest
@@ -120,7 +121,9 @@ function freshnessFor(
   // moment this coherent snapshot was actually published, not when its oldest
   // member began generating.
   const manifestPublishedAt = manifest.published_at;
-  const manifestPublishedTime = Date.parse(manifestPublishedAt ?? "");
+  // Strategy refresh is independent: re-publishing operational JSON must not
+  // make an old preserved book appear current.
+  const manifestPublishedTime = clock === "publication" ? Date.parse(manifestPublishedAt ?? "") : NaN;
   const oldestArtifact = artifactTimes.length
     ? artifactTimes.reduce((candidate, value) =>
         value.time < candidate.time ? value : candidate,
@@ -145,6 +148,7 @@ function staleDeadlineFor(
   manifest: PublicationManifest | null,
   artifactNames: string[],
   maxAgeMinutes: number,
+  clock: "publication" | "artifact" = "publication",
 ): number | null {
   if (!manifest?.artifacts) return null;
   const artifactTimes: number[] = [];
@@ -154,7 +158,7 @@ function staleDeadlineFor(
     const generatedTime = Date.parse(artifact.generated_at ?? "");
     if (!Number.isNaN(generatedTime)) artifactTimes.push(generatedTime);
   }
-  const publishedTime = Date.parse(manifest.published_at ?? "");
+  const publishedTime = clock === "publication" ? Date.parse(manifest.published_at ?? "") : NaN;
   const basis = !Number.isNaN(publishedTime)
     ? publishedTime
     : artifactTimes.length
@@ -245,7 +249,7 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         ["trading_signal.json", "cities_data.json"],
         OPERATIONAL_MAX_AGE_MINUTES,
       ),
-      staleDeadlineFor(manifest, ["strategy_research.json"], STRATEGY_MAX_AGE_MINUTES),
+      staleDeadlineFor(manifest, ["strategy_research.json"], STRATEGY_MAX_AGE_MINUTES, "artifact"),
     ].filter((deadline): deadline is number => deadline != null && deadline > Date.now());
     if (!deadlines.length) return;
     const timer = window.setTimeout(
@@ -300,6 +304,8 @@ export function PublicationProvider({ children }: { children: ReactNode }) {
         loadedArtifactVersions,
         STRATEGY_MAX_AGE_MINUTES,
         freshnessNow,
+        true,
+        "artifact",
       ),
       error,
       versionForArtifact: (name: string) => artifactHashes[name] ?? snapshotVersion,

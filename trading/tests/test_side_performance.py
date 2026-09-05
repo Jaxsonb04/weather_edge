@@ -88,18 +88,18 @@ def test_exit_reason_breakdown_classifies_settlement_take_profit_and_stop_loss()
             _decision("KXHIGHTSFO-TEST-B66.5", "BUY_YES", "YES", cost=0.30, floor=66.0, cap=67.0),
         )
         store.settle_paper_orders("2026-06-03", 67)
-        # Early close at a profit -> take-profit.
+        # Explicit take-profit execution.
         tp_id = store.record_paper_order(
             "2026-06-04",
             _decision("KXHIGHTSFO-TEST-B68.5", "BUY_YES", "YES", cost=0.20, floor=68.0, cap=69.0),
         )
-        store.close_paper_order(tp_id, 0.50)
-        # Early close at a loss -> stop-loss.
+        store.close_paper_order(tp_id, 0.50, liquidity_evidence={"exit_reason": "TAKE_PROFIT"})
+        # Explicit stop-loss execution.
         sl_id = store.record_paper_order(
             "2026-06-05",
             _decision("KXHIGHTSFO-TEST-B70.5", "BUY_YES", "YES", cost=0.40, floor=70.0, cap=71.0),
         )
-        store.close_paper_order(sl_id, 0.10)
+        store.close_paper_order(sl_id, 0.10, liquidity_evidence={"exit_reason": "STOP_LOSS"})
 
         payload = build_paper_summary(
             db_path=db_path,

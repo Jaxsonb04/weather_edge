@@ -5,6 +5,7 @@ import { Stat } from "../ui/Stat";
 const EXIT_LABELS: Record<string, string> = {
   closed_take_profit: "Take-profit",
   closed_stop_loss: "Stop-loss",
+  closed_unclassified: "Reason unavailable",
   held_to_settlement: "Held to settlement",
   closed_break_even: "Break-even",
   expired_unfilled: "Expired unfilled",
