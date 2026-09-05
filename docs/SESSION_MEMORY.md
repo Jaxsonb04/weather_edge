@@ -1,15 +1,28 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 23:36 PDT
+Last updated: 2026-09-04 23:43 PDT
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
-Last public artifact inspection: 2026-09-04 23:25 PDT (fresh)
+Last public artifact inspection: 2026-09-04 23:43 PDT (fresh)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Final follow-up verification (September 4, 23:43 PDT):** the natural
+  forecaster refresh completed successfully at 06:41:26 UTC. At 06:42 UTC, all
+  thirty future lead-one/two baselines and fifteen current-day rows were present
+  and fresh; the Central-midnight gap below had closed. This was baseline-only
+  verification, not another Apple request or accuracy score. The public manifest
+  published at 06:42:04 UTC and Strategy generated at 06:40:34 UTC; all five
+  JSON hashes matched, status was `ok`, and live execution remained disabled.
+  Draft PR #116 contains this research/diagnostic work. Code commit
+  `5dbd4024aec3102b85dcfef593d12ec67e62d838` passed Python 3.12, Python 3.13
+  (including required Semgrep), and Web CI. Backend installation and model
+  promotion remain deliberately deferred: installed source is unchanged and
+  the candidate did not establish improved probabilistic skill.
 
 - **Apple history and ML follow-up (September 4, 23:36 PDT snapshot):** Apple's
   historical REST capability is now actually verified for one SFO day: 24/24

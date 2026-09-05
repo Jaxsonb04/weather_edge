@@ -48,6 +48,12 @@ inspection tried to read it; no additional Apple fetch was needed to explain
 the baseline gap. The next natural baseline refresh was scheduled for
 **06:40:20 UTC**; its overnight host-local schedule is hourly at :40.
 
+That natural refresh completed successfully at **06:41:26 UTC**. A follow-up
+metadata query at **06:42:00 UTC** confirmed **30/30 fresh future baselines**
+and all fifteen current-day rows. The rollover gap closed. This follow-up used
+no Apple requests and does not claim that the earlier expiring cache remained
+available or that Apple accuracy was evaluated.
+
 This verifies that endpoint, location, date, and window. It does not verify all
 historical dates or all fifteen cities, data accuracy, or original forecast
 vintages. Apple describes global coordinate coverage generally, while some
