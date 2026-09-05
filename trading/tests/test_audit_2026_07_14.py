@@ -991,7 +991,7 @@ def test_readiness_strict_fingerprint_uses_only_complete_target_day_cohorts() ->
         )
         assert result["evidence_scope"]["complete_target_days_only"] is True
         assert result["evidence_scope"]["strategy_fingerprint_semantics"] == (
-            "policy_config_and_entry_mode_only"
+            "policy_config_entry_mode_and_behavior_version"
         )
         assert result["evidence_scope"]["immutable_model_lineage_persisted"] is False
         assert any(

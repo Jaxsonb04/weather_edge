@@ -176,6 +176,34 @@ def test_live_portfolio_shrinks_to_moderate_drawdown_cap() -> None:
     assert all(leg.sleeve == "no_core" for leg in plan.legs)
 
 
+def test_live_daily_directional_budget_does_not_refresh_each_allocation() -> None:
+    market = _market(
+        "72° to 73°",
+        ticker="KXHIGHTSFO-TEST-B72.5",
+        floor=72,
+        cap=73,
+        no_ask=0.80,
+    )
+    decision = _decision(
+        market,
+        side="NO",
+        spend=20.0,
+        probability=0.95,
+        edge=0.15,
+        edge_lcb=0.05,
+    )
+
+    plan = allocate_portfolio(
+        [decision],
+        bankroll=1000.0,
+        risk_profile="live",
+        existing_directional_spend=70.0,
+    )
+
+    assert not plan.approved
+    assert any("directional risk budget is full" in reason for reason in plan.reasons)
+
+
 def test_research_exploration_sleeve_keeps_informative_positive_edge_trade_small() -> None:
     market = _market("69° to 70°", ticker="KXHIGHTSFO-TEST-B69.5", floor=69, cap=70, yes_ask=0.35)
     candidate = _decision(
@@ -244,6 +272,34 @@ def test_joint_kelly_resizes_directional_legs_within_cap() -> None:
     assert joint.worst_case_loss <= limits.max_daily_loss + 1e-9
     # Every re-sized leg carries a real position.
     assert all(leg.decision.recommended_contracts > 0 for leg in joint.legs)
+
+
+def test_joint_kelly_cannot_resize_live_yes_past_its_sleeve() -> None:
+    market = _market(
+        "70° to 71°",
+        ticker="KXHIGHTSFO-TEST-B70.5",
+        floor=70,
+        cap=71,
+        yes_ask=0.20,
+    )
+    decision = _decision(
+        market,
+        side="YES",
+        spend=3.8,
+        probability=0.90,
+        edge=0.70,
+        edge_lcb=0.50,
+        quality=90.0,
+    )
+    plan = allocate_portfolio(
+        [decision],
+        bankroll=1000.0,
+        risk_profile="live",
+        bin_yes_probs={market.ticker: 0.90, "KXHIGHTSFO-TEST-B72.5": 0.10},
+        joint_kelly_enabled=True,
+    )
+
+    assert sum(leg.spend for leg in plan.legs if leg.sleeve == "yes_convex") <= 4.0
 
 
 def test_joint_kelly_is_noop_without_a_ladder() -> None:

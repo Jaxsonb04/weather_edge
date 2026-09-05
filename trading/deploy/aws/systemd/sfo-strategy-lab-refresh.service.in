@@ -12,7 +12,8 @@ EnvironmentFile=__ENV_FILE__
 # run_publication_cycle.sh forces the bounded flag after EnvironmentFile
 # loading, so an operator override cannot accidentally restore full scanning.
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh strategy
-Nice=5
+Nice=10
+CPUWeight=50
 # Contain a runaway strategy-research build to this unit instead of letting
 # the kernel OOM-killer pick an arbitrary victim (4 GB box: containment).
 MemoryHigh=1200M

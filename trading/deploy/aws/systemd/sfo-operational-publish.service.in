@@ -10,7 +10,8 @@ User=__APP_USER__
 WorkingDirectory=__FORECASTER_DIR__
 EnvironmentFile=__ENV_FILE__
 ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh operational
-Nice=5
+Nice=10
+CPUWeight=50
 # Contain a runaway process to this unit instead of letting the kernel
 # OOM-killer pick an arbitrary victim (4 GB box: containment, not
 # thrash-protection).

@@ -16,6 +16,7 @@ from ..datasets import KSFO_ASOS_STATION, KSFO_ISD_STATION
 from ..exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
     DEFAULT_NO_TAKE_PROFIT_PCT,
+    DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_YES_STOP_LOSS_PCT,
@@ -773,6 +774,18 @@ def register_paper_commands(sub) -> None:
         type=float,
         default=_env_float_default("PAPER_NO_STOP_LOSS_PCT", DEFAULT_NO_STOP_LOSS_PCT),
         help="NO-specific stop-loss ROI percent. Default: 35.",
+    )
+    monitor.add_argument(
+        "--research-take-profit-margin",
+        type=float,
+        default=_env_float_default(
+            "PAPER_RESEARCH_TAKE_PROFIT_MARGIN",
+            DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN,
+        ),
+        help=(
+            "Research-only probability margin above model fair value required "
+            "for an early take-profit. Live always uses zero. Default: 0.05."
+        ),
     )
     monitor.add_argument(
         "--model-veto-max-loss-pct",

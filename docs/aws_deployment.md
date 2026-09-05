@@ -300,7 +300,10 @@ cannot conceal a stalled five-minute publisher. Set
 `SFO_PUBLICATION_MANIFEST_URL` to the public manifest URL to validate the exact
 snapshot visitors receive. A full installer run migrates only the former
 15-minute local and 20-minute public default values in `/etc/weatheredge.env`;
-operator-customized thresholds are preserved.
+operator-customized thresholds are preserved. The guarded environment migrator
+also enables the exact former `false` same-day paper-model heartbeat default and
+adds the missing research-only `0.05` take-profit margin. Explicit custom values
+and duplicate assignments are preserved rather than guessed at deployment time.
 
 For operator-only archive restoration, stop paper services, restore into a new
 database, and run the FK audit before any swap. The tested Python API is

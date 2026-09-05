@@ -346,6 +346,50 @@ def test_prune_batching_is_equivalent_to_a_single_pass():
         assert _survivors(batched) == _survivors(single)
 
 
+def test_prune_materializes_the_expensive_dedup_probe_once():
+    """A small batch must not rescan the full dedup window per commit."""
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "p.db")
+        with store.connect() as conn:
+            for index in range(12):
+                _insert_profiled(conn, f"T-{index % 3}", "YES", "target")
+            _age_all(conn, 10)
+
+        statements: list[str] = []
+        opened = store.connect
+
+        @contextlib.contextmanager
+        def _traced():
+            with opened() as conn:
+                conn.set_trace_callback(statements.append)
+                try:
+                    yield conn
+                finally:
+                    conn.set_trace_callback(None)
+
+        store.connect = _traced
+        try:
+            result = store.prune_decision_snapshots(
+                full_days=7,
+                dedup_days=45,
+                batch_limit=1,
+                batch_pause_seconds=0,
+            )
+        finally:
+            store.connect = opened
+
+        candidate_materializations = [
+            sql
+            for sql in statements
+            if sql.strip().upper().startswith(
+                "INSERT INTO WEATHEREDGE_PRUNE_DECISION_IDS"
+            )
+        ]
+        assert result["deduped"] == 9
+        assert len(candidate_materializations) == 1
+
+
 def test_prune_batch_loop_terminates_on_exact_multiple_of_batch_limit():
     """The loop exits on `removed < batch_limit`; an exact multiple is the
     boundary where a naive implementation either stops early or spins."""
@@ -460,6 +504,10 @@ def test_every_retention_delete_is_index_supported():
 
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "p.db")
+        with store.connect() as conn:
+            _insert_profiled(conn, "T-PLAN", "YES", "target")
+            _insert_profiled(conn, "T-PLAN", "YES", "target")
+            _age_all(conn, 10)
 
         statements: list[str] = []
         opened = store.connect

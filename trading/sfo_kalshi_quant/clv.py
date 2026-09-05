@@ -19,12 +19,12 @@ Two metrics, deliberately separated by how much they can be trusted:
   early exits destroyed value. This needs an authoritative settlement high, so it
   is computed ONLY where one is known.
 
-Settlement highs come from the recorded ``settlement_high_f`` (the NWS CLI value
-the book actually settled on) propagated across each target date. They are never
-reconstructed from ``dataset_station_observations``: the observation high runs a
-few degrees below the CLI value (the METAR-vs-CLI discrepancy) which is enough to
-flip a bin, so an obs-based counterfactual would silently mislead. Dates without a
-recorded high are reported as uncovered rather than guessed.
+Settlement highs come from final ``cli_settlements`` in the forecast database,
+keyed by ``(series_ticker, target_date)``. They are never reconstructed from
+``dataset_station_observations``: the observation high runs a few degrees below
+the CLI value (the METAR-vs-CLI discrepancy) which is enough to flip a bin, so an
+obs-based counterfactual would silently mislead. Market-days without final CLI
+truth are reported as uncovered rather than guessed.
 """
 
 from __future__ import annotations
@@ -36,24 +36,15 @@ from . import _sqlite
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settlement_truth import bin_resolves_yes
+from .config import temperature_cohort
+from .settlement_truth import (
+    bin_resolves_yes,
+    load_cli_settlement_truth,
+    settlement_for_market,
+)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "paper_trading.db"
-
-# Temperature cohort edges -- mirror config.temperature_cohort so this read-only
-# tool has no import-time dependency on strategy config.
-_COOL_MAX_F = 69.0
-_WARM_MAX_F = 79.0
-
-
-def temperature_cohort(high_f: float) -> str:
-    """Settled-high regime label. Mirrors ``config.temperature_cohort``."""
-
-    if high_f <= _COOL_MAX_F:
-        return "cool_le_69f"
-    if high_f <= _WARM_MAX_F:
-        return "warm_70_79f"
-    return "hot_80f_plus"
+DEFAULT_WEATHER_DB_PATH = Path(__file__).resolve().parents[2] / "forecaster" / "weather.db"
 
 
 def side_won(
@@ -89,6 +80,7 @@ def closing_line_value(entry_cost_per_contract: float, closing_mark_per_contract
 class OrderCLV:
     order_id: int
     target_date: str
+    market_ticker: str
     status: str
     side: str
     risk_profile: str | None
@@ -169,32 +161,32 @@ def _group_by(records: list[OrderCLV], key) -> dict[str, dict[str, object]]:
 def build_report(records: list[OrderCLV]) -> dict[str, object]:
     """Full CLV report: overall plus by-status / by-profile / by-cohort buckets."""
 
-    covered_dates = sorted({r.target_date for r in records if r.settlement_high_f is not None})
-    all_dates = sorted({r.target_date for r in records})
+    covered_market_days = sorted(
+        {(r.market_ticker, r.target_date) for r in records if r.settlement_high_f is not None}
+    )
+    all_market_days = sorted({(r.market_ticker, r.target_date) for r in records})
+    covered_set = set(covered_market_days)
     return {
         "overall": bucket_metrics(records),
         "by_status": _group_by(records, lambda r: r.status),
         "by_risk_profile": _group_by(records, lambda r: r.risk_profile or "unknown"),
         "by_cohort": _group_by(records, lambda r: r.cohort or "unknown"),
         "settlement_coverage": {
-            "dates_total": len(all_dates),
-            "dates_with_authoritative_high": len(covered_dates),
-            "uncovered_dates": [d for d in all_dates if d not in set(covered_dates)],
+            "market_days_total": len(all_market_days),
+            "market_days_with_authoritative_high": len(covered_market_days),
+            "uncovered_market_days": [
+                {"market_ticker": ticker, "target_date": target}
+                for ticker, target in all_market_days
+                if (ticker, target) not in covered_set
+            ],
         },
     }
 
 
-def _authoritative_highs(conn: sqlite3.Connection) -> dict[str, float]:
-    """Per-target-date NWS CLI high from recorded settlements (authoritative only)."""
+def _authoritative_highs(weather_conn: sqlite3.Connection) -> dict[tuple[str, str], float]:
+    """Final NWS CLI highs keyed by canonical city series and target date."""
 
-    rows = conn.execute(
-        "SELECT target_date, settlement_high_f FROM paper_orders "
-        "WHERE settlement_high_f IS NOT NULL"
-    ).fetchall()
-    highs: dict[str, float] = {}
-    for target_date, high in rows:
-        highs[target_date] = float(high)
-    return highs
+    return load_cli_settlement_truth(weather_conn)
 
 
 def _closing_marks(conn: sqlite3.Connection) -> dict[int, float]:
@@ -209,14 +201,17 @@ def _closing_marks(conn: sqlite3.Connection) -> dict[int, float]:
     return {int(order_id): float(mark) for order_id, mark in rows}
 
 
-def load_order_clv(conn: sqlite3.Connection) -> list[OrderCLV]:
+def load_order_clv(
+    conn: sqlite3.Connection,
+    weather_conn: sqlite3.Connection,
+) -> list[OrderCLV]:
     """Assemble OrderCLV records from the paper journal."""
 
-    highs = _authoritative_highs(conn)
+    highs = _authoritative_highs(weather_conn)
     marks = _closing_marks(conn)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT id, target_date, status, side, risk_profile, contracts, "
+        "SELECT id, target_date, market_ticker, status, side, risk_profile, contracts, "
         "cost_per_contract, realized_pnl, strike_type, floor_strike, cap_strike "
         "FROM paper_orders"
     ).fetchall()
@@ -224,7 +219,8 @@ def load_order_clv(conn: sqlite3.Connection) -> list[OrderCLV]:
     records: list[OrderCLV] = []
     for row in rows:
         target_date = row["target_date"]
-        high = highs.get(target_date)
+        market_ticker = str(row["market_ticker"])
+        high = settlement_for_market(highs, market_ticker, target_date)
         contracts = float(row["contracts"] or 0.0)
         cost = float(row["cost_per_contract"] or 0.0)
         won = None
@@ -240,6 +236,7 @@ def load_order_clv(conn: sqlite3.Connection) -> list[OrderCLV]:
             OrderCLV(
                 order_id=int(row["id"]),
                 target_date=target_date,
+                market_ticker=market_ticker,
                 status=row["status"],
                 side=row["side"],
                 risk_profile=row["risk_profile"],
@@ -280,11 +277,17 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="paper_trading.db path")
+    parser.add_argument(
+        "--weather-db",
+        default=str(DEFAULT_WEATHER_DB_PATH),
+        help="weather.db path containing final cli_settlements",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     args = parser.parse_args(argv)
 
-    with _sqlite.connect(args.db) as conn:
-        records = load_order_clv(conn)
+    weather_uri = f"file:{Path(args.weather_db).resolve()}?mode=ro"
+    with _sqlite.connect(args.db) as conn, _sqlite.connect(weather_uri, uri=True) as weather_conn:
+        records = load_order_clv(conn, weather_conn)
     report = build_report(records)
 
     if args.json:
@@ -301,8 +304,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     cov = report["settlement_coverage"]
     print(
-        f"settlement coverage: {cov['dates_with_authoritative_high']}/{cov['dates_total']} dates; "
-        f"uncovered={cov['uncovered_dates']}"
+        "settlement coverage: "
+        f"{cov['market_days_with_authoritative_high']}/{cov['market_days_total']} market-days; "
+        f"uncovered={cov['uncovered_market_days']}"
     )
     _print_bucket_table("By lifecycle status:", report["by_status"])
     _print_bucket_table("By risk profile:", report["by_risk_profile"])

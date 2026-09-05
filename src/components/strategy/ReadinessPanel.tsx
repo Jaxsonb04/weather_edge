@@ -17,7 +17,9 @@ const hasPublishedStatus = (r: RealMoneyReadiness) =>
   Boolean(r.status || r.verdict || r.status_reasons?.length);
 
 const statusText = (r: RealMoneyReadiness) =>
-  (r.status ?? r.verdict ?? "").replace(/_/g, " ").trim() || "STATUS UNPUBLISHED";
+  r.status === "ANALYSIS_STALE"
+    ? "ANALYSIS NOT REFRESHED"
+    : (r.status ?? r.verdict ?? "").replace(/_/g, " ").trim() || "STATUS UNPUBLISHED";
 
 const riskLimit = (dollars?: number, fraction?: number) => {
   const amount = money(dollars, { sign: "negative-only" });
@@ -32,6 +34,7 @@ const riskLimit = (dollars?: number, fraction?: number) => {
     the runtime gave, and no invented check count. */
 function DeferredVerdict({ r, compact = false }: { r: RealMoneyReadiness; compact?: boolean }) {
   const status = statusText(r);
+  const deployDeferred = r.status === "ANALYSIS_STALE";
   const ready = r.ready === true || /^READY$/i.test(status);
   const reasons = r.status_reasons?.length ? r.status_reasons : [deferralReason(r)];
   return (
@@ -39,7 +42,9 @@ function DeferredVerdict({ r, compact = false }: { r: RealMoneyReadiness; compac
       <Card.Header>
         <Card.Title className="text-base">{compact ? "Go-live readiness" : "Verdict"}</Card.Title>
         <Card.Description className="text-sm text-muted">
-          Published status only — the per-check evidence is deferred from this refresh
+          {deployDeferred
+            ? "Readiness analysis has not been refreshed since the last deploy-time analysis run"
+            : "Published status only — the per-check evidence is deferred from this refresh"}
         </Card.Description>
       </Card.Header>
       <Card.Content className="space-y-4 pt-0">
@@ -52,7 +57,7 @@ function DeferredVerdict({ r, compact = false }: { r: RealMoneyReadiness; compac
             {status}
           </span>
           <Chip size="sm" variant="soft" color="warning">
-            <Chip.Label>Checklist deferred</Chip.Label>
+            <Chip.Label>{deployDeferred ? "Deploy-time analysis" : "Checklist deferred"}</Chip.Label>
           </Chip>
         </div>
         <ul className="space-y-2">
@@ -68,8 +73,9 @@ function DeferredVerdict({ r, compact = false }: { r: RealMoneyReadiness; compac
           ))}
         </ul>
         <p className="text-xs leading-relaxed text-muted">
-          This is the status the runtime published, carried unchanged. No check count is shown because the
-          checklist behind it is not part of this artifact.
+          {deployDeferred
+            ? "This does not mean the checks newly failed. No check count is shown because the recurring public refresh does not rerun the deploy-time readiness analysis."
+            : "This is the status the runtime published, carried unchanged. No check count is shown because the checklist behind it is not part of this artifact."}
         </p>
       </Card.Content>
     </Card>

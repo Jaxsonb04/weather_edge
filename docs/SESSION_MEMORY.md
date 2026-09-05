@@ -1,16 +1,21 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-08-28 00:06 PDT
+Last updated: 2026-09-04 17:36 PDT
 
-Last production verification: 2026-08-28 00:06 PDT
+Last production verification: 2026-09-04 17:36 PDT
 
 Last public artifact verification: 2026-08-28 00:06 PDT
 
-Production status snapshot (last verified 2026-08-28): healthy and paper-only on
-runtime revision `f617b200c06216322bacc75f1b7560a90794028d`. All fourteen
-canonical timers are enabled and active, all twenty-nine canonical units match
-their templates, scheduler health passes, and no unit is failed. Live execution
-is disabled, dry-run is enabled, and no authenticated order client or live-order
+Production status snapshot (last verified 2026-09-04): stable and paper-only
+after supervised archive-backed retention and compaction. The paper journal is
+17,953,009,664 bytes, down from 30,585,167,872 bytes; root disk use is 42% with
+38,027,980,800 bytes available. All fourteen captured timers are enabled and
+active, maintenance and rollback files are absent, the full post-swap paper scan
+passed, and no unit is failed. Controlled emergency copies of the audit's
+scheduler and retention fixes are present ahead of the exact clean full deploy,
+so the stamped `c3cbf319...` provenance is a pre-deploy snapshot rather than a
+claim that every installed source file still matches it. Live execution is
+disabled, dry-run is enabled, and no authenticated order client or live-order
 service is deployed.
 
 This is the rolling cross-session handoff for WeatherEdge. It records the last
@@ -18,6 +23,50 @@ verified state and the reasoning behind it. It is not a substitute for checking
 current AWS state before making an operational claim.
 
 ## Session Brief
+
+- **SEPTEMBER AUDIT INCIDENT STABILIZED; EXACT FULL DEPLOY PENDING
+  (2026-09-04):** the 30.6 GB paper journal had outgrown the deploy backup gate,
+  the five-minute Pages publisher was repeatedly fetching full history, and the
+  host was CPU-credit throttled. Controlled emergency installation switched the
+  publisher to shallow fetches, moved it to an offset ten-minute cadence, gave
+  scan/monitor priority over publication/Strategy Lab, lengthened artifact-lock
+  waits, and added bounded Pages retry with inner-error propagation. A failure
+  alert URL is still not configured because no real webhook was available; do
+  not invent one. Enabling unlimited EC2 CPU credits remains an owner-only AWS
+  action.
+
+  A supervised retention run stopped every captured writer, verified archive
+  coverage and foreign keys, and kept S3-verified recovery artifacts before any
+  deletion. The original implementation then exposed a production-scale defect:
+  every 5,000-row dedup batch rescanned roughly the whole journal and hit its
+  one-hour timeout after freeing only tens of megabytes. The replacement
+  materializes candidate IDs once, then performs durable primary-key batches.
+  It removed 2,421,829 redundant decision rows, 2,546 old rejected decisions,
+  175,107 contexts, 415,458 probability rows, 116,152 monitor rows, and 66,413
+  orphan rows from each forecast/market parent table; approved rows were never
+  deleted. `VACUUM INTO` produced a 17,946,406,912-byte candidate, whose full
+  integrity, foreign keys, and per-table row counts passed before atomic swap.
+  WAL mode was restored, `ANALYZE` completed, targeted statistics integrity and
+  foreign keys passed, and a full paper scan passed before the 29 GB rollback
+  file was removed. The scan added normal new rows, leaving the journal at
+  17,953,009,664 bytes and the root filesystem at 42% used. Scheduled live-DB
+  deletion remains safe-off until writer quiescence can be automated; the
+  one-time cleanup is recoverable from verified archives and backup storage.
+
+  Local remediation fixes also correct multi-city CLI settlement truth in CLV,
+  persisted directional budget accounting, arbitrage/account and joint-resize
+  exposure enforcement, narrow research-entry rejection handling, fee rounding,
+  per-profile exit model reads, target-day EMOS sigma, city-clock lead days,
+  the wrong-sided edge-reversal exit, a research-only five-point take-profit
+  margin, and the same-day model heartbeat. A behavior-version input now rotates
+  strategy fingerprints explicitly rather than blending policy eras. Dashboard
+  publication freshness uses `published_at`, deploy-time readiness is labeled as
+  such, and cached analytics show their cutoff. No risk floor was loosened and
+  Live Stability remains economically separate from Research ROI. Final local
+  verification passed **2,806 Python tests with 8 skipped** in both UTC and
+  America/Los_Angeles, **170 frontend tests**, lint (two pre-existing Fast
+  Refresh warnings), and the production SPA build. Exact clean landing, full
+  deployment, public verification, and the final provenance update remain.
 
 - **THIN-LIQUIDITY PAPER RETUNE DEPLOYED; SAFETY GATES STILL DETERMINE
   FREQUENCY (2026-08-28, PRs #105 and #107):** clean runtime and public

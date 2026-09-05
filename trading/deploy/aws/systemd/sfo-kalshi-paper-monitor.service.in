@@ -11,8 +11,8 @@ WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
 # Type=oneshot cannot carry Restart=, so an exit-75 lock TEMPFAIL would
 # otherwise lose the tick outright (audit F-02). Wrap in the bounded retry.
-ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/retry_on_sqlite_lock.sh __TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color --forecaster-root __FORECASTER_DIR__ --db-path __TRADING_DIR__/data/paper_trading.db paper-monitor --take-profit-pct ${PAPER_TAKE_PROFIT_PCT} --stop-loss-pct ${PAPER_STOP_LOSS_PCT} --yes-take-profit-pct ${PAPER_YES_TAKE_PROFIT_PCT} --yes-stop-loss-pct ${PAPER_YES_STOP_LOSS_PCT} --no-take-profit-pct ${PAPER_NO_TAKE_PROFIT_PCT} --no-stop-loss-pct ${PAPER_NO_STOP_LOSS_PCT} --model-veto-max-loss-pct ${PAPER_MODEL_VETO_MAX_LOSS_PCT} --model-veto-buffer ${PAPER_MODEL_VETO_BUFFER}
-Nice=5
+ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/retry_on_sqlite_lock.sh __TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color --forecaster-root __FORECASTER_DIR__ --db-path __TRADING_DIR__/data/paper_trading.db paper-monitor --take-profit-pct ${PAPER_TAKE_PROFIT_PCT} --stop-loss-pct ${PAPER_STOP_LOSS_PCT} --yes-take-profit-pct ${PAPER_YES_TAKE_PROFIT_PCT} --yes-stop-loss-pct ${PAPER_YES_STOP_LOSS_PCT} --no-take-profit-pct ${PAPER_NO_TAKE_PROFIT_PCT} --no-stop-loss-pct ${PAPER_NO_STOP_LOSS_PCT} --research-take-profit-margin ${PAPER_RESEARCH_TAKE_PROFIT_MARGIN} --model-veto-max-loss-pct ${PAPER_MODEL_VETO_MAX_LOSS_PCT} --model-veto-buffer ${PAPER_MODEL_VETO_BUFFER}
+Nice=0
 # Contain a runaway process to this unit instead of letting the kernel
 # OOM-killer pick an arbitrary victim (4 GB box: containment, not
 # thrash-protection).

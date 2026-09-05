@@ -585,6 +585,12 @@ export interface StrategyLab {
     exit_reasons?: Record<string, number>;
     side_performance?: Record<string, SideStats>;
     data_collected?: Record<string, number>;
+    decision_analytics?: {
+      status?: "fresh" | "cached" | "deferred" | string;
+      analysis_generated_at?: string | null;
+      counts_stale_from?: string | null;
+      reason?: string | null;
+    };
     model_vs_market?: { samples?: number; mean_abs_gap?: number; max_abs_gap?: number };
     gate_behavior?: GateBehavior;
   };

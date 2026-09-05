@@ -1,11 +1,10 @@
 [Unit]
-Description=Build and publish WeatherEdge operational artifacts every five minutes
+Description=Build and publish WeatherEdge operational artifacts every ten minutes
 
 [Timer]
-# Stagger publication from the forecaster and paper-trading timers.
-RandomizedDelaySec=30
-OnActiveSec=2min
-OnUnitActiveSec=5min
+# Fixed cadence avoids completion-time drift and stays offset from the scan and
+# Strategy Lab jobs that fire on :00/:05.
+OnCalendar=*-*-* *:02,12,22,32,42,52
 AccuracySec=30s
 Persistent=true
 Unit=sfo-operational-publish.service

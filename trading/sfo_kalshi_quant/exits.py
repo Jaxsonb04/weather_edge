@@ -36,6 +36,10 @@ DEFAULT_NO_STOP_LOSS_PCT = 35.0
 # paper book clustered above this cost, where a binary's residual upside is tiny
 # and profitable early exits mostly clip the remaining settlement spread.
 DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST = 0.73
+# Research requires the market to pay five probability points beyond the
+# model's fair value before an early take-profit. Live remains at zero: its
+# observed calibration does not support settlement-first behavior.
+DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN = 0.05
 
 
 @dataclass(frozen=True)
@@ -141,13 +145,16 @@ def convergence_take_profit_net(
     model_side_probability: float | None,
     *,
     buffer: float = 0.0,
+    margin: float = 0.0,
 ) -> float | None:
     """Edge-based take-profit: the net-exit level at which to bank the position.
 
     Sell once the net exit reaches the model's fair value for the held side --
     the price has converged to where the model thinks it belongs, so the
     remaining edge is gone. ``buffer`` lets a slightly-early exit through (a
-    small tolerance to cover the exit fee).
+    small tolerance to cover the exit fee). ``margin`` is a distinct positive
+    hurdle above fair value; research uses it to avoid clipping residual
+    settlement upside while live deliberately leaves it at zero.
 
     Returns ``None`` when no current model probability is available: holding a
     still-favoured position to settlement pays no exit fee and realizes the full
@@ -156,7 +163,10 @@ def convergence_take_profit_net(
 
     if model_side_probability is None:
         return None
-    return max(0.0, min(1.0, float(model_side_probability) - buffer))
+    return max(
+        0.0,
+        min(1.0, float(model_side_probability) - buffer + margin),
+    )
 
 
 @dataclass(frozen=True)
@@ -176,6 +186,7 @@ def decide_exit(
     stop_loss_net: float,
     model_side_probability: float | None,
     convergence_buffer: float = 0.0,
+    take_profit_margin: float = 0.0,
     model_veto_enabled: bool = True,
     model_veto_buffer: float = 0.0,
     model_veto_max_loss_roi: float | None = None,
@@ -234,37 +245,40 @@ def decide_exit(
     # positions, and harmlessly unreachable for an expensive favorite, which then
     # simply rides to settlement).
     if edge_based_take_profit and model_side_probability is not None:
-        tp_net = convergence_take_profit_net(model_side_probability, buffer=convergence_buffer)
+        convergence_net = convergence_take_profit_net(
+            model_side_probability,
+            buffer=convergence_buffer,
+        )
+        tp_net = convergence_take_profit_net(
+            model_side_probability,
+            buffer=convergence_buffer,
+            margin=take_profit_margin,
+        )
     else:
+        convergence_net = None
         tp_net = legacy_take_profit_net
-    # The EV-optimal exit: sell once the market pays at or above the model's fair
-    # value. This single condition captures BOTH upward convergence (price rose to
-    # fair value -> bank the gain) and deterioration (the model fell below the
-    # sellable price -> the edge reversed, cut while you can). Label by whether the
-    # exit is a gain or a loss relative to entry cost.
-    if tp_net is not None and net_exit >= tp_net:
-        if net_exit >= entry_cost:
-            if (
-                side.upper() == "NO"
-                and settlement_first_no_min_cost is not None
-                and entry_cost >= settlement_first_no_min_cost
-            ):
-                return ExitSignal(
-                    "HOLD_SETTLEMENT_FIRST",
-                    f"settlement-first NO favorite: entry cost {entry_cost:.3f} >= "
-                    f"{settlement_first_no_min_cost:.3f}; hold instead of clipping "
-                    f"residual settlement upside at net exit {net_exit:.3f}",
-                )
-            return ExitSignal(
-                "TAKE_PROFIT",
-                f"edge captured: net exit {net_exit:.3f} >= fair value {tp_net:.3f}",
-            )
-        reversal_roi = (net_exit - entry_cost) / entry_cost if entry_cost > 0 else 0.0
+    if (
+        convergence_net is not None
+        and net_exit >= convergence_net
+        and net_exit >= entry_cost
+        and side.upper() == "NO"
+        and settlement_first_no_min_cost is not None
+        and entry_cost >= settlement_first_no_min_cost
+    ):
         return ExitSignal(
-            "STOP_LOSS",
-            f"edge reversed: fair value {tp_net:.3f} fell to/below net exit "
-            f"{net_exit:.3f}, under entry {entry_cost:.3f}",
-            catastrophic=_catastrophic(reversal_roi),
+            "HOLD_SETTLEMENT_FIRST",
+            f"settlement-first NO favorite: entry cost {entry_cost:.3f} >= "
+            f"{settlement_first_no_min_cost:.3f}; hold instead of clipping "
+            f"residual settlement upside at net exit {net_exit:.3f}",
+        )
+    # Bank upward convergence only once the exit is both at/above the model
+    # target and at/above entry cost. A deteriorating model no longer turns an
+    # unrealized winner-at-settlement into an immediate stop; losses flow through
+    # the ordinary configured stop floor below.
+    if tp_net is not None and net_exit >= tp_net and net_exit >= entry_cost:
+        return ExitSignal(
+            "TAKE_PROFIT",
+            f"edge captured: net exit {net_exit:.3f} >= target {tp_net:.3f}",
         )
 
     if net_exit <= stop_loss_net:

@@ -177,7 +177,7 @@ export function AnalysisFreshness({ s }: { s: StrategyLab }) {
 
   return (
     <p className="mt-4 text-[11px] leading-relaxed text-muted">
-      {analysisStatus} Current paper state and readiness are recomputed on every public refresh.
+      {analysisStatus} Current paper state is refreshed on every publication; readiness evidence is refreshed only by the deploy-time analysis job.
     </p>
   );
 }

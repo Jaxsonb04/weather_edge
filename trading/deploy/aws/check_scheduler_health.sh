@@ -54,7 +54,7 @@ DB="${SFO_FORECAST_DB:-$FORECASTER_DIR/weather.db}"
 MANIFEST="${SFO_PUBLICATION_MANIFEST_PATH:-$FORECASTER_DIR/publication_manifest.json}"
 BUILD_INFO="${SFO_BUILD_INFO_PATH:-$FORECASTER_DIR/build_info.json}"
 ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-$BASE_DIR/.locks/artifact-generation.lock}"
-VALIDATION_LOCK_WAIT_SECONDS="${SFO_SCHEDULER_VALIDATION_LOCK_WAIT_SECONDS:-10}"
+VALIDATION_LOCK_WAIT_SECONDS="${SFO_SCHEDULER_VALIDATION_LOCK_WAIT_SECONDS:-120}"
 MAX_AGE_HOURS="${SFO_FORECAST_MAX_AGE_HOURS:-6}"
 DISK_MAX_PERCENT="${SFO_DISK_USAGE_MAX_PERCENT:-85}"
 OPERATIONAL_MAX_MINUTES="${SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES:-10}"
@@ -229,7 +229,8 @@ validate_publication_state() (
       [[ "$PUBLIC_MANIFEST_URL" == *"?"* ]] && separator="&"
       public_poll_url="${PUBLIC_MANIFEST_URL}${separator}scheduler=$(date +%s%N)"
     fi
-    if ! curl -fsS -m 15 "$public_poll_url" >"$public_tmp"; then
+    if ! curl -fsS -m 15 --retry 2 --retry-delay 2 --retry-all-errors \
+      "$public_poll_url" >"$public_tmp"; then
       echo "scheduler health blocked: public manifest is unavailable" >&2
       exit 1
     fi
@@ -378,14 +379,16 @@ validation_output="$(
     -E 75 \
     -w "$VALIDATION_LOCK_WAIT_SECONDS" \
     "$ARTIFACT_LOCK" \
-    /bin/bash "$0" __validate_publication_under_app_lock
+    /bin/bash "$0" __validate_publication_under_app_lock 2>&1
 )" || validation_status=$?
 if (( validation_status == 75 )); then
-  echo "scheduler health blocked: artifact validation lock is busy" >&2
+  echo "scheduler health blocked: artifact validation lock is busy after ${VALIDATION_LOCK_WAIT_SECONDS}s" >&2
+  [[ -z "$validation_output" ]] || printf '%s\n' "$validation_output" >&2
   exit 1
 fi
 if (( validation_status != 0 )); then
   echo "scheduler health blocked: app-privileged artifact validation failed (status=$validation_status)" >&2
+  [[ -z "$validation_output" ]] || printf '%s\n' "$validation_output" >&2
   exit 1
 fi
 

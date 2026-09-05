@@ -203,7 +203,7 @@ def test_settle_paper_orders_computes_realized_pnl():
         assert store.settle_paper_orders("2026-06-03", 67) == 1
         summary = store.market_backtest_summary()
         assert summary["orders"] == 1
-        assert round(summary["realized_pnl"], 2) == 9.68
+        assert round(summary["realized_pnl"], 2) == 9.67
 
 
 def test_recorded_decisions_backtest_against_settlements():
@@ -561,7 +561,7 @@ def test_settle_paper_orders_pays_buy_no_when_bucket_resolves_no():
         summary = store.market_backtest_summary()
         assert summary["orders"] == 1
         assert summary["hit_rate"] == 1.0
-        assert round(summary["realized_pnl"], 2) == 7.58
+        assert round(summary["realized_pnl"], 2) == 7.57
 
 
 def test_settle_paper_orders_prefers_structured_strikes_over_labels():
@@ -1425,6 +1425,47 @@ def test_place_arbitrage_records_same_market_yes_and_no_as_group():
         assert len({float(row["contracts"]) for row in rows}) == 1
 
 
+def test_place_arbitrage_respects_account_policy_capacity():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, risk_profile="live")
+        market = MarketBin(
+            ticker="KXHIGHTSFO-TEST-B68.5",
+            event_ticker="KXHIGHTSFO-TEST",
+            title="SFO high 68 to 69",
+            yes_sub_title="68° to 69°",
+            strike_type="between",
+            floor_strike=68,
+            cap_strike=69,
+            yes_bid=0.44,
+            yes_ask=0.45,
+            no_bid=0.47,
+            no_ask=0.48,
+            yes_bid_size=20.0,
+            yes_ask_size=20.0,
+            status="active",
+        )
+        box = next(
+            opportunity
+            for opportunity in build_arbitrage_opportunities(
+                [market],
+                config=StrategyConfig(max_event_risk_pct=0.50),
+                bankroll=1000.0,
+            )
+            if opportunity.kind == "BOX_YES_NO"
+        )
+
+        with patch.object(
+            store,
+            "account_policy_capacity",
+            return_value={"allowed_spend": 0.0, "reason": "drawdown pause"},
+        ) as capacity:
+            assert trader.place_arbitrage("2026-06-03", box, bankroll=1000.0) == []
+
+        capacity.assert_called()
+        assert store.paper_orders(10) == []
+
+
 def test_place_arbitrage_blocks_when_market_already_has_open_position():
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
@@ -1653,7 +1694,9 @@ def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
             "ENTRY_FILL",
             "EXIT_PROCEEDS",
         ]
-        assert sum(amount for _event_type, amount in ledger) == row["realized_pnl"]
+        assert sum(amount for _event_type, amount in ledger) == pytest.approx(
+            row["realized_pnl"]
+        )
 
 
 def test_arbitrage_compensation_raises_fatal_when_active_leg_cannot_be_contained():

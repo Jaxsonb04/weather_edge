@@ -276,8 +276,10 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # thin but already-approved displayed slices can be captured. Signal and
     # account risk gates are unchanged, but this is intentionally a new
     # execution identity.
-    assert strategy_fingerprint(config, entry_mode="limit") == "dceac4d4125c6faeb878a038"
-    assert strategy_fingerprint(config, entry_mode="market") == "e0300ed55c4ebbafde6189cd"
+    # 2026-09-04: explicit behavior-version coverage rotates the evidence cohort
+    # for the audited exit-policy correction instead of silently blending it.
+    assert strategy_fingerprint(config, entry_mode="limit") == "88e417a64d8be9b1bb933b3b"
+    assert strategy_fingerprint(config, entry_mode="market") == "ea635b48bd45aad3d28d9c5b"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1226,7 +1228,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "e0300ed55c4ebbafde6189cd"
+    assert row["strategy_fingerprint"] == "ea635b48bd45aad3d28d9c5b"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
@@ -1671,6 +1673,37 @@ def test_target_atomic_admission_uses_one_canonical_day_ahead_bucket(
         admission=admission,
         strategy_config=strategy_config_for_profile("research"),
     ) is not None
+
+
+def test_target_minimum_lead_uses_city_fixed_standard_day(tmp_path: Path) -> None:
+    from sfo_kalshi_quant.db import PaperStore
+
+    # New York's fixed-standard clock has crossed midnight while Los Angeles'
+    # civil clock is still on July 18. July 19 is therefore same-day for this
+    # market and must not be admitted as a day-ahead target.
+    now = datetime(2026, 7, 19, 5, 30, tzinfo=UTC)
+    store = PaperStore(
+        tmp_path / "nyc-fixed-standard-lead.db",
+        research_clock=lambda: now,
+    )
+    decision = _atomic_decision("KXHIGHNY-26JUL19-B80.5")
+    admission = _linked_admission(
+        store,
+        TARGET_POLICY,
+        "nyc-fixed-standard-lead",
+        decision,
+        target_date="2026-07-19",
+        objective_day="2026-07-18",
+        lead_bucket="day-ahead",
+    )
+
+    with pytest.raises(ValueError, match="minimum lead"):
+        store.record_research_order_atomic(
+            "2026-07-19",
+            decision,
+            admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
 
 
 def test_atomic_admission_rejects_noncanonical_lead_bucket(
@@ -2602,16 +2635,16 @@ def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() 
         model_probability=None,
     )
     target_contracts = 2.0
-    fee = quadratic_fee_average_per_contract(
+    motion_fee = quadratic_fee_average_per_contract(
         raw.ask,
-        target_contracts,
+        1.0,
         maker=False,
         fee_multiplier=config.fee_multiplier,
         taker_rate=config.taker_fee_rate,
         maker_rate=config.maker_fee_rate,
         series_ticker=raw.ticker,
     )
-    point_probability = raw.ask + fee + 0.003
+    point_probability = raw.ask + motion_fee + 0.003
     structural = replace(
         raw,
         probability=point_probability,
@@ -2628,18 +2661,9 @@ def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() 
     target, motion = prepare_research_sleeve_decisions([structural], config)
 
     assert target[0].approved is True
-    assert target[0].edge == pytest.approx(0.003)
+    assert target[0].edge > 0.003
     assert motion[0].approved is True
-    motion_fee = quadratic_fee_average_per_contract(
-        raw.ask,
-        1.0,
-        maker=False,
-        fee_multiplier=config.fee_multiplier,
-        taker_rate=config.taker_fee_rate,
-        maker_rate=config.maker_fee_rate,
-        series_ticker=raw.ticker,
-    )
-    assert motion[0].edge == pytest.approx(point_probability - raw.ask - motion_fee)
+    assert motion[0].edge == pytest.approx(0.003)
 
 
 def test_target_uses_maker_when_taker_lcb_is_negative_but_maker_lcb_is_nonnegative() -> None:

@@ -32,6 +32,8 @@ STRATEGY_MAX_MINUTES="${SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES:-20}"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 PUBLISH_PAGES="${SFO_PUBLISH_PAGES:-0}"
 DISK_MAX_PERCENT="${SFO_DISK_USAGE_MAX_PERCENT:-85}"
+ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-$BASE_DIR/.locks/artifact-generation.lock}"
+ARTIFACT_LOCK_WAIT_SECONDS="${SFO_FRESHNESS_ARTIFACT_LOCK_WAIT_SECONDS:-120}"
 
 now=$(date +%s)
 failures=()
@@ -78,10 +80,23 @@ manifest_args=(
   --max-operational-age-minutes "$OPERATIONAL_MAX_MINUTES"
   --max-strategy-age-minutes "$STRATEGY_MAX_MINUTES"
 )
-if ! local_manifest_result="$(
+validate_local_manifest() {
   cd "$TRADING_DIR" 2>/dev/null \
-    && "$PYTHON_BIN" "${manifest_args[@]}" 2>&1
-)"; then
+    && "$PYTHON_BIN" "${manifest_args[@]}"
+}
+if ! [[ "$ARTIFACT_LOCK_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+  failures+=("artifact lock wait malformed: $ARTIFACT_LOCK_WAIT_SECONDS")
+elif command -v flock >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$ARTIFACT_LOCK")"
+  exec 8>"$ARTIFACT_LOCK"
+  if ! flock -w "$ARTIFACT_LOCK_WAIT_SECONDS" 8; then
+    failures+=(
+      "local publication manifest invalid: artifact lock remained busy after ${ARTIFACT_LOCK_WAIT_SECONDS}s"
+    )
+  elif ! local_manifest_result="$(validate_local_manifest 2>&1)"; then
+    failures+=("local publication manifest invalid: $local_manifest_result")
+  fi
+elif ! local_manifest_result="$(validate_local_manifest 2>&1)"; then
   failures+=("local publication manifest invalid: $local_manifest_result")
 fi
 

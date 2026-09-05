@@ -1,5 +1,7 @@
 """Tests for the closing-line-value / exit-drag measurement tool (Phase 0)."""
 
+import sqlite3
+
 from pytest import approx
 
 from sfo_kalshi_quant.clv import (
@@ -9,6 +11,7 @@ from sfo_kalshi_quant.clv import (
     build_report,
     closing_line_value,
     counterfactual_pnl,
+    load_order_clv,
     side_won,
     temperature_cohort,
 )
@@ -47,9 +50,11 @@ def test_closing_line_value_is_mark_minus_entry():
 
 
 def test_temperature_cohort_edges():
-    assert temperature_cohort(69.0) == "cool_le_69f"
+    assert temperature_cohort(59.9) == "cold_below_60f"
+    assert temperature_cohort(60.0) == "normal_60_69f"
+    assert temperature_cohort(69.9) == "normal_60_69f"
     assert temperature_cohort(70.0) == "warm_70_79f"
-    assert temperature_cohort(79.0) == "warm_70_79f"
+    assert temperature_cohort(79.9) == "warm_70_79f"
     assert temperature_cohort(80.0) == "hot_80f_plus"
 
 
@@ -57,6 +62,7 @@ def _order(**kw) -> OrderCLV:
     base = dict(
         order_id=1,
         target_date="2026-06-15",
+        market_ticker="KXHIGHTSFO-26JUN15-B70.5",
         status="PAPER_CLOSED",
         side="NO",
         risk_profile="research",
@@ -129,6 +135,52 @@ def test_build_report_reports_settlement_coverage():
     ]
     report = build_report(records)
     cov = report["settlement_coverage"]
-    assert cov["dates_total"] == 2
-    assert cov["dates_with_authoritative_high"] == 1
-    assert cov["uncovered_dates"] == ["2026-06-20"]
+    assert cov["market_days_total"] == 2
+    assert cov["market_days_with_authoritative_high"] == 1
+    assert cov["uncovered_market_days"] == [
+        {
+            "market_ticker": "KXHIGHTSFO-26JUN15-B70.5",
+            "target_date": "2026-06-20",
+        }
+    ]
+
+
+def test_load_order_clv_uses_city_scoped_final_cli_truth(tmp_path):
+    paper = sqlite3.connect(tmp_path / "paper.db")
+    weather = sqlite3.connect(tmp_path / "weather.db")
+    paper.row_factory = sqlite3.Row
+    paper.executescript(
+        """
+        CREATE TABLE paper_orders (
+          id INTEGER PRIMARY KEY, target_date TEXT, market_ticker TEXT, status TEXT,
+          side TEXT, risk_profile TEXT, contracts REAL, cost_per_contract REAL,
+          realized_pnl REAL, strike_type TEXT, floor_strike REAL, cap_strike REAL
+        );
+        CREATE TABLE paper_monitor_snapshots (
+          order_id INTEGER, net_exit_per_contract REAL, created_at TEXT
+        );
+        INSERT INTO paper_orders VALUES
+          (1, '2026-09-01', 'KXHIGHTSFO-26SEP01-B70.5', 'PAPER_CLOSED',
+           'YES', 'live', 1, .4, -.4, 'range', 70, 72),
+          (2, '2026-09-01', 'KXHIGHMIA-26SEP01-B90.5', 'PAPER_CLOSED',
+           'YES', 'research', 1, .4, .6, 'range', 90, 92);
+        """
+    )
+    weather.executescript(
+        """
+        CREATE TABLE cli_settlements (
+          station_id TEXT, local_date TEXT, max_temperature_f REAL, is_final INTEGER
+        );
+        INSERT INTO cli_settlements VALUES
+          ('KSFO', '2026-09-01', 71, 1),
+          ('KMIA', '2026-09-01', 95, 1),
+          ('KNYC', '2026-09-01', 80, 0);
+        """
+    )
+
+    records = load_order_clv(paper, weather)
+
+    assert [(row.market_ticker.split("-")[0], row.settlement_high_f, row.won) for row in records] == [
+        ("KXHIGHTSFO", 71.0, True),
+        ("KXHIGHMIA", 95.0, False),
+    ]
