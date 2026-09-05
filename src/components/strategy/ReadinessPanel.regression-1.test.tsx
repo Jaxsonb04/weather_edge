@@ -64,4 +64,20 @@ describe("ReadinessPanel progressive detail", () => {
       screen.getByText(/5% of the configured risk capital \(\$125\.00\)/i),
     ).toBeInTheDocument();
   });
+
+  it("labels stale deploy-time analysis without implying newly failed checks", () => {
+    const strategy = {
+      real_money_readiness: {
+        available: false,
+        ready: false,
+        status: "ANALYSIS_STALE",
+        reason: "Historical analysis is stale.",
+      },
+    } as unknown as StrategyLab;
+
+    render(<ReadinessPanel s={strategy} />);
+
+    expect(screen.getByText("ANALYSIS NOT REFRESHED")).toBeInTheDocument();
+    expect(screen.getByText(/does not mean the checks newly failed/i)).toBeInTheDocument();
+  });
 });

@@ -676,8 +676,13 @@ def test_emos_city_scan_prices_the_point_against_its_own_coupled_distribution() 
     hoisted = {target: (99.0, 9.0), other: (70.0, 2.0)}
     calibrator = Mock()
     calibrator.bucket_probabilities.return_value = {market.ticker: object()}
+    evaluator = Mock()
+    evaluator.rank.return_value = []
 
     with _scan_context_patches() as stack:
+        stack.enter_context(
+            patch("sfo_kalshi_quant.cli.TradeEvaluator", return_value=evaluator)
+        )
         stack.enter_context(
             patch("sfo_kalshi_quant.cli._intraday_for_target", return_value=None)
         )
@@ -698,6 +703,7 @@ def test_emos_city_scan_prices_the_point_against_its_own_coupled_distribution() 
         )
 
     assert calibrator.bucket_probabilities.call_args.kwargs["emos_mu_sigma"] == (71.5, 2.54)
+    assert evaluator.rank.call_args.kwargs["forecast_sigma_f"] == 2.54
     # The per-city hoisted lookup is shared across every target of that city, so
     # the injection must copy rather than mutate it.
     assert hoisted == {target: (99.0, 9.0), other: (70.0, 2.0)}

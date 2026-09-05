@@ -26,6 +26,7 @@ from ..exits import (
     DEFAULT_NO_STOP_LOSS_PCT,
     DEFAULT_NO_TAKE_PROFIT_PCT,
     DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
+    DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_YES_STOP_LOSS_PCT,
@@ -1089,6 +1090,7 @@ def _paper_monitor_config() -> dict[str, Any]:
     no_stop_loss = _env_float("PAPER_NO_STOP_LOSS_PCT")
     model_veto_max_loss = _env_float("PAPER_MODEL_VETO_MAX_LOSS_PCT")
     model_veto_buffer = _env_float("PAPER_MODEL_VETO_BUFFER")
+    research_take_profit_margin = _env_float("PAPER_RESEARCH_TAKE_PROFIT_MARGIN")
     return {
         "take_profit_pct": take_profit if take_profit is not None else DEFAULT_TAKE_PROFIT_PCT,
         "stop_loss_pct": stop_loss if stop_loss is not None else DEFAULT_STOP_LOSS_PCT,
@@ -1104,6 +1106,11 @@ def _paper_monitor_config() -> dict[str, Any]:
             else DEFAULT_MODEL_VETO_MAX_LOSS_PCT
         ),
         "model_veto_buffer": model_veto_buffer if model_veto_buffer is not None else DEFAULT_MODEL_VETO_BUFFER,
+        "research_take_profit_margin": (
+            research_take_profit_margin
+            if research_take_profit_margin is not None
+            else DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN
+        ),
     }
 
 
@@ -1128,11 +1135,24 @@ def _monitor_thresholds_for_side(monitor: dict[str, Any], side: str) -> tuple[fl
 def _settlement_first_no_min_cost_for_row(row: sqlite3.Row) -> float | None:
     profile = _row_risk_profile(row)
     if profile is not None and (
-        profile.startswith("research-")
-        or normalize_risk_profile_name(profile) == "research"
+        profile == "research" or profile.startswith("research-")
     ):
         return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
     return None
+
+
+def _take_profit_margin_for_row(
+    row: sqlite3.Row, monitor: dict[str, Any]
+) -> float:
+    profile = _row_risk_profile(row)
+    if profile is not None and (
+        profile == "research" or profile.startswith("research-")
+    ):
+        return _to_float(
+            monitor.get("research_take_profit_margin"),
+            DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN,
+        )
+    return 0.0
 
 
 def _position_mark_status(
@@ -1240,7 +1260,10 @@ def _paper_row(
     legacy_take_profit_net = cost_per_contract * (1.0 + take_profit)
     stop_loss_net = max(0.0, cost_per_contract * (1.0 - stop_loss))
     model_side_probability = _to_float(mark.get("model_side_probability"), None) if mark else None
-    model_take_profit_net = convergence_take_profit_net(model_side_probability)
+    take_profit_margin = _take_profit_margin_for_row(row, monitor)
+    model_take_profit_net = convergence_take_profit_net(
+        model_side_probability, margin=take_profit_margin
+    )
     if model_take_profit_net is not None:
         take_profit_net = model_take_profit_net
         take_profit_basis = "model_fair_value"
@@ -1256,6 +1279,7 @@ def _paper_row(
             net_exit=current_net_exit,
             stop_loss_net=stop_loss_net,
             model_side_probability=model_side_probability,
+            take_profit_margin=take_profit_margin,
             model_veto_buffer=_to_float(monitor.get("model_veto_buffer"), DEFAULT_MODEL_VETO_BUFFER),
             model_veto_max_loss_roi=(
                 _to_float(

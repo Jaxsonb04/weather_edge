@@ -394,6 +394,17 @@ def build_scan_context(
         )
     if matching_emos is not None:
         emos_lookup = {**emos_lookup, target: matching_emos}
+    target_emos = emos_lookup.get(target)
+    raw_emos = forecast.raw.get("emos", {}) if isinstance(forecast.raw, dict) else {}
+    forecast_sigma_f = (
+        float(target_emos[1])
+        if target_emos is not None
+        else (
+            float(raw_emos["sigma"])
+            if isinstance(raw_emos, dict) and raw_emos.get("sigma") is not None
+            else None
+        )
+    )
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,
@@ -401,7 +412,7 @@ def build_scan_context(
         observed_high_f=observed_high_f,
         ensemble=ensemble,
         intraday=intraday,
-        emos_mu_sigma=emos_lookup.get(target),
+        emos_mu_sigma=target_emos,
         standard_timezone=intraday_timezone_for_city(city),
     )
     consensus = build_market_consensus(markets)
@@ -418,7 +429,7 @@ def build_scan_context(
         "sides": _analysis_sides(args.side),
         "source_spread_f": forecast.source_spread_f,
         "forecast_high_f": forecast.predicted_high_f,
-        "forecast_sigma_f": forecast.source_spread_f,
+        "forecast_sigma_f": forecast_sigma_f,
         "market_consensus": consensus,
     }
     if risk_profile == "research":
@@ -904,6 +915,9 @@ def _portfolio_scan_one_target(
         risk_profile=risk_profile,
         bin_yes_probs={ticker: prob.probability for ticker, prob in probabilities.items()},
         joint_kelly_enabled=config.joint_kelly_enabled,
+        existing_directional_spend=store.paper_directional_spend(
+            target.isoformat(), risk_profile
+        ),
     )
 
     entry_allowed = True
@@ -1490,14 +1504,23 @@ def _portfolio_decisions_for_recording(decisions, plan: PortfolioPlan):
         if selected is not None:
             recorded.append(selected)
         elif decision.approved:
+            allocation_reason = next(
+                (
+                    reason
+                    for reason in plan.reasons
+                    if reason.startswith(f"{decision.ticker} ")
+                ),
+                "portfolio not allocated by shared risk budget",
+            )
             recorded.append(
                 replace(
                     decision,
                     approved=False,
                     signal_approved=True,
+                    entry_block_reason=allocation_reason,
                     recommended_contracts=0.0,
                     expected_profit=0.0,
-                    reasons=[*decision.reasons, "portfolio not allocated by shared risk budget"],
+                    reasons=[*decision.reasons, allocation_reason],
                 )
             )
         else:

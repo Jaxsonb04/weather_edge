@@ -95,13 +95,14 @@ def allocate_portfolio(
     run_id: str | None = None,
     bin_yes_probs: dict[str, float] | None = None,
     joint_kelly_enabled: bool = False,
+    existing_directional_spend: float = 0.0,
 ) -> PortfolioPlan:
     limits = portfolio_limits_for_profile(risk_profile, bankroll)
     run_id = run_id or f"PF-{uuid.uuid4().hex[:12]}"
     reasons: list[str] = []
     selected: list[PortfolioLeg] = []
     selected_arbitrage: list[ArbitrageOpportunity] = []
-    directional_spend = 0.0
+    directional_spend = max(0.0, float(existing_directional_spend))
     yes_spend = 0.0
     explore_spend = 0.0
 
@@ -182,7 +183,9 @@ def allocate_portfolio(
             selected,
             bin_yes_probs,
             bankroll=limits.bankroll,
-            max_daily_loss=limits.max_daily_loss,
+            max_daily_loss=max(0.0, limits.max_daily_loss - existing_directional_spend),
+            yes_sleeve=limits.yes_sleeve,
+            explore_sleeve=limits.explore_sleeve,
         )
 
     total_spend = sum(leg.spend for leg in selected)
@@ -226,6 +229,8 @@ def _joint_resize_directional(
     *,
     bankroll: float,
     max_daily_loss: float,
+    yes_sleeve: float,
+    explore_sleeve: float,
 ) -> list[PortfolioLeg]:
     """Re-size the non-arbitrage legs with the growth-optimal joint allocation.
 
@@ -274,6 +279,15 @@ def _joint_resize_directional(
     candidate = [*others, *resized]
     if _worst_case_loss(candidate) > max_daily_loss + 1e-9:
         return legs  # fail safe: keep the disciplined greedy sizing
+    if sum(leg.spend for leg in resized) > max_daily_loss + 1e-9:
+        return legs
+    if sum(leg.spend for leg in resized if leg.sleeve == "yes_convex") > yes_sleeve + 1e-9:
+        return legs
+    if (
+        sum(leg.spend for leg in resized if leg.sleeve == "research_explore")
+        > explore_sleeve + 1e-9
+    ):
+        return legs
     return candidate
 
 

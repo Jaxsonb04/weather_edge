@@ -1036,7 +1036,9 @@ def replay_from_database(
             else None
         ),
         "strategy_fingerprint_scope": strategy_requirement_identity,
-        "strategy_fingerprint_semantics": "policy_config_and_entry_mode_only",
+        "strategy_fingerprint_semantics": (
+            "policy_config_entry_mode_and_behavior_version"
+        ),
         "immutable_model_lineage_persisted": False,
         "evidence_boundary": evidence_boundary,
         "source_cohort": source_cohort,

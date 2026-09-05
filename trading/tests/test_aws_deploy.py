@@ -188,7 +188,44 @@ def test_env_migration_preserves_custom_operator_live_risk_caps(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "live risk defaults unchanged"
-    assert env_path.read_text(encoding="utf-8") == original
+    migrated = env_path.read_text(encoding="utf-8")
+    assert migrated.startswith(original)
+    assert "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=true" in migrated
+    assert "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.05" in migrated
+
+
+def test_env_migration_installs_audited_paper_defaults_without_overriding_custom_values(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / "weatheredge.env"
+    env_path.write_text(
+        "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=false\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [sys.executable, str(AWS_DIR / "migrate_weatheredge_env.py"), str(env_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    migrated = env_path.read_text(encoding="utf-8")
+    assert "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=true" in migrated
+    assert "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.05" in migrated
+
+    custom = (
+        "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=operator-managed\n"
+        "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.08\n"
+    )
+    env_path.write_text(custom, encoding="utf-8")
+    subprocess.run(
+        [sys.executable, str(AWS_DIR / "migrate_weatheredge_env.py"), str(env_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert env_path.read_text(encoding="utf-8") == custom
 
 
 @pytest.mark.parametrize(
@@ -229,7 +266,10 @@ def test_env_migration_preserves_ambiguous_legacy_assignments(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "live risk defaults unchanged"
-    assert env_path.read_text(encoding="utf-8") == original
+    migrated = env_path.read_text(encoding="utf-8")
+    assert migrated.startswith(original)
+    assert "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=true" in migrated
+    assert "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.05" in migrated
 
 
 def test_installers_run_the_guarded_runtime_env_migration() -> None:
@@ -401,10 +441,13 @@ def test_operational_publish_service_runs_fast_builder_then_publisher():
     assert "sync_forecaster_source.sh" not in service
     assert "run_publication_cycle.sh operational" in service
     assert "google_weather_cache.py --refresh" not in service
-    assert "OnActiveSec=2min" in timer
+    assert "OnActiveSec=" not in timer
     assert "OnBootSec=" not in timer
-    assert "OnUnitActiveSec=5min" in timer
+    assert "OnUnitActiveSec=" not in timer
+    assert "OnCalendar=*-*-* *:02,12,22,32,42,52" in timer
     assert "Unit=sfo-operational-publish.service" in timer
+    assert "Nice=10" in service
+    assert "CPUWeight=50" in service
 
 
 def test_web_app_deploy_triggers_fast_operational_publication():
@@ -436,6 +479,8 @@ def test_strategy_lab_refresh_uses_bounded_fast_publication():
     assert "OnUnitInactiveSec=" not in timer
     assert "Unit=sfo-strategy-lab-refresh.service" in timer
     assert "TimeoutStartSec=120" in service
+    assert "Nice=10" in service
+    assert "CPUWeight=50" in service
     runner = _read(AWS_DIR / "run_publication_cycle.sh")
     assert "export SFO_STRATEGY_FAST_PUBLICATION=1" in runner
     assert "Environment=SFO_STRATEGY_FAST_PUBLICATION=1" not in service

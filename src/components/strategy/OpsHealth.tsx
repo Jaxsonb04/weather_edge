@@ -79,6 +79,8 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
   const rows = freshnessRows(s);
   const alerts = mergedAlerts(s);
   const mvm = s.daily_summary?.model_vs_market;
+  const analytics = s.daily_summary?.decision_analytics;
+  const cachedCounts = analytics?.status === "cached";
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -93,15 +95,22 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
             All figures and runtime statuses come from {(s.source_of_truth ?? "AWS runtime artifacts").toLowerCase()}; explanatory copy and archive curation are part of this frontend.
           </p>
           {collected && (
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
-              {COLLECTED_LABELS.filter(([k]) => collected[k] != null).map(([k, label]) => (
-                <Stat key={k} label={label} value={collected[k].toLocaleString()} />
-              ))}
-            </div>
+            <>
+              {cachedCounts && (
+                <p role="status" className="text-xs font-medium text-warning">
+                  Historical counts as of {analytics.counts_stale_from ?? analytics.analysis_generated_at?.slice(0, 10) ?? "the last deploy-time analysis"}; runtime status above is current.
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
+                {COLLECTED_LABELS.filter(([k]) => collected[k] != null).map(([k, label]) => (
+                  <Stat key={k} label={label} value={collected[k].toLocaleString()} />
+                ))}
+              </div>
+            </>
           )}
           {mvm?.samples != null && (
             <p className="text-xs text-muted">
-              Model-vs-market gap tracked across <span className="tnum font-medium text-foreground">{mvm.samples.toLocaleString()}</span>{" "}
+              {cachedCounts ? "At that cutoff, model-vs-market gap was" : "Model-vs-market gap tracked"} across <span className="tnum font-medium text-foreground">{mvm.samples.toLocaleString()}</span>{" "}
               snapshots · mean absolute gap {Math.round((mvm.mean_abs_gap ?? 0) * 1000) / 10}pp.
             </p>
           )}

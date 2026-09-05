@@ -97,7 +97,7 @@ function freshnessFor(
 ): PublicationFreshness {
   if (!manifest?.artifacts) return UNKNOWN;
 
-  const timestamps: { iso: string; time: number }[] = [];
+  const artifactTimes: { iso: string; time: number }[] = [];
   for (const name of artifactNames) {
     const artifact = manifest.artifacts[name];
     if (!artifact || (artifact.status !== "ready" && artifact.status !== "preserved")) return UNKNOWN;
@@ -109,21 +109,35 @@ function freshnessFor(
     // Stale-cache protection is handled by the versioned fetch URL. requireLoaded
     // stays true for callers that render the exact data being version-checked.
     if (requireLoaded && loadedArtifactVersions[name] !== expectedVersion) return UNKNOWN;
-    const iso = artifact.generated_at;
-    if (typeof iso !== "string" || !iso) return UNKNOWN;
-    const time = Date.parse(iso);
-    if (Number.isNaN(time)) return UNKNOWN;
-    timestamps.push({ iso, time });
+    const artifactIso = artifact.generated_at;
+    const artifactTime = Date.parse(artifactIso ?? "");
+    if (typeof artifactIso === "string" && !Number.isNaN(artifactTime)) {
+      artifactTimes.push({ iso: artifactIso, time: artifactTime });
+    }
   }
-
-  const oldest = timestamps.reduce((candidate, value) =>
-    value.time < candidate.time ? value : candidate,
-  );
-  const ageMinutes = Math.max(0, (now - oldest.time) / 60_000);
+  // Artifact generation begins before the publication cycle and the manifest
+  // may carry data generated in the preceding cycle. Pipeline freshness is the
+  // moment this coherent snapshot was actually published, not when its oldest
+  // member began generating.
+  const manifestPublishedAt = manifest.published_at;
+  const manifestPublishedTime = Date.parse(manifestPublishedAt ?? "");
+  const oldestArtifact = artifactTimes.length
+    ? artifactTimes.reduce((candidate, value) =>
+        value.time < candidate.time ? value : candidate,
+      )
+    : null;
+  const publishedAt = !Number.isNaN(manifestPublishedTime)
+    ? manifestPublishedAt!
+    : oldestArtifact?.iso;
+  const publishedTime = !Number.isNaN(manifestPublishedTime)
+    ? manifestPublishedTime
+    : oldestArtifact?.time;
+  if (!publishedAt || publishedTime == null) return UNKNOWN;
+  const ageMinutes = Math.max(0, (now - publishedTime) / 60_000);
   return {
     state: ageMinutes > maxAgeMinutes ? "stale" : "fresh",
     ageMinutes,
-    generatedAt: oldest.iso,
+    generatedAt: publishedAt,
   };
 }
 
@@ -133,15 +147,20 @@ function staleDeadlineFor(
   maxAgeMinutes: number,
 ): number | null {
   if (!manifest?.artifacts) return null;
-  const generatedTimes: number[] = [];
+  const artifactTimes: number[] = [];
   for (const name of artifactNames) {
     const artifact = manifest.artifacts[name];
     if (!artifact || (artifact.status !== "ready" && artifact.status !== "preserved")) return null;
-    const parsed = Date.parse(artifact.generated_at ?? "");
-    if (Number.isNaN(parsed)) return null;
-    generatedTimes.push(parsed);
+    const generatedTime = Date.parse(artifact.generated_at ?? "");
+    if (!Number.isNaN(generatedTime)) artifactTimes.push(generatedTime);
   }
-  return Math.min(...generatedTimes) + maxAgeMinutes * 60_000 + 1;
+  const publishedTime = Date.parse(manifest.published_at ?? "");
+  const basis = !Number.isNaN(publishedTime)
+    ? publishedTime
+    : artifactTimes.length
+      ? Math.min(...artifactTimes)
+      : null;
+  return basis == null ? null : basis + maxAgeMinutes * 60_000 + 1;
 }
 
 function PublicationClockProvider({ children }: { children: ReactNode }) {

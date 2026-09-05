@@ -23,6 +23,10 @@ INITIAL_CAPITAL = 1000.0
 RESEARCH_ACCOUNT_ID = "paper-research-shadow"
 RESEARCH_VIRTUAL_CAPITAL = INITIAL_CAPITAL
 ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
+# Explicitly covers behavior outside StrategyConfig (notably exit policy). Any
+# live-account behavior change must rotate this value so readiness evidence
+# cannot silently blend pre-change and post-change orders.
+STRATEGY_BEHAVIOR_VERSION = "behavior-v2-audit-remediation-2026-09-04"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)
@@ -175,7 +179,11 @@ def strategy_fingerprint(config: StrategyConfig | None, *, entry_mode: str) -> s
         return "legacy_independent_sizing"
     payload = {
         "strategy": asdict(config),
-        "execution": {"entry_mode": entry_mode, "account_policy": "shared-v2"},
+        "execution": {
+            "entry_mode": entry_mode,
+            "account_policy": "shared-v2",
+            "behavior_version": STRATEGY_BEHAVIOR_VERSION,
+        },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]

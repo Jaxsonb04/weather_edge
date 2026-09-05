@@ -282,6 +282,7 @@ def _leg_for_contracts(
         fee_multiplier=config.fee_multiplier,
         taker_rate=config.taker_fee_rate,
         maker_rate=config.maker_fee_rate,
+        series_ticker=market.ticker,
     )
     cost = price + fee
     side = side.upper()
@@ -404,6 +405,7 @@ def _group_spend(
             fee_multiplier=config.fee_multiplier,
             taker_rate=config.taker_fee_rate,
             maker_rate=config.maker_fee_rate,
+            series_ticker=market.ticker,
         )
         for market, side in leg_specs
     )

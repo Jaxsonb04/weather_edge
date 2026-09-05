@@ -220,7 +220,10 @@ wait_for_remote_publication() {
 }
 
 prepare_pages_branch() {
-  if git fetch origin "$PAGES_BRANCH" >/dev/null 2>&1; then
+  # The Pages branch is a generated snapshot. Fetch only its current head:
+  # downloading the full, fast-growing publication history every cycle burned
+  # most of the burstable instance's CPU and network budget.
+  if git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1; then
     if ! wait_for_remote_publication; then
       return 1
     fi

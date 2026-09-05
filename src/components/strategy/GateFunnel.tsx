@@ -17,12 +17,14 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 /** Shared by the measured funnel and its deferred stand-in so the section keeps
     one identity in both states. */
-function FunnelHeader() {
+function FunnelHeader({ countsAsOf }: { countsAsOf?: string | null }) {
   return (
     <Card.Header>
       <Card.Title className="text-base">Signal filtering</Card.Title>
       <Card.Description className="text-sm text-muted">
-        Every 5-minute scheduled scan re-checks each published bracket and side against the full filter set
+        {countsAsOf
+          ? `Cached gate counts as of ${countsAsOf}; they are not current-runtime totals`
+          : "Every scheduled scan re-checks each published bracket and side against the full filter set"}
       </Card.Description>
     </Card.Header>
   );
@@ -51,10 +53,14 @@ function DeferredFunnel({ reason }: { reason: string }) {
     lives in the profile explorer. */
 export function GateFunnel({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
+  const analytics = s.daily_summary?.decision_analytics;
   if (!gate) return null;
   const { approved, total } = gateCounts(gate);
   if (gateDeferred(gate) || total === 0) return <DeferredFunnel reason={deferralReason(gate)} />;
   const approvedPct = approved / total;
+  const countsAsOf = analytics?.status === "cached"
+    ? analytics.counts_stale_from ?? analytics.analysis_generated_at?.slice(0, 10) ?? "the last deploy-time analysis"
+    : null;
   const cats = Object.entries(aggregateCategories(gate.by_profile ?? []));
   const rejections = (gate.top_rejections_all?.length ? gate.top_rejections_all : gate.top_rejections ?? []).slice(0, 8);
   const max = rejections[0]?.count ?? 1;
@@ -63,7 +69,7 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
 
   return (
     <Card className="w-full min-w-0 max-w-full rounded-2xl">
-      <FunnelHeader />
+      <FunnelHeader countsAsOf={countsAsOf} />
       <Card.Content className="min-w-0 space-y-6 pt-0">
         <div>
           <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">

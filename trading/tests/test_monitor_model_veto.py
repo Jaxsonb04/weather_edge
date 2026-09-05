@@ -9,6 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+import pytest
+
 from sfo_kalshi_quant.account import RESEARCH_ACCOUNT_ID
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.cli import _refresh_same_day_model_reads, main
@@ -436,7 +438,13 @@ def test_latest_model_probability_missing_market_is_none():
 # flowing -- which silently disabled this veto from 2026-06-16.
 
 def _record_decision_model_read(
-    store: PaperStore, target_date: str, ticker: str, side: str, model_probability: float
+    store: PaperStore,
+    target_date: str,
+    ticker: str,
+    side: str,
+    model_probability: float,
+    *,
+    risk_profile: str = "live",
 ) -> None:
     decision = TradeDecision(
         ticker=ticker,
@@ -462,7 +470,7 @@ def _record_decision_model_read(
         floor_strike=82.0,
         cap_strike=None,
     )
-    store.record_decisions(target_date, [decision])
+    store.record_decisions(target_date, [decision], risk_profile=risk_profile)
 
 
 def test_latest_model_probability_reads_no_side_decision_journal():
@@ -474,6 +482,28 @@ def test_latest_model_probability_reads_no_side_decision_journal():
         value = store.latest_model_probability("2026-06-18", "KXHIGHTSFO-TEST-B82.5")
         assert value is not None
         assert abs(value - 0.05) < 1e-9
+
+
+def test_latest_model_probability_read_is_scoped_to_order_profile():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        ticker = "KXHIGHTSFO-TEST-B82.5"
+        _record_decision_model_read(
+            store, "2026-06-18", ticker, "YES", 0.20, risk_profile="live"
+        )
+        _record_decision_model_read(
+            store, "2026-06-18", ticker, "YES", 0.80, risk_profile="research"
+        )
+
+        live = store.latest_model_probability_read(
+            "2026-06-18", ticker, risk_profile="live"
+        )
+        research = store.latest_model_probability_read(
+            "2026-06-18", ticker, risk_profile="research"
+        )
+
+        assert live is not None and live[1] == pytest.approx(0.20)
+        assert research is not None and research[1] == pytest.approx(0.80)
 
 
 def test_latest_model_probability_prefers_decision_over_probability_snapshot():
@@ -1241,7 +1271,14 @@ def test_same_day_no_basket_noncatastrophic_stop_is_held_without_crystallizing()
                 cap=71.0,
             ),
         )
-        _record_decision_model_read(store, "2026-06-26", "KXHIGHTSFO-TEST-B68.5", "NO", 0.66)
+        _record_decision_model_read(
+            store,
+            "2026-06-26",
+            "KXHIGHTSFO-TEST-B68.5",
+            "NO",
+            0.66,
+            risk_profile="research",
+        )
 
         out = StringIO()
         with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoBasketClient), redirect_stdout(out):
@@ -1290,7 +1327,14 @@ def test_same_day_no_basket_closes_stop_when_model_thesis_dies():
                 cap=71.0,
             ),
         )
-        _record_decision_model_read(store, "2026-06-26", "KXHIGHTSFO-TEST-B68.5", "NO", 0.40)
+        _record_decision_model_read(
+            store,
+            "2026-06-26",
+            "KXHIGHTSFO-TEST-B68.5",
+            "NO",
+            0.40,
+            risk_profile="research",
+        )
 
         out = StringIO()
         with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _FakeNoBasketClient), redirect_stdout(out):

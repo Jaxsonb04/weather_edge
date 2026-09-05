@@ -24,6 +24,7 @@ from .config import (
 from .db import PaperStore
 from .exits import (
     DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST,
+    DEFAULT_RESEARCH_TAKE_PROFIT_MARGIN,
     ExitSignal,
     decide_exit,
     research_no_basket_hold_reason,
@@ -97,9 +98,13 @@ def _validate_monitor_args(args: argparse.Namespace) -> None:
         args.no_stop_loss_pct,
         args.model_veto_max_loss_pct,
     ]
-    if any(value <= 0 for value in values) or args.model_veto_buffer < 0:
+    if (
+        any(value <= 0 for value in values)
+        or args.model_veto_buffer < 0
+        or not 0 <= args.research_take_profit_margin <= 1
+    ):
         raise ValueError(
-            "take-profit, stop-loss, model-veto loss percentages, and model-veto buffer must be non-negative; percentages must be greater than zero"
+            "take-profit, stop-loss, model-veto loss percentages, and model-veto buffer must be non-negative; percentages must be greater than zero; research take-profit margin must be within [0, 1]"
         )
 
 
@@ -151,6 +156,11 @@ def _settlement_first_no_min_cost_for_order(row) -> float | None:
     if risk_profile == "research":
         return DEFAULT_RESEARCH_NO_SETTLEMENT_FIRST_MIN_COST
     return None
+
+
+def _take_profit_margin_for_order(row, configured_margin: float) -> float:
+    risk_profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
+    return float(configured_margin) if risk_profile == "research" else 0.0
 
 
 def _same_day_no_basket_veto_reason(
@@ -458,7 +468,9 @@ def run_paper_monitor(
         # stop-loss is the reachable downside price floor with the NO-side model
         # veto preserved (do not sell intraday noise the model still expects to win).
         model_read = store.latest_model_probability_read(
-            str(row["target_date"]), str(row["market_ticker"])
+            str(row["target_date"]),
+            str(row["market_ticker"]),
+            risk_profile=str(row["risk_profile"] or "live"),
         )
         model_yes_p = None if model_read is None else model_read[1]
         model_side_p = (
@@ -483,6 +495,9 @@ def run_paper_monitor(
             net_exit=net_exit,
             stop_loss_net=entry_cost * (1.0 - stop_loss),
             model_side_probability=model_side_p,
+            take_profit_margin=_take_profit_margin_for_order(
+                row, args.research_take_profit_margin
+            ),
             model_veto_buffer=args.model_veto_buffer,
             model_veto_max_loss_roi=model_veto_max_loss,
             model_veto_max_loss_dollars=RESEARCH_VETO_DOLLAR_CAPS.get(

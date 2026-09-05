@@ -112,7 +112,8 @@ describe("AnalysisFreshness", () => {
     );
 
     expect(screen.getByText(/Historical rescore cached from 2026-07-25 08:00 UTC/i)).toBeInTheDocument();
-    expect(screen.getByText(/current paper state and readiness are recomputed/i)).toBeInTheDocument();
+    expect(screen.getByText(/current paper state is refreshed on every publication/i)).toBeInTheDocument();
+    expect(screen.getByText(/readiness evidence is refreshed only by the deploy-time analysis job/i)).toBeInTheDocument();
   });
 
   it("states when historical analysis is deferred instead of inventing freshness", () => {

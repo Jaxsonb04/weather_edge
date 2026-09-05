@@ -11,7 +11,7 @@ from sfo_kalshi_quant.fees import (
 
 
 def test_july_2026_fee_schedule_handles_general_and_contract_overrides():
-    assert FEE_SCHEDULE_VERSION == "2026-07-07"
+    assert FEE_SCHEDULE_VERSION == "2026-09-04"
     assert fee_multipliers("KXHIGHNY-26JUL09-B85") == (0.0, 1.0)
     assert fee_multipliers("KXCPI-26JUL") == (1.0, 1.0)
     assert fee_multipliers("KXBTCY-26DEC") == (0.0, 0.0)
@@ -21,6 +21,9 @@ def test_july_2026_fee_schedule_handles_general_and_contract_overrides():
     assert quadratic_fee_total(
         0.5, 100, maker=False, series_ticker="KXHIGHNY"
     ) == 1.75
+    assert quadratic_fee_total(
+        0.85, 5, maker=False, series_ticker="KXHIGHNY"
+    ) == 0.05
 from sfo_kalshi_quant.standard_bins import standard_sfo_bins
 
 

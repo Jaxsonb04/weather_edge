@@ -1,5 +1,7 @@
 """Unit tests for the shared exit math (trading/sfo_kalshi_quant/exits.py)."""
 
+import pytest
+
 from sfo_kalshi_quant.exits import (
     convergence_take_profit_net,
     decide_exit,
@@ -31,6 +33,7 @@ def test_edge_based_take_profit_is_reachable_for_the_same_favorite():
 def test_convergence_target_is_the_model_fair_value():
     assert convergence_take_profit_net(0.66) == 0.66
     assert convergence_take_profit_net(0.66, buffer=0.01) == 0.65
+    assert convergence_take_profit_net(0.66, margin=0.05) == pytest.approx(0.71)
     # No model read -> ride to settlement (no scalp, no exit fee paid).
     assert convergence_take_profit_net(None) is None
 
@@ -81,6 +84,38 @@ def test_settlement_first_no_does_not_block_edge_reversal_stop():
         settlement_first_no_min_cost=0.73,
     )
     assert signal.action == "STOP_LOSS"
+
+
+def test_edge_reversal_above_stop_floor_holds_instead_of_mislabeling_winner():
+    signal = decide_exit(
+        side="NO",
+        entry_cost=0.86,
+        net_exit=0.70,
+        stop_loss_net=0.86 * 0.65,
+        model_side_probability=0.65,
+    )
+    assert signal.action == "HOLD"
+
+
+def test_positive_take_profit_margin_requires_price_beyond_fair_value():
+    hold = decide_exit(
+        side="NO",
+        entry_cost=0.40,
+        net_exit=0.67,
+        stop_loss_net=0.26,
+        model_side_probability=0.66,
+        take_profit_margin=0.05,
+    )
+    bank = decide_exit(
+        side="NO",
+        entry_cost=0.40,
+        net_exit=0.72,
+        stop_loss_net=0.26,
+        model_side_probability=0.66,
+        take_profit_margin=0.05,
+    )
+    assert hold.action == "HOLD"
+    assert bank.action == "TAKE_PROFIT"
 
 
 def test_converged_no_books_profit_at_fair_value_not_at_ceiling():

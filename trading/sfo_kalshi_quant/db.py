@@ -38,6 +38,7 @@ from .account import (
     strategy_fingerprint,
 )
 from .consensus import MarketConsensus
+from .cities import city_for_market_ticker
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
@@ -93,6 +94,7 @@ from .settlement_truth import (
     row_resolves_yes as _row_resolves_yes,
     settlement_for_market,
 )
+from .settlement_day import settlement_clock
 from .store.diagnostics import (
     _decision_diagnostics_payload,
     _decision_signal_payload,
@@ -159,6 +161,10 @@ from .store.scoring import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ResearchEntryLimitError(ValueError):
+    """A research leg no longer satisfies canonical entry limits."""
 
 
 def _single_series_ticker(rows: tuple[sqlite3.Row, ...]) -> str | None:
@@ -2522,12 +2528,36 @@ class PaperStore:
         )
         return None if read is None else read[1]
 
+    def paper_directional_spend(self, target_date: str, risk_profile: str) -> float:
+        """Total directional risk admitted for one profile/settlement day.
+
+        Terminal positions remain counted: this is a daily admission budget,
+        not a momentary open-risk gauge that refreshes after every close or scan.
+        Unfilled expired/cancelled roots and arbitrage groups are excluded.
+        """
+
+        profile = normalize_risk_profile_name(risk_profile)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(contracts * cost_per_contract), 0.0)
+                FROM paper_orders
+                WHERE target_date = ? AND risk_profile = ?
+                  AND parent_order_id IS NULL
+                  AND group_id IS NULL
+                  AND status NOT IN ('PAPER_EXPIRED', 'PAPER_CANCELLED')
+                """,
+                (target_date, profile),
+            ).fetchone()
+        return max(0.0, float(row[0] or 0.0))
+
     def latest_model_probability_read(
         self,
         target_date: str,
         market_ticker: str,
         *,
         max_age_minutes: float = 90.0,
+        risk_profile: str | None = None,
     ) -> tuple[datetime, float] | None:
         """Like ``latest_model_probability`` but keeps the snapshot timestamp.
 
@@ -2537,7 +2567,10 @@ class PaperStore:
 
         candidates = [
             self._latest_model_probability_from_decisions(
-                target_date, market_ticker, max_age_minutes=max_age_minutes
+                target_date,
+                market_ticker,
+                max_age_minutes=max_age_minutes,
+                risk_profile=risk_profile,
             ),
             self._latest_model_probability_from_snapshots(
                 target_date, market_ticker, max_age_minutes=max_age_minutes
@@ -2554,6 +2587,7 @@ class PaperStore:
         market_ticker: str,
         *,
         max_age_minutes: float,
+        risk_profile: str | None,
     ) -> tuple[datetime, float] | None:
         """Latest valid decision model read, normalized to the YES frame."""
 
@@ -2561,16 +2595,26 @@ class PaperStore:
         lower = (now - timedelta(minutes=max_age_minutes)).isoformat()
         upper = (now + timedelta(minutes=5)).isoformat()
         with self.connect() as conn:
+            profile_clause = " AND risk_profile = ?" if risk_profile is not None else ""
+            params: tuple[object, ...] = (
+                target_date,
+                market_ticker,
+                lower,
+                upper,
+            )
+            if risk_profile is not None:
+                params = (*params, normalize_risk_profile_name(risk_profile))
             rows = conn.execute(
-                """
+                f"""
                 SELECT created_at, side, COALESCE(model_probability, probability)
                 FROM decision_snapshots
                 WHERE target_date = ? AND market_ticker = ?
                   AND julianday(created_at) >= julianday(?)
                   AND julianday(created_at) <= julianday(?)
+                  {profile_clause}
                 ORDER BY julianday(created_at) DESC, id DESC
                 """,
-                (target_date, market_ticker, lower, upper),
+                params,
             ).fetchall()
         for row in rows:
             if row[2] is None:
@@ -3213,7 +3257,9 @@ class PaperStore:
             spread = float(decision.spread)
             ask_size = float(decision.ask_size)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("research strategy entry limits are invalid") from exc
+            raise ResearchEntryLimitError(
+                "research strategy entry limits are invalid"
+            ) from exc
         allowed_contracts = float(canonical.max_contracts_per_market)
         # The active target allocator may deliberately resize a zero-fee,
         # non-crossing maker quote beyond the scanner's structural 25-contract
@@ -3272,12 +3318,14 @@ class PaperStore:
                 and abs(contracts - round(contracts)) > 1e-9
             )
         ):
-            raise ValueError("research strategy entry limits are violated")
+            raise ResearchEntryLimitError("research strategy entry limits are violated")
         if decision.limit_price is not None:
             limit_price = float(decision.limit_price)
             ticks = limit_price / canonical.limit_price_tick
             if not math.isfinite(ticks) or abs(ticks - round(ticks)) > 1e-9:
-                raise ValueError("research strategy entry limits are violated")
+                raise ResearchEntryLimitError(
+                    "research strategy entry limits are violated"
+                )
         return snapshot
 
     @staticmethod
@@ -3682,12 +3730,14 @@ class PaperStore:
                     "research admission objective day must equal the current "
                     "Pacific civil day"
                 )
-            lead_days = (target_day - civil_day).days
+            city = city_for_market_ticker(decision.ticker)
+            station_day = settlement_clock(self._research_clock(), city).date()
+            lead_days = (target_day - station_day).days
             if lead_days < policy.min_lead_days:
                 conn.rollback()
                 raise ValueError(
                     f"{policy.sleeve.value} research minimum lead is "
-                    f"{policy.min_lead_days} civil day(s); got {lead_days}"
+                    f"{policy.min_lead_days} station-standard day(s); got {lead_days}"
                 )
             canonical_lead_bucket = canonical_research_lead_bucket(lead_days)
             if admission.lead_bucket != canonical_lead_bucket:
@@ -6451,6 +6501,78 @@ class PaperStore:
                     # what lets a waiting scan/monitor connection win it.
                     _sleep(batch_pause_seconds)
 
+        def _materialized_batched_delete(
+            conn,
+            *,
+            source_table: str,
+            candidate_sql: str,
+            params: tuple,
+        ) -> int:
+            """Resolve an expensive candidate set once, then delete by PK.
+
+            Production's 30 GB journal exposed a failure in the otherwise
+            bounded dedup query: the correlated candidate probe was repeated
+            for every 5,000-row delete batch, rereading roughly the whole
+            journal each time. A connection-local integer table keeps the
+            same candidate set and interruption semantics while each durable
+            source-table delete becomes a primary-key lookup.
+            """
+
+            if source_table != "decision_snapshots":
+                raise ValueError(f"unsupported materialized prune table: {source_table}")
+            temp_table = "weatheredge_prune_decision_ids"
+            conn.execute(
+                f"CREATE TEMP TABLE {temp_table} (id INTEGER PRIMARY KEY)"
+            )
+            try:
+                conn.execute(
+                    f"INSERT INTO {temp_table} (id) {candidate_sql}",
+                    params,
+                )
+                # TEMP contents survive this commit. Release the candidate
+                # scan's read transaction before the first main-DB write.
+                conn.commit()
+                total = 0
+                last_id = 0
+                while True:
+                    limit = adaptive_limit[0]
+                    ids = [
+                        int(row[0])
+                        for row in conn.execute(
+                            f"SELECT id FROM {temp_table} "
+                            "WHERE id > ? ORDER BY id LIMIT ?",
+                            (last_id, limit),
+                        )
+                    ]
+                    if not ids:
+                        return total
+                    started = _monotonic()
+                    placeholders = ", ".join("?" for _ in ids)
+                    cursor = conn.execute(
+                        f"DELETE FROM {source_table} "
+                        f"WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                    raw = cursor.rowcount
+                    removed = raw if raw and raw > 0 else 0
+                    if removed != len(ids):
+                        raise RuntimeError(
+                            "materialized retention candidates changed during prune"
+                        )
+                    total += removed
+                    conn.commit()
+                    held_seconds = _monotonic() - started
+                    last_id = ids[-1]
+                    if (
+                        max_batch_seconds is not None
+                        and held_seconds > max_batch_seconds
+                    ):
+                        adaptive_limit[0] = max(min_batch_limit, limit // 2)
+                    if batch_pause_seconds > 0:
+                        _sleep(batch_pause_seconds)
+            finally:
+                conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
+
         with self.connect() as conn:
             # Resolve the window ONCE. Re-evaluating datetime('now', ...) inside
             # each batched statement let the retention window slide forward
@@ -6460,31 +6582,28 @@ class PaperStore:
                 "SELECT datetime('now', ?), datetime('now', ?)",
                 (f"-{full_days} days", f"-{dedup_days} days"),
             ).fetchone()
-            deduped = _batched_delete(
+            deduped = _materialized_batched_delete(
                 conn,
-                """
-                DELETE FROM decision_snapshots
-                WHERE id IN (
-                    SELECT d.id FROM decision_snapshots AS d
-                    WHERE d.created_at < ?
-                      AND d.created_at >= ?
-                      AND COALESCE(d.approved, 0) = 0
-                      AND COALESCE(d.signal_approved, 0) = 0
-                      AND EXISTS (
-                          SELECT 1 FROM decision_snapshots AS n
-                          WHERE n.market_ticker = d.market_ticker
-                            AND n.side = d.side
-                            AND n.target_date = d.target_date
-                            AND COALESCE(n.risk_profile, '')
-                                = COALESCE(d.risk_profile, '')
-                            AND n.id > d.id
-                            AND n.created_at < ?
-                            AND n.created_at >= ?
-                      )
-                    LIMIT ?
-                )
+                source_table="decision_snapshots",
+                candidate_sql="""
+                SELECT d.id FROM decision_snapshots AS d
+                WHERE d.created_at < ?
+                  AND d.created_at >= ?
+                  AND COALESCE(d.approved, 0) = 0
+                  AND COALESCE(d.signal_approved, 0) = 0
+                  AND EXISTS (
+                      SELECT 1 FROM decision_snapshots AS n
+                      WHERE n.market_ticker = d.market_ticker
+                        AND n.side = d.side
+                        AND n.target_date = d.target_date
+                        AND COALESCE(n.risk_profile, '')
+                            = COALESCE(d.risk_profile, '')
+                        AND n.id > d.id
+                        AND n.created_at < ?
+                        AND n.created_at >= ?
+                  )
                 """,
-                (
+                params=(
                     full_cutoff,
                     dedup_cutoff,
                     full_cutoff,

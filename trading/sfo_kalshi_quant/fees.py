@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import math
 
-FEE_SCHEDULE_VERSION = "2026-07-07"
-FEE_ROUNDING_UNIT = 0.0001  # one centicent
+FEE_SCHEDULE_VERSION = "2026-09-04"
 
 # July 7, 2026 non-standard table. Unlisted prediction series use maker M=0,
 # taker M=1. Only overrides that differ from that general rule are needed here.
@@ -34,11 +33,6 @@ _TAKER_ZERO = {
 def fee_multipliers(series_or_ticker: str | None) -> tuple[float, float]:
     series = (series_or_ticker or "").split("-", 1)[0].upper()
     return (1.0 if series in _MAKER_ONE else 0.0, 0.0 if series in _TAKER_ZERO else 1.0)
-
-
-def _ceil_position_plus_fee(position_cost: float, raw_fee: float) -> float:
-    total = math.ceil((position_cost + raw_fee) / FEE_ROUNDING_UNIT - 1e-12) * FEE_ROUNDING_UNIT
-    return max(0.0, round(total - position_cost, 12))
 
 
 def ceil_to_cent(value: float) -> float:
@@ -77,8 +71,6 @@ def quadratic_fee_total(
         maker_multiplier, taker_multiplier = fee_multipliers(series_ticker)
         schedule_multiplier = maker_multiplier if maker else taker_multiplier
     raw_fee = rate * fee_multiplier * schedule_multiplier * contracts * price * (1.0 - price)
-    if series_ticker is not None:
-        return _ceil_position_plus_fee(price * contracts, raw_fee)
     return ceil_to_cent(raw_fee)
 
 

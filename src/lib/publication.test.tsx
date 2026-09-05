@@ -72,6 +72,24 @@ describe("PublicationProvider", () => {
     );
   });
 
+  it("uses coherent publication time rather than an older artifact generation time", async () => {
+    vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
+    const payload = manifest("2026-07-09T11:59:00Z");
+    payload.artifacts!["trading_signal.json"]!.generated_at = "2026-07-09T11:35:00Z";
+    payload.artifacts!["cities_data.json"]!.generated_at = "2026-07-09T11:35:00Z";
+    fetchMock.mockResolvedValue(ok(payload));
+
+    render(
+      <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json"]} />
+        <Probe />
+      </PublicationProvider>,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    expect(screen.getByText("Operational").nextElementSibling).toHaveTextContent("fresh");
+  });
+
   it("treats missing optional manifest fields as unknown without crashing", async () => {
     vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
     fetchMock.mockResolvedValue(ok({ artifacts: { "trading_signal.json": {} } }));

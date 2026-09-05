@@ -13,6 +13,7 @@ from .db import (
     PaperStore,
     ResearchDecisionEvidence,
     ResearchDecisionIdentity,
+    ResearchEntryLimitError,
 )
 from .fees import (
     contracts_for_budget,
@@ -462,12 +463,19 @@ class PaperTrader:
             sleeve_decision_ids.append(decision_id)
             if not attempt.admission_pending:
                 continue
-            order_id = self.store.record_research_order_atomic(
-                target_date,
-                attempt.decision,
-                admission=attempt.identity.admission(decision_id),
-                strategy_config=self.config,
-            )
+            try:
+                order_id = self.store.record_research_order_atomic(
+                    target_date,
+                    attempt.decision,
+                    admission=attempt.identity.admission(decision_id),
+                    strategy_config=self.config,
+                )
+            except ResearchEntryLimitError as exc:
+                self.store.mark_research_decision_admission_blocked(
+                    decision_id,
+                    f"canonical research entry rejected: {exc}",
+                )
+                continue
             if order_id is not None:
                 sleeve_order_ids.append(order_id)
             else:
@@ -893,6 +901,10 @@ class PaperTrader:
             adjusted = self._fit_arbitrage_to_exposure(opportunity, exposure_remaining)
             if adjusted is None:
                 return []
+        if bankroll is not None:
+            adjusted = self._fit_arbitrage_to_account_policy(target_date, adjusted)
+            if adjusted is None:
+                return []
 
         normalized = self._normalize_arbitrage_contracts(adjusted)
         if normalized is None:
@@ -1133,6 +1145,30 @@ class PaperTrader:
         if not adjusted.approved or adjusted.total_spend > exposure_remaining + 1e-9:
             return None
         return adjusted
+
+    def _fit_arbitrage_to_account_policy(
+        self,
+        target_date: str,
+        opportunity: ArbitrageOpportunity,
+    ) -> ArbitrageOpportunity | None:
+        """Clamp a guaranteed group to the strictest applicable account room."""
+
+        requested = float(opportunity.total_spend)
+        if requested <= 0:
+            return None
+        allowed = requested
+        for ticker in {decision.ticker for decision in opportunity.decisions}:
+            capacity = self.store.account_policy_capacity(
+                target_date=target_date,
+                market_ticker=ticker,
+                risk_profile=self.risk_profile,
+                requested_spend=requested,
+                minimum_notional=self.config.limit_taker_cross_min_notional,
+            )
+            allowed = min(allowed, float(capacity["allowed_spend"]))
+        if allowed <= 0:
+            return None
+        return self._fit_arbitrage_to_exposure(opportunity, allowed)
 
 
 def _prepare_research_disposition(
