@@ -107,6 +107,44 @@ describe("PublicationProvider", () => {
     expect(screen.getByText("Snapshot").nextElementSibling).toHaveTextContent("none");
   });
 
+  it("keeps preserved Strategy data stale when operational data is republished", async () => {
+    vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
+    const payload = manifest("2026-07-09T11:59:00Z");
+    payload.artifacts!["strategy_research.json"] = {
+      generated_at: "2026-07-09T10:00:00Z", sha256: "strategy-hash", status: "preserved",
+    };
+    fetchMock.mockResolvedValue(ok(payload));
+
+    render(
+      <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json", "strategy_research.json"]} />
+        <Probe />
+      </PublicationProvider>,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    expect(screen.getByText("Operational").nextElementSibling).toHaveTextContent("fresh");
+    expect(screen.getByText("Strategy").nextElementSibling).toHaveTextContent("stale");
+  });
+
+  it("expires Strategy data on its own deadline even while publication remains fresh", async () => {
+    vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
+    const payload = manifest("2026-07-09T11:59:00Z");
+    payload.artifacts!["strategy_research.json"]!.generated_at = "2026-07-09T11:41:00Z";
+    fetchMock.mockResolvedValue(ok(payload));
+    render(
+      <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json", "strategy_research.json"]} />
+        <Probe />
+      </PublicationProvider>,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("Strategy").nextElementSibling).toHaveTextContent("fresh");
+    await act(async () => vi.advanceTimersByTimeAsync(60_001));
+    expect(screen.getByText("Strategy").nextElementSibling).toHaveTextContent("stale");
+    expect(screen.getByText("Operational").nextElementSibling).toHaveTextContent("fresh");
+  });
+
   it("recomputes freshness as time advances", async () => {
     vi.setSystemTime(new Date("2026-07-09T12:00:00Z"));
     fetchMock.mockResolvedValue(ok(manifest("2026-07-09T11:55:00Z")));

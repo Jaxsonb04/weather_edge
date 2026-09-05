@@ -1,4 +1,4 @@
-"""Leakage-free multi-model NWP forecast archive for the SFO daily high.
+"""Fixed-lead multi-model NWP forecast archive for the daily high.
 
 Phase 0 of the forecast-accuracy upgrade. The live trade engine's "model
 probability" rides on a heuristic point-blend of a few public forecasts; this
@@ -15,10 +15,13 @@ Why the Previous-Runs API (and not the plain Historical-Forecast daily max):
   (e.g. 62.5F vs 63.2F for the same SFO day), so scoring against the analysis
   would flatter any model that consumed it.
 * The Previous-Runs API exposes ``temperature_2m_previous_dayN`` -- for each
-  valid hour, the value from the model run issued N days earlier. We reconstruct
-  the daily max over the fixed-PST settlement window from those hours, giving a
-  genuine ~24/48/72h-lead forecast known at trade time. That is the only honest
-  input for an out-of-sample gate.
+  valid hour, the value predicted N days earlier. We reconstruct the daily max
+  over the station's fixed-standard-time settlement window. This is a fixed-lead
+  weather-skill series, not one model run known at a single decision time: the
+  afternoon values can originate later than the morning values. A trading-time
+  replay must instead use archived live inputs or Single Runs forecasts whose
+  initialization precedes that decision; a truth cutoff alone cannot enforce
+  the model-input cutoff. See https://open-meteo.com/en/docs/previous-runs-api.
 
 Design choices mirror ``forecast_backtest.py``: pure standard library (no numpy)
 so the project test runner stays dependency-light, fixed-PST (``Etc/GMT+8``)
@@ -234,7 +237,7 @@ def previous_day_variable(lead_days: int) -> str:
 
 
 def reconstruct_daily_max(payload: dict, lead_days: int) -> dict[str, float]:
-    """Daily max per local date from the leakage-free previous-day hourly series.
+    """Daily max per local date from the fixed-lead previous-day hourly series.
 
     We read *only* ``temperature_2m_previous_day{N}`` -- never the plain
     ``temperature_2m`` (which is the freshest/analysis run and would leak). Hours
@@ -265,13 +268,36 @@ def fetch_model_range(
     city: CityConfig = DEFAULT_CITY,
     timeout: float = _HTTP_TIMEOUT,
 ) -> dict[str, float]:
-    """Day-ahead (lead N) daily max per date for one model over [start, end]."""
+    """Fixed-lead daily max per date for one model over [start, end]."""
+
+    return _fetch_model_range_leads(
+        model, start, end, (lead_days,), city=city, timeout=timeout
+    )[lead_days]
+
+
+def _fetch_model_range_leads(
+    model: str,
+    start: str,
+    end: str,
+    leads: tuple[int, ...],
+    *,
+    city: CityConfig = DEFAULT_CITY,
+    timeout: float = _HTTP_TIMEOUT,
+) -> dict[int, dict[str, float]]:
+    """Fetch several lead series together, retaining each lead's own values.
+
+    Missing variables produce empty series; there is never a fallback to a
+    different lead or the freshest ``temperature_2m`` variable.
+    """
+
+    if not leads:
+        return {}
 
     params = urlencode(
         {
             "latitude": f"{city.latitude:.4f}",
             "longitude": f"{city.longitude:.4f}",
-            "hourly": previous_day_variable(lead_days),
+            "hourly": ",".join(previous_day_variable(lead) for lead in leads),
             "temperature_unit": "fahrenheit",
             "timezone": city.settlement_tz_name,
             "start_date": start,
@@ -280,7 +306,7 @@ def fetch_model_range(
         }
     )
     payload = _http_get_json(f"{OPEN_METEO_PREVIOUS_RUNS_URL}?{params}", timeout)
-    return reconstruct_daily_max(payload, lead_days)
+    return {lead: reconstruct_daily_max(payload, lead) for lead in leads}
 
 
 def _date_chunks(start: str, end: str, span_days: int = _MAX_CHUNK_DAYS):
@@ -309,8 +335,9 @@ def archive_range(
     """Fetch + persist every (model, lead) over a date range.
 
     Returns a coverage summary keyed ``"model@leadN"`` -> rows written. One
-    request per (model, lead) per <=300-day chunk, so cost scales with models
-    and leads, not days. A failing model/chunk is logged and skipped -- never
+    request per model per <=300-day chunk contains every requested lead,
+    avoiding a separate HTTP round trip for each lead. A failing model/chunk
+    is logged and skipped -- never
     silently dropped -- so partial coverage is visible, not invisible.
     """
 
@@ -318,24 +345,28 @@ def archive_range(
     stamp = fetched_at or _utcnow_iso()
     summary: dict[str, int] = {}
     for model in models:
-        for lead in leads:
-            written = 0
-            for chunk_start, chunk_end in _date_chunks(start, end):
-                try:
-                    by_date = fetch_model_range(model, chunk_start, chunk_end, lead, city=city)
-                except NwpArchiveError as exc:
-                    if verbose:
-                        print(f"  ! {model}@lead{lead} {chunk_start}..{chunk_end}: {exc}")
-                    continue
+        written_by_lead = {lead: 0 for lead in leads}
+        if not leads:
+            continue
+        for chunk_start, chunk_end in _date_chunks(start, end):
+            try:
+                by_lead = _fetch_model_range_leads(
+                    model, chunk_start, chunk_end, leads, city=city
+                )
+            except NwpArchiveError as exc:
+                if verbose:
+                    print(f"  ! {model} leads={leads} {chunk_start}..{chunk_end}: {exc}")
+                continue
+            for lead, by_date in by_lead.items():
                 rows = [
                     (city.nws_station_id, target_date, model, lead, value, stamp, source)
                     for target_date, value in by_date.items()
                 ]
-                written += upsert_forecasts(conn, rows)
-            # Commit per (model, lead) so a long backfill is resumable: an
-            # interruption keeps every series persisted so far, and a re-run
-            # resumes via the idempotent upsert rather than restarting from zero.
+                written_by_lead[lead] += upsert_forecasts(conn, rows)
+            # Commit each completed model/chunk so a long backfill preserves
+            # progress across interruptions. Re-fetches remain idempotent.
             conn.commit()
+        for lead, written in written_by_lead.items():
             summary[f"{model}@lead{lead}"] = written
             if verbose:
                 print(f"  {model}@lead{lead}: {written} days")

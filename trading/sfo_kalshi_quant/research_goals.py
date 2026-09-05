@@ -396,8 +396,6 @@ def _exit_breakdown(
         reasons_for_position: set[str] = set()
         for lot in lots:
             reason = audited_exit_reason(lot)
-            if reason == "unclassified":
-                continue
             bucket = breakdown.setdefault(
                 reason,
                 {

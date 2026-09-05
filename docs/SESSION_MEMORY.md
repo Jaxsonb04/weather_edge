@@ -1,28 +1,65 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 17:36 PDT
+Last updated: 2026-09-04 20:47 PDT
 
-Last production verification: 2026-09-04 17:36 PDT
+Last complete production verification: 2026-09-04 17:36 PDT
 
-Last public artifact verification: 2026-08-28 00:06 PDT
+Last public artifact inspection: 2026-09-04 20:33 PDT (stale; recovery in progress)
 
-Production status snapshot (last verified 2026-09-04): stable and paper-only
-after supervised archive-backed retention and compaction. The paper journal is
-17,953,009,664 bytes, down from 30,585,167,872 bytes; root disk use is 42% with
-38,027,980,800 bytes available. All fourteen captured timers are enabled and
-active, maintenance and rollback files are absent, the full post-swap paper scan
-passed, and no unit is failed. Controlled emergency copies of the audit's
-scheduler and retention fixes are present ahead of the exact clean full deploy,
-so the stamped `c3cbf319...` provenance is a pre-deploy snapshot rather than a
-claim that every installed source file still matches it. Live execution is
-disabled, dry-run is enabled, and no authenticated order client or live-order
-service is deployed.
+Production recovery snapshot: the earlier full-deployment retry was interrupted
+in its assistant task while its backup helper continued. The host remains under
+maintenance with all fourteen timers disabled. Runtime source is stamped at
+`dd159f814654d1d5de9a29a2ae9cef627cd2174a`, and all twenty-nine installed units
+passed integrity verification. This is not a completed deployment or healthy
+publication claim. The public manifest inspected at 03:33 UTC was last published
+at 02:35 UTC, with Strategy data generated at 00:40 UTC. The warning was real.
 
-This is the rolling cross-session handoff for WeatherEdge. It records the last
-verified state and the reasoning behind it. It is not a substitute for checking
-current AWS state before making an operational claim.
+This is the rolling cross-session handoff. Recheck AWS before making a current
+operational claim; the incident briefs below are historical snapshots.
 
 ## Session Brief
+
+- **Recovery in progress (September 4):** the previous task left an active backup
+  verification and a quiesced host. The new audit paused the orphaned local
+  coordinator before it could transfer concurrent unreviewed checkout changes.
+  Complete the existing helper's downloaded-backup integrity and foreign-key
+  checks, preserve its verified snapshot, and continue the canonical deployment
+  gates with the exact captured fourteen timers. Do not recapture the disabled
+  state or repeat the lengthy backup while all writers remain quiesced.
+- **New bounded fixes:** combine NWP lead requests (120 rather than 240 HTTP
+  calls for the daily fifteen-city/eight-model/two-lead collection); report only
+  evidenced exit causes while retaining unknown-close P&L; keep partial expiry
+  open; use Strategy's own generation timestamp; revalidate deployment source
+  after long backup/transfer work; initialize interruption recovery's watchdog
+  policy before registering traps. These changes are not yet deployed.
+- **Validation so far:** 2,837 Python tests passed with eight skipped in both UTC
+  and America/Los_Angeles; 172 frontend tests, lint, production build and
+  browser-observed bundle budgets passed. Desktop and 390px mobile layouts had
+  no horizontal overflow. Local fixtures exercise fresh and preserved-stale
+  Strategy behavior. Lint retains two existing Fast Refresh warnings.
+- **Research priorities:** establish fixed-issuance forecast lineage before
+  promotion comparisons; test proper-score-fitted EMOS and pooled quantile
+  forests using existing feeds; evaluate WeatherNext 3 only with confirmed
+  access, publication latency and incremental skill. See
+  `docs/research/2026-09-04-forecast-and-execution-improvements.md`.
+- **Remaining measurement concerns:** posterior sizing mixes accounts/policy
+  eras and execution lots; exit quote timestamps do not establish actual quote
+  age; historical forecast source selection, new-member handling and incomplete
+  hourly coverage need isolated evaluation. No accuracy or profitability gain
+  has been established for a new model.
+- **Account boundary:** Live Stability and Research ROI are two economically
+  separate paper accounts, each started with $1,000. Never combine their equity
+  into one bankroll. The former alone contributes to readiness. Higher volume,
+  win rate and larger size are distinct from higher after-fee returns.
+- **Safety:** keep live trading disabled and dry-run enabled. Keep edge, loss,
+  exposure, calibration and liquidity gates binding. Retention stays archive-only;
+  no unattended live-journal deletion. Alert webhook remains unconfigured, and
+  unlimited CPU credits remain an owner-only AWS decision.
+
+## Historical incident briefs (dated snapshots)
+
+The former long opening brief is preserved below for continuity. Later entries
+and the current brief supersede older state claims; none is a live status check.
 
 - **SEPTEMBER AUDIT INCIDENT STABILIZED; EXACT FULL DEPLOY PENDING
   (2026-09-04):** the 30.6 GB paper journal had outgrown the deploy backup gate,

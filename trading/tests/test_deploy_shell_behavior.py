@@ -302,6 +302,81 @@ esac
     )
 
 
+@pytest.mark.parametrize("change", ["head", "branch", "tracked", "staged", "untracked"])
+@pytest.mark.parametrize("phase", ["backup", "transfer"])
+def test_full_sync_rejects_source_changes_after_initial_clean_check(
+    tmp_path: Path, change: str, phase: str,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "git",
+        """#!/bin/sh
+changed=0
+[ ! -e "$SOURCE_CHANGED" ] || changed=1
+case "$*" in
+  *"rev-parse HEAD")
+    if [ "$changed:$SOURCE_CHANGE" = 1:head ]; then echo different; else echo initial; fi ;;
+  *"branch --show-current")
+    if [ "$changed:$SOURCE_CHANGE" = 1:branch ]; then echo codex/other-task; else echo main; fi ;;
+  *"diff --cached --quiet") [ "$changed:$SOURCE_CHANGE" != 1:staged ] ;;
+  *"diff --quiet") [ "$changed:$SOURCE_CHANGE" != 1:tracked ] ;;
+  *"ls-files --others --exclude-standard")
+    if [ "$changed:$SOURCE_CHANGE" = 1:untracked ]; then echo unexpected.py; fi ;;
+  *) exit 1 ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/bin/sh
+printf '%s\\n' "$*" >> "$SSH_LOG"
+case "$*" in
+  *"bash -s backup "*)
+    if [ "$SOURCE_PHASE" = backup ]; then touch "$SOURCE_CHANGED"; fi
+    echo 'WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3' ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        """#!/bin/sh
+printf '%s\\n' "$*" >> "$RSYNC_LOG"
+if [ "$SOURCE_PHASE" = transfer ]; then touch "$SOURCE_CHANGED"; fi
+""",
+    )
+    key = tmp_path / "test.pem"
+    key.write_text("test")
+    ssh_log, rsync_log = tmp_path / "ssh.log", tmp_path / "rsync.log"
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WEATHEREDGE_ROOT": str(ROOT),
+            "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "EC2_IP": "ec2.example", "EC2_KEY": str(key),
+            "REMOTE_BASE": "/opt/weatheredge",
+            "SOURCE_CHANGE": change, "SOURCE_PHASE": phase,
+            "SOURCE_CHANGED": str(tmp_path / "changed"),
+            "SSH_LOG": str(ssh_log), "RSYNC_LOG": str(rsync_log),
+        },
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert f"Deploy source changed during {'backup verification' if phase == 'backup' else 'source transfer'}" in result.stderr
+    remote_calls = ssh_log.read_text()
+    assert "bash -s backup " in remote_calls
+    assert "install_systemd_notimers.sh" not in remote_calls
+    assert "bash -s restore" not in remote_calls
+    if phase == "backup":
+        assert not rsync_log.exists()
+    else:
+        assert rsync_log.exists()
+        assert "build_info.json" not in rsync_log.read_text()
+
+
 def test_database_backup_preflight_requires_off_host_target(tmp_path: Path) -> None:
     db_path = tmp_path / "paper.db"
     sqlite3.connect(db_path).close()

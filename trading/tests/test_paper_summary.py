@@ -464,7 +464,7 @@ def test_paper_summary_counts_three_close_lots_as_one_logical_position():
         assert yes_side["losses"] == 0
         assert yes_side["realized_pnl"] == round(expected_pnl, 2)
         assert yes_side["capital"] == round(expected_capital, 2)
-        assert payload["exit_reasons"]["closed_take_profit"] == 1
+        assert payload["exit_reasons"]["closed_unclassified"] == 1
 
         assert len(payload["biggest_winners"]) == 1
         assert payload["biggest_winners"][0]["id"] == root_id
