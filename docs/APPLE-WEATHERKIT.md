@@ -2,11 +2,15 @@
 
 ## Current State
 
-WeatherEdge has a credential-ready Apple WeatherKit REST source for all fifteen
-settlement stations. It is disabled by default, has **zero live trading
-weight**, and has not been deployed to production as of 2026-08-10. Enabling
-the source fetches data; it does not change the NWP→EMOS forecast, calibrated
-market probabilities, risk gates, sizing, or paper decisions.
+WeatherEdge's Apple WeatherKit REST source was deployed for all fifteen
+settlement stations on August 10, 2026. The September 5, 06:20 UTC production
+check confirmed that its refresh and independent expiry-purge timers are active.
+The cache was absent between scheduled refreshes, consistent with its temporary
+lifecycle. New installations remain disabled by default. Apple's current
+decision weight is zero: fetching data alone does not change NWP→EMOS forecasts
+or paper decisions. The owner's accepted direction is to make Apple eligible
+for meaningful influence, with weight determined by evidence; see
+[`CODEBASE-REVIEW-DIALOGUE.md`, D001–D002](CODEBASE-REVIEW-DIALOGUE.md).
 
 This separation is deliberate. A new provider is a hypothesis, not an edge.
 The trading decision remains the calibrated WeatherEdge probability versus the
@@ -40,6 +44,21 @@ The source never writes Apple values to `weather.db`,
 training data, or public JSON. In particular, inserting Apple rows into
 `nwp_model_forecasts` would silently alter EMOS fitting and is prohibited by
 the release boundary.
+
+The revised CLI also checks whether each complete lead-one/two Apple target has
+a fresh, valid `source='live'` EMOS baseline for the exact station, target date,
+and lead. It opens SQLite read-only and reports only pairing counts. Run
+`apple_weatherkit.py --probe-only --cities all` to inspect the current cache
+without an API request. Missing baselines do not fail a provider refresh; this
+check establishes input compatibility, not accuracy or Apple influence.
+
+The revised code was exercised in AWS memory on September 5: 15/15 cities
+refreshed, 30 complete targets, 20 compatible baselines. The ten missing matches
+were the five Central-time cities immediately after standard midnight, before
+the next scheduled baseline update. Existing matches were fresh, and previous
+lead-two rows were not silently reused as current lead-one forecasts. These
+diagnostics are implemented and tested; the installed scheduled source remains
+at the previously deployed revision until the next guarded backend deployment.
 
 Only complete future settlement days are cached. A refresh after local
 fixed-standard midnight cannot reconstruct the already elapsed forecast hours,
@@ -82,6 +101,23 @@ The cache-path setting is not a general storage override: the CLI requires the
 exact canonical Apple filename directly under the transient runtime root so a
 misconfiguration can never purge another provider's store.
 
+## Historical Access
+
+Apple does provide historical hourly/daily weather and daily summaries; these
+are different from historical averages and from forecasts issued before a past
+trading decision. On September 5, 2026, one authenticated REST request returned
+24/24 hourly records for SFO's July 19, 2025 fixed-standard settlement window,
+with no out-of-window rows. No weather values were retained.
+
+`apple_history_probe.py --city sfo --date 2025-07-19` performs this bounded
+capability check in an environment with the existing WeatherKit credentials.
+It makes one request, has no retry or date-range loop, and prints only structural
+availability. It does not cache data, fit a model, score accuracy, or verify an
+original forecast issuance. Apple's coordinate-based past weather must not
+replace the official station CLI settlement truth. See the
+[historical-access research](research/2026-09-05-weatherkit-history.md) for the
+official API sources and remaining evidence boundary.
+
 ## License Boundary And Deferred Work
 
 The implementation follows a conservative reading of the current
@@ -91,11 +127,12 @@ database, while caching is allowed only on a temporary and limited basis to
 improve WeatherKit API performance. Consequently, WeatherEdge does not retain
 Apple-only forecast vintages or residuals for historical scoring.
 
-That prevents an honest long-horizon promotion study today. Durable Apple
-forecast evidence, Apple-specific error histories, inferred residuals, and any
-nonzero model/trading weight remain deliberately deferred until Apple gives
-written clarification or qualified counsel approves a compliant evidence
-design. WeatherKit authentication and endpoint behavior should continue to be
+The reviewed WeatherKit terms do not explicitly prohibit all machine learning.
+They do restrict the bulk download and lasting training database requested here.
+The permitted retention of transformed aggregate scores and learned parameters
+still needs clarification; deleting raw values alone does not establish that
+every derived dataset is permitted. The existing evidence design therefore
+cannot yet justify a learned Apple weight. WeatherKit authentication and endpoint behavior should continue to be
 checked against Apple's official
 [request-authentication](https://developer.apple.com/documentation/WeatherKitRESTAPI/request-authentication-for-weatherkit-rest-api)
 and
