@@ -1,23 +1,25 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 21:43 PDT
+Last updated: 2026-09-04 21:58 PDT
 
-Last complete production verification: 2026-09-04 21:39 PDT
+Last complete production verification: 2026-09-04 21:57 PDT
 
-Last public artifact inspection: 2026-09-04 21:39 PDT (fresh)
+Last public artifact inspection: 2026-09-04 21:57 PDT (fresh)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **Publication recovered (September 4, 21:39 PDT snapshot):** backend source,
+- **Publication recovered (September 4, 21:57 PDT snapshot):** backend source,
   public provenance and full Strategy analysis match clean merged PR #113,
   `2a6432e3bdb29fa1798a4b07e5f5396685b5245b`. The public manifest was published
-  at 04:37:54 UTC, Strategy generated at 04:37:46 UTC, and full analysis at
+  at 04:56:12 UTC, Strategy generated at 04:56:05 UTC, and full analysis at
   04:36:08 UTC. Five public JSON hashes and all 38 uploaded static app files
   matched. The live desktop/mobile pages showed no publication-behind alert.
-  A final frontend wording correction is being prepared separately.
+  The frontend wording correction from PR #114 is also deployed, at
+  `65fc162ac12964f2fe0053b7d1b55aae1beeba27`. Backend artifact provenance remains
+  at PR #113 because its Python source and runtime settings did not change.
 - **Runtime healthy:** all fourteen original timers are enabled and active,
   twenty-nine canonical units pass integrity, no unit is failed, maintenance is
   absent, and disk use is 42%. Automatic scan, monitor, settlement, forecast,
@@ -47,6 +49,15 @@ operational claim; all production observations below are dated snapshots.
   backup tests; the final targeted backup/deploy run passed 175 tests. Build,
   lint (two existing Fast Refresh warnings), browser bundle budgets and desktop/
   390px mobile behavior checks passed.
+- **Final frontend deployment:** the wording correction passed 172 frontend
+  tests, build/lint, independent review and the CI matrices. It was uploaded and
+  hash-verified in a separate static directory before a short publication pause.
+  The two publication jobs and any in-flight scheduler repair were drained, the
+  app directory was switched with rollback retained, and fresh Strategy/operational
+  data plus every public static file were verified before timer restoration and
+  maintenance release. Desktop/mobile DOM checks confirmed accurate methodology,
+  no publication-behind alert and no horizontal overflow. No forecast, trading,
+  provider, billing or account policy changed in this frontend deployment.
 - **Measured research:** a fresh AWS export and independent review support a
   small exploratory CRPS improvement: 1.125% across 2,658 paired forecasts,
   with only 0.011°F MAE improvement and a Philadelphia lead-two regression.
@@ -66,7 +77,7 @@ operational claim; all production observations below are dated snapshots.
   nightly full-table archive omits two maker-execution tables used by replay;
   these must be included before claiming off-host replay equivalence.
 - **Account boundary and safety:** Live Stability and Research ROI are separate
-  paper accounts, each started with $1,000. Their 21:39 PDT published equity was
+  paper accounts, each started with $1,000. Their 21:57 PDT published equity was
   $1,052.23 and $1,078.97 respectively; never combine these into one bankroll.
   Only Live Stability contributes to readiness. Retention stays archive-only;
   alert webhook is unconfigured; unlimited CPU credits remain an owner-only AWS
