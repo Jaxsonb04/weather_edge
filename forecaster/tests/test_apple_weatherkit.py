@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import stat
 import threading
 import traceback
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -762,8 +764,9 @@ def test_daily_expiry_crossed_during_request_does_not_drop_fresh_hourly_high(
     assert snapshot.expires_at == datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("baseline_contents", [None, b"not a sqlite database"])
 def test_enabled_cli_discards_corrupt_cache_before_refresh(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, baseline_contents
 ) -> None:
     cache_path = tmp_path / "apple_weather_runtime.json"
     cache_path.write_text("not-json")
@@ -784,8 +787,11 @@ def test_enabled_cli_discards_corrupt_cache_before_refresh(
         timeouts.append(timeout)
         return _Response(_weatherkit_payload())
 
+    missing_baseline = tmp_path / "missing-baseline.db"
+    if baseline_contents is not None:
+        missing_baseline.write_bytes(baseline_contents)
     status = run_cli(
-        ["--cities", "sfo"],
+        ["--cities", "sfo", "--baseline-db", str(missing_baseline)],
         transport=transport,
         now_provider=lambda: NOW,
         runtime_root=tmp_path,
@@ -793,7 +799,14 @@ def test_enabled_cli_discards_corrupt_cache_before_refresh(
 
     assert status == 0
     assert timeouts == [15]
-    assert "1 refreshed" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "1 refreshed" in output
+    assert "paired=0, unpaired=1" in output
+    assert "not an accuracy evaluation" in output
+    if baseline_contents is None:
+        assert not missing_baseline.exists()
+    else:
+        assert missing_baseline.read_bytes() == baseline_contents
     assert json.loads(cache_path.read_text())["entries"]
 
 
@@ -920,3 +933,167 @@ def test_malformed_optional_daily_product_does_not_hide_hourly_high(tmp_path) ->
     assert snapshot.hourly_high_f == pytest.approx(68.0)
     assert snapshot.daily_high_f is None
     assert snapshot.expires_at == datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)
+
+
+def _probe_cache(tmp_path):
+    cache = AppleRuntimeCache(tmp_path / "apple_weather_runtime.json")
+    refresh_apple_weather(
+        (get_city("sfo"),),
+        client=WeatherKitClient(
+            token_provider=lambda: "signed-test-token",
+            transport=lambda _request, timeout=15: _Response(_weatherkit_payload()),
+        ),
+        cache=cache,
+        now=NOW,
+    )
+    return cache
+
+
+def _probe_baseline(tmp_path, rows=None):
+    path = tmp_path / "baseline.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE forecast_emos_daily_high (station_id TEXT, target_date TEXT, "
+            "lead_days INTEGER, predicted_high_f REAL, sigma_f REAL, fetched_at TEXT, source TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows if rows is not None else [
+                ("KSFO", "2026-07-19", 1, 71.25, 2.5, NOW.isoformat(), "live")
+            ],
+        )
+    return path
+
+
+def test_runtime_probe_pairs_fresh_matching_baseline_without_writing_it(tmp_path):
+    from apple_weatherkit import probe_baseline_compatibility
+
+    cache = _probe_cache(tmp_path)
+    baseline = _probe_baseline(tmp_path)
+    before = baseline.read_bytes()
+
+    report = probe_baseline_compatibility(
+        (get_city("sfo"),), cache=cache, baseline_db=baseline, now_provider=lambda: NOW,
+    )
+
+    assert report.paired_targets == 1
+    assert report.apple_targets == 1
+    assert report.unpaired_targets == 0
+    assert baseline.read_bytes() == before
+    # The returned report cannot retain raw values or reversible comparisons.
+    assert set(report.__dataclass_fields__) == {
+        "requested_cities", "apple_targets", "paired_targets", "unpaired_targets",
+        "unavailable_cities",
+    }
+
+
+@pytest.mark.parametrize("mutation", [
+    {"station_id": "KNYC"}, {"target_date": "2026-07-20"}, {"lead_days": 2},
+    {"source": "rolling_origin_v2"}, {"sigma_f": 0.0}, {"sigma_f": float("inf")},
+    {"predicted_high_f": float("inf")}, {"fetched_at": "invalid"},
+    {"fetched_at": (NOW - timedelta(hours=7)).isoformat()},
+    {"fetched_at": (NOW + timedelta(seconds=1)).isoformat()},
+])
+def test_runtime_probe_rejects_mismatched_stale_or_invalid_baseline(tmp_path, mutation):
+    from apple_weatherkit import probe_baseline_compatibility
+
+    cache = _probe_cache(tmp_path)
+    row = dict(station_id="KSFO", target_date="2026-07-19", lead_days=1,
+               predicted_high_f=71.25, sigma_f=2.5, fetched_at=NOW.isoformat(), source="live")
+    row.update(mutation)
+    baseline = _probe_baseline(tmp_path, [tuple(row.values())])
+
+    report = probe_baseline_compatibility(
+        (get_city("sfo"),), cache=cache, baseline_db=baseline, now_provider=lambda: NOW,
+    )
+
+    assert report.apple_targets == 1
+    assert report.paired_targets == 0
+    assert report.unpaired_targets == 1
+
+
+def test_runtime_probe_uses_latest_baseline_and_does_not_hide_its_invalid_sigma(tmp_path):
+    from apple_weatherkit import probe_baseline_compatibility
+
+    cache = _probe_cache(tmp_path)
+    baseline = _probe_baseline(tmp_path, [
+        ("KSFO", "2026-07-19", 1, 71.25, 2.5, (NOW - timedelta(minutes=5)).isoformat(), "live"),
+        ("KSFO", "2026-07-19", 1, 71.25, 0.0, NOW.isoformat(), "live"),
+    ])
+    report = probe_baseline_compatibility(
+        (get_city("sfo"),), cache=cache, baseline_db=baseline, now_provider=lambda: NOW,
+    )
+    assert report.paired_targets == 0
+
+
+def test_runtime_probe_rechecks_apple_expiry_after_baseline_read(tmp_path):
+    from apple_weatherkit import probe_baseline_compatibility
+
+    cache = _probe_cache(tmp_path)
+    baseline = _probe_baseline(tmp_path)
+    times = iter((NOW, datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)))
+    report = probe_baseline_compatibility(
+        (get_city("sfo"),), cache=cache, baseline_db=baseline, now_provider=lambda: next(times),
+    )
+    assert report.apple_targets == 1
+    assert report.paired_targets == 0
+    assert not cache.path.exists()
+
+
+def test_runtime_probe_counts_only_complete_lead_one_and_two_targets(tmp_path):
+    from apple_weatherkit import probe_baseline_compatibility
+
+    cache = _probe_cache(tmp_path)
+    snapshot = cache.active_highs(city_slug="sfo", now=NOW)[0]
+    cache.replace_city("sfo", [
+        replace(snapshot, target_date="2026-07-18"),
+        snapshot,
+        replace(snapshot, target_date="2026-07-20"),
+        replace(snapshot, target_date="2026-07-21"),
+    ], now=NOW)
+    baseline = _probe_baseline(tmp_path, [
+        ("KSFO", "2026-07-19", 1, 71.25, 2.5, NOW.isoformat(), "live"),
+        ("KSFO", "2026-07-20", 2, 71.25, 2.5, NOW.isoformat(), "live"),
+    ])
+
+    report = probe_baseline_compatibility(
+        (get_city("sfo"), get_city("nyc")), cache=cache,
+        baseline_db=baseline, now_provider=lambda: NOW,
+    )
+
+    assert report.apple_targets == 2
+    assert report.paired_targets == 2
+    assert report.requested_cities == 2
+    assert report.unavailable_cities == 1
+
+
+def test_runtime_probe_missing_database_is_unavailable_and_never_created(tmp_path):
+    from apple_weatherkit import probe_baseline_compatibility
+
+    cache = _probe_cache(tmp_path)
+    missing = tmp_path / "missing.db"
+    report = probe_baseline_compatibility(
+        (get_city("sfo"),), cache=cache, baseline_db=missing, now_provider=lambda: NOW,
+    )
+    assert report.paired_targets == 0
+    assert report.unpaired_targets == 1
+    assert not missing.exists()
+
+
+def test_probe_only_needs_no_credentials_or_network_and_prints_only_counts(tmp_path, monkeypatch, capsys):
+    cache = _probe_cache(tmp_path)
+    baseline = _probe_baseline(tmp_path)
+    monkeypatch.delenv("ENABLE_APPLE_WEATHER", raising=False)
+    monkeypatch.setenv("APPLE_WEATHER_RUNTIME_CACHE_PATH", str(cache.path))
+    status = run_cli(
+        ["--probe-only", "--cities", "sfo", "--baseline-db", str(baseline)],
+        transport=lambda *_a, **_kw: pytest.fail("probe must not call WeatherKit"),
+        now_provider=lambda: NOW, runtime_root=tmp_path,
+    )
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "compatibility" in output
+    assert "paired=1" in output
+    assert "not an accuracy evaluation" in output
+    for private_content in ("68.0", "69.8", "71.25", "2.5", "KSFO", str(baseline), "signed-test-token"):
+        assert private_content not in output

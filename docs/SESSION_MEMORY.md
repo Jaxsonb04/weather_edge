@@ -1,15 +1,56 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 21:58 PDT
+Last updated: 2026-09-04 23:43 PDT
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
-Last public artifact inspection: 2026-09-04 21:57 PDT (fresh)
+Last public artifact inspection: 2026-09-04 23:43 PDT (fresh)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Final follow-up verification (September 4, 23:43 PDT):** the natural
+  forecaster refresh completed successfully at 06:41:26 UTC. At 06:42 UTC, all
+  thirty future lead-one/two baselines and fifteen current-day rows were present
+  and fresh; the Central-midnight gap below had closed. This was baseline-only
+  verification, not another Apple request or accuracy score. The public manifest
+  published at 06:42:04 UTC and Strategy generated at 06:40:34 UTC; all five
+  JSON hashes matched, status was `ok`, and live execution remained disabled.
+  Draft PR #116 contains this research/diagnostic work. Code commit
+  `5dbd4024aec3102b85dcfef593d12ec67e62d838` passed Python 3.12, Python 3.13
+  (including required Semgrep), and Web CI. Backend installation and model
+  promotion remain deliberately deferred: installed source is unchanged and
+  the candidate did not establish improved probabilistic skill.
+
+- **Apple history and ML follow-up (September 4, 23:36 PDT snapshot):** Apple's
+  historical REST capability is now actually verified for one SFO day: 24/24
+  hours over the July 19, 2025 fixed-standard climate window. Returned weather
+  stayed in AWS process memory. Current refresh also succeeded for 15/15 cities;
+  a new counts-only compatibility probe matched 20/30 future targets. All ten
+  missing baselines were Central-time lead keys after midnight and before the
+  next normal refresh, not stale matched rows. Implemented history/compatibility
+  diagnostics were exercised in memory; installed backend source was not
+  replaced. Apple history is retrospective conditions, not proven original
+  forecast vintages. Attachment 8 restricts bulk downloads and retained derived
+  databases; it does not explicitly prohibit all WeatherKit machine learning.
+  Apple aggregate-score/model-parameter retention still needs clarification;
+  an unsent inquiry and sources are in `docs/research/2026-09-05-weatherkit-history.md`.
+- **New offline ML result:** a fixed histogram-gradient residual model trained
+  on 11,101 existing complete eight-member cases, using truth through June 3,
+  2026. On the same 2,658 exploratory cases as the earlier pilot, MAE fell from
+  1.642986 to 1.604579°F (2.34%), but its confidence interval includes no gain.
+  CRPS slightly worsened to 1.184925 versus 1.181990, and nominal 80% intervals
+  covered 88.90%. SFO point error worsened. No candidate was promoted and no
+  forecast probabilities, risk gates, sizing or execution flags changed.
+  Training ran locally in 3.21 seconds; repeated artifacts were identical.
+  Independent arithmetic/temporal review passed. Final local verification:
+  2,876 Python tests passed, eight skipped; changed files compiled and diff
+  checks passed. Local Semgrep was unavailable; CI remains its required gate.
+  See `docs/research/2026-09-05-ml-challenger.md`. The 23:25 PDT public check
+  verified five JSON hashes, all 38 static files, fresh Strategy/operational
+  publication and live execution disabled. Each paper account remains separate.
 
 - **Publication recovered (September 4, 21:57 PDT snapshot):** backend source,
   public provenance and full Strategy analysis match clean merged PR #113,

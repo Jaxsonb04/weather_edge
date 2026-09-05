@@ -15,6 +15,7 @@ import fcntl
 import json
 import math
 import os
+import sqlite3
 import stat
 import tempfile
 from collections.abc import Callable, Sequence
@@ -159,6 +160,17 @@ class AppleHighSnapshot:
 class AppleRefreshReport:
     refreshed: tuple[str, ...]
     failed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AppleCompatibilityReport:
+    """Operational counts only; no provider values or derived comparisons."""
+
+    requested_cities: int
+    apple_targets: int
+    paired_targets: int
+    unpaired_targets: int
+    unavailable_cities: int
 
 
 def _parse_datetime(value: object, *, field: str) -> datetime:
@@ -699,6 +711,123 @@ def refresh_apple_weather(
     return AppleRefreshReport(refreshed=tuple(refreshed), failed=tuple(failed))
 
 
+def probe_baseline_compatibility(
+    cities: Sequence[CityConfig],
+    *,
+    cache: AppleRuntimeCache,
+    baseline_db: Path,
+    now_provider: Callable[[], datetime] | None = None,
+    max_baseline_age: timedelta = timedelta(hours=6),
+) -> AppleCompatibilityReport:
+    """Pair current Apple targets with valid live EMOS rows, without scoring.
+
+    Read the baseline without schema migrations or database creation. Values
+    remain local to this call: only availability/compatibility counts escape.
+    A missing or malformed baseline never makes provider refresh fail.
+    """
+
+    now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+    connection = None
+    try:
+        connection = sqlite3.connect(
+            Path(baseline_db).resolve().as_uri() + "?mode=ro", uri=True, timeout=2,
+        )
+    except (OSError, sqlite3.Error):
+        pass
+    targets = paired = unavailable = 0
+    try:
+        for city in cities:
+            read_at = now_provider().astimezone(timezone.utc)
+            try:
+                snapshots = cache.active_highs(city_slug=city.slug, now=read_at)
+            except (OSError, WeatherKitError):
+                snapshots = ()
+            city_targets = 0
+            for snapshot in snapshots:
+                try:
+                    target = date.fromisoformat(snapshot.target_date)
+                    lead = (
+                        target - read_at.astimezone(city.fixed_standard_timezone()).date()
+                    ).days
+                    if (
+                        lead not in (1, 2)
+                        or snapshot.city_slug != city.slug
+                        or snapshot.station_id != city.nws_station_id
+                        or not snapshot.complete or snapshot.covered_hours != 24
+                    ):
+                        continue
+                    targets += 1
+                    city_targets += 1
+                    if connection is None:
+                        continue
+                    rows = connection.execute(
+                        "SELECT predicted_high_f, sigma_f, fetched_at "
+                        "FROM forecast_emos_daily_high "
+                        "WHERE station_id=? AND target_date=? AND lead_days=? AND source='live'",
+                        (city.nws_station_id, snapshot.target_date, lead),
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    # Compare parsed instants, not differently formatted ISO
+                    # strings. Never fall back past a malformed latest row.
+                    stamped = [
+                        (_parse_datetime(row[2], field="baseline timestamp"), row)
+                        for row in rows
+                    ]
+                    baseline_at, baseline = max(stamped, key=lambda item: item[0])
+                    _finite_number(baseline[0], field="baseline mean")
+                    sigma = _finite_number(baseline[1], field="baseline sigma")
+                    checked_at = now_provider().astimezone(timezone.utc)
+                    if snapshot.expires_at <= checked_at:
+                        # This read discovered expiry, so enforce retention now.
+                        cache.purge_or_discard_unverifiable(now=checked_at)
+                        continue
+                    current_lead = (
+                        target - checked_at.astimezone(city.fixed_standard_timezone()).date()
+                    ).days
+                    if (
+                        sigma <= 0 or current_lead != lead
+                        or not timedelta(0) <= checked_at - baseline_at <= max_baseline_age
+                        or snapshot.fetched_at > checked_at or snapshot.issued_at > checked_at
+                    ):
+                        continue
+                    paired += 1
+                except (OSError, TypeError, ValueError, OverflowError, sqlite3.Error, WeatherKitError):
+                    continue
+            if not city_targets:
+                unavailable += 1
+    finally:
+        if connection is not None:
+            connection.close()
+    return AppleCompatibilityReport(
+        requested_cities=len(cities), apple_targets=targets, paired_targets=paired,
+        unpaired_targets=targets - paired, unavailable_cities=unavailable,
+    )
+
+
+def _print_baseline_compatibility(
+    cities: Sequence[CityConfig], cache: AppleRuntimeCache, baseline_db: Path,
+    now_provider: Callable[[], datetime],
+) -> None:
+    try:
+        max_age_hours = float(os.getenv("SFO_FORECAST_MAX_AGE_HOURS", "6"))
+        if not math.isfinite(max_age_hours) or max_age_hours <= 0:
+            raise ValueError
+        report = probe_baseline_compatibility(
+            cities, cache=cache, baseline_db=baseline_db, now_provider=now_provider,
+            max_baseline_age=timedelta(hours=max_age_hours),
+        )
+    except (OSError, ValueError, OverflowError, WeatherKitError):
+        print("Apple runtime compatibility unavailable; not an accuracy evaluation")
+        return
+    print(
+        "Apple runtime compatibility: "
+        f"cities={report.requested_cities}, targets={report.apple_targets}, "
+        f"paired={report.paired_targets}, unpaired={report.unpaired_targets}, "
+        f"unavailable_cities={report.unavailable_cities}; not an accuracy evaluation"
+    )
+
+
 def _env_enabled(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -761,7 +890,16 @@ def run_cli(
     parser.add_argument(
         "--cities", default="all", help="'all' or comma-separated city slugs"
     )
-    parser.add_argument("--purge-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--purge-only", action="store_true")
+    mode.add_argument(
+        "--probe-only", action="store_true",
+        help="pair cached current targets with live EMOS; no API calls",
+    )
+    parser.add_argument(
+        "--baseline-db", type=Path,
+        default=Path(__file__).resolve().parent / "weather.db",
+    )
     args = parser.parse_args(argv)
     now_provider = now_provider or (lambda: datetime.now(timezone.utc))
     now = now_provider().astimezone(timezone.utc)
@@ -783,6 +921,15 @@ def run_cli(
             print("discarded unverifiable Apple Weather runtime cache")
             return 0
         print(f"purged {purged} expired Apple Weather runtime entries")
+        return 0
+
+    if args.probe_only:
+        try:
+            cities = parse_city_slugs(args.cities)
+        except (KeyError, ValueError):
+            print("Apple Weather refresh configuration is invalid")
+            return 2
+        _print_baseline_compatibility(cities, cache, args.baseline_db, now_provider)
         return 0
 
     credentials = _credentials_from_env()
@@ -836,6 +983,7 @@ def run_cli(
         f"{len(report.refreshed)} refreshed, {len(report.failed)} failed; "
         "live trading weight remains 0"
     )
+    _print_baseline_compatibility(cities, cache, args.baseline_db, now_provider)
     return 1 if report.failed else 0
 
 
