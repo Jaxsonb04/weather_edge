@@ -115,3 +115,36 @@ an exploratory weather-skill result, not evidence of better deployed forecasts
 or trading returns. See `../research/2026-09-04-crps-pilot.md` for the full method,
 paired block-bootstrap intervals and limitations. Production parameters remain
 unchanged pending shadow evaluation.
+
+
+## Recovery outcome and resource prevalence
+
+At 04:39 UTC, backend source and public/full-analysis provenance matched clean
+PR #113 (`2a6432e3bdb29fa1798a4b07e5f5396685b5245b`). Public generation at
+04:37:54 UTC and Strategy analysis at 04:36:08 UTC were current. Five public
+artifact hashes and 38 static app files matched the deployed build. All fourteen
+timers were enabled/active, twenty-nine unit definitions matched, no unit was
+failed, maintenance was absent and disk use returned to 42%. Both separate
+paper ledgers reconciled. Automatic scan, monitor, settlement, forecast and
+publication cycles succeeded; live execution stayed disabled and dry-run enabled.
+The extra recovery staging check stopped on bundled fallback JSON before
+restoration; stripping only those six disposable build copies resolved it,
+with authoritative data supplied by the canonical AWS publisher.
+
+A 0.44-second read-only production query covered 124,804 NWP rows since January
+2024 across fifteen stations and leads one/two: every inspected row used the
+canonical Previous Runs source. A fresh eighteen-month replay found zero unseen
+members across 12,163 eligible targets. These are latent hardening defects within
+that scope. Every current station/lead archive has all eight serving models;
+complete hourly coverage still cannot be established from the stored schema.
+
+Google and WeatherKit caches currently do not enter EMOS. Google paired-evidence
+and shadow helpers have no scheduled callers; WeatherKit's active-high reader
+has no consumer. The main Google orchestration also runs all-city EMOS, so
+turning off that entire service would break an active forecast resource. See
+the companion resource report for a bounded use of existing archives and feeds.
+
+The public visual audit also found overly broad leakage-free claims in the
+homepage and methodology. A separate frontend correction describes the actual
+rolling-origin fit and explicitly distinguishes fixed-hour archives from
+proven availability at a historical trading decision.

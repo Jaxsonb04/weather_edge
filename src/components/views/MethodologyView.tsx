@@ -142,7 +142,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
         icon="solar:graph-up-bold"
         eyebrow="Methodology & diagnostics"
         title="How the forecast is built and tested"
-        sub={`The current ${cityCount}-city coverage artifact serves ${ensemblePhrase} taken from each model's freshest run, EMOS-calibrated per station on a leakage-free rolling-origin fit, then settles against each city's NWS Climatological Report. San Francisco is blend-capable, with residual-calibration, marine-layer, and optional external evidence; its served point forecast can fall back to EMOS.`}
+        sub={`The current ${cityCount}-city coverage artifact serves ${ensemblePhrase}, EMOS-calibrated per station using rolling-origin historical fits, then settles against each city's NWS Climatological Report. San Francisco also retains residual-calibration, marine-layer and external-source research. Each published forecast identifies the method actually served.`}
       />
       <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
         <section className="scroll-mt-24">
@@ -150,7 +150,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="01"
             eyebrow="The production pipeline"
             title="One method, running in every city"
-            sub={`${ensembleSentence} is pulled per city from each model's freshest current run, then post-processed with rolling-origin EMOS into a calibrated Gaussian — the coefficients themselves are fitted on the pre-target previous-runs archive, so no evaluation day is scored against a model cycle that did not exist yet — and settled against each city's official NWS Climatological Report.`}
+            sub={`${ensembleSentence} is pulled per city from each model's freshest current run and processed with EMOS into a Gaussian forecast distribution. Historical fits use earlier target dates, but the Previous Runs archive combines fixed leads for individual hours. It does not establish every input's availability at an earlier trading decision. Outcomes are checked against each city's official NWS Climatological Report.`}
           />
           <ForecastPipeline />
         </section>
