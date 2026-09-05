@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 20:47 PDT
+Last updated: 2026-09-04 21:07 PDT
 
 Last complete production verification: 2026-09-04 17:36 PDT
 
@@ -31,17 +31,23 @@ operational claim; the incident briefs below are historical snapshots.
   evidenced exit causes while retaining unknown-close P&L; keep partial expiry
   open; use Strategy's own generation timestamp; revalidate deployment source
   after long backup/transfer work; initialize interruption recovery's watchdog
-  policy before registering traps. These changes are not yet deployed.
+  policy before registering traps; remove a duplicate backup scan while retaining
+  downloaded integrity/checksum/foreign-key proof and rejecting FK command errors.
+  These changes are not yet deployed.
 - **Validation so far:** 2,837 Python tests passed with eight skipped in both UTC
   and America/Los_Angeles; 172 frontend tests, lint, production build and
   browser-observed bundle budgets passed. Desktop and 390px mobile layouts had
   no horizontal overflow. Local fixtures exercise fresh and preserved-stale
-  Strategy behavior. Lint retains two existing Fast Refresh warnings.
+  Strategy behavior. Another 175 targeted deployment/backup tests passed after
+  the backup optimization. Lint retains two existing Fast Refresh warnings.
 - **Research priorities:** establish fixed-issuance forecast lineage before
   promotion comparisons; test proper-score-fitted EMOS and pooled quantile
   forests using existing feeds; evaluate WeatherNext 3 only with confirmed
   access, publication latency and incremental skill. See
-  `docs/research/2026-09-04-forecast-and-execution-improvements.md`.
+  `docs/research/2026-09-04-forecast-and-execution-improvements.md`. An independently
+  checked 2,658-case offline CRPS pilot improved pooled score 1.125% but regressed
+  Philadelphia lead two; see `docs/research/2026-09-04-crps-pilot.md`. It is
+  reconstructed fixed-lead research, not deployed accuracy or a trading replay.
 - **Remaining measurement concerns:** posterior sizing mixes accounts/policy
   eras and execution lots; exit quote timestamps do not establish actual quote
   age; historical forecast source selection, new-member handling and incomplete

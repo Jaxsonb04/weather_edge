@@ -159,7 +159,8 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
   disabled or unavailable.
 - `weatheredge-google-runtime-purge.timer`: every ten minutes; physically
   expires Google runtime rows independently of Apple.
-- `sfo-operational-publish.timer`: every five minutes; builds and validates the
+- `sfo-operational-publish.timer`: every ten minutes, offset to :02/:12/:22/:32/:42/:52;
+  builds and validates the
   operational JSON snapshot, then publishes it.
 - `sfo-strategy-lab-refresh.timer`: fixed wall-clock five-minute cadence;
   bounded research-only build and publish, with no paid Google refresh or
@@ -240,8 +241,16 @@ default encryption enabled, and a lifecycle rule for both `paper_trading/` and
 `database-snapshots/`. The instance role needs bucket listing plus object
 put/get access limited to those two prefixes. After preflight, the deploy gate
 uploads a full SQLite snapshot and checksum, downloads the snapshot to a
-temporary path, and passes `integrity_check` and `foreign_key_check` again
-before any source transfer.
+temporary path, verifies byte equality by SHA-256, and passes full
+`integrity_check` and `foreign_key_check` on that downloaded copy before any
+source transfer. There is one full structural proof on the recoverable copy;
+repeating it before upload adds no proof after verified byte equality. A failed
+check never promotes a snapshot or permits deployment. Sanitized phase messages
+go to stderr so operators can follow progress through the long read.
+
+The source revision, main branch and clean checkout are rechecked after backup
+and after source transfer. Stop concurrent source edits for deployment; these
+checks detect persistent changes but are not an immutable source export.
 
 Useful checks:
 
@@ -263,9 +272,8 @@ gate only when an index must be built or repaired. It also creates the narrow
 pending-admission index that prevents research scans from repeatedly reading the
 entire decision journal.
 
-`sync_to_box.sh` restores producers, seeds and validates a fresh publication,
-and restores the watchdog before it attempts
-`refresh_strategy_analysis_cache.sh`. That post-restore job reads the
+`sync_to_box.sh` attempts `refresh_strategy_analysis_cache.sh` while deployment
+maintenance still holds the producers. The job reads the
 integrity-checked deploy snapshot rather than the live journal and performs the
 expensive historical rescore in a stable transient systemd unit with a 1.6 GB
 hard memory cap, low I/O priority, and a fixed runtime deadline. It requires
@@ -279,9 +287,10 @@ Before any timer is restored, the deploy also rejects canonical units with
 runtime drop-ins, transient shadows, stale fragments, or an unexpected Strategy
 timeout. The stable analysis unit name is stopped and reset on
 failure, including a best-effort caller-side cleanup after a dropped transport.
-Because this cache is diagnostic, a failed or resource-killed rescore is
-reported while production remains active; the public artifact explicitly marks
-historical analysis deferred.
+The verified local snapshot is removed after this last consumer, before timers
+and disk/freshness checks resume. Because this cache is diagnostic, a failed or
+resource-killed rescore is reported and restoration continues; the public
+artifact explicitly marks historical analysis deferred.
 Recurring Strategy Lab refreshes reuse that validated input while recomputing
 current account state, calibration, readiness, and a hard-bounded tail of
 indexed scan contexts for live and research-profile candidates. Historical
@@ -293,10 +302,11 @@ operator can run the same helper manually by setting
 root-owned `/etc/weatheredge.env` through passwordless `sudo` before forcing
 full-analysis mode and refuses to run against the live paper database.
 
-The freshness watchdog requires local and public operational artifacts no older
-than 10 minutes, and Strategy Lab research no older than 20 minutes. Its public
+The freshness watchdog defaults to local operational artifacts no older than
+10 minutes, public publication no older than 20 minutes, and Strategy Lab
+research no older than 20 minutes. Its public
 manifest request uses a unique query key so the GitHub Pages ten-minute CDN TTL
-cannot conceal a stalled five-minute publisher. Set
+cannot conceal a stalled publisher. Set
 `SFO_PUBLICATION_MANIFEST_URL` to the public manifest URL to validate the exact
 snapshot visitors receive. A full installer run migrates only the former
 15-minute local and 20-minute public default values in `/etc/weatheredge.env`;

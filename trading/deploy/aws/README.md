@@ -77,9 +77,11 @@ instance role. The deployment script does not provision IAM or S3.
 
 On an established host, the full sync refuses to stop services until
 `backup_paper_db.sh preflight` proves the configured AWS identity and bucket
-are available. After quiescing, it creates a consistent SQLite backup, checks
-integrity and foreign keys, uploads it with server-side encryption, downloads
-it to a temporary restore path, and repeats those checks. Only then does the
+are available. After quiescing, it creates a consistent SQLite backup, hashes and
+uploads it with server-side encryption, downloads it to a temporary restore
+path, verifies its checksum, and runs full integrity and foreign-key checks on
+that downloaded copy. The same-byte pre-upload scan is redundant and omitted.
+Only then does the
 source transfer begin. The full sync reinstalls units and restores the exact
 pre-deploy timer policy automatically. On a new or intentionally quiesced host,
 the captured set is empty and every timer remains disabled for manual checks.
@@ -138,14 +140,15 @@ dependencies do not belong on the production box.
   hourly+daily request per city. It is disabled by default, temporary-only,
   and has zero live trading weight. See `docs/APPLE-WEATHERKIT.md`.
 - Provider runtime purge: every ten minutes, independent of refresh success.
-- Operational publication: every five minutes; builds
+- Operational publication: every ten minutes, offset to :02/:12/:22/:32/:42/:52; builds
   `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.
 - Strategy Lab publication: fixed wall-clock five-minute cadence; bounded
   research-only artifact build backed by a separately timestamped
   historical-analysis cache. A full
-  source/config-bound cache refresh runs once, at low I/O priority, after
-  `sync_to_box.sh` has restored and validated production. It reads the verified
-  immutable deploy snapshot rather than the live journal.
+  source/config-bound cache refresh runs at low I/O priority during deployment
+  maintenance. It reads the verified immutable deploy snapshot rather than the
+  live journal. The snapshot is removed before producers and health checks
+  resume, avoiding transient disk-pressure failures during restoration.
 - Paper scan: every five minutes, all configured cities, two profiles
   (`PAPER_RISK_PROFILES=live,research`), reservation-first with guarded
   profile-scoped taker crosses under `PAPER_ENTRY_MODE=limit`, and
@@ -156,11 +159,12 @@ dependencies do not belong on the production box.
 Publication is finality-aware and race-safe: builders share
 `SFO_ARTIFACT_GENERATION_LOCK`; the publisher serializes the Pages delivery
 gate with `SFO_PAGES_LOCK`, then reacquires the artifact lock to validate and
-copy the exact snapshot before pushing. It will not push a successor until the
-current branch snapshot is public, preventing GitHub from canceling an
-in-flight deployment. Strategy promotion waits at most 30 seconds for the
-artifact lock; operational generation and lock acquisition each wait at most
-60 seconds, while prior-branch propagation is bounded at seven minutes. These
+copy the exact snapshot before pushing. A short prior-branch delivery wait
+reduces churn; by default its first timeout permits a successor push to replace
+a stuck deployment. Strategy promotion defaults to a 30-second artifact-lock
+wait; operational artifact and Pages locks default to 60 seconds each. The
+prior-branch wait defaults to 60 seconds, distinct from the longer exact-manifest
+verification used by deployment and scheduler recovery. These
 bounds leave generation and push headroom inside their systemd deadlines.
 Both publisher and paper-scan locks default under `/opt/weatheredge/.locks` so
 reboots clean temporary storage without weakening overlap protection. Configure
@@ -219,8 +223,9 @@ to `SFO_DATABASE_BACKUP_KEEP_DAYS` (one day by default; the verified S3 tier
 retains database snapshots for 35 days).
 
 Preflight also checks peak local capacity before timers are quiesced. The volume
-must be able to hold both a full SQLite snapshot and its downloaded restore copy
-plus 1 GiB of operating headroom; clean only old, independently verified local
+must have room for one full SQLite snapshot plus 1 GiB of operating headroom.
+The uploaded local copy is removed before the restore copy is downloaded;
+clean only old, independently verified local
 snapshots if this gate refuses a deploy.
 Without a bucket, the local ring buffer remains authoritative and cleanup skips
 unuploaded files.
@@ -246,8 +251,8 @@ Restore only to a new DB while paper services are stopped, using the tested
 
 Set
 `SFO_PUBLICATION_MANIFEST_URL=https://jaxsonb04.github.io/weather_edge/publication_manifest.json`.
-The watchdog rejects local or public operational artifacts older than 10 minutes,
-Strategy Lab research older than 20 minutes, disk
+The default watchdog rejects local operational artifacts older than 10 minutes,
+public publication or Strategy Lab research older than 20 minutes, disk
 usage at or above 85%, missing files,
 invalid schemas, and checksum mismatches. It writes `STALE_FORECAST` for the
 local alarm path; sync excludes preserve that marker. Every operational service

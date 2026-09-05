@@ -36,6 +36,16 @@ installation, unit, index, account, analysis and publication gates. Repeating an
 identical expensive backup during continuous quiescence adds downtime without
 new recovery evidence. Final outcome belongs in `docs/SESSION_MEMORY.md`.
 
+The backup gate also performed two full database scans. It now retains the
+stronger single proof: snapshot, hash, encrypted upload, download, checksum,
+full restored SQLite integrity, and restored foreign-key checks before promotion.
+Removing the duplicate pre-upload scan reduces future maintenance work; no new
+production timing is claimed. An actual error-propagation defect could accept a
+foreign-key command failure with empty stdout; that failure now rejects the
+backup. Six new full-flow tests cover success, checksum/corruption failures,
+foreign-key violations and command failure, with unchanged live database bytes.
+The focused deployment/backup suite passed 175 tests.
+
 ## Corrected local behavior
 
 - NWP collection combines lead-1 and lead-2 variables in one model request.
@@ -92,3 +102,16 @@ maintained repositories and acceptance criteria.
 Higher win rate is not a substitute for positive after-fee edge. More volume must
 come from eligible distinct opportunities and realistic fills, with independent
 weather-day uncertainty and each account's unchanged risk limits.
+
+
+## Bounded offline result
+
+A fresh, narrow read-only AWS forecast export supported an independently reviewed
+90-day comparison across 2,658 paired forecasts. Constrained CRPS fitting reduced
+pooled bias-corrected CRPS by 1.125%, while MAE improved only 0.011°F. Philadelphia
+lead two regressed 1.64%. The approximate reconstructed baseline, fixed-hour
+feature vintages and absent hourly completeness/publication metadata make this
+an exploratory weather-skill result, not evidence of better deployed forecasts
+or trading returns. See `../research/2026-09-04-crps-pilot.md` for the full method,
+paired block-bootstrap intervals and limitations. Production parameters remain
+unchanged pending shadow evaluation.
