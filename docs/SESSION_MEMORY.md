@@ -1,66 +1,76 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 21:07 PDT
+Last updated: 2026-09-04 21:43 PDT
 
-Last complete production verification: 2026-09-04 17:36 PDT
+Last complete production verification: 2026-09-04 21:39 PDT
 
-Last public artifact inspection: 2026-09-04 20:33 PDT (stale; recovery in progress)
-
-Production recovery snapshot: the earlier full-deployment retry was interrupted
-in its assistant task while its backup helper continued. The host remains under
-maintenance with all fourteen timers disabled. Runtime source is stamped at
-`dd159f814654d1d5de9a29a2ae9cef627cd2174a`, and all twenty-nine installed units
-passed integrity verification. This is not a completed deployment or healthy
-publication claim. The public manifest inspected at 03:33 UTC was last published
-at 02:35 UTC, with Strategy data generated at 00:40 UTC. The warning was real.
+Last public artifact inspection: 2026-09-04 21:39 PDT (fresh)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
-operational claim; the incident briefs below are historical snapshots.
+operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **Recovery in progress (September 4):** the previous task left an active backup
-  verification and a quiesced host. The new audit paused the orphaned local
-  coordinator before it could transfer concurrent unreviewed checkout changes.
-  Complete the existing helper's downloaded-backup integrity and foreign-key
-  checks, preserve its verified snapshot, and continue the canonical deployment
-  gates with the exact captured fourteen timers. Do not recapture the disabled
-  state or repeat the lengthy backup while all writers remain quiesced.
-- **New bounded fixes:** combine NWP lead requests (120 rather than 240 HTTP
-  calls for the daily fifteen-city/eight-model/two-lead collection); report only
-  evidenced exit causes while retaining unknown-close P&L; keep partial expiry
-  open; use Strategy's own generation timestamp; revalidate deployment source
-  after long backup/transfer work; initialize interruption recovery's watchdog
-  policy before registering traps; remove a duplicate backup scan while retaining
-  downloaded integrity/checksum/foreign-key proof and rejecting FK command errors.
-  These changes are not yet deployed.
-- **Validation so far:** 2,837 Python tests passed with eight skipped in both UTC
-  and America/Los_Angeles; 172 frontend tests, lint, production build and
-  browser-observed bundle budgets passed. Desktop and 390px mobile layouts had
-  no horizontal overflow. Local fixtures exercise fresh and preserved-stale
-  Strategy behavior. Another 175 targeted deployment/backup tests passed after
-  the backup optimization. Lint retains two existing Fast Refresh warnings.
-- **Research priorities:** establish fixed-issuance forecast lineage before
-  promotion comparisons; test proper-score-fitted EMOS and pooled quantile
-  forests using existing feeds; evaluate WeatherNext 3 only with confirmed
-  access, publication latency and incremental skill. See
-  `docs/research/2026-09-04-forecast-and-execution-improvements.md`. An independently
-  checked 2,658-case offline CRPS pilot improved pooled score 1.125% but regressed
-  Philadelphia lead two; see `docs/research/2026-09-04-crps-pilot.md`. It is
-  reconstructed fixed-lead research, not deployed accuracy or a trading replay.
-- **Remaining measurement concerns:** posterior sizing mixes accounts/policy
-  eras and execution lots; exit quote timestamps do not establish actual quote
-  age; historical forecast source selection, new-member handling and incomplete
-  hourly coverage need isolated evaluation. No accuracy or profitability gain
-  has been established for a new model.
-- **Account boundary:** Live Stability and Research ROI are two economically
-  separate paper accounts, each started with $1,000. Never combine their equity
-  into one bankroll. The former alone contributes to readiness. Higher volume,
-  win rate and larger size are distinct from higher after-fee returns.
-- **Safety:** keep live trading disabled and dry-run enabled. Keep edge, loss,
-  exposure, calibration and liquidity gates binding. Retention stays archive-only;
-  no unattended live-journal deletion. Alert webhook remains unconfigured, and
-  unlimited CPU credits remain an owner-only AWS decision.
+- **Publication recovered (September 4, 21:39 PDT snapshot):** backend source,
+  public provenance and full Strategy analysis match clean merged PR #113,
+  `2a6432e3bdb29fa1798a4b07e5f5396685b5245b`. The public manifest was published
+  at 04:37:54 UTC, Strategy generated at 04:37:46 UTC, and full analysis at
+  04:36:08 UTC. Five public JSON hashes and all 38 uploaded static app files
+  matched. The live desktop/mobile pages showed no publication-behind alert.
+  A final frontend wording correction is being prepared separately.
+- **Runtime healthy:** all fourteen original timers are enabled and active,
+  twenty-nine canonical units pass integrity, no unit is failed, maintenance is
+  absent, and disk use is 42%. Automatic scan, monitor, settlement, forecast,
+  Strategy and publication cycles completed successfully. The two fixed-capital
+  paper ledgers reconcile. Live execution remains disabled and dry-run enabled.
+- **Incident and recovery:** the earlier task left an ongoing backup verification
+  and a paused host. The obsolete local coordinator was stopped before it could
+  transfer concurrent edits. The inherited downloaded backup completed integrity
+  and foreign-key checks; identity, checksum and explicit successful FK status
+  were rechecked while writers remained continuously stopped. Recovery reused
+  that protected snapshot and the original timer policy through the canonical
+  install, unit, index, account, full-analysis and publication gates. The
+  temporary snapshot was removed before producer restoration. An extra staging
+  assertion initially rejected tracked fallback JSON; the disposable build was
+  stripped of those six runtime paths and verified before publication resumed.
+- **Deployed fixes:** NWP lead batching reduces the normal daily HTTP request
+  count from 240 to 120 with unchanged returned forecast values; exit reporting
+  requires evidenced causes and keeps partial expiry open; Strategy freshness
+  uses its own generation clock. Deploy source guards reject persistent checkout
+  changes after long backup/transfer work, and interruption recovery initializes
+  its watchdog policy before use. Future backup runs retain full downloaded
+  verification while avoiding the duplicate pre-upload scan; FK command errors
+  now fail closed.
+- **Validation:** merged CI passed 2,842 Python tests with nine skipped on both
+  Python 3.12 and 3.13, plus 172 frontend tests. Earlier local Python verification
+  passed 2,837 tests with eight skipped in UTC and Pacific before the final six
+  backup tests; the final targeted backup/deploy run passed 175 tests. Build,
+  lint (two existing Fast Refresh warnings), browser bundle budgets and desktop/
+  390px mobile behavior checks passed.
+- **Measured research:** a fresh AWS export and independent review support a
+  small exploratory CRPS improvement: 1.125% across 2,658 paired forecasts,
+  with only 0.011°F MAE improvement and a Philadelphia lead-two regression.
+  This reconstructed fixed-lead experiment is not proven deployed accuracy,
+  execution replay or higher profitability. See `docs/research/2026-09-04-crps-pilot.md`.
+- **Use existing resources first:** AIFS is already in the eight serving models.
+  Google and WeatherKit caches do not enter EMOS; Google shadow helpers have no
+  scheduled caller. Do not disable the whole main forecaster/Google unit: it also
+  runs all-city EMOS. Existing decision/context/forecast archives retain served
+  distributions for offline recalibration, but not named live NWP member highs.
+  Add only missing per-vintage evidence, and run heavy comparisons locally.
+- **Remaining evidence gaps:** isolate posterior sizing by account/policy era and
+  dependent fills; establish actual exit-quote age; preserve hourly completeness
+  and provider availability. Source mixing and unseen-member bugs are latent
+  in the inspected production sample, not established causes of low trading
+  frequency. Existing archive rollups lack full account/policy lineage and the
+  nightly full-table archive omits two maker-execution tables used by replay;
+  these must be included before claiming off-host replay equivalence.
+- **Account boundary and safety:** Live Stability and Research ROI are separate
+  paper accounts, each started with $1,000. Their 21:39 PDT published equity was
+  $1,052.23 and $1,078.97 respectively; never combine these into one bankroll.
+  Only Live Stability contributes to readiness. Retention stays archive-only;
+  alert webhook is unconfigured; unlimited CPU credits remain an owner-only AWS
+  decision. Keep edge, loss, exposure, calibration and liquidity gates binding.
 
 ## Historical incident briefs (dated snapshots)
 

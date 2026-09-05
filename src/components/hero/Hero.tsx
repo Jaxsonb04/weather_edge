@@ -41,9 +41,9 @@ export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }
 
           <Reveal immediate delay={0.16}>
             <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted">
-              A leakage-free NWP ensemble and per-station EMOS layer price daily-high brackets across {cityCount} US city markets,
-              each settling on its own NWS station. San Francisco is the flagship: it adds local residual-calibration evidence,
-              marine-layer features, and optional external inputs when fresh. Every paper decision remains fee-, liquidity-, and risk-gated.
+              An NWP ensemble and per-station EMOS layer price daily-high brackets across {cityCount} US city markets,
+              each settling on its own NWS station. San Francisco is the flagship, with additional residual-calibration
+              and marine-layer research alongside the shared model. Every paper decision remains fee-, liquidity-, and risk-gated.
             </p>
           </Reveal>
 

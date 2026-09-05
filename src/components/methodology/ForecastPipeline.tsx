@@ -16,7 +16,7 @@ function tier1Steps(modelSample: number | null): Step[] {
     {
       icon: "solar:cloud-storm-bold",
       title: modelSample == null ? "Multi-model NWP ensemble" : `${modelSample}-member NWP ensemble`,
-      desc: "Each model's freshest current run for the target date, fetched per city from the live forecast API — the served forecast is never a lagged reconstruction.",
+      desc: "Live serving normally uses each model's freshest current run for the target date, fetched per city from the forecast API. The published forecast identifies its served method.",
     },
     {
       icon: "solar:graph-up-bold",
@@ -33,7 +33,7 @@ function tier1Steps(modelSample: number | null): Step[] {
 
 const TIER2_EXTRAS: Step[] = [
   { icon: "solar:cpu-bolt-bold", title: "LSTM calibration evidence", desc: "A held-out residual model trained on a decade of SFO station history." },
-  { icon: "solar:layers-bold", title: "Optional external input", desc: "A commercial weather source may join the SFO blend when its cached value is fresh." },
+  { icon: "solar:layers-bold", title: "External-source research", desc: "Commercial weather inputs remain a research and compatibility capability; the scheduled EMOS forecast does not currently use them." },
   { icon: "solar:waterdrops-bold", title: "Marine-layer features", desc: "SFO-specific coastal signals retained as an additional evidence layer." },
 ];
 
@@ -104,10 +104,10 @@ export function ForecastPipeline() {
               endpoints; conflating them reads as "the live forecast is stale by
               design", which is the opposite of what the code does. */}
           <p className="mt-3 text-xs leading-relaxed text-muted">
-            <span className="font-semibold text-foreground">Two feeds, on purpose.</span> Serving reads the freshest
-            current run. Fitting reads a different endpoint — the Open-Meteo previous-runs archive, each cycle exactly
-            as it stood before its own target date — so the rolling-origin EMOS coefficients are never fitted or
-            scored on a model run that did not exist yet.
+            <span className="font-semibold text-foreground">Live inputs and historical evidence.</span> Serving reads the freshest
+            current run. Fitting uses earlier target dates from Open-Meteo's Previous Runs archive, which combines
+            fixed leads for individual hours. That archive does not establish a single forecast vintage available
+            at an earlier trading decision.
           </p>
         </section>
 
@@ -152,10 +152,10 @@ export function ForecastPipeline() {
         <strong>
           {typeof cityCount === "number" ? <span className="tnum">{cityCount}</span> : "every"}
         </strong>{" "}
-        market, EMOS-calibrated per city on a leakage-free rolling-origin fit and settled against each station's
+        market, EMOS-calibrated per city using rolling-origin historical fits and settled against each station's
         official NWS Climatological Report. The
-        LSTM calibration study, marine-layer features, and optional external input are <strong>{flagshipName}-only evidence layers</strong>,
-        not the universal point-forecast method. The current SFO publication may serve the shared EMOS weighted mean as an operational fallback.
+        LSTM calibration study and marine-layer features are <strong>{flagshipName} research layers</strong>.
+        External-source integration remains a research and compatibility capability. The current SFO publication may serve the shared EMOS weighted mean as an operational fallback.
         {nonFlagshipCount != null && nonFlagshipCount > 0 && (
           <> The other <strong className="tnum">{nonFlagshipCount}</strong> cities have only a short operational record so far.</>
         )}
