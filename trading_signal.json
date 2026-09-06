@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-09-06T09:12:25+00:00",
+  "generated_at": "2026-09-06T09:22:25+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-09-06T09:12:27+00:00",
+  "market_data_at": "2026-09-06T09:22:27+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -203,7 +203,7 @@
       "spread": 0.08,
       "target_date": "2026-09-06",
       "ticker": "KXHIGHTSFO-26SEP06-B71.5",
-      "trade_quality_score": 51.9
+      "trade_quality_score": 49.9
     },
     "target_count": 2
   },
@@ -237,7 +237,7 @@
         "side": "NO",
         "spread": 0.08,
         "ticker": "KXHIGHTSFO-26SEP06-B71.5",
-        "trade_quality_score": 51.9
+        "trade_quality_score": 49.9
       },
       "decisions": [
         {
@@ -268,7 +268,7 @@
           "side": "NO",
           "spread": 0.08,
           "ticker": "KXHIGHTSFO-26SEP06-B71.5",
-          "trade_quality_score": 51.9
+          "trade_quality_score": 49.9
         },
         {
           "action": "BUY_NO",
@@ -287,7 +287,6 @@
           "probability": 0.8695,
           "probability_lcb": 0.739,
           "reasons": [
-            "NO ask size 0.01 below min 1.00; no displayed entry liquidity",
             "edge 0.010 below min 0.012",
             "lower-bound edge -0.121 below min 0.000"
           ],
@@ -490,6 +489,37 @@
           "trade_quality_score": 31.8
         },
         {
+          "action": "BUY_YES",
+          "approved": false,
+          "ask": 0.18,
+          "bid": 0.15,
+          "decision": "NO_TRADE",
+          "edge": -0.0695,
+          "edge_lcb": -0.2,
+          "ensemble_probability": 0.0,
+          "expected_profit": -0.0,
+          "intraday_probability": 0.0501,
+          "label": "73\u00b0 or above",
+          "market_probability": 0.1602,
+          "model_probability": 0.0753,
+          "probability": 0.1305,
+          "probability_lcb": 0.0,
+          "reasons": [
+            "YES price 0.18 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "edge -0.070 below min 0.012",
+            "lower-bound edge -0.200 below min 0.000",
+            "YES lower-bound edge -0.200 is not positive"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": 0.8124,
+          "residual_probability": 0.1196,
+          "side": "YES",
+          "spread": 0.03,
+          "ticker": "KXHIGHTSFO-26SEP06-T72",
+          "trade_quality_score": 31.3
+        },
+        {
           "action": "BUY_NO",
           "approved": false,
           "ask": 0.95,
@@ -518,38 +548,6 @@
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26SEP06-B67.5",
           "trade_quality_score": 30.7
-        },
-        {
-          "action": "BUY_YES",
-          "approved": false,
-          "ask": 0.18,
-          "bid": 0.15,
-          "decision": "NO_TRADE",
-          "edge": -0.0695,
-          "edge_lcb": -0.2,
-          "ensemble_probability": 0.0,
-          "expected_profit": -0.0,
-          "intraday_probability": 0.0501,
-          "label": "73\u00b0 or above",
-          "market_probability": 0.1602,
-          "model_probability": 0.0753,
-          "probability": 0.1305,
-          "probability_lcb": 0.0,
-          "reasons": [
-            "YES bid size 0.01 below min 1.00",
-            "YES price 0.18 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.070 below min 0.012",
-            "lower-bound edge -0.200 below min 0.000",
-            "YES lower-bound edge -0.200 is not positive"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": 0.8124,
-          "residual_probability": 0.1196,
-          "side": "YES",
-          "spread": 0.03,
-          "ticker": "KXHIGHTSFO-26SEP06-T72",
-          "trade_quality_score": 30.1
         },
         {
           "action": "BUY_YES",
@@ -721,7 +719,7 @@
         "p75_f": 72.12,
         "p90_f": 73.2529
       },
-      "market_data_at": "2026-09-06T09:12:27+00:00",
+      "market_data_at": "2026-09-06T09:22:27+00:00",
       "target_date": "2026-09-06",
       "target_status": "settlement_day",
       "warnings": []
