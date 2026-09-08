@@ -277,8 +277,11 @@ despite partial extraction into `store/`.
 
 ## Scheduled machinery
 
-The repository defines 14 timers. This is a code map, not proof that every
-timer is currently enabled or healthy.
+The repository defines 14 timers, one of which — Apple refresh — is retired:
+its unit files still ship and are integrity-checked, but no deploy path
+enables it and the scheduler watchdog's canonical set (12 timers) excludes
+it. This is a code map, not proof that every timer is currently enabled or
+healthy.
 
 | Timer gear | Repository cadence/purpose |
 |---|---|
@@ -293,7 +296,7 @@ timer is currently enabled or healthy.
 | Scheduler health | Offset five-minute watchdog of units, freshness, disk, and publication |
 | Strategy Lab | Wall-clock every 5 minutes; research/accounting artifact |
 | Apple purge | Every 10 minutes |
-| Apple refresh | Four fixed UTC vintages daily |
+| Apple refresh | Four fixed UTC vintages daily; **retired (FC-4)** — shipped and integrity-checked, never enabled by a deploy |
 | Non-SFO Google refresh | Daily |
 | Google purge | Every 10 minutes |
 

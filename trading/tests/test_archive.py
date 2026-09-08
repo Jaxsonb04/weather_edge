@@ -47,6 +47,8 @@ def _run_scheduled_retention(
     tmp_path: Path,
     *,
     mode: str | None = None,
+    fail_on: str | None = None,
+    fail_status: int = 75,
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
     trading_root = tmp_path / "trading"
     trading_root.mkdir()
@@ -62,6 +64,9 @@ with open(os.environ["RETENTION_CALL_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
 if sys.argv[1:2] == ["-"]:
     sys.stdin.read()
+_fail_on = os.environ.get("RETENTION_FAIL_ON")
+if _fail_on and _fail_on in sys.argv[1:]:
+    sys.exit(int(os.environ["RETENTION_FAIL_STATUS"]))
 """,
         encoding="utf-8",
     )
@@ -78,6 +83,11 @@ if sys.argv[1:2] == ["-"]:
         env.pop("SFO_PRUNE_MODE", None)
     else:
         env["SFO_PRUNE_MODE"] = mode
+    if fail_on is None:
+        env.pop("RETENTION_FAIL_ON", None)
+    else:
+        env["RETENTION_FAIL_ON"] = fail_on
+    env["RETENTION_FAIL_STATUS"] = str(fail_status)
 
     result = subprocess.run(
         ["bash", str(ARCHIVE_PRUNE_SCRIPT)],
@@ -94,9 +104,16 @@ if sys.argv[1:2] == ["-"]:
     return result, [call for call in calls if "-m" in call]
 
 
-def test_scheduled_retention_defaults_to_archive_only_with_degraded_diagnostics(
+def test_scheduled_retention_defaults_to_bounded_delete_after_the_archive_gate(
     tmp_path: Path,
 ) -> None:
+    """OPS-2: an unset SFO_PRUNE_MODE must now delete, not skip.
+
+    Production ran with the key unset for months, archiving and verifying every
+    night and then deleting nothing while the journal grew ~0.7 GB/day until the
+    deploy backup gate could no longer find free space.
+    """
+
     result, cli_calls = _run_scheduled_retention(tmp_path)
 
     assert result.returncode == 0, result.stderr
@@ -104,9 +121,54 @@ def test_scheduled_retention_defaults_to_archive_only_with_degraded_diagnostics(
     assert any("--upload" in call for call in cli_calls)
     assert any("--check-gate" in call for call in cli_calls)
     assert any("paper-check-foreign-keys" in call for call in cli_calls)
+    prune_calls = [call for call in cli_calls if "paper-prune" in call]
+    assert len(prune_calls) == 1
+    gate_index = next(
+        index for index, call in enumerate(cli_calls) if "--check-gate" in call
+    )
+    assert gate_index < cli_calls.index(prune_calls[0])
+    assert "bounded live-DB deletion enabled" in result.stderr
+    assert "live-DB deletion skipped" not in result.stderr
+
+
+def test_failed_delete_still_runs_the_ring_buffer_cleanup_and_then_fails(
+    tmp_path: Path,
+) -> None:
+    """The delete and the disk-freeing cleanup are peers, not a chain.
+
+    `paper-prune` fails on ordinary lock contention (SQLITE_BUSY -> CLI exit 75)
+    and this script runs under `set -euo pipefail`, so making the delete the
+    nightly default would otherwise let one contended night also cancel the
+    ring-buffer cleanup -- the only bound on `data/archive` -- and stop freeing
+    disk in both places at once.
+    """
+
+    result, cli_calls = _run_scheduled_retention(tmp_path, fail_on="paper-prune")
+
+    assert any("--cleanup" in call for call in cli_calls)
+    prune_index = next(
+        index for index, call in enumerate(cli_calls) if "paper-prune" in call
+    )
+    cleanup_index = next(
+        index for index, call in enumerate(cli_calls) if "--cleanup" in call
+    )
+    assert prune_index < cleanup_index
+    # The unit must still fail, with the CLI's own status.
+    assert result.returncode == 75
+    assert "ring-buffer cleanup still runs" in result.stderr
+    assert "ERROR: live-DB deletion failed (exit 75)" in result.stderr
+
+
+def test_scheduled_retention_archive_only_is_still_an_explicit_escape_hatch(
+    tmp_path: Path,
+) -> None:
+    result, cli_calls = _run_scheduled_retention(tmp_path, mode="archive-only")
+
+    assert result.returncode == 0, result.stderr
+    assert any("--check-gate" in call for call in cli_calls)
     assert not any("paper-prune" in call for call in cli_calls)
     assert "DEGRADED" in result.stderr
-    assert "live-DB deletion skipped" in result.stderr
+    assert "live-DB deletion skipped by SFO_PRUNE_MODE=archive-only" in result.stderr
 
 
 def test_scheduled_retention_preserves_explicit_quiesced_delete_mode(

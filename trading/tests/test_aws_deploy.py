@@ -569,7 +569,10 @@ def test_scheduler_health_watchdog_is_bounded_and_wired_everywhere():
             "if [[ -e \"$DEPLOY_MAINTENANCE_MARKER\""
         )
     ]
-    assert canonical_block.count(".timer\"") == 13
+    # 12, not 13: FC-4 retired weatheredge-apple-refresh.timer, so the
+    # watchdog must not demand it be enabled and active.
+    assert canonical_block.count(".timer\"") == 12
+    assert "weatheredge-apple-refresh.timer" not in canonical_block
     assert "sfo-scheduler-health.timer" not in canonical_block
     repair_targets = set(
         re.findall(r'SYSTEMCTL\[@\]}" start ([a-z0-9@.-]+)', script)
@@ -961,10 +964,28 @@ def test_paper_prune_retention_is_explicit_in_canonical_environment():
     example_env = _read(AWS_DIR / "sfo-weather.env.example")
     wrapper = _read(AWS_DIR / "run_archive_then_prune.sh")
 
-    assert "SFO_PRUNE_MODE=archive-only" in example_env
-    assert 'PRUNE_MODE="${SFO_PRUNE_MODE:-archive-only}"' in wrapper
+    # OPS-2: the scheduled job deletes by default. `archive-only` remains as
+    # the named escape hatch, and `quiesced-delete` as the supervised mode.
+    assert "SFO_PRUNE_MODE=bounded-delete" in example_env
+    assert 'PRUNE_MODE="${SFO_PRUNE_MODE:-bounded-delete}"' in wrapper
+    assert "bounded-delete|quiesced-delete)" in wrapper
     assert '[[ "$PRUNE_MODE" == "quiesced-delete" ]]' in wrapper
+    assert "archive-only)" in wrapper
     assert "SFO_PRUNE_FULL_DAYS=1" in example_env
+
+
+def test_scheduled_prune_cannot_delete_without_a_passing_archive_gate():
+    wrapper = _read(AWS_DIR / "run_archive_then_prune.sh")
+
+    # The gate flag is set only by the line directly after --check-gate, and
+    # the delete branch refuses without it. Order matters: assert both.
+    assert "archive_gate_passed=0" in wrapper
+    gate_index = wrapper.index("--check-gate")
+    passed_index = wrapper.index("archive_gate_passed=1")
+    prune_index = wrapper.index("paper-prune --")
+    assert gate_index < passed_index < prune_index
+    assert "archive_gate_passed != 1" in wrapper
+    assert "refusing live-DB deletion" in wrapper
 
 
 def test_source_only_sync_is_disabled_to_preserve_cross_tree_provenance():
@@ -1042,6 +1063,38 @@ def test_pages_publish_is_race_safe():
     assert "flock" in publisher
     assert "SFO_PAGES_PUSH_ATTEMPTS" in publisher
     assert "re-fetching" in publisher  # the retry path re-fetches the fresh tip
+
+
+def test_pages_publisher_periodically_re_roots_the_generated_branch():
+    """OPS-1 residual: the shallow fetch stopped the download, not the growth.
+
+    Every push still adds a commit and ~6 objects to gh-pages, 144 times a day.
+    The branch is a regenerated snapshot, so it is re-rooted on a counter and
+    force-pushed -- but only after the delivery gate has passed, so the periodic
+    truncation cannot bypass the publication backpressure rule.
+    """
+
+    publisher = _read(AWS_DIR / "publish_forecaster_pages.sh")
+
+    assert "SFO_PAGES_HISTORY_MAX_COMMITS" in publisher
+    assert "PAGES_PUBLISH_COUNT_FILE" in publisher
+    assert "record_publish_count" in publisher
+    # Leased, not bare: an unattended destructive push must refuse to discard a
+    # commit that landed between this cycle's fetch and its push.
+    assert (
+        '--force-with-lease=refs/heads/$PAGES_BRANCH:$PAGES_FORCE_LEASE'
+        in publisher
+    )
+    assert "push_args=(--force " not in publisher
+
+    prepare_start = publisher.index("prepare_pages_branch() {")
+    prepare_block = publisher[prepare_start : publisher.index("\n}\n", prepare_start)]
+    gate_idx = prepare_block.index("wait_for_remote_publication")
+    reroot_idx = prepare_block.index("PAGES_HISTORY_MAX_COMMITS > 0")
+    assert gate_idx < reroot_idx
+    # The counter only advances on a push that actually landed.
+    push_idx = publisher.index("Published SFO weather dashboard")
+    assert publisher.index("record_publish_count \"$(( $(publish_count) + 1 ))\"") > push_idx
 
 
 def test_pages_publisher_validates_manifest_and_copies_exact_validated_artifacts():
@@ -1790,6 +1843,74 @@ def test_google_runtime_purge_service_does_not_sync_or_back_up_the_runtime_db():
     assert "s3" not in service.lower()
 
 
+def test_journald_retention_is_deploy_managed_and_beats_the_distro_drop_in():
+    """OPS-7: the journal has to survive long enough to root-cause with.
+
+    At SystemMaxUse=500M it covered 2.6-4.5 days while ForwardToSyslog=yes
+    duplicated every line into rsyslog, so a four-day-old cause was simply gone.
+    Both settings are box configuration, so they ship with the deploy.
+    """
+
+    conf = _read(AWS_DIR / "systemd" / "weatheredge-journald.conf")
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+
+    assert "[Journal]" in conf
+    assert "ForwardToSyslog=no" in conf
+    assert "SystemMaxUse=1500M" in conf
+
+    for script in (installer, notimers):
+        assert "weatheredge-journald.conf" in script
+        # "zz-" so it sorts after the distribution's own syslog.conf drop-in,
+        # which is what makes ForwardToSyslog=no actually win.
+        assert "/etc/systemd/journald.conf.d/zz-weatheredge.conf" in script
+        # Supersede the hand-made 500M drop-in rather than merely outranking it:
+        # two WeatherEdge files with contradictory values, resolved only by
+        # filename order, is drift an operator would read wrong.
+        assert (
+            "rm -f /etc/systemd/journald.conf.d/00-weatheredge.conf" in script
+        )
+        # Restart only on a real change: journald reads this file at start, and
+        # a restart on every deploy churns the log the deploy is watched through.
+        assert "cmp -s" in script
+        assert "systemctl restart systemd-journald" in script
+        assert script.index("journald_changed=0") < script.index(
+            "systemctl restart systemd-journald"
+        )
+
+
+def test_apple_refresh_timer_is_retired_everywhere_a_deploy_could_re_enable_it():
+    """FC-4: the paid Apple refresh must not survive any deploy path.
+
+    The unit files remain installed, so every route that could turn the timer
+    back on has to be closed independently: the fresh-install enable list, the
+    established-host capture/restore, and the watchdog's canonical set.
+    """
+
+    installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
+    deployer = _read(AWS_DIR / "sync_to_box.sh")
+    health = _read(AWS_DIR / "check_scheduler_health.sh")
+
+    enable_block = installer[installer.index("systemctl enable --now") :]
+    assert "weatheredge-apple-refresh.timer" not in enable_block
+    # Both installers, not just the fresh-provision one: install_systemd_notimers.sh
+    # is what a real deploy runs, and on an established host "not enabled by me"
+    # is not the same as disabled.
+    for script in (installer, notimers):
+        assert "systemctl disable --now weatheredge-apple-refresh.timer" in script
+    assert 'RETIRED_TIMERS=(\n  "weatheredge-apple-refresh.timer"\n)' in deployer
+    assert 'ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")' not in deployer
+
+    canonical_block = health[
+        health.index("CANONICAL_TIMERS=(") : health.index("APP_USER=")
+    ]
+    assert "weatheredge-apple-refresh.timer" not in canonical_block
+    # The purge is deliberately kept: it makes no API call and expires any
+    # residual Apple runtime content.
+    assert "weatheredge-apple-purge.timer" in canonical_block
+
+
 def test_apple_weather_runtime_source_is_isolated_scheduled_and_expiry_purged():
     service = _read(AWS_DIR / "systemd" / "weatheredge-apple-refresh.service.in")
     timer = _read(AWS_DIR / "systemd" / "weatheredge-apple-refresh.timer")
@@ -1827,28 +1948,25 @@ def test_apple_weather_runtime_source_is_isolated_scheduled_and_expiry_purged():
     assert "Unit=weatheredge-apple-purge.service" in apple_purge_timer
     assert "apple_weatherkit.py" not in google_purge_service
 
+    # The unit files stay installed and integrity-checked even though FC-4
+    # retired the refresh timer: re-enabling must remain one systemctl command,
+    # and a half-removed unit is exactly what the integrity gate exists to catch.
     for script in (installer, notimers):
         assert "weatheredge-apple-refresh.service.in" in script
         assert "weatheredge-apple-refresh.timer" in script
         assert "weatheredge-apple-purge.service.in" in script
         assert "weatheredge-apple-purge.timer" in script
-    assert "weatheredge-apple-refresh.timer" in installer[
-        installer.index("systemctl enable --now") :
-    ]
     assert (
         "weatheredge-apple-refresh.timer weatheredge-apple-refresh.service"
         in quiesce
     )
     assert "weatheredge-apple-purge.timer weatheredge-apple-purge.service" in quiesce
-    assert '"weatheredge-apple-refresh.timer"' in health
     assert '"weatheredge-apple-purge.timer"' in health
     assert '"weatheredge-apple-refresh.service"' in integrity
     assert '"weatheredge-apple-refresh.timer"' in integrity
     assert '"weatheredge-apple-purge.service"' in integrity
     assert '"weatheredge-apple-purge.timer"' in integrity
-    assert "bash -s probe weatheredge-apple-refresh.timer" in deployer
     assert "bash -s probe weatheredge-apple-purge.timer" in deployer
-    assert 'ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")' in deployer
     assert 'ENABLED_TIMERS+=("weatheredge-apple-purge.timer")' in deployer
     assert "ENABLE_APPLE_WEATHER=0" in env_example
     assert "APPLE_WEATHER_PRIVATE_KEY_PATH=" in env_example
