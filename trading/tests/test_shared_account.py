@@ -151,34 +151,21 @@ def test_profile_minimum_notional_fails_invalid_values_closed() -> None:
         }
 
 
-def test_live_profile_places_the_exact_fee_repriced_whole_contract_order() -> None:
-    """Exact repricing still SHRINKS the order; it no longer voids it.
-
-    Renamed 2026-09-07 from ...rejects_when_exact_fee_repricing_falls_below_
-    one_dollar (audit TC-15). The $1 executable floor is what voided this
-    order, and that same floor refused every guaranteed one-contract cross in
-    production. The invariant worth keeping is that exact taker-fee repricing
-    reduces the whole-contract quantity that fits the account's room -- not
-    that an edge-positive whole-contract order is discarded for costing less
-    than a dollar.
-    """
-
+def test_live_profile_rejects_when_exact_fee_repricing_falls_below_one_dollar() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
         config = strategy_config_for_profile("live")
         trader = PaperTrader(store, config)
 
+        # The recommendation's approximate cost clears $1, but exact taker-fee
+        # repricing reduces the safe whole-contract quantity to two ($0.84).
         order_ids = trader.place_approved(
             "2026-07-11",
             [_decision(recommended_contracts=3.0)],
             bankroll=1000.0,
         )
 
-        assert len(order_ids) == 1
-        row = store.paper_order(order_ids[0])
-        assert row is not None
-        assert row["contracts"] == 2.0
-        assert row["contracts"] * row["cost_per_contract"] < 1.0
+        assert order_ids == []
 
 
 def test_account_capacity_carries_no_unreachable_daily_loss_breaker() -> None:

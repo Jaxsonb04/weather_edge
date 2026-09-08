@@ -954,18 +954,9 @@ def _portfolio_scan_one_target(
             entry_allowed = False
             entry_block_reason = pause_reason
 
-    decisions_to_record = _portfolio_decisions_for_recording(decisions, plan)
-    # Audit TC-15: the portfolio scan recorded the ALLOCATOR'S REQUEST, never
-    # the order execution would place. A crossing limit is capped at displayed
-    # ask depth (`execution._taker_cross_quote`, `paper._clamp_to_displayed_ask`),
-    # so live snapshots carried ~85 contracts / ~$77 of intended spend for
-    # orders that were 2 contracts / $1.77: 7,561 recommended contracts against
-    # 392 executable, and $384.69 of expected_profit against $19.20, over the 89
-    # approved live rows since 2026-09-04. The single-target scan has always
-    # applied the entry-mode quote before recording (`with_entry_mode` above);
-    # this makes the portfolio path agree. Placement is untouched --
-    # `_place_portfolio_orders` still reads `plan.legs`.
-    decisions_to_record = paper_trader.with_entry_mode(decisions_to_record)
+    decisions_to_record = _restate_recorded_execution(
+        _portfolio_decisions_for_recording(decisions, plan), plan, paper_trader
+    )
     if not entry_allowed and entry_block_reason:
         if risk_profile == "research":
             paper_trader.record_research_shadow_candidates(
@@ -1552,6 +1543,48 @@ def _decision_signal_approved(decision) -> bool:
 
 def _portfolio_decision_key(decision) -> tuple[str, str]:
     return (str(decision.ticker), str(decision.side).upper())
+
+
+def _restate_recorded_execution(decisions, plan: PortfolioPlan, paper_trader):
+    """Record the order execution will place, not the allocator's request.
+
+    Audit TC-15: the portfolio scan recorded the ALLOCATOR'S REQUEST and never
+    the crossing quote derived from it. A crossing limit is capped at displayed
+    ask depth (`execution._taker_cross_quote`, `paper._clamp_to_displayed_ask`),
+    so live snapshots carried ~85 contracts / ~$77 of intended spend for orders
+    that were 2 contracts / $1.77: 7,561 recommended contracts against 427
+    executable, and $384.69 of expected_profit, over the 89 approved live rows
+    since 2026-09-04. The single-target scan has always applied the entry-mode
+    quote before recording; this makes the portfolio path agree. Placement is
+    untouched -- `_place_portfolio_orders` still reads `plan.legs`.
+
+    Arbitrage legs are skipped deliberately. A box leg's own after-fee LCB edge
+    is not the applicable test -- that is the point of a box -- so
+    `buy_limit_for_decision` can return None for one, and `with_buy_limit`
+    would then journal an approved, about-to-be-placed leg as approved=False /
+    0 contracts / "no buy-limit price preserves lower-bound edge" while
+    `_place_portfolio_orders` still places the group through `place_arbitrage`
+    on the opportunity's own sizing. That would be a journal-fidelity inversion
+    introduced by a journal-fidelity fix. Latent today (the live book has
+    recorded no arbitrage group) but `build_arbitrage_opportunities` runs on
+    every live portfolio scan.
+    """
+
+    arbitrage_keys = {
+        _portfolio_decision_key(leg.decision)
+        for leg in plan.legs
+        if leg.sleeve == "arbitrage"
+    }
+    return [
+        decision
+        if _portfolio_decision_key(decision) in arbitrage_keys
+        else restated
+        for decision, restated in zip(
+            decisions,
+            paper_trader.with_entry_mode(list(decisions)),
+            strict=True,
+        )
+    ]
 
 
 def _same_day_entry_cutoff_hour() -> int:

@@ -75,15 +75,33 @@ NORMAL_POSITION_PCT = 0.03
 CITY_TARGET_PCT = 0.05
 REGION_DAY_PCT = 0.08
 # Audit TC-6 (2026-09-07): DAILY_LOSS_PCT = 0.02 ("2% live-account daily loss
-# pause") was DELETED because it could never fire. Both paper entry paths
-# (`PaperTrader.place_approved` and `PaperTrader.place_arbitrage`) consult
-# `PaperStore.paper_entry_pause_reason` BEFORE any capacity call, and
-# PAUSE_THRESHOLDS["live"] pauses at 1.0% of clamp(equity, 500, 2000) against
-# the same rows, the same fixed-PST day boundary and the same predicate -- at
-# or below half of 2% of equity at every equity level the 15% drawdown pause
-# below does not already cover. Daily loss is enforced by that breaker for
-# paper entries, and by `LiveExecutionPolicy.daily_loss_pct`
-# (SFO_LIVE_DAILY_LOSS_PCT, still 2% of risk capital) for real money.
+# pause") was DELETED because in this system's configuration it can never
+# fire. Both paper entry paths (`PaperTrader.place_approved` and
+# `PaperTrader.place_arbitrage`) consult `PaperStore.paper_entry_pause_reason`
+# BEFORE any capacity call, over realized pnl on the same fixed-PST settlement
+# day, and PAUSE_THRESHOLDS["live"] pauses at 1.0% of the caller's bankroll.
+#
+# Be precise about how strong that claim is: the two breakers are NOT
+# identically scoped, so this is domination in the production configuration,
+# not by construction.
+#   * Row set: the deleted query took status IN (PAPER_SETTLED, PAPER_CLOSED)
+#     filtered by account_id and ignored risk_profile; the surviving one takes
+#     any non-NULL realized_pnl row that is not REJECTED/PAPER_EXPIRED,
+#     filtered by risk_profile, and -- since both entry paths call it with no
+#     account_id -- ignores account. Broader row set, so it can only see at
+#     least as much loss.
+#   * Threshold: 1.0% of the passed-in `bankroll`, not 2% of realized equity.
+#     Callers pass `_clamp_sizing_equity(equity, 1000)` = clamp(equity, 500,
+#     2000), so the surviving pause fires at $5.00 below $500 of equity, at
+#     1% of equity between $500 and $2000, and at $20.00 above -- strictly
+#     tighter than 2% of equity at every level. A caller passing a far larger
+#     --bankroll would invert that; nothing in production does, and
+#     `test_account_capacity_carries_no_unreachable_daily_loss_breaker` keeps
+#     the deletion a visible decision rather than a silent gap.
+#
+# Daily loss is enforced by that breaker for paper entries, and by
+# `LiveExecutionPolicy.daily_loss_pct` (SFO_LIVE_DAILY_LOSS_PCT, still 2% of
+# risk capital) for real money.
 
 REGION_BY_SERIES = {
     "KXHIGHMIA": "southeast",

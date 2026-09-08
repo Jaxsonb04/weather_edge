@@ -309,24 +309,37 @@ def test_joint_kelly_cannot_resize_live_yes_past_its_sleeve() -> None:
     )
 
 
-def test_live_yes_sleeve_admits_a_full_size_position() -> None:
+def test_live_yes_sleeve_admits_a_maximum_size_position() -> None:
     """Audit TC-6: the live YES sleeve must not be an invisible veto.
 
-    It was `bankroll * 0.08 * 0.05` = $4.00 across all 15 cities -- less than
-    the account's own per-position ceiling of min($30, 3% of equity) -- so the
-    first YES leg evaluated was always dropped as "YES sleeve is full" no
-    matter how good it was. That was masked only because no live YES candidate
-    has ever been signal-approved: 0 of 328 YES candidates cleared min_edge
-    over 2026-09-01..03, and 0 of 89,508 live YES decision rows since
-    2026-09-01 were approved. The upstream signal gate is the control that
-    keeps the book 100% NO; the sleeve must be a coherent concentration cap.
+    It was `bankroll * 0.08 * 0.05` = $4.00 across all 15 cities. Live sets
+    `yes_estimation_shrink`, so a live YES leg is hard-capped at `bankroll *
+    yes_max_position_risk_pct` = $5.00 -- the sleeve was smaller than a single
+    maximum-size leg, and `allocate_portfolio` DROPS a YES leg that does not
+    fit instead of scaling it. 0.20 of the directional budget is the research
+    book's own convex fraction ($50 against a $15 maximum research YES leg =
+    3.3 positions; $16.00 against a $5.00 maximum live leg = 3.2), so the two
+    books now express the same concentration rule.
+
+    This is inert today and has no production evidence behind it: 0 of 86,820
+    live YES decision rows on 2026-09-05..07 were approved and the live book
+    has never traded YES (608/608 orders NO since 2026-07-01). The upstream
+    signal gate is what keeps the book NO-only.
     """
 
+    live = strategy_config_for_profile("live")
     limits = portfolio_limits_for_profile("live", 1000.0)
-    # At least one full-size position (NORMAL_POSITION_CAP), at most half the
-    # day's directional budget.
-    assert limits.yes_sleeve >= 30.0
-    assert limits.yes_sleeve == limits.max_daily_loss * 0.5
+    research_limits = portfolio_limits_for_profile("research", 1000.0)
+
+    max_live_yes_leg = 1000.0 * live.yes_max_position_risk_pct
+    assert live.yes_estimation_shrink is True
+    assert max_live_yes_leg == 5.0
+    # Holds at least one maximum-size leg -- the property the old value broke.
+    assert limits.yes_sleeve > max_live_yes_leg
+    # And is the research book's fraction of the directional budget, not a
+    # looser one.
+    assert limits.yes_sleeve == limits.max_daily_loss * 0.20
+    assert research_limits.yes_sleeve == research_limits.max_daily_loss * 0.20
 
     market = _market(
         "70° to 71°",
@@ -340,7 +353,7 @@ def test_live_yes_sleeve_admits_a_full_size_position() -> None:
             _decision(
                 market,
                 side="YES",
-                spend=30.0,
+                spend=max_live_yes_leg,
                 probability=0.90,
                 edge=0.70,
                 edge_lcb=0.50,
@@ -356,7 +369,7 @@ def test_live_yes_sleeve_admits_a_full_size_position() -> None:
 
 
 def test_live_yes_sleeve_still_caps_the_convex_side() -> None:
-    """Raising the sleeve must not remove it: the third full-size leg is refused."""
+    """Raising the sleeve must not remove it: the fourth max-size leg is refused."""
 
     limits = portfolio_limits_for_profile("live", 1000.0)
     decisions = [
@@ -369,17 +382,19 @@ def test_live_yes_sleeve_still_caps_the_convex_side() -> None:
                 yes_ask=0.20,
             ),
             side="YES",
-            spend=30.0,
+            spend=5.0,
             probability=0.90,
             edge=0.70,
             edge_lcb=0.50,
             quality=90.0 - index,
         )
-        for index in range(3)
+        for index in range(4)
     ]
     plan = allocate_portfolio(decisions, bankroll=1000.0, risk_profile="live")
 
-    yes_spend = sum(leg.spend for leg in plan.legs if leg.sleeve == "yes_convex")
+    yes_legs = [leg for leg in plan.legs if leg.sleeve == "yes_convex"]
+    yes_spend = sum(leg.spend for leg in yes_legs)
+    assert len(yes_legs) == 3
     assert yes_spend <= limits.yes_sleeve
     assert any("YES sleeve is full" in reason for reason in plan.reasons)
 

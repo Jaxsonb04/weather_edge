@@ -234,15 +234,27 @@ def test_with_buy_limit_exposes_limit_math_on_decision_for_reporting():
     assert limited.limit_edge_lcb >= 0.02
 
 
-def test_one_contract_of_depth_is_filled_instead_of_resting_and_expiring():
-    """Audit TC-15, the production shape of live orders 2611/2616/2679/2743.
+def test_one_contract_of_depth_rests_rather_than_crossing():
+    """Audit TC-15b, the production shape of live orders 2611/2616/2679/2743.
 
     Each was an approved favorite with exactly one contract of displayed ask
-    depth. The $1 executable floor refused the guaranteed one-contract cross
-    (one contract cost $0.82-0.93), so the candidate fell through to the maker
-    path as a 32-36 contract resting order, and all four expired with zero
-    fills. Pin both limbs: the fill happens now, and restoring the old floor
-    reproduces the resting order it replaces.
+    depth, and the $1 executable floor refused the one-contract cross (one
+    contract cost $0.82-0.93), so each rested 32-36 contracts and expired
+    unfilled. The audit asked for the floor to be dropped so those become
+    guaranteed one-contract fills; that was implemented, measured and
+    REVERTED, because on this book resting is the higher-EV side:
+
+      * live rests are not dead -- 414 orders / 12,479.6 contracts / 943.5
+        filled = 7.6% since 2026-07-01, above research's 5.2%;
+      * the sub-$1 class specifically fills 216.5 of 3,248.8 contracts (6.7%,
+        16 of 105 orders) for $14.14 realized = $0.135 per rest attempted,
+        against ~$0.043 of after-fee edge for the one-contract cross;
+      * and a fill consumes the market/side entry slot an expiry deliberately
+        leaves open, which 25 of the 43 groups that began with such a rest
+        later used to fill 152.1 contracts for $13.53 realized.
+
+    Pin both limbs: the live profile rests, and the dropped floor would have
+    crossed.
     """
 
     from dataclasses import replace as _replace
@@ -273,26 +285,26 @@ def test_one_contract_of_depth_is_filled_instead_of_resting_and_expiring():
         )
         row = store.paper_order(order_id)
         assert row is not None
-        assert row["status"] == "PAPER_FILLED"
-        assert row["contracts"] == 1.0
-        assert row["limit_price"] == 0.92
+        assert row["status"] == "PAPER_LIMIT_RESTING"
+        assert row["contracts"] == 32.0
+        assert row["limit_price"] == 0.91
 
     with TemporaryDirectory() as tmp:
-        store = PaperStore(Path(tmp) / "old.db")
-        old_floor = PaperTrader(
+        store = PaperStore(Path(tmp) / "dropped.db")
+        dropped_floor = PaperTrader(
             store,
-            _replace(live, limit_taker_cross_min_notional=1.0),
+            _replace(live, limit_taker_cross_min_notional=0.01),
             risk_profile="live",
             entry_mode="limit",
         )
-        [order_id] = old_floor.place_approved(
+        [order_id] = dropped_floor.place_approved(
             "2026-09-08", [_decision(**production_shape)], bankroll=1000.0
         )
         row = store.paper_order(order_id)
         assert row is not None
-        assert row["status"] == "PAPER_LIMIT_RESTING"
-        assert row["contracts"] == 32.0
-        assert row["limit_price"] == 0.91
+        assert row["status"] == "PAPER_FILLED"
+        assert row["contracts"] == 1.0
+        assert row["limit_price"] == 0.92
 
 
 def test_with_entry_mode_restates_a_crossing_quote_at_its_executable_size():
@@ -326,8 +338,14 @@ def test_with_entry_mode_restates_a_crossing_quote_at_its_executable_size():
         assert restated.recommended_contracts == 2.0
         assert restated.binding_constraint == "visible_ask_depth"
         assert restated.expected_profit == restated.limit_edge * 2.0
+        # The pre-clamp request stays recoverable from the recorded row.
+        assert (
+            "execution: displayed ask depth capped size 90 -> 2 contracts"
+            in restated.reasons
+        )
         # The plan the allocator built is untouched; only the recorded copy moves.
         assert decision.recommended_contracts == 90.0
+        assert "execution: displayed ask depth capped" not in " ".join(decision.reasons)
 
 
 def test_analyze_entry_mode_defaults_from_environment():

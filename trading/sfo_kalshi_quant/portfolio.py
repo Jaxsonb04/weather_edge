@@ -82,18 +82,28 @@ def portfolio_limits_for_profile(profile: str | None, bankroll: float) -> Portfo
         bankroll=bankroll,
         max_daily_loss=bankroll * 0.08,
         # Audit TC-6 (2026-09-07): this was 0.05 of the directional budget =
-        # $4.00 across all 15 cities -- LESS than one live position, since the
-        # account's per-position ceiling is min($30, 3% of equity). Every
-        # normally-sized YES leg was therefore dropped on its first evaluation
-        # as "YES sleeve is full". That is an invisible veto, not a sleeve.
-        # What actually keeps the book 100% NO is the upstream signal gate: 0
-        # of 328 YES candidates cleared min_edge over 2026-09-01..03, and 0 of
-        # 89,508 live YES decision rows since 2026-09-01 were approved. Half
-        # the directional budget ($40 at the $1000 bankroll) admits at least
-        # one full-size YES position while still stopping the convex side from
-        # consuming a whole day's risk. No live behaviour changes until a YES
-        # candidate is signal-approved for the first time.
-        yes_sleeve=bankroll * 0.08 * 0.50,
+        # $4.00 across all 15 cities. The live profile sets
+        # `yes_estimation_shrink`, so a live YES leg is hard-capped at
+        # `bankroll * yes_max_position_risk_pct` = $5.00 (risk.py,
+        # `yes_budget`) -- the sleeve was therefore smaller than a SINGLE
+        # maximum-size YES leg, and the loop below DROPS a leg that does not
+        # fit rather than scaling it down (unlike the exploration sleeve). A
+        # concentration cap that cannot hold one position is an invisible
+        # veto, not a sleeve.
+        # 0.20 is the research book's own convex fraction, chosen for parity
+        # rather than for yield: research allocates bankroll * 0.25 * 0.20 =
+        # $50 against a $15 maximum research YES leg (it leaves
+        # `yes_estimation_shrink` off, so `max_position_risk_pct` binds) =
+        # 3.3 positions; at 0.20 live gets $16.00 against a $5.00 maximum leg
+        # = 3.2 positions. Same concentration semantics, not a looser one, and
+        # 80% of the day's directional budget still belongs to the NO book.
+        # This number has NO production evidence behind it and is inert today:
+        # the live book has never traded YES (608/608 orders NO since
+        # 2026-07-01) and 0 of 86,820 live YES decision rows on 2026-09-05..07
+        # were approved. The upstream signal gate, not this sleeve, is what
+        # keeps the book NO-only. Revisit with real data the first time a YES
+        # candidate is signal-approved.
+        yes_sleeve=bankroll * 0.08 * 0.20,
         explore_sleeve=0.0,
     )
 

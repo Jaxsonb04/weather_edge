@@ -97,11 +97,11 @@ def test_live_profile_enables_taker_cross_and_reservation_fallback():
     # win rate and +$3.47/day (see the LIVE_PROFILE_OVERRIDES rationale).
     assert live.limit_taker_cross_min_edge_lcb == 0.0
     assert live.limit_taker_cross_min_edge_lcb < live.limit_price_edge_lcb_buffer
-    # 2026-09-07 (audit TC-15): $1 refused every guaranteed 1-contract
-    # cross, because one contract of a favorite costs $0.74-0.96. One cent
-    # rather than zero because this value doubles as the account policy's
-    # `minimum_notional`, which rejects a non-positive floor as invalid.
-    assert live.limit_taker_cross_min_notional == 0.01
+    # 2026-09-07 (audit TC-15b): dropping this to admit the guaranteed
+    # 1-contract cross was implemented, measured and reverted -- live rests
+    # fill 7.6% of contracts and a fill would consume the market/side entry
+    # slot an expiry leaves open. See the LIVE_PROFILE_OVERRIDES rationale.
+    assert live.limit_taker_cross_min_notional == 1.0
 
 
 def test_research_profile_scopes_capture_to_the_target_book():
@@ -112,10 +112,6 @@ def test_research_profile_scopes_capture_to_the_target_book():
     assert research.limit_taker_cross_enabled is False
     assert research.limit_resting_reservation_fallback is False
     assert research.research_target_taker_cross is True
-    # Pinned, not inherited: the target book spends this on a different
-    # rule (is a partial slice worth crossing for) and its maker path
-    # actually fills, so live's TC-15 change must not retune it.
-    assert research.limit_taker_cross_min_notional == 1.0
 
 
 def _research_cross_config() -> StrategyConfig:

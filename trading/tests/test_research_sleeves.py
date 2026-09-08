@@ -278,13 +278,15 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # execution identity.
     # 2026-09-04: explicit behavior-version coverage rotates the evidence cohort
     # for the audited exit-policy correction instead of silently blending it.
-    # 2026-09-07 (audit TC-15/TC-6): the profile-scoped executable minimum moved
-    # from $1 to $0.01 so a guaranteed one-contract cross is taken instead of
-    # rested (one contract of a favorite costs $0.74-0.96, so $1 refused every
-    # such fill), and STRATEGY_BEHAVIOR_VERSION rotates for the same batch of
-    # execution changes. Both are deliberately a new execution identity.
-    assert strategy_fingerprint(config, entry_mode="limit") == "76ab4a48e1ba368b681ff302"
-    assert strategy_fingerprint(config, entry_mode="market") == "cc248d359ac909dd4b99bcdf"
+    # 2026-09-07 (audit TC-6/TC-15): StrategyConfig itself is unchanged -- the
+    # executable-minimum drop was implemented, measured and reverted -- but
+    # STRATEGY_BEHAVIOR_VERSION rotates because behaviour outside StrategyConfig
+    # did change: recorded execution size is now the ask-clamped order rather
+    # than the policy request, and the live YES sleeve moved from $4.00 to
+    # $16.00. Rotating deliberately starts a new evidence cohort rather than
+    # blending the two recording conventions.
+    assert strategy_fingerprint(config, entry_mode="limit") == "f1bdcf43918f69dc8f63698e"
+    assert strategy_fingerprint(config, entry_mode="market") == "0cfaaa324f93f1ba20cd4a82"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1233,9 +1235,9 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    # Rotated 2026-09-07 with the TC-15 executable-minimum change; see
+    # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "cc248d359ac909dd4b99bcdf"
+    assert row["strategy_fingerprint"] == "0cfaaa324f93f1ba20cd4a82"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

@@ -550,21 +550,36 @@ LIVE_PROFILE_OVERRIDES = {
     # capped Live book from 62 to 84 fills (+35%, 79-5) at a $1 floor, without
     # changing any signal, exposure, loss, liquidity, or position-size cap.
     #
-    # 2026-09-07 (audit TC-15). The residual $1 floor still refused EVERY
-    # 1-contract cross, because one contract of a favorite costs $0.74-0.96.
-    # Measured on production: of the 89 approved live decision rows since
-    # 2026-09-04, 24 had exactly one contract of displayed depth and all 24
-    # were refused, falling through to the maker path as 30-something-contract
-    # resting orders. Orders 2611, 2616, 2679 and 2743 are the four such
-    # orders actually placed in that window; all four expired with zero fills.
-    # The executable unit is a whole contract, which `_taker_cross_quote`
-    # enforces directly (`contracts < 1.0 -> None`), and the after-fee LCB
-    # edge floor is what governs EV. The value is one cent rather than zero
-    # because it doubles as the account policy's `minimum_notional`
-    # (`PaperTrader._fit_to_account_policy` -> `account.policy_capacity`),
-    # which rejects a non-positive floor as invalid and would then block every
-    # live order.
-    "limit_taker_cross_min_notional": 0.01,
+    # 2026-09-07 (audit TC-15b). The audit asked for this floor to be dropped
+    # so a guaranteed one-contract cross is taken instead of rested. It was
+    # implemented at $0.01, MEASURED, and REVERTED: production says the trade
+    # is negative. The measurements, so nobody repeats the attempt (all
+    # read-only against /opt/weatheredge/trading/data/paper_trading.db):
+    #   * The premise "the live maker path never fills" is FALSE. Live resting
+    #     orders since 2026-07-01: 414 orders, 12,479.6 contracts requested,
+    #     943.5 filled = 7.6% of contracts -- a HIGHER rate than research's
+    #     5.2% (1,368 orders, 87,534.1 requested, 4,577.6 filled). The "0
+    #     fills" figure that motivated the drop came from a query filtered to
+    #     status='PAPER_EXPIRED', where zero fills is true by construction and
+    #     there is no denominator.
+    #   * The exact class this floor governs -- displayed depth below two
+    #     contracts, i.e. the sub-$1 cross -- fills too: 105 live rests,
+    #     3,248.8 contracts, 216.5 filled (6.7%) across 16 of 105 orders, for
+    #     $14.14 of REALIZED pnl = $0.135 per rest attempted. Crossing instead
+    #     buys one contract at roughly $0.043 of after-fee edge (order 2611's
+    #     book: NO 0.90/0.92, one contract displayed).
+    #   * A fill also consumes an entry slot that an expiry deliberately does
+    #     not. Live `max_entries_per_market_side` is 1 and
+    #     `entries_for_market_side` excludes PAPER_EXPIRED precisely so an
+    #     unfilled rest can re-quote. Of the 43 live (target_date, market,
+    #     side) groups since 2026-07-01 whose FIRST order was a thin-depth
+    #     expired rest, 25 went on to place later orders that filled 152.1
+    #     contracts for $13.53 realized -- every one of which a one-contract
+    #     fill in that market would have blocked for the rest of the day.
+    # The floor therefore stays at $1. It is what keeps the one-contract
+    # candidate on the maker path, which on this book is the higher-EV side.
+    # Revisit only with a fresh measurement of live resting fill rates.
+    "limit_taker_cross_min_notional": 1.0,
     "limit_resting_reservation_fallback": True,
 }
 
@@ -667,13 +682,6 @@ RESEARCH_PROFILE_OVERRIDES = {
     "limit_taker_cross_enabled": False,
     "limit_resting_reservation_fallback": False,
     "research_target_taker_cross": True,
-    # Pinned, deliberately NOT inherited from LIVE_PROFILE_OVERRIDES. The
-    # target book spends this value on a different rule -- the opt-in test
-    # that a partial slice is worth crossing for when the spread is wider than
-    # one tick (`target_research_quote`) -- and its maker path actually fills
-    # (844 of 11,538 contracts, 7.3%, against live's 0 of 65). Live's TC-15
-    # change must not silently retune the research book.
-    "limit_taker_cross_min_notional": 1.0,
     # Observation only; see the StrategyConfig field comment. Piloted on
     # research (the collect-data-risk-nothing book) so the already-fragile
     # live 15-minute scan cadence is untouched by a new API dependency.

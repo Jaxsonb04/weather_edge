@@ -28,8 +28,41 @@ from sfo_kalshi_quant.config import (
 )
 from sfo_kalshi_quant.forecast import ForecastDataError
 from sfo_kalshi_quant.models import ForecastSnapshot
-from sfo_kalshi_quant.portfolio import PortfolioLimits, PortfolioPlan
-from sfo_kalshi_quant.paper import ArbitrageContainmentError
+from sfo_kalshi_quant.portfolio import PortfolioLeg, PortfolioLimits, PortfolioPlan
+from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
+from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.models import TradeDecision
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+
+def _restatement_decision(ticker: str, **overrides) -> TradeDecision:
+    values = {
+        "ticker": ticker,
+        "label": "70 to 71",
+        "action": "BUY_NO",
+        "approved": True,
+        "probability": 0.90,
+        "probability_lcb": 0.86,
+        "yes_bid": 0.25,
+        "yes_ask": 0.26,
+        "spread": 0.01,
+        "fee_per_contract": 0.003,
+        "cost_per_contract": 0.743,
+        "edge": 0.157,
+        "edge_lcb": 0.117,
+        "kelly_fraction": 0.05,
+        "recommended_contracts": 90.0,
+        "expected_profit": 14.0,
+        "reasons": [],
+        "side": "NO",
+        "entry_bid": 0.73,
+        "entry_ask": 0.74,
+        "entry_bid_size": 20.0,
+        "entry_ask_size": 2.0,
+    }
+    values.update(overrides)
+    return TradeDecision(**values)
 
 
 def test_portfolio_scan_parser_is_paper_only_by_default() -> None:
@@ -418,13 +451,84 @@ def test_portfolio_scan_records_the_executable_size_not_the_policy_request() -> 
     """
 
     source = inspect.getsource(scan_module._portfolio_scan_one_target)
-    quote_at = source.index("paper_trader.with_entry_mode(decisions_to_record)")
+    quote_at = source.index("_restate_recorded_execution(")
     record_at = source.index("store.record_decisions(")
     assert quote_at < record_at
     assert "_place_portfolio_orders(" in source
     placement = inspect.getsource(scan_module._place_portfolio_orders)
     assert "plan.legs" in placement
     assert "decisions_to_record" not in placement
+
+
+def test_recorded_restatement_clamps_directional_legs_and_skips_arbitrage() -> None:
+    """A box leg must not be re-journalled against a standalone-edge test.
+
+    `with_buy_limit` rewrites a decision it cannot quote to approved=False /
+    0 contracts, but `_place_portfolio_orders` still places an arbitrage group
+    through `place_arbitrage` on the opportunity's own sizing -- so applying
+    the restatement to arbitrage legs would invert journal fidelity rather
+    than fix it. Directional legs must still be clamped to displayed depth.
+    """
+
+    directional = _restatement_decision(
+        "KXHIGHTSFO-TEST-B70.5", recommended_contracts=90.0, entry_ask_size=2.0
+    )
+    # No standalone after-fee LCB edge: a box leg's own edge is not the test.
+    box_leg = _restatement_decision(
+        "KXHIGHTSFO-TEST-B71.5",
+        recommended_contracts=40.0,
+        entry_ask_size=1.0,
+        probability=0.20,
+        probability_lcb=0.10,
+    )
+
+    def _leg(decision, sleeve):
+        return PortfolioLeg(
+            sleeve=sleeve,
+            decision=decision,
+            spend=1.0,
+            expected_profit=0.1,
+            growth_score=0.1,
+        )
+
+    plan = PortfolioPlan(
+        run_id="PF-test",
+        risk_profile="live",
+        approved=True,
+        legs=[_leg(directional, "no_core"), _leg(box_leg, "arbitrage")],
+        arbitrage_opportunities=[],
+        total_spend=2.0,
+        worst_case_loss=2.0,
+        expected_profit=0.2,
+        reasons=[],
+        limits=PortfolioLimits(
+            risk_profile="live",
+            bankroll=1000.0,
+            max_daily_loss=80.0,
+            yes_sleeve=16.0,
+            explore_sleeve=0.0,
+        ),
+    )
+
+    with TemporaryDirectory() as tmp:
+        trader = PaperTrader(
+            PaperStore(Path(tmp) / "paper.db"),
+            strategy_config_for_profile("live"),
+            risk_profile="live",
+            entry_mode="limit",
+        )
+        # Confirm the premise: the box leg has no standalone crossing quote.
+        assert trader.with_entry_mode([box_leg])[0].approved is False
+        restated = scan_module._restate_recorded_execution(
+            [directional, box_leg], plan, trader
+        )
+
+    assert restated[0].recommended_contracts == 2.0
+    assert restated[0].binding_constraint == "visible_ask_depth"
+    # The arbitrage leg is passed through untouched -- not voided.
+    assert restated[1] is box_leg
+    assert restated[1].approved is True
+    assert restated[1].recommended_contracts == 40.0
 
 
 def test_build_scan_context_preserves_event_fallback_and_injected_sizing_model() -> None:

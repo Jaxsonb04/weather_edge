@@ -139,39 +139,41 @@ def test_high_bar_config_still_refuses_the_thin_candidate():
     assert buy_limit_for_decision(_decision(), config) is None
 
 
-def test_single_contract_cross_is_taken_rather_than_rested():
-    """Audit TC-15: a guaranteed one-contract fill must not be sent to rest.
+def test_executable_minimum_still_blocks_a_too_thin_book():
+    """One contract at ~0.95 remains below the live profile's $1 floor.
 
-    Replaces test_executable_minimum_still_blocks_a_too_thin_book, which
-    asserted the defect. One contract of a favorite costs $0.74-0.96, so the
-    live profile's $1 executable floor refused EVERY quote whose displayed
-    depth was one contract. Measured on production 2026-09-04..07: 24 of the
-    89 approved live rows had exactly one contract of depth and all 24 were
-    refused; the four such orders actually placed in the 2026-08-24 window
-    (2611, 2616, 2679, 2743) rested 32-36 contracts each and expired with
-    zero fills. The whole-contract rule below and the after-fee LCB edge floor
-    are what govern the cross now.
+    Audit TC-15b asked for this floor to be dropped so the guaranteed
+    one-contract cross is taken instead. That was tried at $0.01 and REVERTED
+    on production evidence, so this test is deliberately still here: the live
+    maker path fills 7.6% of rested contracts (414 orders / 12,479.6 requested
+    / 943.5 filled since 2026-07-01), the sub-$1 class specifically returns
+    $0.135 of realized pnl per rest attempted (105 rests, 216.5 of 3,248.8
+    contracts filled, $14.14 realized) against ~$0.043 of after-fee edge for
+    the one-contract cross, and a fill would additionally consume the
+    market/side entry slot (`max_entries_per_market_side` is 1 for live and
+    `entries_for_market_side` excludes PAPER_EXPIRED) that 25 of 43 such
+    groups later used to fill 152.1 contracts for $13.53. See
+    LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"].
     """
 
     live = strategy_config_for_profile("live")
-    quote = buy_limit_for_decision(_decision(entry_ask_size=1.0), live)
-
-    assert quote is not None
-    assert quote.would_cross is True
-    assert quote.contracts == 1.0
-    # The refusal this replaces: one contract is worth less than a dollar.
-    assert quote.contracts * quote.cost_per_contract < 1.0
-    assert quote.edge_lcb >= live.limit_taker_cross_min_edge_lcb
+    assert buy_limit_for_decision(_decision(entry_ask_size=1.0), live) is None
 
 
-def test_a_notional_floor_above_one_contract_still_refuses_the_cross():
-    """The floor stays a real parameter: restoring $1 restores the old refusal."""
+def test_dropping_the_notional_floor_would_convert_that_rest_into_a_fill():
+    """Pin what the reverted change did, so the trade-off stays legible."""
 
     from dataclasses import replace as _replace
 
     live = strategy_config_for_profile("live")
-    strict = _replace(live, limit_taker_cross_min_notional=1.0)
-    assert buy_limit_for_decision(_decision(entry_ask_size=1.0), strict) is None
+    dropped = _replace(live, limit_taker_cross_min_notional=0.01)
+    quote = buy_limit_for_decision(_decision(entry_ask_size=1.0), dropped)
+
+    assert quote is not None
+    assert quote.would_cross is True
+    assert quote.contracts == 1.0
+    # The whole reason $1 bites: one contract of a favorite is worth under $1.
+    assert quote.contracts * quote.cost_per_contract < 1.0
 
 
 def test_a_book_without_a_whole_contract_is_still_not_executable():
@@ -179,6 +181,22 @@ def test_a_book_without_a_whole_contract_is_still_not_executable():
 
     live = strategy_config_for_profile("live")
     assert buy_limit_for_decision(_decision(entry_ask_size=0.0), live) is None
+
+
+def test_a_malformed_book_yields_no_quote_instead_of_raising():
+    """Both scans quote before recording, so a bad book must not kill the scan.
+
+    `_portfolio_scan_one_target` now quotes every approved decision before
+    `record_decisions`. An unguarded `float(decision.ask)` there would raise
+    out of the recording path and lose the whole city's snapshot batch for the
+    tick, which is a worse failure than journalling a bad number.
+    """
+
+    live = strategy_config_for_profile("live")
+    assert buy_limit_for_decision(_decision(entry_ask="n/a"), live) is None
+    assert buy_limit_for_decision(_decision(entry_bid="n/a"), live) is None
+    assert buy_limit_for_decision(_decision(entry_ask=float("nan")), live) is None
+    assert buy_limit_for_decision(_decision(entry_bid=float("nan")), live) is None
 
 
 def test_with_buy_limit_reports_the_executable_size_not_the_policy_request():

@@ -55,14 +55,27 @@ def buy_limit_for_decision(
 
     if not decision.approved or decision.recommended_contracts <= 0:
         return None
-    visible_ask = float(decision.ask)
+    # Both scans now quote before `record_decisions` (audit TC-15), so a
+    # missing or non-numeric book on an approved decision has to degrade to
+    # "no quote" rather than raise out of the recording path and lose the
+    # whole city's snapshot batch for that tick. `_taker_cross_quote` and
+    # `target_research_quote` already guard their conversions this way.
+    try:
+        visible_ask = float(decision.ask)
+        quoted_bid = float(decision.bid)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # `max(0.0, nan)` is 0.0, so the NaN has to be caught before the clamp or a
+    # malformed book would quietly quote as if the bid were zero.
+    if not math.isfinite(visible_ask) or not math.isfinite(quoted_bid):
+        return None
+    visible_bid = max(0.0, quoted_bid)
     if visible_ask <= 0.0 or visible_ask >= 1.0:
         return None
     tick = float(config.limit_price_tick)
     if tick <= 0:
         raise ValueError("limit price tick must be greater than zero")
 
-    visible_bid = max(0.0, float(decision.bid))
     inside_price = _floor_to_tick(visible_bid + tick, tick)
     crosses = inside_price >= visible_ask - 1e-12
     if config.limit_taker_cross_enabled:
@@ -146,11 +159,13 @@ def _taker_cross_quote(
     edge_lcb = decision.probability_lcb - cost
     if edge_lcb + 1e-12 < config.limit_taker_cross_min_edge_lcb:
         return None
-    # Dust guard only. The exchange's executable unit is the WHOLE CONTRACT
-    # already enforced above; a floor at or above one contract's cost (a
-    # favorite costs $0.74-0.96) silently refuses guaranteed single-contract
-    # fills and diverts them to the maker path, where the live book has never
-    # filled. See LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"].
+    # Executable-notional floor. At the live value ($1) this refuses a cross
+    # whose whole-contract size is worth less than a dollar -- in practice the
+    # one-contract-of-displayed-depth case, since one contract of a favorite
+    # costs $0.74-0.96 -- and leaves it on the maker path. That is deliberate
+    # and measured, not an oversight: see the production fill rates and the
+    # entry-slot substitution recorded at
+    # LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"].
     if contracts * cost + 1e-9 < config.limit_taker_cross_min_notional:
         return None
     return BuyLimitQuote(
@@ -373,6 +388,7 @@ def with_buy_limit(
     # Reporting the request (audit TC-15) overstated live `expected_profit` by
     # ~20x in decision_snapshots. Mirrors `with_target_research_execution`.
     # Resting quotes carry the full request, so this is a no-op for them.
+    clamped = quote.contracts < decision.recommended_contracts
     return replace(
         decision,
         limit_price=quote.price,
@@ -383,9 +399,27 @@ def with_buy_limit(
         recommended_contracts=quote.contracts,
         expected_profit=quote.edge * quote.contracts,
         binding_constraint=(
-            "visible_ask_depth"
-            if quote.contracts < decision.recommended_contracts
-            else decision.binding_constraint
+            "visible_ask_depth" if clamped else decision.binding_constraint
+        ),
+        # Overwriting `recommended_contracts` in place would otherwise make the
+        # sizing model's pre-clamp request unrecoverable from the row, and the
+        # arithmetic that FOUND this defect (7,561 requested vs 427 executable
+        # over 89 live rows) unreproducible from data recorded afterwards.
+        # `reasons` is serialized into both `reasons_json` and the
+        # `diagnostics_json` signal payload, so this one string preserves the
+        # request AND marks which rows use the new definition -- live
+        # decision_snapshots carry no strategy/policy fingerprint (both columns
+        # are NULL for all 121,248 live rows on 2026-09-06..07), so `created_at`
+        # is otherwise the only thing separating the two conventions.
+        reasons=(
+            [
+                *decision.reasons,
+                "execution: displayed ask depth capped size "
+                f"{decision.recommended_contracts:g} -> {quote.contracts:g}"
+                " contracts",
+            ]
+            if clamped
+            else decision.reasons
         ),
     )
 
