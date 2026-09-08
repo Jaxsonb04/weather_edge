@@ -225,11 +225,16 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
             """
             SELECT market_ticker,
                    COALESCE(risk_profile, 'live') AS risk_profile,
-                   -- Open and resting are counted the way the Strategy Lab
-                   -- counts them (``paper_card._project_paper_journal``), so
+                   -- Open and resting split the same way the Strategy Lab
+                   -- splits them (``paper_card._project_paper_journal``), so
                    -- the Overview cannot say 22 positions while the Lab says
                    -- "21 open, 2 resting" for the same book. A partial fill is
                    -- deliberately both: it holds contracts and still rests.
+                   -- The two are not identical by construction: paper_card
+                   -- groups child lots into logical positions and drops
+                   -- terminal ones, while this query counts raw paper_orders
+                   -- rows. They agree while every open-status row is a root
+                   -- order, which is the case on today's book.
                    SUM(CASE
                          WHEN status IN (
                               'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED',
@@ -246,7 +251,10 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
                          THEN 1 ELSE 0
                        END) AS resting_orders,
                    -- Exposure stays the whole committed amount: filled cost
-                   -- plus the capital a resting order has reserved.
+                   -- plus the capital a resting order has reserved. That makes
+                   -- it wider than ``open_positions``, so a book holding only a
+                   -- resting order publishes 0 open beside a non-zero figure —
+                   -- the site labels this row "Open + resting exposure".
                    COALESCE(SUM(CASE
                          WHEN status IN (
                               'PAPER_FILLED', 'PAPER_LIMIT_RESTING',

@@ -29,6 +29,21 @@ def test_unmatched_rejection_reason_is_not_cut_mid_word():
     assert _normalize_reason(reason) == reason
 
 
+def test_overlong_reason_without_spaces_cuts_on_a_punctuation_boundary():
+    """Engine text separates on punctuation as often as on spaces. A reason with
+    no space at all fell straight through the word-boundary check and was still
+    published with a mid-token cut at exactly 96 characters."""
+
+    reason = ";".join(["min_lead_days=1"] * 12)
+    assert " " not in reason
+
+    normalized = _normalize_reason(reason)
+
+    assert normalized.endswith("\u2026")
+    assert normalized[:-1].endswith("min_lead_days=1")
+    assert reason.startswith(normalized[:-1])
+
+
 def test_overlong_rejection_reason_truncates_on_a_word_boundary():
     reason = "live paper entry rejected because " + "diagnostic detail " * 12
 

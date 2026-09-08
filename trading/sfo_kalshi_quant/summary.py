@@ -1364,15 +1364,29 @@ def _reason_category(reason: str) -> str:
 _REASON_MAX_CHARS = 96
 
 
+# Reasons are engine text, not prose: they separate on punctuation as often as
+# on spaces. A reason with none of these in its first 96 characters is a single
+# token, and then the ellipsis is the only honest marker available.
+_REASON_BOUNDARY_CHARS = " \t,;:|/"
+
+
 def _truncate_reason(reason: str) -> str:
     if len(reason) <= _REASON_MAX_CHARS:
         return reason
     head = reason[:_REASON_MAX_CHARS]
-    if " " in head:
-        head = head.rsplit(" ", 1)[0]
+    cut = max(head.rfind(ch) for ch in _REASON_BOUNDARY_CHARS)
+    if cut > 0:
+        head = head[:cut]
     return head.rstrip(" ,;:-") + "\u2026"
 
 
+# NOTE: this return value is also the aggregation key for `rejection_counts` and
+# `rejection_counts_all`, so the truncation length decides which distinct
+# unmatched reasons collapse into one published bucket. Widening the cut from 48
+# to 96 characters therefore splits buckets that used to merge — the published
+# top-rejections histogram can change shape even though nothing about the gate
+# changed. `_reason_category` is exact-match against the marker list and is
+# unaffected.
 def _normalize_reason(reason: str) -> str:
     for marker in (
         "source spread",

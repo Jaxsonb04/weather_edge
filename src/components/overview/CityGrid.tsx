@@ -61,20 +61,27 @@ function emosIssue(forecast: CityForecast): number | null {
 /** The high to display for one city forecast. `baselineF` is the EMOS issue
     behind it, set only when the intraday update actually moved the number, so
     callers label the adjustment instead of silently swapping one published
-    figure for the other. */
+    figure for the other. `source` says WHICH publisher moved it: only San
+    Francisco has a flagship market signal, so copy that credits the flagship is
+    false for the other fourteen cities, whose fold-in comes from the coverage
+    artifact itself. */
 export function lockedHigh(
   slug: string | undefined,
   forecast: CityForecast,
   lock: IntradayLock | null | undefined,
-): { highF: number; baselineF: number | null } {
+): { highF: number; baselineF: number | null; source: "flagship" | "coverage" } {
   const issue = emosIssue(forecast);
   if (!lock || lock.slug !== slug || lock.targetDate !== forecast.target_date) {
-    return { highF: forecast.predicted_high_f, baselineF: issue };
+    return { highF: forecast.predicted_high_f, baselineF: issue, source: "coverage" };
   }
   const moved = Math.abs(lock.highF - forecast.predicted_high_f) >= LOCK_EPSILON_F;
   // When the flagship lock moves the card's number, the honest baseline is
   // still the ensemble mean, not the coverage artifact's own post-intraday high.
-  return { highF: lock.highF, baselineF: moved ? issue ?? forecast.predicted_high_f : issue };
+  return {
+    highF: lock.highF,
+    baselineF: moved ? issue ?? forecast.predicted_high_f : issue,
+    source: moved ? "flagship" : "coverage",
+  };
 }
 
 function CityCard({
@@ -159,9 +166,11 @@ function CityCard({
           </div>
           <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
             {fc
-              ? `${shortDateUTC(fc.target_date)} · ${fc.n_models ?? "—"}-model EMOS${
-                  preLockHighF == null ? "" : " + intraday"
-                }`
+              ? `${shortDateUTC(fc.target_date)} · ${
+                  // "—-model EMOS" is worse than saying nothing about the member
+                  // count, so drop the prefix entirely when it is missing.
+                  fc.n_models == null ? "EMOS" : `${fc.n_models}-model EMOS`
+                }${preLockHighF == null ? "" : " + intraday"}`
               : "no current forecast"}
           </p>
           {fc && preLockHighF != null && (

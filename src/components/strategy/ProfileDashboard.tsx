@@ -197,7 +197,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const resolved = s.paper_trading?.diagnostics?.by_profile?.[rp];
   const gate = profileGate(s, rp);
   const gateCount = profileGateCounts(gate);
-  const gateCounts = decisionCountProvenance(s);
+  const countsProvenance = decisionCountProvenance(s);
   const copy = PROFILE_COPY[rp];
   const target = researchDailyTarget(s, p);
   const primary = p.profile_type === "primary";
@@ -396,7 +396,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               <div>
                 <div className="flex items-baseline justify-between gap-2">
                   <p className="text-[11px] uppercase tracking-wide text-muted">
-                    {gateCounts.cached ? `Gate approvals · as of ${gateCounts.asOf}` : "Gate approvals · window"}
+                    {countsProvenance.cached ? `Gate approvals · as of ${countsProvenance.asOf}` : "Gate approvals · window"}
                   </p>
                   <p className="tnum text-sm font-semibold">
                     {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} evaluations</span>
@@ -407,8 +407,8 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 </div>
                 <p className="mt-2 text-[11px] text-muted">
                   {pct(gateCount.approved / gateCount.signals, 2)} published approval rate
-                  {gateCounts.cached
-                    ? ` for the cached window ending ${gateCounts.asOf}; these are not current-runtime totals.`
+                  {countsProvenance.cached
+                    ? ` for the cached window ending ${countsProvenance.asOf}; these are not current-runtime totals.`
                     : " for this window."}
                 </p>
               </div>

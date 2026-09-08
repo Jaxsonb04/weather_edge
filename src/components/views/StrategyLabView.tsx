@@ -102,6 +102,9 @@ export function SelectivityFinding({ s }: { s: StrategyLab }) {
         <span className="block font-medium text-foreground">
           These gate counts come from the last deploy-time analysis and stop at{" "}
           <strong>{counts.asOf}</strong>; they are not current-runtime totals.
+          {/* The publisher writes the most precise sentence available about the
+              cached window; print it rather than only the synthesized date. */}
+          {counts.reason ? ` ${counts.reason}` : ""}
         </span>
       )}
       Of <strong>{total.toLocaleString()}</strong> gate evaluations{" "}
