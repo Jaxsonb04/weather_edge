@@ -13,6 +13,7 @@ from postproc_models import (
     analog_ensemble_predictions,
     apply_emos,
     blend_gaussian_predictions,
+    debiased_range,
     emos_ngr_predictions,
     fit_emos,
     make_lookup_predictor,
@@ -97,9 +98,12 @@ def test_emos_truth_lag_matches_live_availability_boundary(
     }
     fitted_truth: list[list[float]] = []
 
+    class _StubParams:
+        biases: dict[str, float] = {}
+
     def capture_fit(history, *, weight_mode="equal"):
         fitted_truth.append([actual for _forecasts, actual in history])
-        return object()
+        return _StubParams()
 
     monkeypatch.setattr(models, "fit_emos", capture_fit)
     monkeypatch.setattr(models, "apply_emos", lambda _params, _forecasts: (70.0, 2.0))
@@ -212,20 +216,84 @@ def test_blend_gaussian_predictions_mixture_moments():
 
 def _hetero_history(error_tracks_spread: bool):
     """History where the cross-model spread either tracks the error (hetero) or
-    anti-correlates with it (forcing the d>=0 clip + homoscedastic fallback)."""
+    anti-correlates with it (forcing the d>=0 clip + homoscedastic fallback).
+
+    Which member sits high alternates, so every model's fitted bias is exactly
+    zero and the wide days are genuine *disagreement*. That matters since FC-1:
+    the variance regression runs on the DEBIASED spread, so a fixture whose
+    "spread" is a fixed per-model offset would (correctly) carry no signal.
+    """
 
     history = []
     for i in range(200):
         base = 50.0 + (i % 40)
         low_spread = i % 2 == 0
-        spread_models = (
-            {"a": base - 0.5, "b": base, "c": base + 0.5} if low_spread
-            else {"a": base - 5.0, "b": base, "c": base + 5.0}
-        )
+        half = 0.5 if low_spread else 5.0
+        sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+        spread_models = {"a": base - sign * half, "b": base, "c": base + sign * half}
         big_error = low_spread != error_tracks_spread  # XOR
         err = (5.0 if i % 4 < 2 else -5.0) if big_error else (0.3 if i % 4 < 2 else -0.3)
         history.append((spread_models, base + err))
     return history
+
+
+def _shift_one_model(history, model: str, delta: float):
+    return [
+        ({name: value + (delta if name == model else 0.0) for name, value in models.items()}, truth)
+        for models, truth in history
+    ]
+
+
+def test_debiased_range_is_invariant_to_a_pure_model_bias():
+    models = {"warm": 73.0, "cold": 68.0, "plain": 70.0}
+    biases = {"warm": 3.0, "cold": -2.0, "plain": 0.0}
+    assert debiased_range(models, biases) == 0.0  # every member agrees once corrected
+    # Shifting a member by a constant that is also in its bias changes nothing.
+    shifted = {**models, "cold": models["cold"] - 9.0}
+    assert debiased_range(shifted, {**biases, "cold": biases["cold"] - 9.0}) == 0.0
+    # A real disagreement still registers.
+    assert debiased_range({**models, "plain": 74.0}, biases) == 4.0
+
+
+def test_debiased_range_drops_members_with_no_learned_bias():
+    """A model still ramping into the archive has no fitted bias. Correcting it
+    by 0.0 would let its full raw offset into the PUBLISHED disagreement
+    statistic for the whole ramp-in window -- exactly the artifact FC-1 removes
+    -- so it is dropped, matching emos_forecast.serve_live_emos."""
+
+    models = {"warm": 73.0, "cold": 68.0, "plain": 70.0}
+    biases = {"warm": 3.0, "cold": -2.0, "plain": 0.0}
+    assert debiased_range(models, biases) == 0.0
+    # A brand-new member 12 F off does not inflate the statistic.
+    assert debiased_range({**models, "rookie": 58.0}, biases) == 0.0
+    # Once it has a fitted bias it counts like any other member.
+    assert debiased_range({**models, "rookie": 58.0}, {**biases, "rookie": -12.0}) == 0.0
+    assert debiased_range({**models, "rookie": 58.0}, {**biases, "rookie": -10.0}) == 2.0
+    # Fewer than two KNOWN members is no honest statistic at all.
+    assert debiased_range(models, {"warm": 3.0}) is None
+    assert debiased_range({}, biases) is None
+
+
+def test_emos_sigma_is_invariant_to_a_pure_model_bias():
+    """FC-1: a member that is uniformly K degrees off is a known offset, not
+    disagreement. Shifting it by K -- which lands entirely in its fitted bias --
+    must leave the predictive distribution untouched."""
+
+    dates, truth, nwp = _synthetic_series()
+    history = [(nwp[day], truth[day]) for day in dates]
+    live = {"m_warm": 73.0, "m_cold": 68.0, "m_zero": 70.0}
+
+    base_params = fit_emos(history, weight_mode="inv_var")
+    shifted_params = fit_emos(_shift_one_model(history, "m_cold", -12.0), weight_mode="inv_var")
+    # the shift lands in the bias, and nowhere else
+    assert abs(shifted_params.biases["m_cold"] - (base_params.biases["m_cold"] - 12.0)) < 1e-9
+
+    mu, sigma = apply_emos(base_params, live)
+    shifted_mu, shifted_sigma = apply_emos(
+        shifted_params, {**live, "m_cold": live["m_cold"] - 12.0}
+    )
+    assert abs(shifted_mu - mu) < 1e-9
+    assert abs(shifted_sigma - sigma) < 1e-9
 
 
 def test_emos_sigma_grows_with_spread_when_spread_predicts_error():

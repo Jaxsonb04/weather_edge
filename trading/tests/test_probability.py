@@ -6,6 +6,7 @@ from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig, intraday_timezone_for_city
 from sfo_kalshi_quant.models import ForecastOutcome, IntradaySnapshot
 from sfo_kalshi_quant.probability import (
+    SOURCE_SPREAD_DEBIAS_SCALE,
     ResidualCalibrator,
     _market_implied_probabilities,
     _market_prior_reliability,
@@ -13,6 +14,7 @@ from sfo_kalshi_quant.probability import (
     _local_decimal_hour,
     _model_weight,
     _normalize_weather_probabilities,
+    raw_equivalent_source_spread_f,
 )
 from sfo_kalshi_quant.standard_bins import fallback_bins, standard_sfo_bins
 
@@ -333,3 +335,109 @@ def test_normalize_weather_probabilities_preserves_positive_mass():
     probs = [p for _, p, _, _, _ in out]
     assert abs(probs[0] - 0.25) < 1e-9
     assert abs(probs[1] - 0.75) < 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# FC-1: source_spread_f changed units (raw range -> debiased range). Every
+# control in this module keyed to that statistic was tuned on the raw scale, so
+# each one must read a raw-EQUIVALENT value. These tests pin the knee, not just
+# the helper -- a silent revert would otherwise pass the whole suite.
+# --------------------------------------------------------------------------- #
+
+def test_raw_equivalent_source_spread_round_trips_the_measured_scale():
+    for raw in (3.0, 6.0, 10.0, 11.75, 13.667):
+        debiased = raw * SOURCE_SPREAD_DEBIAS_SCALE
+        assert abs(raw_equivalent_source_spread_f(debiased) - raw) < 1e-9
+    # The map must SHRINK raw -> debiased, i.e. expand on the way back.
+    assert 0.0 < SOURCE_SPREAD_DEBIAS_SCALE < 1.0
+    assert raw_equivalent_source_spread_f(5.0) > 5.0
+
+
+def test_market_weight_shift_knee_is_in_debiased_units():
+    """The 3.0 F knee is a RAW-scale constant; in debiased units it sits at
+    3.0 * scale. Feeding the debiased statistic straight in would move weight
+    away from the Kalshi price -- the worse forecaster of the two."""
+
+    market = replace(
+        standard_sfo_bins()[0],
+        status="active",
+        yes_bid=0.49,
+        yes_ask=0.51,
+        no_bid=0.49,
+        no_ask=0.51,
+        yes_bid_size=100.0,
+        yes_ask_size=100.0,
+    )
+    config = StrategyConfig()
+    assert config.source_spread_market_weight_per_f > 0.0
+
+    knee = 3.0 * SOURCE_SPREAD_DEBIAS_SCALE
+    at_knee = _model_weight(knee, market=market, config=config)
+    below_knee = _model_weight(knee - 0.5, market=market, config=config)
+    # Nothing happens at or below the (debiased) knee.
+    assert abs(at_knee - below_knee) < 1e-12
+    # Above it, model weight falls -- and by the RAW-scale slope, so a debiased
+    # spread one raw-degree past the knee shifts exactly one slope-step.
+    one_raw_degree_past = _model_weight(
+        4.0 * SOURCE_SPREAD_DEBIAS_SCALE, market=market, config=config
+    )
+    reliability = _market_prior_reliability(market, config)
+    expected_shift = config.source_spread_market_weight_per_f * reliability
+    assert abs((at_knee - one_raw_degree_past) - expected_shift) < 1e-9
+
+
+def test_model_risk_penalty_ramp_is_in_debiased_units():
+    """The LCB deduction ramps from a raw 3.0 F at 0.0075/raw-degree, capped at
+    0.08. Live runs min_edge_lcb = 0.00, so a units drift here silently loosens
+    the gate the live book trades against."""
+
+    config = StrategyConfig(min_conditional_samples=20)
+    calibrator = ResidualCalibrator(_outcomes(), config)
+    markets = standard_sfo_bins()
+
+    def band(spread: float) -> float:
+        rows = calibrator.bucket_probabilities(markets, 69.0, source_spread_f=spread)
+        row = max(rows.values(), key=lambda r: r.probability)
+        return row.probability - row.lower_confidence
+
+    knee = 3.0 * SOURCE_SPREAD_DEBIAS_SCALE
+    # At the debiased knee the penalty is still zero (and so is the widening).
+    assert abs(band(knee) - band(0.0)) < 1e-9
+    # Between a raw 11.75 (where the sigma widening saturates) and a raw 13.667
+    # (where the penalty saturates) the ONLY moving part is this penalty, so the
+    # slope is readable exactly: one raw degree costs 0.0075 of extra deduction.
+    assert (
+        abs(
+            (
+                band(13.0 * SOURCE_SPREAD_DEBIAS_SCALE)
+                - band(12.0 * SOURCE_SPREAD_DEBIAS_SCALE)
+            )
+            - 0.0075
+        )
+        < 1e-9
+    )
+    # The 0.08 cap still lands at a raw 13.667, not at a debiased 13.667.
+    saturated = band(13.667 * SOURCE_SPREAD_DEBIAS_SCALE)
+    assert saturated > band(13.0 * SOURCE_SPREAD_DEBIAS_SCALE)
+    assert abs(band(20.0 * SOURCE_SPREAD_DEBIAS_SCALE) - saturated) < 1e-9
+
+
+def test_source_spread_sigma_inflation_knee_is_in_debiased_units():
+    """The <=1.35x sigma widening is the control the live profile's
+    max_source_spread_f comment leans on to size uncertain days down. It binds
+    only where the EMOS Gaussian does not overwrite sigma -- i.e. SFO."""
+
+    config = StrategyConfig(min_conditional_samples=20)
+    calibrator = ResidualCalibrator(_outcomes(), config)
+    markets = standard_sfo_bins()
+
+    def peak(spread: float) -> float:
+        rows = calibrator.bucket_probabilities(markets, 69.0, source_spread_f=spread)
+        return max(row.normal_probability for row in rows.values())
+
+    knee = 3.0 * SOURCE_SPREAD_DEBIAS_SCALE
+    assert abs(peak(knee) - peak(0.0)) < 1e-9  # no widening at or below the knee
+    assert peak(6.0 * SOURCE_SPREAD_DEBIAS_SCALE) < peak(knee)  # wider sigma, flatter peak
+    # The cap is reached at a raw 11.75 and nothing past it widens further.
+    capped = peak(11.75 * SOURCE_SPREAD_DEBIAS_SCALE)
+    assert abs(peak(30.0 * SOURCE_SPREAD_DEBIAS_SCALE) - capped) < 1e-9

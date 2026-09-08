@@ -280,15 +280,22 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # execution identity.
     # 2026-09-04: explicit behavior-version coverage rotates the evidence cohort
     # for the audited exit-policy correction instead of silently blending it.
-    # 2026-09-07 (audit TC-6/TC-15): StrategyConfig itself is unchanged -- the
-    # executable-minimum drop was implemented, measured and reverted -- but
-    # STRATEGY_BEHAVIOR_VERSION rotates because behaviour outside StrategyConfig
-    # did change: recorded execution size is now the ask-clamped order rather
-    # than the policy request, and the live YES sleeve moved from $4.00 to
-    # $16.00. Rotating deliberately starts a new evidence cohort rather than
-    # blending the two recording conventions.
-    assert strategy_fingerprint(config, entry_mode="limit") == "f1bdcf43918f69dc8f63698e"
-    assert strategy_fingerprint(config, entry_mode="market") == "0cfaaa324f93f1ba20cd4a82"
+    # 2026-09-07 (audit TC-6/TC-15): StrategyConfig's executable minimum is
+    # unchanged -- the drop was implemented, measured and reverted -- but
+    # behaviour outside StrategyConfig did change: recorded execution size is
+    # now the ask-clamped order rather than the policy request, and the live YES
+    # sleeve moved from $4.00 to $16.00.
+    # 2026-09-07 (audit FC-1/FC-2): `source_spread_f` is now the DEBIASED
+    # cross-model range, so `max_source_spread_f` was re-derived into those units
+    # (10.0 -> 7.3, pooled veto 16.9% -> 18.5%, with the per-station
+    # redistribution documented in config.py); the raw-tuned source-spread
+    # controls in probability.py now read a raw-EQUIVALENT value, and the
+    # same-day sigma is rescaled per station.
+    # All of the above move served probabilities or recorded execution size, so
+    # STRATEGY_BEHAVIOR_VERSION rotates once for the combined release and these
+    # fingerprints move with it.
+    assert strategy_fingerprint(config, entry_mode="limit") == "0fffde5286e84e6418733fca"
+    assert strategy_fingerprint(config, entry_mode="market") == "93d0db46d518967192dceab1"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1239,7 +1246,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["policy_fingerprint"] is None
     # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "0cfaaa324f93f1ba20cd4a82"
+    assert row["strategy_fingerprint"] == "93d0db46d518967192dceab1"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
