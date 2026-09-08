@@ -36,6 +36,36 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _seed_dispersed(conn: sqlite3.Connection) -> None:
+    """Like ``_seed`` but with real irreducible error, so the fitted sigma sits
+    well above SIGMA_FLOOR_F.
+
+    ``_seed``'s members are truth +/- a constant, so once debiased they agree
+    exactly, the EMOS residual variance is ~0 and every served sigma lands on
+    the 1.5 F floor -- where a horizon rescale is invisible. Here the members
+    track a signal that truth wanders around by a repeating +/-3 F, giving
+    var_c ~ 4-5 and a served sigma ~2.2 F.
+    """
+
+    conn.execute(
+        "CREATE TABLE clisfo_settlements "
+        "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
+    )
+    ensure_nwp_schema(conn)
+    base = date(2024, 1, 1)
+    wobble = (3, -3, 2, -2, 0)
+    rows = []
+    for i in range(140):
+        day = (base + timedelta(days=i)).isoformat()
+        signal = 65 + (i % 9)
+        truth = signal + wobble[i % len(wobble)]
+        conn.execute("INSERT INTO clisfo_settlements VALUES (?, ?, ?, ?)", (day, truth, "x", "t"))
+        for model, offset in (("gfs_seamless", 1.0), ("ecmwf_ifs025", -1.0), ("ncep_nbm_conus", 0.0)):
+            rows.append(("KSFO", day, model, 1, signal + offset, "x", "test"))
+    upsert_forecasts(conn, rows)
+    conn.commit()
+
+
 def test_build_emos_archive_roundtrip():
     conn = sqlite3.connect(":memory:")
     _seed(conn)
@@ -352,12 +382,14 @@ def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):
     import emos_forecast as ef
 
     conn = sqlite3.connect(":memory:")
-    _seed(conn)  # lead-1 history: 140 settled days before the target
+    # Dispersed fixture on purpose: with _seed the served sigma lands on the
+    # 1.5 F floor, and a floor-clamped serve cannot distinguish a working
+    # horizon rescale from a no-op. Monkeypatching ef.SIGMA_FLOOR_F would not
+    # fix that -- postproc_models.apply_emos imports its own copy and floors
+    # first -- so the fixture, not the floor, has to carry the dispersion.
+    _seed_dispersed(conn)  # lead-1 history: 140 settled days before the target
     target = date(2024, 6, 1)
     monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
-    # This fixture's members agree exactly once debiased, so both serves sit on
-    # the sigma floor; drop it so the horizon rescale itself is observable.
-    monkeypatch.setattr(ef, "SIGMA_FLOOR_F", 0.1)
     live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
     result = serve_live_emos(conn, target, lead_days=1, store_lead_days=0, live_models=live)
     assert result is not None
@@ -375,22 +407,51 @@ def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):
     lead1 = serve_live_emos(conn, target, lead_days=1, live_models=live)
     assert lead1 is not None
     assert abs(lead1[0] - result[0]) < 1e-9
+    scale = ef._borrowed_lead_sigma_scale(ef.DEFAULT_CITY.nws_station_id, 0, 1)
+    assert scale < 1.0
+    # The production floor is in force here: assert it is NOT what produced the
+    # difference, or this test silently stops covering FC-2.
+    assert lead1[1] > ef.SIGMA_FLOOR_F
+    assert result[1] > ef.SIGMA_FLOOR_F
     assert result[1] < lead1[1]
-    assert abs(result[1] - lead1[1] * ef.LEAD0_SIGMA_SCALE) < 1e-9
+    assert abs(result[1] - lead1[1] * scale) < 1e-9
 
 
 def test_lead0_sigma_rescale_is_bounded_and_only_applies_to_a_borrowed_fit():
     import emos_forecast as ef
 
+    station = ef.DEFAULT_CITY.nws_station_id
     # A serve fit at its own lead is untouched, in either direction.
-    assert ef._borrowed_lead_sigma_scale(1, 1) == 1.0
-    assert ef._borrowed_lead_sigma_scale(2, 2) == 1.0
-    assert ef._borrowed_lead_sigma_scale(0, 0) == 1.0
+    assert ef._borrowed_lead_sigma_scale(station, 1, 1) == 1.0
+    assert ef._borrowed_lead_sigma_scale(station, 2, 2) == 1.0
+    assert ef._borrowed_lead_sigma_scale(station, 0, 0) == 1.0
     # Only the same-day serve borrows, and it only ever sharpens.
-    scale = ef._borrowed_lead_sigma_scale(0, 1)
+    scale = ef._borrowed_lead_sigma_scale(station, 0, 1)
     low, high = ef.LEAD0_SIGMA_SCALE_BOUNDS
     assert low <= scale <= high < 1.0 + 1e-12
-    assert scale == ef.LEAD0_SIGMA_SCALE
+    assert scale == ef.LEAD0_SIGMA_SCALE_BY_STATION[station]
+
+
+def test_lead0_sigma_scale_never_sharpens_an_already_confident_station():
+    """The pooled constant this replaced pushed KOKC/KBOS/KHOU/KNYC/KSFO from
+    mildly over-confident into materially over-confident. A station measured at
+    or past calibration must come out of the table as an exact identity, and no
+    station may be widened."""
+
+    import emos_forecast as ef
+
+    low, high = ef.LEAD0_SIGMA_SCALE_BOUNDS
+    assert high == 1.0
+    for station, scale in ef.LEAD0_SIGMA_SCALE_BY_STATION.items():
+        assert 0.0 < scale <= 1.0, station
+        effective = ef._borrowed_lead_sigma_scale(station, 0, 1)
+        assert low <= effective <= 1.0, station
+    # Stations whose measured same-day z^2 was already >= 1 are exact no-ops.
+    for station in ("KBOS", "KHOU", "KOKC"):
+        assert ef._borrowed_lead_sigma_scale(station, 0, 1) == 1.0
+    # An unmeasured station keeps the borrowed width (over-dispersed, under-sized).
+    assert ef._borrowed_lead_sigma_scale("KZZZ", 0, 1) == ef.LEAD0_SIGMA_SCALE_DEFAULT
+    assert ef.LEAD0_SIGMA_SCALE_DEFAULT == 1.0
 
 
 def test_lead0_sigma_rescale_respects_the_sigma_floor(monkeypatch):
@@ -400,13 +461,20 @@ def test_lead0_sigma_rescale_respects_the_sigma_floor(monkeypatch):
     import emos_forecast as ef
 
     conn = sqlite3.connect(":memory:")
-    _seed(conn)
+    _seed(conn)  # agreeing members -> the fit lands on the floor by itself
     target = date(2024, 6, 1)
     monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
     result = serve_live_emos(conn, target, lead_days=1, store_lead_days=0, live_models=live)
     assert result is not None
     assert result[1] >= ef.SIGMA_FLOOR_F
+    # ... and on this fixture the floor is exactly what binds: the same-day serve
+    # is a no-op against the lead-1 serve, which is what production sees on the
+    # ~34% of same-day serves that sit on the floor.
+    lead1 = serve_live_emos(conn, target, lead_days=1, live_models=live)
+    assert lead1 is not None
+    assert abs(result[1] - lead1[1]) < 1e-12
+    assert abs(result[1] - ef.SIGMA_FLOOR_F) < 1e-12
 
 
 def test_model_spread_is_invariant_to_a_pure_model_bias():

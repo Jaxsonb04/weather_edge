@@ -77,38 +77,85 @@ SERVE_RECAL_SIGMA = False
 # Measured on the append-only serve log (paper_trading.forecast_snapshots,
 # 2026-07-06..2026-09-07, every 5-minute serve rather than the last write of the
 # day) joined to final CLI settlements, with the debiased spread of FC-1 already
-# applied: lead 0 n=107,491 mean z^2 = 0.783 against an ideal of 1.0, i.e. the
-# same-day Gaussian is 1/sqrt(0.783) = 1.13x too wide. Lead 1 sits at 0.889 on
-# n=136,858, so lead 0 is only marginally sharper than the day-ahead fit it
-# borrows -- exactly the horizon that never shrinks. The scale is the square
-# root of that measured z^2, which lands the pooled statistic at 0.998 before
-# the 1.5 F sigma floor and 0.941 after it (the floor binds on 35% of same-day
-# serves and deliberately absorbs part of the correction).
+# applied. Pooled lead-0 mean z^2 = 0.762 against an ideal of 1.0, so the
+# same-day Gaussian is on average 1.15x too wide; lead 1 sits at 0.865.
+#
+# THE POOLED NUMBER IS NOT A USABLE SCALE. Per-station lead-0 z^2 spans 0.39
+# (KAUS) to 1.17 (KHOU): a single pooled multiplier sharpens the stations that
+# are ALREADY too sharp, and an over-confident sigma over-prices the favorite
+# bin and over-sizes the stake -- the one direction that costs money. Measured
+# floor-aware effect of a pooled 0.886 on the same serve log: KOKC 1.145 ->
+# 1.401, KBOS 1.087 -> 1.345, KHOU 1.166 -> 1.287, KNYC 0.960 -> 1.194,
+# KSFO 0.924 -> 1.177. So the scale is PER STATION, and each station's scale is
+# min(1.0, sqrt(z^2_station)): a station whose same-day Gaussian is already at
+# or past calibration is left exactly alone (identity), and only genuinely
+# over-dispersed stations are sharpened. Under this table no station's z^2
+# rises at all -- the post-change maximum is KHOU's own unchanged 1.166 -- while
+# the pooled statistic still moves 0.762 -> 0.903 (floor-aware; 0.919 under the
+# rejected pooled constant, so pooled calibration is not materially given up).
+#
+# PRECISION. n = 107,491 counts ~100 five-minute serves of the same station-day;
+# the independent unit is the station-day, of which there are 742 pooled and
+# only 38-55 per station. SE(mean z^2) ~ sqrt(2/days) ~ 0.20 per station, so a
+# station scale is pinned to roughly +/-10% and the pooled day-equal-weighted
+# figure (0.811, not 0.762) is the honest central estimate. The 0.75 lower bound
+# below exists BECAUSE of that noise: it caps how far one 50-day estimate may
+# sharpen a served Gaussian.
 #
 # NOTE the population matters: the 2026-09-03 audit read z^2 = 0.55 from
 # forecast_emos_daily_high, which keeps only the LAST write per target
 # (INSERT OR REPLACE) -- the sharpest, end-of-day serve. That understates the
 # dispersion the book actually trades against all day.
-LEAD0_SIGMA_SCALE = 0.886
-# Explicit guard on any future retune of the constant above: a borrowed
+#
+# SCOPE / FC-3 INTERACTION. This calibrates lead 0 to z^2 = 1 per station, which
+# also absorbs the share of the over-dispersion lead 1 has and keeps (pooled
+# 0.865). Lead 1 is FC-3's per-station serve recalibration, not FC-2's. Whoever
+# lands FC-3 must exclude lead 0 from a per-station sigma correction or the two
+# will compose and double-correct.
+# min(1.0, sqrt(measured lead-0 z^2)) as measured; LEAD0_SIGMA_SCALE_BOUNDS
+# below clamps the four entries that fall under 0.75 at the point of use.
+LEAD0_SIGMA_SCALE_BY_STATION = {
+    "KATL": 0.951,
+    "KAUS": 0.627,
+    "KBOS": 1.000,
+    "KDEN": 0.685,
+    "KDFW": 0.875,
+    "KHOU": 1.000,
+    "KLAX": 0.629,
+    "KMDW": 0.772,
+    "KMIA": 0.875,
+    "KNYC": 0.980,
+    "KOKC": 1.000,
+    "KPHL": 0.892,
+    "KPHX": 0.665,
+    "KSEA": 0.809,
+    "KSFO": 0.961,
+}
+# A station with no measured same-day dispersion (a new city, or one whose serve
+# log has not accumulated settled days) keeps the borrowed lead-1 width. That is
+# the over-dispersed, under-sized direction -- the safe one to be wrong in.
+LEAD0_SIGMA_SCALE_DEFAULT = 1.0
+# Hard guard on every entry above and on any future retune: a borrowed
 # longer-lead dispersion may only be sharpened (never widened -- a shorter
 # horizon cannot be more uncertain than the fit it borrows), and never below
-# 0.75, where the measured pooled lead-0 z^2 would pass 1.39 into
-# over-confidence and start over-sizing.
+# 0.75, which bounds how much a single 38-55 day per-station estimate is allowed
+# to move a served Gaussian. Four stations (KAUS, KDEN, KLAX, KPHX) measure
+# below 0.75 and are deliberately under-corrected by this clamp.
 LEAD0_SIGMA_SCALE_BOUNDS = (0.75, 1.0)
 
 
-def _borrowed_lead_sigma_scale(stored_lead: int, fit_lead: int) -> float:
+def _borrowed_lead_sigma_scale(station: str, stored_lead: int, fit_lead: int) -> float:
     """Dispersion correction for a serve that borrows a longer lead's fit.
 
     Identity whenever the serve is fit at its own lead; only the same-day serve
-    borrows today (see LEAD0_SIGMA_SCALE).
+    borrows today (see LEAD0_SIGMA_SCALE_BY_STATION).
     """
 
     if stored_lead != 0 or fit_lead <= stored_lead:
         return 1.0
+    scale = LEAD0_SIGMA_SCALE_BY_STATION.get(station, LEAD0_SIGMA_SCALE_DEFAULT)
     low, high = LEAD0_SIGMA_SCALE_BOUNDS
-    return min(max(LEAD0_SIGMA_SCALE, low), high)
+    return min(max(scale, low), high)
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -340,7 +387,8 @@ def serve_live_emos(
     row. The same-day serve passes ``lead_days=1, store_lead_days=0``: lead 0
     has no archive of its own, and the lead-1 per-model biases/weights are the
     closest learned coefficients for the current-run forecast of today. Its
-    *dispersion* is not borrowed unchanged -- see LEAD0_SIGMA_SCALE.
+    *dispersion* is not borrowed unchanged -- see
+    LEAD0_SIGMA_SCALE_BY_STATION.
 
     ``recalibrate`` applies the serve-time trailing recalibration
     (emos_recalibration.py) as a post-process on the EMOS output. Rolling-origin
@@ -391,7 +439,9 @@ def serve_live_emos(
     # the same-day horizon its own (FC-2). The floor apply_emos imposed has to be
     # re-imposed after the rescale: a horizon correction must not push a served
     # Gaussian below the absolute sharpness limit every other path respects.
-    sigma = max(sigma * _borrowed_lead_sigma_scale(stored_lead, lead_days), SIGMA_FLOOR_F)
+    sigma = max(
+        sigma * _borrowed_lead_sigma_scale(station, stored_lead, lead_days), SIGMA_FLOOR_F
+    )
 
     if recalibrate and (SERVE_RECAL_BIAS or SERVE_RECAL_SIGMA):
         # The serve happens on the day `stored_lead` days before the target;

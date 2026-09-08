@@ -458,8 +458,11 @@ def test_research_profile_is_more_active_but_smaller_sized_than_live():
     # Looser gates than live.
     assert research.min_edge < live.min_edge
     assert research.min_edge_lcb < live.min_edge_lcb
-    # 2026-09-07 (FC-1): debiased units. 10.0 was the raw-range bar; 7.3 is the
-    # same 80th-percentile selectivity measured on the live-served forecasts.
+    # 2026-09-07 (FC-1): debiased units. 10.0 was the raw-range bar; 7.3 is
+    # ROUGHLY equal selectivity re-derived on the gate-facing journal (raw 10.0
+    # vetoed 16.9% of decision rows, 7.3 vetoes 18.5%, equal-selectivity is
+    # 7.49) -- deliberately the fail-closed side. See config.py for the
+    # per-station redistribution, which is the real effect.
     assert research.max_source_spread_f == 7.3
     assert research.comfort_edge_enabled is False  # collects center bins too
     # Smaller size than live.
@@ -744,8 +747,9 @@ def test_live_blocks_trade_when_forecast_sources_disagree():
     # losing entries carried 9.6-11F spread -- so only spreads ABOVE the bar are
     # blocked now; validate the win-rate impact on a walk-forward.
     # 2026-09-07 (FC-1): the gate reads a DEBIASED spread and the bar was
-    # re-derived into those units (10.0 -> 7.3, unchanged selectivity), so the
-    # moderate/stormy probes move with it rather than being re-tuned.
+    # re-derived into those units (10.0 -> 7.3, pooled veto 16.9% -> 18.5% on
+    # the gate-facing journal), so the moderate/stormy probes move with it
+    # rather than being re-tuned.
     moderate = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=6.9)
     assert moderate.approved, moderate.reasons
     stormy = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=7.9)
@@ -882,3 +886,24 @@ def test_live_deploys_meaningful_stake_not_pocket_change():
     assert spend >= 30.0
     # ...but still bounded by the per-position risk budget (~$50 = 5% of $1000).
     assert spend <= 1000 * cfg.max_position_risk_pct + decision.cost_per_contract
+
+
+def test_published_site_states_the_gate_threshold_the_engine_actually_uses():
+    """src/components/hero/SourceBlend.tsx renders the spread gate as a factual
+    claim about the engine ("the paper engine refuses to size a new position").
+    It hard-codes the number, so a re-derivation on the Python side silently
+    turns the published copy into a false statement -- which is exactly what
+    happened when max_source_spread_f moved 10.0 -> 7.3."""
+
+    import re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    source = (root / "src" / "components" / "hero" / "SourceBlend.tsx").read_text()
+    match = re.search(r"const SOURCE_SPREAD_GATE_F = ([0-9.]+);", source)
+    assert match is not None, "SourceBlend.tsx no longer declares SOURCE_SPREAD_GATE_F"
+    published = float(match.group(1))
+
+    live = strategy_config_for_profile("live")
+    research = strategy_config_for_profile("research")
+    assert published == live.max_source_spread_f == research.max_source_spread_f

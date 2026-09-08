@@ -280,8 +280,11 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # for the audited exit-policy correction instead of silently blending it.
     # 2026-09-07: moved again by FC-1. `source_spread_f` is now the DEBIASED
     # cross-model range, so `max_source_spread_f` was re-derived into those units
-    # (10.0 -> 7.3, same selectivity); the served probabilities change too, so
-    # STRATEGY_BEHAVIOR_VERSION rotates with it.
+    # (10.0 -> 7.3, pooled veto 16.9% -> 18.5%, with the per-station
+    # redistribution documented in config.py); the raw-tuned source-spread
+    # controls in probability.py now read a raw-EQUIVALENT value, and the
+    # same-day sigma is rescaled per station. All three move served
+    # probabilities, so STRATEGY_BEHAVIOR_VERSION rotates with them.
     assert strategy_fingerprint(config, entry_mode="limit") == "93326de538852004fc08aa99"
     assert strategy_fingerprint(config, entry_mode="market") == "cdfaeb3c0be77f5b9dcb1270"
 

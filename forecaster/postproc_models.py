@@ -91,10 +91,31 @@ def debiased_values(models_for_day: dict[str, float], biases: dict[str, float]) 
     return [value - biases.get(model, 0.0) for model, value in models_for_day.items()]
 
 
-def debiased_range(models_for_day: dict[str, float], biases: dict[str, float]) -> float:
-    """Debiased cross-model range (max - min) -- the published disagreement stat."""
+def debiased_range(
+    models_for_day: dict[str, float], biases: dict[str, float]
+) -> float | None:
+    """Debiased cross-model range (max - min) -- the published disagreement stat.
 
-    values = debiased_values(models_for_day, biases)
+    Members with no learned bias are DROPPED rather than corrected by 0.0,
+    mirroring ``emos_forecast.serve_live_emos``: a model still ramping into the
+    archive carries its full raw offset, and letting it into the published range
+    would re-create exactly the artifact FC-1 removes for the whole of its
+    ramp-in window. ``None`` when fewer than two known members remain -- the
+    same "no honest disagreement statistic" answer the <2-member case gives.
+
+    The variance regressor (``debiased_values`` in ``fit_emos``/``apply_emos``)
+    deliberately keeps every member, matching ``_weighted_debiased_mean``:
+    filtering one side of the fitted (mean, spread) pair and not the other would
+    make the pair inconsistent. That is pre-existing behaviour, unchanged here.
+    """
+
+    values = [
+        value - biases[model]
+        for model, value in models_for_day.items()
+        if model in biases
+    ]
+    if len(values) < 2:
+        return None
     return round(max(values) - min(values), 2)
 
 
@@ -243,12 +264,13 @@ def emos_ngr_predictions_with_spread(
     min_train: int = EMOS_MIN_TRAIN,
     weight_mode: str = "equal",
     truth_lag_days: int = 0,
-) -> dict[str, tuple[float, float, float]]:
+) -> dict[str, tuple[float, float, float | None]]:
     """Rolling-origin EMOS predictions with a live-availability truth boundary.
 
     Returns ``target -> (mu, sigma, debiased_spread_f)``. The third element is
     the published ``model_spread_f``: it needs that target's own fitted biases,
-    which exist only inside this loop.
+    which exist only inside this loop. It is ``None`` on a day with fewer than
+    two bias-corrected members (see ``debiased_range``).
 
     ``truth_lag_days=0`` preserves the generic rolling-origin contract: target
     D fits through D-1. A replay for a forecast served ``lead`` days before D
@@ -259,7 +281,7 @@ def emos_ngr_predictions_with_spread(
     if truth_lag_days < 0:
         raise ValueError("truth_lag_days must be non-negative")
 
-    preds: dict[str, tuple[float, float, float]] = {}
+    preds: dict[str, tuple[float, float, float | None]] = {}
     history: list[tuple[str, dict[str, float], float]] = []
     for date_str in dates_sorted:
         models_for_day = nwp_by_date.get(date_str)

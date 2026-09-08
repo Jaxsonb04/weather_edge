@@ -255,6 +255,25 @@ def test_debiased_range_is_invariant_to_a_pure_model_bias():
     assert debiased_range({**models, "plain": 74.0}, biases) == 4.0
 
 
+def test_debiased_range_drops_members_with_no_learned_bias():
+    """A model still ramping into the archive has no fitted bias. Correcting it
+    by 0.0 would let its full raw offset into the PUBLISHED disagreement
+    statistic for the whole ramp-in window -- exactly the artifact FC-1 removes
+    -- so it is dropped, matching emos_forecast.serve_live_emos."""
+
+    models = {"warm": 73.0, "cold": 68.0, "plain": 70.0}
+    biases = {"warm": 3.0, "cold": -2.0, "plain": 0.0}
+    assert debiased_range(models, biases) == 0.0
+    # A brand-new member 12 F off does not inflate the statistic.
+    assert debiased_range({**models, "rookie": 58.0}, biases) == 0.0
+    # Once it has a fitted bias it counts like any other member.
+    assert debiased_range({**models, "rookie": 58.0}, {**biases, "rookie": -12.0}) == 0.0
+    assert debiased_range({**models, "rookie": 58.0}, {**biases, "rookie": -10.0}) == 2.0
+    # Fewer than two KNOWN members is no honest statistic at all.
+    assert debiased_range(models, {"warm": 3.0}) is None
+    assert debiased_range({}, biases) is None
+
+
 def test_emos_sigma_is_invariant_to_a_pure_model_bias():
     """FC-1: a member that is uniformly K degrees off is a known offset, not
     disagreement. Shifting it by K -- which lands entirely in its fitted bias --
