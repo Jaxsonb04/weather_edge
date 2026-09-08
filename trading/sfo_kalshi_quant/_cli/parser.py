@@ -44,6 +44,7 @@ _COMMAND_NAMES = (
     "cmd_paper_check_foreign_keys",
     "cmd_paper_close",
     "cmd_paper_features",
+    "cmd_paper_ladder_outcomes",
     "cmd_paper_monitor",
     "cmd_paper_prune",
     "cmd_paper_report",
@@ -927,6 +928,78 @@ def register_paper_commands(sub) -> None:
         help="How many unrecoverable market-days to list (0 for none)",
     )
     backfill_outcomes.set_defaults(func=cmd_paper_backfill_market_day_settlements)
+
+    ladder_outcomes = sub.add_parser(
+        "paper-ladder-outcomes",
+        help=(
+            "Resolve EVERY offered ladder bin against the final CLI maximum "
+            "(not just the traded ones) into ladder_bin_outcomes; measurement "
+            "only, writes no order, ledger, or policy"
+        ),
+    )
+    ladder_outcomes.add_argument(
+        "--start", default=None, help="First target date to resolve (YYYY-MM-DD)"
+    )
+    ladder_outcomes.add_argument(
+        "--end", default=None, help="Last target date to resolve (YYYY-MM-DD)"
+    )
+    ladder_outcomes.add_argument(
+        "--nightly", action="store_true",
+        help=(
+            "Resolve the previous complete settlement day, measured on the "
+            "westernmost station's clock so no city's day is still open, plus "
+            "--nightly-lookback-days before it"
+        ),
+    )
+    ladder_outcomes.add_argument(
+        "--nightly-lookback-days", type=int, default=3,
+        help=(
+            "How many earlier days --nightly re-resolves. A station's final CLI "
+            "for D-1 is issued 01:30-04:40 local, so a one-shot nightly leaves a "
+            "permanent hole whenever it runs first; re-resolving closes it (the "
+            "upsert never downgrades a row it already has)"
+        ),
+    )
+    ladder_outcomes.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would be recorded without writing anything",
+    )
+    ladder_outcomes.add_argument(
+        "--score", action="store_true",
+        help="Print model-vs-market Brier/log-loss over the recorded range",
+    )
+    ladder_outcomes.add_argument(
+        "--quote-lead", default="day_ahead", choices=("day_ahead", "same_day", "all"),
+        help=(
+            "Which quote class --score compares model against market on. "
+            "Same-day quotes see part of the day's heating and are far easier "
+            "(Brier 0.0500 against 0.1042 on the validated window), so 'all' "
+            "pools two different questions and is diagnostic only"
+        ),
+    )
+    ladder_outcomes.add_argument(
+        "--side", default="NO", choices=("NO", "YES", "both"),
+        help=(
+            "Which side --score compares model against market on. The ladder is "
+            "evaluated on both sides and their outcomes are exact complements, "
+            "so 'both' pins realized frequency at 0.5 and is diagnostic only"
+        ),
+    )
+    ladder_outcomes.add_argument(
+        "--show-flagged", type=int, default=20,
+        help="How many integrity-flagged station-days to list (0 for none)",
+    )
+    ladder_outcomes.add_argument(
+        "--allow-incomplete", action="store_true",
+        help=(
+            "Exit 0 even when the run reports integrity flags, unresolved older "
+            "days, or a ladder already thinned by retention. For a deliberate "
+            "historical backfill, where a thin ladder is the expected answer"
+        ),
+    )
+    ladder_outcomes.add_argument("--json", action="store_true", help="Emit JSON only")
+    ladder_outcomes.set_defaults(func=cmd_paper_ladder_outcomes)
+
 
 def register_backtest_commands(sub) -> None:
     market_backtest = sub.add_parser("backtest-market", help="Summarize settled paper-trading PnL")

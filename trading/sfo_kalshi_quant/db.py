@@ -95,6 +95,17 @@ from .settlement_truth import (
     settlement_for_market,
 )
 from .settlement_day import settlement_clock
+from .ladder_truth import (
+    INTEGRITY_FLAGGED,
+    INTEGRITY_UNCHECKED,
+    LADDER_RETENTION_FULL_DAYS,
+    assess_ladder_coverage,
+    build_ladder_outcomes_for_date,
+    exchange_settlement_highs,
+    record_ladder_outcomes,
+    score_ladder_outcomes,
+    target_dates_in_range,
+)
 from .store.diagnostics import (
     _decision_diagnostics_payload,
     _decision_signal_payload,
@@ -623,6 +634,11 @@ def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
 # this has already lost its meaning and should yield to the next one. The fix
 # for contention is to shorten the lock HOLDER, not to lengthen the waiter.
 PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
+
+# Row cap for a single ladder-ledger read. Reaching it is an error rather
+# than a truncation, so no calibration number is ever computed over a
+# silently shortened range.
+LADDER_READ_LIMIT = 100_000
 
 
 class PaperStore:
@@ -5918,6 +5934,196 @@ class PaperStore:
                 "ORDER BY target_date DESC, market_ticker LIMIT ?",
                 (*params, limit),
             ).fetchall()
+
+    def backfill_ladder_bin_outcomes(
+        self,
+        *,
+        start: str,
+        end: str,
+        cli_settlement_highs: Mapping[tuple[str, str], float],
+        observed_settlement_highs: Mapping[tuple[str, str], float] | None = None,
+        dry_run: bool = False,
+        today: str | None = None,
+    ) -> dict:
+        """Resolve every offered ladder bin over a target-date range.
+
+        Reads ``decision_snapshots`` for the offered bins and ``paper_orders``
+        only to mark which of them the book actually held; writes nothing but
+        ``ladder_bin_outcomes``. Nothing on the trading path reads that table,
+        so this changes no decision, size, gate, or fee.
+
+        ``cli_settlement_highs`` carries the forecaster archive's final CLI
+        maxima keyed by ``(series_ticker, target_date)``, and
+        ``observed_settlement_highs`` the station observation-tape maxima that
+        give the integrity guard a second opinion in the era the exchange
+        dataset does not reach. Both live in ``weather.db``, which this store
+        does not own, so the caller loads them and passes them down -- the same
+        contract ``backfill_market_day_settlements`` uses.
+
+        LOCK-HOLD BUDGET (audit F-02). Every read here is pure and needs no
+        write lock, and the decision_snapshots passes cost seconds per target
+        date on the production journal. Holding one ``BEGIN IMMEDIATE`` across
+        the whole range would put all of that inside the write lock the
+        2-minute paper monitor and 5-minute scan wait on with a 30 s
+        busy_timeout; a fifteen-day backfill would outlive that wait and turn a
+        live tick into a FAILED oneshot -- lost, not deferred. So each target
+        date reads in autocommit, then takes the write lock only for its own
+        ~180-row upsert and commits immediately, exactly as
+        ``prune_decision_snapshots`` batches its deletes.
+        """
+
+        recorded_at = _now()
+        summary: dict[str, object] = {
+            "start": start,
+            "end": end,
+            "target_dates": 0,
+            "offered_bins": 0,
+            "resolved_bins": 0,
+            "recorded_bins": 0,
+            "missing_truth_bins": 0,
+            "unchecked_bins": 0,
+            "flagged": [],
+            "missing_truth": [],
+            "dry_run": dry_run,
+        }
+        dates = target_dates_in_range(start, end)
+        summary["target_dates"] = len(dates)
+        offered_by_city_day: dict[tuple[str, str], set[str]] = {}
+        with self.connect() as conn:
+            exchange_highs = exchange_settlement_highs(conn)
+            for target_date in dates:
+                # Pure reads, deliberately outside any write transaction.
+                resolved, unlabelled = build_ladder_outcomes_for_date(
+                    conn,
+                    target_date=target_date,
+                    settlement_highs=cli_settlement_highs,
+                    exchange_highs=exchange_highs,
+                    observed_highs=observed_settlement_highs,
+                )
+                summary["offered_bins"] += len(resolved) + len(unlabelled)
+                summary["resolved_bins"] += len(resolved)
+                summary["missing_truth_bins"] += len(unlabelled)
+                for quote in unlabelled:
+                    offered_by_city_day.setdefault(
+                        (quote.series_ticker, quote.target_date), set()
+                    ).add(quote.market_ticker)
+                    summary["missing_truth"].append(
+                        {
+                            "market_ticker": quote.market_ticker,
+                            "target_date": quote.target_date,
+                            "station_id": quote.station_id,
+                        }
+                    )
+                for outcome in resolved:
+                    offered_by_city_day.setdefault(
+                        (outcome.quote.series_ticker, outcome.quote.target_date), set()
+                    ).add(outcome.quote.market_ticker)
+                    if outcome.integrity_status == INTEGRITY_UNCHECKED:
+                        summary["unchecked_bins"] += 1
+                    if outcome.integrity_status != INTEGRITY_FLAGGED:
+                        continue
+                    entry = {
+                        "market_ticker": outcome.quote.market_ticker,
+                        "target_date": outcome.quote.target_date,
+                        "station_id": outcome.quote.station_id,
+                        "settlement_high_f": outcome.settlement_high_f,
+                        "exchange_settlement_high_f": outcome.exchange_settlement_high_f,
+                        "observed_settlement_high_f": outcome.observed_settlement_high_f,
+                        "truth_delta_f": outcome.truth_delta_f,
+                        "integrity_source": outcome.integrity_source,
+                    }
+                    summary["flagged"].append(entry)
+                    logger.warning("ladder settlement truth disagreement: %s", entry)
+                if dry_run or not resolved:
+                    continue
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    written = record_ladder_outcomes(
+                        conn, resolved, recorded_at=recorded_at
+                    )
+                except BaseException:
+                    conn.rollback()
+                    raise
+                conn.commit()
+                summary["recorded_bins"] += written
+        summary["coverage"] = assess_ladder_coverage(
+            {key: len(tickers) for key, tickers in offered_by_city_day.items()},
+            today=today or _now()[:10],
+            full_days=LADDER_RETENTION_FULL_DAYS,
+        )
+        return summary
+
+    def ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        series_ticker: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = LADDER_READ_LIMIT,
+    ) -> list[sqlite3.Row]:
+        """Read back resolved ladder bins. Measurement only."""
+
+        filters: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            filters.append("target_date >= ?")
+            params.append(start)
+        if end is not None:
+            filters.append("target_date <= ?")
+            params.append(end)
+        if series_ticker is not None:
+            filters.append("series_ticker = ?")
+            params.append(series_ticker)
+        if quote_lead is not None:
+            filters.append("quote_lead = ?")
+            params.append(quote_lead)
+        if side is not None:
+            # The ladder is evaluated on both sides, and a bin scored on both
+            # of them contributes two rows whose outcomes are exact
+            # complements: pooling them pins realized frequency at 0.5 and
+            # makes every calibration number meaningless. Callers comparing
+            # model against market pick one side.
+            filters.append("side = ?")
+            params.append(str(side).strip().upper())
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"SELECT * FROM ladder_bin_outcomes {where} "
+                "ORDER BY target_date, market_ticker, side LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+
+    def score_ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = LADDER_READ_LIMIT,
+    ) -> dict:
+        """Model-versus-market calibration over the recorded ladder.
+
+        The read is ``ORDER BY target_date, market_ticker, side LIMIT ?``, so a
+        range that overflows ``limit`` would otherwise return a metric over the
+        OLDEST prefix of the range with nothing in the result saying so. The
+        ledger is designed to accumulate (~180 rows a day, both sides), so that
+        is a dormant silent-wrong-answer, not a hypothetical: raise instead.
+        """
+
+        rows = self.ladder_bin_outcomes(
+            start=start, end=end, quote_lead=quote_lead, side=side, limit=limit
+        )
+        if len(rows) >= limit:
+            raise ValueError(
+                f"ladder scoring read hit its {limit}-row cap and would score a "
+                "truncated prefix of the range; narrow --start/--end or raise "
+                "the limit"
+            )
+        return score_ladder_outcomes(rows)
 
     def verify_paper_settlements(
         self,
