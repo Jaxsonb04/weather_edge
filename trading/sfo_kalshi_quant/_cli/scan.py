@@ -625,8 +625,17 @@ def _execute_research_scan_context(
     """Evaluate the active research book from one immutable scan context."""
 
     objective_day = store.research_objective_day()
-    lead_days = (target - objective_day).days
-    lead_bucket = canonical_research_lead_bucket(lead_days)
+    # ``objective_day`` is the Pacific civil accounting day and stays that way.
+    # Lead is a settlement-clock quantity instead: the atomic admission gate
+    # recomputes it from the station's fixed-standard day, so measuring it here
+    # against the civil day admits a same-day Central/Eastern candidate between
+    # 05:00 and 07:00 UTC that the store then rejects mid-tick.  Reading the
+    # station day through the store keeps both gates on one clock.
+    station_day = store.research_station_day(context.city)
+    lead_days = (target - station_day).days
+    # A target already behind the station is rejected downstream as invalid
+    # candidate metadata; the audit label must not raise before it gets there.
+    lead_bucket = canonical_research_lead_bucket(max(lead_days, 0))
     run_id = scan_run_id or f"research-{uuid.uuid4().hex[:16]}"
     decisions = list(context.decisions)
     if not entry_allowed and entry_block_reason:

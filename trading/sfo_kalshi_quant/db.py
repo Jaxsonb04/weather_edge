@@ -38,7 +38,7 @@ from .account import (
     strategy_fingerprint,
 )
 from .consensus import MarketConsensus
-from .cities import city_for_market_ticker
+from .cities import CityConfig, city_for_market_ticker
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
@@ -1103,6 +1103,19 @@ class PaperStore:
         """Return the current Pacific civil day used by both research books."""
 
         return self._research_objective_day()
+
+    def research_station_day(self, city: CityConfig | None = None) -> date:
+        """Return the settlement day now in progress at one station.
+
+        Research *lead* is measured on the station's fixed-standard settlement
+        clock, never on the Pacific civil objective day: between 05:00 and
+        07:00 UTC a Central/Eastern station has already rolled over while Los
+        Angeles has not.  Scanners must read the lead clock through the store
+        that owns the admission clock, so the upstream gate and the atomic
+        admission gate below can never disagree.
+        """
+
+        return settlement_clock(self._research_clock(), city).date()
 
     def research_daily_goal_state(
         self,
@@ -3571,7 +3584,7 @@ class PaperStore:
             raise ValueError("research target date is invalid") from exc
         preflight_civil_day = self._research_objective_day()
         if admission.objective_day != preflight_civil_day.isoformat():
-            raise ValueError(
+            raise ResearchEntryLimitError(
                 "research admission objective day must equal the current "
                 "Pacific civil day"
             )
@@ -3726,23 +3739,23 @@ class PaperStore:
             civil_day = self._research_objective_day()
             if admission.objective_day != civil_day.isoformat():
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     "research admission objective day must equal the current "
                     "Pacific civil day"
                 )
             city = city_for_market_ticker(decision.ticker)
-            station_day = settlement_clock(self._research_clock(), city).date()
+            station_day = self.research_station_day(city)
             lead_days = (target_day - station_day).days
             if lead_days < policy.min_lead_days:
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     f"{policy.sleeve.value} research minimum lead is "
                     f"{policy.min_lead_days} station-standard day(s); got {lead_days}"
                 )
             canonical_lead_bucket = canonical_research_lead_bucket(lead_days)
             if admission.lead_bucket != canonical_lead_bucket:
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     "research admission canonical lead bucket does not match target"
                 )
             entry_decision = self._research_entry_decision_on_connection(

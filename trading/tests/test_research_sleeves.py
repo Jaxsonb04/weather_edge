@@ -1,10 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import json
 import sqlite3
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from sfo_kalshi_quant.account import (
     strategy_fingerprint,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
+from sfo_kalshi_quant.db import ResearchEntryLimitError
 from sfo_kalshi_quant.execution import with_buy_limit
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import (
@@ -1260,7 +1262,7 @@ def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> 
         objective_day="2026-07-19",
     )
 
-    with pytest.raises(ValueError, match="current Pacific civil day"):
+    with pytest.raises(ResearchEntryLimitError, match="current Pacific civil day"):
         store.record_research_order_atomic(
             "2026-07-19",
             decision,
@@ -1304,7 +1306,7 @@ def test_atomic_admission_uses_current_pacific_day_at_dst_boundaries(
         objective_day=invalid_day,
         target_date=target_date,
     )
-    with pytest.raises(ValueError, match="current Pacific civil day"):
+    with pytest.raises(ResearchEntryLimitError, match="current Pacific civil day"):
         store.record_research_order_atomic(
             target_date,
             invalid_decision,
@@ -1605,7 +1607,7 @@ def test_target_atomic_admission_rejects_past_and_same_day_targets(
         lead_bucket=lead_bucket,
     )
 
-    with pytest.raises(ValueError, match="minimum lead"):
+    with pytest.raises(ResearchEntryLimitError, match="minimum lead"):
         store.record_research_order_atomic(
             target_date,
             decision,
@@ -1697,13 +1699,74 @@ def test_target_minimum_lead_uses_city_fixed_standard_day(tmp_path: Path) -> Non
         lead_bucket="day-ahead",
     )
 
-    with pytest.raises(ValueError, match="minimum lead"):
+    with pytest.raises(ResearchEntryLimitError, match="minimum lead"):
         store.record_research_order_atomic(
             "2026-07-19",
             decision,
             admission=admission,
             strategy_config=strategy_config_for_profile("research"),
         )
+
+
+def test_research_scan_rejects_same_day_station_target_before_admission(
+    tmp_path: Path,
+) -> None:
+    """REG-1: the scanner must measure lead on the station's settlement clock.
+
+    At 06:00 UTC Austin's fixed-standard (CST) clock has just rolled over to
+    Sep 6 while the Los Angeles civil day is still Sep 5. Measuring lead
+    against the civil day admitted the Sep 6 candidate as day-ahead, and the
+    atomic gate above then rejected it -- killing the whole research scan
+    tick. The candidate must be rejected upstream, with the ordinary reason,
+    and the scan must complete.
+    """
+
+    from sfo_kalshi_quant._cli import scan as scan_module
+    from sfo_kalshi_quant.cities import get_city
+    from sfo_kalshi_quant.db import PaperStore
+
+    now = datetime(2026, 9, 6, 6, 0, tzinfo=UTC)
+    store = PaperStore(
+        tmp_path / "aus-station-lead.db",
+        research_clock=lambda: now,
+    )
+    city = get_city("aus")
+    assert store.research_objective_day() == date(2026, 9, 5)
+    assert store.research_station_day(city) == date(2026, 9, 6)
+
+    decision = _atomic_decision("KXHIGHAUS-26SEP06-B80.5")
+    context = SimpleNamespace(
+        decisions=[decision],
+        city=city,
+        series_ticker=city.series_ticker,
+        intraday=None,
+        forecast=None,
+        event=None,
+        consensus=None,
+    )
+
+    plans, execution, recorded = scan_module._execute_research_scan_context(
+        context,
+        target=date(2026, 9, 6),
+        store=store,
+        config=strategy_config_for_profile("research"),
+        entry_allowed=True,
+        entry_block_reason=None,
+        place_paper=True,
+        place_research_target=True,
+        place_research_motion=False,
+        forecast_snapshot_id=None,
+        market_snapshot_id=None,
+        scan_run_id="reg-1-station-lead",
+    )
+
+    assert recorded == [decision]
+    assert plans.target.legs == []
+    assert [disposition.reason for disposition in plans.target.dispositions] == [
+        "target requires day-ahead lead"
+    ]
+    assert execution.target_order_ids == ()
+    assert execution.motion_order_ids == ()
 
 
 def test_atomic_admission_rejects_noncanonical_lead_bucket(
@@ -1725,7 +1788,7 @@ def test_atomic_admission_rejects_noncanonical_lead_bucket(
         lead_bucket="same-day",
     )
 
-    with pytest.raises(ValueError, match="canonical lead bucket"):
+    with pytest.raises(ResearchEntryLimitError, match="canonical lead bucket"):
         store.record_research_order_atomic(
             "2026-07-19",
             decision,
