@@ -42,21 +42,69 @@ and says which one it took:
     of the day's heating -- and must not be pooled with day-ahead rows, which is
     why the class is stored rather than inferred.
 
+Both windows are bounded by the station's own fixed-standard clock: the same-day
+window ends when the climate day *closes*, not at a bare ``target_date + 2``
+wall-clock date, so a post-resolution quote can never structurally become a
+bin's scored view.
+
+A re-run may only improve a quote, never degrade it
+---------------------------------------------------
+Retention (``prune_decision_snapshots``) keeps everything for ``full_days``,
+then keeps only the last snapshot per (market, side, target_date, risk_profile)
+plus every approved/signal-approved row, then beyond ``dedup_days`` only the
+approved rows.  So a backfill re-run over an older window sees a *thinner and
+approval-biased* journal than the first run did -- exactly the trade-filter
+conditioning this ledger exists to escape.  Two defences:
+
+* the upsert refuses to replace a ``day_ahead`` quote with a ``same_day`` one,
+  or a later day-ahead close with an earlier one (see ``_QUOTE_IS_UPGRADE``),
+  so re-running an eroded range cannot downgrade an already-correct row; and
+* :func:`assess_ladder_coverage` reports every city-day whose ladder is thinner
+  than the widest one in the same run, and every target date already past the
+  full-fidelity retention horizon, so "the ledger silently thinned" becomes a
+  printed number instead of a shrug.
+
 The integrity guard
 -------------------
 CLI parse errors would contaminate every label, so the ledger cross-checks its
-CLI value against the exchange's own settlement number
-(``dataset_kalshi_markets.expiration_value``, the °F the market settled on) and
-flags any station-day where the two disagree by
-:data:`LADDER_INTEGRITY_TOLERANCE_F` or more instead of accepting it silently.
-Measured over the 1,348 exchange-settled city-days that carry both numbers
-(target dates 2026-03-12 .. 2026-07-07), the two agreed **exactly** on every
-one; the guard exists for the failure that has not happened yet.  Days with no
-exchange record are recorded as ``unchecked`` -- never as agreement.
+CLI value against an *independent* record of the same station-day.  There are
+two, and they are used in rank order:
+
+``dataset_kalshi_markets.expiration_value`` (rank 1)
+    The °F the exchange actually settled the ladder on -- the strongest second
+    opinion available, because it is the number that moved real money.  Measured
+    over the 1,348 exchange-settled city-days that carry both values (target
+    dates 2026-03-12 .. 2026-07-07) the two agreed **exactly** on every one.
+    Tolerance :data:`LADDER_INTEGRITY_TOLERANCE_F`.
+
+``nws_daily_high_ground_truth.high_f`` (rank 2)
+    The station's own observation tape maximum, from ``weather.db``.  It is a
+    coarser instrument than the CLI text -- the observation-derived high runs a
+    degree or two low on some days, which is why it must never *settle* an order
+    -- so it gets its own wider tolerance
+    (:data:`LADDER_OBSERVED_TOLERANCE_F`) and is only consulted on days whose
+    tape is dense enough to have seen the peak
+    (:data:`LADDER_OBSERVED_MIN_OBSERVATIONS`).
+
+Rank 2 exists because rank 1 does not cover the era being scored.  Finalized
+``dataset_kalshi_markets`` rows stop at target date 2026-07-07 while retained
+``decision_snapshots`` start at 2026-06-10, so on the 2026-08-18..09-01
+validation window the exchange channel checks **0 of 225** station-days and the
+guard the audit ordered could not fire at all.  On the same window the
+observation channel checks **195 of 225** (the 30 it declines are KDEN and KNYC,
+whose tapes carry ~25 observations a day rather than ~310).  Its false-positive
+rate is measured, not assumed: over the 863 station-days from 2026-06-01 with a
+dense tape, ``|CLI - observed|`` never exceeded 2 °F, so a 3 °F threshold flags
+0 of 863.
+
+Days no channel can check are recorded as ``unchecked`` -- never as agreement --
+and every count of them is reported alongside the flagged count, because "0
+flagged" and "nothing could be checked" must never look the same.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
@@ -64,7 +112,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from .cities import CITIES, CityConfig, city_for_market_ticker
+from .cities import CITIES, CityConfig, city_for_market_ticker, city_for_station
 from .settlement_truth import (
     SettlementKey,
     integer_settlement_high_f,
@@ -72,15 +120,39 @@ from .settlement_truth import (
 )
 from .store.market_day_settlements import TRADED_STATUSES
 
+logger = logging.getLogger(__name__)
+
 # A CLI maximum this far from the exchange's own settlement value is a data
 # defect, not a rounding difference. Any change to this number must also bump
 # _LADDER_INTEGRITY_MIGRATION_KEY in store/schema.py, because integrity_status
 # is a cached projection of this constant.
 LADDER_INTEGRITY_TOLERANCE_F = 2.0
 
+# The observation tape is a coarser instrument than the CLI text and runs a
+# degree or two low on some days, so it needs its own, wider threshold. Measured
+# over 863 dense-tape station-days from 2026-06-01, |CLI - observed| never
+# exceeded 2 F, so this flags 0 of 863 while still catching the multi-degree
+# parse error the guard exists for. Bump the migration key when it moves.
+LADDER_OBSERVED_TOLERANCE_F = 3.0
+
+# A sparse tape has probably missed the peak, so it is not evidence about the
+# CLI. KDEN and KNYC report ~25 observations a day against ~310 elsewhere; every
+# |delta| >= 2 F in the 2026-08-18..09-01 window came from a tape thinner than
+# this, and none of them was a CLI defect.
+LADDER_OBSERVED_MIN_OBSERVATIONS = 200
+
+# Mirrors prune_decision_snapshots(full_days=...): the horizon beyond which
+# unapproved decision rows may already have been deleted, so an offered-bin
+# population older than this is approval-biased and cannot be called complete.
+# test_the_retention_horizon_matches_the_pruner pins the two together.
+LADDER_RETENTION_FULL_DAYS = 7
+
 INTEGRITY_OK = "ok"
 INTEGRITY_UNCHECKED = "unchecked"
 INTEGRITY_FLAGGED = "flagged"
+
+INTEGRITY_SOURCE_EXCHANGE = "dataset_kalshi_markets"
+INTEGRITY_SOURCE_OBSERVED = "nws_daily_high_ground_truth"
 
 QUOTE_LEAD_DAY_AHEAD = "day_ahead"
 QUOTE_LEAD_SAME_DAY = "same_day"
@@ -117,8 +189,11 @@ CREATE TABLE IF NOT EXISTS ladder_bin_outcomes (
     resolved_yes INTEGER NOT NULL,
     side_won INTEGER NOT NULL,
     traded INTEGER NOT NULL DEFAULT 0,
+    traded_profiles TEXT,
     exchange_settlement_high_f REAL,
+    observed_settlement_high_f REAL,
     truth_delta_f REAL,
+    integrity_source TEXT,
     integrity_status TEXT NOT NULL,
     PRIMARY KEY (market_ticker, target_date, side)
 );
@@ -131,45 +206,86 @@ CREATE INDEX IF NOT EXISTS idx_ladder_bin_outcomes_integrity
 ON ladder_bin_outcomes (integrity_status, target_date);
 """
 
-# recorded_at is the first sighting and never moves; everything derived from a
-# later pass refreshes. Re-running the same day is therefore a no-op on the
-# provenance and an update everywhere else.
-_UPSERT_SQL = """
-INSERT INTO ladder_bin_outcomes (
-    market_ticker, target_date, side, series_ticker, station_id,
-    recorded_at, updated_at,
-    strike_type, floor_strike, cap_strike,
-    quote_lead, quote_created_at, quote_snapshot_id, quote_risk_profile,
-    snapshot_count, model_probability, market_probability, entry_bid, entry_ask,
-    settlement_high_f, truth_source, resolved_yes, side_won, traded,
-    exchange_settlement_high_f, truth_delta_f, integrity_status
+# Columns added after the table's first shape. A journal created by an earlier
+# revision of this branch still has the old five-column integrity block, and
+# CREATE TABLE IF NOT EXISTS will not widen it, so init() runs these through
+# _add_missing_columns exactly as it does for every other audit column set.
+LADDER_BIN_OUTCOME_AUDIT_COLUMNS = {
+    "traded_profiles": "TEXT",
+    "observed_settlement_high_f": "REAL",
+    "integrity_source": "TEXT",
+}
+
+_INSERT_COLUMNS = (
+    "market_ticker", "target_date", "side", "series_ticker", "station_id",
+    "recorded_at", "updated_at",
+    "strike_type", "floor_strike", "cap_strike",
+    "quote_lead", "quote_created_at", "quote_snapshot_id", "quote_risk_profile",
+    "snapshot_count", "model_probability", "market_probability",
+    "entry_bid", "entry_ask",
+    "settlement_high_f", "truth_source", "resolved_yes", "side_won",
+    "traded", "traded_profiles",
+    "exchange_settlement_high_f", "observed_settlement_high_f",
+    "truth_delta_f", "integrity_source", "integrity_status",
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(market_ticker, target_date, side) DO UPDATE SET
-    updated_at = excluded.updated_at,
-    series_ticker = excluded.series_ticker,
-    station_id = excluded.station_id,
-    strike_type = excluded.strike_type,
-    floor_strike = excluded.floor_strike,
-    cap_strike = excluded.cap_strike,
-    quote_lead = excluded.quote_lead,
-    quote_created_at = excluded.quote_created_at,
-    quote_snapshot_id = excluded.quote_snapshot_id,
-    quote_risk_profile = excluded.quote_risk_profile,
-    snapshot_count = excluded.snapshot_count,
-    model_probability = excluded.model_probability,
-    market_probability = excluded.market_probability,
-    entry_bid = excluded.entry_bid,
-    entry_ask = excluded.entry_ask,
-    settlement_high_f = excluded.settlement_high_f,
-    truth_source = excluded.truth_source,
-    resolved_yes = excluded.resolved_yes,
-    side_won = excluded.side_won,
-    traded = excluded.traded,
-    exchange_settlement_high_f = excluded.exchange_settlement_high_f,
-    truth_delta_f = excluded.truth_delta_f,
-    integrity_status = excluded.integrity_status
-"""
+
+# The label block: everything derived from truth that arrived after the quote.
+# It always refreshes, because CLI truth and both integrity channels can land
+# days later and a stale `unchecked` is exactly the silence the guard exists to
+# break.
+_LABEL_COLUMNS = (
+    "updated_at", "series_ticker", "station_id",
+    "settlement_high_f", "truth_source", "resolved_yes", "side_won",
+    "traded", "traded_profiles",
+    "exchange_settlement_high_f", "observed_settlement_high_f",
+    "truth_delta_f", "integrity_source", "integrity_status",
+)
+
+# The quote block: the representative pre-outcome view. It refreshes only on an
+# upgrade, see below.
+_QUOTE_UPSERT_COLUMNS = (
+    "strike_type", "floor_strike", "cap_strike",
+    "quote_lead", "quote_created_at", "quote_snapshot_id", "quote_risk_profile",
+    "snapshot_count", "model_probability", "market_probability",
+    "entry_bid", "entry_ask",
+)
+
+# Retention deletes exactly the unapproved rows this ledger reads, so a re-run
+# over an older range sees a thinner journal than the first run did: the
+# day-ahead close may be gone while a same-day row survives. Without this
+# predicate the upsert would silently DOWNGRADE a correct day_ahead row to a
+# later, easier same_day quote and nothing in the row would show it happened.
+# A day_ahead quote therefore outranks a same_day one; within a class, the rule
+# that chose the quote wins (last day-ahead, first same-day). Ties refresh, so
+# re-running an unchanged range is still a full no-op on the quote.
+_QUOTE_IS_UPGRADE = """(
+        (ladder_bin_outcomes.quote_lead = 'same_day'
+         AND excluded.quote_lead = 'day_ahead')
+     OR (excluded.quote_lead = ladder_bin_outcomes.quote_lead
+         AND ((excluded.quote_lead = 'day_ahead'
+               AND excluded.quote_created_at >= ladder_bin_outcomes.quote_created_at)
+           OR (excluded.quote_lead = 'same_day'
+               AND excluded.quote_created_at <= ladder_bin_outcomes.quote_created_at)))
+    )"""
+
+# recorded_at is the first sighting and never moves; everything derived from a
+# later pass refreshes, subject to the upgrade rule above. Re-running the same
+# day is therefore a no-op on the provenance and an update everywhere else.
+_UPSERT_SQL = (
+    "INSERT INTO ladder_bin_outcomes (\n    "
+    + ", ".join(_INSERT_COLUMNS)
+    + "\n)\nVALUES ("
+    + ", ".join("?" for _ in _INSERT_COLUMNS)
+    + ")\nON CONFLICT(market_ticker, target_date, side) DO UPDATE SET\n    "
+    + ",\n    ".join(
+        [f"{column} = excluded.{column}" for column in _LABEL_COLUMNS]
+        + [
+            f"{column} = CASE WHEN {_QUOTE_IS_UPGRADE} "
+            f"THEN excluded.{column} ELSE ladder_bin_outcomes.{column} END"
+            for column in _QUOTE_UPSERT_COLUMNS
+        ]
+    )
+)
 
 _TRADED_PLACEHOLDERS = ", ".join("?" for _ in TRADED_STATUSES)
 
@@ -207,8 +323,11 @@ class LadderBinOutcome:
     resolved_yes: bool
     side_won: bool
     traded: bool
+    traded_profiles: str | None
     exchange_settlement_high_f: float | None
+    observed_settlement_high_f: float | None
     truth_delta_f: float | None
+    integrity_source: str | None
     integrity_status: str
 
 
@@ -226,44 +345,58 @@ def side_wins(side: str, resolved_yes: bool) -> bool:
 
 def assess_integrity(
     settlement_high_f: float,
-    exchange_settlement_high_f: float | None,
+    exchange_settlement_high_f: float | None = None,
+    observed_settlement_high_f: float | None = None,
     *,
     tolerance_f: float = LADDER_INTEGRITY_TOLERANCE_F,
-) -> tuple[str, float | None]:
-    """Compare the CLI label against the exchange's own settlement value.
+    observed_tolerance_f: float = LADDER_OBSERVED_TOLERANCE_F,
+) -> tuple[str, float | None, str | None]:
+    """Cross-check the CLI label against whichever independent record exists.
 
-    Returns ``(status, delta)`` where ``delta`` is ``CLI - exchange`` in °F.
-    With no exchange record the status is ``unchecked``: absence of a
-    contradiction is not evidence of agreement, and recording it as ``ok``
-    would make the flagged count meaningless.
+    Returns ``(status, delta, source)`` where ``delta`` is ``CLI - source`` in
+    °F and ``source`` names the channel that produced the verdict.  The
+    exchange's own settlement value wins when it exists; the station's
+    observation tape is the fallback that actually covers the current era.  With
+    neither, the status is ``unchecked``: absence of a contradiction is not
+    evidence of agreement, and recording it as ``ok`` would make the flagged
+    count meaningless.
     """
 
-    if exchange_settlement_high_f is None:
-        return INTEGRITY_UNCHECKED, None
-    delta = float(settlement_high_f) - float(exchange_settlement_high_f)
-    if not math.isfinite(delta):
-        return INTEGRITY_UNCHECKED, None
-    if abs(delta) >= float(tolerance_f):
-        return INTEGRITY_FLAGGED, delta
-    return INTEGRITY_OK, delta
+    channels = (
+        (exchange_settlement_high_f, tolerance_f, INTEGRITY_SOURCE_EXCHANGE),
+        (observed_settlement_high_f, observed_tolerance_f, INTEGRITY_SOURCE_OBSERVED),
+    )
+    for reference, tolerance, source in channels:
+        if reference is None:
+            continue
+        delta = float(settlement_high_f) - float(reference)
+        if not math.isfinite(delta):
+            continue
+        if abs(delta) >= float(tolerance):
+            return INTEGRITY_FLAGGED, delta, source
+        return INTEGRITY_OK, delta, source
+    return INTEGRITY_UNCHECKED, None, None
 
 
-def derive_integrity_status(
+def derive_integrity_verdict(
     settlement_high_f: object,
     exchange_settlement_high_f: object,
+    observed_settlement_high_f: object = None,
     *,
     tolerance_f: float = LADDER_INTEGRITY_TOLERANCE_F,
-) -> str:
-    """Row-shaped wrapper used by the schema migration to re-derive a status."""
+    observed_tolerance_f: float = LADDER_OBSERVED_TOLERANCE_F,
+) -> tuple[str, float | None, str | None]:
+    """Row-shaped wrapper used by the schema migration to re-derive a verdict."""
 
-    if exchange_settlement_high_f is None or settlement_high_f is None:
-        return INTEGRITY_UNCHECKED
-    status, _ = assess_integrity(
+    if settlement_high_f is None:
+        return INTEGRITY_UNCHECKED, None, None
+    return assess_integrity(
         float(settlement_high_f),
-        float(exchange_settlement_high_f),
+        None if exchange_settlement_high_f is None else float(exchange_settlement_high_f),
+        None if observed_settlement_high_f is None else float(observed_settlement_high_f),
         tolerance_f=tolerance_f,
+        observed_tolerance_f=observed_tolerance_f,
     )
-    return status
 
 
 def day_ahead_cutoff_utc(city: CityConfig, target_date: date) -> str:
@@ -280,32 +413,55 @@ def day_ahead_cutoff_utc(city: CityConfig, target_date: date) -> str:
     return opens.astimezone(timezone.utc).isoformat()
 
 
+def settlement_day_close_utc(city: CityConfig, target_date: date) -> str:
+    """The instant the target settlement day *closes* at the station, in UTC ISO.
+
+    The same-day window ends here rather than at a bare ``target_date + N``
+    wall-clock date.  A date-string bound is up to sixteen hours late for a
+    UTC-8 station, which structurally permits a post-resolution quote to become
+    a bin's scored view -- the one thing that would make these labels worthless.
+    """
+
+    return day_ahead_cutoff_utc(city, target_date + timedelta(days=1))
+
+
 _QUOTE_COLUMNS = (
     "market_ticker, side, id, created_at, strike_type, floor_strike, cap_strike, "
     "model_probability, market_probability, entry_bid, entry_ask, risk_profile"
 )
 
+# The series segment of a market ticker: everything before the first '-'
+# (``KXHIGHNY-26JUL06-B79.5`` -> ``KXHIGHNY``). UPPER() keeps the old
+# case-insensitive LIKE semantics; a ticker with no '-' yields '' and matches no
+# city, which is the correct answer for a retired or foreign series.
+_SERIES_SEGMENT_SQL = "UPPER(substr(market_ticker, 1, instr(market_ticker, '-') - 1))"
+
 # Bare columns beside an aggregate resolve to the row that produced the
 # min/max -- a documented SQLite guarantee, and the reason this needs no window
-# function or correlated subquery. Served by idx_decision_snapshots_market
-# (target_date, market_ticker, created_at).
-_LAST_DAY_AHEAD_SQL = f"""
-SELECT {_QUOTE_COLUMNS}, MAX(created_at) AS chosen_at, COUNT(*) AS snapshot_count
+# function or correlated subquery.
+#
+# ONE pass per lead per target date, not one per city. The planner serves
+# `target_date = ?` from idx_decision_snapshots_retention_dedup and converts
+# neither a `market_ticker LIKE ?` prefix nor the created_at range into an index
+# range, so a per-city loop rescanned the same date partition fifteen times over
+# (measured on production: 7.6 s for thirty passes against 0.7 s for one). Each
+# city's own fixed-standard boundary is carried into the single pass as a CASE
+# over the ticker's series segment instead.
+_LAST_DAY_AHEAD_SQL = """
+SELECT {columns}, MAX(created_at) AS chosen_at, COUNT(*) AS snapshot_count
 FROM decision_snapshots
 WHERE target_date = ?
-  AND market_ticker LIKE ?
   AND created_at >= ?
-  AND created_at < ?
+  AND created_at < {opens}
 GROUP BY market_ticker, side
 """
 
-_FIRST_SAME_DAY_SQL = f"""
-SELECT {_QUOTE_COLUMNS}, MIN(created_at) AS chosen_at, COUNT(*) AS snapshot_count
+_FIRST_SAME_DAY_SQL = """
+SELECT {columns}, MIN(created_at) AS chosen_at, COUNT(*) AS snapshot_count
 FROM decision_snapshots
 WHERE target_date = ?
-  AND market_ticker LIKE ?
-  AND created_at >= ?
-  AND created_at < ?
+  AND created_at >= {opens}
+  AND created_at < {closes}
 GROUP BY market_ticker, side
 """
 
@@ -313,8 +469,6 @@ GROUP BY market_ticker, side
 # day ahead, so three days is generous headroom that still keeps the scan
 # bounded on a multi-gigabyte decision table.
 _QUOTE_LOOKBACK_DAYS = 3
-# How far past the settlement day a snapshot can still be attributed to it.
-_QUOTE_LOOKAHEAD_DAYS = 2
 
 
 def _float_or_none(value: object) -> float | None:
@@ -325,6 +479,27 @@ def _float_or_none(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _row_get(row: object, key: str) -> Any:
+    """Read an optional column from a dict or a ``sqlite3.Row`` alike.
+
+    ``sqlite3.Row`` raises ``IndexError`` for an unknown key and has no
+    ``.get``; plain mappings raise ``KeyError``.  Scoring accepts both.
+    """
+
+    try:
+        return row[key]  # type: ignore[index]
+    except (KeyError, IndexError):
+        return None
+
+
+def _cutoff_case(boundaries: Sequence[tuple[str, str]]) -> tuple[str, list[str]]:
+    """A CASE mapping each city's series segment to its own UTC boundary."""
+
+    whens = " ".join("WHEN ? THEN ?" for _ in boundaries)
+    sql = f"CASE {_SERIES_SEGMENT_SQL} {whens} END"
+    return sql, [value for pair in boundaries for value in pair]
 
 
 def _quote_from_row(
@@ -359,58 +534,84 @@ def offered_ladder_quotes(
 ) -> list[LadderQuote]:
     """One representative quote per offered bin on ``target_date``.
 
-    Two bounded passes per city: the day-ahead close, then the same-day opener
-    for bins the day-ahead pass never saw.  Both are keyed on
-    ``target_date`` + a ticker prefix + a ``created_at`` range, so neither can
-    degrade into a scan of the whole decision table.
+    Two bounded passes over the date -- the day-ahead close, then the same-day
+    opener for bins the day-ahead pass never saw -- each carrying every city's
+    own settlement-day boundary as a CASE so neither pass has to be repeated per
+    city.  Both are keyed on ``target_date`` plus a ``created_at`` range, so
+    neither can degrade into a scan of the whole decision table.
     """
 
     day = date.fromisoformat(str(target_date))
     lower = (day - timedelta(days=_QUOTE_LOOKBACK_DAYS)).isoformat()
-    upper = (day + timedelta(days=_QUOTE_LOOKAHEAD_DAYS)).isoformat()
+    by_series = {city.series_ticker: city for city in cities}
+    if not by_series:
+        return []
+    opens_sql, opens_params = _cutoff_case(
+        [(city.series_ticker, day_ahead_cutoff_utc(city, day)) for city in by_series.values()]
+    )
+    closes_sql, closes_params = _cutoff_case(
+        [
+            (city.series_ticker, settlement_day_close_utc(city, day))
+            for city in by_series.values()
+        ]
+    )
     previous_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     quotes: dict[tuple[str, str], LadderQuote] = {}
     try:
-        for city in cities:
-            prefix = f"{city.series_ticker}-%"
-            cutoff = day_ahead_cutoff_utc(city, day)
-            day_ahead = conn.execute(
-                _LAST_DAY_AHEAD_SQL, (str(target_date), prefix, lower, cutoff)
-            ).fetchall()
-            for row in day_ahead:
+        passes = (
+            (
+                _LAST_DAY_AHEAD_SQL.format(columns=_QUOTE_COLUMNS, opens=opens_sql),
+                (str(target_date), lower, *opens_params),
+                QUOTE_LEAD_DAY_AHEAD,
+            ),
+            (
+                _FIRST_SAME_DAY_SQL.format(
+                    columns=_QUOTE_COLUMNS, opens=opens_sql, closes=closes_sql
+                ),
+                (str(target_date), *opens_params, *closes_params),
+                QUOTE_LEAD_SAME_DAY,
+            ),
+        )
+        for sql, params, quote_lead in passes:
+            for row in conn.execute(sql, params).fetchall():
+                city = city_for_market_ticker(str(row["market_ticker"]))
+                if city is None or city.series_ticker not in by_series:
+                    continue
                 quote = _quote_from_row(
-                    row, city=city, target_date=str(target_date),
-                    quote_lead=QUOTE_LEAD_DAY_AHEAD,
+                    row, city=city, target_date=str(target_date), quote_lead=quote_lead
                 )
-                quotes[(quote.market_ticker, quote.side)] = quote
-            same_day = conn.execute(
-                _FIRST_SAME_DAY_SQL, (str(target_date), prefix, cutoff, upper)
-            ).fetchall()
-            for row in same_day:
-                quote = _quote_from_row(
-                    row, city=city, target_date=str(target_date),
-                    quote_lead=QUOTE_LEAD_SAME_DAY,
-                )
+                # setdefault, so the day-ahead pass always wins the bin.
                 quotes.setdefault((quote.market_ticker, quote.side), quote)
     finally:
         conn.row_factory = previous_factory
     return [quotes[key] for key in sorted(quotes)]
 
 
-def traded_bins(conn: sqlite3.Connection, *, target_date: str) -> set[tuple[str, str]]:
-    """``(market_ticker, side)`` the book actually held on ``target_date``.
+def traded_bins(conn: sqlite3.Connection, *, target_date: str) -> dict[tuple[str, str], str]:
+    """``(market_ticker, side) -> the books that actually held it`` on a date.
 
     Reuses ``market_day_settlements.TRADED_STATUSES`` so "traded" means the same
     thing in both ledgers: a quote that rested and expired took no market risk.
+
+    The value is a comma-joined list of ``risk_profile`` values rather than a
+    bare flag because there are two economically separate paper books, and a bin
+    held only by the research sleeve is not the same evidence as one the live
+    book held.  Legacy rows with no profile record ``live``, matching
+    ``_paper_profile_filter``'s ``COALESCE(risk_profile, 'live')``.
     """
 
     rows = conn.execute(
-        "SELECT DISTINCT market_ticker, side FROM paper_orders "
+        "SELECT DISTINCT market_ticker, side, COALESCE(risk_profile, 'live') "
+        "FROM paper_orders "
         f"WHERE target_date = ? AND status IN ({_TRADED_PLACEHOLDERS})",
         (str(target_date), *TRADED_STATUSES),
     ).fetchall()
-    return {(str(ticker), str(side or "YES").strip().upper()) for ticker, side in rows}
+    held: dict[tuple[str, str], set[str]] = {}
+    for ticker, side, profile in rows:
+        key = (str(ticker), str(side or "YES").strip().upper())
+        held.setdefault(key, set()).add(str(profile))
+    return {key: ",".join(sorted(profiles)) for key, profiles in held.items()}
 
 
 def exchange_settlement_highs(conn: sqlite3.Connection) -> dict[SettlementKey, float]:
@@ -418,9 +619,16 @@ def exchange_settlement_highs(conn: sqlite3.Connection) -> dict[SettlementKey, f
 
     ``dataset_kalshi_markets.expiration_value`` is the number Kalshi settled the
     ladder on, and it is constant across a city-day (verified: 0 city-days out
-    of 1,350 carry more than one distinct value).  This is the only source in
-    the journal that is independent of the NWS CLI text we parse, which is what
-    makes it usable as the integrity guard's second opinion.
+    of 1,350 carry more than one distinct value).  This is the strongest source
+    in the journal that is independent of the NWS CLI text we parse.
+
+    That invariant is re-checked here rather than trusted.  A city-day carrying
+    two different settlement values is a contradiction *inside the guard's own
+    reference*, so it cannot serve as a second opinion about anything: the day
+    is dropped and logged, and the ledger falls through to the observation
+    channel or records ``unchecked``.  Silently keeping whichever row SQLite
+    returned first would be the same swallow-the-contradiction defect the rest
+    of this module refuses.
     """
 
     present = conn.execute(
@@ -434,6 +642,7 @@ def exchange_settlement_highs(conn: sqlite3.Connection) -> dict[SettlementKey, f
         "WHERE market_status = 'finalized' AND expiration_value IS NOT NULL"
     ).fetchall()
     highs: dict[SettlementKey, float] = {}
+    contradictions: set[SettlementKey] = set()
     for ticker, target_date, value in rows:
         city = city_for_market_ticker(str(ticker))
         if city is None:
@@ -441,7 +650,63 @@ def exchange_settlement_highs(conn: sqlite3.Connection) -> dict[SettlementKey, f
         number = _float_or_none(value)
         if number is None:
             continue
-        highs.setdefault((city.series_ticker, str(target_date)), number)
+        key = (city.series_ticker, str(target_date))
+        existing = highs.get(key)
+        if existing is not None and existing != number:
+            contradictions.add(key)
+            continue
+        highs[key] = number
+    for key in contradictions:
+        logger.warning(
+            "exchange settlement value is not constant across the city-day; "
+            "dropping it from the integrity guard: %s", key
+        )
+        highs.pop(key, None)
+    return highs
+
+
+def observed_settlement_highs(
+    conn: sqlite3.Connection,
+    *,
+    min_observations: int = LADDER_OBSERVED_MIN_OBSERVATIONS,
+) -> dict[SettlementKey, float]:
+    """Station observation-tape maxima per ``(series_ticker, target_date)``.
+
+    Reads ``nws_daily_high_ground_truth`` from ``weather.db`` -- the second
+    integrity channel, and the only one that covers the era being scored.  Days
+    whose tape carries fewer than ``min_observations`` readings are omitted
+    entirely: a sparse tape has probably missed the peak, so it is evidence
+    about the *tape*, not about the CLI, and flagging on it would manufacture
+    false contradictions (every |delta| >= 2 °F in the 2026-08-18..09-01 window
+    came from a thin tape).
+
+    ``is_complete`` is deliberately NOT used as the density test. It has been 0
+    for every station-day since 2026-08-15 on production, so gating on it would
+    make this channel inert in exactly the era it exists to cover -- the same
+    failure as the exchange channel.
+    """
+
+    present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'nws_daily_high_ground_truth'"
+    ).fetchone()
+    if present is None:
+        return {}
+    rows = conn.execute(
+        "SELECT station_id, local_date, high_f FROM nws_daily_high_ground_truth "
+        "WHERE high_f IS NOT NULL AND observation_count >= ?",
+        (int(min_observations),),
+    ).fetchall()
+    highs: dict[SettlementKey, float] = {}
+    for station_id, local_date, high in rows:
+        try:
+            city = city_for_station(str(station_id))
+        except KeyError:
+            continue
+        number = _float_or_none(high)
+        if number is None:
+            continue
+        highs[(city.series_ticker, str(local_date))] = number
     return highs
 
 
@@ -450,8 +715,10 @@ def resolve_ladder_quotes(
     *,
     settlement_highs: Mapping[SettlementKey, float],
     exchange_highs: Mapping[SettlementKey, float] | None = None,
-    traded: set[tuple[str, str]] | None = None,
+    observed_highs: Mapping[SettlementKey, float] | None = None,
+    traded: Mapping[tuple[str, str], str] | None = None,
     tolerance_f: float = LADDER_INTEGRITY_TOLERANCE_F,
+    observed_tolerance_f: float = LADDER_OBSERVED_TOLERANCE_F,
 ) -> tuple[list[LadderBinOutcome], list[LadderQuote]]:
     """Label every quote that has final CLI truth; return the rest unlabelled.
 
@@ -461,7 +728,8 @@ def resolve_ladder_quotes(
     """
 
     exchange = exchange_highs or {}
-    held = traded or set()
+    observed = observed_highs or {}
+    held = traded or {}
     resolved: list[LadderBinOutcome] = []
     unlabelled: list[LadderQuote] = []
     for quote in quotes:
@@ -481,7 +749,15 @@ def resolve_ladder_quotes(
             high,
         )
         exchange_high = exchange.get(key)
-        status, delta = assess_integrity(high, exchange_high, tolerance_f=tolerance_f)
+        observed_high = observed.get(key)
+        status, delta, source = assess_integrity(
+            high,
+            exchange_high,
+            observed_high,
+            tolerance_f=tolerance_f,
+            observed_tolerance_f=observed_tolerance_f,
+        )
+        profiles = held.get((quote.market_ticker, quote.side))
         resolved.append(
             LadderBinOutcome(
                 quote=quote,
@@ -489,9 +765,12 @@ def resolve_ladder_quotes(
                 truth_source=TRUTH_SOURCE_CLI_SETTLEMENT,
                 resolved_yes=yes,
                 side_won=side_wins(quote.side, yes),
-                traded=(quote.market_ticker, quote.side) in held,
+                traded=profiles is not None,
+                traded_profiles=profiles,
                 exchange_settlement_high_f=exchange_high,
+                observed_settlement_high_f=observed_high,
                 truth_delta_f=delta,
+                integrity_source=source,
                 integrity_status=status,
             )
         )
@@ -536,8 +815,11 @@ def record_ladder_outcomes(
                 1 if outcome.resolved_yes else 0,
                 1 if outcome.side_won else 0,
                 1 if outcome.traded else 0,
+                outcome.traded_profiles,
                 outcome.exchange_settlement_high_f,
+                outcome.observed_settlement_high_f,
                 outcome.truth_delta_f,
+                outcome.integrity_source,
                 outcome.integrity_status,
             ),
         )
@@ -551,18 +833,27 @@ def build_ladder_outcomes_for_date(
     target_date: str,
     settlement_highs: Mapping[SettlementKey, float],
     exchange_highs: Mapping[SettlementKey, float] | None = None,
+    observed_highs: Mapping[SettlementKey, float] | None = None,
     cities: Sequence[CityConfig] = CITIES,
     tolerance_f: float = LADDER_INTEGRITY_TOLERANCE_F,
+    observed_tolerance_f: float = LADDER_OBSERVED_TOLERANCE_F,
 ) -> tuple[list[LadderBinOutcome], list[LadderQuote]]:
-    """Assemble one target date's resolved ladder from the journal."""
+    """Assemble one target date's resolved ladder from the journal.
+
+    Pure reads. The caller opens the write transaction *after* this returns:
+    these scans cost seconds on a multi-gigabyte journal and the 2-minute paper
+    monitor waits on the write lock with a 30 s busy_timeout.
+    """
 
     quotes = offered_ladder_quotes(conn, target_date=target_date, cities=cities)
     return resolve_ladder_quotes(
         quotes,
         settlement_highs=settlement_highs,
         exchange_highs=exchange_highs,
+        observed_highs=observed_highs,
         traded=traded_bins(conn, target_date=target_date),
         tolerance_f=tolerance_f,
+        observed_tolerance_f=observed_tolerance_f,
     )
 
 
@@ -589,6 +880,61 @@ def previous_complete_settlement_day(
 
     slowest = city or min(CITIES, key=lambda item: item.standard_utc_offset_hours)
     return (settlement_today(now, slowest) - timedelta(days=1)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Completeness -- the ledger's population is only as honest as its coverage
+# ---------------------------------------------------------------------------
+
+
+def assess_ladder_coverage(
+    offered_bins: Mapping[tuple[str, str], int],
+    *,
+    today: str,
+    full_days: int = LADDER_RETENTION_FULL_DAYS,
+) -> dict[str, Any]:
+    """Say out loud where the offered-bin population is not complete.
+
+    ``offered_bins`` maps ``(series_ticker, target_date)`` to the number of
+    distinct bins the journal still holds for that city-day.
+
+    Two independent signals, because retention deletes exactly the rows this
+    ledger reads (``COALESCE(approved,0)=0 AND COALESCE(signal_approved,0)=0``):
+
+    ``retention_incomplete_dates``
+        Target dates already older than the full-fidelity horizon.  Beyond it
+        the surviving population is approval-biased -- the trade filter this
+        table exists to escape -- whether or not the bin *count* looks right.
+
+    ``thin_city_days``
+        City-days offering fewer bins than the widest ladder in the same run.
+        On production this separates the eroded era cleanly: every city-day from
+        2026-07-19 onward carries 6 bins, while June and early July carry 1-5.
+    """
+
+    counts = {key: int(value) for key, value in offered_bins.items()}
+    expected = max(counts.values(), default=0)
+    thin = [
+        {
+            "series_ticker": series,
+            "target_date": target_date,
+            "offered_bins": count,
+            "expected_bins": expected,
+        }
+        for (series, target_date), count in sorted(counts.items())
+        if count < expected
+    ]
+    horizon = (date.fromisoformat(str(today)) - timedelta(days=int(full_days))).isoformat()
+    incomplete = sorted(
+        {target_date for _, target_date in counts if str(target_date) < horizon}
+    )
+    return {
+        "city_days": len(counts),
+        "expected_bins_per_city_day": expected,
+        "thin_city_days": thin,
+        "retention_full_fidelity_since": horizon,
+        "retention_incomplete_dates": incomplete,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +965,14 @@ def score_ladder_outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     Scored on the *recorded side's* outcome, so a NO book's probabilities are
     compared against whether NO won -- the same convention the audit's
     model-versus-market comparison used.
+
+    Every row that leaves the population is counted on its way out.  A metric
+    over silently fewer bins than the caller asked for is the failure mode this
+    whole module is trying to remove, so ``unchecked_bins``,
+    ``flagged_bins_excluded`` and ``unscorable_bins`` all come back with the
+    numbers, and the ``quote_leads`` / ``risk_profiles`` mixes come back too:
+    ``quote_lead`` is ~98% confounded with ``risk_profile`` in production, so a
+    lead mix read as a book comparison is a wrong answer waiting to happen.
     """
 
     model: list[tuple[float, float]] = []
@@ -629,7 +983,11 @@ def score_ladder_outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     cities: set[str] = set()
     dates: set[str] = set()
     flagged = 0
+    unchecked = 0
+    unscorable = 0
     traded = 0
+    leads: dict[str, int] = {}
+    profiles: dict[str, int] = {}
     for row in rows:
         status = str(row["integrity_status"])
         if status == INTEGRITY_FLAGGED:
@@ -639,12 +997,19 @@ def score_ladder_outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         model_p = _float_or_none(row["model_probability"])
         market_p = _float_or_none(row["market_probability"])
         if model_p is None or market_p is None:
+            unscorable += 1
             continue
         scored += 1
+        if status == INTEGRITY_UNCHECKED:
+            unchecked += 1
         day_markets.add((str(row["market_ticker"]), str(row["target_date"])))
         cities.add(str(row["series_ticker"]))
         dates.add(str(row["target_date"]))
         traded += 1 if int(row["traded"] or 0) else 0
+        lead = _row_get(row, "quote_lead")
+        leads[str(lead)] = leads.get(str(lead), 0) + 1
+        profile = _row_get(row, "quote_risk_profile")
+        profiles[str(profile)] = profiles.get(str(profile), 0) + 1
         model.append((model_p, outcome))
         market.append((market_p, outcome))
         blend.append((0.5 * (model_p + market_p), outcome))
@@ -655,6 +1020,10 @@ def score_ladder_outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "target_dates": len(dates),
         "traded_bins": traded,
         "flagged_bins_excluded": flagged,
+        "unchecked_bins": unchecked,
+        "unscorable_bins": unscorable,
+        "quote_leads": leads,
+        "risk_profiles": profiles,
         "brier_model": _brier(model),
         "brier_market": _brier(market),
         "brier_blend": _brier(blend),

@@ -1,12 +1,20 @@
 [Unit]
 # NOT INSTALLED OR ENABLED -- see the matching .service.in header.
-Description=Score the previous complete settlement day's full ladder, once nightly
+Description=Score the previous complete settlement days' full ladder, once nightly
 
 [Timer]
-# 11:20 UTC is 03:20 PST: past the last station's midnight-standard close and
-# past the CLI finalization the auto-settle timer already waits for, and off the
-# publish/scan/monitor cadence so it never contends with them.
-OnCalendar=*-*-* 11:20:00
+# 13:20 UTC is 05:20 PST. The final CLI for D-1 is issued 01:30-04:40 LOCAL
+# (audit FC-11), which for the westernmost UTC-8 station is 09:30-12:40 UTC, so
+# the earlier 11:20 UTC slot this unit first carried fired INSIDE that window
+# and would have missed the Pacific cities' own truth on some nights. 13:20
+# clears it, and is still off the publish/scan/monitor cadence so it never
+# contends with them.
+#
+# A clock alone is not a guarantee, so the command does not depend on one: the
+# service resolves the last few days, not just D-1, and the ledger's upsert
+# refuses to downgrade a row it already has. A CLI that lands late is picked up
+# by the next run instead of leaving a permanent hole.
+OnCalendar=*-*-* 13:20:00
 RandomizedDelaySec=300
 Persistent=true
 Unit=sfo-kalshi-ladder-outcomes.service

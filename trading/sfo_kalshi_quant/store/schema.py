@@ -9,10 +9,12 @@ from datetime import UTC, datetime
 
 from ..account import LIVE_STABILITY_ACCOUNT_ID
 from ..ladder_truth import (
+    LADDER_BIN_OUTCOME_AUDIT_COLUMNS,
     LADDER_BIN_OUTCOME_INDEXES,
     LADDER_BIN_OUTCOME_SCHEMA,
     LADDER_INTEGRITY_TOLERANCE_F,
-    derive_integrity_status,
+    LADDER_OBSERVED_TOLERANCE_F,
+    derive_integrity_verdict,
 )
 from .market_day_settlements import (
     MARKET_DAY_SETTLEMENT_INDEXES,
@@ -1417,6 +1419,13 @@ def _init_store_locked(self) -> None:
         _migrate_legacy_profile_names(conn)
         _migrate_closed_row_position_won(conn)
         _migrate_market_day_truth_ranks(conn)
+        existing_ladder = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ladder_bin_outcomes)").fetchall()
+        }
+        _add_missing_columns(
+            conn, "ladder_bin_outcomes", existing_ladder, LADDER_BIN_OUTCOME_AUDIT_COLUMNS
+        )
         _migrate_ladder_integrity_status(conn)
         scan_context_index = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' "
@@ -1615,23 +1624,26 @@ def _migrate_market_day_truth_ranks(conn: sqlite3.Connection) -> int:
     return updated
 
 
-_LADDER_INTEGRITY_MIGRATION_KEY = "ladder_bin_outcome_integrity_status_v1"
+_LADDER_INTEGRITY_MIGRATION_KEY = "ladder_bin_outcome_integrity_status_v2"
 
 
 def _migrate_ladder_integrity_status(conn: sqlite3.Connection) -> int:
-    """Re-derive every stored ``integrity_status`` from the current tolerance.
+    """Re-derive every stored integrity verdict from the current tolerances.
 
     ``ladder_bin_outcomes.integrity_status`` is a cached projection of
-    ``|settlement_high_f - exchange_settlement_high_f|`` against
-    ``ladder_truth.LADDER_INTEGRITY_TOLERANCE_F``, exactly as ``truth_rank`` is
-    a projection of ``TRUTH_SOURCE_RANKS``. A database written under a different
-    tolerance carries verdicts that no longer mean what the constant says, and
-    the flagged count is the whole point of the guard -- a stale ``ok`` is a
-    silently accepted bad label.
+    ``settlement_high_f`` against whichever independent record exists for the
+    station-day, exactly as ``truth_rank`` is a projection of
+    ``TRUTH_SOURCE_RANKS``. A database written under a different tolerance -- or
+    before the observation channel existed -- carries verdicts that no longer
+    mean what the constants say, and the flagged count is the whole point of the
+    guard: a stale ``ok`` is a silently accepted bad label and a stale
+    ``unchecked`` is a guard that never fired.
 
-    Both inputs are stored, so the verdict is fully recoverable from the row and
-    this rewrites no outcome, only the verdict over it. Changing the tolerance
-    requires bumping this key so the re-derivation runs again.
+    Every input is stored, so the verdict is fully recoverable from the row and
+    this rewrites no outcome, only the verdict over it (``truth_delta_f`` and
+    ``integrity_source`` move with the status because all three are the same
+    projection). Changing either tolerance, or adding a channel, requires
+    bumping this key so the re-derivation runs again.
     """
 
     if conn.execute(
@@ -1642,18 +1654,27 @@ def _migrate_ladder_integrity_status(conn: sqlite3.Connection) -> int:
     updated = 0
     rows = conn.execute(
         "SELECT market_ticker, target_date, side, settlement_high_f, "
-        "exchange_settlement_high_f, integrity_status FROM ladder_bin_outcomes"
+        "exchange_settlement_high_f, observed_settlement_high_f, truth_delta_f, "
+        "integrity_source, integrity_status FROM ladder_bin_outcomes"
     ).fetchall()
-    for ticker, target_date, side, high, exchange_high, status in rows:
-        expected = derive_integrity_status(
-            high, exchange_high, tolerance_f=LADDER_INTEGRITY_TOLERANCE_F
+    for (
+        ticker, target_date, side, high, exchange_high, observed_high,
+        delta, source_name, status,
+    ) in rows:
+        expected = derive_integrity_verdict(
+            high,
+            exchange_high,
+            observed_high,
+            tolerance_f=LADDER_INTEGRITY_TOLERANCE_F,
+            observed_tolerance_f=LADDER_OBSERVED_TOLERANCE_F,
         )
-        if expected == str(status):
+        if expected == (str(status), delta, source_name):
             continue
         updated += conn.execute(
-            "UPDATE ladder_bin_outcomes SET integrity_status = ? "
+            "UPDATE ladder_bin_outcomes SET integrity_status = ?, truth_delta_f = ?, "
+            "integrity_source = ? "
             "WHERE market_ticker = ? AND target_date = ? AND side = ?",
-            (expected, ticker, target_date, side),
+            (*expected, ticker, target_date, side),
         ).rowcount
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",

@@ -946,8 +946,18 @@ def register_paper_commands(sub) -> None:
     ladder_outcomes.add_argument(
         "--nightly", action="store_true",
         help=(
-            "Resolve only the previous complete settlement day, measured on the "
-            "westernmost station's clock so no city's day is still open"
+            "Resolve the previous complete settlement day, measured on the "
+            "westernmost station's clock so no city's day is still open, plus "
+            "--nightly-lookback-days before it"
+        ),
+    )
+    ladder_outcomes.add_argument(
+        "--nightly-lookback-days", type=int, default=3,
+        help=(
+            "How many earlier days --nightly re-resolves. A station's final CLI "
+            "for D-1 is issued 01:30-04:40 local, so a one-shot nightly leaves a "
+            "permanent hole whenever it runs first; re-resolving closes it (the "
+            "upsert never downgrades a row it already has)"
         ),
     )
     ladder_outcomes.add_argument(
@@ -959,8 +969,13 @@ def register_paper_commands(sub) -> None:
         help="Print model-vs-market Brier/log-loss over the recorded range",
     )
     ladder_outcomes.add_argument(
-        "--quote-lead", default=None, choices=("day_ahead", "same_day"),
-        help="Restrict --score to one quote class (default: both)",
+        "--quote-lead", default="day_ahead", choices=("day_ahead", "same_day", "all"),
+        help=(
+            "Which quote class --score compares model against market on. "
+            "Same-day quotes see part of the day's heating and are far easier "
+            "(Brier 0.0500 against 0.1042 on the validated window), so 'all' "
+            "pools two different questions and is diagnostic only"
+        ),
     )
     ladder_outcomes.add_argument(
         "--side", default="NO", choices=("NO", "YES", "both"),
@@ -974,8 +989,17 @@ def register_paper_commands(sub) -> None:
         "--show-flagged", type=int, default=20,
         help="How many integrity-flagged station-days to list (0 for none)",
     )
+    ladder_outcomes.add_argument(
+        "--allow-incomplete", action="store_true",
+        help=(
+            "Exit 0 even when the run reports integrity flags, unresolved older "
+            "days, or a ladder already thinned by retention. For a deliberate "
+            "historical backfill, where a thin ladder is the expected answer"
+        ),
+    )
     ladder_outcomes.add_argument("--json", action="store_true", help="Emit JSON only")
     ladder_outcomes.set_defaults(func=cmd_paper_ladder_outcomes)
+
 
 def register_backtest_commands(sub) -> None:
     market_backtest = sub.add_parser("backtest-market", help="Summarize settled paper-trading PnL")

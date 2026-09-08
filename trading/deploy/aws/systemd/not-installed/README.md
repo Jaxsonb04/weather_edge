@@ -21,11 +21,34 @@ it.
 ## sfo-kalshi-ladder-outcomes
 
 Nightly `paper-ladder-outcomes --nightly` (audit IMP-1): resolves every offered
-ladder bin for the previous complete settlement day into `ladder_bin_outcomes`.
+ladder bin for the previous complete settlement day, plus
+`--nightly-lookback-days` (default 3) before it, into `ladder_bin_outcomes`.
 Read-only scoring -- it writes no order, ledger, policy, or trading decision --
 but it does read `decision_snapshots` on a multi-gigabyte database, so it should
 only be enabled once the box's CPU-credit and disk budgets (audit OPS-1/OPS-2)
 are known to be healthy.
+
+Two behaviours the operator should know before enabling it:
+
+* **It re-resolves recent days rather than only D-1.** A station's final CLI for
+  D-1 is issued 01:30-04:40 local, so a one-shot nightly leaves a permanent hole
+  for any station whose CLI had not landed yet: the bins come back in
+  `missing_truth`, are written nowhere, and the next night moves on to the next
+  day. The lookback closes that on the following run, and the ledger's upsert
+  refuses to downgrade a row it already has. The timer also fires at 13:20 UTC
+  rather than 11:20, which is past the westernmost station's CLI window.
+* **It exits non-zero when something is wrong,** because `OnFailure=` is the
+  only production notification path this unit has. An integrity contradiction,
+  a hole on a day older than the newest in range, or a ladder retention has
+  already thinned all produce exit 1. `--allow-incomplete` waives the
+  completeness alerts for a deliberate historical backfill; it never waives an
+  integrity contradiction.
+
+Per-run cost on production (measured read-only, 2026-09-05): two bounded
+`decision_snapshots` passes per target date, 0.26 s for the pair, plus one
+exchange-settlement scan and one traded-bins query. The write lock is taken per
+target date for a ~180-row upsert and released immediately, so a run cannot
+starve the 2-minute paper monitor.
 
 To enable it, deliberately:
 

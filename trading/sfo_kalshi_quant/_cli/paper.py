@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from dataclasses import replace
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from ..cities import CITIES, CityConfig, get_city, parse_city_slugs
 from ..colors import Color
@@ -22,8 +22,11 @@ from ..forecast import SfoForecasterAdapter, parse_target_date
 from ..kalshi import KalshiPublicClient
 from ..models import target_date_from_event_ticker
 from ..report import build_daily_report, write_report
+from ..ladder_truth import (
+    LADDER_OBSERVED_MIN_OBSERVATIONS,
+    previous_complete_settlement_day,
+)
 from ..settlement_day import settlement_clock, settlement_today
-from ..ladder_truth import previous_complete_settlement_day
 from ..store.market_day_settlements import TRUTH_SOURCE_SETTLEMENT_PATH
 from ..summary import (
     build_paper_summary,
@@ -663,16 +666,35 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
     The labels are the same final NWS CLI maxima the exchange settles on, and
     the outcome of a bin is a pure function of that integer and the bin edges.
 
-    Two modes. ``--nightly`` resolves the previous complete settlement day and
-    is what a timer would run; ``--start/--end`` backfills a range. Both write
-    only ``ladder_bin_outcomes``, which no trading code path reads.
+    Two modes. ``--nightly`` resolves the previous complete settlement day plus
+    a short lookback; ``--start/--end`` backfills a range. Both write only
+    ``ladder_bin_outcomes``, which no trading code path reads.
+
+    The lookback is not decoration. A station's final CLI for D-1 is issued
+    01:30-04:40 local, so a single-shot nightly that resolves exactly one day
+    leaves a permanent hole for any station whose CLI had not landed -- the
+    bins come back in ``missing_truth``, are written nowhere, and nothing ever
+    looks at that day again. Re-resolving the last few days closes the hole on
+    the next run, and the upsert refuses to downgrade a row it already has.
+
+    Exit status is an alert channel, not decoration either: the only production
+    notification path for the nightly unit is ``OnFailure=``, so a run that
+    found an integrity contradiction, a hole older than the newest day in its
+    range, or a ladder thinned by retention must not exit 0.
+    ``--allow-incomplete`` is the escape hatch for a deliberate historical
+    backfill, where a thin ladder is the expected answer rather than an alarm --
+    and it waives ONLY the completeness alerts. An integrity contradiction says
+    a label may be wrong, and nothing waives that.
     """
 
     color = Color.from_no_color(args.no_color)
     if args.nightly:
         if args.start or args.end:
-            raise ValueError("--nightly resolves one day; drop --start/--end")
-        start = end = previous_complete_settlement_day()
+            raise ValueError("--nightly resolves recent days; drop --start/--end")
+        end_date = previous_complete_settlement_day()
+        lookback = max(int(args.nightly_lookback_days), 0)
+        start = (date.fromisoformat(end_date) - timedelta(days=lookback)).isoformat()
+        end = end_date
     else:
         if not args.start:
             raise ValueError("give --start (and optionally --end), or --nightly")
@@ -681,19 +703,62 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
     store = PaperStore(args.db_path)
     # weather.db truth, all fifteen stations at once; the adapter's city only
     # selects a station for the per-city readers.
-    cli_settlement_highs = SfoForecasterAdapter(
-        args.forecaster_root
-    ).load_cli_settlement_truth()
+    adapter = SfoForecasterAdapter(args.forecaster_root)
+    cli_settlement_highs = adapter.load_cli_settlement_truth()
+    # The integrity guard's second opinion. The exchange's own settlement value
+    # is the stronger channel but its coverage stops at target date 2026-07-07;
+    # the station observation tape covers every era the journal does, so without
+    # it the guard is inert exactly where the scoring happens.
+    observed_settlement_highs = adapter.load_observed_daily_highs(
+        min_observations=LADDER_OBSERVED_MIN_OBSERVATIONS
+    )
     summary = store.backfill_ladder_bin_outcomes(
         start=start,
         end=end,
         cli_settlement_highs=cli_settlement_highs,
+        observed_settlement_highs=observed_settlement_highs,
         dry_run=args.dry_run,
     )
+    coverage = summary["coverage"]
+    # A hole on the newest day is normal -- its CLI may still be hours away.
+    # A hole on any older day is one the lookback failed to close.
+    stale_missing = [
+        entry for entry in summary["missing_truth"] if str(entry["target_date"]) < end
+    ]
+    # Two alert classes, because they mean different things. An integrity
+    # contradiction says a LABEL may be wrong, and no flag suppresses that. A
+    # completeness alert says the POPULATION is thinner than the ladder, which
+    # is the expected answer for a deliberate historical backfill and is what
+    # --allow-incomplete acknowledges.
+    integrity_alerts: list[str] = []
+    completeness_alerts: list[str] = []
+    if summary["flagged"]:
+        integrity_alerts.append(f"{len(summary['flagged'])} integrity-flagged bin(s)")
+    if stale_missing:
+        completeness_alerts.append(
+            f"{len(stale_missing)} bin(s) still without final CLI truth on a day "
+            "older than the newest in range"
+        )
+    if coverage["thin_city_days"]:
+        completeness_alerts.append(
+            f"{len(coverage['thin_city_days'])} city-day(s) offering fewer than "
+            f"{coverage['expected_bins_per_city_day']} bins"
+        )
+    if coverage["retention_incomplete_dates"]:
+        completeness_alerts.append(
+            f"{len(coverage['retention_incomplete_dates'])} target date(s) past the "
+            f"full-fidelity retention horizon "
+            f"({coverage['retention_full_fidelity_since']}): the offered-bin "
+            "population there is approval-biased"
+        )
+    alerts = integrity_alerts + completeness_alerts
+    summary["alerts"] = alerts
+    fatal = integrity_alerts if args.allow_incomplete else alerts
     side = None if args.side == "both" else args.side
+    quote_lead = None if args.quote_lead == "all" else args.quote_lead
     score = (
         store.score_ladder_bin_outcomes(
-            start=start, end=end, quote_lead=args.quote_lead, side=side
+            start=start, end=end, quote_lead=quote_lead, side=side
         )
         if args.score
         else None
@@ -703,24 +768,39 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
         if score is not None:
             payload["score"] = score
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
+        return 1 if fatal else 0
 
     prefix = "would record" if summary["dry_run"] else "recorded"
     print(
         color.cyan(
             f"ladder outcome ledger {start}..{end}: {summary['target_dates']} target "
-            f"date(s); {summary['offered_bins']} offered bin(s); {prefix} "
+            f"date(s); {summary['offered_bins']} offered bin(s) over "
+            f"{coverage['city_days']} city-day(s); {prefix} "
             f"{summary['resolved_bins']} resolved bin(s); "
-            f"{summary['missing_truth_bins']} still awaiting a final CLI maximum; "
-            f"{len(summary['flagged'])} integrity-flagged"
+            f"{summary['missing_truth_bins']} still awaiting a final CLI maximum"
+        )
+    )
+    # "0 integrity-flagged" on its own cannot be distinguished from "nothing
+    # could be checked at all", which is the confusion the tri-state status
+    # exists to prevent. Always print both numbers together.
+    print(
+        color.cyan(
+            f"integrity: {len(summary['flagged'])} flagged, "
+            f"{summary['unchecked_bins']} unchecked of "
+            f"{summary['resolved_bins']} resolved"
         )
     )
     for entry in summary["flagged"][: args.show_flagged]:
+        reference = (
+            entry["exchange_settlement_high_f"]
+            if entry["integrity_source"] == "dataset_kalshi_markets"
+            else entry["observed_settlement_high_f"]
+        )
         print(
             color.red(
                 f"INTEGRITY: {entry['market_ticker']} {entry['target_date']} "
                 f"{entry['station_id']} CLI={entry['settlement_high_f']} vs "
-                f"exchange={entry['exchange_settlement_high_f']} "
+                f"{entry['integrity_source']}={reference} "
                 f"(delta {entry['truth_delta_f']:+.1f}F >= tolerance)"
             ),
             file=sys.stderr,
@@ -733,15 +813,36 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
             ),
             file=sys.stderr,
         )
+    for entry in coverage["thin_city_days"][: args.show_flagged]:
+        print(
+            color.yellow(
+                f"THIN LADDER: {entry['series_ticker']} {entry['target_date']} "
+                f"offered {entry['offered_bins']} of {entry['expected_bins']} bins "
+                "-- retention has already pruned the unapproved rows"
+            ),
+            file=sys.stderr,
+        )
     if score is not None:
-        lead = args.quote_lead or "all"
+        lead = args.quote_lead
         print(
             color.cyan(
                 f"calibration ({lead} quotes, {args.side} side): "
                 f"scored={score['scored_bins']} bins over "
                 f"{score['day_markets']} day-market(s), {score['cities']} city/cities, "
                 f"{score['target_dates']} date(s); traded={score['traded_bins']}; "
-                f"excluded_flagged={score['flagged_bins_excluded']}"
+                f"excluded_flagged={score['flagged_bins_excluded']}; "
+                f"unchecked={score['unchecked_bins']}; "
+                f"unscorable={score['unscorable_bins']}"
+            )
+        )
+        # quote_lead is ~98% confounded with risk_profile in production (the
+        # research book supplies almost every day-ahead quote and the live book
+        # almost every same-day one), so a profile split read as book skill is a
+        # wrong answer. Print the mix beside the metric so it cannot hide.
+        print(
+            color.cyan(
+                f"  quote leads {_fmt_mix(score['quote_leads'])} "
+                f"| books {_fmt_mix(score['risk_profiles'])}"
             )
         )
         print(
@@ -758,7 +859,23 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
                 f"| realized={_fmt_metric(score['realized_frequency'])}"
             )
         )
-    return 0
+    for alert in alerts:
+        print(color.red(f"ALERT: {alert}"), file=sys.stderr)
+    if completeness_alerts and args.allow_incomplete:
+        print(
+            color.yellow(
+                "--allow-incomplete: the completeness alerts above do not change "
+                "the exit status"
+            ),
+            file=sys.stderr,
+        )
+    return 1 if fatal else 0
+
+
+def _fmt_mix(counts: dict) -> str:
+    if not counts:
+        return "--"
+    return " ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
 
 def _fmt_metric(value: float | None) -> str:

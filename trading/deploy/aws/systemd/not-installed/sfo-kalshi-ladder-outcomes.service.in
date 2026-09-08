@@ -16,9 +16,15 @@ User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
 # --nightly resolves the previous complete settlement day, measured on the
-# westernmost station's fixed-standard clock, so no city's climate day is still
-# open when the ledger labels it. Writes only ladder_bin_outcomes; no trading
-# code path reads that table.
+# westernmost station's fixed-standard clock so no city's climate day is still
+# open when the ledger labels it, plus --nightly-lookback-days before it. The
+# lookback is what makes OnFailure= a real alert channel rather than a
+# formality: a station whose final CLI lands after this run is retried on the
+# next one instead of leaving a hole nothing ever revisits, and the command
+# exits non-zero -- so this unit alerts -- on an integrity contradiction, on a
+# hole older than the newest day in its range, or on a ladder retention has
+# already thinned. Writes only ladder_bin_outcomes; no trading code path reads
+# that table.
 ExecStart=__TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color --forecaster-root __FORECASTER_DIR__ --db-path __TRADING_DIR__/data/paper_trading.db paper-ladder-outcomes --nightly
 Nice=10
 CPUWeight=50
