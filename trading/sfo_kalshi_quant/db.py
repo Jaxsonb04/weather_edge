@@ -3583,6 +3583,15 @@ class PaperStore:
         except ValueError as exc:
             raise ValueError("research target date is invalid") from exc
         preflight_civil_day = self._research_objective_day()
+        # ResearchEntryLimitError, not ValueError: paper.py journals this via
+        # mark_research_decision_admission_blocked and keeps scanning the rest
+        # of the tick, instead of the exception escaping cmd_portfolio_scan and
+        # killing the unit mid-tick (REG-1/OPS-4). The cost is real and needs an
+        # owner: a systemic objective-day misconfiguration would now surface
+        # only as a rising count of "canonical research entry rejected"
+        # decision rows. That counter has fired 0 times to date, and nothing
+        # alerts on it while OPS-3 (SFO_FRESHNESS_ALERT_URL unset) is open, so
+        # it is the number to watch after this ships.
         if admission.objective_day != preflight_civil_day.isoformat():
             raise ResearchEntryLimitError(
                 "research admission objective day must equal the current "
@@ -3786,6 +3795,13 @@ class PaperStore:
                     reason=reason,
                 ):
                     conn.rollback()
+                    # Stays a plain ValueError on purpose, unlike the gates
+                    # above. This fires only when the pending decision row is
+                    # already gone -- exactly the state in which
+                    # mark_research_decision_admission_blocked matches nothing
+                    # and returns False, a return both paper.py call sites
+                    # discard. Converting it would turn a state-corruption
+                    # signal into a silent no-op rather than a journalled skip.
                     raise ValueError("research pending evidence changed during admission")
                 conn.commit()
                 return None

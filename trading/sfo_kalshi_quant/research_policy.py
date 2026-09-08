@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import time
+from datetime import datetime, time, timezone
 from enum import Enum
 from zoneinfo import ZoneInfo
 
@@ -75,6 +75,35 @@ def canonical_research_lead_bucket(lead_days: int) -> str:
     if isinstance(lead_days, bool) or not isinstance(lead_days, int) or lead_days < 0:
         raise ValueError("research lead days must be a non-negative integer")
     return "same-day" if lead_days == 0 else "day-ahead"
+
+
+# REG-1 (2026-09-07) moved the research lead measure -- and therefore the
+# ``lead_bucket`` label stamped on every research decision and order -- from the
+# Los Angeles civil day onto the station's fixed-standard settlement day. The
+# two clocks name the same date except between 05:00 and 08:00 UTC, so a label
+# written inside that window can mean different things before and after the
+# change and a label written outside it cannot. Both directions occur: at
+# 05:00-07:00 UTC an Eastern/Central station is a day ahead of Los Angeles (a
+# row labelled "day-ahead" was same-day at its station), and at 07:00-08:00 UTC
+# during DST a Pacific-standard station is a day behind (a row labelled
+# "same-day" was day-ahead at its station).
+#
+# Historical rows are NOT backfilled. Consumers that group by ``lead_bucket``
+# across the change must therefore report how many of their rows fall in this
+# window rather than assume one definition -- research_goals._lead_split does.
+# The window is a property of the 15 station offsets, not a guess: it is
+# re-derived for every hour of a full year by
+# test_lead_bucket_clock_window_covers_every_station_disagreement.
+LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS = frozenset({5, 6, 7})
+
+
+def lead_bucket_clock_is_ambiguous(created_at: datetime) -> bool:
+    """Whether a row stamped at this moment has a clock-dependent lead label."""
+
+    if created_at.tzinfo is None:
+        raise ValueError("lead bucket clock check requires an aware timestamp")
+    hour = created_at.astimezone(timezone.utc).hour
+    return hour in LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS
 
 
 TARGET_POLICY_V1 = ResearchSleevePolicy(

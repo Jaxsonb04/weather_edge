@@ -1769,6 +1769,117 @@ def test_research_scan_rejects_same_day_station_target_before_admission(
     assert execution.motion_order_ids == ()
 
 
+def test_research_scan_admits_day_ahead_target_on_lagging_station_clock(
+    tmp_path: Path,
+) -> None:
+    """REG-1, the other direction: the station clock also ADMITS.
+
+    Moving the scanner's lead measure onto the station clock is two-sided, and
+    this is the half that widens rather than narrows. At 07:30 UTC on a DST
+    date the Los Angeles civil day has already rolled to Sep 6 while SFO's
+    fixed-standard (PST) settlement day is still Sep 5, so a Sep 6 target is
+    lead 1 -- day-ahead -- at the station and lead 0 against the civil day.
+    Before the fix the scanner rejected it as "target requires day-ahead lead";
+    the store's atomic gate, which was already on the station clock, would not
+    have. The candidate is therefore admitted now where it previously was not,
+    and that is asserted here rather than left to a green suite: the same three
+    Pacific-standard cities (sfo, lax, sea) are the only ones this reaches, for
+    one hour a day, during DST only.
+    """
+
+    from sfo_kalshi_quant._cli import scan as scan_module
+    from sfo_kalshi_quant.cities import get_city
+    from sfo_kalshi_quant.db import PaperStore
+
+    now = datetime(2026, 9, 6, 7, 30, tzinfo=UTC)
+    store = PaperStore(
+        tmp_path / "sfo-station-lead.db",
+        research_clock=lambda: now,
+    )
+    city = get_city("sfo")
+    # The civil day is AHEAD of the station here -- the mirror of the Austin
+    # case above, where the station was ahead of the civil day.
+    assert store.research_objective_day() == date(2026, 9, 6)
+    assert store.research_station_day(city) == date(2026, 9, 5)
+
+    decision = _atomic_decision("KXHIGHTSFO-26SEP06-B80.5")
+    context = SimpleNamespace(
+        decisions=[decision],
+        city=city,
+        series_ticker=city.series_ticker,
+        intraday=None,
+        forecast=None,
+        event=None,
+        consensus=None,
+    )
+
+    plans, execution, recorded = scan_module._execute_research_scan_context(
+        context,
+        target=date(2026, 9, 6),
+        store=store,
+        config=strategy_config_for_profile("research"),
+        entry_allowed=True,
+        entry_block_reason=None,
+        place_paper=True,
+        place_research_target=True,
+        place_research_motion=False,
+        forecast_snapshot_id=None,
+        market_snapshot_id=None,
+        scan_run_id="reg-1-station-lead-admit",
+    )
+
+    assert recorded == [decision]
+    assert [disposition.reason for disposition in plans.target.dispositions] == [None]
+    assert len(plans.target.legs) == 1
+    assert len(execution.target_order_ids) == 1
+
+    order = store.paper_order(execution.target_order_ids[0])
+    assert order is not None
+    # Stamped from the station clock, not the civil day: the civil-day label
+    # would have been "same-day", and the atomic gate rejects a label that
+    # disagrees with the station lead.
+    assert order["lead_bucket"] == "day-ahead"
+    assert order["objective_day"] == "2026-09-06"
+
+
+def test_lead_bucket_clock_window_covers_every_station_disagreement() -> None:
+    """The declared 05:00-08:00 UTC window is derived, not asserted by hand.
+
+    ``lead_bucket`` labels written before and after REG-1 can only differ for
+    rows stamped while some station's fixed-standard day disagrees with the Los
+    Angeles civil day. Sweep every hour of a full year against the repo's own
+    settlement clock and confirm that set is exactly the declared window, so
+    research_goals' contamination counter cannot silently miss an hour if a city
+    with a new standard offset is added.
+    """
+
+    from sfo_kalshi_quant.cities import CITIES
+    from sfo_kalshi_quant.research_policy import (
+        LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS,
+        RESEARCH_OBJECTIVE_TZ,
+        lead_bucket_clock_is_ambiguous,
+    )
+    from sfo_kalshi_quant.settlement_day import settlement_clock
+
+    start = datetime(2026, 1, 1, 0, 30, tzinfo=UTC)
+    disagreeing_hours = {
+        moment.hour
+        for step in range(365 * 24)
+        if (moment := start + timedelta(hours=step))
+        and any(
+            settlement_clock(moment, city).date()
+            != moment.astimezone(RESEARCH_OBJECTIVE_TZ).date()
+            for city in CITIES
+        )
+    }
+
+    assert disagreeing_hours == set(LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS)
+    assert lead_bucket_clock_is_ambiguous(datetime(2026, 9, 6, 7, 30, tzinfo=UTC))
+    assert not lead_bucket_clock_is_ambiguous(datetime(2026, 9, 6, 8, 30, tzinfo=UTC))
+    with pytest.raises(ValueError, match="aware timestamp"):
+        lead_bucket_clock_is_ambiguous(datetime(2026, 9, 6, 7, 30))
+
+
 def test_atomic_admission_rejects_noncanonical_lead_bucket(
     tmp_path: Path,
 ) -> None:

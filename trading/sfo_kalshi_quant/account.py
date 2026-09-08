@@ -26,6 +26,24 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # Explicitly covers behavior outside StrategyConfig (notably exit policy). Any
 # live-account behavior change must rotate this value so readiness evidence
 # cannot silently blend pre-change and post-change orders.
+#
+# NOT rotated for REG-1 (2026-09-07), which moved the *research* admission lead
+# onto each station's fixed-standard settlement clock and did move the research
+# admission boundary, in both directions. That decision is deliberate; the
+# reasoning is recorded here so it can be re-checked instead of re-derived:
+#   * strategy_fingerprint() below is profile-agnostic -- it hashes this string
+#     for research and live orders alike -- so rotating it rotates the LIVE
+#     fingerprint too.
+#   * The cohort that consumes the rotation, replay.py, filters to
+#     READINESS_LIVE_ACCOUNT_IDS = {paper-shared, paper-live-stability-v1}. The
+#     research accounts are excluded from it by construction, so a rotation
+#     would add nothing to the research book's evidence while restarting the
+#     live 30-day readiness clock over a change the live book never executes
+#     (_portfolio_scan_one_target reaches the research scanner only under
+#     `if risk_profile == "research"`, and returns).
+# The research-side discontinuity is marked instead, not hidden: see
+# LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS in research_policy.py, which the daily
+# goal report counts per lead bucket.
 STRATEGY_BEHAVIOR_VERSION = "behavior-v2-audit-remediation-2026-09-04"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
