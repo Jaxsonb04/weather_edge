@@ -149,6 +149,20 @@ sudo install -m 755 "$SCRIPT_DIR/verify_systemd_unit_integrity.sh" /usr/local/li
 render_unit "$SCRIPT_DIR/systemd/weatheredge-tmpfiles.conf" /etc/tmpfiles.d/weatheredge.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/weatheredge.conf
 
+# OPS-7: journald retention and syslog duplication are box configuration, so
+# they are deploy-managed like the tmpfiles entry above rather than left to a
+# hand edit that no deploy would ever re-apply. Restart journald only when the
+# content actually changed: journald.conf.d is read at start, and restarting it
+# on every deploy would churn the very log a deploy is being watched through.
+sudo mkdir -p /etc/systemd/journald.conf.d
+if ! sudo cmp -s "$SCRIPT_DIR/systemd/weatheredge-journald.conf" \
+  /etc/systemd/journald.conf.d/zz-weatheredge.conf; then
+  sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-journald.conf" \
+    /etc/systemd/journald.conf.d/zz-weatheredge.conf
+  sudo systemctl restart systemd-journald
+  echo "journald configuration updated and systemd-journald restarted"
+fi
+
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.timer" /etc/systemd/system/sfo-forecaster-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-google-nonsfo-refresh.timer" /etc/systemd/system/weatheredge-google-nonsfo-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-apple-refresh.timer" /etc/systemd/system/weatheredge-apple-refresh.timer

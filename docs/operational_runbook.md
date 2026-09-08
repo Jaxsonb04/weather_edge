@@ -226,6 +226,45 @@ Lead 3 is research/on-demand only. Preserve it in explicit historical
 `nwp_archive.py --backfill --start ... --end ...` runs, but do not add it back
 to the nightly `--daily` job.
 
+## Google Weather Client-Error Breaker
+
+Every Google Weather request is a billable event whether or not it succeeds, and
+the event budget alone cannot tell a working key from a dead one. In September
+2026 the box billed roughly 124 events a day for five days while **every** request
+returned 4xx (last success 2026-09-02T02:41Z, first failure 03:41Z the same
+morning, then 100% failures across all three endpoints and all fifteen cities).
+
+`GoogleUsageLedger.reserve_event` now refuses to reserve once
+`GOOGLE_WEATHER_CLIENT_ERROR_BREAKER` consecutive completed 4xx events land on
+the same Pacific billing date (default 12, about two SFO bundles; 0 disables it).
+One non-4xx outcome resets the run, and a new billing date starts clean. The
+refresh cycle also checks the breaker once up front and skips every city with
+`skipped_reason=client_error_breaker`, and `google_weather_cache.py` prints a
+loud `ERROR: Google Weather client-error circuit breaker is OPEN` line. The unit
+still exits on the EMOS baseline's result, not Google's: the served forecast does
+not depend on Google, and failing the forecaster unit over a dead research
+credential would be worse than the outage.
+
+To diagnose an open breaker:
+
+```bash
+# Which endpoints, which days, and which HTTP class.
+sqlite3 -header -column "file:/opt/weatheredge/forecaster/weather.db?mode=ro" \
+  "SELECT billing_date_pacific, endpoint, status, response_status_class,
+          error_kind, count(*)
+     FROM google_weather_usage_events
+    WHERE billing_date_pacific >= date('now','-7 day')
+    GROUP BY 1,2,3,4,5 ORDER BY 1 DESC;"
+```
+
+The ledger deliberately records only the HTTP **class**, never the status code or
+the response body: `_open_google_request` is the only place that ever holds the
+key-bearing URL, and `_dispatch_google_request` re-raises a sanitized error so no
+secret can escape into a log or a database. A 4xx on every endpoint of every city
+is a credential, entitlement, or billing-account failure and has to be fixed in
+the Google Cloud console; nothing in this repository can repair it. The breaker's
+job is only to stop paying for it.
+
 ## Archive-Gated Paper Retention
 
 Production retention belongs only to the dedicated
@@ -242,6 +281,60 @@ otherwise write roughly 60k rejection snapshots (~0.5 GB) per day. Do not
 schedule or routinely run bare `paper-prune`: it is a low-level/manual command
 for recovery work only, after an operator has independently completed and
 verified the archive gate.
+
+### Retention modes
+
+`SFO_PRUNE_MODE` selects the delete step. Leaving the key unset selects the
+default.
+
+| Mode | What it does | When |
+|---|---|---|
+| `bounded-delete` | Nightly batched delete with the paper writers running. Each batch commits and releases the write lock within `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) against the writers' 30 s `busy_timeout`, and the batch limit halves on any overrun. | Default. |
+| `quiesced-delete` | The same delete plus an operator assertion that every paper-journal writer is stopped. | Supervised catch-up after a long archive-only stretch. |
+| `archive-only` | Archive, upload, gate, FK audit; delete nothing. | Escape hatch only. |
+
+To enable nightly deletion on a host that predates this default, do nothing
+beyond deploying: the key is absent from `/etc/weatheredge.env` and the wrapper's
+default now deletes. To turn it back off, add `SFO_PRUNE_MODE=archive-only` to
+that file. Expect roughly an 88% collapse of `decision_snapshots` under the
+configured 45-day dedup, taking journal growth from ~0.67 GB/day to ~0.15 GB/day.
+Deletion frees SQLite pages but does not shrink the file; run the separately
+quiesced `compact_paper_db.sh` once when the filesystem needs the space back.
+
+The first delete after a long archive-only stretch is by far the largest. The
+unit is fenced at `MemoryHigh=2600M` / `MemoryMax=3000M` and
+`TimeoutStartSec=3600`; a supervised 2026-09-04 catch-up run of 2.1 M rows on a
+30 GB journal peaked at 3.3 GB outside those limits. Prefer a one-off
+`quiesced-delete` run for the first catch-up on such a host, then let the nightly
+`bounded-delete` hold the steady state.
+
+## Operator-Only Box Cleanups
+
+These need a shell on the production host, so no deploy and no agent performs
+them. Each is dead weight verified present on 2026-09-07; none is referenced by
+any running unit.
+
+```bash
+# Stale rsync-era source checkout, frozen at 5bc9113 (2026-07-25). The runtime
+# tree is rsynced by sync_to_box.sh, so nothing reads this. ~17 MB.
+sudo rm -rf /opt/weatheredge/.cache/main
+
+# Orphaned SQLite sidecars from a backup snapshot that no longer exists. A -shm
+# and a zero-byte -wal with no matching .sqlite3 file, plus a checksum sidecar
+# whose snapshot the last deploy already removed.
+cd /opt/weatheredge/trading/data/backups
+ls -la                                   # confirm the .sqlite3 files are gone
+sudo rm -f paper_trading-20260828T030029Z.sqlite3-shm \
+           paper_trading-20260828T030029Z.sqlite3-wal
+# Any *.sha256 with no matching *.sqlite3 is likewise orphaned.
+
+# Frozen legacy Google usage ledger, last written 2026-07-19. The authoritative
+# ledger is the google_weather_usage_events table in forecaster/weather.db.
+sudo rm -f /opt/weatheredge/forecaster/.google_weather_usage.json
+```
+
+Delete only what the listing confirms. A `-wal`/`-shm` pair beside a database
+file that still exists is live SQLite state, never garbage.
 
 ## Signal Backtest
 

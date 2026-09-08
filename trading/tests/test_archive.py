@@ -94,9 +94,16 @@ if sys.argv[1:2] == ["-"]:
     return result, [call for call in calls if "-m" in call]
 
 
-def test_scheduled_retention_defaults_to_archive_only_with_degraded_diagnostics(
+def test_scheduled_retention_defaults_to_bounded_delete_after_the_archive_gate(
     tmp_path: Path,
 ) -> None:
+    """OPS-2: an unset SFO_PRUNE_MODE must now delete, not skip.
+
+    Production ran with the key unset for months, archiving and verifying every
+    night and then deleting nothing while the journal grew ~0.7 GB/day until the
+    deploy backup gate could no longer find free space.
+    """
+
     result, cli_calls = _run_scheduled_retention(tmp_path)
 
     assert result.returncode == 0, result.stderr
@@ -104,9 +111,26 @@ def test_scheduled_retention_defaults_to_archive_only_with_degraded_diagnostics(
     assert any("--upload" in call for call in cli_calls)
     assert any("--check-gate" in call for call in cli_calls)
     assert any("paper-check-foreign-keys" in call for call in cli_calls)
+    prune_calls = [call for call in cli_calls if "paper-prune" in call]
+    assert len(prune_calls) == 1
+    gate_index = next(
+        index for index, call in enumerate(cli_calls) if "--check-gate" in call
+    )
+    assert gate_index < cli_calls.index(prune_calls[0])
+    assert "bounded live-DB deletion enabled" in result.stderr
+    assert "live-DB deletion skipped" not in result.stderr
+
+
+def test_scheduled_retention_archive_only_is_still_an_explicit_escape_hatch(
+    tmp_path: Path,
+) -> None:
+    result, cli_calls = _run_scheduled_retention(tmp_path, mode="archive-only")
+
+    assert result.returncode == 0, result.stderr
+    assert any("--check-gate" in call for call in cli_calls)
     assert not any("paper-prune" in call for call in cli_calls)
     assert "DEGRADED" in result.stderr
-    assert "live-DB deletion skipped" in result.stderr
+    assert "live-DB deletion skipped by SFO_PRUNE_MODE=archive-only" in result.stderr
 
 
 def test_scheduled_retention_preserves_explicit_quiesced_delete_mode(

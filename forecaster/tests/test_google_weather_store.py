@@ -1543,6 +1543,162 @@ def test_completed_dispatch_always_remains_billable(
     assert ledger.usage(now=TEST_NOW).daily_events == 1
 
 
+# ---------------------------------------------------------------------------
+# FC-4: a credential or entitlement failure returns HTTP 4xx for every request
+# and each one is still a billable event. Production billed ~124 events a day
+# for five days of 100% 4xx because nothing in the ledger noticed. These tests
+# pin the breaker that stops the spend.
+# ---------------------------------------------------------------------------
+
+
+def _consume_client_error(ledger, page_number, *, response_class=4, moment=None):
+    from google_weather_store import GoogleWeatherClientErrorBreakerOpen
+
+    instant = moment if moment is not None else TEST_NOW + timedelta(
+        seconds=page_number
+    )
+    event = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="daily",
+        page_number=page_number,
+        now=instant,
+    )
+    ledger.mark_dispatched(event, now=instant)
+    ledger.complete_event(
+        event,
+        success=False,
+        error_kind="http",
+        response_status_class=response_class,
+        now=instant,
+    )
+    assert GoogleWeatherClientErrorBreakerOpen is not None
+    return event
+
+
+def test_consecutive_client_errors_open_the_breaker_and_deny_further_spend(tmp_path):
+    from google_weather_store import GoogleWeatherClientErrorBreakerOpen
+
+    ledger = _usage_ledger(tmp_path, client_error_breaker=3)
+    for page in range(3):
+        _consume_client_error(ledger, page)
+
+    assert ledger.consecutive_client_errors(now=TEST_NOW) == 3
+    with pytest.raises(GoogleWeatherClientErrorBreakerOpen) as excinfo:
+        ledger.reserve_event(
+            city_slug="sfo",
+            station_id="KSFO",
+            endpoint="hourly",
+            page_number=9,
+            now=TEST_NOW + timedelta(seconds=10),
+        )
+    assert excinfo.value.consecutive == 3
+    assert excinfo.value.threshold == 3
+    # The denial must not itself be billed.
+    assert ledger.usage(now=TEST_NOW).daily_events == 3
+
+
+def test_breaker_denial_is_handled_by_existing_budget_aware_callers(tmp_path):
+    from google_weather_store import (
+        GoogleWeatherBudgetExceeded,
+        GoogleWeatherClientErrorBreakerOpen,
+    )
+
+    assert issubclass(GoogleWeatherClientErrorBreakerOpen, GoogleWeatherBudgetExceeded)
+    ledger = _usage_ledger(tmp_path, client_error_breaker=1)
+    _consume_client_error(ledger, 0)
+    with pytest.raises(GoogleWeatherBudgetExceeded):
+        ledger.reserve_event(
+            city_slug="sfo",
+            station_id="KSFO",
+            endpoint="daily",
+            page_number=1,
+            now=TEST_NOW + timedelta(seconds=5),
+        )
+
+
+def test_one_success_resets_the_client_error_run(tmp_path):
+    ledger = _usage_ledger(tmp_path, client_error_breaker=3)
+    _consume_client_error(ledger, 0)
+    _consume_client_error(ledger, 1)
+
+    recovered = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=2,
+        now=TEST_NOW + timedelta(seconds=2),
+    )
+    ledger.mark_dispatched(recovered, now=TEST_NOW + timedelta(seconds=2))
+    ledger.complete_event(recovered, success=True, now=TEST_NOW + timedelta(seconds=2))
+
+    assert ledger.consecutive_client_errors(now=TEST_NOW) == 0
+
+
+def test_non_client_failures_do_not_open_the_breaker(tmp_path):
+    ledger = _usage_ledger(tmp_path, client_error_breaker=2)
+    for page in range(4):
+        instant = TEST_NOW + timedelta(seconds=page)
+        event = ledger.reserve_event(
+            city_slug="sfo",
+            station_id="KSFO",
+            endpoint="daily",
+            page_number=page,
+            now=instant,
+        )
+        ledger.mark_dispatched(event, now=instant)
+        ledger.complete_event(
+            event, success=False, error_kind="timeout", now=instant
+        )
+
+    assert ledger.consecutive_client_errors(now=TEST_NOW) == 0
+    ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=9,
+        now=TEST_NOW + timedelta(seconds=9),
+    )
+
+
+def test_a_new_billing_date_starts_the_breaker_clean(tmp_path):
+    ledger = _usage_ledger(tmp_path, client_error_breaker=2)
+    _consume_client_error(ledger, 0)
+    _consume_client_error(ledger, 1)
+    assert ledger.consecutive_client_errors(now=TEST_NOW) == 2
+
+    next_day = TEST_NOW + timedelta(days=1)
+    assert ledger.consecutive_client_errors(now=next_day) == 0
+    ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="daily",
+        page_number=0,
+        now=next_day,
+    )
+
+
+def test_breaker_can_be_disabled_with_zero(tmp_path):
+    ledger = _usage_ledger(tmp_path, client_error_breaker=0)
+    for page in range(5):
+        _consume_client_error(ledger, page)
+
+    ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=9,
+        now=TEST_NOW + timedelta(seconds=9),
+    )
+
+
+def test_client_error_breaker_rejects_a_negative_threshold(tmp_path):
+    from google_weather_store import GoogleUsageLedger
+
+    with pytest.raises(ValueError, match="client_error_breaker"):
+        GoogleUsageLedger(tmp_path / "weather.db", client_error_breaker=-1)
+
+
 def test_stale_undispatched_reservations_are_cancelled_in_bulk(tmp_path):
     ledger = _usage_ledger(tmp_path)
     stale = ledger.reserve_event(

@@ -47,6 +47,16 @@ MAX_GATE_DEFERRALS="${SFO_PAGES_MAX_GATE_DEFERRALS:-1}"
 PUBLISH_DEADLINE_SECONDS="${SFO_PAGES_PUBLISH_DEADLINE_SECONDS:-780}"
 GATE_STATE_DIR="${SFO_PAGES_GATE_STATE_DIR:-$BASE_DIR/.locks}"
 GATE_DEFERRAL_FILE="$GATE_STATE_DIR/pages-gate-deferrals"
+# OPS-1 residual: the shallow fetch below stopped this job from *downloading*
+# the whole publication history, but the branch still gains a commit and about
+# six objects on every push, 144 pushes a day. Left alone the remote branch
+# grows without bound again and every future clone of it pays for that. The
+# branch is a regenerated snapshot with no history worth keeping, so re-root it
+# on a schedule. The counter lives beside the gate deferral counter; losing it
+# (a wiped state dir) only postpones the next re-orphan, so it needs no
+# durability guarantees. 0 disables the periodic re-orphan.
+PAGES_HISTORY_MAX_COMMITS="${SFO_PAGES_HISTORY_MAX_COMMITS:-1500}"
+PAGES_PUBLISH_COUNT_FILE="$GATE_STATE_DIR/pages-publish-count"
 PUBLIC_MANIFEST_URL="${SFO_PUBLICATION_MANIFEST_URL:-${SFO_PUBLIC_MANIFEST_URL:-}}"
 
 # The manifest validator always emits these required files. It emits the
@@ -102,6 +112,10 @@ if [[ ! "$MAX_GATE_DEFERRALS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! "$PUBLISH_DEADLINE_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "Pages publish deadline must be a positive integer" >&2
+  exit 1
+fi
+if [[ ! "$PAGES_HISTORY_MAX_COMMITS" =~ ^[0-9]+$ ]]; then
+  echo "Pages history commit ceiling must be a non-negative integer" >&2
   exit 1
 fi
 if ! command -v flock >/dev/null 2>&1; then
@@ -173,6 +187,23 @@ record_gate_deferrals() {
   mv -f "$tmp" "$GATE_DEFERRAL_FILE"
 }
 
+publish_count() {
+  local value=0
+  if [[ -f "$PAGES_PUBLISH_COUNT_FILE" ]]; then
+    value="$(<"$PAGES_PUBLISH_COUNT_FILE")"
+    [[ "$value" =~ ^[0-9]+$ ]] || value=0
+  fi
+  printf '%s' "$value"
+}
+
+record_publish_count() {
+  local value="$1"
+  mkdir -p "$GATE_STATE_DIR"
+  local tmp="$PAGES_PUBLISH_COUNT_FILE.$$"
+  printf '%s\n' "$value" >"$tmp"
+  mv -f "$tmp" "$PAGES_PUBLISH_COUNT_FILE"
+}
+
 # Returns 0 to proceed with publication, 1 to defer this cycle without error.
 # A gate that can only ever block would turn a genuinely failed or disabled
 # Pages build into a permanent publication outage, because the commit that
@@ -219,18 +250,45 @@ wait_for_remote_publication() {
   return 1
 }
 
+# Set whenever this cycle re-roots the branch, because a root commit is not a
+# descendant of the remote head and an ordinary push would be rejected.
+PAGES_FORCE_PUSH=0
+
+start_orphan_branch() {
+  # Leave HEAD unborn on the Pages branch so the next commit is a new root.
+  # `git checkout --orphan` cannot be used here: it refuses a branch name that
+  # already exists, which is exactly the re-root case, and renaming a scratch
+  # orphan onto the existing name silently keeps the old ref (verified against
+  # git 2.50). Dropping the ref and re-pointing HEAD at it is unambiguous, and
+  # it is a no-op on a freshly initialized repository whose branch is already
+  # unborn -- the first-publish path. The index is left populated on purpose:
+  # the caller wipes the tree and re-adds it, which stages the deletions.
+  git symbolic-ref HEAD "refs/heads/$PAGES_BRANCH"
+  git update-ref -d "refs/heads/$PAGES_BRANCH" >/dev/null 2>&1 || true
+}
+
 prepare_pages_branch() {
   # The Pages branch is a generated snapshot. Fetch only its current head:
   # downloading the full, fast-growing publication history every cycle burned
   # most of the burstable instance's CPU and network budget.
+  PAGES_FORCE_PUSH=0
   if git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1; then
     if ! wait_for_remote_publication; then
       return 1
     fi
     git checkout -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH" >/dev/null
+    # Re-root only after the delivery gate has passed, so the periodic
+    # truncation never bypasses the backpressure rule above.
+    if (( PAGES_HISTORY_MAX_COMMITS > 0 )) \
+      && (( $(publish_count) >= PAGES_HISTORY_MAX_COMMITS )); then
+      echo "gh-pages history reached $PAGES_HISTORY_MAX_COMMITS publications; re-rooting the branch"
+      start_orphan_branch
+      PAGES_FORCE_PUSH=1
+      record_publish_count 0
+    fi
   else
-    git checkout --orphan "$PAGES_BRANCH" >/dev/null 2>&1 \
-      || git checkout -B "$PAGES_BRANCH" >/dev/null
+    start_orphan_branch
+    record_publish_count 0
   fi
 }
 
@@ -335,8 +393,15 @@ while true; do
   SOURCE_SHA="$(grep -o '"source_sha": *"[0-9a-f]\{7,40\}"' "$FORECASTER_DIR/build_info.json" 2>/dev/null | sed 's/.*"\([0-9a-f]*\)"/\1/' | head -1 || true)"
   git commit -m "Update SFO weather dashboard${SOURCE_SHA:+ (source $SOURCE_SHA)}" >/dev/null
 
-  if git push origin "HEAD:$PAGES_BRANCH"; then
+  push_args=(origin "HEAD:$PAGES_BRANCH")
+  if (( PAGES_FORCE_PUSH == 1 )); then
+    # Discarding the old history is the entire point of the re-root; the branch
+    # content is regenerated from scratch on every cycle anyway.
+    push_args=(--force "${push_args[@]}")
+  fi
+  if git push "${push_args[@]}"; then
     echo "Published SFO weather dashboard to $PAGES_BRANCH"
+    record_publish_count "$(( $(publish_count) + 1 ))"
     exit 0
   fi
 

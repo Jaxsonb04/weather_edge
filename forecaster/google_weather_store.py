@@ -27,6 +27,7 @@ from weather_cache_config import (
     GOOGLE_FUTURE_DAILY_TTL,
     GOOGLE_HOURLY_TTL,
     GOOGLE_TODAY_DAILY_TTL,
+    GOOGLE_WEATHER_CLIENT_ERROR_BREAKER,
     GOOGLE_WEATHER_DAILY_EVENT_BUDGET,
     GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
     GOOGLE_WEATHER_SOFT_MONTHLY_CEILING,
@@ -47,6 +48,30 @@ class GoogleWeatherBudgetExceeded(RuntimeError):
     def __init__(self, scope: str) -> None:
         self.scope = scope
         super().__init__(f"Google Weather {scope} event budget reached")
+
+
+class GoogleWeatherClientErrorBreakerOpen(GoogleWeatherBudgetExceeded):
+    """Repeated HTTP 4xx responses halted paid Google Weather requests.
+
+    Subclasses the budget error deliberately: every caller already treats a
+    budget denial as "stop spending and fail this endpoint soft", which is
+    exactly the required behaviour for a dead key, a revoked entitlement, or a
+    disabled billing account. Nothing here can repair such a failure -- the
+    breaker only stops paying for it.
+    """
+
+    def __init__(self, consecutive: int, threshold: int) -> None:
+        super().__init__("client-error breaker")
+        self.consecutive = consecutive
+        self.threshold = threshold
+        # Replace the inherited "event budget reached" wording: this is not a
+        # budget, it is a halt on repeated client errors.
+        self.args = (
+            f"Google Weather requests halted after {consecutive} consecutive "
+            f"HTTP 4xx responses on today's billing date (threshold {threshold}); "
+            "the API key, its entitlement, or the billing account is the likely "
+            "cause",
+        )
 
 
 class GoogleUsageLifecycleError(RuntimeError):
@@ -1210,6 +1235,7 @@ class GoogleUsageLedger:
         daily_budget: int = GOOGLE_WEATHER_DAILY_EVENT_BUDGET,
         monthly_budget: int = GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
         soft_monthly_ceiling: int = GOOGLE_WEATHER_SOFT_MONTHLY_CEILING,
+        client_error_breaker: int = GOOGLE_WEATHER_CLIENT_ERROR_BREAKER,
         timeout_seconds: float = 30.0,
     ) -> None:
         self.db_path = Path(db_path)
@@ -1217,6 +1243,11 @@ class GoogleUsageLedger:
         self.monthly_budget = self._budget("monthly_budget", monthly_budget)
         self.soft_monthly_ceiling = self._budget(
             "soft_monthly_ceiling", soft_monthly_ceiling
+        )
+        # 0 disables the breaker; any positive value is a consecutive-failure
+        # threshold, so the same non-negative-integer rule applies.
+        self.client_error_breaker = self._budget(
+            "client_error_breaker", client_error_breaker
         )
         self.timeout_seconds = _positive_finite_timeout(timeout_seconds)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1305,6 +1336,14 @@ class GoogleUsageLedger:
                 raise GoogleWeatherBudgetExceeded("monthly")
             if monthly_events >= self.soft_monthly_ceiling:
                 raise GoogleWeatherBudgetExceeded("soft monthly")
+            if self.client_error_breaker > 0:
+                consecutive = self._consecutive_client_errors(
+                    connection, billing_date, self.client_error_breaker
+                )
+                if consecutive >= self.client_error_breaker:
+                    raise GoogleWeatherClientErrorBreakerOpen(
+                        consecutive, self.client_error_breaker
+                    )
             connection.execute(
                 """
                 INSERT INTO google_weather_usage_events (
@@ -1331,6 +1370,46 @@ class GoogleUsageLedger:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _consecutive_client_errors(
+        connection: sqlite3.Connection, billing_date: str, limit: int
+    ) -> int:
+        """Length of the trailing run of completed 4xx events for one day.
+
+        Newest first, stopping at the first terminal event that is not a 4xx,
+        so a single success -- or a timeout/transport failure, which is not a
+        client error -- resets the run. Reservations still in flight are not
+        terminal and are ignored. Capped at ``limit`` because the only question
+        asked of this count is whether the run has reached the breaker.
+        """
+
+        rows = connection.execute(
+            """
+            SELECT status, response_status_class
+            FROM google_weather_usage_events
+            WHERE billing_date_pacific = ?
+              AND status IN ('consumed', 'success')
+            ORDER BY reserved_at DESC, id DESC
+            LIMIT ?
+            """,
+            (billing_date, limit),
+        ).fetchall()
+        run = 0
+        for row in rows:
+            if row["status"] != "consumed" or row["response_status_class"] != 4:
+                break
+            run += 1
+        return run
+
+    def consecutive_client_errors(self, *, now: datetime | None = None) -> int:
+        """Public read of the breaker's counter for callers and operators."""
+
+        instant = _aware_utc(now)
+        billing_date = instant.astimezone(PACIFIC).date().isoformat()
+        limit = self.client_error_breaker or self.daily_budget
+        with self._connection() as connection:
+            return self._consecutive_client_errors(connection, billing_date, limit)
 
     @staticmethod
     def _count(connection: sqlite3.Connection, column: str, value: str) -> int:

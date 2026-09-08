@@ -140,6 +140,20 @@ sudo install -m 755 "$SCRIPT_DIR/verify_systemd_unit_integrity.sh" /usr/local/li
 render_unit "$SCRIPT_DIR/systemd/weatheredge-tmpfiles.conf" /etc/tmpfiles.d/weatheredge.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/weatheredge.conf
 
+# OPS-7: journald retention and syslog duplication are box configuration, so
+# they are deploy-managed like the tmpfiles entry above rather than left to a
+# hand edit that no deploy would ever re-apply. Restart journald only when the
+# content actually changed: journald.conf.d is read at start, and restarting it
+# on every deploy would churn the very log a deploy is being watched through.
+sudo mkdir -p /etc/systemd/journald.conf.d
+if ! sudo cmp -s "$SCRIPT_DIR/systemd/weatheredge-journald.conf" \
+  /etc/systemd/journald.conf.d/zz-weatheredge.conf; then
+  sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-journald.conf" \
+    /etc/systemd/journald.conf.d/zz-weatheredge.conf
+  sudo systemctl restart systemd-journald
+  echo "journald configuration updated and systemd-journald restarted"
+fi
+
 sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-forecaster-refresh.timer" /etc/systemd/system/sfo-forecaster-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-google-nonsfo-refresh.timer" /etc/systemd/system/weatheredge-google-nonsfo-refresh.timer
 sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-apple-refresh.timer" /etc/systemd/system/weatheredge-apple-refresh.timer
@@ -157,12 +171,24 @@ sudo install -m 644 "$SCRIPT_DIR/systemd/sfo-scheduler-health.timer" /etc/system
 
 sudo systemctl daemon-reload
 
+# FC-4 (2026-09-03 audit, re-verified 2026-09-06): the Apple WeatherKit refresh
+# is retired. Its 4x/day paid fetch fills `AppleRuntimeCache.active_highs`,
+# which has no caller anywhere outside apple_weatherkit.py; the service log says
+# so itself on every run ("live trading weight remains 0"); and the 10-minute
+# purge deletes the cache about an hour into each 6-hour cycle, so the data does
+# not exist most of the time. It cannot become a scored EMOS member either,
+# because Apple's terms do not permit retaining the archive that scoring needs.
+# The unit files stay installed so re-enabling is one systemctl command. Disable it actively rather
+# than merely leaving it out of the enable list below: on an established host it
+# is already enabled, and an omission alone would leave it running.
+sudo systemctl disable --now weatheredge-apple-refresh.timer >/dev/null 2>&1 || true
+
 if sudo grep -q "replace_with_google_weather_key" "$ENV_FILE"; then
   echo "Edit $ENV_FILE and set GOOGLE_WEATHER_API_KEY before enabling timers."
   echo "Then run:"
-  echo "  sudo systemctl enable --now sfo-forecaster-refresh.timer weatheredge-google-nonsfo-refresh.timer weatheredge-apple-refresh.timer weatheredge-apple-purge.timer weatheredge-google-runtime-purge.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer sfo-scheduler-health.timer"
+  echo "  sudo systemctl enable --now sfo-forecaster-refresh.timer weatheredge-google-nonsfo-refresh.timer weatheredge-apple-purge.timer weatheredge-google-runtime-purge.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer sfo-scheduler-health.timer"
   exit 0
 fi
 
-sudo systemctl enable --now sfo-forecaster-refresh.timer weatheredge-google-nonsfo-refresh.timer weatheredge-apple-refresh.timer weatheredge-apple-purge.timer weatheredge-google-runtime-purge.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer sfo-scheduler-health.timer
+sudo systemctl enable --now sfo-forecaster-refresh.timer weatheredge-google-nonsfo-refresh.timer weatheredge-apple-purge.timer weatheredge-google-runtime-purge.timer sfo-operational-publish.timer sfo-strategy-lab-refresh.timer sfo-dataset-backfill.timer sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer sfo-scheduler-health.timer
 sudo systemctl list-timers 'sfo-*' 'weatheredge-*' --all

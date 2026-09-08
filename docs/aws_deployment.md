@@ -151,9 +151,9 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
   forecast state for all fifteen cities, and no public artifacts.
 - `weatheredge-google-nonsfo-refresh.timer`: one daily budgeted Google runtime
   refresh for the fourteen non-SFO stations.
-- `weatheredge-apple-refresh.timer`: four fixed UTC vintages/day for all fifteen
-  stations. It exits without a request by default, retains only provider-valid
-  temporary data in `/run/weatheredge`, and has zero trading weight.
+- `weatheredge-apple-refresh.timer`: **disabled, not canonical.** Four fixed UTC
+  vintages/day for all fifteen stations, retaining only provider-valid temporary
+  data in `/run/weatheredge` with zero trading weight. It is **retired as of the 2026-09-03 audit (FC-4)**: its runtime cache had no reader anywhere outside `apple_weatherkit.py`, and Apple's terms do not permit retaining an archive, so it could not become a scored EMOS member either. The unit files are still installed and integrity-checked, so an operator can re-enable it with `sudo systemctl enable --now weatheredge-apple-refresh.timer`, but no deploy path turns it on.
 - `weatheredge-apple-purge.timer`: every ten minutes, offset from Google;
   physically removes expired or unverifiable Apple values even when refresh is
   disabled or unavailable.
@@ -177,12 +177,12 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
 - `sfo-kalshi-paper-monitor.timer`: every two minutes; monitors paper exits and
   maker-limit proxy fills.
 - `sfo-kalshi-paper-settle.timer`: finality-gated, series-scoped settlement.
-- `sfo-kalshi-paper-prune.timer`: archive, upload, verify, and FK-check. Its
-  interim default is archive-only, so a missed run waits for the next nightly
-  window and the scheduled unit never deletes from the live journal.
+- `sfo-kalshi-paper-prune.timer`: archive, upload, verify, FK-check, then a
+  bounded batched delete. `SFO_PRUNE_MODE` defaults to `bounded-delete`; a
+  missed run waits for the next nightly window.
 - `sfo-forecast-freshness.timer`: publication and forecast health checks.
 - `sfo-scheduler-health.timer`: offset five-minute independent scheduler check.
-  It requires the thirteen application timers to be enabled and active, verifies
+  It requires the twelve application timers to be enabled and active, verifies
   canonical systemd units, forecast DB safety, artifact checksums and source
   provenance, and local/public Strategy and operational freshness. It repairs
   only age-only failures by starting Strategy Lab and/or operational
@@ -216,19 +216,28 @@ The journal archive defaults to
 SHA-256, exact ID coverage, and decision-to-context references for each
 compressed daily partition. `run_archive_then_prune.sh` performs lossless
 export, feature rollup, optional S3 upload, exact-ID/reference gate, explicit FK
-audit, and upload-backed local cleanup in that order. Scheduled runs default to
-`SFO_PRUNE_MODE=archive-only`: they log a degraded warning, exit successfully,
-and never enter the write-heavy prune. A failed archive or gate still fails the
-unit.
+audit, the retention delete, and upload-backed local cleanup in that order. A
+failed archive or gate still fails the unit, and the delete is additionally
+interlocked on the gate flag so it cannot run without one.
 
-Archive-only mode deliberately trades write availability for live-journal
-growth. The disk watchdog remains active and fails at its configured ceiling
-(85% by default), but it does not delete data automatically. Plan a quiesced
-maintenance window before reaching that ceiling. The exact opt-in is
-`SFO_PRUNE_MODE=quiesced-delete`; stop every paper-journal writer first and
-restore archive-only before timers resume. Deletion creates reusable SQLite
-pages but does not shrink the database file; use the separately quiesced
-`compact_paper_db.sh` workflow when filesystem space must be reclaimed.
+`SFO_PRUNE_MODE` selects what the delete step does:
+
+- `bounded-delete` (default, unset included): the batched prune runs nightly
+  with the paper writers up. Batches commit and release SQLite's write lock
+  within `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) while the scan and monitor wait on
+  a 30 s busy_timeout, and the batch limit halves on any overrun.
+- `quiesced-delete`: the same delete plus an explicit operator assertion that
+  every paper-journal writer is stopped. Use it for a supervised catch-up after
+  a long archive-only stretch, not on the timer.
+- `archive-only`: the escape hatch. Nothing is deleted, the unit logs a degraded
+  warning and exits successfully, and the journal resumes growing at roughly
+  0.7 GB/day. That growth is what made the deploy backup gate
+  (`available >= db_bytes + 1 GiB`) unsatisfiable in September 2026; the disk
+  watchdog fails at its ceiling (85% by default) but never deletes anything.
+
+Deletion creates reusable SQLite pages but does not shrink the database file;
+use the separately quiesced `compact_paper_db.sh` workflow when filesystem space
+must be reclaimed.
 
 S3 is safe-off until `SFO_ARCHIVE_S3_BUCKET` is configured; the related
 variables are `SFO_ARCHIVE_S3_PREFIX`, `SFO_ARCHIVE_AWS_CLI`, and

@@ -172,7 +172,7 @@ the deploy key as `/home/ubuntu/.ssh/sfo_weather_pages_deploy` and the Git sourc
 as `git@github.com:Jaxsonb04/weather_edge.git`.
 
 `sfo-scheduler-health.timer` runs on an offset five-minute wall clock. Its
-root-owned helper verifies that the thirteen application timers are enabled and
+root-owned helper verifies that the twelve application timers are enabled and
 active, rejects effective unit drift, stale/missing forecast state, checksum or
 source-provenance mismatches, and validates both local and public artifact
 freshness. Only age-only failures are eligible for repair: it may start the
@@ -196,21 +196,27 @@ auto-repaired.
 3. Uploads to S3 only when configured.
 4. Requires the manifest's exact-ID and context-reference coverage gate.
 5. Runs `paper-check-foreign-keys`.
-6. Defaults to `SFO_PRUNE_MODE=archive-only`, emits an explicit degraded
-   diagnostic, and skips all deletion from the live journal.
+6. Deletes from the live journal in bounded batches
+   (`SFO_PRUNE_MODE=bounded-delete`, the default), gated on step 4 having
+   passed: an `archive_gate_passed` flag set only by the gate's own success is
+   re-checked before any delete, so no reordering or future edit can put a
+   delete ahead of the archive that makes it recoverable.
 7. Removes old local partitions only after verified upload.
 
-The archive-only unit exits successfully so it cannot hold SQLite's write lock
-or fail every night while deletion is deliberately deferred. It does **not**
-bound live-journal growth. The disk watchdog remains the last-resort alarm and
-fails at the configured usage ceiling (85% by default); schedule maintenance
-before that threshold rather than relying on automatic deletion. Archive
-cleanup removes uploaded partition files, not rows or free pages in the live
-SQLite database.
+Each delete batch commits and releases SQLite's write lock within
+`SFO_PRUNE_MAX_BATCH_SECONDS` (2 s), against the 30 s `busy_timeout` the scan and
+monitor wait on, and the batch limit halves on any overrun. The archive cleanup
+in step 7 removes uploaded partition files, not rows or free pages.
 
-The retained opt-in mode is `SFO_PRUNE_MODE=quiesced-delete`. Use it only for an
-operator-supervised run after the paper scan, monitor, settlement, dataset, and
-other journal writers are stopped. Restore `archive-only` before timers resume.
+`SFO_PRUNE_MODE=quiesced-delete` runs the same delete plus an explicit operator
+assertion that the paper scan, monitor, settlement, dataset, and other journal
+writers are stopped; use it for a supervised catch-up, not on the timer.
+`SFO_PRUNE_MODE=archive-only` is the escape hatch: it exits successfully without
+touching the live journal, which does **not** bound growth -- roughly 0.7 GB/day,
+the condition that made the deploy backup gate unsatisfiable in September 2026.
+The disk watchdog is only a last-resort alarm at the configured ceiling (85% by
+default) and never deletes anything.
+
 The prune makes old pages reusable inside SQLite; reclaiming filesystem space
 still requires the separately quiesced `compact_paper_db.sh` workflow.
 

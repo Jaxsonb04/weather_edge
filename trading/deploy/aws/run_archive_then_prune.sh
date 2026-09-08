@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Archive-gated retention maintenance for paper_trading.db.
 #
-# Scheduled runs default to archive-only: export, upload, archive gate, and FK
-# audit still execute, while live-DB deletion stays off. A prune may ONLY run
-# in the explicit quiesced-delete mode after every complete UTC day of every
-# snapshot table is losslessly exported and verified (manifest-backed).
+# Scheduled runs delete. Export, upload, the exact-coverage archive gate, and
+# the FK audit run first, and only a passing archive gate unlocks deletion: no
+# row leaves the live DB until every complete UTC day of every snapshot table
+# is losslessly exported and verified (manifest-backed).
 # Upload and feature-rollup failures are non-fatal: raw local archive files are
 # the safety property; the 30-day ring buffer absorbs S3 outages, and features
 # can always be rebuilt from the archive.
@@ -14,7 +14,19 @@ TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 PY="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB="${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}"
 ARCHIVE_DIR="${SFO_ARCHIVE_DIR:-$TRADING_DIR/data/archive}"
-PRUNE_MODE="${SFO_PRUNE_MODE:-archive-only}"
+# Retention modes (SFO_PRUNE_MODE):
+#   bounded-delete  (default) nightly batched delete with the paper writers
+#                   still running. `PaperStore.prune_decision_snapshots` commits
+#                   every batch and shrinks the batch whenever it holds SQLite's
+#                   write lock longer than --max-batch-seconds (2 s), while the
+#                   scan/monitor writers wait on a 30 s busy_timeout.
+#   quiesced-delete the same bounded delete plus an explicit operator assertion
+#                   that every paper-journal writer has been stopped. Use it for
+#                   a supervised catch-up run, not on the timer.
+#   archive-only    escape hatch: archive, upload, gate, and FK audit only; the
+#                   live DB is never written. Growth then continues at roughly
+#                   0.7 GB/day and the deploy backup gate eventually fails.
+PRUNE_MODE="${SFO_PRUNE_MODE:-bounded-delete}"
 cd "$TRADING_DIR"
 
 # 1. Lossless export of every unarchived complete UTC day (hard requirement).
@@ -32,20 +44,49 @@ cd "$TRADING_DIR"
   || echo "WARN: S3 upload failed; local ring buffer retains files" >&2
 
 # 4. Hard gate: refuses unless every complete UTC day is archived+verified.
+# `archive_gate_passed` is only set by the line immediately after the gate
+# command, so it records that this exact run's gate returned success.
+archive_gate_passed=0
 "$PY" -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-archive --archive-dir "$ARCHIVE_DIR" --check-gate
+archive_gate_passed=1
 
 # 5. Explicit integrity audit (kept out of normal PaperStore initialization).
 "$PY" -m sfo_kalshi_quant.cli --no-color --db-path "$DB" \
   paper-check-foreign-keys --limit "${SFO_FK_AUDIT_LIMIT:-100}"
 
-# 6. Live-DB deletion is temporarily safe-off on scheduled runs. The archive,
-# upload, exact-coverage gate, and FK audit above still execute every night.
-# `quiesced-delete` is an explicit operator assertion that all journal writers
-# have been stopped; it retains the bounded low-level prune for future manual
-# maintenance without putting that write-heavy path back on the default timer.
-if [[ "$PRUNE_MODE" == "quiesced-delete" ]]; then
-  echo "NOTICE: quiesced live-DB deletion explicitly enabled; paper writers must be stopped" >&2
+# 6. Live-DB deletion. The archive, upload, exact-coverage gate, and FK audit
+# above always run first and the gate is a hard interlock: deletion is refused
+# unless this run's own `--check-gate` returned success.
+case "$PRUNE_MODE" in
+  bounded-delete|quiesced-delete)
+    prune_requested=1
+    ;;
+  archive-only)
+    prune_requested=0
+    ;;
+  *)
+    echo "DEGRADED: unrecognized SFO_PRUNE_MODE=$PRUNE_MODE; failing closed to archive-only" >&2
+    PRUNE_MODE="archive-only"
+    prune_requested=0
+    ;;
+esac
+
+# Unreachable while `set -euo pipefail` is in force, because a failed gate
+# already aborts this script at step 4. It is kept as an explicit interlock so
+# no future edit -- a `|| true` on the gate, a reordering, a new mode -- can
+# quietly put a delete ahead of the archive that makes it recoverable.
+if (( prune_requested == 1 )) && (( archive_gate_passed != 1 )); then
+  echo "BLOCKED: archive/verify gate did not pass; refusing live-DB deletion" >&2
+  exit 1
+fi
+
+if (( prune_requested == 1 )); then
+  if [[ "$PRUNE_MODE" == "quiesced-delete" ]]; then
+    echo "NOTICE: quiesced live-DB deletion explicitly enabled; paper writers must be stopped" >&2
+  else
+    echo "NOTICE: bounded live-DB deletion enabled; archive gate passed, batches commit and release the write lock every <=${SFO_PRUNE_MAX_BATCH_SECONDS:-2}s" >&2
+  fi
 
   # Index precondition. The prune's dedup grouping and its parent-orphan probes
   # depend on the retention indexes; without them each probe becomes a
@@ -77,11 +118,10 @@ PY
     --batch-limit "${SFO_PRUNE_BATCH_LIMIT:-5000}" \
     --max-batch-seconds "${SFO_PRUNE_MAX_BATCH_SECONDS:-2}" \
     --batch-pause-seconds "${SFO_PRUNE_BATCH_PAUSE_SECONDS:-0.15}"
+
+  echo "NOTICE: $PRUNE_MODE retention complete; the pruned-decision-snapshots line above is this run's actual delete count" >&2
 else
-  if [[ "$PRUNE_MODE" != "archive-only" ]]; then
-    echo "DEGRADED: unrecognized SFO_PRUNE_MODE=$PRUNE_MODE; failing closed to archive-only" >&2
-  fi
-  echo "DEGRADED: archive/upload/gate/FK complete; scheduled live-DB deletion skipped" >&2
+  echo "DEGRADED: archive/upload/gate/FK complete; scheduled live-DB deletion skipped by SFO_PRUNE_MODE=$PRUNE_MODE" >&2
   echo "DEGRADED: journal growth continues; disk watchdog remains the safety alarm" >&2
 fi
 

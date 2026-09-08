@@ -90,7 +90,10 @@ coverage.
 `run_archive_then_prune.sh` is the scheduled safety wrapper. It archives,
 derives features, optionally uploads, requires exact-ID/reference coverage,
 runs an explicit foreign-key audit, prunes, and finally cleans only verified
-uploaded local partitions. Missing or corrupt archive evidence stops pruning.
+uploaded local partitions. Missing or corrupt archive evidence stops pruning:
+the gate aborts the run, and the delete step is separately interlocked on a flag
+that only a passing gate sets. The prune is on by default
+(`SFO_PRUNE_MODE=bounded-delete`); `archive-only` turns it off.
 
 S3 is optional and safe-off:
 
