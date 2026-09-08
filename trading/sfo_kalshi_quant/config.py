@@ -483,7 +483,15 @@ LIVE_PROFILE_OVERRIDES = {
     # matching the research collector) -- posterior-mean Kelly + the source-spread
     # sigma inflation already size these uncertain days down, so let them trade
     # rather than sit out. 120 of the 240 rescored rejections were this gate.
-    "max_source_spread_f": 10.0,
+    # RE-DERIVED 2026-09-07 (FC-1): source_spread_f is now the DEBIASED
+    # cross-model range, so 10.0 -- tuned against the raw statistic -- no longer
+    # means anything. Held at the same selectivity rather than retuned: over the
+    # 2,820 live-served forecasts since 2026-06-01, a raw 10.0 kept 80.18% of
+    # them, and the 80.18th percentile of the same rows in debiased units is
+    # 7.27. The gate therefore still vetoes the top ~20% most-uncertain days --
+    # but now that is genuinely the most-uncertain days rather than the two
+    # stations (KSFO, KLAX) whose coarse-grid members resolve as ocean.
+    "max_source_spread_f": 7.3,
     # Size against live paper equity (bankroll + realized PnL) so sizing
     # compounds correctly once the bigger caps let PnL accumulate -- Kelly
     # requires sizing off current wealth (Kelly 1956; Thorp 2006). Scoped to the
@@ -615,7 +623,9 @@ RESEARCH_PROFILE_OVERRIDES = {
     "max_entries_per_market_side": 3,
     # Tolerates moderate source disagreement to collect more, but not the
     # 2026-06-10/12 regime where models were separated by double-digit F.
-    "max_source_spread_f": 10.0,
+    # RE-DERIVED 2026-09-07 (FC-1) at the same selectivity as the old raw-units
+    # 10.0 -- see the live profile above for the derivation.
+    "max_source_spread_f": 7.3,
     "cheap_tail_min_yes_bid": 0.01,
     "cheap_tail_min_yes_bid_size": 5.0,
     "cheap_tail_min_probability_lcb": 0.06,

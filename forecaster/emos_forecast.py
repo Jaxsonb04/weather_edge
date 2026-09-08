@@ -37,7 +37,15 @@ from nwp_archive import (
 )
 
 DEFAULT_CITY = get_city("sfo")
-from postproc_models import EMOS_MIN_TRAIN, MIN_MODELS, apply_emos, emos_ngr_predictions, fit_emos
+from postproc_models import (
+    EMOS_MIN_TRAIN,
+    MIN_MODELS,
+    apply_emos,
+    debiased_range,
+    emos_ngr_predictions_with_spread,
+    fit_emos,
+)
+from scores import SIGMA_FLOOR_F
 from truth_store import load_clisfo_truth, load_nwp_forecasts
 
 DB_PATH = Path(__file__).resolve().parent / "weather.db"
@@ -59,6 +67,48 @@ OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # remain separately toggleable in recalibration_replay.py.
 SERVE_RECAL_BIAS = True
 SERVE_RECAL_SIGMA = False
+
+# Same-day (lead 0) dispersion. The NWP archive only holds leads >= 1, so a
+# lead-0 EMOS cannot be fit: the same-day serve borrows the lead-1 fit, whose
+# irreducible-error intercept ``var_c`` is a lead-1 quantity that never shrinks
+# for the shorter horizon. SERVE_RECAL_SIGMA is off, so nothing downstream
+# corrects it, and probability.py takes the sigma essentially unmodified.
+#
+# Measured on the append-only serve log (paper_trading.forecast_snapshots,
+# 2026-07-06..2026-09-07, every 5-minute serve rather than the last write of the
+# day) joined to final CLI settlements, with the debiased spread of FC-1 already
+# applied: lead 0 n=107,491 mean z^2 = 0.783 against an ideal of 1.0, i.e. the
+# same-day Gaussian is 1/sqrt(0.783) = 1.13x too wide. Lead 1 sits at 0.889 on
+# n=136,858, so lead 0 is only marginally sharper than the day-ahead fit it
+# borrows -- exactly the horizon that never shrinks. The scale is the square
+# root of that measured z^2, which lands the pooled statistic at 0.998 before
+# the 1.5 F sigma floor and 0.941 after it (the floor binds on 35% of same-day
+# serves and deliberately absorbs part of the correction).
+#
+# NOTE the population matters: the 2026-09-03 audit read z^2 = 0.55 from
+# forecast_emos_daily_high, which keeps only the LAST write per target
+# (INSERT OR REPLACE) -- the sharpest, end-of-day serve. That understates the
+# dispersion the book actually trades against all day.
+LEAD0_SIGMA_SCALE = 0.886
+# Explicit guard on any future retune of the constant above: a borrowed
+# longer-lead dispersion may only be sharpened (never widened -- a shorter
+# horizon cannot be more uncertain than the fit it borrows), and never below
+# 0.75, where the measured pooled lead-0 z^2 would pass 1.39 into
+# over-confidence and start over-sizing.
+LEAD0_SIGMA_SCALE_BOUNDS = (0.75, 1.0)
+
+
+def _borrowed_lead_sigma_scale(stored_lead: int, fit_lead: int) -> float:
+    """Dispersion correction for a serve that borrows a longer lead's fit.
+
+    Identity whenever the serve is fit at its own lead; only the same-day serve
+    borrows today (see LEAD0_SIGMA_SCALE).
+    """
+
+    if stored_lead != 0 or fit_lead <= stored_lead:
+        return 1.0
+    low, high = LEAD0_SIGMA_SCALE_BOUNDS
+    return min(max(LEAD0_SIGMA_SCALE, low), high)
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -126,14 +176,20 @@ def _migrate_station_key(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _model_spread_f(forecasts: dict[str, float]) -> float | None:
-    """Cross-model disagreement (max - min raw forecast) -- the multi-city
-    analogue of the blend's source_spread_f uncertain-day gate."""
+def _model_spread_f(forecasts: dict[str, float], biases: dict[str, float]) -> float | None:
+    """Cross-model disagreement (max - min) over *debiased* members -- the
+    multi-city analogue of the blend's source_spread_f uncertain-day gate.
+
+    The per-model biases must come off first. Without them the statistic mostly
+    measures which coarse grids resolve the station as ocean rather than how
+    uncertain the day is, and the gate it feeds
+    (``StrategyConfig.max_source_spread_f``) vetoed the KSFO and KLAX books
+    outright.
+    """
 
     if len(forecasts) < 2:
         return None
-    values = list(forecasts.values())
-    return round(max(values) - min(values), 2)
+    return debiased_range(forecasts, biases)
 
 
 def build_emos_archive(
@@ -156,7 +212,7 @@ def build_emos_archive(
     station = city.nws_station_id
     truth = load_clisfo_truth(conn, station)
     nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
-    predictions = emos_ngr_predictions(
+    predictions = emos_ngr_predictions_with_spread(
         sorted(nwp_by_date),
         truth,
         nwp_by_date,
@@ -174,13 +230,13 @@ def build_emos_archive(
             mu,
             sigma,
             len(nwp_by_date.get(target_date, {})),
-            _model_spread_f(nwp_by_date.get(target_date, {})),
+            spread_f,
             stamp,
             method,
             source,
             truth.get(target_date),
         )
-        for target_date, (mu, sigma) in predictions.items()
+        for target_date, (mu, sigma, spread_f) in predictions.items()
     ]
     conn.executemany(
         """
@@ -283,7 +339,8 @@ def serve_live_emos(
     ``store_lead_days`` (default: same) is the lead recorded on the persisted
     row. The same-day serve passes ``lead_days=1, store_lead_days=0``: lead 0
     has no archive of its own, and the lead-1 per-model biases/weights are the
-    closest learned coefficients for the current-run forecast of today.
+    closest learned coefficients for the current-run forecast of today. Its
+    *dispersion* is not borrowed unchanged -- see LEAD0_SIGMA_SCALE.
 
     ``recalibrate`` applies the serve-time trailing recalibration
     (emos_recalibration.py) as a post-process on the EMOS output. Rolling-origin
@@ -330,6 +387,11 @@ def serve_live_emos(
     if len(forecasts) < MIN_MODELS:
         return None
     mu, sigma = apply_emos(params, forecasts)
+    # A serve that borrows a longer lead's fit also borrows its dispersion; give
+    # the same-day horizon its own (FC-2). The floor apply_emos imposed has to be
+    # re-imposed after the rescale: a horizon correction must not push a served
+    # Gaussian below the absolute sharpness limit every other path respects.
+    sigma = max(sigma * _borrowed_lead_sigma_scale(stored_lead, lead_days), SIGMA_FLOOR_F)
 
     if recalibrate and (SERVE_RECAL_BIAS or SERVE_RECAL_SIGMA):
         # The serve happens on the day `stored_lead` days before the target;
@@ -360,7 +422,7 @@ def serve_live_emos(
             mu,
             sigma,
             len(forecasts),
-            _model_spread_f(forecasts),
+            _model_spread_f(forecasts, params.biases),
             stamp,
             _method_tag(weight_mode),
             LIVE_SOURCE,
@@ -426,8 +488,9 @@ def main(argv: list[str] | None = None) -> int:
             # biases match the forecast horizon (next-day -> lead 1, 2-day-out
             # -> lead 2). The NWP archive only holds leads >= 1, so the
             # same-day target (lead 0) has no training history of its own; it
-            # is served with the lead-1 fit (per-model biases/weights and
-            # sigma) applied to the CURRENT-run forecast for today, stored at
+            # is served with the lead-1 fit (per-model biases/weights) applied
+            # to the CURRENT-run forecast for today, with the borrowed
+            # dispersion rescaled to the same-day horizon, stored at
             # lead_days=0 so every 30-minute tick refreshes the same-day
             # market's distribution instead of leaving it on a pre-midnight
             # mean all day.

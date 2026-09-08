@@ -278,8 +278,12 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # execution identity.
     # 2026-09-04: explicit behavior-version coverage rotates the evidence cohort
     # for the audited exit-policy correction instead of silently blending it.
-    assert strategy_fingerprint(config, entry_mode="limit") == "88e417a64d8be9b1bb933b3b"
-    assert strategy_fingerprint(config, entry_mode="market") == "ea635b48bd45aad3d28d9c5b"
+    # 2026-09-07: moved again by FC-1. `source_spread_f` is now the DEBIASED
+    # cross-model range, so `max_source_spread_f` was re-derived into those units
+    # (10.0 -> 7.3, same selectivity); the served probabilities change too, so
+    # STRATEGY_BEHAVIOR_VERSION rotates with it.
+    assert strategy_fingerprint(config, entry_mode="limit") == "93326de538852004fc08aa99"
+    assert strategy_fingerprint(config, entry_mode="market") == "cdfaeb3c0be77f5b9dcb1270"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1228,7 +1232,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "ea635b48bd45aad3d28d9c5b"
+    assert row["strategy_fingerprint"] == "cdfaeb3c0be77f5b9dcb1270"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
