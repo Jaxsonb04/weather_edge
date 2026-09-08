@@ -1,0 +1,30 @@
+[Unit]
+# NOT INSTALLED OR ENABLED. This template is deliberately absent from
+# install_systemd.sh, install_systemd_notimers.sh, disable_systemd_timers.sh,
+# check_scheduler_health.sh, and verify_systemd_unit_integrity.sh: the ladder
+# ledger is new measurement infrastructure and the owner enables it explicitly,
+# after the box's disk and CPU budgets have been checked (see OPS-1/OPS-2).
+# Adding it to those lists is a separate, deliberate change.
+Description=WeatherEdge full-ladder outcome ledger (measurement only)
+Wants=network-online.target
+After=network-online.target
+OnFailure=sfo-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__TRADING_DIR__
+EnvironmentFile=__ENV_FILE__
+# --nightly resolves the previous complete settlement day, measured on the
+# westernmost station's fixed-standard clock, so no city's climate day is still
+# open when the ledger labels it. Writes only ladder_bin_outcomes; no trading
+# code path reads that table.
+ExecStart=__TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color --forecaster-root __FORECASTER_DIR__ --db-path __TRADING_DIR__/data/paper_trading.db paper-ladder-outcomes --nightly
+Nice=10
+CPUWeight=50
+# Contain a runaway process to this unit instead of letting the kernel
+# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# thrash-protection).
+MemoryHigh=400M
+MemoryMax=512M
+TimeoutStartSec=900

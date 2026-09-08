@@ -117,6 +117,14 @@ from .store.diagnostics import (
     _strategy_config_snapshot,
     _win_loss_reason,
 )
+from .ladder_truth import (
+    INTEGRITY_FLAGGED,
+    build_ladder_outcomes_for_date,
+    exchange_settlement_highs,
+    record_ladder_outcomes,
+    score_ladder_outcomes,
+    target_dates_in_range,
+)
 from .store.market_day_settlements import (
     TRUTH_SOURCE_SETTLED_SIBLING,
     TRUTH_SOURCE_SETTLEMENT_PATH,
@@ -5889,6 +5897,144 @@ class PaperStore:
                 "ORDER BY target_date DESC, market_ticker LIMIT ?",
                 (*params, limit),
             ).fetchall()
+
+    def backfill_ladder_bin_outcomes(
+        self,
+        *,
+        start: str,
+        end: str,
+        cli_settlement_highs: Mapping[tuple[str, str], float],
+        dry_run: bool = False,
+    ) -> dict:
+        """Resolve every offered ladder bin over a target-date range.
+
+        Reads ``decision_snapshots`` for the offered bins and ``paper_orders``
+        only to mark which of them the book actually held; writes nothing but
+        ``ladder_bin_outcomes``. Nothing on the trading path reads that table,
+        so this changes no decision, size, gate, or fee.
+
+        ``cli_settlement_highs`` carries the forecaster archive's final CLI
+        maxima keyed by ``(series_ticker, target_date)``. It lives in
+        ``weather.db``, which this store does not own, so the caller loads it
+        and passes it down -- the same contract
+        ``backfill_market_day_settlements`` uses.
+        """
+
+        recorded_at = _now()
+        summary: dict[str, object] = {
+            "start": start,
+            "end": end,
+            "target_dates": 0,
+            "offered_bins": 0,
+            "resolved_bins": 0,
+            "recorded_bins": 0,
+            "missing_truth_bins": 0,
+            "flagged": [],
+            "missing_truth": [],
+            "dry_run": dry_run,
+        }
+        dates = target_dates_in_range(start, end)
+        summary["target_dates"] = len(dates)
+        with self.connect() as conn:
+            exchange_highs = exchange_settlement_highs(conn)
+            if not dry_run:
+                conn.execute("BEGIN IMMEDIATE")
+            for target_date in dates:
+                resolved, unlabelled = build_ladder_outcomes_for_date(
+                    conn,
+                    target_date=target_date,
+                    settlement_highs=cli_settlement_highs,
+                    exchange_highs=exchange_highs,
+                )
+                summary["offered_bins"] += len(resolved) + len(unlabelled)
+                summary["resolved_bins"] += len(resolved)
+                summary["missing_truth_bins"] += len(unlabelled)
+                for quote in unlabelled:
+                    summary["missing_truth"].append(
+                        {
+                            "market_ticker": quote.market_ticker,
+                            "target_date": quote.target_date,
+                            "station_id": quote.station_id,
+                        }
+                    )
+                for outcome in resolved:
+                    if outcome.integrity_status != INTEGRITY_FLAGGED:
+                        continue
+                    entry = {
+                        "market_ticker": outcome.quote.market_ticker,
+                        "target_date": outcome.quote.target_date,
+                        "station_id": outcome.quote.station_id,
+                        "settlement_high_f": outcome.settlement_high_f,
+                        "exchange_settlement_high_f": outcome.exchange_settlement_high_f,
+                        "truth_delta_f": outcome.truth_delta_f,
+                    }
+                    summary["flagged"].append(entry)
+                    logger.warning("ladder settlement truth disagreement: %s", entry)
+                if dry_run:
+                    continue
+                summary["recorded_bins"] += record_ladder_outcomes(
+                    conn, resolved, recorded_at=recorded_at
+                )
+        return summary
+
+    def ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        series_ticker: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = 100000,
+    ) -> list[sqlite3.Row]:
+        """Read back resolved ladder bins. Measurement only."""
+
+        filters: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            filters.append("target_date >= ?")
+            params.append(start)
+        if end is not None:
+            filters.append("target_date <= ?")
+            params.append(end)
+        if series_ticker is not None:
+            filters.append("series_ticker = ?")
+            params.append(series_ticker)
+        if quote_lead is not None:
+            filters.append("quote_lead = ?")
+            params.append(quote_lead)
+        if side is not None:
+            # The ladder is evaluated on both sides, and a bin scored on both
+            # of them contributes two rows whose outcomes are exact
+            # complements: pooling them pins realized frequency at 0.5 and
+            # makes every calibration number meaningless. Callers comparing
+            # model against market pick one side.
+            filters.append("side = ?")
+            params.append(str(side).strip().upper())
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"SELECT * FROM ladder_bin_outcomes {where} "
+                "ORDER BY target_date, market_ticker, side LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+
+    def score_ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+    ) -> dict:
+        """Model-versus-market calibration over the recorded ladder."""
+
+        return score_ladder_outcomes(
+            self.ladder_bin_outcomes(
+                start=start, end=end, quote_lead=quote_lead, side=side
+            )
+        )
 
     def verify_paper_settlements(
         self,

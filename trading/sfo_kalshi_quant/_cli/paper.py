@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from dataclasses import replace
@@ -22,6 +23,7 @@ from ..kalshi import KalshiPublicClient
 from ..models import target_date_from_event_ticker
 from ..report import build_daily_report, write_report
 from ..settlement_day import settlement_clock, settlement_today
+from ..ladder_truth import previous_complete_settlement_day
 from ..store.market_day_settlements import TRUTH_SOURCE_SETTLEMENT_PATH
 from ..summary import (
     build_paper_summary,
@@ -650,6 +652,117 @@ def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
             )
         )
     return 0
+
+
+def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
+    """Resolve every offered ladder bin, not just the ones the book traded.
+
+    ``market_day_settlements`` answers "what happened on the days we traded";
+    this answers "what happened on every bin we were offered", which is the
+    only population a gate can be judged on without being judged by itself.
+    The labels are the same final NWS CLI maxima the exchange settles on, and
+    the outcome of a bin is a pure function of that integer and the bin edges.
+
+    Two modes. ``--nightly`` resolves the previous complete settlement day and
+    is what a timer would run; ``--start/--end`` backfills a range. Both write
+    only ``ladder_bin_outcomes``, which no trading code path reads.
+    """
+
+    color = Color.from_no_color(args.no_color)
+    if args.nightly:
+        if args.start or args.end:
+            raise ValueError("--nightly resolves one day; drop --start/--end")
+        start = end = previous_complete_settlement_day()
+    else:
+        if not args.start:
+            raise ValueError("give --start (and optionally --end), or --nightly")
+        start = args.start
+        end = args.end or args.start
+    store = PaperStore(args.db_path)
+    # weather.db truth, all fifteen stations at once; the adapter's city only
+    # selects a station for the per-city readers.
+    cli_settlement_highs = SfoForecasterAdapter(
+        args.forecaster_root
+    ).load_cli_settlement_truth()
+    summary = store.backfill_ladder_bin_outcomes(
+        start=start,
+        end=end,
+        cli_settlement_highs=cli_settlement_highs,
+        dry_run=args.dry_run,
+    )
+    side = None if args.side == "both" else args.side
+    score = (
+        store.score_ladder_bin_outcomes(
+            start=start, end=end, quote_lead=args.quote_lead, side=side
+        )
+        if args.score
+        else None
+    )
+    if args.json:
+        payload = dict(summary)
+        if score is not None:
+            payload["score"] = score
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    prefix = "would record" if summary["dry_run"] else "recorded"
+    print(
+        color.cyan(
+            f"ladder outcome ledger {start}..{end}: {summary['target_dates']} target "
+            f"date(s); {summary['offered_bins']} offered bin(s); {prefix} "
+            f"{summary['resolved_bins']} resolved bin(s); "
+            f"{summary['missing_truth_bins']} still awaiting a final CLI maximum; "
+            f"{len(summary['flagged'])} integrity-flagged"
+        )
+    )
+    for entry in summary["flagged"][: args.show_flagged]:
+        print(
+            color.red(
+                f"INTEGRITY: {entry['market_ticker']} {entry['target_date']} "
+                f"{entry['station_id']} CLI={entry['settlement_high_f']} vs "
+                f"exchange={entry['exchange_settlement_high_f']} "
+                f"(delta {entry['truth_delta_f']:+.1f}F >= tolerance)"
+            ),
+            file=sys.stderr,
+        )
+    if len(summary["flagged"]) > args.show_flagged:
+        print(
+            color.red(
+                f"... {len(summary['flagged']) - args.show_flagged} more flagged "
+                "station-day(s) not shown"
+            ),
+            file=sys.stderr,
+        )
+    if score is not None:
+        lead = args.quote_lead or "all"
+        print(
+            color.cyan(
+                f"calibration ({lead} quotes, {args.side} side): "
+                f"scored={score['scored_bins']} bins over "
+                f"{score['day_markets']} day-market(s), {score['cities']} city/cities, "
+                f"{score['target_dates']} date(s); traded={score['traded_bins']}; "
+                f"excluded_flagged={score['flagged_bins_excluded']}"
+            )
+        )
+        print(
+            color.cyan(
+                f"  Brier  market={_fmt_metric(score['brier_market'])} "
+                f"model={_fmt_metric(score['brier_model'])} "
+                f"blend={_fmt_metric(score['brier_blend'])}"
+            )
+        )
+        print(
+            color.cyan(
+                f"  LogLoss market={_fmt_metric(score['log_loss_market'])} "
+                f"model={_fmt_metric(score['log_loss_model'])} "
+                f"| realized={_fmt_metric(score['realized_frequency'])}"
+            )
+        )
+    return 0
+
+
+def _fmt_metric(value: float | None) -> str:
+    return "--" if value is None else f"{value:.4f}"
 
 
 def _completed_open_target_dates(

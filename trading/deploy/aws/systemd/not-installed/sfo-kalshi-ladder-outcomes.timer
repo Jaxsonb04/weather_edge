@@ -1,0 +1,15 @@
+[Unit]
+# NOT INSTALLED OR ENABLED -- see the matching .service.in header.
+Description=Score the previous complete settlement day's full ladder, once nightly
+
+[Timer]
+# 11:20 UTC is 03:20 PST: past the last station's midnight-standard close and
+# past the CLI finalization the auto-settle timer already waits for, and off the
+# publish/scan/monitor cadence so it never contends with them.
+OnCalendar=*-*-* 11:20:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=sfo-kalshi-ladder-outcomes.service
+
+[Install]
+WantedBy=timers.target
