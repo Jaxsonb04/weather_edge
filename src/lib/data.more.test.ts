@@ -5,6 +5,8 @@ import {
   cityFreshness,
   climatologySeries,
   cohortSeries,
+  describeMethod,
+  fixtureCoverage,
   histogramSeries,
   marketModelSeries,
   monthlySeries,
@@ -87,5 +89,38 @@ describe("series helper fallbacks", () => {
     [{ forecast: { blended_high_f: 68.4 } } as unknown as Target, 68.4],
   ])("reads a predicted high without assuming optional fields", (target, expected) => {
     expect(predictedHigh(target)).toBe(expected);
+  });
+});
+
+describe("describeMethod", () => {
+  // The runtime's own tag, verbatim from trading_signal.json on 2026-09-08.
+  it("never surfaces the internal method tag", () => {
+    expect(
+      describeMethod(
+        "emos_wmean (live NWP ensemble) [SFO operational fallback] + intraday high-so-far update",
+      ),
+    ).toBe(
+      "EMOS weighted mean \u00b7 live NWP ensemble \u00b7 operational fallback \u00b7 updated with the day's observed high",
+    );
+  });
+
+  it.each([
+    ["emos_wmean", "EMOS weighted mean"],
+    ["weighted blend + intraday high-so-far update", "weighted blend \u00b7 updated with the day's observed high"],
+    [undefined, "Published forecast"],
+    ["", "Published forecast"],
+  ])("reads %s as plain English", (raw, expected) => {
+    expect(describeMethod(raw)).toBe(expected);
+  });
+});
+
+describe("fixtureCoverage", () => {
+  it.each([
+    [undefined, null],
+    [{ years: [] } as unknown as ForecastData, null],
+    [{ years: [2020] } as unknown as ForecastData, "2020"],
+    [{ years: [2016, 2026, 2021] } as unknown as ForecastData, "2016\u20132026"],
+  ])("dates the committed study fixture from its own observation years", (forecast, expected) => {
+    expect(fixtureCoverage(forecast)).toBe(expected);
   });
 });
