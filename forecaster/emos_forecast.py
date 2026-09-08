@@ -89,10 +89,15 @@ SERVE_RECAL_SIGMA = False
 # KSFO 0.924 -> 1.177. So the scale is PER STATION, and each station's scale is
 # min(1.0, sqrt(z^2_station)): a station whose same-day Gaussian is already at
 # or past calibration is left exactly alone (identity), and only genuinely
-# over-dispersed stations are sharpened. Under this table no station's z^2
-# rises at all -- the post-change maximum is KHOU's own unchanged 1.166 -- while
-# the pooled statistic still moves 0.762 -> 0.903 (floor-aware; 0.919 under the
-# rejected pooled constant, so pooled calibration is not materially given up).
+# over-dispersed stations are sharpened. Every corrected station's z^2 rises --
+# that IS the correction -- but under this table none is pushed PAST 1.0: the
+# post-change per-station maximum is KHOU's own unchanged 1.166, and the three
+# stations that already sat above 1.0 (KBOS 1.087, KHOU 1.166, KOKC 1.145) are
+# bit-identical no-ops. The stations the pooled constant would have made
+# over-confident land exactly on 1.000 instead (KNYC 0.960 -> 1.000, KSFO
+# 0.924 -> 1.000, KPHL 0.796 -> 1.000). Pooled moves 0.762 -> 0.903
+# (floor-aware; 0.919 under the rejected pooled constant, so pooled calibration
+# is not materially given up).
 #
 # PRECISION. n = 107,491 counts ~100 five-minute serves of the same station-day;
 # the independent unit is the station-day, of which there are 742 pooled and
