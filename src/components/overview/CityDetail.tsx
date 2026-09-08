@@ -191,6 +191,11 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
       research: currentStateAvailable ? String(research.open_positions ?? 0) : "Unavailable",
     },
     {
+      k: "Resting orders",
+      live: currentStateAvailable ? String(live.resting_orders ?? 0) : "Unavailable",
+      research: currentStateAvailable ? String(research.resting_orders ?? 0) : "Unavailable",
+    },
+    {
       k: "Open exposure",
       live: currentStateAvailable ? money(live.open_exposure) : "Unavailable",
       research: currentStateAvailable ? money(research.open_exposure) : "Unavailable",

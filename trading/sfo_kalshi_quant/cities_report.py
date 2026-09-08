@@ -183,6 +183,7 @@ def _city_settlement(conn: sqlite3.Connection, city: CityConfig) -> dict | None:
 def _empty_profile_book() -> dict:
     return {
         "open_positions": 0,
+        "resting_orders": 0,
         "open_exposure": 0.0,
         "settled_orders": 0,
         "settled_pnl": 0.0,
@@ -224,14 +225,28 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
             """
             SELECT market_ticker,
                    COALESCE(risk_profile, 'live') AS risk_profile,
+                   -- Open and resting are counted the way the Strategy Lab
+                   -- counts them (``paper_card._project_paper_journal``), so
+                   -- the Overview cannot say 22 positions while the Lab says
+                   -- "21 open, 2 resting" for the same book. A partial fill is
+                   -- deliberately both: it holds contracts and still rests.
                    SUM(CASE
                          WHEN status IN (
-                              'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
-                              'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
+                              'PAPER_FILLED', 'PAPER_PARTIALLY_FILLED',
+                              'PAPER_PARTIAL_EXPIRED'
                          )
                           AND settled_at IS NULL AND closed_at IS NULL
                          THEN 1 ELSE 0
                        END) AS open_positions,
+                   SUM(CASE
+                         WHEN status IN (
+                              'PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED'
+                         )
+                          AND settled_at IS NULL AND closed_at IS NULL
+                         THEN 1 ELSE 0
+                       END) AS resting_orders,
+                   -- Exposure stays the whole committed amount: filled cost
+                   -- plus the capital a resting order has reserved.
                    COALESCE(SUM(CASE
                          WHEN status IN (
                               'PAPER_FILLED', 'PAPER_LIMIT_RESTING',
@@ -249,7 +264,15 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
             GROUP BY market_ticker, COALESCE(risk_profile, 'live')
             """
         ).fetchall()
-        for ticker, raw_profile, open_count, exposure, settled_count, pnl in order_rows:
+        for (
+            ticker,
+            raw_profile,
+            open_count,
+            resting_count,
+            exposure,
+            settled_count,
+            pnl,
+        ) in order_rows:
             city = city_for_market_ticker(ticker)
             if city is None:
                 continue
@@ -261,6 +284,7 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
                 continue
             profile_book = books[city.slug][profile]
             profile_book["open_positions"] += int(open_count)
+            profile_book["resting_orders"] += int(resting_count)
             profile_book["open_exposure"] += float(exposure)
             profile_book["settled_orders"] += int(settled_count)
             profile_book["settled_pnl"] += float(pnl)
@@ -344,7 +368,11 @@ def build_cities_data(
             "settlement day is under way its predicted_high_f also carries the "
             "observed high-so-far update the trading path serves, with the "
             "pre-update mean kept as predicted_high_f_pre_intraday. Every "
-            "market settles on its own NWS Climatological Report."
+            "market settles on its own NWS Climatological Report. The live and "
+            "research books are economically separate paper accounts and are "
+            "never summed; open_positions counts filled contracts and "
+            "resting_orders counts unfilled limit orders, matching the "
+            "Strategy Lab."
         ),
         "cities": cities_payload,
     }

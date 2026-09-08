@@ -147,11 +147,25 @@ export interface DashboardData {
 
 /* ---- multi-city artifact (cities_data.json) ---- */
 
+export interface CityIntradayUpdate {
+  applied?: boolean;
+  observed_high_f?: number | null;
+  latest_temp_f?: number | null;
+  latest_observed_at?: string | null;
+  observation_count?: number | null;
+  is_complete?: boolean | null;
+}
 export interface CityForecast {
   target_date: string;
   target_status?: TargetStatus;
   lead_days?: number;
+  /** Served high. On a settlement day the publisher has already folded the
+      day's observed high into this, so it is NOT the ensemble mean. */
   predicted_high_f: number;
+  /** The plain EMOS ensemble mean, before any intraday update. This is the
+      value `sigma_f` is the spread of. */
+  predicted_high_f_pre_intraday?: number | null;
+  intraday_update?: CityIntradayUpdate | null;
   sigma_f?: number | null;
   n_models?: number | null;
   model_spread_f?: number | null;
@@ -165,7 +179,10 @@ export interface CitySettlement {
   source?: string;
 }
 export interface CityBookSide {
+  /** Filled (or partially filled) positions only — resting limit orders are
+      counted separately, exactly as the Strategy Lab counts them. */
   open_positions?: number;
+  resting_orders?: number;
   open_exposure?: number;
   settled_orders?: number;
   settled_pnl?: number;
@@ -461,6 +478,35 @@ export function cityFreshness(forecasts: CityForecast[] | undefined): Freshness 
 }
 
 /* ---- derived helpers ---- */
+
+/** `forecast_data.json` and `weather_story_data.json` are committed research
+    fixtures rather than pipeline output (docs/data_and_artifacts.md), and the
+    publication manifest carries an old stamp forward for them — so the only
+    honest date to show is the observation range the fixture itself covers. */
+export const STATIC_FIXTURE_NOTE =
+  "static committed fixture, not refreshed by the live pipeline";
+
+export function fixtureCoverage(forecast: ForecastData | undefined): string | null {
+  const years = (forecast?.years ?? []).filter((year) => Number.isFinite(year));
+  if (!years.length) return null;
+  const first = Math.min(...years);
+  const last = Math.max(...years);
+  return first === last ? String(first) : `${first}\u2013${last}`;
+}
+
+/** Turn the runtime's own method tag — e.g. `emos_wmean (live NWP ensemble)
+    [SFO operational fallback] + intraday high-so-far update` — into the plain
+    phrases this site already uses, instead of leaking the internal tag. */
+export function describeMethod(raw: unknown): string {
+  const tag = typeof raw === "string" ? raw.trim() : "";
+  if (!tag) return "Published forecast";
+  const base = tag.split(/[([+]/)[0].replace(/[_-]/g, " ").replace(/\s+/g, " ").trim();
+  const parts = [/^emos\s*wmean$/i.test(base) ? "EMOS weighted mean" : base || "Published forecast"];
+  if (/live NWP ensemble/i.test(tag)) parts.push("live NWP ensemble");
+  if (/operational fallback/i.test(tag)) parts.push("operational fallback");
+  if (/intraday/i.test(tag)) parts.push("updated with the day's observed high");
+  return parts.join(" \u00b7 ");
+}
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 

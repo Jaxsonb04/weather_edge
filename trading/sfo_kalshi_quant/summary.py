@@ -1356,6 +1356,23 @@ def _reason_category(reason: str) -> str:
     return "other"
 
 
+# Unmatched rejection reasons are free engine text and the site prints them
+# verbatim, so a mid-word cut ("...requires min_lead_days=1; same-") reads as a
+# defect in the gate rather than a display cap. Keep whole words and mark the
+# cut; the longest reason in production is 77 characters, so this normally
+# passes the reason through untouched.
+_REASON_MAX_CHARS = 96
+
+
+def _truncate_reason(reason: str) -> str:
+    if len(reason) <= _REASON_MAX_CHARS:
+        return reason
+    head = reason[:_REASON_MAX_CHARS]
+    if " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip(" ,;:-") + "\u2026"
+
+
 def _normalize_reason(reason: str) -> str:
     for marker in (
         "source spread",
@@ -1381,7 +1398,7 @@ def _normalize_reason(reason: str) -> str:
     ):
         if marker in reason:
             return marker
-    return reason[:48]
+    return _truncate_reason(reason)
 
 
 def _all_reasons(reasons_json: object) -> list[str]:
