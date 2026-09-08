@@ -223,9 +223,12 @@ interlocked on the gate flag so it cannot run without one.
 `SFO_PRUNE_MODE` selects what the delete step does:
 
 - `bounded-delete` (default, unset included): the batched prune runs nightly
-  with the paper writers up. Batches commit and release SQLite's write lock
-  within `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) while the scan and monitor wait on
-  a 30 s busy_timeout, and the batch limit halves on any overrun.
+  with the paper writers up. Batches commit and release SQLite's write lock, and
+  the scan and monitor wait on a 30 s busy_timeout.
+  `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) is a shrink target measured after each
+  batch, not a ceiling — a batch runs to completion at the current row limit and
+  an overrun halves the limit for the next one — so an early batch can outlive a
+  waiter's remaining wait and cost it a tick.
 - `quiesced-delete`: the same delete plus an explicit operator assertion that
   every paper-journal writer is stopped. Use it for a supervised catch-up after
   a long archive-only stretch, not on the timer.

@@ -143,13 +143,28 @@ sudo systemd-tmpfiles --create /etc/tmpfiles.d/weatheredge.conf
 # OPS-7: journald retention and syslog duplication are box configuration, so
 # they are deploy-managed like the tmpfiles entry above rather than left to a
 # hand edit that no deploy would ever re-apply. Restart journald only when the
-# content actually changed: journald.conf.d is read at start, and restarting it
-# on every deploy would churn the very log a deploy is being watched through.
+# effective configuration actually changed -- this file's content, or the removal
+# of the superseded drop-in below: journald.conf.d is read at start, and
+# restarting on every deploy would churn the very log a deploy is watched through.
 sudo mkdir -p /etc/systemd/journald.conf.d
+journald_changed=0
+# Supersede, do not merely outrank. Established hosts carry a hand-made
+# /etc/systemd/journald.conf.d/00-weatheredge.conf pinning SystemMaxUse=500M.
+# Leaving it in place would give the box two WeatherEdge drop-ins with
+# contradictory values whose winner is decided only by filename order, and an
+# operator reading journald.conf.d would get the wrong answer.
+if sudo test -e /etc/systemd/journald.conf.d/00-weatheredge.conf; then
+  sudo rm -f /etc/systemd/journald.conf.d/00-weatheredge.conf
+  journald_changed=1
+  echo "removed superseded journald drop-in 00-weatheredge.conf"
+fi
 if ! sudo cmp -s "$SCRIPT_DIR/systemd/weatheredge-journald.conf" \
   /etc/systemd/journald.conf.d/zz-weatheredge.conf; then
   sudo install -m 644 "$SCRIPT_DIR/systemd/weatheredge-journald.conf" \
     /etc/systemd/journald.conf.d/zz-weatheredge.conf
+  journald_changed=1
+fi
+if (( journald_changed == 1 )); then
   sudo systemctl restart systemd-journald
   echo "journald configuration updated and systemd-journald restarted"
 fi

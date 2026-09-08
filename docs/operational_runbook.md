@@ -289,7 +289,7 @@ default.
 
 | Mode | What it does | When |
 |---|---|---|
-| `bounded-delete` | Nightly batched delete with the paper writers running. Each batch commits and releases the write lock within `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) against the writers' 30 s `busy_timeout`, and the batch limit halves on any overrun. | Default. |
+| `bounded-delete` | Nightly batched delete with the paper writers running. Each batch commits and releases the write lock; `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) is a shrink target measured after the batch, not a ceiling, so an early batch can overrun it against the writers' 30 s `busy_timeout` before the row limit halves. | Default. |
 | `quiesced-delete` | The same delete plus an operator assertion that every paper-journal writer is stopped. | Supervised catch-up after a long archive-only stretch. |
 | `archive-only` | Archive, upload, gate, FK audit; delete nothing. | Escape hatch only. |
 
@@ -307,6 +307,33 @@ unit is fenced at `MemoryHigh=2600M` / `MemoryMax=3000M` and
 30 GB journal peaked at 3.3 GB outside those limits. Prefer a one-off
 `quiesced-delete` run for the first catch-up on such a host, then let the nightly
 `bounded-delete` hold the steady state.
+
+**Watch the first nightly run by hand.** `sfo-kalshi-paper-prune.service` carries
+`OnFailure=sfo-alert@%n.service`, but that hook is a no-op while
+`SFO_FRESHNESS_ALERT_URL` is empty in `/etc/weatheredge.env` (OPS-3, still open:
+48 `alert was not sent` lines in the seven days to 2026-09-06). So an OOM against
+`MemoryMax`, an exhausted `TimeoutStartSec`, or a `materialized retention
+candidates changed during prune` abort notifies nobody, and retention silently
+reverts to the situation this default exists to end. Read
+`journalctl -u sfo-kalshi-paper-prune.service -b` after the first 08:20 UTC run.
+
+A failed delete no longer cancels the ring-buffer cleanup. `paper-prune` fails on
+ordinary lock contention (SQLITE_BUSY, CLI exit 75); step 7 of the wrapper — the
+only thing bounding `data/archive`, ~33 MB/day of uploaded partitions — now runs
+regardless, and the wrapper re-reports the delete's exit status afterwards so the
+unit still fails.
+
+**Run `ANALYZE` once after the first bounded delete.** `sqlite_stat1` on the box
+claimed 914,768 `decision_snapshots` rows against an actual 4,102,302 on
+2026-09-03, and an ~88% collapse of that table moves the estimate wrong in the
+other direction. Plans still pick the right indexes, but the strategy-lab
+`GROUP BY` cost estimates drift further off. `ANALYZE` takes the write lock for
+its duration, so run it in the same quiesced window as `compact_paper_db.sh`:
+
+```bash
+# paper timers already stopped for the compaction
+sqlite3 /opt/weatheredge/trading/data/paper_trading.db 'ANALYZE;'
+```
 
 ## Operator-Only Box Cleanups
 
@@ -331,7 +358,26 @@ sudo rm -f paper_trading-20260828T030029Z.sqlite3-shm \
 # Frozen legacy Google usage ledger, last written 2026-07-19. The authoritative
 # ledger is the google_weather_usage_events table in forecaster/weather.db.
 sudo rm -f /opt/weatheredge/forecaster/.google_weather_usage.json
+
+# Superseded hand-made journald drop-in (SystemMaxUse=500M, written 2026-07-11).
+# Both installers now delete it and restart journald, so this should already be
+# gone after the first deploy that carries OPS-7 -- verify rather than assume,
+# because two WeatherEdge drop-ins with contradictory values would be decided
+# only by filename order.
+ls -la /etc/systemd/journald.conf.d/     # expect only zz-weatheredge.conf
+sudo rm -f /etc/systemd/journald.conf.d/00-weatheredge.conf
 ```
+
+The journald cap moves from 500M to 1500M, so the journal may grow by up to 1 GB
+on a box whose deploy backup gate (`available >= db_bytes + 1 GiB`) is the OPS-2
+deadline. `ForwardToSyslog=no` gives most of it back — `/var/log/syslog` and its
+rotations held ~590 MB on 2026-09-03 and drain over one logrotate cycle — for a
+net cost of roughly half a gigabyte. That is deliberate: at 500M the journal
+covered 2.6-4.5 days and a four-day-old root cause was simply unavailable during
+the audit. If the disk gets tight before `compact_paper_db.sh` runs, lower
+`SystemMaxUse` in
+`trading/deploy/aws/systemd/weatheredge-journald.conf` and redeploy;
+`journalctl --vacuum-size=` reclaims the space immediately.
 
 Delete only what the listing confirms. A `-wal`/`-shm` pair beside a database
 file that still exists is live SQLite state, never garbage.

@@ -1079,7 +1079,13 @@ def test_pages_publisher_periodically_re_roots_the_generated_branch():
     assert "SFO_PAGES_HISTORY_MAX_COMMITS" in publisher
     assert "PAGES_PUBLISH_COUNT_FILE" in publisher
     assert "record_publish_count" in publisher
-    assert "--force" in publisher
+    # Leased, not bare: an unattended destructive push must refuse to discard a
+    # commit that landed between this cycle's fetch and its push.
+    assert (
+        '--force-with-lease=refs/heads/$PAGES_BRANCH:$PAGES_FORCE_LEASE'
+        in publisher
+    )
+    assert "push_args=(--force " not in publisher
 
     prepare_start = publisher.index("prepare_pages_branch() {")
     prepare_block = publisher[prepare_start : publisher.index("\n}\n", prepare_start)]
@@ -1858,10 +1864,19 @@ def test_journald_retention_is_deploy_managed_and_beats_the_distro_drop_in():
         # "zz-" so it sorts after the distribution's own syslog.conf drop-in,
         # which is what makes ForwardToSyslog=no actually win.
         assert "/etc/systemd/journald.conf.d/zz-weatheredge.conf" in script
+        # Supersede the hand-made 500M drop-in rather than merely outranking it:
+        # two WeatherEdge files with contradictory values, resolved only by
+        # filename order, is drift an operator would read wrong.
+        assert (
+            "rm -f /etc/systemd/journald.conf.d/00-weatheredge.conf" in script
+        )
         # Restart only on a real change: journald reads this file at start, and
         # a restart on every deploy churns the log the deploy is watched through.
         assert "cmp -s" in script
         assert "systemctl restart systemd-journald" in script
+        assert script.index("journald_changed=0") < script.index(
+            "systemctl restart systemd-journald"
+        )
 
 
 def test_apple_refresh_timer_is_retired_everywhere_a_deploy_could_re_enable_it():
@@ -1873,14 +1888,17 @@ def test_apple_refresh_timer_is_retired_everywhere_a_deploy_could_re_enable_it()
     """
 
     installer = _read(AWS_DIR / "install_systemd.sh")
+    notimers = _read(AWS_DIR / "install_systemd_notimers.sh")
     deployer = _read(AWS_DIR / "sync_to_box.sh")
     health = _read(AWS_DIR / "check_scheduler_health.sh")
 
     enable_block = installer[installer.index("systemctl enable --now") :]
     assert "weatheredge-apple-refresh.timer" not in enable_block
-    assert (
-        "systemctl disable --now weatheredge-apple-refresh.timer" in installer
-    )
+    # Both installers, not just the fresh-provision one: install_systemd_notimers.sh
+    # is what a real deploy runs, and on an established host "not enabled by me"
+    # is not the same as disabled.
+    for script in (installer, notimers):
+        assert "systemctl disable --now weatheredge-apple-refresh.timer" in script
     assert 'RETIRED_TIMERS=(\n  "weatheredge-apple-refresh.timer"\n)' in deployer
     assert 'ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")' not in deployer
 

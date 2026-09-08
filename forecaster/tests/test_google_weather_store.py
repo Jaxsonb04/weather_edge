@@ -1661,6 +1661,44 @@ def test_non_client_failures_do_not_open_the_breaker(tmp_path):
     )
 
 
+def test_a_stranded_dispatch_does_not_reset_the_client_error_run(tmp_path):
+    """A kill between dispatch and completion must not reopen the spend.
+
+    ``mark_dispatched`` sets ``status='consumed'`` with a NULL status class, so
+    an in-flight or stranded reservation is indistinguishable from a completed
+    one by status alone -- production carries two such rows. Terminality is
+    ``completed_at IS NOT NULL``; without that filter the stranded row breaks
+    the trailing run and silently buys another ``threshold`` billable events.
+    """
+
+    from google_weather_store import GoogleWeatherClientErrorBreakerOpen
+
+    ledger = _usage_ledger(tmp_path, client_error_breaker=3)
+    _consume_client_error(ledger, 0)
+    _consume_client_error(ledger, 1)
+
+    stranded = ledger.reserve_event(
+        city_slug="sfo",
+        station_id="KSFO",
+        endpoint="hourly",
+        page_number=2,
+        now=TEST_NOW + timedelta(seconds=2),
+    )
+    ledger.mark_dispatched(stranded, now=TEST_NOW + timedelta(seconds=2))
+
+    _consume_client_error(ledger, 3)
+
+    assert ledger.consecutive_client_errors(now=TEST_NOW) == 3
+    with pytest.raises(GoogleWeatherClientErrorBreakerOpen):
+        ledger.reserve_event(
+            city_slug="sfo",
+            station_id="KSFO",
+            endpoint="daily",
+            page_number=9,
+            now=TEST_NOW + timedelta(seconds=9),
+        )
+
+
 def test_a_new_billing_date_starts_the_breaker_clean(tmp_path):
     ledger = _usage_ledger(tmp_path, client_error_breaker=2)
     _consume_client_error(ledger, 0)

@@ -1379,9 +1379,16 @@ class GoogleUsageLedger:
 
         Newest first, stopping at the first terminal event that is not a 4xx,
         so a single success -- or a timeout/transport failure, which is not a
-        client error -- resets the run. Reservations still in flight are not
-        terminal and are ignored. Capped at ``limit`` because the only question
-        asked of this count is whether the run has reached the breaker.
+        client error -- resets the run. Capped at ``limit`` because the only
+        question asked of this count is whether the run has reached the breaker.
+
+        Terminality is ``completed_at IS NOT NULL``, not the status alone.
+        ``mark_dispatched`` also sets ``status='consumed'``, so an in-flight
+        reservation -- or one stranded by a kill between dispatch and completion,
+        of which production carries two -- looks identical by status while
+        carrying a NULL ``response_status_class``. Selecting those would break
+        the trailing run on a row that never had an outcome and silently reset
+        the breaker.
         """
 
         rows = connection.execute(
@@ -1390,6 +1397,7 @@ class GoogleUsageLedger:
             FROM google_weather_usage_events
             WHERE billing_date_pacific = ?
               AND status IN ('consumed', 'success')
+              AND completed_at IS NOT NULL
             ORDER BY reserved_at DESC, id DESC
             LIMIT ?
             """,

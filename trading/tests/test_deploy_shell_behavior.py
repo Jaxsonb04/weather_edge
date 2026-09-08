@@ -129,11 +129,20 @@ def _run_prepare_pages_branch(
         'PAGES_BRANCH="gh-pages"\n'
         f"PAGES_HISTORY_MAX_COMMITS={max_commits}\n"
         "PAGES_FORCE_PUSH=0\n"
+        'PAGES_FORCE_LEASE=""\n'
         "wait_for_remote_publication() { return 0; }\n"
         f"{_PAGES_BRANCH_HELPERS}\n"
         f'cd "{work}"\n'
+        # Resolve the remote tip the same way the helper will, before it runs.
+        'git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1 || true\n'
+        'remote_tip="$(git rev-parse "refs/remotes/origin/$PAGES_BRANCH" 2>/dev/null || echo none)"\n'
         "prepare_pages_branch\n"
         'printf "force=%s count=%s\\n" "$PAGES_FORCE_PUSH" "$(publish_count)"\n'
+        'if [[ "$PAGES_FORCE_LEASE" == "$remote_tip" ]]; then\n'
+        '  printf "lease=tip\\n"\n'
+        "else\n"
+        '  printf "lease=%s\\n" "${PAGES_FORCE_LEASE:-empty}"\n'
+        "fi\n"
         'if git rev-parse --verify HEAD >/dev/null 2>&1; then\n'
         '  printf "head=born\\n"\n'
         "else\n"
@@ -159,6 +168,10 @@ def test_pages_branch_is_re_rooted_once_the_publish_counter_hits_the_ceiling(
     # An orphan checkout leaves HEAD unborn: the next commit is a new root, which
     # is exactly why the push has to be forced.
     assert "head=unborn" in stdout
+    # Forced, but leased on the tip this cycle fetched and gated on, so an
+    # unattended re-root cannot discard a commit that landed in between. The
+    # lease has to be captured before start_orphan_branch drops the local ref.
+    assert "lease=tip" in stdout
     assert counter_reset
 
 
@@ -170,6 +183,8 @@ def test_pages_branch_keeps_its_history_below_the_ceiling(tmp_path: Path) -> Non
     assert "force=0" in stdout
     assert "head=born" in stdout
     assert "count=1" in stdout
+    # No force, so no lease: an ordinary fast-forward push needs no protection.
+    assert "lease=empty" in stdout
     assert not counter_reset
 
 

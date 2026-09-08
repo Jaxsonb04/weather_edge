@@ -253,6 +253,8 @@ wait_for_remote_publication() {
 # Set whenever this cycle re-roots the branch, because a root commit is not a
 # descendant of the remote head and an ordinary push would be rejected.
 PAGES_FORCE_PUSH=0
+# The remote tip this cycle fetched and gated on, used as the force push's lease.
+PAGES_FORCE_LEASE=""
 
 start_orphan_branch() {
   # Leave HEAD unborn on the Pages branch so the next commit is a new root.
@@ -272,6 +274,7 @@ prepare_pages_branch() {
   # downloading the full, fast-growing publication history every cycle burned
   # most of the burstable instance's CPU and network budget.
   PAGES_FORCE_PUSH=0
+  PAGES_FORCE_LEASE=""
   if git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1; then
     if ! wait_for_remote_publication; then
       return 1
@@ -282,6 +285,9 @@ prepare_pages_branch() {
     if (( PAGES_HISTORY_MAX_COMMITS > 0 )) \
       && (( $(publish_count) >= PAGES_HISTORY_MAX_COMMITS )); then
       echo "gh-pages history reached $PAGES_HISTORY_MAX_COMMITS publications; re-rooting the branch"
+      # Lease the tip this cycle actually fetched and gated on. `start_orphan_branch`
+      # is about to drop the local ref, so capture it first.
+      PAGES_FORCE_LEASE="$(git rev-parse "refs/remotes/origin/$PAGES_BRANCH")"
       start_orphan_branch
       PAGES_FORCE_PUSH=1
       record_publish_count 0
@@ -396,8 +402,12 @@ while true; do
   push_args=(origin "HEAD:$PAGES_BRANCH")
   if (( PAGES_FORCE_PUSH == 1 )); then
     # Discarding the old history is the entire point of the re-root; the branch
-    # content is regenerated from scratch on every cycle anyway.
-    push_args=(--force "${push_args[@]}")
+    # content is regenerated from scratch on every cycle anyway. Lease it all the
+    # same: this is an unattended destructive push, and the lease is free --
+    # prepare_pages_branch fetched this exact tip moments ago, so it holds unless
+    # something else pushed in between, which is precisely the case worth
+    # refusing. A refused lease falls into the existing re-fetch/retry loop.
+    push_args=("--force-with-lease=refs/heads/$PAGES_BRANCH:$PAGES_FORCE_LEASE" "${push_args[@]}")
   fi
   if git push "${push_args[@]}"; then
     echo "Published SFO weather dashboard to $PAGES_BRANCH"

@@ -203,10 +203,14 @@ auto-repaired.
    delete ahead of the archive that makes it recoverable.
 7. Removes old local partitions only after verified upload.
 
-Each delete batch commits and releases SQLite's write lock within
-`SFO_PRUNE_MAX_BATCH_SECONDS` (2 s), against the 30 s `busy_timeout` the scan and
-monitor wait on, and the batch limit halves on any overrun. The archive cleanup
-in step 7 removes uploaded partition files, not rows or free pages.
+Each delete batch commits and releases SQLite's write lock, and the scan and
+monitor wait on a 30 s `busy_timeout`. `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) is a
+shrink target measured *after* each batch, not a ceiling: a batch runs to
+completion at the current row limit and only an overrun halves the limit for the
+next one (floor 500), so the first batch of a run can exceed it. Step 7's archive
+cleanup runs whether or not the delete succeeded, and removes uploaded partition
+files, not rows or free pages; a failed delete is reported after it and still
+fails the unit.
 
 `SFO_PRUNE_MODE=quiesced-delete` runs the same delete plus an explicit operator
 assertion that the paper scan, monitor, settlement, dataset, and other journal
