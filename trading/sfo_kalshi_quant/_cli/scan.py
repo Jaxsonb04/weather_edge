@@ -955,6 +955,17 @@ def _portfolio_scan_one_target(
             entry_block_reason = pause_reason
 
     decisions_to_record = _portfolio_decisions_for_recording(decisions, plan)
+    # Audit TC-15: the portfolio scan recorded the ALLOCATOR'S REQUEST, never
+    # the order execution would place. A crossing limit is capped at displayed
+    # ask depth (`execution._taker_cross_quote`, `paper._clamp_to_displayed_ask`),
+    # so live snapshots carried ~85 contracts / ~$77 of intended spend for
+    # orders that were 2 contracts / $1.77: 7,561 recommended contracts against
+    # 392 executable, and $384.69 of expected_profit against $19.20, over the 89
+    # approved live rows since 2026-09-04. The single-target scan has always
+    # applied the entry-mode quote before recording (`with_entry_mode` above);
+    # this makes the portfolio path agree. Placement is untouched --
+    # `_place_portfolio_orders` still reads `plan.legs`.
+    decisions_to_record = paper_trader.with_entry_mode(decisions_to_record)
     if not entry_allowed and entry_block_reason:
         if risk_profile == "research":
             paper_trader.record_research_shadow_candidates(

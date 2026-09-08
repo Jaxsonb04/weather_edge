@@ -2137,19 +2137,11 @@ class PaperStore:
             }
         else:
             return {"allowed_spend": 0.0, "reason": "account/profile identity mismatch"}
-        today_start = datetime.now(SETTLEMENT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        # The account-level daily-loss query was deleted with DAILY_LOSS_PCT
+        # (audit TC-6): `paper_entry_pause_reason` pauses live entries at 1.0%
+        # of the clamped bankroll before any caller can reach this method, so
+        # the 2% account breaker this fed could never fire.
         with self.connect() as conn:
-            daily_pnl = float(conn.execute(
-                "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
-                "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED') "
-                "AND COALESCE(closed_at, settled_at) >= ? "
-                "AND COALESCE(account_id, ?) = ?",
-                (
-                    today_start.astimezone(UTC).isoformat(),
-                    SHARED_ACCOUNT_ID,
-                    entry_account,
-                ),
-            ).fetchone()[0] or 0.0)
             active = conn.execute(
                 "SELECT market_ticker, target_date, COALESCE(risk_profile, 'live'), "
                 "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
@@ -2169,7 +2161,6 @@ class PaperStore:
         return policy_capacity(
             state=state,
             active_rows=active,
-            daily_pnl=daily_pnl,
             target_date=target_date,
             market_ticker=market_ticker,
             risk_profile=risk_profile,

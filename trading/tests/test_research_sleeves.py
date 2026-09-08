@@ -278,8 +278,13 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # execution identity.
     # 2026-09-04: explicit behavior-version coverage rotates the evidence cohort
     # for the audited exit-policy correction instead of silently blending it.
-    assert strategy_fingerprint(config, entry_mode="limit") == "88e417a64d8be9b1bb933b3b"
-    assert strategy_fingerprint(config, entry_mode="market") == "ea635b48bd45aad3d28d9c5b"
+    # 2026-09-07 (audit TC-15/TC-6): the profile-scoped executable minimum moved
+    # from $1 to $0.01 so a guaranteed one-contract cross is taken instead of
+    # rested (one contract of a favorite costs $0.74-0.96, so $1 refused every
+    # such fill), and STRATEGY_BEHAVIOR_VERSION rotates for the same batch of
+    # execution changes. Both are deliberately a new execution identity.
+    assert strategy_fingerprint(config, entry_mode="limit") == "76ab4a48e1ba368b681ff302"
+    assert strategy_fingerprint(config, entry_mode="market") == "cc248d359ac909dd4b99bcdf"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1228,7 +1233,9 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "ea635b48bd45aad3d28d9c5b"
+    # Rotated 2026-09-07 with the TC-15 executable-minimum change; see
+    # test_live_account_cutover_preserves_strategy_fingerprints.
+    assert row["strategy_fingerprint"] == "cc248d359ac909dd4b99bcdf"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

@@ -406,6 +406,27 @@ def test_analysis_and_portfolio_scans_share_one_context_builder() -> None:
         assert duplicated_step not in portfolio_source
 
 
+def test_portfolio_scan_records_the_executable_size_not_the_policy_request() -> None:
+    """Audit TC-15: recorded rows must carry the size execution will order.
+
+    The portfolio scan recorded the ALLOCATOR'S request and never the crossing
+    quote's ask-clamped size, so live snapshots showed ~85 contracts / ~$77 of
+    intended spend for orders that were 2 contracts / $1.77. The single-target
+    scan has always applied the entry-mode quote before recording; this pins
+    that the portfolio path now agrees, and that placement still reads the
+    plan rather than the restated recording copy.
+    """
+
+    source = inspect.getsource(scan_module._portfolio_scan_one_target)
+    quote_at = source.index("paper_trader.with_entry_mode(decisions_to_record)")
+    record_at = source.index("store.record_decisions(")
+    assert quote_at < record_at
+    assert "_place_portfolio_orders(" in source
+    placement = inspect.getsource(scan_module._place_portfolio_orders)
+    assert "plan.legs" in placement
+    assert "decisions_to_record" not in placement
+
+
 def test_build_scan_context_preserves_event_fallback_and_injected_sizing_model() -> None:
     target = date(2026, 7, 12)
     city = get_city("nyc")

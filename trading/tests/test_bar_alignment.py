@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 
 from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
-from sfo_kalshi_quant.execution import buy_limit_for_decision
+from sfo_kalshi_quant.execution import buy_limit_for_decision, with_buy_limit
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import TradeDecision
 
@@ -139,11 +139,91 @@ def test_high_bar_config_still_refuses_the_thin_candidate():
     assert buy_limit_for_decision(_decision(), config) is None
 
 
-def test_executable_minimum_still_blocks_a_too_thin_book():
-    """One contract at ~0.95 remains below the live profile's $1 floor."""
+def test_single_contract_cross_is_taken_rather_than_rested():
+    """Audit TC-15: a guaranteed one-contract fill must not be sent to rest.
+
+    Replaces test_executable_minimum_still_blocks_a_too_thin_book, which
+    asserted the defect. One contract of a favorite costs $0.74-0.96, so the
+    live profile's $1 executable floor refused EVERY quote whose displayed
+    depth was one contract. Measured on production 2026-09-04..07: 24 of the
+    89 approved live rows had exactly one contract of depth and all 24 were
+    refused; the four such orders actually placed in the 2026-08-24 window
+    (2611, 2616, 2679, 2743) rested 32-36 contracts each and expired with
+    zero fills. The whole-contract rule below and the after-fee LCB edge floor
+    are what govern the cross now.
+    """
 
     live = strategy_config_for_profile("live")
-    assert buy_limit_for_decision(_decision(entry_ask_size=1.0), live) is None
+    quote = buy_limit_for_decision(_decision(entry_ask_size=1.0), live)
+
+    assert quote is not None
+    assert quote.would_cross is True
+    assert quote.contracts == 1.0
+    # The refusal this replaces: one contract is worth less than a dollar.
+    assert quote.contracts * quote.cost_per_contract < 1.0
+    assert quote.edge_lcb >= live.limit_taker_cross_min_edge_lcb
+
+
+def test_a_notional_floor_above_one_contract_still_refuses_the_cross():
+    """The floor stays a real parameter: restoring $1 restores the old refusal."""
+
+    from dataclasses import replace as _replace
+
+    live = strategy_config_for_profile("live")
+    strict = _replace(live, limit_taker_cross_min_notional=1.0)
+    assert buy_limit_for_decision(_decision(entry_ask_size=1.0), strict) is None
+
+
+def test_a_book_without_a_whole_contract_is_still_not_executable():
+    """Removing the dollar floor must not invent volume out of an empty book."""
+
+    live = strategy_config_for_profile("live")
+    assert buy_limit_for_decision(_decision(entry_ask_size=0.0), live) is None
+
+
+def test_with_buy_limit_reports_the_executable_size_not_the_policy_request():
+    """Audit TC-15: recorded size and expected_profit must be the order, not the ask.
+
+    ``with_buy_limit`` used to keep the allocator's request while the crossing
+    quote it derived was capped at displayed depth, so live decision snapshots
+    carried ~85 contracts / ~$77 of intended spend for orders that were 2
+    contracts / $1.77 -- 7,561 recommended contracts against 392 executable
+    and $384.69 of expected_profit against $19.20 over the 89 approved live
+    rows since 2026-09-04. ``with_target_research_execution`` already did this
+    correctly; this is the same restatement on the live path.
+    """
+
+    live = strategy_config_for_profile("live")
+    decision = _decision()
+    assert decision.recommended_contracts == 87.0
+    assert decision.ask_size == 11.0
+
+    limited = with_buy_limit(decision, live)
+
+    assert limited.recommended_contracts == 11.0
+    assert limited.binding_constraint == "visible_ask_depth"
+    assert math.isclose(
+        limited.expected_profit, limited.limit_edge * 11.0, abs_tol=1e-12
+    )
+
+
+def test_with_buy_limit_leaves_a_resting_quote_at_full_size():
+    """A resting maker bid is gated by future volume, not the ask at entry."""
+
+    live = strategy_config_for_profile("live")
+    decision = _decision(
+        entry_bid=0.90,
+        entry_ask=0.93,
+        spread=0.03,
+        probability_lcb=0.932,
+        probability=0.96,
+        entry_ask_size=1.0,
+    )
+    limited = with_buy_limit(decision, live)
+
+    assert limited.limit_price == 0.91
+    assert limited.recommended_contracts == decision.recommended_contracts
+    assert limited.binding_constraint == decision.binding_constraint
 
 
 def test_wide_spread_still_prefers_the_improving_maker_quote_when_it_qualifies():

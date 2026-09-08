@@ -146,6 +146,11 @@ def _taker_cross_quote(
     edge_lcb = decision.probability_lcb - cost
     if edge_lcb + 1e-12 < config.limit_taker_cross_min_edge_lcb:
         return None
+    # Dust guard only. The exchange's executable unit is the WHOLE CONTRACT
+    # already enforced above; a floor at or above one contract's cost (a
+    # favorite costs $0.74-0.96) silently refuses guaranteed single-contract
+    # fills and diverts them to the maker path, where the live book has never
+    # filled. See LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"].
     if contracts * cost + 1e-9 < config.limit_taker_cross_min_notional:
         return None
     return BuyLimitQuote(
@@ -363,6 +368,11 @@ def with_buy_limit(
                 ),
             ],
         )
+    # A crossing quote is capped at displayed ask depth, so the order that
+    # will actually be placed is `quote.contracts`, not the policy request.
+    # Reporting the request (audit TC-15) overstated live `expected_profit` by
+    # ~20x in decision_snapshots. Mirrors `with_target_research_execution`.
+    # Resting quotes carry the full request, so this is a no-op for them.
     return replace(
         decision,
         limit_price=quote.price,
@@ -370,7 +380,13 @@ def with_buy_limit(
         limit_cost_per_contract=quote.cost_per_contract,
         limit_edge=quote.edge,
         limit_edge_lcb=quote.edge_lcb,
-        expected_profit=quote.edge * decision.recommended_contracts,
+        recommended_contracts=quote.contracts,
+        expected_profit=quote.edge * quote.contracts,
+        binding_constraint=(
+            "visible_ask_depth"
+            if quote.contracts < decision.recommended_contracts
+            else decision.binding_constraint
+        ),
     )
 
 

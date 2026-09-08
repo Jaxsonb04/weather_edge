@@ -549,7 +549,22 @@ LIVE_PROFILE_OVERRIDES = {
     # point-in-time replay over the 2026-07-29..08-21 depth window moved the
     # capped Live book from 62 to 84 fills (+35%, 79-5) at a $1 floor, without
     # changing any signal, exposure, loss, liquidity, or position-size cap.
-    "limit_taker_cross_min_notional": 1.0,
+    #
+    # 2026-09-07 (audit TC-15). The residual $1 floor still refused EVERY
+    # 1-contract cross, because one contract of a favorite costs $0.74-0.96.
+    # Measured on production: of the 89 approved live decision rows since
+    # 2026-09-04, 24 had exactly one contract of displayed depth and all 24
+    # were refused, falling through to the maker path as 30-something-contract
+    # resting orders. Orders 2611, 2616, 2679 and 2743 are the four such
+    # orders actually placed in that window; all four expired with zero fills.
+    # The executable unit is a whole contract, which `_taker_cross_quote`
+    # enforces directly (`contracts < 1.0 -> None`), and the after-fee LCB
+    # edge floor is what governs EV. The value is one cent rather than zero
+    # because it doubles as the account policy's `minimum_notional`
+    # (`PaperTrader._fit_to_account_policy` -> `account.policy_capacity`),
+    # which rejects a non-positive floor as invalid and would then block every
+    # live order.
+    "limit_taker_cross_min_notional": 0.01,
     "limit_resting_reservation_fallback": True,
 }
 
@@ -652,6 +667,13 @@ RESEARCH_PROFILE_OVERRIDES = {
     "limit_taker_cross_enabled": False,
     "limit_resting_reservation_fallback": False,
     "research_target_taker_cross": True,
+    # Pinned, deliberately NOT inherited from LIVE_PROFILE_OVERRIDES. The
+    # target book spends this value on a different rule -- the opt-in test
+    # that a partial slice is worth crossing for when the spread is wider than
+    # one tick (`target_research_quote`) -- and its maker path actually fills
+    # (844 of 11,538 contracts, 7.3%, against live's 0 of 65). Live's TC-15
+    # change must not silently retune the research book.
+    "limit_taker_cross_min_notional": 1.0,
     # Observation only; see the StrategyConfig field comment. Piloted on
     # research (the collect-data-risk-nothing book) so the already-fragile
     # live 15-minute scan cadence is untouched by a new API dependency.

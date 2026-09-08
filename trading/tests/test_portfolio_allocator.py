@@ -299,7 +299,89 @@ def test_joint_kelly_cannot_resize_live_yes_past_its_sleeve() -> None:
         joint_kelly_enabled=True,
     )
 
-    assert sum(leg.spend for leg in plan.legs if leg.sleeve == "yes_convex") <= 4.0
+    limits = portfolio_limits_for_profile("live", 1000.0)
+    # Was a literal 4.0, which cemented the defective sleeve (audit TC-6): the
+    # sleeve was bankroll * 0.08 * 0.05 = $4.00 across all 15 cities, and this
+    # fixture spends $3.80 with or without the resize, so the literal pinned a
+    # number the test never actually exercised. Assert the live sleeve itself.
+    assert sum(leg.spend for leg in plan.legs if leg.sleeve == "yes_convex") <= (
+        limits.yes_sleeve
+    )
+
+
+def test_live_yes_sleeve_admits_a_full_size_position() -> None:
+    """Audit TC-6: the live YES sleeve must not be an invisible veto.
+
+    It was `bankroll * 0.08 * 0.05` = $4.00 across all 15 cities -- less than
+    the account's own per-position ceiling of min($30, 3% of equity) -- so the
+    first YES leg evaluated was always dropped as "YES sleeve is full" no
+    matter how good it was. That was masked only because no live YES candidate
+    has ever been signal-approved: 0 of 328 YES candidates cleared min_edge
+    over 2026-09-01..03, and 0 of 89,508 live YES decision rows since
+    2026-09-01 were approved. The upstream signal gate is the control that
+    keeps the book 100% NO; the sleeve must be a coherent concentration cap.
+    """
+
+    limits = portfolio_limits_for_profile("live", 1000.0)
+    # At least one full-size position (NORMAL_POSITION_CAP), at most half the
+    # day's directional budget.
+    assert limits.yes_sleeve >= 30.0
+    assert limits.yes_sleeve == limits.max_daily_loss * 0.5
+
+    market = _market(
+        "70° to 71°",
+        ticker="KXHIGHTSFO-TEST-B70.5",
+        floor=70,
+        cap=71,
+        yes_ask=0.20,
+    )
+    plan = allocate_portfolio(
+        [
+            _decision(
+                market,
+                side="YES",
+                spend=30.0,
+                probability=0.90,
+                edge=0.70,
+                edge_lcb=0.50,
+                quality=90.0,
+            )
+        ],
+        bankroll=1000.0,
+        risk_profile="live",
+    )
+
+    assert [leg.sleeve for leg in plan.legs] == ["yes_convex"]
+    assert not any("YES sleeve is full" in reason for reason in plan.reasons)
+
+
+def test_live_yes_sleeve_still_caps_the_convex_side() -> None:
+    """Raising the sleeve must not remove it: the third full-size leg is refused."""
+
+    limits = portfolio_limits_for_profile("live", 1000.0)
+    decisions = [
+        _decision(
+            _market(
+                f"{70 + index}° to {71 + index}°",
+                ticker=f"KXHIGHTSFO-TEST-B{70 + index}.5",
+                floor=70 + index,
+                cap=71 + index,
+                yes_ask=0.20,
+            ),
+            side="YES",
+            spend=30.0,
+            probability=0.90,
+            edge=0.70,
+            edge_lcb=0.50,
+            quality=90.0 - index,
+        )
+        for index in range(3)
+    ]
+    plan = allocate_portfolio(decisions, bankroll=1000.0, risk_profile="live")
+
+    yes_spend = sum(leg.spend for leg in plan.legs if leg.sleeve == "yes_convex")
+    assert yes_spend <= limits.yes_sleeve
+    assert any("YES sleeve is full" in reason for reason in plan.reasons)
 
 
 def test_joint_kelly_is_noop_without_a_ladder() -> None:

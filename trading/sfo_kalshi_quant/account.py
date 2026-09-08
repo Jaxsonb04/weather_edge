@@ -26,7 +26,7 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # Explicitly covers behavior outside StrategyConfig (notably exit policy). Any
 # live-account behavior change must rotate this value so readiness evidence
 # cannot silently blend pre-change and post-change orders.
-STRATEGY_BEHAVIOR_VERSION = "behavior-v2-audit-remediation-2026-09-04"
+STRATEGY_BEHAVIOR_VERSION = "behavior-v3-forecast-and-execution-2026-09-07"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)
@@ -53,17 +53,37 @@ MIN_EXECUTABLE_NOTIONAL = 5.0
 # Per-position ceiling: min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * equity).
 # Raised 2026-07-10 from $20/2% to $30/3%: with maker-first sizing no longer
 # bound by displayed ask depth, the per-position cap becomes the working
-# per-trade ceiling (~$30 on the $1000 bankroll). Aggregate, sleeve, city,
-# region, daily-loss, and drawdown breakers are unchanged.
+# per-trade ceiling (~$30 on the $1000 bankroll). Aggregate, city, region and
+# drawdown breakers are unchanged.
 NORMAL_POSITION_CAP = 30.0
 AGGREGATE_RISK_PCT = 0.20
-MAIN_SLEEVE_PCT = 0.16
+# Audit TC-6 (2026-09-07): MAIN_SLEEVE_PCT = 0.16 was DELETED, not retuned. It
+# split the aggregate cap into a "main" and a "research" sleeve, but since the
+# v3 account cutover every research order lives in its own policy account and
+# `active_rows` binds only paper-shared plus the entry account, so a live
+# entry's rows structurally cannot contain a research row. With
+# research_risk == 0 the old expression
+#     0.16E - main_risk + max(0, 0.04E - research_risk)
+# reduces algebraically to 0.20E - aggregate -- exactly AGGREGATE_RISK_PCT,
+# which now stands alone. (It is also never looser than the old expression:
+# the two differ only when research_risk > 0.04E, where the old one gave MORE
+# room.) Research capital is capped by its own sleeve policy in
+# `PaperStore._research_capacity_on_connection`, not here.
 RESEARCH_SLEEVE_PCT = 0.04
 RESEARCH_POSITION_PCT = 0.01
 NORMAL_POSITION_PCT = 0.03
 CITY_TARGET_PCT = 0.05
 REGION_DAY_PCT = 0.08
-DAILY_LOSS_PCT = 0.02
+# Audit TC-6 (2026-09-07): DAILY_LOSS_PCT = 0.02 ("2% live-account daily loss
+# pause") was DELETED because it could never fire. Both paper entry paths
+# (`PaperTrader.place_approved` and `PaperTrader.place_arbitrage`) consult
+# `PaperStore.paper_entry_pause_reason` BEFORE any capacity call, and
+# PAUSE_THRESHOLDS["live"] pauses at 1.0% of clamp(equity, 500, 2000) against
+# the same rows, the same fixed-PST day boundary and the same predicate -- at
+# or below half of 2% of equity at every equity level the 15% drawdown pause
+# below does not already cover. Daily loss is enforced by that breaker for
+# paper entries, and by `LiveExecutionPolicy.daily_loss_pct`
+# (SFO_LIVE_DAILY_LOSS_PCT, still 2% of risk capital) for real money.
 
 REGION_BY_SERIES = {
     "KXHIGHMIA": "southeast",
@@ -88,7 +108,6 @@ def policy_capacity(
     *,
     state: dict[str, object],
     active_rows: Iterable[Sequence[object]],
-    daily_pnl: float,
     target_date: str,
     market_ticker: str,
     risk_profile: str | None,
@@ -105,8 +124,6 @@ def policy_capacity(
     drawdown = float(state["drawdown"])
     if drawdown >= 0.15:
         return {"allowed_spend": 0.0, "reason": "15% account drawdown pause"}
-    if daily_pnl <= -DAILY_LOSS_PCT * equity:
-        return {"allowed_spend": 0.0, "reason": "2% live-account daily loss pause"}
 
     rows = list(active_rows)
     series = market_ticker.split("-", 1)[0].upper()
@@ -114,7 +131,6 @@ def policy_capacity(
     profile = normalize_risk_profile_name(risk_profile) if risk_profile else "live"
     aggregate = sum(float(row[3] or 0.0) for row in rows)
     research_risk = sum(float(row[3] or 0.0) for row in rows if str(row[2]) == "research")
-    main_risk = aggregate - research_risk
     city_risk = sum(
         float(row[3] or 0.0)
         for row in rows
@@ -137,9 +153,9 @@ def policy_capacity(
     if profile == "research":
         sleeve_room = RESEARCH_SLEEVE_PCT * equity - research_risk
     else:
-        sleeve_room = MAIN_SLEEVE_PCT * equity - main_risk + max(
-            0.0, RESEARCH_SLEEVE_PCT * equity - research_risk
-        )
+        # No main/research split survives the v3 cutover -- see the
+        # MAIN_SLEEVE_PCT note above. The aggregate cap IS the live sleeve.
+        sleeve_room = total_room
     allowed = min(
         requested_spend,
         position_cap,

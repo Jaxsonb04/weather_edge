@@ -81,7 +81,19 @@ def portfolio_limits_for_profile(profile: str | None, bankroll: float) -> Portfo
         risk_profile="live",
         bankroll=bankroll,
         max_daily_loss=bankroll * 0.08,
-        yes_sleeve=bankroll * 0.08 * 0.05,
+        # Audit TC-6 (2026-09-07): this was 0.05 of the directional budget =
+        # $4.00 across all 15 cities -- LESS than one live position, since the
+        # account's per-position ceiling is min($30, 3% of equity). Every
+        # normally-sized YES leg was therefore dropped on its first evaluation
+        # as "YES sleeve is full". That is an invisible veto, not a sleeve.
+        # What actually keeps the book 100% NO is the upstream signal gate: 0
+        # of 328 YES candidates cleared min_edge over 2026-09-01..03, and 0 of
+        # 89,508 live YES decision rows since 2026-09-01 were approved. Half
+        # the directional budget ($40 at the $1000 bankroll) admits at least
+        # one full-size YES position while still stopping the convex side from
+        # consuming a whole day's risk. No live behaviour changes until a YES
+        # candidate is signal-approved for the first time.
+        yes_sleeve=bankroll * 0.08 * 0.50,
         explore_sleeve=0.0,
     )
 
