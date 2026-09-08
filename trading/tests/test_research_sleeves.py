@@ -294,8 +294,8 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # All of the above move served probabilities or recorded execution size, so
     # STRATEGY_BEHAVIOR_VERSION rotates once for the combined release and these
     # fingerprints move with it.
-    assert strategy_fingerprint(config, entry_mode="limit") == "0fffde5286e84e6418733fca"
-    assert strategy_fingerprint(config, entry_mode="market") == "93d0db46d518967192dceab1"
+    assert strategy_fingerprint(config, entry_mode="limit") == "93326de538852004fc08aa99"
+    assert strategy_fingerprint(config, entry_mode="market") == "cdfaeb3c0be77f5b9dcb1270"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1246,7 +1246,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["policy_fingerprint"] is None
     # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "93d0db46d518967192dceab1"
+    assert row["strategy_fingerprint"] == "cdfaeb3c0be77f5b9dcb1270"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
