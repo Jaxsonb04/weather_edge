@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 
 from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
-from sfo_kalshi_quant.execution import buy_limit_for_decision
+from sfo_kalshi_quant.execution import buy_limit_for_decision, with_buy_limit
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import TradeDecision
 
@@ -140,10 +140,108 @@ def test_high_bar_config_still_refuses_the_thin_candidate():
 
 
 def test_executable_minimum_still_blocks_a_too_thin_book():
-    """One contract at ~0.95 remains below the live profile's $1 floor."""
+    """One contract at ~0.95 remains below the live profile's $1 floor.
+
+    Audit TC-15b asked for this floor to be dropped so the guaranteed
+    one-contract cross is taken instead. That was tried at $0.01 and REVERTED
+    on production evidence, so this test is deliberately still here: the live
+    maker path fills 7.6% of rested contracts (414 orders / 12,479.6 requested
+    / 943.5 filled since 2026-07-01), the sub-$1 class specifically returns
+    $0.135 of realized pnl per rest attempted (105 rests, 216.5 of 3,248.8
+    contracts filled, $14.14 realized) against ~$0.043 of after-fee edge for
+    the one-contract cross, and a fill would additionally consume the
+    market/side entry slot (`max_entries_per_market_side` is 1 for live and
+    `entries_for_market_side` excludes PAPER_EXPIRED) that 25 of 43 such
+    groups later used to fill 152.1 contracts for $13.53. See
+    LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"].
+    """
 
     live = strategy_config_for_profile("live")
     assert buy_limit_for_decision(_decision(entry_ask_size=1.0), live) is None
+
+
+def test_dropping_the_notional_floor_would_convert_that_rest_into_a_fill():
+    """Pin what the reverted change did, so the trade-off stays legible."""
+
+    from dataclasses import replace as _replace
+
+    live = strategy_config_for_profile("live")
+    dropped = _replace(live, limit_taker_cross_min_notional=0.01)
+    quote = buy_limit_for_decision(_decision(entry_ask_size=1.0), dropped)
+
+    assert quote is not None
+    assert quote.would_cross is True
+    assert quote.contracts == 1.0
+    # The whole reason $1 bites: one contract of a favorite is worth under $1.
+    assert quote.contracts * quote.cost_per_contract < 1.0
+
+
+def test_a_book_without_a_whole_contract_is_still_not_executable():
+    """Removing the dollar floor must not invent volume out of an empty book."""
+
+    live = strategy_config_for_profile("live")
+    assert buy_limit_for_decision(_decision(entry_ask_size=0.0), live) is None
+
+
+def test_a_malformed_book_yields_no_quote_instead_of_raising():
+    """Both scans quote before recording, so a bad book must not kill the scan.
+
+    `_portfolio_scan_one_target` now quotes every approved decision before
+    `record_decisions`. An unguarded `float(decision.ask)` there would raise
+    out of the recording path and lose the whole city's snapshot batch for the
+    tick, which is a worse failure than journalling a bad number.
+    """
+
+    live = strategy_config_for_profile("live")
+    assert buy_limit_for_decision(_decision(entry_ask="n/a"), live) is None
+    assert buy_limit_for_decision(_decision(entry_bid="n/a"), live) is None
+    assert buy_limit_for_decision(_decision(entry_ask=float("nan")), live) is None
+    assert buy_limit_for_decision(_decision(entry_bid=float("nan")), live) is None
+
+
+def test_with_buy_limit_reports_the_executable_size_not_the_policy_request():
+    """Audit TC-15: recorded size and expected_profit must be the order, not the ask.
+
+    ``with_buy_limit`` used to keep the allocator's request while the crossing
+    quote it derived was capped at displayed depth, so live decision snapshots
+    carried ~85 contracts / ~$77 of intended spend for orders that were 2
+    contracts / $1.77 -- 7,561 recommended contracts against 392 executable
+    and $384.69 of expected_profit against $19.20 over the 89 approved live
+    rows since 2026-09-04. ``with_target_research_execution`` already did this
+    correctly; this is the same restatement on the live path.
+    """
+
+    live = strategy_config_for_profile("live")
+    decision = _decision()
+    assert decision.recommended_contracts == 87.0
+    assert decision.ask_size == 11.0
+
+    limited = with_buy_limit(decision, live)
+
+    assert limited.recommended_contracts == 11.0
+    assert limited.binding_constraint == "visible_ask_depth"
+    assert math.isclose(
+        limited.expected_profit, limited.limit_edge * 11.0, abs_tol=1e-12
+    )
+
+
+def test_with_buy_limit_leaves_a_resting_quote_at_full_size():
+    """A resting maker bid is gated by future volume, not the ask at entry."""
+
+    live = strategy_config_for_profile("live")
+    decision = _decision(
+        entry_bid=0.90,
+        entry_ask=0.93,
+        spread=0.03,
+        probability_lcb=0.932,
+        probability=0.96,
+        entry_ask_size=1.0,
+    )
+    limited = with_buy_limit(decision, live)
+
+    assert limited.limit_price == 0.91
+    assert limited.recommended_contracts == decision.recommended_contracts
+    assert limited.binding_constraint == decision.binding_constraint
 
 
 def test_wide_spread_still_prefers_the_improving_maker_quote_when_it_qualifies():
