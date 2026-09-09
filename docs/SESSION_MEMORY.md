@@ -34,8 +34,8 @@ operational claim; all production observations below are dated snapshots.
   page or console errors; menu blur, focus containment/restoration, scroll lock,
   route heading focus, and the plain-line close control passed. No backend,
   account, trading, provider, or billing policy changed; production-health
-  timestamps above remain unchanged. The deployed SPA source is commit
-  `34218cb20`; see
+  timestamps above remain unchanged. The deployed SPA source is the local
+  frontend commit `34218cb20` (the deployed SPA code revision); see
   `docs/audits/2026-09-08-web-ui-audit.md`.
 
 - **Publication recovered (September 4, 21:57 PDT snapshot):** backend source,

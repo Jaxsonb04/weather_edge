@@ -136,3 +136,8 @@ the iPhone canary confirmed the menu's 12px blur, modal focus containment and
 restoration, scroll lock, no overflow, and plain-line close control. Both had
 no page or console errors. No backend, paper-account, execution, provider, or
 billing policy changed.
+
+The deployed frontend code is recorded in commit `34218cb20` on the
+`codex/apple-history-ml-evaluation` branch. The deployment used that code's
+working tree; the subsequent documentation-only memory update does not change
+the deployed SPA assets.
