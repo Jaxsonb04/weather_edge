@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 21:58 PDT
+Last updated: 2026-09-08 21:54 PDT
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
@@ -10,6 +10,33 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Frontend audit, menu follow-up, and SPA deployment completed (September 8, 22:05 PDT snapshot):**
+  the closed ledger placed a 960px, twelve-column table inside a 333px phone
+  viewport and duplicated HeroUI Pro's scroll container. Phones now show
+  expandable records with visible P&L/outcomes; desktop has pinned columns,
+  essential/detail views, and button/keyboard scrolling through one container.
+  City breakdowns fold and mobile profile selectors are compact. Magic UI
+  border sweeps and dot textures retain the gold instrument direction. The
+  menu now floats over the same blur as search, animates in/out, uses a plain
+  horizontal close line, and preserves modal keyboard/touch behavior. Overview
+  immediate reveals previously started in their final state; finite staggered
+  entrances now animate its cleaner introduction and forecast instrument.
+  Reduced motion remains supported. Route focus waits for overlay exit and
+  cancels if the user moves on. Build, 178 frontend tests, lint (two existing
+  warnings), icon/diff checks, 29 initial ledger/page browser checks, and 31
+  follow-up menu/overview checks across phone/tablet/desktop passed. Current
+  initial assets are 223.09 KiB JS / 18.83 KiB CSS gzip. Five public JSON hashes
+  matched the September 8, 21:32 PDT snapshot used in follow-up browser checks.
+  The guarded `deploy_web_app.sh` build and sync completed, the operational
+  publisher ran, and the public Pages shell returned HTTP 200 with the updated
+  asset bundle. Desktop and iPhone production canaries loaded in 1.3s with no
+  page or console errors; menu blur, focus containment/restoration, scroll lock,
+  route heading focus, and the plain-line close control passed. No backend,
+  account, trading, provider, or billing policy changed; production-health
+  timestamps above remain unchanged. The deployed SPA source is commit
+  `34218cb20`; see
+  `docs/audits/2026-09-08-web-ui-audit.md`.
 
 - **Publication recovered (September 4, 21:57 PDT snapshot):** backend source,
   public provenance and full Strategy analysis match clean merged PR #113,

@@ -1,5 +1,6 @@
 import { Icon } from "@iconify/react/offline";
 import { Reveal } from "./Reveal";
+import { DotPattern } from "../magicui/DotPattern";
 
 interface PageHeaderProps {
   headingId: string;
@@ -13,7 +14,7 @@ interface PageHeaderProps {
 export function PageHeader({ eyebrow, title, sub, icon, headingId }: PageHeaderProps) {
   return (
     <header className="hero-glow relative overflow-hidden border-b border-border/60">
-      <div className="grid-lines pointer-events-none absolute inset-0 opacity-40" />
+      <DotPattern />
       <div className="relative mx-auto w-full max-w-6xl px-5 py-14 sm:px-8 lg:py-16">
         <Reveal immediate>
           <div className="mb-2 flex items-center gap-2.5">

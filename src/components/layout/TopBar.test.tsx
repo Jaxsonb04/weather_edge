@@ -1,4 +1,5 @@
-import { createEvent, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
+import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@iconify/react/offline", () => ({ Icon: () => null }));
@@ -14,9 +15,14 @@ const props = {
   liveUrl: "https://example.com/live",
 };
 
+function MenuHarness() {
+  const [open, setOpen] = useState(false);
+  return <TopBar {...props} menuOpen={open} onMenuOpenChange={setOpen} />;
+}
+
 describe("TopBar mobile menu keyboard behavior", () => {
   it("keeps brand and source link names explicit when responsive text is hidden", () => {
-    render(<TopBar {...props} />);
+    render(<MenuHarness />);
 
     const brandLink = screen.getByRole("link", { name: "WeatherEdge overview" });
     expect(brandLink).toHaveAttribute(
@@ -31,59 +37,58 @@ describe("TopBar mobile menu keyboard behavior", () => {
     );
   });
 
-  it("focuses the first link on open and restores the trigger on Escape", () => {
-    render(<TopBar {...props} />);
+  it("opens a named modal and restores the trigger on Escape", async () => {
+    render(<MenuHarness />);
     const trigger = screen.getByRole("button", { name: "Open menu" });
-
+    trigger.focus();
     fireEvent.click(trigger);
-    const menu = screen.getByRole("navigation", { name: "Mobile navigation" });
-    expect(within(menu).getByRole("link", { name: "Overview" })).toHaveFocus();
+    const dialog = await screen.findByRole("dialog", { name: "Navigation" });
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
 
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("navigation", { name: "Mobile navigation" })).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("lets natural Tab order leave the non-modal mobile menu", () => {
+  it("isolates the menu from background controls and offers a named close button", async () => {
     render(
       <>
-        <TopBar {...props} />
+        <MenuHarness />
         <button type="button">After navigation</button>
       </>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
 
-    const menu = screen.getByRole("navigation", { name: "Mobile navigation" });
-    const last = within(menu).getByRole("link", { name: "Source on GitHub" });
-    const sentinel = screen.getByRole("button", { name: "After navigation" });
-    last.focus();
-    const tab = createEvent.keyDown(last, { key: "Tab", bubbles: true, cancelable: true });
-    fireEvent(last, tab);
-    if (!tab.defaultPrevented) sentinel.focus();
-
-    expect(tab.defaultPrevented).toBe(false);
-    expect(sentinel).toHaveFocus();
+    const dialog = await screen.findByRole("dialog", { name: "Navigation" });
+    expect(screen.queryByRole("button", { name: "After navigation" })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close menu" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "After navigation" })).toBeInTheDocument();
   });
 
-  it("closes an already-active route and restores the menu trigger", () => {
-    render(<TopBar {...props} />);
+  it("closes an already-active route and restores the menu trigger", async () => {
+    render(<MenuHarness />);
     const trigger = screen.getByRole("button", { name: "Open menu" });
+    trigger.focus();
     fireEvent.click(trigger);
 
     fireEvent.click(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Overview" }));
 
-    expect(screen.queryByRole("navigation", { name: "Mobile navigation" })).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("does not restore trigger focus when selecting a different route", () => {
-    render(<TopBar {...props} />);
+  it("preserves native navigation when selecting a different route", async () => {
+    render(<MenuHarness />);
     const trigger = screen.getByRole("button", { name: "Open menu" });
     fireEvent.click(trigger);
 
-    fireEvent.click(within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Methodology" }));
+    const link = within(screen.getByRole("navigation", { name: "Mobile navigation" })).getByRole("link", { name: "Methodology" });
+    expect(link).toHaveAttribute("href", "#/methodology");
+    const click = createEvent.click(link, { bubbles: true, cancelable: true });
+    fireEvent(link, click);
 
-    expect(screen.queryByRole("navigation", { name: "Mobile navigation" })).not.toBeInTheDocument();
-    expect(trigger).not.toHaveFocus();
+    expect(click.defaultPrevented).toBe(false);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });

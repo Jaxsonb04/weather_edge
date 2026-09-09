@@ -40,7 +40,7 @@ export function Reveal({ children, className, delay = 0, immediate = false }: Re
     <div
       ref={ref}
       className={`reveal ${shown ? "is-in" : ""} ${className ?? ""}`}
-      style={delay ? { transitionDelay: `${delay}s` } : undefined}
+      style={delay ? { transitionDelay: `${delay}s`, animationDelay: `${delay}s` } : undefined}
     >
       {children}
     </div>

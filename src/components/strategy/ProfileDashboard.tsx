@@ -59,10 +59,10 @@ function profileBadge(p: ProfileEntry) {
 /** Small labelled divider for sub-sections inside a single book's dashboard. */
 function SubHead({ icon, title, note }: { icon: string; title: string; note?: string }) {
   return (
-    <div className="mb-2 flex items-center gap-2">
+    <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
       <Icon icon={icon} className="size-4 shrink-0 text-accent" aria-hidden="true" />
       <h4 className="font-display text-sm font-semibold text-foreground">{title}</h4>
-      {note && <span className="ml-auto text-[11px] text-muted">{note}</span>}
+      {note && <span className="w-full pl-6 text-xs text-muted sm:ml-auto sm:w-auto sm:pl-0">{note}</span>}
     </div>
   );
 }
@@ -317,12 +317,13 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             note={`${ledger.length} in the published month · showing ${closedPositionsExpanded ? ledger.length : Math.min(ledger.length, 5)}`}
           />
           {byCity.length > 0 && (
-            <div className="mb-4">
-              <p className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+            <details className="city-breakdown mb-3">
+              <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-muted focus-visible:outline-2 focus-visible:outline-[color:var(--focus)]">
                 <Icon icon="solar:map-point-bold" className="size-3.5 text-accent" aria-hidden="true" />
-                By settlement city
-              </p>
-              <ul className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs" aria-label="Closed positions grouped by settlement city">
+                By settlement city <span className="tnum">· {byCity.length} cities</span>
+                <Icon icon="solar:alt-arrow-down-linear" className="city-breakdown-chevron ml-auto size-4" aria-hidden="true" />
+              </summary>
+              <ul className="grid gap-x-6 gap-y-3 pb-4 pt-2 text-xs sm:grid-cols-2 lg:grid-cols-3" aria-label="Closed positions grouped by settlement city">
                 {byCity.map((c) => (
                   <li key={c.slug} className="flex items-center gap-1.5">
                     <span className="font-medium text-foreground">{c.name}</span>
@@ -331,7 +332,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
           )}
           <div className="overflow-hidden rounded-2xl border border-border/50">
             <div id={`closed-positions-${rp}`}>
