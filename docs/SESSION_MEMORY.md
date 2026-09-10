@@ -1,15 +1,34 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-08 21:54 PDT
+Last updated: 2026-09-09 21:40 PDT
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
-Last public artifact inspection: 2026-09-04 21:57 PDT (fresh)
+Last public artifact inspection: 2026-09-09 21:32 PDT (fresh shell/manifest;
+not a full AWS audit)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Recruiter-facing repository refresh prepared (September 9, 21:40 PDT snapshot):**
+  a clean branch from `origin/main` now carries the exact September 8 deployed
+  frontend commits without the unrelated WeatherKit/ML draft research. The root
+  README leads with the end-to-end engineering problem, scope, evidence, safety
+  boundary and a three-minute case study; the portfolio screenshot, package
+  descriptions and social metadata match the current fifteen-city platform.
+  The forecaster README now distinguishes the shared NWP/EMOS operational path
+  from optional SFO research layers and no longer mixes separate MAE summaries
+  or describes Google as an unconditional live primary input. The AI workflow
+  document's test inventory is current. The public SPA and manifest were
+  inspected at the timestamp above; publication was fresh with clean source
+  provenance. Build, 178 frontend tests, icon determinism and lint passed (the
+  same two Fast Refresh warnings remain). With network access available to the
+  editable-install integration test, the full Python suite passed 2,843 tests
+  with eight skips. Python compilation and diff checks passed. No AWS source,
+  timer, provider, paper account, trading policy, public artifact, or live-order
+  setting changed; the new metadata is not deployed until a later web release.
 
 - **Frontend audit, menu follow-up, and SPA deployment completed (September 8, 22:05 PDT snapshot):**
   the closed ledger placed a 960px, twelve-column table inside a 333px phone
