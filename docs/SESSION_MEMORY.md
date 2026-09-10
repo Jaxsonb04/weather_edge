@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-09 21:40 PDT
+Last updated: 2026-09-09 21:55 PDT
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
@@ -12,7 +12,7 @@ operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **Recruiter-facing repository refresh prepared (September 9, 21:40 PDT snapshot):**
+- **Recruiter-facing repository refresh prepared (September 9, 21:55 PDT snapshot):**
   a clean branch from `origin/main` now carries the exact September 8 deployed
   frontend commits without the unrelated WeatherKit/ML draft research. The root
   README leads with the end-to-end engineering problem, scope, evidence, safety
@@ -26,9 +26,16 @@ operational claim; all production observations below are dated snapshots.
   provenance. Build, 178 frontend tests, icon determinism and lint passed (the
   same two Fast Refresh warnings remain). With network access available to the
   editable-install integration test, the full Python suite passed 2,843 tests
-  with eight skips. Python compilation and diff checks passed. No AWS source,
-  timer, provider, paper account, trading policy, public artifact, or live-order
-  setting changed; the new metadata is not deployed until a later web release.
+  with eight skips. Python compilation and diff checks passed. GitHub also
+  exposed a critical MapLibre sanitizer advisory: the existing automated PR
+  changed only `package.json`, leaving `bun.lock` on vulnerable 5.24.0. This
+  branch updates both files to patched 6.4.1; a frozen install resolved 6.4.1,
+  and the production build, 178 frontend tests, lint, icon check and the
+  223.11 KiB JS / 18.83 KiB CSS initial bundle budgets passed afterward. No AWS
+  source, timer, provider, paper account, trading policy, public artifact, or
+  live-order setting changed; the new metadata is not deployed until a later
+  web release, and the default-branch alert remains open until this branch
+  lands.
 
 - **Frontend audit, menu follow-up, and SPA deployment completed (September 8, 22:05 PDT snapshot):**
   the closed ledger placed a 960px, twelve-column table inside a 333px phone
