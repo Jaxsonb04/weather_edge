@@ -22,6 +22,7 @@ import {
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
 import { SourceBlend } from "./SourceBlend";
+import { BorderBeam } from "../magicui/BorderBeam";
 
 const methodLabel = (method: string | undefined) =>
   method === "emos_wmean" ? "EMOS weighted mean" : method?.replaceAll("_", " ") ?? "Calibrated ensemble";
@@ -50,7 +51,8 @@ function CityForecastDial({ city }: { city: City }) {
   const freshnessColor = freshness.tone === "danger" ? "danger" : freshness.tone === "warning" ? "warning" : "success";
 
   return (
-    <Card className="overflow-hidden rounded-2xl">
+    <Card className="relative overflow-hidden rounded-2xl">
+      <BorderBeam />
       <Card.Content className="p-6">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -188,7 +190,8 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
       : null;
 
   return (
-    <Card className="overflow-hidden rounded-2xl">
+    <Card className="relative overflow-hidden rounded-2xl">
+      <BorderBeam />
       <Card.Content className="p-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">

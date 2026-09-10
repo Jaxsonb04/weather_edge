@@ -1,14 +1,21 @@
 # WeatherEdge
 
-**One calibrated NWP/EMOS engine forecasts daily-high temperature across fifteen US
-city markets, then prices those forecasts against live Kalshi prediction-market
-brackets — converting every candidate trade to fee-aware edge behind risk gates.**
+**An end-to-end probabilistic weather system that forecasts daily highs across
+15 U.S. cities, prices those forecasts against prediction markets, and publishes
+every decision to a live evidence dashboard.**
+
+WeatherEdge is a production-style student quant engineering project spanning
+data ingestion, probabilistic forecasting, market microstructure, paper
+execution, official settlement, cloud operations, and a responsive React app.
+It runs unattended on AWS, but it cannot place real-money orders.
 
 [**▶ Live dashboard**](https://jaxsonb04.github.io/weather_edge/) ·
+[Project case study](docs/PROJECT_CASE_STUDY.md) ·
+[Architecture](docs/architecture.md) ·
 [Methodology](https://jaxsonb04.github.io/weather_edge/#/methodology) ·
 [Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) ·
-[Architecture](docs/architecture.md) ·
-[Codebase walkthrough](docs/CODEBASE-WALKTHROUGH.md)
+[Codebase walkthrough](docs/CODEBASE-WALKTHROUGH.md) ·
+[AI-assisted development](docs/ai-assisted-development.md)
 
 [![Verify](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml/badge.svg)](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml)
 
@@ -19,6 +26,35 @@ brackets — converting every candidate trade to fee-aware edge behind risk gate
 > execution is unimplemented and fail-closed (`trading/sfo_kalshi_quant/live_execution.py`
 > raises `LiveTradingDisabled` and holds no authenticated client). Nothing here is
 > financial advice.
+
+## At a Glance
+
+| Area | What is implemented |
+|---|---|
+| Forecasting | 8-member NWP ensemble, rolling-origin EMOS per station, and deeper SFO-only LSTM/XGBoost research |
+| Coverage | 15 city markets, each mapped to its own NWS settlement station and local-standard climate day |
+| Decision engine | Bracket probabilities, market consensus, exact fees, spread/liquidity checks, lower-bound edge, and portfolio risk gates |
+| Paper execution | Reservation-price limits, bounded taker crosses, monitoring, exits, and official NWS settlement in isolated paper accounts |
+| Operations | AWS EC2, systemd timers, watchdogs, SQLite, S3 backups, atomic artifacts, and GitHub Pages publication |
+| Interface | React 19, TypeScript, Vite, HeroUI Pro, responsive tables, search, dark/light themes, and accessibility checks |
+| Verification | Python 3.12/3.13 CI, 141 Python test files, 178 frontend tests, Semgrep, deterministic icons, and browser-observed bundle budgets |
+
+## What This Project Demonstrates
+
+- **End-to-end ownership:** weather and market ingestion, model evaluation,
+  decision logic, persistence, cloud scheduling, publication, and frontend UX
+  live in one auditable system.
+- **Probability over point estimates:** forecasts become calibrated settlement-bin
+  distributions before the engine considers price, fees, liquidity, or size.
+- **Evidence discipline:** statistically weak improvements are rejected, model
+  claims are scoped to their actual samples, and the system never grades itself
+  with its own forecast feed.
+- **Operational safety:** live execution is fail-closed, paper accounts remain
+  economically separate, deployment is backup-gated, and stale or incomplete
+  evidence blocks readiness rather than being silently accepted.
+
+For a recruiter-oriented walkthrough of the engineering decisions and the best
+places to inspect, read the [three-minute project case study](docs/PROJECT_CASE_STUDY.md).
 
 ## Results
 
@@ -77,11 +113,12 @@ NWS Climatological Report (CLI)  ──► settlement truth   fee-aware edge + r
                                                         paper journal ─► React SPA
 ```
 
-Apple WeatherKit is also available as a private, temporary research source for
-all fifteen station coordinates. It is intentionally outside the diagram's
-prediction path: its live weight is zero, its values expire in tmpfs at Apple's
-provider deadline, and it does not enter `weather.db`, EMOS training, trading
-decisions, or public JSON. See
+Apple WeatherKit also runs as a private, temporary shadow source for all fifteen
+station coordinates. It is intentionally outside the prediction path: its live
+weight is zero, its values expire in tmpfs at Apple's provider deadline, and it
+does not enter `weather.db`, EMOS training, trading decisions, or public JSON.
+Activation therefore cannot change a forecast, risk gate, position size, or
+paper decision. See
 [the WeatherKit boundary](docs/APPLE-WEATHERKIT.md).
 
 Every market settles on its own NWS Climatological Report, and each city's
@@ -103,7 +140,7 @@ check that has not yet passed — which is why it remains paper-only.
 | Trading engine | Python, fee-aware edge, risk gates, paper journal |
 | Web | React, TypeScript, Vite, HeroUI Pro, bun |
 | Infra | AWS EC2, systemd timers, S3 archive, GitHub Pages |
-| Quality | pytest (132 test files), semgrep, oxlint, hash-pinned deps, CI bundle budget |
+| Quality | pytest (141 test files), Vitest (178 tests), semgrep, oxlint, hash-pinned deps, CI bundle budget |
 
 ## Engineering Notes
 
@@ -241,14 +278,15 @@ python google_weather_cache.py
 ```
 
 Refreshing Google Weather requires `GOOGLE_WEATHER_API_KEY`. The project keeps
-Google usage disciplined with an 8,000/month and 260/day default event budget,
-below the 10,000 free monthly cap.
+usage bounded with explicit monthly and daily event budgets; current limits and
+provider terms are operator configuration rather than README promises.
 
-The optional Apple source runs separately with `python apple_weatherkit.py
---cities all`. It is safe-off until the WeatherKit REST credentials and
-`ENABLE_APPLE_WEATHER=1` are configured. The canonical schedule uses one
-bundled hourly+daily request per city at four UTC vintages per day. This source
-is shadow-only and cannot alter the forecast or trading engine.
+The Apple source runs separately with `python apple_weatherkit.py --cities all`.
+It exits safely without a request unless WeatherKit REST credentials and
+`ENABLE_APPLE_WEATHER=1` are configured. Production uses one bundled
+hourly+daily request per city at four UTC vintages per day, plus an independent
+expiry purge. The source remains shadow-only and cannot alter the forecast or
+trading engine.
 
 These commands drive the SFO legacy blend. The other fourteen cities run
 through the NWP→EMOS path (`nwp_archive.py`, `emos_forecast.py`) with CLI

@@ -1,30 +1,47 @@
-# WeatherEdge Forecaster — San Francisco flagship
+# WeatherEdge Forecaster
 
-This directory holds the **San Francisco flagship** forecaster: the full legacy
-blend of Google Weather, NWS, Open-Meteo, an LSTM trained on 10 years of NOAA
-hourly observations, and marine-layer features.
+This directory owns both layers of WeatherEdge forecasting:
 
-The other fourteen cities do **not** run this path. They run the shared,
-station-agnostic NWP→EMOS pipeline (`nwp_archive.py`, `emos_forecast.py`) with
-settlement truth from `city_truth.py`. See the
-[project README](../README.md) for how the two tiers fit together.
+- the shared operational path: an eight-member NWP archive and rolling-origin
+  EMOS forecast for all fifteen stations; and
+- the **San Francisco flagship** research path: Google/NWS/Open-Meteo inputs,
+  an LSTM trained on ten years of NOAA observations, and marine-layer features.
 
-Everything below describes the San Francisco flagship specifically.
+SFO is blend-capable, but the public operational point forecast may fall back to
+the same EMOS weighted mean used by the other cities when optional inputs are
+unavailable or do not pass freshness gates. The public artifact names the method
+actually served. See the [project README](../README.md) for the whole system.
 
 ## What It Predicts
 
-The headline target is the next **local calendar day high** at SFO. For each
-hourly observation today, the model predicts the maximum temperature observed
-tomorrow in Pacific time.
+The operational target is each registered station's **local-standard climate-day
+high**. City, station, timezone, market series, and official NWS settlement
+product are defined together in `cities.py`.
+
+The SFO LSTM research target is the next local calendar-day high at KSFO. For
+each hourly observation today, the model predicts the maximum temperature
+observed tomorrow in Pacific time.
 
 The project also trains a secondary target, spot temperature 24 hours ahead, as
 a sanity check against a simpler persistence problem.
 
-## Live Forecast Strategy
+## Operational Forecast Path
 
-The live dashboard is intentionally forecast-first but not single-source:
+`nwp_archive.py` preserves point-in-time forecasts from eight NWP members.
+`emos_forecast.py` fits rolling-origin post-processing per station and publishes
+a calibrated Gaussian mean and spread. `city_truth.py` supplies station-keyed
+settlement truth from final NWS Climatological Reports. Scheduled maintenance
+archives the operational lead-one and lead-two horizons; lead three remains an
+explicit historical-backfill and research capability.
 
-1. **Google Weather API**: highest live weight by a small margin. It uses
+The trading adapter and public dashboard consume the method recorded in the
+current artifact. They do not assume that SFO's optional blend is available.
+
+### SFO legacy blend and research layers
+
+The deeper SFO path can combine:
+
+1. **Google Weather API**: highest configured weight in the legacy blend. It uses
    hourly forecasts and takes the max temperature across tomorrow's SFO local
    calendar date, then caches that result locally so the public website never
    exposes the API key. It can also fetch Google's daily forecast and current
@@ -40,20 +57,16 @@ The live dashboard is intentionally forecast-first but not single-source:
    readings from NWS. They make a small capped adjustment when SFO is currently
    warmer or cooler than nearby airports.
 
-The default blend is 38% Google Weather, 36% NWS, 18% Open-Meteo, and 8% SFO
-history. If one live source is unavailable, the available sources are reweighted
-automatically. Live airport observations are intentionally limited to a small
-adjustment so today's microclimate does not overpower tomorrow's forecast.
-After enough completed forecasts have been scored, the blend also learns
-conservative source weights from the archive by nudging weight toward sources
-with lower NWS-scored MAE. Until at least five scored days exist, it keeps the
-configured base weights to avoid overfitting.
+The legacy configured blend is 38% Google Weather, 36% NWS, 18% Open-Meteo, and
+8% SFO history. Those weights describe that optional SFO path, not the shared
+fifteen-city EMOS method or a guarantee about today's served forecast. Missing
+sources are reweighted automatically, live-station adjustments are capped, and
+the published method label remains the authority for what reached the dashboard.
 
 Google Weather is limited by a local **Weather event budget** through
-`google_weather_cache.py`. The default budget is 8,000 events/month and 260
-events/day, both below the 10,000 monthly free usage cap. The dashboard only
-uses the cached Google value when it is for the current SFO tomorrow date and
-less than 24 hours old.
+`google_weather_cache.py`. Monthly and daily ceilings are explicit operator
+configuration, and the dashboard accepts a cached Google value only for the
+expected SFO target date while it remains fresh.
 
 ## Apple WeatherKit Shadow Source
 
@@ -129,9 +142,10 @@ archived forecast backtesting is complete.
 The project started as a local ML/weather dashboard, but the live forecast is
 now automated end to end:
 
-1. **Forecast source**: Google Weather is the highest-weight live input. The
-   API key is kept off the public website; refreshes happen server-side and are
-   written to `google_weather_cache.json` plus the SQLite archive.
+1. **Forecast source**: the shared operational baseline is the all-city
+   NWP→EMOS path. SFO can add optional legacy-blend inputs when they are fresh
+   and admitted; Google credentials and cached values remain server-side and
+   never reach the public website.
 2. **Always-on runner**: an AWS EC2 Ubuntu arm64 instance runs the refresh
    workflow even when the laptop is asleep. There is no local launchd job; the
    cloud machine is the single automation source.
@@ -162,27 +176,25 @@ now automated end to end:
    the fresh data JSONs to `gh-pages`, which GitHub Pages serves at
    `https://jaxsonb04.github.io/weather_edge/`.
 
-In short: AWS fetches the paid Google Weather data privately, the forecaster
-stores/scales it with the public NWS/Open-Meteo context, and GitHub Pages
-publishes only the safe static output.
+In short: AWS runs the station-aligned NWP/EMOS pipeline, keeps optional provider
+data private, settles from official NWS truth, and publishes only validated
+static artifacts to GitHub Pages.
 
 ## Results
 
-Per-day A/B test on the held-out forecast period. Regenerate these numbers with
-`python research/ab_test.py` and `python research/compare_models.py`; the values
-below track `ab_test_results.json` and `diagnostics.json`, which are also what
-the live dashboard renders.
+The SFO studies contain two related but distinct summaries; they should not be
+silently mixed.
 
-| Target | n | LSTM MAE | XGBoost MAE | Persistence MAE | Result |
-|---|---:|---:|---:|---:|---|
-| Tomorrow's daily high | 442 | **3.30°F** | 3.86°F | 3.97°F | LSTM wins; Diebold–Mariano p < 0.001 |
-| Spot temp 24h ahead | 9,897 | 2.32°F | 2.41°F | — | Significant (p = 0.03) but negligible effect (Cohen's d = 0.06) |
+| Evaluation | n | LSTM MAE | Comparator MAE | Result |
+|---|---:|---:|---:|---|
+| Paired LSTM vs XGBoost daily-high comparison | 442 days | **3.12°F** | 3.71°F | 15.8% lower MAE; Diebold–Mariano p < 0.001; LSTM wins 63% of days |
+| Separate daily-high baseline summary | 442 days | **3.30°F** | Persistence 3.97°F | LSTM improves on the baseline |
 
-Tomorrow's daily high is the target the markets actually settle on. There the
-LSTM beats the persistence baseline by 17% and the XGBoost challenger by 15.8%,
-winning 63% of days head-to-head. On spot temperature 24h ahead the LSTM's edge
-is real but too small to matter, which is why the daily-high model holds the
-production slot and the spot model does not.
+Regenerate and inspect the source artifacts with `research/ab_test.py` and
+`research/compare_models.py`. The daily-high evaluation uses one observation per
+calendar day. The separate 24-hour spot-temperature experiment is retained as a
+sanity check, but its hourly rows are autocorrelated, so its nominal p-value is
+not quoted as independent daily evidence.
 
 For point-in-time validation of the live blend archive, use:
 
@@ -193,13 +205,9 @@ python -m sfo_kalshi_quant.cli backtest-calibration --source clean-blend
 That path uses only clean archived next-day blend forecasts that existed before
 the target day started. Same-day observed-high lock/floor rows are excluded.
 
-For tomorrow's high, the LSTM cuts error by **17.5%** versus XGBoost. The paired
-A/B test gives a 95% confidence interval of **+0.47°F to +0.89°F** MAE
-improvement, with p < 0.0001.
-
-The spot-temperature target is intentionally less dramatic: the confidence
-interval crosses zero, so the honest conclusion is that persistence/XGBoost are
-already about as strong as the LSTM there.
+These SFO-only results are research evidence. They do not establish equal skill
+for the other fourteen cities, and the live SFO artifact can still serve the
+shared EMOS fallback when optional inputs are absent.
 
 ## Why It Works
 

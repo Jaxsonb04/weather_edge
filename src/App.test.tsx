@@ -61,6 +61,58 @@ describe("application landmarks and route focus", () => {
     await waitFor(() => expect(heading).toHaveFocus());
   });
 
+  it("waits for the navigation overlay to release main before focusing a route", async () => {
+    routeState.route = "overview";
+    const { container, rerender } = render(<App />);
+    await screen.findByText("Overview heading");
+    const overlay = document.createElement("section");
+    overlay.setAttribute("role", "dialog");
+    overlay.tabIndex = -1;
+    document.body.append(overlay);
+    container.setAttribute("aria-hidden", "true");
+    overlay.focus();
+
+    try {
+      routeState.route = "methodology";
+      rerender(<App />);
+      const heading = await screen.findByText("Methodology heading");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(overlay).toHaveFocus();
+      container.removeAttribute("aria-hidden");
+      overlay.remove();
+      await waitFor(() => expect(heading).toHaveFocus());
+    } finally {
+      container.removeAttribute("aria-hidden");
+      overlay.remove();
+    }
+  });
+
+  it("cancels a pending overlay focus handoff when the user continues typing", async () => {
+    routeState.route = "overview";
+    const { container, rerender } = render(<App />);
+    await screen.findByText("Overview heading");
+    const overlay = document.createElement("section");
+    overlay.setAttribute("role", "dialog");
+    overlay.tabIndex = -1;
+    document.body.append(overlay);
+    container.setAttribute("aria-hidden", "true");
+    overlay.focus();
+
+    try {
+      routeState.route = "methodology";
+      rerender(<App />);
+      const heading = await screen.findByText("Methodology heading");
+      fireEvent.keyDown(overlay, { key: "Tab" });
+      container.removeAttribute("aria-hidden");
+      overlay.remove();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(heading).not.toHaveFocus();
+    } finally {
+      container.removeAttribute("aria-hidden");
+      overlay.remove();
+    }
+  });
+
   it.each([
     ["null trading signal", { forecast: {}, story: {}, signal: null }],
     ["missing trading signal", { forecast: {}, story: {} }],

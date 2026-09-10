@@ -10,6 +10,7 @@
 @import "@heroui/styles/components/chip.css" layer(components);
 @import "@heroui/styles/components/label.css" layer(components);
 @import "@heroui/styles/components/list-box.css" layer(components);
+@import "@heroui/styles/components/modal.css" layer(components);
 /* CitySelect renders above the fold, so item sizing and its selected marker
    must be available before the lazy Overview detail chunk is requested. */
 @import "@heroui/styles/components/list-box-item.css" layer(components);
@@ -23,6 +24,8 @@
    matter its specificity, so a Pro sheet left unlayered silently beats every
    Tailwind utility (those land in @layer utilities) written on a Pro slot. */
 @import "@heroui-pro/react/css/components/segment.css" layer(components);
+/* The forecast's TrendChip also renders before the below-fold stylesheet. */
+@import "@heroui-pro/react/css/components/trend-chip.css" layer(components);
 @import "@heroui/styles/themes/default" layer(theme);
 @import "@heroui/styles/utilities";
 @import "@heroui/styles/variants";
@@ -253,15 +256,97 @@
    even when the tab is backgrounded, unlike rAF-gated JS animation. */
 .reveal {
   opacity: 0;
-  transform: translateY(22px);
+  transform: translateY(12px);
   transition:
-    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: opacity, transform;
+    opacity 0.36s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.36s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .reveal.is-in {
   opacity: 1;
   transform: none;
+}
+
+/* Above-the-fold reveals start visible in React. A finite CSS entrance gives
+   them actual motion without a frame callback or a hidden-content JS gate. */
+@keyframes overview-enter {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: none; }
+}
+.overview-enter {
+  animation: overview-enter 680ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.overview-enter:focus-within { animation: none; }
+.overview-rule {
+  background: linear-gradient(to right, var(--temp-cold), var(--accent), transparent);
+  transform-origin: left;
+  animation: overview-rule 800ms 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes overview-rule {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.overview-intro > .magic-dot-pattern {
+  animation: overview-atmosphere 1000ms ease-out both;
+}
+@keyframes overview-atmosphere {
+  from { opacity: 0; }
+  to { opacity: 0.22; }
+}
+
+/* The menu uses the same HeroUI backdrop tokens as the Pro command palette.
+   Animate only the panel's transform/opacity; blur remains static. */
+.menu-mark { position: relative; display: block; width: 20px; height: 20px; }
+.menu-mark > span {
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 20px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  transform: translateY(-3px);
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.menu-mark > span + span { transform: translateY(3px); }
+.menu-mark.is-open > span { transform: none; }
+.mobile-menu-container {
+  padding: 12px;
+  padding-top: max(12px, env(safe-area-inset-top));
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  transform-origin: top center;
+}
+.mobile-menu-dialog {
+  max-width: 36rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+}
+.mobile-menu-container[data-entering] { animation: menu-panel-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.mobile-menu-container[data-exiting] { animation: menu-panel-out 160ms ease-in both; }
+.mobile-menu-container[data-entering] .mobile-menu-item { animation: menu-item-in 240ms ease-out both; }
+.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(1) { animation-delay: 40ms; }
+.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(2) { animation-delay: 80ms; }
+.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(3) { animation-delay: 120ms; }
+@keyframes menu-panel-in {
+  from { opacity: 0; transform: translateY(-14px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes menu-panel-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-8px) scale(0.99); }
+}
+@keyframes menu-item-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@media (min-width: 640px) {
+  .mobile-menu-container { padding: 20px 32px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .overview-enter, .overview-rule, .overview-intro > .magic-dot-pattern,
+  .mobile-menu-container[data-entering], .mobile-menu-container[data-exiting],
+  .mobile-menu-container[data-entering] .mobile-menu-item { animation: none; }
+  .menu-mark > span { transition: none; }
 }
 
 /* Pop-in for small marks (source dots, indicators). */
@@ -290,3 +375,38 @@
 
 /* Recharts: let strokes/areas inherit our themed easing on first draw. */
 .recharts-surface { overflow: visible; }
+
+/* Magic UI details share the instrument's own palette. The beam runs once
+   when a forecast/selection appears, and never captures a pointer event. */
+.magic-dot-pattern {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--muted);
+  opacity: 0.22;
+  mask-image: linear-gradient(to bottom, black, transparent 95%);
+}
+.magic-border-beam {
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 2;
+  mask-image: linear-gradient(transparent, transparent), linear-gradient(black, black);
+  mask-composite: intersect;
+  mask-clip: padding-box, border-box;
+}
+.magic-border-beam-light {
+  position: absolute;
+  width: 100px;
+  aspect-ratio: 1;
+  background: linear-gradient(to left, var(--accent), var(--temp-cold), transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .magic-border-beam { display: none; }
+}
+
+button, summary { touch-action: manipulation; }
+button, a, summary { -webkit-tap-highlight-color: transparent; }
+[id] { scroll-margin-top: 6rem; }

@@ -1,15 +1,68 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-04 21:58 PDT
+Last updated: 2026-09-09 21:55 PDT
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
-Last public artifact inspection: 2026-09-04 21:57 PDT (fresh)
+Last public artifact inspection: 2026-09-09 21:32 PDT (fresh shell/manifest;
+not a full AWS audit)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Recruiter-facing repository refresh prepared (September 9, 21:55 PDT snapshot):**
+  a clean branch from `origin/main` now carries the exact September 8 deployed
+  frontend commits without the unrelated WeatherKit/ML draft research. The root
+  README leads with the end-to-end engineering problem, scope, evidence, safety
+  boundary and a three-minute case study; the portfolio screenshot, package
+  descriptions and social metadata match the current fifteen-city platform.
+  The forecaster README now distinguishes the shared NWP/EMOS operational path
+  from optional SFO research layers and no longer mixes separate MAE summaries
+  or describes Google as an unconditional live primary input. The AI workflow
+  document's test inventory is current. The public SPA and manifest were
+  inspected at the timestamp above; publication was fresh with clean source
+  provenance. Build, 178 frontend tests, icon determinism and lint passed (the
+  same two Fast Refresh warnings remain). With network access available to the
+  editable-install integration test, the full Python suite passed 2,843 tests
+  with eight skips. Python compilation and diff checks passed. GitHub also
+  exposed a critical MapLibre sanitizer advisory: the existing automated PR
+  changed only `package.json`, leaving `bun.lock` on vulnerable 5.24.0. This
+  branch updates both files to patched 6.4.1; a frozen install resolved 6.4.1,
+  and the production build, 178 frontend tests, lint, icon check and the
+  223.11 KiB JS / 18.83 KiB CSS initial bundle budgets passed afterward. No AWS
+  source, timer, provider, paper account, trading policy, public artifact, or
+  live-order setting changed; the new metadata is not deployed until a later
+  web release, and the default-branch alert remains open until this branch
+  lands.
+
+- **Frontend audit, menu follow-up, and SPA deployment completed (September 8, 22:05 PDT snapshot):**
+  the closed ledger placed a 960px, twelve-column table inside a 333px phone
+  viewport and duplicated HeroUI Pro's scroll container. Phones now show
+  expandable records with visible P&L/outcomes; desktop has pinned columns,
+  essential/detail views, and button/keyboard scrolling through one container.
+  City breakdowns fold and mobile profile selectors are compact. Magic UI
+  border sweeps and dot textures retain the gold instrument direction. The
+  menu now floats over the same blur as search, animates in/out, uses a plain
+  horizontal close line, and preserves modal keyboard/touch behavior. Overview
+  immediate reveals previously started in their final state; finite staggered
+  entrances now animate its cleaner introduction and forecast instrument.
+  Reduced motion remains supported. Route focus waits for overlay exit and
+  cancels if the user moves on. Build, 178 frontend tests, lint (two existing
+  warnings), icon/diff checks, 29 initial ledger/page browser checks, and 31
+  follow-up menu/overview checks across phone/tablet/desktop passed. Current
+  initial assets are 223.09 KiB JS / 18.83 KiB CSS gzip. Five public JSON hashes
+  matched the September 8, 21:32 PDT snapshot used in follow-up browser checks.
+  The guarded `deploy_web_app.sh` build and sync completed, the operational
+  publisher ran, and the public Pages shell returned HTTP 200 with the updated
+  asset bundle. Desktop and iPhone production canaries loaded in 1.3s with no
+  page or console errors; menu blur, focus containment/restoration, scroll lock,
+  route heading focus, and the plain-line close control passed. No backend,
+  account, trading, provider, or billing policy changed; production-health
+  timestamps above remain unchanged. The deployed SPA source is the local
+  frontend commit `34218cb20` (the deployed SPA code revision); see
+  `docs/audits/2026-09-08-web-ui-audit.md`.
 
 - **Publication recovered (September 4, 21:57 PDT snapshot):** backend source,
   public provenance and full Strategy analysis match clean merged PR #113,

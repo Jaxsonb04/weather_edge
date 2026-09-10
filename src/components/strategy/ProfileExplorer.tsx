@@ -5,6 +5,7 @@ import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
 import { activeProfiles, money, profileDisplayLabel, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
 import { ProfileDashboard } from "./ProfileDashboard";
+import { BorderBeam } from "../magicui/BorderBeam";
 
 const ICONS: Record<string, string> = {
   live: "solar:shield-check-bold",
@@ -35,13 +36,14 @@ function ProfileOption({ profile, index, active, onSelect }: {
       variant="ghost"
       onPress={onSelect}
       aria-pressed={active}
-      className={`group h-auto min-h-40 w-full min-w-0 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] ${
+      className={`profile-option group relative h-auto w-full min-w-0 touch-manipulation justify-start rounded-2xl p-0 text-left focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] ${
         active
           ? "border border-accent/45 bg-surface shadow-md"
           : "border border-border/55 bg-surface-secondary/70 hover:bg-surface-secondary"
       }`}
     >
-      <span className="flex w-full flex-col gap-4 p-4">
+      {active && <BorderBeam />}
+      <span className="profile-option-content flex w-full flex-col gap-4 p-4">
         <span className="flex items-start justify-between gap-3">
           <span className={`grid size-10 place-items-center rounded-xl ${active ? "bg-accent-soft text-accent" : "bg-background text-muted"}`}>
             <Icon icon={ICONS[profile.risk_profile] ?? "solar:notebook-bold"} className="size-5" aria-hidden="true" />
@@ -49,7 +51,7 @@ function ProfileOption({ profile, index, active, onSelect }: {
           <span className="font-mono text-[10px] tracking-[0.16em] text-muted">0{index + 1}</span>
         </span>
         <span className="min-w-0">
-          <span className="block min-h-10 text-balance font-display text-sm font-semibold leading-snug text-foreground">{profileDisplayLabel(profile)}</span>
+          <span className="block text-balance font-display text-base font-semibold leading-snug text-foreground">{profileDisplayLabel(profile)}</span>
           <span className="mt-1 block text-xs text-muted">{ROLES[profile.risk_profile] ?? "Research profile"}</span>
         </span>
         <span className="flex items-end justify-between gap-3">

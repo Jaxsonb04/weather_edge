@@ -44,3 +44,64 @@
   }
 
 }
+
+/* Closed positions: one native desktop scroller, vertical records on phones. */
+.ledger-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: auto;
+  scrollbar-color: var(--muted) var(--surface-secondary);
+}
+.ledger-scroll::-webkit-scrollbar { height: 10px; }
+.ledger-scroll::-webkit-scrollbar-track { background: var(--surface-secondary); }
+.ledger-scroll::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border: 3px solid var(--surface-secondary);
+  border-radius: 999px;
+}
+.ledger-record { border-bottom: 1px solid var(--border); }
+.ledger-record:last-child { border-bottom: 0; }
+.ledger-record-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 104px;
+  padding: 1rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.ledger-record-trigger:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+.ledger-record-trigger:hover,
+.ledger-record-trigger[aria-expanded="true"] { background: var(--surface-secondary); }
+.ledger-record-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  padding-top: 0.75rem;
+  font-size: 0.75rem;
+}
+.ledger-record-details dt { color: var(--muted); margin-bottom: 0.25rem; }
+.ledger-record-details dd { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.city-breakdown summary { list-style: none; }
+.city-breakdown summary::-webkit-details-marker { display: none; }
+.city-breakdown-chevron { transition: transform 180ms ease-out; }
+.city-breakdown[open] .city-breakdown-chevron { transform: rotate(180deg); }
+@media (max-width: 639px) {
+  .profile-option-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .profile-option-content > :first-child { display: none; }
+  .profile-option-content > :last-child { flex-direction: column; align-items: flex-end; gap: 0.5rem; }
+  .profile-option-content > :last-child > :first-child { text-align: right; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .city-breakdown-chevron { transition: none; }
+}

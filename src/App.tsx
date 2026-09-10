@@ -35,7 +35,9 @@ export default function App() {
   const { data, error } = useDashboardData();
   const { mode, toggle } = useTheme();
   const { route, navigate } = useHashRoute();
-  const [cmdOpen, setCmdOpen] = useState(false);
+  // Menu and search share one overlay state, including the keyboard shortcut.
+  const [activeOverlay, setActiveOverlay] = useState<"menu" | "command" | null>(null);
+  const cmdOpen = activeOverlay === "command";
   // Once opened the palette stays mounted. Unmounting the overlay subtree in the
   // same commit that closes it tears down React Aria's focus scope before it can
   // restore focus, dropping focus to <body>. Command.Backdrop's isOpen is what
@@ -52,21 +54,34 @@ export default function App() {
       mounted.current = true;
       return;
     }
-    // A first visit to a route waits on its chunk, so this poll can still be
-    // running a second after navigation. Whoever holds focus when the heading
-    // finally appears must have been put there by the navigation itself — if the
-    // user has moved on (tabbed to the theme toggle, say), leave them alone.
+    // A route can load while its navigation overlay is still exiting. Wait
+    // until main is accessible before moving focus out of the modal's scope.
+    // Any subsequent user interaction cancels this pending focus handoff.
     const origin = document.activeElement;
+    const fromOverlay = Boolean(origin?.closest('[role="dialog"]'));
+    let interrupted = false;
+    const cancelFocus = () => { interrupted = true; };
+    document.addEventListener("pointerdown", cancelFocus, true);
+    document.addEventListener("keydown", cancelFocus, true);
     let attempts = 0;
     let timer = 0;
     const focusHeading = () => {
-      if (document.activeElement !== origin) return;
+      if (interrupted) return;
+      if (mainRef.current?.closest('[aria-hidden="true"], [inert]')) {
+        if (attempts++ < 100) timer = window.setTimeout(focusHeading, 20);
+        return;
+      }
+      if (!fromOverlay && document.activeElement !== origin) return;
       const heading = document.getElementById(`${route}-page-title`);
       if (heading) heading.focus({ preventScroll: true });
-      else if (attempts++ < 50) timer = window.setTimeout(focusHeading, 20);
+      else if (attempts++ < 100) timer = window.setTimeout(focusHeading, 20);
     };
     timer = window.setTimeout(focusHeading, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("pointerdown", cancelFocus, true);
+      document.removeEventListener("keydown", cancelFocus, true);
+    };
   }, [route]);
 
   useEffect(() => {
@@ -77,7 +92,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCmdOpen((open) => !open);
+        setActiveOverlay((open) => open === "command" ? null : "command");
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -100,7 +115,9 @@ export default function App() {
       <TopBar
         mode={mode}
         onToggleTheme={toggle}
-        onOpenCommand={() => setCmdOpen(true)}
+        onOpenCommand={() => setActiveOverlay("command")}
+        menuOpen={activeOverlay === "menu"}
+        onMenuOpenChange={(open) => setActiveOverlay((current) => open ? "menu" : current === "menu" ? null : current)}
         route={route}
         repoUrl={REPO}
         liveUrl={LIVE}
@@ -110,7 +127,7 @@ export default function App() {
         <Suspense fallback={null}>
           <CommandPalette
             open={cmdOpen}
-            onOpenChange={setCmdOpen}
+            onOpenChange={(open) => setActiveOverlay((current) => open ? "command" : current === "command" ? null : current)}
             onToggleTheme={toggle}
             onNavigate={navigate}
             repoUrl={REPO}
