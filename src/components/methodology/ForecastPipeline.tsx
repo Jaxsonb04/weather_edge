@@ -152,7 +152,7 @@ export function ForecastPipeline() {
         <strong>
           {typeof cityCount === "number" ? <span className="tnum">{cityCount}</span> : "every"}
         </strong>{" "}
-        market, EMOS-calibrated per city using rolling-origin historical fits and settled against each station's
+        {typeof cityCount === "number" && cityCount !== 1 ? "markets" : "market"}, EMOS-calibrated per city using rolling-origin historical fits and settled against each station's
         official NWS Climatological Report. The
         LSTM calibration study and marine-layer features are <strong>{flagshipName} research layers</strong>.
         External-source integration remains a research and compatibility capability. The current SFO publication may serve the shared EMOS weighted mean as an operational fallback.

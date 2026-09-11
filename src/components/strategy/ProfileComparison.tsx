@@ -4,6 +4,7 @@ import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import {
   activeProfiles,
+  decisionCountProvenance,
   money,
   profileGate,
   profileGateCounts,
@@ -70,7 +71,11 @@ interface MetricRow {
 
 const ROWS: MetricRow[] = [
   {
-    label: "Resolved trades",
+    // The same relabel the ProfileDashboard, LiveHero and EvidenceDossier carry:
+    // this field counts terminal positions and profitable EXITS, and most exits
+    // are monitor closes, not settlements. One field must not appear under two
+    // labels on the same site.
+    label: "Closed or settled",
     render: (p) => {
       const sum = p.paper_trading?.summary;
       const wl = sum ? ` · ${sum.win_count}–${sum.loss_count}` : "";
@@ -78,7 +83,7 @@ const ROWS: MetricRow[] = [
     },
   },
   {
-    label: "Hit rate",
+    label: "Profitable exits",
     render: (p) => {
       const hr = p.paper_trading?.summary?.hit_rate;
       return { text: hr == null ? "—" : pct(hr, 1) };
@@ -117,6 +122,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
   const primary = p.profile_type === "primary";
   const gate = profileGate(s, p.risk_profile);
   const gateCount = profileGateCounts(gate);
+  const counts = decisionCountProvenance(s);
   const approvalRate = gateCount.signals > 0 ? gateCount.approved / gateCount.signals : null;
   const alertOk = currentStateAvailable && (p.status?.alert_level ?? "ok") === "ok";
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
@@ -208,10 +214,19 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
           })}
         </dl>
 
+        {/* Same caveat the ProfileDashboard prints, because it is the same
+            field: the label describes exits, not settlements. */}
+        <p className="text-[11px] leading-relaxed text-muted">
+          A profitable exit is any closed-or-settled position that realized a gain; most exits are monitor
+          take-profit or stop closes rather than market settlements.
+        </p>
+
         {gate && gateCount.signals > 0 && (
           <div>
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</span>
+              <span className="text-[11px] uppercase tracking-wide text-muted">
+                {counts.cached ? `Gate approvals · as of ${counts.asOf}` : "Gate approvals · window"}
+              </span>
               <span className="tnum text-xs font-medium text-foreground">
                 {gateCount.approved.toLocaleString()}
                 <span className="font-normal text-muted"> / {gateCount.signals.toLocaleString()}</span>
@@ -224,7 +239,12 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
             >
               <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((approvalRate ?? 0) * 100, 0.6)}%` }} />
             </div>
-            <p className="mt-1 text-[11px] text-muted">{pct(approvalRate, 2)} published approval rate for this window.</p>
+            <p className="mt-1 text-[11px] text-muted">
+              {pct(approvalRate, 2)} published approval rate
+              {counts.cached
+                ? ` for the cached window ending ${counts.asOf}; these are not current-runtime totals.`
+                : " for this window."}
+            </p>
           </div>
         )}
       </Card.Content>
@@ -233,7 +253,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
 }
 
 /** The isolated books shown together — same metric rows in
-    the same order so size, activity, hit rate and P&L compare at a glance. No
+    the same order so size, activity, profitable exits and P&L compare at a glance. No
     toggle: both books are always visible. */
 export function ProfileComparison({ s }: { s: StrategyLab }) {
   const { strategy } = usePublication();

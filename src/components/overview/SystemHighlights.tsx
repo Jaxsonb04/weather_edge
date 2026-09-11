@@ -27,7 +27,7 @@ const buildPillars = (checkCount: number | null): Pillar[] => [
     title: "Forecasting stack",
     points: [
       "An 8-member NWP ensemble with per-station EMOS point forecasts across all 15 cities",
-      "San Francisco adds LSTM residual-calibration evidence, marine-layer features, and optional external inputs when fresh",
+      "San Francisco adds LSTM residual-calibration evidence and marine-layer features; external commercial inputs stay a research capability the scheduled forecast does not consume",
       "Held-out SFO diagnostics compare the LSTM with XGBoost and persistence; they are research evidence, not runtime health",
     ],
   },
@@ -44,7 +44,10 @@ const buildPillars = (checkCount: number | null): Pillar[] => [
     icon: "solar:server-square-cloud-bold",
     title: "Production discipline",
     points: [
-      "Unattended AWS timers scan every city's markets every 5 minutes and publish the runtime artifacts",
+      // Two different timers, two cadences: sfo-kalshi-paper-scan runs
+      // *:00,05,10,... (5 min) and sfo-operational-publish runs *:02,12,22,...
+      // (10 min). One number for both is always wrong for one of them.
+      "Unattended AWS timers scan every city's markets every 5 minutes and publish the runtime artifacts every 10 minutes",
       "SQLite paper journal with rule-based monitor exits (take-profit, stop-loss, model veto)",
       readinessPoint(checkCount),
     ],

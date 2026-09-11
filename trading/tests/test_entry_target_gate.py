@@ -119,6 +119,7 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
     target_decisions = [object(), object(), object()]
     context = SimpleNamespace(
         decisions=decisions,
+        city=get_city("sfo"),
         series_ticker="KXHIGHTSFO",
         intraday=None,
         forecast=object(),
@@ -127,6 +128,7 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
     )
     store = Mock()
     store.research_objective_day.return_value = date(2026, 7, 18)
+    store.research_station_day.return_value = date(2026, 7, 18)
     store.research_account_state.return_value = {"available_cash": 900.0}
     store.research_realized_pnl_for_day.return_value = 12.0
     plans = SimpleNamespace(target=object(), motion=object())

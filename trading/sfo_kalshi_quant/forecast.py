@@ -22,8 +22,9 @@ from .models import ForecastOutcome, ForecastSnapshot, IntradaySnapshot
 from .settlement_day import PACIFIC_STANDARD_TZ, settlement_today
 from .settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
-    load_final_cli_high_for_station_date,
     load_cli_settlement_truth,
+    load_final_cli_high_for_station_date,
+    load_observed_daily_highs,
 )
 
 
@@ -790,6 +791,24 @@ class SfoForecasterAdapter:
             if not _table_exists(conn, "cli_settlements"):
                 return {}
             return load_cli_settlement_truth(conn)
+
+    def load_observed_daily_highs(
+        self, *, min_observations: int
+    ) -> dict[tuple[str, str], float]:
+        """Station observation-tape maxima for every city, keyed like CLI truth.
+
+        The ladder ledger's integrity guard needs a record of a station-day that
+        is independent of the CLI text it is checking. The exchange's own
+        settlement value is the stronger one but its coverage stops in July;
+        this one covers every era the journal does.
+        """
+
+        if not self.weather_db.exists():
+            return {}
+        with _sqlite.connect(self.weather_db) as conn:
+            if not _table_exists(conn, "nws_daily_high_ground_truth"):
+                return {}
+            return load_observed_daily_highs(conn, min_observations=min_observations)
 
     def load_ksfo_daily_highs(self) -> dict[date, float]:
         """Deprecated SFO-only view of authoritative CLI settlements."""

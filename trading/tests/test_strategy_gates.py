@@ -458,7 +458,12 @@ def test_research_profile_is_more_active_but_smaller_sized_than_live():
     # Looser gates than live.
     assert research.min_edge < live.min_edge
     assert research.min_edge_lcb < live.min_edge_lcb
-    assert research.max_source_spread_f == 10.0
+    # 2026-09-07 (FC-1): debiased units. 10.0 was the raw-range bar; 7.3 is
+    # ROUGHLY equal selectivity re-derived on the gate-facing journal (raw 10.0
+    # vetoed 16.9% of decision rows, 7.3 vetoes 18.5%, equal-selectivity is
+    # 7.49) -- deliberately the fail-closed side. See config.py for the
+    # per-station redistribution, which is the real effect.
+    assert research.max_source_spread_f == 7.3
     assert research.comfort_edge_enabled is False  # collects center bins too
     # Smaller size than live.
     assert research.max_contracts_per_market < live.max_contracts_per_market
@@ -545,7 +550,9 @@ def test_research_collects_tiny_trade_on_moderate_source_disagreement():
         probability,
         bankroll=1000,
         side="NO",
-        source_spread_f=9.6,
+        # 2026-09-07 (FC-1): 9.6 was "moderate" against the old raw-range bar of
+        # 10.0; 6.9 is the same position under the debiased bar of 7.3.
+        source_spread_f=6.9,
     )
 
     assert decision.approved, decision.reasons
@@ -583,7 +590,9 @@ def test_research_blocks_deep_negative_lcb_research_trade():
         probability,
         bankroll=1000,
         side="NO",
-        source_spread_f=9.6,
+        # Under the debiased bar (FC-1) a 9.6F spread would also trip the
+        # source-spread gate; keep this test isolating the LCB block.
+        source_spread_f=6.9,
     )
 
     assert not decision.approved
@@ -735,18 +744,22 @@ def test_live_blocks_trade_when_forecast_sources_disagree():
     # Frequency push (2026-07-03): live now trades higher-disagreement days too
     # (max_source_spread_f 7->10, matching research), sized down by posterior-mean
     # Kelly + the source-spread sigma inflation. 2026-06-10 caveat still stands --
-    # losing entries carried 9.6-11F spread -- so only spreads ABOVE the 10F bar
-    # are blocked now; validate the win-rate impact on a walk-forward.
-    moderate = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=9.6)
+    # losing entries carried 9.6-11F spread -- so only spreads ABOVE the bar are
+    # blocked now; validate the win-rate impact on a walk-forward.
+    # 2026-09-07 (FC-1): the gate reads a DEBIASED spread and the bar was
+    # re-derived into those units (10.0 -> 7.3, pooled veto 16.9% -> 18.5% on
+    # the gate-facing journal), so the moderate/stormy probes move with it
+    # rather than being re-tuned.
+    moderate = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=6.9)
     assert moderate.approved, moderate.reasons
-    stormy = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=10.5)
+    stormy = evaluator.evaluate_market(market, probability, bankroll=1000, source_spread_f=7.9)
     assert not stormy.approved
     assert any("source spread" in reason for reason in stormy.reasons)
 
     fast = TradeEvaluator(strategy_config_for_profile("research"))
-    research = fast.evaluate_market(market, probability, bankroll=1000, source_spread_f=9.6)
+    research = fast.evaluate_market(market, probability, bankroll=1000, source_spread_f=6.9)
     assert research.approved, research.reasons
-    extreme = fast.evaluate_market(market, probability, bankroll=1000, source_spread_f=10.1)
+    extreme = fast.evaluate_market(market, probability, bankroll=1000, source_spread_f=7.6)
     assert not extreme.approved
 
 
@@ -873,3 +886,24 @@ def test_live_deploys_meaningful_stake_not_pocket_change():
     assert spend >= 30.0
     # ...but still bounded by the per-position risk budget (~$50 = 5% of $1000).
     assert spend <= 1000 * cfg.max_position_risk_pct + decision.cost_per_contract
+
+
+def test_published_site_states_the_gate_threshold_the_engine_actually_uses():
+    """src/components/hero/SourceBlend.tsx renders the spread gate as a factual
+    claim about the engine ("the paper engine refuses to size a new position").
+    It hard-codes the number, so a re-derivation on the Python side silently
+    turns the published copy into a false statement -- which is exactly what
+    happened when max_source_spread_f moved 10.0 -> 7.3."""
+
+    import re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    source = (root / "src" / "components" / "hero" / "SourceBlend.tsx").read_text()
+    match = re.search(r"const SOURCE_SPREAD_GATE_F = ([0-9.]+);", source)
+    assert match is not None, "SourceBlend.tsx no longer declares SOURCE_SPREAD_GATE_F"
+    published = float(match.group(1))
+
+    live = strategy_config_for_profile("live")
+    research = strategy_config_for_profile("research")
+    assert published == live.max_source_spread_f == research.max_source_spread_f

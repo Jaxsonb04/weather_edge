@@ -45,6 +45,7 @@ from ._util import _row_value as _shared_row_value
 from .cities import city_for_market_ticker
 from .config import StrategyConfig, config_for_city, temperature_cohort
 from .models import BucketProbability, MarketBin, TradeDecision
+from .probability import raw_equivalent_source_spread_f
 from .risk import TradeEvaluator
 from .settlement_truth import (
     integer_settlement_high_f as _integer_settlement_high_f,
@@ -56,6 +57,54 @@ from .settlement_truth import (
 # not send log(1 + r) to negative infinity in the log-growth average.
 _RETURN_FLOOR = 1e-9
 _row_value = partial(_shared_row_value, default_on_none=True)
+
+# ---------------------------------------------------------------------------
+# Stored-feature units (FC-1, 2026-09-07)
+# ---------------------------------------------------------------------------
+# ``decision_snapshots.forecast_source_spread_f`` changed meaning: it used to be
+# the RAW cross-model range and is now the range over BIAS-CORRECTED members,
+# which is systematically smaller (measured pooled ratio 0.79). The whole
+# existing journal is raw, and the candidate ``StrategyConfig`` a rescore is
+# handed expresses ``max_source_spread_f`` in the NEW units -- so replaying a
+# raw-unit row against a debiased-unit gate vetoes far more than the engine ever
+# would, silently, and skews every retune validated this way.
+#
+# There is no unit marker on the column, so the cut is by ``created_at``. Set
+# ``DEBIASED_SOURCE_SPREAD_FROM`` to the ISO timestamp at which the debiased
+# serve reached production; rows at or after it pass through untouched, rows
+# before it are converted. ``None`` means "not deployed anywhere yet", which is
+# the correct reading of the journal as it stands.
+DEBIASED_SOURCE_SPREAD_FROM: str | None = None
+# Debiased-to-raw quantile ratio, measured on the forecast archive (leads 1+2,
+# 15 stations, n=5,760 station-days: pooled 8.33 -> 6.60) and on the gate-facing
+# journal (n=665,128 decision rows: 6.87 -> 5.42). Same constant as
+# ``probability.SOURCE_SPREAD_DEBIAS_SCALE``.
+RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE = 0.79
+
+
+def _row_is_debiased(row: sqlite3.Row) -> bool:
+    if DEBIASED_SOURCE_SPREAD_FROM is None:
+        return False
+    created_at = _row_value(row, "created_at", None)
+    return created_at is not None and str(created_at) >= DEBIASED_SOURCE_SPREAD_FROM
+
+
+def _stored_source_spread_f(row: sqlite3.Row) -> float | None:
+    """Stored ``forecast_source_spread_f`` in TODAY's (debiased) units."""
+
+    value = _opt_float(row, "forecast_source_spread_f")
+    if value is None or _row_is_debiased(row):
+        return value
+    return value * RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE
+
+
+def _stored_source_spread_raw_scale_f(row: sqlite3.Row) -> float | None:
+    """Stored spread on the RAW scale the comfort-edge band's constants use."""
+
+    value = _opt_float(row, "forecast_source_spread_f")
+    if value is None or not _row_is_debiased(row):
+        return value
+    return raw_equivalent_source_spread_f(value)
 
 
 @dataclass(frozen=True)
@@ -246,7 +295,7 @@ def rescore_row(row: sqlite3.Row, config: StrategyConfig, *, bankroll: float) ->
         probability,
         bankroll=bankroll,
         side=_row_side(row),
-        source_spread_f=_opt_float(row, "forecast_source_spread_f"),
+        source_spread_f=_stored_source_spread_f(row),
         forecast_high_f=_opt_float(row, "forecast_predicted_high_f"),
     )
 
@@ -403,11 +452,13 @@ def run_rescore(
             probability,
             bankroll=bankroll,
             side=side,
-            source_spread_f=_opt_float(row, "forecast_source_spread_f"),
+            source_spread_f=_stored_source_spread_f(row),
             forecast_high_f=_opt_float(row, "forecast_predicted_high_f"),
             # Same comfort-edge uncertainty proxy as the live analyze path, so the
-            # rescore evaluates the exact band the engine would have used.
-            forecast_sigma_f=_opt_float(row, "forecast_source_spread_f"),
+            # rescore evaluates the exact band the engine would have used. That
+            # band's sigma floor and multipliers are raw-scale constants, so this
+            # argument stays on the raw scale on both sides of the FC-1 cut.
+            forecast_sigma_f=_stored_source_spread_raw_scale_f(row),
         )
         candidate_approved = decision.approved and decision.recommended_contracts > 0
         if candidate_approved:

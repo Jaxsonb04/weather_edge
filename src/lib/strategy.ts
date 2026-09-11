@@ -465,6 +465,16 @@ export interface AccountSnapshot {
   days?: DayRow[];
 }
 
+/** Provenance the publisher stamps on every decision and gate COUNT in the
+    artifact. A `fast_public` cycle reuses an older analysis cache, so those
+    counts describe a window that closed before this publication. */
+export interface DecisionAnalytics {
+  status?: "fresh" | "cached" | "deferred" | string;
+  analysis_generated_at?: string | null;
+  counts_stale_from?: string | null;
+  reason?: string | null;
+}
+
 export interface StrategyLab {
   schema_version?: number;
   available: boolean;
@@ -585,12 +595,7 @@ export interface StrategyLab {
     exit_reasons?: Record<string, number>;
     side_performance?: Record<string, SideStats>;
     data_collected?: Record<string, number>;
-    decision_analytics?: {
-      status?: "fresh" | "cached" | "deferred" | string;
-      analysis_generated_at?: string | null;
-      counts_stale_from?: string | null;
-      reason?: string | null;
-    };
+    decision_analytics?: DecisionAnalytics;
     model_vs_market?: { samples?: number; mean_abs_gap?: number; max_abs_gap?: number };
     gate_behavior?: GateBehavior;
   };
@@ -796,10 +801,45 @@ export function gateCounts(gate: GateBehavior | undefined) {
     evaluated in this artifact", not "nothing survived". An explicit
     `available: false` is authoritative; today's artifact omits the flag, so the
     empty shape counts too. */
-export function gateDeferred(gate: GateBehavior | undefined): boolean {
+export function gateDeferred(
+  gate: GateBehavior | undefined,
+  analytics?: DecisionAnalytics,
+): boolean {
+  // `deferred` is the publisher's own word for "this artifact carries no
+  // decision counts", and it outranks whatever stub the gate section holds.
+  if (analytics?.status === "deferred") return true;
   if (!gate || gate.available === false) return true;
   if (gateCounts(gate).total > 0) return false;
   return !(gate.by_profile ?? []).some((g) => (g.signals ?? 0) > 0 || (g.approved ?? 0) > 0);
+}
+
+export interface DecisionCountProvenance {
+  /** True when every published decision/gate count predates this publication. */
+  cached: boolean;
+  /** The day those counts stop covering, in the artifact's own words. */
+  asOf: string;
+  /** The publisher's plain-English explanation, when it published one. */
+  reason: string | null;
+}
+
+const COUNTS_AS_OF_FALLBACK = "the last deploy-time analysis";
+
+/** One reading of `decision_analytics` for every surface that renders a
+    published count, so the "as of <date>" marker cannot appear on one card and
+    be missing from the next. */
+export function decisionCountProvenance(s: StrategyLab | undefined): DecisionCountProvenance {
+  const analytics = s?.daily_summary?.decision_analytics;
+  if (analytics?.status !== "cached") {
+    return { cached: false, asOf: COUNTS_AS_OF_FALLBACK, reason: null };
+  }
+  return {
+    cached: true,
+    asOf:
+      analytics.counts_stale_from ??
+      analytics.analysis_generated_at?.slice(0, 10) ??
+      COUNTS_AS_OF_FALLBACK,
+    reason: analytics.reason ?? null,
+  };
 }
 
 export function profileGateCounts(gate: ProfileGateStats | undefined) {

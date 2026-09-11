@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from .exit_audit import audited_exit_reason
 from .logical_positions import LogicalPaperPosition
+from .research_policy import lead_bucket_clock_is_ambiguous
 
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -190,16 +191,30 @@ def summarize_daily_goals(
     }
 
 
-def _pacific_day(value: object) -> date | None:
+def _aware_timestamp(value: object) -> datetime | None:
+    """Parse a recorded ISO timestamp, or None when it is absent or naive."""
+
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(_PACIFIC).date()
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _pacific_day(value: object) -> date | None:
+    parsed = _aware_timestamp(value)
+    return None if parsed is None else parsed.astimezone(_PACIFIC).date()
+
+
+def _lead_bucket_clock_state(created_at: object) -> str:
+    """Classify how a row's ``lead_bucket`` label depends on its clock."""
+
+    parsed = _aware_timestamp(created_at)
+    if parsed is None:
+        return "unknown"
+    return "ambiguous" if lead_bucket_clock_is_ambiguous(parsed) else "stable"
 
 
 def _quantile(values: Iterable[float], probability: float) -> float | None:
@@ -288,6 +303,23 @@ def _finite(value: object) -> float | None:
 def _lead_split(
     positions: Iterable[LogicalPaperPosition],
 ) -> dict[str, dict[str, float | int]]:
+    """Group terminal positions by the ``lead_bucket`` label they carry.
+
+    The label's meaning changed once: research lead moved from the Los Angeles
+    civil day onto the station's fixed-standard settlement day (REG-1), and no
+    row was backfilled. Rather than pool two definitions silently, each bucket
+    reports how many of its rows could be affected:
+
+    ``clock_ambiguous_decisions``
+        rows stamped between 05:00 and 08:00 UTC, the only window in which the
+        two clocks disagree, so the only rows whose label depends on which one
+        wrote it. A bucket reporting 0 here pools exactly one definition.
+    ``clock_unknown_decisions``
+        rows with a missing or naive ``created_at``, which cannot be placed in
+        or out of that window. Counted separately so an unreadable timestamp is
+        never quietly reported as clean.
+    """
+
     split: dict[str, dict[str, float | int]] = {}
     for position in positions:
         row = position.as_row()
@@ -299,9 +331,20 @@ def _lead_split(
                 "resolved_lots": 0,
                 "realized_pnl": 0.0,
                 "capital_resolved": 0.0,
+                "clock_ambiguous_decisions": 0,
+                "clock_unknown_decisions": 0,
             },
         )
         bucket["logical_decisions"] = int(bucket["logical_decisions"]) + 1
+        clock_state = _lead_bucket_clock_state(row.get("created_at"))
+        if clock_state == "ambiguous":
+            bucket["clock_ambiguous_decisions"] = (
+                int(bucket["clock_ambiguous_decisions"]) + 1
+            )
+        elif clock_state == "unknown":
+            bucket["clock_unknown_decisions"] = (
+                int(bucket["clock_unknown_decisions"]) + 1
+            )
         bucket["resolved_lots"] = int(bucket["resolved_lots"]) + len(
             position.resolved_lots
         )

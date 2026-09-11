@@ -68,7 +68,11 @@ forecaster/dataset_research.json
 docs/AUDIT-PLAN*.md
 
 # --- Frontend (Vite/React UI) ---
-node_modules/
+# No trailing slash: a worktree that borrows the shared checkout's packages does
+# it with a `node_modules` SYMLINK, which git sees as a file, not a directory —
+# `node_modules/` left it untracked and one `git add -A` away from being
+# committed as a link into someone else's checkout.
+node_modules
 dist/
 dist-ssr/
 *.local

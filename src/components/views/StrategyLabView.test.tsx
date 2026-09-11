@@ -318,6 +318,30 @@ describe("TrackRecordFinding", () => {
     expect(screen.queryByText(/cross-profile total is research attribution/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/losses are concentrated/i)).not.toBeInTheDocument();
   });
+
+  // The artifact publishes its own refusal to treat this sum as a balance; the
+  // finding must lead with it rather than reading as one account's record.
+  it("leads with the artifact's own combined-equity refusal", () => {
+    render(
+      <TrackRecordFinding
+        s={{
+          daily_summary: {
+            window_days: 7,
+            equity_unavailable_reason:
+              "Combined profile P&L spans separate paper accounts; account-scoped ledger balances are authoritative.",
+            totals: { realized_pnl: 43.62, roi: 0.0508, hit_rate: 0.8286 },
+          },
+        } as unknown as StrategyLab}
+      />,
+    );
+
+    expect(screen.getByText("Cross-account attribution")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Combined profile P&L spans separate paper accounts/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/closed-or-settled positions exiting profitably/i)).toBeInTheDocument();
+    expect(screen.queryByText(/hit rate/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("LiveStatusStrip accounting gate", () => {

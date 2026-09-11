@@ -226,6 +226,45 @@ Lead 3 is research/on-demand only. Preserve it in explicit historical
 `nwp_archive.py --backfill --start ... --end ...` runs, but do not add it back
 to the nightly `--daily` job.
 
+## Google Weather Client-Error Breaker
+
+Every Google Weather request is a billable event whether or not it succeeds, and
+the event budget alone cannot tell a working key from a dead one. In September
+2026 the box billed roughly 124 events a day for five days while **every** request
+returned 4xx (last success 2026-09-02T02:41Z, first failure 03:41Z the same
+morning, then 100% failures across all three endpoints and all fifteen cities).
+
+`GoogleUsageLedger.reserve_event` now refuses to reserve once
+`GOOGLE_WEATHER_CLIENT_ERROR_BREAKER` consecutive completed 4xx events land on
+the same Pacific billing date (default 12, about two SFO bundles; 0 disables it).
+One non-4xx outcome resets the run, and a new billing date starts clean. The
+refresh cycle also checks the breaker once up front and skips every city with
+`skipped_reason=client_error_breaker`, and `google_weather_cache.py` prints a
+loud `ERROR: Google Weather client-error circuit breaker is OPEN` line. The unit
+still exits on the EMOS baseline's result, not Google's: the served forecast does
+not depend on Google, and failing the forecaster unit over a dead research
+credential would be worse than the outage.
+
+To diagnose an open breaker:
+
+```bash
+# Which endpoints, which days, and which HTTP class.
+sqlite3 -header -column "file:/opt/weatheredge/forecaster/weather.db?mode=ro" \
+  "SELECT billing_date_pacific, endpoint, status, response_status_class,
+          error_kind, count(*)
+     FROM google_weather_usage_events
+    WHERE billing_date_pacific >= date('now','-7 day')
+    GROUP BY 1,2,3,4,5 ORDER BY 1 DESC;"
+```
+
+The ledger deliberately records only the HTTP **class**, never the status code or
+the response body: `_open_google_request` is the only place that ever holds the
+key-bearing URL, and `_dispatch_google_request` re-raises a sanitized error so no
+secret can escape into a log or a database. A 4xx on every endpoint of every city
+is a credential, entitlement, or billing-account failure and has to be fixed in
+the Google Cloud console; nothing in this repository can repair it. The breaker's
+job is only to stop paying for it.
+
 ## Archive-Gated Paper Retention
 
 Production retention belongs only to the dedicated
@@ -242,6 +281,106 @@ otherwise write roughly 60k rejection snapshots (~0.5 GB) per day. Do not
 schedule or routinely run bare `paper-prune`: it is a low-level/manual command
 for recovery work only, after an operator has independently completed and
 verified the archive gate.
+
+### Retention modes
+
+`SFO_PRUNE_MODE` selects the delete step. Leaving the key unset selects the
+default.
+
+| Mode | What it does | When |
+|---|---|---|
+| `bounded-delete` | Nightly batched delete with the paper writers running. Each batch commits and releases the write lock; `SFO_PRUNE_MAX_BATCH_SECONDS` (2 s) is a shrink target measured after the batch, not a ceiling, so an early batch can overrun it against the writers' 30 s `busy_timeout` before the row limit halves. | Default. |
+| `quiesced-delete` | The same delete plus an operator assertion that every paper-journal writer is stopped. | Supervised catch-up after a long archive-only stretch. |
+| `archive-only` | Archive, upload, gate, FK audit; delete nothing. | Escape hatch only. |
+
+To enable nightly deletion on a host that predates this default, do nothing
+beyond deploying: the key is absent from `/etc/weatheredge.env` and the wrapper's
+default now deletes. To turn it back off, add `SFO_PRUNE_MODE=archive-only` to
+that file. Expect roughly an 88% collapse of `decision_snapshots` under the
+configured 45-day dedup, taking journal growth from ~0.67 GB/day to ~0.15 GB/day.
+Deletion frees SQLite pages but does not shrink the file; run the separately
+quiesced `compact_paper_db.sh` once when the filesystem needs the space back.
+
+The first delete after a long archive-only stretch is by far the largest. The
+unit is fenced at `MemoryHigh=2600M` / `MemoryMax=3000M` and
+`TimeoutStartSec=3600`; a supervised 2026-09-04 catch-up run of 2.1 M rows on a
+30 GB journal peaked at 3.3 GB outside those limits. Prefer a one-off
+`quiesced-delete` run for the first catch-up on such a host, then let the nightly
+`bounded-delete` hold the steady state.
+
+**Watch the first nightly run by hand.** `sfo-kalshi-paper-prune.service` carries
+`OnFailure=sfo-alert@%n.service`, but that hook is a no-op while
+`SFO_FRESHNESS_ALERT_URL` is empty in `/etc/weatheredge.env` (OPS-3, still open:
+48 `alert was not sent` lines in the seven days to 2026-09-06). So an OOM against
+`MemoryMax`, an exhausted `TimeoutStartSec`, or a `materialized retention
+candidates changed during prune` abort notifies nobody, and retention silently
+reverts to the situation this default exists to end. Read
+`journalctl -u sfo-kalshi-paper-prune.service -b` after the first 08:20 UTC run.
+
+A failed delete no longer cancels the ring-buffer cleanup. `paper-prune` fails on
+ordinary lock contention (SQLITE_BUSY, CLI exit 75); step 7 of the wrapper — the
+only thing bounding `data/archive`, ~33 MB/day of uploaded partitions — now runs
+regardless, and the wrapper re-reports the delete's exit status afterwards so the
+unit still fails.
+
+**Run `ANALYZE` once after the first bounded delete.** `sqlite_stat1` on the box
+claimed 914,768 `decision_snapshots` rows against an actual 4,102,302 on
+2026-09-03, and an ~88% collapse of that table moves the estimate wrong in the
+other direction. Plans still pick the right indexes, but the strategy-lab
+`GROUP BY` cost estimates drift further off. `ANALYZE` takes the write lock for
+its duration, so run it in the same quiesced window as `compact_paper_db.sh`:
+
+```bash
+# paper timers already stopped for the compaction
+sqlite3 /opt/weatheredge/trading/data/paper_trading.db 'ANALYZE;'
+```
+
+## Operator-Only Box Cleanups
+
+These need a shell on the production host, so no deploy and no agent performs
+them. Each is dead weight verified present on 2026-09-07; none is referenced by
+any running unit.
+
+```bash
+# Stale rsync-era source checkout, frozen at 5bc9113 (2026-07-25). The runtime
+# tree is rsynced by sync_to_box.sh, so nothing reads this. ~17 MB.
+sudo rm -rf /opt/weatheredge/.cache/main
+
+# Orphaned SQLite sidecars from a backup snapshot that no longer exists. A -shm
+# and a zero-byte -wal with no matching .sqlite3 file, plus a checksum sidecar
+# whose snapshot the last deploy already removed.
+cd /opt/weatheredge/trading/data/backups
+ls -la                                   # confirm the .sqlite3 files are gone
+sudo rm -f paper_trading-20260828T030029Z.sqlite3-shm \
+           paper_trading-20260828T030029Z.sqlite3-wal
+# Any *.sha256 with no matching *.sqlite3 is likewise orphaned.
+
+# Frozen legacy Google usage ledger, last written 2026-07-19. The authoritative
+# ledger is the google_weather_usage_events table in forecaster/weather.db.
+sudo rm -f /opt/weatheredge/forecaster/.google_weather_usage.json
+
+# Superseded hand-made journald drop-in (SystemMaxUse=500M, written 2026-07-11).
+# Both installers now delete it and restart journald, so this should already be
+# gone after the first deploy that carries OPS-7 -- verify rather than assume,
+# because two WeatherEdge drop-ins with contradictory values would be decided
+# only by filename order.
+ls -la /etc/systemd/journald.conf.d/     # expect only zz-weatheredge.conf
+sudo rm -f /etc/systemd/journald.conf.d/00-weatheredge.conf
+```
+
+The journald cap moves from 500M to 1500M, so the journal may grow by up to 1 GB
+on a box whose deploy backup gate (`available >= db_bytes + 1 GiB`) is the OPS-2
+deadline. `ForwardToSyslog=no` gives most of it back — `/var/log/syslog` and its
+rotations held ~590 MB on 2026-09-03 and drain over one logrotate cycle — for a
+net cost of roughly half a gigabyte. That is deliberate: at 500M the journal
+covered 2.6-4.5 days and a four-day-old root cause was simply unavailable during
+the audit. If the disk gets tight before `compact_paper_db.sh` runs, lower
+`SystemMaxUse` in
+`trading/deploy/aws/systemd/weatheredge-journald.conf` and redeploy;
+`journalctl --vacuum-size=` reclaims the space immediately.
+
+Delete only what the listing confirms. A `-wal`/`-shm` pair beside a database
+file that still exists is live SQLite state, never garbage.
 
 ## Signal Backtest
 

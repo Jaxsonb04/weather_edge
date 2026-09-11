@@ -1,7 +1,13 @@
 import { AreaChart } from "@heroui-pro/react/area-chart";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
-import { climatologySeries, monthDayLabel, type ForecastData } from "../../lib/data";
+import {
+  STATIC_FIXTURE_NOTE,
+  climatologySeries,
+  fixtureCoverage,
+  monthDayLabel,
+  type ForecastData,
+} from "../../lib/data";
 
 /** Headroom in °F above and below the band, and the grid the bounds snap out
     to. Snapping to a multiple of four keeps recharts' five default ticks on
@@ -10,6 +16,7 @@ const Y_GRID_F = 4;
 
 export function ClimatologyChart({ forecast }: { forecast: ForecastData }) {
   const series = climatologySeries(forecast);
+  const coverage = fixtureCoverage(forecast);
   // The band is drawn as a stack (an invisible p10 area carrying the p90−p10
   // band), so the series' own data domain reaches all the way down to the
   // stack's zero baseline — which is how the axis ended up anchored at 0°F,
@@ -28,7 +35,10 @@ export function ClimatologyChart({ forecast }: { forecast: ForecastData }) {
       <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
         <div>
           <Widget.Title>SFO daily-high climatology</Widget.Title>
-          <Widget.Description>Mean with the 10th–90th percentile seasonal band</Widget.Description>
+          <Widget.Description>
+            Mean with the 10th–90th percentile seasonal band · KSFO
+            {coverage ? ` ${coverage}` : ""} · {STATIC_FIXTURE_NOTE}
+          </Widget.Description>
         </div>
         <Widget.Legend className="shrink-0 flex-wrap">
           <Widget.LegendItem color="var(--temp-warm)">p10–p90</Widget.LegendItem>

@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from sfo_kalshi_quant._cli import scan as scan_module
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.portfolio import PortfolioLeg, PortfolioLimits, PortfolioPlan
@@ -82,6 +83,7 @@ def _plan(legs: list[PortfolioLeg]) -> PortfolioPlan:
 def _base_context():
     return SimpleNamespace(
         decisions=[object()],
+        city=get_city("sfo"),
         series_ticker="KXHIGHTSFO",
         intraday=None,
         forecast=object(),
@@ -106,6 +108,7 @@ def _run_scan_context(
     context = _base_context()
     store = Mock()
     store.research_objective_day.return_value = date(2026, 7, 18)
+    store.research_station_day.return_value = date(2026, 7, 18)
     store.research_account_state.return_value = {"available_cash": 900.0}
     store.research_realized_pnl_for_day.return_value = 0.0
     trader = Mock()
@@ -248,6 +251,7 @@ def test_store_write_failure_does_not_raise_or_affect_the_result():
     context = _base_context()
     store = Mock()
     store.research_objective_day.return_value = date(2026, 7, 18)
+    store.research_station_day.return_value = date(2026, 7, 18)
     store.research_account_state.return_value = {"available_cash": 900.0}
     store.research_realized_pnl_for_day.return_value = 0.0
     store.record_orderbook_depth.side_effect = RuntimeError("disk full")

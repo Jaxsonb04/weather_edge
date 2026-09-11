@@ -4,6 +4,7 @@ import { Icon } from "@iconify/react/offline";
 import {
   cityFreshness,
   cityNextForecast,
+  describeMethod,
   f1,
   pct,
   round1,
@@ -35,8 +36,11 @@ const FRESH_TONE: Record<string, { dot: string; text: string }> = {
   danger: { dot: "bg-danger", text: "text-danger" },
 };
 
-const methodLabel = (m: string | undefined) =>
-  m === "emos_wmean" ? "EMOS weighted mean" : m ? m.replace(/_/g, " ") : "—";
+/** The coverage artifact's own method tag in the site's plain phrasing. The tag
+    already names the intraday fold-in when the publisher applied one
+    ("emos_wmean + intraday high-so-far update"), so no caller may append that a
+    second time — and the old fallback printed the raw tag verbatim. */
+const methodLabel = (m: string | undefined) => (m ? describeMethod(m) : "—");
 
 /** `overround` is sum(raw ladder prices) − 1, so it measures the book's balance,
     not a cost: every market probability on this page is already divided by that
@@ -72,11 +76,9 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
           </Card.Description>
         </div>
         <Chip size="sm" variant="soft">
-          {/* The method the coverage artifact names is the EMOS issue; say so
-              plainly when the displayed high is the intraday-updated one. */}
-          <Chip.Label>
-            {display?.baselineF == null ? methodLabel(lead?.method) : `${methodLabel(lead?.method)} + intraday`}
-          </Chip.Label>
+          {/* The artifact's own tag, in plain English. It already carries the
+              intraday fold-in, so appending "+ intraday" here printed it twice. */}
+          <Chip.Label>{methodLabel(lead?.method)}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="space-y-4 pt-0">
@@ -110,8 +112,14 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
 
             {display.baselineF != null && (
               <p className="max-w-prose text-xs leading-relaxed text-muted">
-                Intraday-updated: the flagship market signal republishes this high after folding in
-                the day's observed high so far, so it reads{" "}
+                {/* Only San Francisco has a flagship market signal. The other
+                    fourteen cities get their intraday fold-in from the coverage
+                    artifact, so the sentence must name the right publisher. */}
+                Intraday-updated:{" "}
+                {display.source === "flagship"
+                  ? "the flagship market signal republishes this high after folding in the day's observed high so far"
+                  : "the coverage forecast folds the day's observed high so far into the published high"}
+                , so it reads{" "}
                 <span className="tnum font-medium text-foreground">{round1(display.highF)}°</span>{" "}
                 rather than the{" "}
                 <span className="tnum font-medium text-foreground">{round1(display.baselineF)}°</span>{" "}
@@ -191,7 +199,16 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
       research: currentStateAvailable ? String(research.open_positions ?? 0) : "Unavailable",
     },
     {
-      k: "Open exposure",
+      k: "Resting orders",
+      live: currentStateAvailable ? String(live.resting_orders ?? 0) : "Unavailable",
+      research: currentStateAvailable ? String(research.resting_orders ?? 0) : "Unavailable",
+    },
+    {
+      // Exposure deliberately spans filled cost plus the capital a resting order
+      // has reserved (cities_report.py), so a book can show 0 open positions
+      // beside a non-zero figure. Name both in the label rather than let the row
+      // read as a contradiction.
+      k: "Open + resting exposure",
       live: currentStateAvailable ? money(live.open_exposure) : "Unavailable",
       research: currentStateAvailable ? money(research.open_exposure) : "Unavailable",
     },

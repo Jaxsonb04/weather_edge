@@ -325,9 +325,31 @@ def refresh_all_cities(
     baseline = _archive_baseline_first(archive_baseline)
     purged_rows = runtime.purge_expired(now=fetch_instant)
 
+    # FC-4: a credential or entitlement failure returns 4xx for every endpoint
+    # of every city and each one is still billed. Resolve the breaker once per
+    # cycle so a dead key costs no further reservations; `reserve_event` also
+    # enforces it, which covers a breaker that opens mid-cycle.
+    breaker_threshold = getattr(usage, "client_error_breaker", 0)
+    breaker_open = breaker_threshold > 0 and (
+        usage.consecutive_client_errors(now=fetch_instant) >= breaker_threshold
+    )
+
     statuses: list[CityRefreshStatus] = []
     for city in _priority_order(cities, priority_hints=priority_hints):
         is_sfo = city.slug == DEFAULT_CITY_SLUG
+
+        if breaker_open:
+            statuses.append(
+                CityRefreshStatus(
+                    city_slug=city.slug,
+                    attempted=False,
+                    available=False,
+                    endpoints={},
+                    error_kind=None,
+                    skipped_reason="client_error_breaker",
+                )
+            )
+            continue
 
         if not key:
             statuses.append(
@@ -443,6 +465,22 @@ def run_cli(cities_arg: str) -> int:
         f"month: {report.monthly_events}/{report.monthly_event_budget}; "
         f"runtime rows purged: {report.purged_rows}"
     )
+    # Duck-typed like every other ledger call on this path, so a caller may
+    # still inject a minimal usage stub.
+    breaker_threshold = getattr(usage, "client_error_breaker", 0)
+    if breaker_threshold > 0:
+        consecutive = usage.consecutive_client_errors()
+        if consecutive >= breaker_threshold:
+            print(
+                "ERROR: Google Weather client-error circuit breaker is OPEN -- "
+                f"{consecutive} consecutive HTTP 4xx responses on today's billing "
+                f"date (threshold {breaker_threshold}); no further billable events "
+                "will be reserved until a request succeeds or the billing date "
+                "rolls over. A 4xx on every endpoint of every city is a key, "
+                "entitlement, or billing-account failure, not a client defect: "
+                "check the Google Cloud project's Weather API credential.",
+                file=sys.stderr,
+            )
     # Google refreshes remain per-city fail-soft, but the EMOS baseline is the
     # production forecast for all cities.  Finish the independent Google work,
     # persist its sanitized status, then report a failed baseline to systemd.

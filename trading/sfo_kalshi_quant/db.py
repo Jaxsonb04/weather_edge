@@ -38,7 +38,7 @@ from .account import (
     strategy_fingerprint,
 )
 from .consensus import MarketConsensus
-from .cities import city_for_market_ticker
+from .cities import CityConfig, city_for_market_ticker
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
@@ -95,6 +95,17 @@ from .settlement_truth import (
     settlement_for_market,
 )
 from .settlement_day import settlement_clock
+from .ladder_truth import (
+    INTEGRITY_FLAGGED,
+    INTEGRITY_UNCHECKED,
+    LADDER_RETENTION_FULL_DAYS,
+    assess_ladder_coverage,
+    build_ladder_outcomes_for_date,
+    exchange_settlement_highs,
+    record_ladder_outcomes,
+    score_ladder_outcomes,
+    target_dates_in_range,
+)
 from .store.diagnostics import (
     _decision_diagnostics_payload,
     _decision_signal_payload,
@@ -624,6 +635,11 @@ def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
 # for contention is to shorten the lock HOLDER, not to lengthen the waiter.
 PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
+# Row cap for a single ladder-ledger read. Reaching it is an error rather
+# than a truncation, so no calibration number is ever computed over a
+# silently shortened range.
+LADDER_READ_LIMIT = 100_000
+
 
 class PaperStore:
     def __init__(
@@ -1103,6 +1119,19 @@ class PaperStore:
         """Return the current Pacific civil day used by both research books."""
 
         return self._research_objective_day()
+
+    def research_station_day(self, city: CityConfig | None = None) -> date:
+        """Return the settlement day now in progress at one station.
+
+        Research *lead* is measured on the station's fixed-standard settlement
+        clock, never on the Pacific civil objective day: between 05:00 and
+        07:00 UTC a Central/Eastern station has already rolled over while Los
+        Angeles has not.  Scanners must read the lead clock through the store
+        that owns the admission clock, so the upstream gate and the atomic
+        admission gate below can never disagree.
+        """
+
+        return settlement_clock(self._research_clock(), city).date()
 
     def research_daily_goal_state(
         self,
@@ -2137,19 +2166,11 @@ class PaperStore:
             }
         else:
             return {"allowed_spend": 0.0, "reason": "account/profile identity mismatch"}
-        today_start = datetime.now(SETTLEMENT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        # The account-level daily-loss query was deleted with DAILY_LOSS_PCT
+        # (audit TC-6): `paper_entry_pause_reason` pauses live entries at 1.0%
+        # of the clamped bankroll before any caller can reach this method, so
+        # the 2% account breaker this fed could never fire.
         with self.connect() as conn:
-            daily_pnl = float(conn.execute(
-                "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
-                "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED') "
-                "AND COALESCE(closed_at, settled_at) >= ? "
-                "AND COALESCE(account_id, ?) = ?",
-                (
-                    today_start.astimezone(UTC).isoformat(),
-                    SHARED_ACCOUNT_ID,
-                    entry_account,
-                ),
-            ).fetchone()[0] or 0.0)
             active = conn.execute(
                 "SELECT market_ticker, target_date, COALESCE(risk_profile, 'live'), "
                 "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
@@ -2169,7 +2190,6 @@ class PaperStore:
         return policy_capacity(
             state=state,
             active_rows=active,
-            daily_pnl=daily_pnl,
             target_date=target_date,
             market_ticker=market_ticker,
             risk_profile=risk_profile,
@@ -3570,8 +3590,17 @@ class PaperStore:
         except ValueError as exc:
             raise ValueError("research target date is invalid") from exc
         preflight_civil_day = self._research_objective_day()
+        # ResearchEntryLimitError, not ValueError: paper.py journals this via
+        # mark_research_decision_admission_blocked and keeps scanning the rest
+        # of the tick, instead of the exception escaping cmd_portfolio_scan and
+        # killing the unit mid-tick (REG-1/OPS-4). The cost is real and needs an
+        # owner: a systemic objective-day misconfiguration would now surface
+        # only as a rising count of "canonical research entry rejected"
+        # decision rows. That counter has fired 0 times to date, and nothing
+        # alerts on it while OPS-3 (SFO_FRESHNESS_ALERT_URL unset) is open, so
+        # it is the number to watch after this ships.
         if admission.objective_day != preflight_civil_day.isoformat():
-            raise ValueError(
+            raise ResearchEntryLimitError(
                 "research admission objective day must equal the current "
                 "Pacific civil day"
             )
@@ -3726,23 +3755,23 @@ class PaperStore:
             civil_day = self._research_objective_day()
             if admission.objective_day != civil_day.isoformat():
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     "research admission objective day must equal the current "
                     "Pacific civil day"
                 )
             city = city_for_market_ticker(decision.ticker)
-            station_day = settlement_clock(self._research_clock(), city).date()
+            station_day = self.research_station_day(city)
             lead_days = (target_day - station_day).days
             if lead_days < policy.min_lead_days:
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     f"{policy.sleeve.value} research minimum lead is "
                     f"{policy.min_lead_days} station-standard day(s); got {lead_days}"
                 )
             canonical_lead_bucket = canonical_research_lead_bucket(lead_days)
             if admission.lead_bucket != canonical_lead_bucket:
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     "research admission canonical lead bucket does not match target"
                 )
             entry_decision = self._research_entry_decision_on_connection(
@@ -3773,6 +3802,13 @@ class PaperStore:
                     reason=reason,
                 ):
                     conn.rollback()
+                    # Stays a plain ValueError on purpose, unlike the gates
+                    # above. This fires only when the pending decision row is
+                    # already gone -- exactly the state in which
+                    # mark_research_decision_admission_blocked matches nothing
+                    # and returns False, a return both paper.py call sites
+                    # discard. Converting it would turn a state-corruption
+                    # signal into a silent no-op rather than a journalled skip.
                     raise ValueError("research pending evidence changed during admission")
                 conn.commit()
                 return None
@@ -5889,6 +5925,196 @@ class PaperStore:
                 "ORDER BY target_date DESC, market_ticker LIMIT ?",
                 (*params, limit),
             ).fetchall()
+
+    def backfill_ladder_bin_outcomes(
+        self,
+        *,
+        start: str,
+        end: str,
+        cli_settlement_highs: Mapping[tuple[str, str], float],
+        observed_settlement_highs: Mapping[tuple[str, str], float] | None = None,
+        dry_run: bool = False,
+        today: str | None = None,
+    ) -> dict:
+        """Resolve every offered ladder bin over a target-date range.
+
+        Reads ``decision_snapshots`` for the offered bins and ``paper_orders``
+        only to mark which of them the book actually held; writes nothing but
+        ``ladder_bin_outcomes``. Nothing on the trading path reads that table,
+        so this changes no decision, size, gate, or fee.
+
+        ``cli_settlement_highs`` carries the forecaster archive's final CLI
+        maxima keyed by ``(series_ticker, target_date)``, and
+        ``observed_settlement_highs`` the station observation-tape maxima that
+        give the integrity guard a second opinion in the era the exchange
+        dataset does not reach. Both live in ``weather.db``, which this store
+        does not own, so the caller loads them and passes them down -- the same
+        contract ``backfill_market_day_settlements`` uses.
+
+        LOCK-HOLD BUDGET (audit F-02). Every read here is pure and needs no
+        write lock, and the decision_snapshots passes cost seconds per target
+        date on the production journal. Holding one ``BEGIN IMMEDIATE`` across
+        the whole range would put all of that inside the write lock the
+        2-minute paper monitor and 5-minute scan wait on with a 30 s
+        busy_timeout; a fifteen-day backfill would outlive that wait and turn a
+        live tick into a FAILED oneshot -- lost, not deferred. So each target
+        date reads in autocommit, then takes the write lock only for its own
+        ~180-row upsert and commits immediately, exactly as
+        ``prune_decision_snapshots`` batches its deletes.
+        """
+
+        recorded_at = _now()
+        summary: dict[str, object] = {
+            "start": start,
+            "end": end,
+            "target_dates": 0,
+            "offered_bins": 0,
+            "resolved_bins": 0,
+            "recorded_bins": 0,
+            "missing_truth_bins": 0,
+            "unchecked_bins": 0,
+            "flagged": [],
+            "missing_truth": [],
+            "dry_run": dry_run,
+        }
+        dates = target_dates_in_range(start, end)
+        summary["target_dates"] = len(dates)
+        offered_by_city_day: dict[tuple[str, str], set[str]] = {}
+        with self.connect() as conn:
+            exchange_highs = exchange_settlement_highs(conn)
+            for target_date in dates:
+                # Pure reads, deliberately outside any write transaction.
+                resolved, unlabelled = build_ladder_outcomes_for_date(
+                    conn,
+                    target_date=target_date,
+                    settlement_highs=cli_settlement_highs,
+                    exchange_highs=exchange_highs,
+                    observed_highs=observed_settlement_highs,
+                )
+                summary["offered_bins"] += len(resolved) + len(unlabelled)
+                summary["resolved_bins"] += len(resolved)
+                summary["missing_truth_bins"] += len(unlabelled)
+                for quote in unlabelled:
+                    offered_by_city_day.setdefault(
+                        (quote.series_ticker, quote.target_date), set()
+                    ).add(quote.market_ticker)
+                    summary["missing_truth"].append(
+                        {
+                            "market_ticker": quote.market_ticker,
+                            "target_date": quote.target_date,
+                            "station_id": quote.station_id,
+                        }
+                    )
+                for outcome in resolved:
+                    offered_by_city_day.setdefault(
+                        (outcome.quote.series_ticker, outcome.quote.target_date), set()
+                    ).add(outcome.quote.market_ticker)
+                    if outcome.integrity_status == INTEGRITY_UNCHECKED:
+                        summary["unchecked_bins"] += 1
+                    if outcome.integrity_status != INTEGRITY_FLAGGED:
+                        continue
+                    entry = {
+                        "market_ticker": outcome.quote.market_ticker,
+                        "target_date": outcome.quote.target_date,
+                        "station_id": outcome.quote.station_id,
+                        "settlement_high_f": outcome.settlement_high_f,
+                        "exchange_settlement_high_f": outcome.exchange_settlement_high_f,
+                        "observed_settlement_high_f": outcome.observed_settlement_high_f,
+                        "truth_delta_f": outcome.truth_delta_f,
+                        "integrity_source": outcome.integrity_source,
+                    }
+                    summary["flagged"].append(entry)
+                    logger.warning("ladder settlement truth disagreement: %s", entry)
+                if dry_run or not resolved:
+                    continue
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    written = record_ladder_outcomes(
+                        conn, resolved, recorded_at=recorded_at
+                    )
+                except BaseException:
+                    conn.rollback()
+                    raise
+                conn.commit()
+                summary["recorded_bins"] += written
+        summary["coverage"] = assess_ladder_coverage(
+            {key: len(tickers) for key, tickers in offered_by_city_day.items()},
+            today=today or _now()[:10],
+            full_days=LADDER_RETENTION_FULL_DAYS,
+        )
+        return summary
+
+    def ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        series_ticker: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = LADDER_READ_LIMIT,
+    ) -> list[sqlite3.Row]:
+        """Read back resolved ladder bins. Measurement only."""
+
+        filters: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            filters.append("target_date >= ?")
+            params.append(start)
+        if end is not None:
+            filters.append("target_date <= ?")
+            params.append(end)
+        if series_ticker is not None:
+            filters.append("series_ticker = ?")
+            params.append(series_ticker)
+        if quote_lead is not None:
+            filters.append("quote_lead = ?")
+            params.append(quote_lead)
+        if side is not None:
+            # The ladder is evaluated on both sides, and a bin scored on both
+            # of them contributes two rows whose outcomes are exact
+            # complements: pooling them pins realized frequency at 0.5 and
+            # makes every calibration number meaningless. Callers comparing
+            # model against market pick one side.
+            filters.append("side = ?")
+            params.append(str(side).strip().upper())
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"SELECT * FROM ladder_bin_outcomes {where} "
+                "ORDER BY target_date, market_ticker, side LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+
+    def score_ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = LADDER_READ_LIMIT,
+    ) -> dict:
+        """Model-versus-market calibration over the recorded ladder.
+
+        The read is ``ORDER BY target_date, market_ticker, side LIMIT ?``, so a
+        range that overflows ``limit`` would otherwise return a metric over the
+        OLDEST prefix of the range with nothing in the result saying so. The
+        ledger is designed to accumulate (~180 rows a day, both sides), so that
+        is a dormant silent-wrong-answer, not a hypothetical: raise instead.
+        """
+
+        rows = self.ladder_bin_outcomes(
+            start=start, end=end, quote_lead=quote_lead, side=side, limit=limit
+        )
+        if len(rows) >= limit:
+            raise ValueError(
+                f"ladder scoring read hit its {limit}-row cap and would score a "
+                "truncated prefix of the range; narrow --start/--end or raise "
+                "the limit"
+            )
+        return score_ladder_outcomes(rows)
 
     def verify_paper_settlements(
         self,

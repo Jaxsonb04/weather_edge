@@ -5,6 +5,7 @@ import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
 import {
+  decisionCountProvenance,
   ledgerByCity,
   ledgerForProfile,
   money,
@@ -196,6 +197,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const resolved = s.paper_trading?.diagnostics?.by_profile?.[rp];
   const gate = profileGate(s, rp);
   const gateCount = profileGateCounts(gate);
+  const countsProvenance = decisionCountProvenance(s);
   const copy = PROFILE_COPY[rp];
   const target = researchDailyTarget(s, p);
   const primary = p.profile_type === "primary";
@@ -248,13 +250,21 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                   : money(totalBalance, { sign: "negative-only" })
               }
             />
-            <Stat label="Resolved trades" value={`${allTimeClosed}`} />
-            <Stat label="Hit rate" value={sum?.hit_rate == null ? "—" : `${pct(sum.hit_rate, 1)} · ${sum.win_count}–${sum.loss_count}`} />
+            <Stat label="Closed or settled" value={`${allTimeClosed}`} />
+            <Stat label="Profitable exits" value={sum?.hit_rate == null ? "—" : `${pct(sum.hit_rate, 1)} · ${sum.win_count}–${sum.loss_count}`} />
             <Stat label="Realized P&L" value={money(pnl)} tone={pnl > 0 ? "pos" : pnl < 0 ? "neg" : "default"} />
             <Stat label="ROI · resolved" value={sum?.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum?.roi ?? 0) > 0 ? "pos" : (sum?.roi ?? 0) < 0 ? "neg" : "default"} />
             <Stat label="Capital resolved" value={money(resolved?.capital_resolved, { sign: "negative-only" })} />
             <Stat label="Candidates now" value={currentStateAvailable ? `${p.status?.latest_signal_count ?? 0}` : "Unavailable"} />
           </div>
+          {/* A "win" here is any terminal position that realized a gain, and the
+              monitor closes most of them long before settlement. Saying so keeps
+              the number from reading as a forecast-accuracy score. */}
+          <p className="text-[11px] leading-relaxed text-muted">
+            A profitable exit is any closed-or-settled position that realized a gain. Most exits are monitor
+            take-profit or stop closes rather than market settlements, so this is an execution record, not a
+            settlement hit rate.
+          </p>
         </Card.Content>
       </Card>
 
@@ -386,7 +396,9 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
             <div className="grid gap-x-8 gap-y-6 md:grid-cols-2">
               <div>
                 <div className="flex items-baseline justify-between gap-2">
-                  <p className="text-[11px] uppercase tracking-wide text-muted">Gate approvals · window</p>
+                  <p className="text-[11px] uppercase tracking-wide text-muted">
+                    {countsProvenance.cached ? `Gate approvals · as of ${countsProvenance.asOf}` : "Gate approvals · window"}
+                  </p>
                   <p className="tnum text-sm font-semibold">
                     {gateCount.approved.toLocaleString()} <span className="font-normal text-muted">of {gateCount.signals.toLocaleString()} evaluations</span>
                   </p>
@@ -394,7 +406,12 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
                   <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
                 </div>
-                <p className="mt-2 text-[11px] text-muted">{pct(gateCount.approved / gateCount.signals, 2)} published approval rate for this window.</p>
+                <p className="mt-2 text-[11px] text-muted">
+                  {pct(gateCount.approved / gateCount.signals, 2)} published approval rate
+                  {countsProvenance.cached
+                    ? ` for the cached window ending ${countsProvenance.asOf}; these are not current-runtime totals.`
+                    : " for this window."}
+                </p>
               </div>
               <div>
                 <p className="mb-2 text-xs font-medium text-muted">Why this book says no</p>

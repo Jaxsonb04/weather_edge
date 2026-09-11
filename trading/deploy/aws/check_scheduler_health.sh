@@ -25,10 +25,17 @@ else
   REPAIR_STATE_DIR="/run/weatheredge-scheduler-health"
 fi
 
+# weatheredge-apple-refresh.timer is deliberately absent. FC-4 (2026-09-03 audit, re-verified 2026-09-06): the Apple WeatherKit refresh
+# is retired. Its 4x/day paid fetch fills `AppleRuntimeCache.active_highs`,
+# which has no caller anywhere outside apple_weatherkit.py; the service log says
+# so itself on every run ("live trading weight remains 0"); and the 10-minute
+# purge deletes the cache about an hour into each 6-hour cycle, so the data does
+# not exist most of the time. It cannot become a scored EMOS member either,
+# because Apple's terms do not permit retaining the archive that scoring needs.
+# The unit files stay installed so re-enabling is one systemctl command.
 CANONICAL_TIMERS=(
   "sfo-forecaster-refresh.timer"
   "weatheredge-google-nonsfo-refresh.timer"
-  "weatheredge-apple-refresh.timer"
   "weatheredge-apple-purge.timer"
   "weatheredge-google-runtime-purge.timer"
   "sfo-operational-publish.timer"

@@ -9,6 +9,7 @@ import { Icon } from "@iconify/react/offline";
 import {
   cityFreshness,
   cityNextForecast,
+  describeMethod,
   f1,
   predictedHigh,
   round1,
@@ -23,9 +24,6 @@ import {
 import { usePublication } from "../../lib/publication";
 import { SourceBlend } from "./SourceBlend";
 import { BorderBeam } from "../magicui/BorderBeam";
-
-const methodLabel = (method: string | undefined) =>
-  method === "emos_wmean" ? "EMOS weighted mean" : method?.replaceAll("_", " ") ?? "Calibrated ensemble";
 
 function CityForecastDial({ city }: { city: City }) {
   const reduce = useReducedMotion();
@@ -134,7 +132,7 @@ function CityForecastDial({ city }: { city: City }) {
 
             <Separator className="my-6" />
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
-              <span>{methodLabel(forecast.method)} · station-aligned settlement</span>
+              <span>{describeMethod(forecast.method)} · station-aligned settlement</span>
               <span>
                 Last observed high {city.latest_settlement ? `${round1(city.latest_settlement.high_f)}°F` : "—"}
               </span>
@@ -179,10 +177,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
     ? forecastFields.sources as Record<string, unknown>
     : {};
   const hasPublishedSourceBlend = Object.values(sourceFields).some((value) => typeof value === "number");
-  const currentMethod = String(forecastFields.method ?? "Published forecast")
-    .replace(/_/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const currentMethod = describeMethod(forecastFields.method);
   const modelCount = typeof forecastFields.source_count === "number"
     ? forecastFields.source_count
     : typeof target.ensemble?.member_count === "number"

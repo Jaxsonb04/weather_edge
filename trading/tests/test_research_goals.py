@@ -9,9 +9,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.logical_positions import group_logical_positions
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.profile_identity import published_profile_key
 from sfo_kalshi_quant.research_goals import daily_goal_state, summarize_daily_goals
+from sfo_kalshi_quant.research_policy import LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
@@ -563,10 +565,85 @@ def test_partial_lot_money_uses_actual_pacific_day_and_counts_one_logical_decisi
     assert report["independent_city_target_days"] == 1
     assert report["lead_split"]["day-ahead"]["logical_decisions"] == 1
     assert report["lead_split"]["day-ahead"]["resolved_lots"] == 2
+    # Stamped at 19:00 UTC, outside the clock-disagreement window, so this
+    # label means the same thing before and after REG-1.
+    assert report["lead_split"]["day-ahead"]["clock_ambiguous_decisions"] == 0
+    assert report["lead_split"]["day-ahead"]["clock_unknown_decisions"] == 0
     assert report["execution"]["partial_exit_positions"] == 1
     assert report["execution"]["total_fees"] > 0
     assert report["exit_breakdown"]["unclassified"]["logical_decisions"] == 1
 
+
+def _lead_split_row(order_id: int, created_at: str | None) -> dict[str, object]:
+    return {
+        "id": order_id,
+        "parent_order_id": None,
+        "created_at": created_at,
+        "filled_at": "2026-09-06T06:01:00+00:00",
+        "target_date": "2026-09-06",
+        "market_ticker": "KXHIGHAUS-26SEP06-B80.5",
+        "label": "80 to 81",
+        "side": "NO",
+        "risk_profile": "research",
+        "account_id": TARGET_POLICY.account_id,
+        "research_sleeve": "target",
+        "research_policy_version": TARGET_POLICY.policy_version,
+        "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+        "strategy_fingerprint": "fp",
+        "execution_model_version": "exec",
+        "lead_bucket": "day-ahead",
+        "entry_price": 0.80,
+        "cost_per_contract": 0.80,
+        "contracts": 1,
+        "status": "PAPER_CLOSED",
+        "realized_pnl": 0.10,
+        "exit_price": 0.90,
+        "exit_fee_per_contract": 0.0,
+        "closed_at": "2026-09-06T20:00:00+00:00",
+        "settled_at": None,
+        "edge": 0.08,
+        "resolved_yes": 0,
+    }
+
+
+def test_lead_split_counts_rows_whose_lead_label_depends_on_the_clock() -> None:
+    """REG-1 relabel: pooled buckets must declare their contaminated rows.
+
+    ``lead_bucket`` moved from the Los Angeles civil day onto the station's
+    fixed-standard settlement day and nothing was backfilled, so a bucket can
+    hold both definitions at once. Only rows stamped inside the 05:00-08:00 UTC
+    disagreement window can differ, so the bucket counts those instead of
+    pretending the series is homogeneous -- and counts an unreadable timestamp
+    separately rather than reporting it as clean.
+    """
+
+    ambiguous_hour = min(LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS)
+    positions = group_logical_positions(
+        [
+            _lead_split_row(1, f"2026-09-06T{ambiguous_hour:02d}:30:00+00:00"),
+            _lead_split_row(2, "2026-09-06T20:30:00+00:00"),
+            _lead_split_row(3, None),
+            # Naive: unplaceable in or out of the window, so it is unknown, not
+            # clean.
+            _lead_split_row(4, "2026-09-06T06:30:00"),
+        ]
+    )
+
+    report = summarize_daily_goals(
+        [
+            daily_goal_state(
+                objective_day=date(2026, 9, 6),
+                realized_pnl=0.4,
+                target_pnl=50.0,
+            )
+        ],
+        positions=positions,
+    )
+
+    bucket = report["lead_split"]["day-ahead"]
+    assert bucket["logical_decisions"] == 4
+    assert bucket["clock_ambiguous_decisions"] == 1
+    assert bucket["clock_unknown_decisions"] == 2
 
 def test_daily_goal_summary_reports_day_clustered_statistics_without_a_guarantee() -> None:
     pnls = [0.0, 50.0, -10.0, 20.0]
