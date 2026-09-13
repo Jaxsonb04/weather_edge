@@ -1,16 +1,15 @@
 import { Skeleton } from "@heroui/react/skeleton";
-import { useCitiesData, type City } from "../../lib/data";
+import { describeMethod, useCitiesData, type City } from "../../lib/data";
 
 const TH = "px-3 py-2 text-left font-mono text-[10px] font-semibold uppercase tracking-wider text-muted";
 const TD = "px-3 py-2.5 align-top";
 
-/** "emos_wmean" → "EMOS · weighted mean". Tolerant of any string / missing. */
-function methodLabel(method: string | undefined): string {
-  if (!method) return "—";
-  if (method.startsWith("emos_wmean") && /fallback/i.test(method)) return "EMOS · weighted mean · SFO fallback";
-  if (method === "emos_wmean") return "EMOS · weighted mean";
-  return method.replace(/_/g, " ");
-}
+/** The artifact's own method tag in plain English. The local variant fell
+    through to the raw tag for anything that was not exactly "emos_wmean", which
+    on a settlement day printed "emos wmean + intraday high-so-far update"
+    verbatim in this table. */
+const methodLabel = (method: string | undefined): string =>
+  method ? describeMethod(method) : "—";
 
 /** Strip the verbose "NWS Climatological Report (…)" wrapper down to the CLI
     station + WFO already inside the parens; fall back to the raw string. */

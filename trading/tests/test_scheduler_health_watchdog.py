@@ -14,10 +14,11 @@ from sfo_kalshi_quant.publication import build_manifest
 ROOT = Path(__file__).resolve().parents[2]
 AWS_DIR = ROOT / "trading" / "deploy" / "aws"
 SCRIPT = AWS_DIR / "check_scheduler_health.sh"
+# weatheredge-apple-refresh.timer is deliberately absent: FC-4 retired the paid
+# Apple refresh, so the watchdog must not demand that it be enabled and active.
 CANONICAL_TIMERS = (
     "sfo-forecaster-refresh.timer",
     "weatheredge-google-nonsfo-refresh.timer",
-    "weatheredge-apple-refresh.timer",
     "weatheredge-apple-purge.timer",
     "weatheredge-google-runtime-purge.timer",
     "sfo-operational-publish.timer",
@@ -275,6 +276,7 @@ def test_scheduler_health_accepts_fresh_local_and_public_artifacts(
     for timer in CANONICAL_TIMERS:
         assert f"is-enabled --quiet {timer}" in calls
         assert f"is-active --quiet {timer}" in calls
+    assert "weatheredge-apple-refresh.timer" not in calls
     assert " start " not in f" {calls}"
 
 

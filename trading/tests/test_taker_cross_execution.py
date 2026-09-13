@@ -97,6 +97,10 @@ def test_live_profile_enables_taker_cross_and_reservation_fallback():
     # win rate and +$3.47/day (see the LIVE_PROFILE_OVERRIDES rationale).
     assert live.limit_taker_cross_min_edge_lcb == 0.0
     assert live.limit_taker_cross_min_edge_lcb < live.limit_price_edge_lcb_buffer
+    # 2026-09-07 (audit TC-15b): dropping this to admit the guaranteed
+    # 1-contract cross was implemented, measured and reverted -- live rests
+    # fill 7.6% of contracts and a fill would consume the market/side entry
+    # slot an expiry leaves open. See the LIVE_PROFILE_OVERRIDES rationale.
     assert live.limit_taker_cross_min_notional == 1.0
 
 

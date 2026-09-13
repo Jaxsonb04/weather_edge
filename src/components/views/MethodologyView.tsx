@@ -1,6 +1,14 @@
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-methodology.css";
-import { pct, round1, useCitiesData, type Cohort, type DashboardData } from "../../lib/data";
+import {
+  fixtureCoverage,
+  pct,
+  round1,
+  STATIC_FIXTURE_NOTE,
+  useCitiesData,
+  type Cohort,
+  type DashboardData,
+} from "../../lib/data";
 import { useDiagnostics, type Diagnostics } from "../../lib/diagnostics";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
@@ -49,6 +57,10 @@ const BLOCKED_COHORT = "hot_80f_plus";
 
 function AccuracyFinding({ data, otherCityCount }: { data: DashboardData; otherCityCount: number | null }) {
   const { forecast, signal } = data;
+  // `forecast_data.json` is a committed study fixture, not pipeline output, so
+  // every surface quoting its counts has to say so — this one and the section
+  // heading below were the two the earlier pass missed.
+  const fixtureYears = fixtureCoverage(forecast);
   const cal = signal.calibration;
   if (!cal) return null;
   const cohorts = cal.cohorts ?? [];
@@ -106,7 +118,8 @@ function AccuracyFinding({ data, otherCityCount }: { data: DashboardData; otherC
           down. That block is lifted for {otherCities}, where 80°+ is an ordinary summer day.
         </>
       )}{" "}
-      All of it rests on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years.
+      All of it rests on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across{" "}
+      {forecast.n_years} years{fixtureYears ? ` (${fixtureYears})` : ""} — a {STATIC_FIXTURE_NOTE}.
       {otherCityCount != null && otherCityCount > 0 && (
         <> The other {otherCityCount} cities run the same EMOS post-processing against their own settlement stations, without the same SFO-specific held-out study.</>
       )}
@@ -124,6 +137,7 @@ const cohortLabel = (name: string) => COHORT_LABELS[name] ?? name.replace(/_/g, 
 
 export default function MethodologyView({ data }: { data: DashboardData }) {
   const { forecast, story, signal } = data;
+  const fixtureYears = fixtureCoverage(forecast);
   const { data: diag, error: diagError } = useDiagnostics();
   const { data: coverage } = useCitiesData();
   const cities = coverage?.cities ?? [];
@@ -200,7 +214,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
             index="03"
             eyebrow="Forecast accuracy"
             title="Ten years of San Francisco observations"
-            sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor the SFO climatology and held-out calibration study. The current operational point forecast is reported separately above.`}
+            sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor the SFO climatology and held-out calibration study${fixtureYears ? ` (${fixtureYears})` : ""} — a ${STATIC_FIXTURE_NOTE}. The current operational point forecast is reported separately above.`}
           />
           <div className="space-y-6">
             <AccuracyFinding data={data} otherCityCount={otherCityCount} />

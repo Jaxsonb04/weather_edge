@@ -1764,6 +1764,81 @@ def test_google_fetch_failure_cannot_retroactively_affect_the_already_archived_b
 
 
 # ---------------------------------------------------------------------------
+# FC-4: the collector must stop paying once every request is coming back 4xx.
+# ---------------------------------------------------------------------------
+
+
+def _open_the_client_error_breaker(usage, count):
+    for page in range(count):
+        instant = TEST_NOW - timedelta(minutes=count - page)
+        event = usage.reserve_event(
+            city_slug="sfo",
+            station_id="KSFO",
+            endpoint="daily",
+            page_number=page,
+            now=instant,
+        )
+        usage.mark_dispatched(event, now=instant)
+        usage.complete_event(
+            event,
+            success=False,
+            error_kind="http",
+            response_status_class=4,
+            now=instant,
+        )
+
+
+def test_an_open_client_error_breaker_skips_every_city_without_dispatching(tmp_path):
+    usage = _usage_ledger(tmp_path, client_error_breaker=2)
+    runtime = _runtime_store(tmp_path)
+    _open_the_client_error_breaker(usage, 2)
+    dispatched_before = usage.usage(now=TEST_NOW).daily_events
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("no HTTP request may be made while the breaker is open")
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"), get_city("lax")),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=refuse,
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    assert [status.skipped_reason for status in report.cities] == [
+        "client_error_breaker",
+        "client_error_breaker",
+    ]
+    assert all(status.attempted is False for status in report.cities)
+    assert all(status.available is False for status in report.cities)
+    # The skip is what protects the budget: not one extra billable event.
+    assert usage.usage(now=TEST_NOW).daily_events == dispatched_before
+    # The EMOS baseline is independent of Google and still runs.
+    assert report.baseline.succeeded is True
+
+
+def test_a_closed_breaker_leaves_the_refresh_cycle_untouched(tmp_path):
+    usage = _usage_ledger(tmp_path, client_error_breaker=5)
+    runtime = _runtime_store(tmp_path)
+    _open_the_client_error_breaker(usage, 2)
+
+    report = gmr.refresh_all_cities(
+        cities=(get_city("sfo"),),
+        key=TEST_KEY,
+        usage=usage,
+        runtime=runtime,
+        transport=_full_bundle_transport(),
+        now=TEST_NOW,
+        archive_baseline=_noop_baseline,
+    )
+
+    assert report.cities[0].skipped_reason is None
+    assert report.cities[0].available is True
+
+
+# ---------------------------------------------------------------------------
 # Runtime purge each cycle.
 # ---------------------------------------------------------------------------
 

@@ -36,6 +36,36 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _seed_dispersed(conn: sqlite3.Connection) -> None:
+    """Like ``_seed`` but with real irreducible error, so the fitted sigma sits
+    well above SIGMA_FLOOR_F.
+
+    ``_seed``'s members are truth +/- a constant, so once debiased they agree
+    exactly, the EMOS residual variance is ~0 and every served sigma lands on
+    the 1.5 F floor -- where a horizon rescale is invisible. Here the members
+    track a signal that truth wanders around by a repeating +/-3 F, giving
+    var_c ~ 4-5 and a served sigma ~2.2 F.
+    """
+
+    conn.execute(
+        "CREATE TABLE clisfo_settlements "
+        "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
+    )
+    ensure_nwp_schema(conn)
+    base = date(2024, 1, 1)
+    wobble = (3, -3, 2, -2, 0)
+    rows = []
+    for i in range(140):
+        day = (base + timedelta(days=i)).isoformat()
+        signal = 65 + (i % 9)
+        truth = signal + wobble[i % len(wobble)]
+        conn.execute("INSERT INTO clisfo_settlements VALUES (?, ?, ?, ?)", (day, truth, "x", "t"))
+        for model, offset in (("gfs_seamless", 1.0), ("ecmwf_ifs025", -1.0), ("ncep_nbm_conus", 0.0)):
+            rows.append(("KSFO", day, model, 1, signal + offset, "x", "test"))
+    upsert_forecasts(conn, rows)
+    conn.commit()
+
+
 def test_build_emos_archive_roundtrip():
     conn = sqlite3.connect(":memory:")
     _seed(conn)
@@ -76,15 +106,16 @@ def test_build_emos_archive_replays_truth_at_the_requested_lead(monkeypatch):
 
     def fake_predictions(dates, truth, nwp, *, truth_lag_days=0, **kwargs):
         captured["truth_lag_days"] = truth_lag_days
-        return {dates[-1]: (72.0, 2.0)}
+        return {dates[-1]: (72.0, 2.0, 3.5)}
 
-    monkeypatch.setattr(ef, "emos_ngr_predictions", fake_predictions)
+    monkeypatch.setattr(ef, "emos_ngr_predictions_with_spread", fake_predictions)
 
     assert build_emos_archive(conn, lead_days=1) == 1
     assert captured == {"truth_lag_days": 1}
+    # the archived spread is the fit's own debiased range, not a raw re-derivation
     assert conn.execute(
-        "SELECT source, predicted_high_f, sigma_f FROM forecast_emos_daily_high"
-    ).fetchall() == [("rolling_origin_v2", 72.0, 2.0)]
+        "SELECT source, predicted_high_f, sigma_f, model_spread_f FROM forecast_emos_daily_high"
+    ).fetchall() == [("rolling_origin_v2", 72.0, 2.0, 3.5)]
 
 
 def test_serve_live_emos_with_injected_forecasts(monkeypatch):
@@ -351,7 +382,12 @@ def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):
     import emos_forecast as ef
 
     conn = sqlite3.connect(":memory:")
-    _seed(conn)  # lead-1 history: 140 settled days before the target
+    # Dispersed fixture on purpose: with _seed the served sigma lands on the
+    # 1.5 F floor, and a floor-clamped serve cannot distinguish a working
+    # horizon rescale from a no-op. Monkeypatching ef.SIGMA_FLOOR_F would not
+    # fix that -- postproc_models.apply_emos imports its own copy and floors
+    # first -- so the fixture, not the floor, has to carry the dispersion.
+    _seed_dispersed(conn)  # lead-1 history: 140 settled days before the target
     target = date(2024, 6, 1)
     monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
@@ -365,10 +401,99 @@ def test_serve_live_emos_stores_lead0_row_with_lead1_fit(monkeypatch):
     assert row is not None
     assert row[0] == 0  # stored at its true (same-day) lead
     assert abs(row[1] - result[0]) < 1e-9
-    # Identical inputs at lead 1: same fit, same (mu, sigma), different key.
+    assert abs(row[2] - result[1]) < 1e-9
+    # Identical inputs at lead 1: same fit, so the same MEAN -- but FC-2, the
+    # same-day serve must NOT inherit the day-ahead dispersion.
     lead1 = serve_live_emos(conn, target, lead_days=1, live_models=live)
     assert lead1 is not None
-    assert abs(lead1[0] - result[0]) < 1e-9 and abs(lead1[1] - result[1]) < 1e-9
+    assert abs(lead1[0] - result[0]) < 1e-9
+    scale = ef._borrowed_lead_sigma_scale(ef.DEFAULT_CITY.nws_station_id, 0, 1)
+    assert scale < 1.0
+    # The production floor is in force here: assert it is NOT what produced the
+    # difference, or this test silently stops covering FC-2.
+    assert lead1[1] > ef.SIGMA_FLOOR_F
+    assert result[1] > ef.SIGMA_FLOOR_F
+    assert result[1] < lead1[1]
+    assert abs(result[1] - lead1[1] * scale) < 1e-9
+
+
+def test_lead0_sigma_rescale_is_bounded_and_only_applies_to_a_borrowed_fit():
+    import emos_forecast as ef
+
+    station = ef.DEFAULT_CITY.nws_station_id
+    # A serve fit at its own lead is untouched, in either direction.
+    assert ef._borrowed_lead_sigma_scale(station, 1, 1) == 1.0
+    assert ef._borrowed_lead_sigma_scale(station, 2, 2) == 1.0
+    assert ef._borrowed_lead_sigma_scale(station, 0, 0) == 1.0
+    # Only the same-day serve borrows, and it only ever sharpens.
+    scale = ef._borrowed_lead_sigma_scale(station, 0, 1)
+    low, high = ef.LEAD0_SIGMA_SCALE_BOUNDS
+    assert low <= scale <= high < 1.0 + 1e-12
+    assert scale == ef.LEAD0_SIGMA_SCALE_BY_STATION[station]
+
+
+def test_lead0_sigma_scale_never_sharpens_an_already_confident_station():
+    """The pooled constant this replaced pushed KOKC/KBOS/KHOU/KNYC/KSFO from
+    mildly over-confident into materially over-confident. A station measured at
+    or past calibration must come out of the table as an exact identity, and no
+    station may be widened."""
+
+    import emos_forecast as ef
+
+    low, high = ef.LEAD0_SIGMA_SCALE_BOUNDS
+    assert high == 1.0
+    for station, scale in ef.LEAD0_SIGMA_SCALE_BY_STATION.items():
+        assert 0.0 < scale <= 1.0, station
+        effective = ef._borrowed_lead_sigma_scale(station, 0, 1)
+        assert low <= effective <= 1.0, station
+    # Stations whose measured same-day z^2 was already >= 1 are exact no-ops.
+    for station in ("KBOS", "KHOU", "KOKC"):
+        assert ef._borrowed_lead_sigma_scale(station, 0, 1) == 1.0
+    # An unmeasured station keeps the borrowed width (over-dispersed, under-sized).
+    assert ef._borrowed_lead_sigma_scale("KZZZ", 0, 1) == ef.LEAD0_SIGMA_SCALE_DEFAULT
+    assert ef.LEAD0_SIGMA_SCALE_DEFAULT == 1.0
+
+
+def test_lead0_sigma_rescale_respects_the_sigma_floor(monkeypatch):
+    """The horizon correction may sharpen the same-day Gaussian but not past
+    the absolute floor every other serve path respects."""
+
+    import emos_forecast as ef
+
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)  # agreeing members -> the fit lands on the floor by itself
+    target = date(2024, 6, 1)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    result = serve_live_emos(conn, target, lead_days=1, store_lead_days=0, live_models=live)
+    assert result is not None
+    assert result[1] >= ef.SIGMA_FLOOR_F
+    # ... and on this fixture the floor is exactly what binds: the same-day serve
+    # is a no-op against the lead-1 serve, which is what production sees on the
+    # ~34% of same-day serves that sit on the floor.
+    lead1 = serve_live_emos(conn, target, lead_days=1, live_models=live)
+    assert lead1 is not None
+    assert abs(result[1] - lead1[1]) < 1e-12
+    assert abs(result[1] - ef.SIGMA_FLOOR_F) < 1e-12
+
+
+def test_model_spread_is_invariant_to_a_pure_model_bias():
+    """FC-1: the published disagreement statistic is taken over debiased
+    members, so a chronically offset member does not read as an uncertain day."""
+
+    import emos_forecast as ef
+
+    forecasts = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    biases = {"gfs_seamless": 1.0, "ecmwf_ifs025": 0.0, "ncep_nbm_conus": 2.0}
+    spread = ef._model_spread_f(forecasts, biases)
+    assert spread == 0.0  # 70 / 70 / 70 once corrected
+    # Shift one member by a constant that is also in its bias: nothing moves.
+    assert ef._model_spread_f(
+        {**forecasts, "ecmwf_ifs025": 58.0}, {**biases, "ecmwf_ifs025": -12.0}
+    ) == spread
+    # Left uncorrected, that same 12F offset reads as a 14F "uncertain day":
+    # the raw range (14F) and the debiased range (12F) are different statistics.
+    assert ef._model_spread_f({**forecasts, "ecmwf_ifs025": 58.0}, biases) == 12.0
 
 
 def test_serve_live_emos_applies_trailing_bias_recalibration(monkeypatch):

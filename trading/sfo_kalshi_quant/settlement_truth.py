@@ -153,6 +153,47 @@ def load_cli_settlement_truth(conn) -> dict[SettlementKey, float]:
     return truth
 
 
+def load_observed_daily_highs(
+    conn, *, min_observations: int
+) -> dict[SettlementKey, float]:
+    """Load station observation-tape maxima keyed by (series, target date).
+
+    ``nws_daily_high_ground_truth`` is the METAR-derived daily maximum, a
+    coarser instrument than the CLI text -- it runs a degree or two low on some
+    days -- so it must never settle an order.  It is loaded here as an
+    *independent* second opinion for integrity checks only, which is the one job
+    a coarser instrument can still do.
+
+    Days whose tape carries fewer than ``min_observations`` readings are omitted
+    entirely: a sparse tape has probably missed the peak, so its disagreement
+    with the CLI says nothing about the CLI.  ``min_observations`` has no
+    default on purpose -- the threshold is the caller's calibration, not this
+    module's.
+
+    Legacy schemas without the density column fail closed, returning nothing
+    rather than an unfiltered tape.
+    """
+
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(nws_daily_high_ground_truth)")
+    }
+    if not {"observation_count", "high_f", "station_id", "local_date"} <= columns:
+        return {}
+    rows = conn.execute(
+        "SELECT station_id, local_date, high_f FROM nws_daily_high_ground_truth "
+        "WHERE high_f IS NOT NULL AND observation_count >= ?",
+        (int(min_observations),),
+    ).fetchall()
+    highs: dict[SettlementKey, float] = {}
+    for station_id, local_date, high in rows:
+        try:
+            city = city_for_station(str(station_id))
+        except KeyError:
+            continue
+        highs[(city.series_ticker, str(local_date))] = float(high)
+    return highs
+
+
 def load_final_cli_high_for_station_date(
     conn,
     *,

@@ -77,6 +77,48 @@ def _spread(values: list[float]) -> float:
     return stdev(values) if len(values) >= 2 else 0.0
 
 
+def debiased_values(models_for_day: dict[str, float], biases: dict[str, float]) -> list[float]:
+    """Member forecasts with their learned systematic offsets removed.
+
+    Cross-model *disagreement* is only meaningful after bias correction. A member
+    that is reliably 12 F cold -- the coarse grids resolve KSFO and KLAX as ocean
+    -- is a known offset the mean already corrects, not evidence that today is an
+    uncertain day. Measured on the production archive (2026-03-01 onward), the
+    raw statistic reads 14.1 F at KSFO and 13.1 F at KLAX where the debiased one
+    reads 8.8 F and 6.9 F.
+    """
+
+    return [value - biases.get(model, 0.0) for model, value in models_for_day.items()]
+
+
+def debiased_range(
+    models_for_day: dict[str, float], biases: dict[str, float]
+) -> float | None:
+    """Debiased cross-model range (max - min) -- the published disagreement stat.
+
+    Members with no learned bias are DROPPED rather than corrected by 0.0,
+    mirroring ``emos_forecast.serve_live_emos``: a model still ramping into the
+    archive carries its full raw offset, and letting it into the published range
+    would re-create exactly the artifact FC-1 removes for the whole of its
+    ramp-in window. ``None`` when fewer than two known members remain -- the
+    same "no honest disagreement statistic" answer the <2-member case gives.
+
+    The variance regressor (``debiased_values`` in ``fit_emos``/``apply_emos``)
+    deliberately keeps every member, matching ``_weighted_debiased_mean``:
+    filtering one side of the fitted (mean, spread) pair and not the other would
+    make the pair inconsistent. That is pre-existing behaviour, unchanged here.
+    """
+
+    values = [
+        value - biases[model]
+        for model, value in models_for_day.items()
+        if model in biases
+    ]
+    if len(values) < 2:
+        return None
+    return round(max(values) - min(values), 2)
+
+
 def day_mean_spread(models_for_day: dict[str, float] | None):
     """(raw ensemble mean, cross-model spread, present-model dict) or None."""
 
@@ -130,8 +172,11 @@ def fit_emos(
             equal-weight mean.
     Step 2: mu = a + b * weighted_debiased_mean   (OLS of truth on that mean).
     Step 3: var = c + d * spread^2                 (OLS of squared residual on
-            squared spread; d clipped >= 0 so more disagreement never *lowers*
-            predicted uncertainty, falling back to homoscedastic otherwise).
+            the squared *debiased* spread; d clipped >= 0 so more disagreement
+            never *lowers* predicted uncertainty, falling back to homoscedastic
+            otherwise). The spread is taken over bias-corrected members so a
+            chronically offset member reads as a known correction, not as
+            today's uncertainty.
     """
 
     if len(history) < 2:
@@ -168,7 +213,7 @@ def fit_emos(
     for (models_for_day, truth), mean in zip(history, means):
         resid = truth - (mu_a + mu_b * mean)
         residual_sq.append(resid * resid)
-        spread = _spread(list(models_for_day.values()))
+        spread = _spread(debiased_values(models_for_day, biases))
         spread_sq.append(spread * spread)
     var_c, var_d = _simple_ols(spread_sq, residual_sq)
     if var_d < 0.0:  # disagreement must not reduce predicted uncertainty
@@ -180,7 +225,7 @@ def fit_emos(
 
 def apply_emos(params: EmosParams, models_for_day: dict[str, float]) -> tuple[float, float]:
     mean = _weighted_debiased_mean(models_for_day, params.biases, params.weights)
-    spread = _spread(list(models_for_day.values()))
+    spread = _spread(debiased_values(models_for_day, params.biases))
     mu = params.mu_a + params.mu_b * mean
     variance = params.var_c + params.var_d * spread * spread
     sigma = math.sqrt(max(variance, SIGMA_FLOOR_F * SIGMA_FLOOR_F))
@@ -196,7 +241,36 @@ def emos_ngr_predictions(
     weight_mode: str = "equal",
     truth_lag_days: int = 0,
 ) -> dict[str, tuple[float, float]]:
+    """Rolling-origin EMOS (mu, sigma); see ``emos_ngr_predictions_with_spread``."""
+
+    return {
+        target: (mu, sigma)
+        for target, (mu, sigma, _) in emos_ngr_predictions_with_spread(
+            dates_sorted,
+            truth,
+            nwp_by_date,
+            min_train=min_train,
+            weight_mode=weight_mode,
+            truth_lag_days=truth_lag_days,
+        ).items()
+    }
+
+
+def emos_ngr_predictions_with_spread(
+    dates_sorted: list[str],
+    truth: dict[str, float],
+    nwp_by_date: dict[str, dict[str, float]],
+    *,
+    min_train: int = EMOS_MIN_TRAIN,
+    weight_mode: str = "equal",
+    truth_lag_days: int = 0,
+) -> dict[str, tuple[float, float, float | None]]:
     """Rolling-origin EMOS predictions with a live-availability truth boundary.
+
+    Returns ``target -> (mu, sigma, debiased_spread_f)``. The third element is
+    the published ``model_spread_f``: it needs that target's own fitted biases,
+    which exist only inside this loop. It is ``None`` on a day with fewer than
+    two bias-corrected members (see ``debiased_range``).
 
     ``truth_lag_days=0`` preserves the generic rolling-origin contract: target
     D fits through D-1. A replay for a forecast served ``lead`` days before D
@@ -207,7 +281,7 @@ def emos_ngr_predictions(
     if truth_lag_days < 0:
         raise ValueError("truth_lag_days must be non-negative")
 
-    preds: dict[str, tuple[float, float]] = {}
+    preds: dict[str, tuple[float, float, float | None]] = {}
     history: list[tuple[str, dict[str, float], float]] = []
     for date_str in dates_sorted:
         models_for_day = nwp_by_date.get(date_str)
@@ -223,7 +297,8 @@ def emos_ngr_predictions(
         if usable and len(available_history) >= min_train:
             params = fit_emos(available_history, weight_mode=weight_mode)
             if params is not None:
-                preds[date_str] = apply_emos(params, models_for_day)
+                mu, sigma = apply_emos(params, models_for_day)
+                preds[date_str] = (mu, sigma, debiased_range(models_for_day, params.biases))
         # Retain all prior candidates; the per-target availability boundary
         # above decides when each truth could have reached a live serve.
         if usable and date_str in truth:

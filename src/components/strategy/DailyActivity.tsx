@@ -13,7 +13,10 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
   // replay the bounded public refresh defers. When that section is unpopulated
   // every day reports 0 scans beside a day that demonstrably opened trades, so
   // those two columns report "no measurement" instead of a stub zero.
-  const scanCountsDeferred = gateDeferred(s.daily_summary?.gate_behavior);
+  const scanCountsDeferred = gateDeferred(
+    s.daily_summary?.gate_behavior,
+    s.daily_summary?.decision_analytics,
+  );
   const scanCount = (value: number | null | undefined) =>
     scanCountsDeferred ? "—" : value?.toLocaleString() ?? "—";
 

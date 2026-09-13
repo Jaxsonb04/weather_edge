@@ -8,6 +8,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from ..account import LIVE_STABILITY_ACCOUNT_ID
+from ..ladder_truth import (
+    LADDER_BIN_OUTCOME_AUDIT_COLUMNS,
+    LADDER_BIN_OUTCOME_INDEXES,
+    LADDER_BIN_OUTCOME_SCHEMA,
+    LADDER_INTEGRITY_TOLERANCE_F,
+    LADDER_OBSERVED_TOLERANCE_F,
+    derive_integrity_verdict,
+)
 from .market_day_settlements import (
     MARKET_DAY_SETTLEMENT_INDEXES,
     MARKET_DAY_SETTLEMENT_SCHEMA,
@@ -496,7 +504,7 @@ CREATE TABLE IF NOT EXISTS google_challenger_snapshots (
   action TEXT NOT NULL,
   PRIMARY KEY(station_id, target_date, issued_at, policy_version)
 );
-""" + MARKET_DAY_SETTLEMENT_SCHEMA
+""" + MARKET_DAY_SETTLEMENT_SCHEMA + LADDER_BIN_OUTCOME_SCHEMA
 
 # Created after column migrations in init() so they can reference late-added
 # columns (e.g. group_id) on databases that predate them.
@@ -548,7 +556,7 @@ CREATE INDEX IF NOT EXISTS idx_research_shadow_monitor_order
     ON research_shadow_monitor_snapshots (shadow_order_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_paper_account_ledger_account
     ON paper_account_ledger (account_id, created_at, id);
-""" + MARKET_DAY_SETTLEMENT_INDEXES
+""" + MARKET_DAY_SETTLEMENT_INDEXES + LADDER_BIN_OUTCOME_INDEXES
 
 # Fresh databases can build this covering report index cheaply during normal
 # initialization. Existing journals deliberately skip it: production creates it
@@ -1411,6 +1419,14 @@ def _init_store_locked(self) -> None:
         _migrate_legacy_profile_names(conn)
         _migrate_closed_row_position_won(conn)
         _migrate_market_day_truth_ranks(conn)
+        existing_ladder = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ladder_bin_outcomes)").fetchall()
+        }
+        _add_missing_columns(
+            conn, "ladder_bin_outcomes", existing_ladder, LADDER_BIN_OUTCOME_AUDIT_COLUMNS
+        )
+        _migrate_ladder_integrity_status(conn)
         scan_context_index = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' "
             "AND name='idx_decision_snapshots_scan_context'"
@@ -1604,6 +1620,65 @@ def _migrate_market_day_truth_ranks(conn: sqlite3.Connection) -> int:
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",
         (_MARKET_DAY_TRUTH_RANK_MIGRATION_KEY, _now()),
+    )
+    return updated
+
+
+_LADDER_INTEGRITY_MIGRATION_KEY = "ladder_bin_outcome_integrity_status_v2"
+
+
+def _migrate_ladder_integrity_status(conn: sqlite3.Connection) -> int:
+    """Re-derive every stored integrity verdict from the current tolerances.
+
+    ``ladder_bin_outcomes.integrity_status`` is a cached projection of
+    ``settlement_high_f`` against whichever independent record exists for the
+    station-day, exactly as ``truth_rank`` is a projection of
+    ``TRUTH_SOURCE_RANKS``. A database written under a different tolerance -- or
+    before the observation channel existed -- carries verdicts that no longer
+    mean what the constants say, and the flagged count is the whole point of the
+    guard: a stale ``ok`` is a silently accepted bad label and a stale
+    ``unchecked`` is a guard that never fired.
+
+    Every input is stored, so the verdict is fully recoverable from the row and
+    this rewrites no outcome, only the verdict over it (``truth_delta_f`` and
+    ``integrity_source`` move with the status because all three are the same
+    projection). Changing either tolerance, or adding a channel, requires
+    bumping this key so the re-derivation runs again.
+    """
+
+    if conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_key=?",
+        (_LADDER_INTEGRITY_MIGRATION_KEY,),
+    ).fetchone() is not None:
+        return 0
+    updated = 0
+    rows = conn.execute(
+        "SELECT market_ticker, target_date, side, settlement_high_f, "
+        "exchange_settlement_high_f, observed_settlement_high_f, truth_delta_f, "
+        "integrity_source, integrity_status FROM ladder_bin_outcomes"
+    ).fetchall()
+    for (
+        ticker, target_date, side, high, exchange_high, observed_high,
+        delta, source_name, status,
+    ) in rows:
+        expected = derive_integrity_verdict(
+            high,
+            exchange_high,
+            observed_high,
+            tolerance_f=LADDER_INTEGRITY_TOLERANCE_F,
+            observed_tolerance_f=LADDER_OBSERVED_TOLERANCE_F,
+        )
+        if expected == (str(status), delta, source_name):
+            continue
+        updated += conn.execute(
+            "UPDATE ladder_bin_outcomes SET integrity_status = ?, truth_delta_f = ?, "
+            "integrity_source = ? "
+            "WHERE market_ticker = ? AND target_date = ? AND side = ?",
+            (*expected, ticker, target_date, side),
+        ).rowcount
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at) VALUES (?, ?)",
+        (_LADDER_INTEGRITY_MIGRATION_KEY, _now()),
     )
     return updated
 

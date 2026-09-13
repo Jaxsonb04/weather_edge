@@ -3,6 +3,7 @@ import { BarChart } from "@heroui-pro/react/bar-chart";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import {
+  STATIC_FIXTURE_NOTE,
   TEMP_RAMP_COLD,
   TEMP_RAMP_HOT,
   histogramBasis,
@@ -41,6 +42,7 @@ export function HistogramChart({ story, forecast }: { story: WeatherStory; forec
             {isDailyMax
               ? `Every recorded KSFO daily high · ${forecast.n_years}-year window`
               : `Every recorded KSFO hourly reading · ${forecast.n_years}-year window`}
+            {` · ${STATIC_FIXTURE_NOTE}`}
           </Widget.Description>
         </div>
         <Widget.Legend className="shrink-0 flex-wrap">

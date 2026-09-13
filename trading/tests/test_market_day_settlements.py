@@ -284,6 +284,10 @@ def test_nothing_in_the_trading_path_reads_the_observability_table():
         "_cli/paper.py",                    # settle/backfill operator commands
         "_cli/parser.py",                   # operator command registration
         "cli.py",                           # operator command dispatch
+        # The sibling full-ladder ledger (audit IMP-1) imports TRADED_STATUSES
+        # so "traded" means the same thing in both measurement tables. It is
+        # measurement infrastructure too, not a trading-path reader.
+        "ladder_truth.py",
     }
     offenders = sorted(
         str(path.relative_to(package))

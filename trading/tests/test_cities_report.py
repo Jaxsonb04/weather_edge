@@ -112,12 +112,17 @@ def test_all_city_books_uses_one_grouped_pass_and_does_not_duplicate_decisions_b
     assert "decisions_24h" not in sfo["research"]
     assert sfo["live"] == {
         "open_positions": 1,
+        "resting_orders": 0,
         "open_exposure": 0.5,
         "settled_orders": 1,
         "settled_pnl": 0.8,
     }
+    # The seeded research row is PAPER_LIMIT_RESTING: an unfilled limit order is
+    # a resting order, not an open position, exactly as the Strategy Lab counts
+    # it. Its reserved capital still shows up in exposure.
     assert sfo["research"] == {
-        "open_positions": 1,
+        "open_positions": 0,
+        "resting_orders": 1,
         "open_exposure": 0.3,
         "settled_orders": 0,
         "settled_pnl": 0.0,
@@ -126,6 +131,39 @@ def test_all_city_books_uses_one_grouped_pass_and_does_not_duplicate_decisions_b
     assert books["nyc"]["live"]["open_positions"] == 1
     assert len([sql for sql in statements if "FROM decision_snapshots" in sql]) == 1
     assert len([sql for sql in statements if "FROM paper_orders" in sql]) == 1
+
+
+def test_resting_limit_orders_are_not_counted_as_open_positions():
+    """Overview must agree with the Strategy Lab's open/resting split.
+
+    Counting ``PAPER_LIMIT_RESTING`` as an open position made the Overview say
+    22 positions while the Lab said "21 open, 2 resting" for the same book.
+    """
+
+    with sqlite3.connect(":memory:") as conn:
+        _create_activity_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO paper_orders (
+                market_ticker, risk_profile, contracts, cost_per_contract,
+                status, settled_at, closed_at, realized_pnl
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                # Filled: open only.
+                ("KXHIGHTSFO-26JUL09-B68.5", "live", 2.0, 0.25, "PAPER_FILLED", None, None, None),
+                # Resting: resting only.
+                ("KXHIGHTSFO-26JUL09-B69.5", "live", 4.0, 0.10, "PAPER_LIMIT_RESTING", None, None, None),
+                # Partially filled: both, because it holds contracts and rests.
+                ("KXHIGHTSFO-26JUL09-B70.5", "live", 1.0, 0.20, "PAPER_PARTIALLY_FILLED", None, None, None),
+            ],
+        )
+        books = cities_report._all_city_books(conn, CUTOFF)
+
+    live = books["sfo"]["live"]
+    assert live["open_positions"] == 2
+    assert live["resting_orders"] == 2
+    assert live["open_exposure"] == round(0.5 + 0.4 + 0.2, 2)
 
 
 def test_all_city_books_tolerates_missing_tables():

@@ -139,7 +139,6 @@ def test_profile_minimum_notional_fails_invalid_values_closed() -> None:
         capacity = policy_capacity(
             state=state,
             active_rows=[],
-            daily_pnl=0.0,
             target_date="2026-07-11",
             market_ticker="KXHIGHTSFO-TEST-B68",
             risk_profile="live",
@@ -167,6 +166,56 @@ def test_live_profile_rejects_when_exact_fee_repricing_falls_below_one_dollar() 
         )
 
         assert order_ids == []
+
+
+def test_account_capacity_carries_no_unreachable_daily_loss_breaker() -> None:
+    """Audit TC-6: the 2% account daily-loss pause was deleted, not retuned.
+
+    It could never fire: both paper entry paths pause on
+    `paper_entry_pause_reason` first, and PAUSE_THRESHOLDS["live"] trips at
+    1.0% of clamp(equity, 500, 2000) -- at or below half of 2% of equity at
+    every equity level the 15% drawdown pause does not already cover. Real
+    money keeps its own 2% guard in `LiveExecutionPolicy.daily_loss_pct`.
+    """
+
+    import inspect
+
+    from sfo_kalshi_quant import account as account_module
+
+    assert not hasattr(account_module, "DAILY_LOSS_PCT")
+    assert "daily_pnl" not in inspect.signature(policy_capacity).parameters
+
+
+def test_live_sleeve_room_is_exactly_the_aggregate_cap() -> None:
+    """Audit TC-6: MAIN_SLEEVE_PCT (16%) was algebraically a no-op and was deleted.
+
+    `active_rows` binds only paper-shared plus the entry account, and since the
+    v3 cutover every research order lives in its own policy account, so a live
+    entry's rows structurally cannot carry a research row. The old
+    `0.16E - main_risk + max(0, 0.04E - research_risk)` was >= `0.20E -
+    aggregate` for every possible input, so it could never be the binding
+    minimum. AGGREGATE_RISK_PCT is the live sleeve.
+    """
+
+    from sfo_kalshi_quant import account as account_module
+
+    assert not hasattr(account_module, "MAIN_SLEEVE_PCT")
+
+    state = {"realized_equity": 1000.0, "drawdown": 0.0, "available_cash": 1000.0}
+    for profile_of_open_row in ("live", "research"):
+        capacity = policy_capacity(
+            state=state,
+            active_rows=[
+                ("KXHIGHNY-TEST-B70", "2026-07-11", profile_of_open_row, 190.0)
+            ],
+            target_date="2026-07-12",
+            market_ticker="KXHIGHTSFO-TEST-B68",
+            risk_profile="live",
+            requested_spend=30.0,
+            minimum_notional=1.0,
+        )
+        # 20% of $1000 minus the $190 already at risk, and nothing else.
+        assert capacity == {"allowed_spend": 10.0, "reason": None}
 
 
 def test_ledger_reserves_fills_and_settles_cash_idempotently() -> None:
@@ -413,19 +462,28 @@ def test_generic_research_position_fails_closed_after_cutover() -> None:
 
 def test_daily_loss_and_drawdown_breakers_fail_closed() -> None:
     with TemporaryDirectory() as tmp:
+        # Audit TC-6 (2026-09-07): the daily-loss breaker that actually governs
+        # live entries is the PER-PROFILE one in `paper_entry_pause_reason`
+        # (1.0% of the clamped bankroll), consulted by `place_approved` and
+        # `place_arbitrage` before any capacity call. The account-level 2% copy
+        # this test used to assert was dominated by it at every equity level
+        # the 15% drawdown pause does not already cover, and was deleted.
         daily_store = PaperStore(Path(tmp) / "daily.db")
         daily_id = daily_store.record_paper_order(
             "2026-07-10", _decision(recommended_contracts=60.0), status="PAPER_FILLED"
         )
         daily_store.close_paper_order(daily_id, 0.01)
-        daily_capacity = daily_store.account_policy_capacity(
-            target_date="2026-07-11",
-            market_ticker="KXHIGHNY-TEST-B70",
-            risk_profile="live",
-            requested_spend=20.0,
+        daily_reason = daily_store.paper_entry_pause_reason(
+            "live", bankroll=1000.0, target_date="2026-07-11"
         )
-        assert daily_capacity["allowed_spend"] == 0
-        assert "daily loss" in str(daily_capacity["reason"])
+        assert daily_reason is not None
+        assert "daily loss" in daily_reason
+        daily_trader = PaperTrader(
+            daily_store, strategy_config_for_profile("live"), risk_profile="live"
+        )
+        assert daily_trader.place_approved(
+            "2026-07-11", [_decision()], bankroll=1000.0
+        ) == []
 
         drawdown_store = PaperStore(Path(tmp) / "drawdown.db")
         drawdown_id = drawdown_store.record_paper_order(

@@ -10,6 +10,64 @@ from .config import SFO_TZ, StrategyConfig
 from .models import BucketProbability, EnsembleSnapshot, ForecastOutcome, IntradaySnapshot, MarketBin
 
 
+# ---------------------------------------------------------------------------
+# Source-disagreement units (FC-1, 2026-09-07)
+# ---------------------------------------------------------------------------
+# ``source_spread_f`` used to be the RAW cross-model range; FC-1 made it the
+# range over BIAS-CORRECTED members, which is a systematically SMALLER number
+# (a member that is chronically 12 F cold no longer reads as a 12 F uncertain
+# day). Three controls in this module were tuned against the raw statistic and
+# share the same ``(spread - 3.0) * k`` shape: the sigma inflation, the
+# ``model_risk_penalty`` LCB deduction, and the market-vs-model weight shift.
+# Leaving them keyed to the old units would have silently weakened all three on
+# every city -- and the live config comment names the sigma inflation as the
+# compensating control that makes a loose ``max_source_spread_f`` safe, so
+# opening the gate while weakening the inflation is exactly the unsafe pair.
+#
+# Rather than retune three separate knees and slopes on an unvalidated basis,
+# the debiased statistic is mapped back onto the raw scale those constants were
+# fitted on. The map is a pure proportional scale, measured twice on production
+# read-only:
+#
+#   * forecast archive (nwp_model_forecasts leads 1+2, 15 stations, 2026-03-01
+#     on, n=5,760 station-days, rolling-origin biases): the debiased/raw ratio
+#     at matched quantiles is 0.763-0.821 across the whole p5-p95 grid, i.e.
+#     flat -- pooled means 8.33 -> 6.60 (0.792).
+#   * the gate-facing journal (decision_snapshots, created_at >= 2026-09-01,
+#     n=665,128 decision rows, each station's raw value pushed through that
+#     station's own quantile map): pooled means 6.87 -> 5.42 (0.789), matched-
+#     quantile ratios 0.71-0.86.
+#
+# So 0.79 recovers the raw scale to within the noise of either population, and
+# a single constant keeps the three tuned controls literally as tuned --
+# identical caps, identical saturation percentiles. It does NOT reintroduce the
+# per-station artifact FC-1 removed: KSFO's raw 14.10 F becomes a raw-EQUIVALENT
+# 11.1 F rather than the 14.10 F that used to saturate every one of these
+# controls, which is precisely the intended relief.
+SOURCE_SPREAD_DEBIAS_SCALE = 0.79
+
+
+def raw_equivalent_source_spread_f(source_spread_f: float) -> float:
+    """Debiased cross-model spread expressed on the raw scale (see above).
+
+    Every constant in this module that reads a source spread was fitted against
+    the raw statistic; this is the one place the unit change is absorbed.
+
+    KNOWN EXCEPTION. ``ForecastSnapshot.source_spread_f`` is the debiased EMOS
+    range whenever an EMOS row exists, but falls back to the RAW range over up
+    to four published SFO blend providers when one does not -- those four have
+    no bias model, so that path is still raw and this rescale over-states it by
+    1/0.79. It is rare (35 of 251,514 production serve-log snapshots, 0.014%,
+    used the blend row) and every consequence is conservative: a larger apparent
+    spread widens sigma, deepens the LCB deduction, and shifts weight toward the
+    Kalshi price. Threading a units flag from ForecastSnapshot through
+    bucket_probabilities and evaluate_market would fix it exactly and is the
+    right move if the blend path ever carries real volume again.
+    """
+
+    return source_spread_f / SOURCE_SPREAD_DEBIAS_SCALE
+
+
 def normal_cdf(x: float, mu: float, sigma: float) -> float:
     if sigma <= 0:
         return 1.0 if x >= mu else 0.0
@@ -122,9 +180,15 @@ class ResidualCalibrator:
         bias = (cond_weight * cond.bias) + ((1.0 - cond_weight) * glob.bias)
 
         # Source disagreement is a real uncertainty signal. Widen gently rather
-        # than inventing directional edge from it.
-        if source_spread_f > 3.0:
-            sigma *= 1.0 + min(0.35, (source_spread_f - 3.0) * 0.04)
+        # than inventing directional edge from it. The knee and slope are tuned
+        # against the RAW spread scale, so the debiased statistic is mapped back
+        # onto it (see SOURCE_SPREAD_DEBIAS_SCALE); this control is the one the
+        # live profile's max_source_spread_f comment relies on to size uncertain
+        # days down, and it binds hardest at KSFO, whose sigma is not overwritten
+        # by the EMOS Gaussian.
+        spread_raw_equivalent = raw_equivalent_source_spread_f(source_spread_f)
+        if spread_raw_equivalent > 3.0:
+            sigma *= 1.0 + min(0.35, (spread_raw_equivalent - 3.0) * 0.04)
 
         # Flow-dependent sharpening: blend in today's GFS ensemble spread so the
         # model sharpens on calm days and widens on volatile ones, instead of
@@ -250,7 +314,12 @@ class ResidualCalibrator:
         # question -- if evidence shows fallback days run hotter residuals,
         # price that as an explicit additive penalty, never as a fake small n.
         se_sample_n = min(cond.n, effective_n)
-        model_risk_penalty = min(0.08, max(0.0, source_spread_f - 3.0) * 0.0075)
+        # Raw-scale knee/slope/cap (see SOURCE_SPREAD_DEBIAS_SCALE): this
+        # deduction feeds edge_lcb, and live runs min_edge_lcb = 0.00, so a
+        # silent units shrink here would loosen the gate live trades against.
+        model_risk_penalty = min(
+            0.08, max(0.0, raw_equivalent_source_spread_f(source_spread_f) - 3.0) * 0.0075
+        )
         residual_by_ticker = {market.ticker: p for market, p, _, _ in residual_probs}
         for market, model_p, p_emp, p_norm, ensemble_p in weather_probs:
             intraday_p = None
@@ -766,8 +835,15 @@ def _model_weight(
         base_weight = config.market_prior_weight
         min_model_weight = config.min_model_weight
     market_weight = base_weight
-    if source_spread_f > 3.0:
-        market_weight += (source_spread_f - 3.0) * config.source_spread_market_weight_per_f
+    # config.source_spread_market_weight_per_f is a per-RAW-degree slope; map the
+    # debiased statistic back onto that scale (see SOURCE_SPREAD_DEBIAS_SCALE).
+    # Understating the spread here shifts weight toward the model and away from
+    # the Kalshi price, and the 2026-09-03 audit measured the price as the better
+    # forecaster (Brier .1194 vs .1230) -- the wrong direction to drift by
+    # accident.
+    spread_raw_equivalent = raw_equivalent_source_spread_f(source_spread_f)
+    if spread_raw_equivalent > 3.0:
+        market_weight += (spread_raw_equivalent - 3.0) * config.source_spread_market_weight_per_f
     market_weight *= _market_prior_reliability(market, config)
     market_weight = min(1.0 - min_model_weight, max(0.0, market_weight))
     return 1.0 - market_weight

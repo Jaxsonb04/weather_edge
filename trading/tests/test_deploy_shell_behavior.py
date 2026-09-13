@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 AWS_DIR = ROOT / "trading" / "deploy" / "aws"
 PULL_SCRIPT = AWS_DIR / "pull_paper_db.sh"
 
+# The retired Apple refresh timer stays in this list: its unit files are still
+# installed and quiesce/restore still knows it, which is exactly what these
+# behavioural stubs model. Whether a deploy may *enable* it is asserted in
+# test_aws_deploy.py.
 TIMERS = (
     "sfo-forecaster-refresh.timer",
     "weatheredge-google-nonsfo-refresh.timer",
@@ -52,6 +56,145 @@ def _load_read_version_helper() -> str:
 
 
 _READ_VERSION_HELPER = _load_read_version_helper()
+
+
+def _load_pages_branch_helpers() -> str:
+    """Extract the real branch-preparation helpers from the publisher.
+
+    Same idiom as `_load_read_version_helper`: the test drives the shipped
+    implementation, so the test and the script cannot drift apart.
+    """
+
+    text = (AWS_DIR / "publish_forecaster_pages.sh").read_text(encoding="utf-8")
+    blocks = []
+    for name in (
+        "publish_count() {",
+        "record_publish_count() {",
+        "start_orphan_branch() {",
+        "prepare_pages_branch() {",
+    ):
+        start = text.index(name)
+        end = text.index("\n}\n", start) + len("\n}\n")
+        blocks.append(text[start:end])
+    return "\n".join(blocks)
+
+
+_PAGES_BRANCH_HELPERS = _load_pages_branch_helpers()
+
+
+def _pages_branch_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    """A bare gh-pages remote with two commits plus a fresh working clone."""
+
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "--bare", "-b", "gh-pages", str(remote)], check=True)
+    subprocess.run(["git", "init", "-b", "gh-pages", str(seed)], check=True)
+    for command in (
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(command, cwd=seed, check=True)
+    for index in range(2):
+        (seed / "index.html").write_text(f"snapshot {index}", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=seed, check=True)
+        subprocess.run(["git", "commit", "-m", f"snapshot {index}"], cwd=seed, check=True)
+    subprocess.run(
+        ["git", "push", str(remote), "gh-pages"], cwd=seed, check=True
+    )
+
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-b", "gh-pages", str(work)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=work, check=True)
+    for command in (
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(command, cwd=work, check=True)
+    return work, remote
+
+
+def _run_prepare_pages_branch(
+    tmp_path: Path, *, max_commits: int, publishes: int
+) -> tuple[str, bool]:
+    work, _remote = _pages_branch_fixture(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "pages-publish-count").write_text(f"{publishes}\n", encoding="utf-8")
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        f'GATE_STATE_DIR="{state}"\n'
+        f'PAGES_PUBLISH_COUNT_FILE="{state}/pages-publish-count"\n'
+        'PAGES_BRANCH="gh-pages"\n'
+        f"PAGES_HISTORY_MAX_COMMITS={max_commits}\n"
+        "PAGES_FORCE_PUSH=0\n"
+        'PAGES_FORCE_LEASE=""\n'
+        "wait_for_remote_publication() { return 0; }\n"
+        f"{_PAGES_BRANCH_HELPERS}\n"
+        f'cd "{work}"\n'
+        # Resolve the remote tip the same way the helper will, before it runs.
+        'git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1 || true\n'
+        'remote_tip="$(git rev-parse "refs/remotes/origin/$PAGES_BRANCH" 2>/dev/null || echo none)"\n'
+        "prepare_pages_branch\n"
+        'printf "force=%s count=%s\\n" "$PAGES_FORCE_PUSH" "$(publish_count)"\n'
+        'if [[ "$PAGES_FORCE_LEASE" == "$remote_tip" ]]; then\n'
+        '  printf "lease=tip\\n"\n'
+        "else\n"
+        '  printf "lease=%s\\n" "${PAGES_FORCE_LEASE:-empty}"\n'
+        "fi\n"
+        'if git rev-parse --verify HEAD >/dev/null 2>&1; then\n'
+        '  printf "head=born\\n"\n'
+        "else\n"
+        '  printf "head=unborn\\n"\n'
+        "fi\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout, (state / "pages-publish-count").read_text().strip() == "0"
+
+
+def test_pages_branch_is_re_rooted_once_the_publish_counter_hits_the_ceiling(
+    tmp_path: Path,
+) -> None:
+    stdout, counter_reset = _run_prepare_pages_branch(
+        tmp_path, max_commits=2, publishes=2
+    )
+
+    assert "force=1" in stdout
+    # An orphan checkout leaves HEAD unborn: the next commit is a new root, which
+    # is exactly why the push has to be forced.
+    assert "head=unborn" in stdout
+    # Forced, but leased on the tip this cycle fetched and gated on, so an
+    # unattended re-root cannot discard a commit that landed in between. The
+    # lease has to be captured before start_orphan_branch drops the local ref.
+    assert "lease=tip" in stdout
+    assert counter_reset
+
+
+def test_pages_branch_keeps_its_history_below_the_ceiling(tmp_path: Path) -> None:
+    stdout, counter_reset = _run_prepare_pages_branch(
+        tmp_path, max_commits=5, publishes=1
+    )
+
+    assert "force=0" in stdout
+    assert "head=born" in stdout
+    assert "count=1" in stdout
+    # No force, so no lease: an ordinary fast-forward push needs no protection.
+    assert "lease=empty" in stdout
+    assert not counter_reset
+
+
+def test_pages_branch_re_root_is_disabled_by_a_zero_ceiling(tmp_path: Path) -> None:
+    stdout, _counter_reset = _run_prepare_pages_branch(
+        tmp_path, max_commits=0, publishes=9999
+    )
+
+    assert "force=0" in stdout
+    assert "head=born" in stdout
 
 
 def _write_executable(path: Path, text: str) -> None:
@@ -695,14 +838,16 @@ exit 0
     actions = action_log.read_text().splitlines()
     assert actions[0].endswith("bash -s preflight /opt/weatheredge/trading/data/paper_trading.db")
     assert actions[1].endswith("bash -s probe sfo-scheduler-health.timer")
-    assert actions[2].endswith("bash -s probe weatheredge-apple-refresh.timer")
-    assert actions[3].endswith("bash -s probe weatheredge-apple-purge.timer")
-    assert actions[4].endswith("bash -s capture")
-    assert "weatheredge-deploy-maintenance" in actions[5]
-    assert actions[6].endswith("bash -s quiesce")
-    assert actions[7].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
-    assert "mkdir -p" in actions[8] and "chown" in actions[8]
-    assert actions[9].startswith("rsync|")
+    # FC-4 retired the Apple refresh timer, so the deploy no longer probes it;
+    # only the purge timer keeps its first-deploy enablement probe.
+    assert not any("probe weatheredge-apple-refresh.timer" in a for a in actions)
+    assert actions[2].endswith("bash -s probe weatheredge-apple-purge.timer")
+    assert actions[3].endswith("bash -s capture")
+    assert "weatheredge-deploy-maintenance" in actions[4]
+    assert actions[5].endswith("bash -s quiesce")
+    assert actions[6].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
+    assert "mkdir -p" in actions[7] and "chown" in actions[7]
+    assert actions[8].startswith("rsync|")
     assert not any("enable" in action or "start" in action for action in actions)
 
 
@@ -724,10 +869,7 @@ data = sys.stdin.read()
 with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:
     handle.write('ssh|' + ' '.join(args) + '\\n')
 
-if args[-4:] in (
-    ['bash', '-s', 'probe', 'weatheredge-apple-refresh.timer'],
-    ['bash', '-s', 'probe', 'weatheredge-apple-purge.timer'],
-):
+if args[-4:] == ['bash', '-s', 'probe', 'weatheredge-apple-purge.timer']:
     raise SystemExit(10)
 elif args[-3:] == ['bash', '-s', 'capture']:
     print('sfo-operational-publish.timer')
@@ -831,10 +973,9 @@ elif 'restore' in args:
         < public_wait_indexes[1]
         < post_writer_restore_idx
     )
-    assert actions[apple_restore_idx] == (
-        "restore|weatheredge-apple-refresh.timer "
-        "weatheredge-apple-purge.timer"
-    )
+    # Only the purge timer: FC-4 retired the Apple refresh timer, so no deploy
+    # path may enable it, including the first-deploy enablement of a new unit.
+    assert actions[apple_restore_idx] == "restore|weatheredge-apple-purge.timer"
     assert actions[initial_writer_restore_idx] == (
         "restore|sfo-strategy-lab-refresh.timer "
         "sfo-operational-publish.timer"
@@ -844,7 +985,9 @@ elif 'restore' in args:
         "restore|sfo-strategy-lab-refresh.timer "
         "sfo-operational-publish.timer"
     )
-    assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+    # One producer timer, not two: the captured set no longer gains the
+    # retired Apple refresh timer.
+    assert "restored 1 producer timer(s); watchdog restored last=1" in result.stdout.lower()
 
 
 def test_full_sync_restores_writers_when_post_analysis_drain_fails(

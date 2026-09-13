@@ -350,9 +350,9 @@ function ArchiveEvidenceCard({
                   value={pnl == null ? "—" : money(pnl)}
                   tone={pnl == null ? "default" : pnl > 0 ? "pos" : pnl < 0 ? "neg" : "default"}
                 />
-                <Stat label="Resolved · W–L" value={recordText(profile)} />
+                <Stat label="Closed or settled · W–L" value={recordText(profile)} />
                 <Stat
-                  label="Hit rate"
+                  label="Profitable exits"
                   value={summary?.hit_rate == null ? "—" : pct(summary.hit_rate, 1)}
                 />
                 <Stat
@@ -366,6 +366,11 @@ function ArchiveEvidenceCard({
                 />
                 <Stat label="Open · resting" value={`${open} · ${pending}`} />
               </div>
+              {/* Same field as every other surface that renders hit_rate. */}
+              <p className="mt-3 text-[11px] leading-relaxed text-muted">
+                Profitable exits count any closed-or-settled position that realized a gain — mostly monitor
+                take-profit or stop closes, not market settlements.
+              </p>
             </div>
           </div>
 

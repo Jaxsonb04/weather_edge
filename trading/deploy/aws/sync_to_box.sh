@@ -152,24 +152,26 @@ case "$scheduler_probe_status" in
     ;;
 esac
 
-# Preserve an intentional pause once either Apple unit exists, but enable each
-# timer on the first deploy that introduces it. Otherwise the timerless install
-# would create a disabled unit that the canonical scheduler check immediately
-# reports as missing from the established host's captured policy.
-APPLE_REFRESH_WAS_ABSENT=0
-apple_refresh_probe_status=0
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  bash -s probe weatheredge-apple-refresh.timer < "$QUIESCE_HELPER" \
-  || apple_refresh_probe_status=$?
-case "$apple_refresh_probe_status" in
-  0) ;;
-  10) APPLE_REFRESH_WAS_ABSENT=1 ;;
-  *)
-    echo "failed to inspect Apple refresh timer before quiescence (status=$apple_refresh_probe_status)" >&2
-    exit "$apple_refresh_probe_status"
-    ;;
-esac
+# FC-4 (2026-09-03 audit, re-verified 2026-09-06): the Apple WeatherKit refresh
+# is retired. Its 4x/day paid fetch fills `AppleRuntimeCache.active_highs`,
+# which has no caller anywhere outside apple_weatherkit.py; the service log says
+# so itself on every run ("live trading weight remains 0"); and the 10-minute
+# purge deletes the cache about an hour into each 6-hour cycle, so the data does
+# not exist most of the time. It cannot become a scored EMOS member either,
+# because Apple's terms do not permit retaining the archive that scoring needs.
+# The unit files stay installed so re-enabling is one systemctl command, but a
+# deploy must never restore this timer -- including on a host that has it
+# enabled right now, whose captured policy would otherwise put it straight back.
+RETIRED_TIMERS=(
+  "weatheredge-apple-refresh.timer"
+)
 
+# Preserve an intentional pause once the Apple purge unit exists, but enable it
+# on the first deploy that introduces it. Otherwise the timerless install would
+# create a disabled unit that the canonical scheduler check immediately reports
+# as missing from the established host's captured policy. The purge survives the
+# refresh's retirement deliberately: it makes no API call and it guarantees any
+# residual Apple runtime content still expires.
 APPLE_PURGE_WAS_ABSENT=0
 apple_purge_probe_status=0
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
@@ -193,13 +195,21 @@ enabled_timer_output="$(
 )"
 ENABLED_TIMERS=()
 while IFS= read -r timer; do
-  [[ -n "$timer" ]] && ENABLED_TIMERS+=("$timer")
+  [[ -n "$timer" ]] || continue
+  retired=0
+  for retired_timer in ${RETIRED_TIMERS[@]+"${RETIRED_TIMERS[@]}"}; do
+    if [[ "$timer" == "$retired_timer" ]]; then
+      retired=1
+    fi
+  done
+  if (( retired == 1 )); then
+    echo "retired WeatherEdge timer captured but will not be restored: $timer" >&2
+    continue
+  fi
+  ENABLED_TIMERS+=("$timer")
 done <<<"$enabled_timer_output"
 if (( SCHEDULER_WATCHDOG_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("sfo-scheduler-health.timer")
-fi
-if (( APPLE_REFRESH_WAS_ABSENT == 1 )); then
-  ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")
 fi
 if (( APPLE_PURGE_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("weatheredge-apple-purge.timer")
