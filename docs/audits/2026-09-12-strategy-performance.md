@@ -257,8 +257,9 @@ was not used to diagnose production. The final execution-focused set passed
 job exposed licensed-installer drift: hpsetup 4.7 upgraded the pinned UI package
 and rewrote dependencies before the frozen install, producing an incompatible
 import. The release pins the version-preserving 4.5 installer, installs locked
-stubs first and rejects manifest changes afterward. Dependency versions remain
-unchanged. Local validation passed 85 deployment tests, 178 frontend tests,
+stubs first and rejects manifest changes afterward. The redundant Pro
+postinstall trust entry is removed because explicit licensing owns installation;
+the other trusted package is retained. Dependency versions remain unchanged. Local validation passed 86 deployment tests, 178 frontend tests,
 build/lint/icons and bundle limits. A fresh GitHub run must validate the actual
 licensed bootstrap and all required checks before merge.
 

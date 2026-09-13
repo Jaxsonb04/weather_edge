@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -375,6 +376,13 @@ def test_web_ci_freezes_dependencies_before_licensed_setup_and_rejects_drift():
     drift_check = workflow.index("git diff --exit-code -- package.json bun.lock")
     tests = workflow.index("bun run test")
     assert frozen < licensed < drift_check < tests
+
+
+def test_explicit_licensed_setup_does_not_duplicate_heroui_postinstall_trust():
+    package = json.loads(_read(ROOT / "package.json"))
+    trusted = package["trustedDependencies"]
+    assert "@heroui-pro/react" not in trusted
+    assert "@zowe/secrets-for-zowe-sdk" in trusted
 
 
 def test_forecaster_refresh_only_refreshes_forecast_state():
