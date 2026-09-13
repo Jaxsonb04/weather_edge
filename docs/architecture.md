@@ -1,7 +1,7 @@
 # Architecture
 
 WeatherEdge deliberately keeps two deep modules with a small interface between
-them. The system covers fifteen US city daily-high markets; SFO is the
+them. The system covers twenty US city daily-high markets; SFO is the
 flagship.
 
 ## City Registry

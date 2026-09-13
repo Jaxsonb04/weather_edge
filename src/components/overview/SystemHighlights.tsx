@@ -26,7 +26,7 @@ const buildPillars = (checkCount: number | null): Pillar[] => [
     icon: "solar:cpu-bolt-bold",
     title: "Forecasting stack",
     points: [
-      "An 8-member NWP ensemble with per-station EMOS point forecasts across all 15 cities",
+      "An 8-member NWP ensemble with per-station EMOS point forecasts across all 20 cities",
       "San Francisco adds LSTM residual-calibration evidence and marine-layer features; external commercial inputs stay a research capability the scheduled forecast does not consume",
       "Held-out SFO diagnostics compare the LSTM with XGBoost and persistence; they are research evidence, not runtime health",
     ],

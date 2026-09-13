@@ -145,7 +145,7 @@ recheck.
 ## The system in one sentence
 
 WeatherEdge turns multi-source weather forecasts into calibrated daily-high
-temperature probabilities for 15 city prediction markets, applies fee,
+temperature probabilities for 20 city prediction markets, applies fee,
 liquidity, and risk gates, records simulated orders in isolated paper accounts,
 settles them from official NWS climate reports, and publishes a versioned
 read-only dashboard.
@@ -336,7 +336,7 @@ claim/boundary change before we review code behavior?
 **Purpose:** make every source, forecast, market, and settlement refer to the
 same city and climate day.
 
-**Flow:** 15 registry entries define slug, city, market series, NWS station,
+**Flow:** 20 registry entries define slug, city, market series, NWS station,
 CLI site/issuer, coordinates, civil timezone, and fixed-standard UTC offset.
 The settlement calendar maps timestamps into midnight-to-midnight local
 standard-time days and rounds official reported highs.

@@ -143,6 +143,15 @@ REGION_BY_SERIES = {
     "KXHIGHTOKC": "southern-plains",
     "KXHIGHTBOS": "northeast",
     "KXHIGHDEN": "mountain",
+    # Added 2026-09-13 with the five-city expansion. Texas now holds four
+    # cities (DAL, AUS, HOU, SATX) under the single REGION_DAY_PCT cap, so a
+    # hot Texas day is bounded by the region cap before the city caps sum;
+    # that is the intended correlated-exposure behaviour, not a leak.
+    "KXHIGHTLV": "southwest",
+    "KXHIGHTMIN": "midwest",
+    "KXHIGHTSATX": "texas",
+    "KXHIGHTNOLA": "southeast",
+    "KXHIGHTDC": "northeast",
 }
 
 

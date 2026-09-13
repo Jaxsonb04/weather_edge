@@ -148,9 +148,12 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
 
 - `sfo-forecaster-refresh.timer`: twice hourly from 05:10 through 18:40 PT and
   hourly overnight; refreshes NWS truth, Google Weather within budget, NWP/EMOS
-  forecast state for all fifteen cities, and no public artifacts.
+  forecast state for all twenty cities, and no public artifacts.
 - `weatheredge-google-nonsfo-refresh.timer`: one daily budgeted Google runtime
-  refresh for the fourteen non-SFO stations.
+  refresh for the fourteen original non-SFO stations. The five cities added
+  2026-09-13 (LV, MIN, SATX, NOLA, DC) are excluded: 19 x 4 + 190 = 266
+  events/day would breach the 260/day Google hard cap, and Google Weather is
+  research corroboration the scheduled forecast does not consume.
 - `weatheredge-apple-refresh.timer`: **disabled, not canonical.** Four fixed UTC
   vintages/day for all fifteen stations, retaining only provider-valid temporary
   data in `/run/weatheredge` with zero trading weight. It is **retired as of the 2026-09-03 audit (FC-4)**: its runtime cache had no reader anywhere outside `apple_weatherkit.py`, and Apple's terms do not permit retaining an archive, so it could not become a scored EMOS member either. The unit files are still installed and integrity-checked, so an operator can re-enable it with `sudo systemctl enable --now weatheredge-apple-refresh.timer`, but no deploy path turns it on.

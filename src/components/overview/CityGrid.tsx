@@ -63,7 +63,7 @@ function emosIssue(forecast: CityForecast): number | null {
     callers label the adjustment instead of silently swapping one published
     figure for the other. `source` says WHICH publisher moved it: only San
     Francisco has a flagship market signal, so copy that credits the flagship is
-    false for the other fourteen cities, whose fold-in comes from the coverage
+    false for the other nineteen cities, whose fold-in comes from the coverage
     artifact itself. */
 export function lockedHigh(
   slug: string | undefined,
@@ -117,7 +117,7 @@ function CityCard({
   return (
     // No aria-label here: role=button computes its name from content, and an
     // aria-label would REPLACE every number on the card in the accessibility
-    // tree — a screen reader would hear fifteen identical "show city detail"
+    // tree — a screen reader would hear twenty identical "show city detail"
     // buttons and none of the forecast, settlement or book figures.
     <button
       type="button"
@@ -225,7 +225,7 @@ function CityCard({
 function EmptyNote() {
   return (
     <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
-      Multi-city data not yet published — the fifteen-city coverage artifact will appear here on the
+      Multi-city data not yet published — the twenty-city coverage artifact will appear here on the
       next pipeline run.
     </p>
   );
@@ -241,7 +241,7 @@ function ErrorNote({ detail }: { detail?: string | null }) {
       className="rounded-2xl border border-dashed border-danger/40 px-4 py-8 text-center"
     >
       <p className="text-sm text-muted">
-        Couldn't load city coverage — the fifteen-city artifact did not load in this session.
+        Couldn't load city coverage — the twenty-city artifact did not load in this session.
         Reload the page to try again.
       </p>
       {detail && <p className="mt-2 font-mono text-[11px] text-muted">{detail}</p>}
@@ -258,7 +258,7 @@ interface CityGridProps {
   intradayLock?: IntradayLock | null;
 }
 
-/** The fifteen-city coverage grid, now the primary navigator: each card is a
+/** The twenty-city coverage grid, now the primary navigator: each card is a
     button that sets the active city; the selected card is clearly marked. Cards
     lead with the next calibrated high, with settlement + book activity quiet
     underneath. */
@@ -269,7 +269,7 @@ export function CityGrid({ data, error, selected, onSelect, intradayLock = null 
     if (error) return <ErrorNote detail={error} />;
     return (
       <div className={GRID} aria-hidden="true">
-        {Array.from({ length: 15 }).map((_, i) => (
+        {Array.from({ length: 20 }).map((_, i) => (
           <Skeleton key={i} className="h-44 rounded-2xl" />
         ))}
       </div>

@@ -60,7 +60,7 @@ function CityRow({ city }: { city: City }) {
 function EmptyNote() {
   return (
     <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
-      Per-city method table appears once the fifteen-city coverage artifact is published on the next
+      Per-city method table appears once the twenty-city coverage artifact is published on the next
       pipeline run.
     </p>
   );

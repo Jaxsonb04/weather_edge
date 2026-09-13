@@ -16,7 +16,7 @@ interface HeroProps {
 }
 
 export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }: HeroProps) {
-  const cityCount = cities.length || 15;
+  const cityCount = cities.length || 20;
   return (
     <header className="overview-intro hero-glow relative overflow-hidden border-b border-border/60">
       <DotPattern />

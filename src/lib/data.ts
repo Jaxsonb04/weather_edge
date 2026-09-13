@@ -385,10 +385,15 @@ const CITY_TICKERS: { ticker: string; slug: string; name: string }[] = [
   { ticker: "KXHIGHTOKC", slug: "okc", name: "Oklahoma City" },
   { ticker: "KXHIGHTBOS", slug: "bos", name: "Boston" },
   { ticker: "KXHIGHDEN", slug: "den", name: "Denver" },
+  { ticker: "KXHIGHTLV", slug: "lv", name: "Las Vegas" },
+  { ticker: "KXHIGHTMIN", slug: "min", name: "Minneapolis" },
+  { ticker: "KXHIGHTSATX", slug: "satx", name: "San Antonio" },
+  { ticker: "KXHIGHTNOLA", slug: "nola", name: "New Orleans" },
+  { ticker: "KXHIGHTDC", slug: "dc", name: "Washington DC" },
 ];
 
 /** Longest-prefix match of a full market ticker (e.g. "KXHIGHTSFO-26JUL07-B67")
-    against the fifteen series tickers. Null when nothing matches. */
+    against the twenty series tickers. Null when nothing matches. */
 export function cityForTicker(ticker: string): { slug: string; name: string } | null {
   if (!ticker) return null;
   let best: (typeof CITY_TICKERS)[number] | null = null;

@@ -1838,14 +1838,14 @@ def test_forecast_health_healthy_15_city_fixture_has_zero_warnings():
         assert nwp_targets[1]["model_count"] == 8
         assert nwp_targets[2]["check"] == "live_serve_models"
         assert nwp_targets[2]["model_count"] == 8
-        # 15 stations x 3 rolling targets, freshest row per pair (any lead,
+        # 20 stations x 3 rolling targets, freshest row per pair (any lead,
         # including the same-day lead-0 serve).
-        assert len(payload["emos"]["live_targets"]) == 45
+        assert len(payload["emos"]["live_targets"]) == 60
         assert payload["emos"]["live_targets"][0]["method"] == "emos_wmean"
         assert {row["lead_days"] for row in payload["emos"]["live_targets"]} == {0, 1, 2}
-        # Worst-station CLI lag across all 15: yesterday settled everywhere.
+        # Worst-station CLI lag across all 20: yesterday settled everywhere.
         assert payload["clisfo"]["lag_days"] == 1
-        assert len(payload["clisfo"]["stations"]) == 15
+        assert len(payload["clisfo"]["stations"]) == 20
 
 
 def test_forecast_health_flags_single_stale_cli_station_exactly_once():
@@ -1894,7 +1894,8 @@ def test_forecast_health_flags_single_missing_emos_station_exactly_once():
         warning = payload["warnings"][0]
         assert warning["code"] == "emos-live-missing"
         assert warning["station_id"] == "KSEA"
-        assert len(payload["emos"]["live_targets"]) == 42
+        # 20 stations x 3 targets, minus the 3 KSEA rows deleted above.
+        assert len(payload["emos"]["live_targets"]) == 57
 
 
 def test_forecast_health_settled_target_is_not_missing_or_stale():

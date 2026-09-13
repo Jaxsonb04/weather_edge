@@ -313,8 +313,8 @@ def test_serve_rolling_fetches_open_meteo_once_per_city(tmp_path, monkeypatch):
     status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "all"])
 
     assert status == 0
-    assert len(calls) == len(ef.CITIES) == 15
-    assert len(served_models) == 45
+    assert len(calls) == len(ef.CITIES) == 20
+    assert len(served_models) == 60
     for city_index in range(len(ef.CITIES)):
         city_targets = served_models[city_index * 3 : city_index * 3 + 3]
         assert [set(models.values()) for models in city_targets] == [

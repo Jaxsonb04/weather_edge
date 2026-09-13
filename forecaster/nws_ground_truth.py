@@ -325,7 +325,7 @@ def main():
 
     for station_id in stations:
         # Fail-soft per station: one station's API hiccup must not stall the
-        # other fourteen (the freshness watchdog still catches a stale station).
+        # other nineteen (the freshness watchdog still catches a stale station).
         try:
             result = refresh_ground_truth(max(1, args.days), station_id)
         except OSError as exc:

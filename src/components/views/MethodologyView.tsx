@@ -141,7 +141,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
   const { data: diag, error: diagError } = useDiagnostics();
   const { data: coverage } = useCitiesData();
   const cities = coverage?.cities ?? [];
-  const cityCount = coverage?.city_count ?? (cities.length || 15);
+  const cityCount = coverage?.city_count ?? (cities.length || 20);
   const modelSample = cities
     .map((city) => city.forecasts?.find((row) => typeof row?.n_models === "number")?.n_models)
     .find((count) => typeof count === "number");

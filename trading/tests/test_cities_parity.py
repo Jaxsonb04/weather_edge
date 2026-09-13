@@ -25,9 +25,9 @@ def test_registry_shape_and_settlement_identities():
     finally:
         sys.path.pop(0)
 
-    assert len(cities.CITIES) == 15
+    assert len(cities.CITIES) == 20
     slugs = [c.slug for c in cities.CITIES]
-    assert len(set(slugs)) == 15
+    assert len(set(slugs)) == 20
     assert cities.DEFAULT_CITY_SLUG == "sfo"
 
     sfo = cities.get_city("sfo")
@@ -45,11 +45,19 @@ def test_registry_shape_and_settlement_identities():
     assert cities.get_city("chi").nws_station_id == "KMDW"  # Midway, not O'Hare
     assert cities.get_city("nyc").nws_station_id == "KNYC"  # Central Park
     assert cities.get_city("phx").civil_tz_name == "America/Phoenix"  # no DST
+    # 2026-09-13 additions, verified against live rules_primary + CLI headers.
+    assert cities.get_city("dc").nws_station_id == "KDCA"  # National, not Dulles
+    assert cities.get_city("nola").nws_station_id == "KMSY"  # Armstrong, not Lakefront
+    assert cities.get_city("lv").cli_issuedby == "LAS" and cities.get_city("lv").cli_site == "VEF"
+    assert cities.get_city("min").cli_site == "MPX"  # Twin Cities WFO issues CLIMSP
+    assert cities.get_city("satx").cli_site == "EWX"  # shares the Austin WFO
 
     # Ticker resolution must survive the KXHIGH/KXHIGHT prefix mix.
     assert cities.city_for_market_ticker("KXHIGHTSFO-26JUL08-B67.5").slug == "sfo"
     assert cities.city_for_market_ticker("KXHIGHNY-26JUL08-T52").slug == "nyc"
+    assert cities.city_for_market_ticker("KXHIGHTDC-26SEP13-T91").slug == "dc"
+    assert cities.city_for_market_ticker("KXHIGHTDAL-26SEP13-B80.5").slug == "dal"
     assert cities.city_for_market_ticker("KXUNKNOWN-26JUL08") is None
 
-    assert len(cities.parse_city_slugs("all")) == 15
+    assert len(cities.parse_city_slugs("all")) == 20
     assert [c.slug for c in cities.parse_city_slugs("sfo,nyc")] == ["sfo", "nyc"]

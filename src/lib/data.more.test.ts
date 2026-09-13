@@ -39,6 +39,9 @@ describe("city lookup and freshness", () => {
   it.each([
     ["KXHIGHNY-26JUL11-B80", { slug: "nyc", name: "New York" }],
     ["KXHIGHTSFO-26JUL11-B68", { slug: "sfo", name: "San Francisco" }],
+    ["KXHIGHTLV-26SEP13-T98", { slug: "lv", name: "Las Vegas" }],
+    ["KXHIGHTDC-26SEP13-T91", { slug: "dc", name: "Washington DC" }],
+    ["KXHIGHTDAL-26SEP13-B80.5", { slug: "dal", name: "Dallas" }],
     ["KXHIGH-UNKNOWN", null],
     ["", null],
   ])("maps %s with the longest known series prefix", (ticker, expected) => {

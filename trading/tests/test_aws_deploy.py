@@ -1741,6 +1741,14 @@ def _non_sfo_slugs() -> list[str]:
     return [city.slug for city in CITIES if city.slug != DEFAULT_CITY_SLUG]
 
 
+# Cities in the registry that the once-daily Google research refresh does NOT
+# cover: the 2026-09-13 expansion would push the Google budget to 266 events/day
+# against the 260/day hard cap (see the unit's own comment). Google Weather is
+# research corroboration only, so these cities trade without it. Adding a slug
+# here is a budget decision; the unit comment and this list move together.
+GOOGLE_NONSFO_EXCLUDED_SLUGS = ("lv", "min", "satx", "nola", "dc")
+
+
 def test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily():
     service = _read(AWS_DIR / "systemd" / "weatheredge-google-nonsfo-refresh.service.in")
     timer = _read(AWS_DIR / "systemd" / "weatheredge-google-nonsfo-refresh.timer")
@@ -1751,10 +1759,19 @@ def test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_da
 
     # Drift guard: this list is a static ExecStart argument (systemd units
     # cannot import cities.py), so if a city is ever added to or removed
-    # from CITIES this test fails until the unit is updated to match.
-    assert configured == _non_sfo_slugs()
+    # from CITIES this test fails until the unit is updated to match -- or
+    # the city is explicitly listed as budget-excluded above.
+    registry_slugs = {city.slug for city in CITIES}
+    assert set(GOOGLE_NONSFO_EXCLUDED_SLUGS) <= registry_slugs
+    assert configured == [
+        slug for slug in _non_sfo_slugs() if slug not in GOOGLE_NONSFO_EXCLUDED_SLUGS
+    ]
     assert "sfo" not in configured
+    assert not set(configured) & set(GOOGLE_NONSFO_EXCLUDED_SLUGS)
     assert len(configured) == 14
+    # The excluded cities are a budget decision, not a typo: the documented
+    # arithmetic in the unit must still name the cap they would breach.
+    assert "266/day" in service and "260/day" in service
 
     assert "OnCalendar=" in timer
     # Exactly one calendar fire per day -- not the 38x/day SFO cadence.

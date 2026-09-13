@@ -113,7 +113,7 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
             {display.baselineF != null && (
               <p className="max-w-prose text-xs leading-relaxed text-muted">
                 {/* Only San Francisco has a flagship market signal. The other
-                    fourteen cities get their intraday fold-in from the coverage
+                    nineteen cities get their intraday fold-in from the coverage
                     artifact, so the sentence must name the right publisher. */}
                 Intraday-updated:{" "}
                 {display.source === "flagship"

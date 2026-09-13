@@ -135,7 +135,7 @@ dependencies do not belong on the production box.
 ## Cadence And Responsibilities
 
 - Forecast refresh: twice hourly from 05:10 through 18:40 PT and hourly
-  overnight; all fifteen cities, SFO flagship.
+  overnight; all twenty cities, SFO flagship.
 - Apple WeatherKit research refresh: four fixed UTC vintages/day, one bundled
   hourly+daily request per city. It is disabled by default, temporary-only,
   and has zero live trading weight. See `docs/APPLE-WEATHERKIT.md`.
@@ -186,6 +186,58 @@ the deploy restores its captured timer policy, removes the marker, and runs one
 explicit scheduler-health check last. A failed or interrupted deployment can
 leave the marker intentionally present so a partially installed tree is not
 auto-repaired.
+
+## Adding A City (Post-Deploy Backfill)
+
+A new registry row (`forecaster/cities.py` + `trading/sfo_kalshi_quant/cities.py`,
+kept byte-identical) changes nothing on the box until its station has scored
+forecast history. The scanner fails closed per city: `SfoForecasterAdapter
+.load_calibration_outcomes` returns the station's scored lead-1 EMOS rows,
+`ResidualCalibrator` refuses fewer than 30 of them, and both `cmd_analyze` and
+`cmd_portfolio_scan` catch that and print `[slug] skipped: calibration
+unavailable (...)` before any target is analysed. A freshly added series is
+therefore *skipped, not traded*, in both paper books (`PAPER_CITIES=all` picks
+it up automatically) until the backfill below has run.
+
+The nightly `sfo-dataset-backfill` timer would eventually fill a new station
+on its own, but `nwp_archive.py --daily` only reaches back five days, so the
+30-row calibration floor would take a month to clear. After deploying a
+registry change, run the deep backfill once for the new slugs, detached and
+outside the refresh window, from the forecaster directory with its venv
+(`__FORECASTER_DIR__` in the unit files; `SLUGS` is the comma list of new
+slugs, e.g. `lv,min,satx,nola,dc` for the 2026-09-13 expansion):
+
+```bash
+cd /opt/weatheredge/forecaster
+SLUGS=lv,min,satx,nola,dc
+# 1. NWP previous-runs archive, 400+ days deep (one request per model per
+#    300-day chunk per city; Open-Meteo previous-runs depth, not the daily
+#    5-day window). --end is yesterday in the station's climate day.
+.venv/bin/python nwp_archive.py --db weather.db --backfill --cities "$SLUGS" \
+    --start "$(date -d '-420 days' +%F)" --end "$(date -d '-1 day' +%F)"
+# 2. Settlement truth from the IEM CLI archive (default --start-year is two
+#    calendar years back; the nightly timer only refreshes the current year).
+.venv/bin/python city_truth.py --db weather.db --backfill-iem --cities "$SLUGS"
+# 3. Scored rolling-origin EMOS rows at the two served leads.
+.venv/bin/python emos_forecast.py --db weather.db --backfill --lead 1 --cities "$SLUGS"
+.venv/bin/python emos_forecast.py --db weather.db --backfill --lead 2 --cities "$SLUGS"
+# 4. Confirm the floor is cleared before expecting the city in a scan.
+.venv/bin/python city_truth.py --db weather.db --coverage --cities "$SLUGS"
+```
+
+Then watch one paper-scan cycle: the new slugs must move from `skipped:
+calibration unavailable` to a normal per-target analysis. The next
+`sfo-forecaster-refresh` serves live EMOS for them without further action. No
+strategy fingerprint changes (the registry is not part of the config hash),
+but both books' opportunity sets grow, so the research and live ledgers gain
+new series from the first traded day onward.
+
+Not automatic: `weatheredge-google-nonsfo-refresh.service.in` carries a static
+`--cities` list bounded by the 260 events/day Google cap. It stays at the
+fourteen original non-SFO cities (19 x 4 + 190 = 266/day would breach the
+cap); `test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily`
+lists the excluded slugs. Google Weather is research corroboration only, so
+the new cities trade on the NWP -> EMOS -> CLI path without it.
 
 ## Archive-Gated Retention
 

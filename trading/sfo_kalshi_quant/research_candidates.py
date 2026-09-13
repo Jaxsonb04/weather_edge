@@ -131,7 +131,7 @@ def _climate_region_for_station(station_id: str) -> str:
     """Coarse multi-city geographic cohort for the climate-region pooling level.
 
     Reuses ``REGION_BY_SERIES`` (``trading/sfo_kalshi_quant/account.py``) --
-    the project's one existing geographic grouping of the 15 settlement
+    the project's one existing geographic grouping of the 20 settlement
     cities (west-coast, southeast, texas, northeast, southwest, midwest,
     mountain, southern-plains), already reviewed and load-bearing for live
     correlated-exposure risk caps. The plan names this pooling level
