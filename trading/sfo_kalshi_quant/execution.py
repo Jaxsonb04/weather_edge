@@ -238,6 +238,12 @@ def target_research_quote(
     at the bid or one tick below it after the improving quote fails either
     edge floor; the research profile keeps that fallback off (see
     ``_target_reservation_resting_quote``), so such a candidate is dropped.
+
+    Because ``research_replay`` and the published backtest re-quote history
+    through this function, disabling the fallback also reclassifies the
+    research orders it once placed (resting at or below the bid) as
+    ``no_trade`` on replay; historical replay figures shift without any
+    data change.
     """
 
     if not decision.approved or decision.recommended_contracts <= 0:
@@ -414,12 +420,18 @@ def _target_reservation_resting_quote(
     the research profile sets False. Between 2026-09-12 and then it ran on
     every research quote whose bid+1 failed an edge floor, i.e. exactly the
     thinnest edges (edge_lcb in [-0.02, 0) at bid+1). Resting at or below
-    the bid moves AWAY from the seller flow that fills a NO bid: on 33
-    expired research orders (2026-09-06) NO-seller prints landed at <= our
-    price 7 times, at +1c 14, at +2c 97, with 0-10 contracts queued ahead,
-    so the limiter is absence of flow at our price, not queue position.
-    Each such order also reserved its cost against the daily budget for
-    the 15-minute TTL while ~73% expired unfilled.
+    the bid moves AWAY from the seller flow that fills a NO bid. Evidence
+    provenance: the seller-flow counts come from the owner's 2026-09-06
+    decision re-check on the production tape (33 expired research orders:
+    NO-seller prints at <= our price 7, at +1c 14, at +2c 97, 0-10
+    contracts queued ahead, so the limiter is absence of flow at our price,
+    not queue position); that tape is not in this repository and the counts
+    are not reproducible from public data. The expiry share is: the public
+    strategy_research.json (2026-09-13T01:20Z) reports 317 of 437 research
+    orders expired (72.5%), each having reserved its cost against the daily
+    budget for the 15-minute TTL. No shipped profile reaches this function
+    now (live: research_target_taker_cross=False; research: fallback off);
+    it stays for a profile that opts in and is covered by opted-in tests.
     """
 
     tick = float(config.limit_price_tick)

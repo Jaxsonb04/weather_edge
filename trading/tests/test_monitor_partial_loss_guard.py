@@ -259,19 +259,48 @@ def test_malformed_root_evidence_does_not_abort_tick_or_next_position_stop(
     assert "veto dollar floor" in healthy_reason
     assert PaperStore(db_path).open_paper_order(healthy_id)["contracts"] == 90.0
 
-    # The malformed root is still managed: with its dollar-floor input
-    # unavailable the model veto holds it (p=0.9 on the NO side), and the
-    # snapshot carries the evidence error so the corruption is auditable.
+    # The malformed root is still managed with the pre-#121 input: the
+    # dollar floor applies to the open remainder alone (90 contracts,
+    # -$33.33, above the -$35 floor) and only the child-lot memory is lost
+    # (with it the loss would be -$37.04 and the floor would bind). The model
+    # veto therefore holds it (p=0.9 on the NO side), and the snapshot
+    # carries the evidence error so the corruption is auditable.
     malformed_action, malformed_reason, _ = _latest_snapshot(db_path, malformed_id)
     assert malformed_action == "HOLD_MODEL_VETO"
     assert "invalid partial-close loss evidence" in malformed_reason
-    assert "veto dollar floor not applied" in malformed_reason
+    assert "veto dollar floor applied to the open remainder only" in malformed_reason
     assert PaperStore(db_path).open_paper_order(malformed_id)["contracts"] == 90.0
 
 
+def test_malformed_root_dollar_floor_still_fires_on_open_remainder(tmp_path):
+    # Fail-safe direction of the degradation: when the open remainder alone
+    # already breaches the $35 veto dollar floor (110 contracts, about
+    # -$40.7), malformed child-lot evidence must not disable the floor and
+    # let the model veto hold a catastrophic loss.
+    db_path = tmp_path / "paper.db"
+    order_id = _seed_target_position(db_path, contracts=120.0)
+    store = PaperStore(db_path)
+    child = store.close_paper_order(order_id, 0.45, max_quantity=10.0)
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET realized_pnl=NULL WHERE id=?", (child["id"],)
+        )
+    with pytest.raises(ValueError, match="invalid partial-close loss evidence"):
+        PaperStore(db_path).partial_close_realized_pnl(order_id)
+
+    _run_monitor(db_path)
+    action, reason, _ = _latest_snapshot(db_path, order_id)
+    assert action == "CLOSE_STOP_LOSS"
+    assert "breached the $35.00 veto dollar floor" in reason
+    assert "invalid partial-close loss evidence" in reason
+    assert "veto dollar floor applied to the open remainder only" in reason
+    assert PaperStore(db_path).open_paper_order(order_id)["contracts"] == 100.0
+
+
 def test_malformed_root_ordinary_stop_still_fires_when_model_agrees(tmp_path):
-    # The dollar-floor input is unavailable, but the ordinary stop does not
-    # need it: a model read that no longer supports the NO side (yes p=0.9)
+    # The child-lot memory is unavailable and the open remainder (-$33.33)
+    # does not breach the $35 floor, but the ordinary stop does not need
+    # either: a model read that no longer supports the NO side (yes p=0.9)
     # lets the plain stop fire on the malformed root itself.
     db_path = tmp_path / "paper.db"
     order_id = _seed_target_position(db_path)
@@ -287,5 +316,5 @@ def test_malformed_root_ordinary_stop_still_fires_when_model_agrees(tmp_path):
     assert action == "CLOSE_STOP_LOSS"
     assert "breached the" not in reason
     assert "invalid partial-close loss evidence" in reason
-    assert "veto dollar floor not applied" in reason
+    assert "veto dollar floor applied to the open remainder only" in reason
     assert PaperStore(db_path).open_paper_order(order_id)["contracts"] == 80.0

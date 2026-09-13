@@ -476,14 +476,18 @@ def run_paper_monitor(
             except ValueError as exc:
                 # Malformed child-lot evidence on ONE root must not abort the
                 # whole tick (which also credits every other position's
-                # fills and expiries). Treat the dollar-floor input as
-                # unavailable for this position -- the ordinary stop, the
-                # ROI catastrophic floor and the model veto still apply --
-                # and carry the error text into this position's snapshot.
-                position_loss_dollars = None
+                # fills and expiries). Degrade to the pre-#121 input: the
+                # dollar floor keeps applying to the unrealized loss of the
+                # open remainder, and only the child-lot memory is lost
+                # (that memory can only make the floor bind sooner, so this
+                # fallback is never looser than the ordinary stop alone).
+                # The ordinary stop, the ROI catastrophic floor and the model
+                # veto still apply; the error text lands in this position's
+                # snapshot so the corruption is auditable.
+                position_loss_dollars = pnl_dollars
                 loss_evidence_error = (
                     f"partial-close loss evidence unavailable ({exc}); "
-                    "veto dollar floor not applied"
+                    "veto dollar floor applied to the open remainder only"
                 )
                 print(
                     f"WARN order {row['id']} {row['market_ticker']} {side}: "
