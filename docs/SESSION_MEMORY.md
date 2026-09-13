@@ -35,7 +35,12 @@ operational claim; all production observations below are dated snapshots.
   daily-goal histories remain intact, with execution separately fingerprinted.
   Losses cannot be guaranteed away. The isolated current-main release passed
   2,928 Python 3.13 tests with eight skips, compilation and diff checks. Required
-  GitHub checks and deployment are pending; the user requested deployment. SSH is unreachable and the
+  GitHub checks and deployment are pending; the user requested deployment.
+  Follow-up regressions cover shallow-book fee clips (415 focused passes).
+  Initial CI passed both Python versions and Semgrep, but exposed a licensed UI
+  installer rewriting the dependency lock. Version-preserving setup plus a
+  manifest-drift guard now passes 85 local deployment tests and 178 web tests,
+  build/lint/icons and bundle limits; actual licensing must pass final CI. SSH is unreachable and the
   AWS console needs owner sign-in. No production source, timer, account or live
   execution flag has changed. Reconcile/drain old pending research orders, use
   canonical backup/install gates, refresh full analysis from the verified

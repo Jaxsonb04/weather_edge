@@ -85,10 +85,16 @@ jobs:
             exit 1
           fi
 
+      - name: Install locked dependency stubs
+        run: bun install --frozen-lockfile --ignore-scripts
+
       - name: Install licensed HeroUI Pro artifacts
-        # --auto suppresses prompts. Clearing CI preserves the version pinned
-        # in bun.lock instead of letting the installer upgrade it to "latest".
-        run: env -u CI npx -y hpsetup@4.7.0 --auto
+        # 4.5.0 honors the installed version without --update when CI is unset.
+        # 4.6+ upgrades to latest unconditionally, rewriting our dependency lock.
+        run: env -u CI npx -y hpsetup@4.5.0 --auto
+
+      - name: Verify licensed setup preserved dependency pins
+        run: git diff --exit-code -- package.json bun.lock
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

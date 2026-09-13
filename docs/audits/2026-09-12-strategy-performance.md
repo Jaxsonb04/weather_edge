@@ -245,16 +245,22 @@ profit metric, and no release can guarantee that market losses never recur.
 
 ## Validation and deployment boundary
 
-The final release was isolated from current main, excluding the unrelated
-Apple/ML draft and retaining newer frontend/dependency fixes. Its full Python
+The release was isolated from current main, excluding the unrelated
+Apple/ML draft and retaining newer frontend/dependency fixes. At initial revision `28c9c311c`, the full Python
 3.13 suite passed **2,928 tests with eight skips in 130 seconds**, including the
 network-enabled isolated installer regression. Compilation and diff checks
 passed. The project health check passed source, configuration and secret checks;
 its only warning concerned disposable test-generated local runtime state, which
 was not used to diagnose production. The final execution-focused set passed
-409 tests with eight skips; the independent statistics/status review passed
-236 focused tests. GitHub's required Python 3.12, Python 3.13/Semgrep and web
-checks remain pending at this release-preparation stage.
+415 tests with eight skips after a shallow-book follow-up; the independent statistics/status review passed
+236 focused tests. The initial GitHub run passed both Python versions and Semgrep, but the web
+job exposed licensed-installer drift: hpsetup 4.7 upgraded the pinned UI package
+and rewrote dependencies before the frozen install, producing an incompatible
+import. The release pins the version-preserving 4.5 installer, installs locked
+stubs first and rejects manifest changes afterward. Dependency versions remain
+unchanged. Local validation passed 85 deployment tests, 178 frontend tests,
+build/lint/icons and bundle limits. A fresh GitHub run must validate the actual
+licensed bootstrap and all required checks before merge.
 
 Direct reproduction against the original allocator and the patched allocator
 changed requested quantities from 132/95/112 to 96/15/32 contracts for the three
@@ -269,7 +275,9 @@ grandfathered-order and fractional-exit-fee limitations documented above.
 Additional regressions verify that a 112-contract stale-fee plan exceeding
 remaining capacity by approximately $0.0014 becomes an exact 111-contract order
 at $85.78 that passes persisted admission. Allocation cannot silently change
-execution mode. Scheduled planning counts filled cost and unfilled reservations
+execution mode. Shallow structural taker orders receive the same exact
+repricing: a $14.687 budget admits 18 contracts for $13.91, avoiding a
+19-contract order whose exact $14.69 cost would fail. Scheduled planning counts filled cost and unfilled reservations
 once, including partial fills, and shrinks a $90 desired entry to fit $50
 remaining daily capacity instead of losing the whole order at admission.
 

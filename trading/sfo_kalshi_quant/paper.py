@@ -209,6 +209,19 @@ def prepare_research_target_decisions(
         target_quote = _expanded_structural_target_taker(decision, config)
         if target_quote is None:
             target_quote = with_target_research_execution(decision, config)
+        if (
+            target_quote is not None
+            and config.research_target_taker_cross
+            and decision.binding_constraint == "research_policy_allocator"
+            and decision.limit_price is None
+            and target_quote.binding_constraint == "visible_ask_depth"
+        ):
+            # Keep structural target provenance even when displayed depth or
+            # risk cannot grow the placeholder. Later portfolio clips still
+            # need exact quantity-dependent taker fees in that smaller slice.
+            target_quote = replace(
+                target_quote, binding_constraint="research_visible_ask_depth"
+            )
         if target_quote is None:
             target.append(
                 replace(

@@ -1,5 +1,6 @@
 """Sizing clips must still fit cash and risk after integer-quantity fee rounding."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -44,10 +45,57 @@ def test_expanded_taker_cash_clip_cannot_change_to_a_resting_order():
     assert not plan.target.legs
 
 
-def test_exact_fee_clip_is_admitted_with_fractional_existing_risk(tmp_path):
+@pytest.mark.parametrize("constraint", ["cash", "daily"])
+def test_structural_taker_below_placeholder_size_reprices_clipped_fees(constraint):
     config = strategy_config_for_profile("research")
-    source = prepare_research_target_decisions([_candidate()], config)[0]
-    budget = source.cost_per_contract * 112
+    source = prepare_research_target_decisions(
+        [_candidate(entry_ask_size=20.0)], config,
+    )[0]
+    assert source.recommended_contracts == 20.0
+    budget = source.cost_per_contract * 19
+    kwargs = {"target_available_cash": budget} if constraint == "cash" else {"realized_today": -(150.0 - budget)}
+    plan = allocate_research_plans(
+        [ResearchOpportunity(source, "2026-09-12", 1)], motion_opportunities=[], **kwargs,
+    )
+    chosen = plan.target.legs[0].decision
+    final = with_target_research_execution(chosen, config)
+    assert final is not None
+    assert chosen.recommended_contracts == 18.0
+    assert source.binding_constraint == "research_visible_ask_depth"
+    assert final.cost_per_contract == chosen.cost_per_contract
+    assert final.fee_per_contract == chosen.fee_per_contract
+    assert final.recommended_contracts * final.cost_per_contract <= budget
+    assert plan.target.legs[0].spend == pytest.approx(13.91)
+
+
+@pytest.mark.parametrize(
+    "changes,legacy",
+    [
+        ({"binding_constraint": "max_contracts"}, False),
+        ({"limit_price": 0.76}, False),
+        ({"entry_bid": 0.75}, True),
+    ],
+)
+def test_structural_taker_marker_does_not_reclassify_other_paths(changes, legacy):
+    config = strategy_config_for_profile("research")
+    if legacy:
+        config = replace(config, research_target_taker_cross=False)
+    source = prepare_research_target_decisions(
+        [_candidate(entry_ask_size=20.0, **changes)], config,
+    )[0]
+    assert source.recommended_contracts == 20.0
+    assert source.binding_constraint == "visible_ask_depth"
+
+
+@pytest.mark.parametrize(
+    "depth,clip_quantity,expected_quantity", [(200.0, 112, 111.0), (20.0, 19, 18.0)],
+)
+def test_exact_fee_clip_is_admitted_with_fractional_existing_risk(
+    tmp_path, depth, clip_quantity, expected_quantity,
+):
+    config = strategy_config_for_profile("research")
+    source = prepare_research_target_decisions([_candidate(entry_ask_size=depth)], config)[0]
+    budget = source.cost_per_contract * clip_quantity
     prior_cost = 150.0 - budget
     store = PaperStore(
         tmp_path / "rounded-fee-capacity.db",
@@ -80,6 +128,6 @@ def test_exact_fee_clip_is_admitted_with_fractional_existing_risk(tmp_path):
     )
     assert len(result.target_order_ids) == 1
     order = store.paper_order(result.target_order_ids[0])
-    assert order["contracts"] == 111.0
+    assert order["contracts"] == expected_quantity
     assert order["status"] == "PAPER_FILLED"
     assert store.research_open_risk(account_id=TARGET_POLICY.account_id) <= 150.0
