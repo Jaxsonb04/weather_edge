@@ -202,7 +202,57 @@ def test_serve_live_emos_returns_none_without_enough_history():
     assert result is None  # below EMOS warm-up
 
 
+def _mark_onboarded(db_path, stations) -> None:
+    """Give each station one scored rolling-origin row, the durable trace that
+    build_emos_archive leaves once a station has cleared EMOS_MIN_TRAIN."""
+
+    import emos_forecast as ef
+
+    with sqlite3.connect(db_path) as conn:
+        ef.ensure_schema(conn)
+        for station in stations:
+            conn.execute(
+                "INSERT OR REPLACE INTO forecast_emos_daily_high "
+                "(station_id, target_date, lead_days, predicted_high_f, sigma_f, n_models, "
+                "model_spread_f, fetched_at, method, source, actual_high_f) "
+                "VALUES (?, '2026-01-01', 1, 60.0, 3.0, 8, 1.0, '2026-01-01T00:00:00+00:00', "
+                "'emos_wmean', ?, 61.0)",
+                (station, ef.DEFAULT_SOURCE),
+            )
+
+
+def _seed_scored_history(db_path, station, days, *, lead_days=1, start=date(2025, 1, 1)):
+    """``days`` settlement days with CLI truth and a full NWP archive row."""
+
+    import emos_forecast as ef
+    import nwp_archive
+    import city_truth
+
+    with sqlite3.connect(db_path) as conn:
+        nwp_archive.ensure_schema(conn)
+        city_truth.ensure_schema(conn)
+        for offset in range(days):
+            day = (start + timedelta(days=offset)).isoformat()
+            conn.execute(
+                "INSERT OR REPLACE INTO cli_settlements "
+                "(station_id, local_date, max_temperature_f, fetched_at, source) "
+                "VALUES (?, ?, 70, '2026-01-01T00:00:00+00:00', 'test')",
+                (station, day),
+            )
+            for model in ef.NWP_MODELS:
+                conn.execute(
+                    "INSERT OR REPLACE INTO nwp_model_forecasts "
+                    "(station_id, target_date, model, lead_days, predicted_high_f, "
+                    "fetched_at, source) VALUES (?, ?, ?, ?, 70.0, "
+                    "'2026-01-01T00:00:00+00:00', 'test')",
+                    (station, day, model, lead_days),
+                )
+
+
 def test_serve_rolling_logs_zero_served_summary(tmp_path):
+    # A station with no history and no EMOS row of any source is a registry
+    # row awaiting its onboarding backfill, not a target -- but a serve that
+    # serves NOTHING is still a failure.
     db_path = tmp_path / "weather.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -215,7 +265,170 @@ def test_serve_rolling_logs_zero_served_summary(tmp_path):
         status = main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"])
 
     assert status == 1
-    assert "live EMOS rolling summary: served=0 targets=3 cities=1 leads=0..2" in out.getvalue()
+    assert "live EMOS [sfo] awaiting onboarding backfill: 0/60 scored lead-1 days" in out.getvalue()
+    assert (
+        "live EMOS rolling summary: served=0 targets=0 cities=1 leads=0..2 awaiting=1"
+        in out.getvalue()
+    )
+
+
+def test_scored_history_days_counts_truth_matched_full_archive_days(tmp_path):
+    import emos_forecast as ef
+
+    db_path = tmp_path / "weather.db"
+    _seed_scored_history(db_path, "KLAS", 7)
+    # A lead-2 archive day does not count toward the lead-1 history.
+    _seed_scored_history(db_path, "KLAS", 1, lead_days=2, start=date(2025, 3, 1))
+    with sqlite3.connect(db_path) as conn:
+        # A day with truth but a thin archive (below MIN_MODELS) does not count.
+        conn.execute(
+            "INSERT INTO cli_settlements (station_id, local_date, max_temperature_f, "
+            "fetched_at, source) VALUES ('KLAS', '2025-02-01', 70, 'x', 'test')"
+        )
+        conn.execute(
+            "INSERT INTO nwp_model_forecasts (station_id, target_date, model, lead_days, "
+            "predicted_high_f, fetched_at, source) VALUES "
+            "('KLAS', '2025-02-01', 'gfs_seamless', 1, 70.0, 'x', 'test')"
+        )
+        assert ef.scored_history_days(conn, ef.get_city("lv"), lead_days=1) == 7
+        assert ef.scored_history_days(conn, ef.get_city("lv"), lead_days=2) == 1
+        assert ef.scored_history_days(conn, ef.get_city("sfo"), lead_days=1) == 0
+
+
+def test_awaiting_onboarding_distinguishes_new_station_from_outage(tmp_path):
+    import emos_forecast as ef
+
+    db_path = tmp_path / "weather.db"
+    lv = ef.get_city("lv")
+    with sqlite3.connect(db_path) as conn:
+        # Fresh registry row: no history, no EMOS row -> awaiting (0 days).
+        assert ef.awaiting_onboarding(conn, lv) == 0
+    _seed_scored_history(db_path, "KLAS", ef.EMOS_MIN_TRAIN - 1)
+    with sqlite3.connect(db_path) as conn:
+        # Thin history, still never scored or served -> awaiting (59 days).
+        assert ef.awaiting_onboarding(conn, lv) == ef.EMOS_MIN_TRAIN - 1
+    _seed_scored_history(db_path, "KLAS", 1, start=date(2025, 6, 1))
+    with sqlite3.connect(db_path) as conn:
+        # Enough history to serve, even before any row exists -> a target.
+        assert ef.awaiting_onboarding(conn, lv) is None
+    # Onboarded (one rolling-origin row) but history since lost -> an outage,
+    # never "awaiting onboarding".
+    db_path2 = tmp_path / "weather2.db"
+    _mark_onboarded(db_path2, ["KLAS"])
+    with sqlite3.connect(db_path2) as conn:
+        assert ef.awaiting_onboarding(conn, lv) is None
+
+
+def test_serve_rolling_excludes_never_onboarded_city_from_health(tmp_path, monkeypatch):
+    # The deploy-day scenario: an onboarded city serves, a freshly registered
+    # one has nothing yet. The serve must succeed (exit 0) and report the new
+    # city as awaiting, not as an outage.
+    import emos_forecast as ef
+
+    calls: list[str] = []
+
+    def fake_serve(conn, target, *, city=ef.DEFAULT_CITY, **kwargs):
+        calls.append(city.slug)
+        return (70.0, 3.0)
+
+    monkeypatch.setattr(ef, "serve_live_emos", fake_serve)
+    monkeypatch.setattr(ef, "fetch_live_model_forecasts_multi", lambda **_kw: {})
+    db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, ["KSFO"])
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo,lv"])
+
+    assert status == 0
+    assert calls == ["sfo", "sfo", "sfo"]
+    text = out.getvalue()
+    assert "live EMOS [lv] awaiting onboarding backfill: 0/60 scored lead-1 days" in text
+    assert "served=3 targets=3 cities=2 leads=0..2 awaiting=1" in text
+
+
+def test_serve_rolling_twenty_cities_with_five_unbackfilled_is_healthy(tmp_path, monkeypatch):
+    # Regression for the 2026-09-13 expansion review: with the five new
+    # stations thin, `--cities all` exited 1 (45/60 served) and turned every
+    # sfo-forecaster-refresh tick red until the deep backfill landed.
+    import emos_forecast as ef
+
+    new_slugs = {"lv", "min", "satx", "nola", "dc"}
+    onboarded = [c.nws_station_id for c in ef.CITIES if c.slug not in new_slugs]
+    assert len(onboarded) == 15
+
+    served_slugs: list[str] = []
+
+    def fake_serve(conn, target, *, city=ef.DEFAULT_CITY, **kwargs):
+        served_slugs.append(city.slug)
+        return (70.0, 3.0)
+
+    monkeypatch.setattr(ef, "serve_live_emos", fake_serve)
+    monkeypatch.setattr(ef, "fetch_live_model_forecasts_multi", lambda **_kw: {})
+    db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, onboarded)
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "all"])
+
+    assert status == 0
+    assert len(served_slugs) == 45
+    assert set(served_slugs).isdisjoint(new_slugs)
+    assert "served=45 targets=45 cities=20 leads=0..2 awaiting=5" in out.getvalue()
+
+
+def test_serve_rolling_real_serve_path_with_one_fresh_city_exits_zero(tmp_path, monkeypatch):
+    # No fake serve: SFO has 70 scored days at leads 1 and 2 and really serves
+    # three live rows; LV is a fresh registry row. The scheduled all-city serve
+    # (what sfo-forecaster-refresh runs) must exit 0 and write SFO's rows.
+    import emos_forecast as ef
+
+    db_path = tmp_path / "weather.db"
+    _seed_scored_history(db_path, "KSFO", 70, lead_days=1)
+    _seed_scored_history(db_path, "KSFO", 70, lead_days=2)
+    today = ef._settlement_today(ef.get_city("sfo"))
+
+    def fake_multi(*, city=ef.DEFAULT_CITY, models=ef.NWP_MODELS):
+        return {
+            today + timedelta(days=k): {m: 65.0 + 0.2 * j for j, m in enumerate(models)}
+            for k in range(ef.ROLLING_SERVE_DAYS)
+        }
+
+    monkeypatch.setattr(ef, "fetch_live_model_forecasts_multi", fake_multi)
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo,lv"])
+
+    assert status == 0
+    assert "served=3 targets=3 cities=2 leads=0..2 awaiting=1" in out.getvalue()
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT station_id, COUNT(*) FROM forecast_emos_daily_high "
+            "WHERE source = 'live' GROUP BY station_id"
+        ).fetchall()
+    assert rows == [("KSFO", 3)]
+
+
+def test_serve_rolling_previously_onboarded_city_below_floor_is_an_outage(tmp_path, monkeypatch):
+    # A station that has an EMOS row (was scored/served before) but now lacks
+    # the training floor is a real outage: it stays a target and fails the run.
+    import emos_forecast as ef
+
+    monkeypatch.setattr(ef, "fetch_live_model_forecasts_multi", lambda **_kw: {})
+    db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, ["KLAS"])
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "lv"])
+
+    assert status == 1
+    text = out.getvalue()
+    assert "awaiting onboarding" not in text
+    assert "unavailable (already settled or thin coverage)" in text
+    assert "served=0 targets=3 cities=1 leads=0..2 awaiting=0" in text
 
 
 def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch):
@@ -239,6 +452,7 @@ def test_serve_rolling_serves_each_target_at_its_true_lead(tmp_path, monkeypatch
             "CREATE TABLE clisfo_settlements "
             "(local_date TEXT PRIMARY KEY, max_temperature_f INTEGER, fetched_at TEXT, source TEXT)"
         )
+    _mark_onboarded(db_path, ["KSFO"])
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -266,6 +480,7 @@ def test_serve_rolling_fails_when_any_requested_target_is_unserved(tmp_path, mon
 
     monkeypatch.setattr(ef, "serve_live_emos", partial_serve)
     db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, ["KSFO"])
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -309,6 +524,7 @@ def test_serve_rolling_fetches_open_meteo_once_per_city(tmp_path, monkeypatch):
     monkeypatch.setattr(ef, "serve_live_emos", fake_serve)
     monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: today)
     db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, [city.nws_station_id for city in ef.CITIES])
 
     status = ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "all"])
 

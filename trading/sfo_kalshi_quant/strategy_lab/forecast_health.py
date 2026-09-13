@@ -378,6 +378,19 @@ def _emos_health(
         if (station, target) in latest_by_key
     ]
     max_age_hours = FORECAST_HEALTH_MAX_EMOS_AGE.total_seconds() / 3600
+    # A station with no EMOS row of ANY source has never been scored or served:
+    # it is a freshly registered city awaiting its onboarding backfill (the
+    # scanner skips it, "calibration unavailable"), not a serve outage. Mirrors
+    # emos_forecast.is_onboarded, which excludes the same stations from the
+    # scheduled serve's health accounting.
+    onboarded_stations = (
+        {
+            str(row[0])
+            for row in conn.execute("SELECT DISTINCT station_id FROM forecast_emos_daily_high")
+        }
+        if station_keyed
+        else set(expected_stations)
+    )
     for station in expected_stations:
         open_targets = [
             target for target in rolling_targets if (station, target) not in settled
@@ -385,6 +398,23 @@ def _emos_health(
         missing = [
             target for target in open_targets if (station, target) not in latest_by_key
         ]
+        if missing and profiles_using_emos and station not in onboarded_stations:
+            warnings.append(
+                _health_warning(
+                    "info",
+                    "emos-live-onboarding",
+                    "Live EMOS station awaiting onboarding",
+                    (
+                        f"{station} has no EMOS rows of any source (never scored or "
+                        f"served): a newly registered city awaiting its post-deploy "
+                        f"backfill. The scanner skips it until then."
+                    ),
+                    "Run the 'Adding A City' backfill in trading/deploy/aws/README.md.",
+                    target_date=missing[0],
+                    station=station,
+                )
+            )
+            continue
         if missing and profiles_using_emos:
             warnings.append(
                 _health_warning(

@@ -46,6 +46,12 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py 
 # The Google endpoints remain isolated per city, but this command also serves
 # the production EMOS baseline first. Its final nonzero status must reach
 # systemd when that all-city baseline produces no forecast rows.
+# A city that is registered but not yet backfilled (no forecast_emos_daily_high
+# row of any source) is reported as "awaiting onboarding" and excluded from
+# that pass/fail accounting (emos_forecast.awaiting_onboarding), so a registry
+# expansion does not page on every tick until its deep backfill lands -- see
+# README.md "Adding A City". A city that HAS served before and cannot now is
+# still an outage and still fails this unit.
 ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities sfo
 Nice=5
 # Contain a runaway to this unit instead of letting the kernel OOM-killer

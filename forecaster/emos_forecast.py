@@ -498,6 +498,57 @@ def _settlement_tomorrow(city: CityConfig = DEFAULT_CITY) -> date:
     return _settlement_today(city) + timedelta(days=1)
 
 
+def scored_history_days(
+    conn: sqlite3.Connection, city: CityConfig, lead_days: int = 1
+) -> int:
+    """Settlement days with CLI truth AND a >= MIN_MODELS NWP archive row at
+    ``lead_days`` -- the training set a live serve for ``city`` can see."""
+
+    station = city.nws_station_id
+    truth = load_clisfo_truth(conn, station)
+    nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
+    return sum(
+        1
+        for target_iso, models in nwp_by_date.items()
+        if target_iso in truth and len(models) >= MIN_MODELS
+    )
+
+
+def is_onboarded(conn: sqlite3.Connection, city: CityConfig) -> bool:
+    """A station is onboarded once forecast_emos_daily_high holds ANY row for it.
+
+    Both writers respect the same floor: build_emos_archive only emits a
+    rolling-origin row once the station has EMOS_MIN_TRAIN scored days, and
+    serve_live_emos only emits a live row under the same floor. A registry row
+    whose post-deploy backfill (trading/deploy/aws/README.md, "Adding A City")
+    has not run therefore has no row of any source.
+    """
+
+    ensure_schema(conn)
+    row = conn.execute(
+        "SELECT 1 FROM forecast_emos_daily_high WHERE station_id = ? LIMIT 1",
+        (city.nws_station_id,),
+    ).fetchone()
+    return row is not None
+
+
+def awaiting_onboarding(conn: sqlite3.Connection, city: CityConfig) -> int | None:
+    """Scored lead-1 day count when ``city`` cannot serve yet AND never has.
+
+    Returns ``None`` for every station that is onboarded (see is_onboarded) or
+    already has EMOS_MIN_TRAIN scored days. A station that once served or was
+    scored but is now below the floor is NOT awaiting onboarding: that is a
+    real outage and must keep failing the scheduled serve.
+    """
+
+    if is_onboarded(conn, city):
+        return None
+    days = scored_history_days(conn, city, lead_days=1)
+    if days >= EMOS_MIN_TRAIN:
+        return None
+    return days
+
+
 # The scheduled paper scan trades a rolling window (today .. today+2); serve EMOS
 # for each open target so the research book has a distribution for every market.
 ROLLING_SERVE_DAYS = 3
@@ -537,7 +588,25 @@ def main(argv: list[str] | None = None) -> int:
 
         served = 0
         total_targets = 0
+        # Freshly registered cities are excluded from the serve's health
+        # accounting until their onboarding backfill exists. Without this, a
+        # registry expansion turned every scheduled sfo-forecaster-refresh tick
+        # red (exit 1 -> OnFailure alert, 38x/day) for the ~60 days the nightly
+        # 5-day NWP window needs to reach EMOS_MIN_TRAIN, while the other
+        # cities' rows were written normally.
+        awaiting: list[str] = []
         for city in cities:
+            if args.serve or args.serve_rolling:
+                pending = awaiting_onboarding(conn, city)
+                if pending is not None:
+                    awaiting.append(city.slug)
+                    print(
+                        f"live EMOS [{city.slug}] awaiting onboarding backfill: "
+                        f"{pending}/{EMOS_MIN_TRAIN} scored lead-1 days and no EMOS "
+                        "row of any source; excluded from serve health "
+                        "(trading/deploy/aws/README.md, 'Adding A City')"
+                    )
+                    continue
             today = _settlement_today(city)
             # Serve each target at its TRUE lead so the EMOS fit's per-model
             # biases match the forecast horizon (next-day -> lead 1, 2-day-out
@@ -599,12 +668,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.serve_rolling:
             print(
                 f"live EMOS rolling summary: served={served} targets={total_targets} "
-                f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1}"
+                f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1} "
+                f"awaiting={len(awaiting)}"
             )
         # A scheduled serve is only healthy when every requested city/target
         # was refreshed. Partial coverage is still a forecast outage: a single
         # successful row must not hide dozens of missing live distributions.
-        if (args.serve or args.serve_rolling) and served != total_targets:
+        # Cities awaiting onboarding are not targets, but serving NOTHING is
+        # never healthy either: a DB wiped of every station's history must not
+        # pass as "all cities awaiting onboarding".
+        if (args.serve or args.serve_rolling) and (
+            served != total_targets or total_targets == 0
+        ):
             return 1
     return 0
 

@@ -1898,6 +1898,35 @@ def test_forecast_health_flags_single_missing_emos_station_exactly_once():
         assert len(payload["emos"]["live_targets"]) == 57
 
 
+def test_forecast_health_reports_never_onboarded_station_as_info_not_missing():
+    # A station with NO forecast_emos_daily_high row of any source is a fresh
+    # registry entry awaiting its onboarding backfill: an info notice with its
+    # own code, so a city expansion does not publish five "missing" warnings.
+    # (Contrast the KSEA test above: live rows gone but a rolling-origin row
+    # left is a serve outage and still warns.)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "forecaster"
+        _seed_health_db(root)
+        with sqlite3.connect(root / "weather.db") as conn:
+            conn.execute("DELETE FROM forecast_emos_daily_high WHERE station_id = 'KLAS'")
+            conn.commit()
+
+        payload = _forecast_health_payload(
+            root,
+            config=StrategyConfig(emos_distribution_enabled=True),
+            now=_HEALTH_NOW,
+        )
+
+        assert len(payload["warnings"]) == 1
+        notice = payload["warnings"][0]
+        assert notice["code"] == "emos-live-onboarding"
+        assert notice["level"] == "info"
+        assert notice["station_id"] == "KLAS"
+        assert "Adding A City" in notice["action"]
+        assert not any(w["code"] == "emos-live-missing" for w in payload["warnings"])
+        assert len(payload["emos"]["live_targets"]) == 57
+
+
 def test_forecast_health_settled_target_is_not_missing_or_stale():
     # Once a (station, target) has CLI truth the serve refuses to refresh it
     # by design; the health check must treat it as done, not missing.

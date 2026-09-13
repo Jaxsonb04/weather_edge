@@ -190,22 +190,46 @@ auto-repaired.
 ## Adding A City (Post-Deploy Backfill)
 
 A new registry row (`forecaster/cities.py` + `trading/sfo_kalshi_quant/cities.py`,
-kept byte-identical) changes nothing on the box until its station has scored
-forecast history. The scanner fails closed per city: `SfoForecasterAdapter
-.load_calibration_outcomes` returns the station's scored lead-1 EMOS rows,
-`ResidualCalibrator` refuses fewer than 30 of them, and both `cmd_analyze` and
-`cmd_portfolio_scan` catch that and print `[slug] skipped: calibration
-unavailable (...)` before any target is analysed. A freshly added series is
-therefore *skipped, not traded*, in both paper books (`PAPER_CITIES=all` picks
-it up automatically) until the backfill below has run.
+kept byte-identical) is picked up by every `--cities all` unit on the next tick.
+What happens on the box before the backfill below has run, and why nothing
+trades:
 
-The nightly `sfo-dataset-backfill` timer would eventually fill a new station
-on its own, but `nwp_archive.py --daily` only reaches back five days, so the
-30-row calibration floor would take a month to clear. After deploying a
-registry change, run the deep backfill once for the new slugs, detached and
-outside the refresh window, from the forecaster directory with its venv
-(`__FORECASTER_DIR__` in the unit files; `SLUGS` is the comma list of new
-slugs, e.g. `lv,min,satx,nola,dc` for the 2026-09-13 expansion):
+- **Scanner: fails closed per city.** `SfoForecasterAdapter
+  .load_calibration_outcomes` returns the station's scored lead-1 EMOS rows,
+  `ResidualCalibrator` refuses fewer than 30 of them, and both `cmd_analyze` and
+  `cmd_portfolio_scan` catch that and print `[slug] skipped: calibration
+  unavailable (...)` before any target is analysed. The series is *skipped, not
+  traded*, in both paper books (`PAPER_CITIES=all`).
+- **Live EMOS serve: excluded from health, not red.** `serve_live_emos` needs
+  `EMOS_MIN_TRAIN = 60` truth-matched NWP days at the fit lead before it emits
+  a row. A station with no `forecast_emos_daily_high` row of any source is
+  reported by `emos_forecast.py --serve-rolling` as `awaiting onboarding
+  backfill` and left out of its served/targets accounting
+  (`emos_forecast.awaiting_onboarding`), so `sfo-forecaster-refresh` keeps
+  exiting 0 and `OnFailure=sfo-alert@` does not page 38x/day for the other
+  cities' healthy rows. A station that *has* served or been scored before and
+  is now below the floor is still an outage and still fails the unit.
+- **Forecast health / status alerts: one `info` per new station.**
+  `forecast_health.py` publishes `emos-live-onboarding` (level `info`, not
+  `warning`) for a station with no EMOS row of any source; `clisfo-stale`
+  ("CLI truth missing for station") appears once and clears on the first
+  `city_truth.py --refresh --cities all` tick of the refresh unit. Both are
+  expected transient state after a registry change, not an outage.
+- **Nightly `sfo-dataset-backfill` alone is too slow.** Its
+  `city_truth.py --backfill-iem --start-year 2026` fills the truth side on the
+  first night, but `nwp_archive.py --daily` only reaches back five days, so the
+  60-day serve floor takes about two months and the scanner's 30 *scored*
+  lead-1 rows (rolling-origin rows only start once 60 prior days exist) about
+  three. Run the deep backfill once instead.
+
+After deploying a registry change, run the backfill detached from the
+forecaster directory with its venv (`__FORECASTER_DIR__` in the unit files;
+`SLUGS` is the comma list of new slugs, e.g. `lv,min,satx,nola,dc` for the
+2026-09-13 expansion). It only touches the new stations' rows, so it can run
+while the timers stay enabled; keep it off the top-of-hour deploy gate window
+so the two do not contend for the DB. Open-Meteo previous-runs depth was
+verified at 420 days for all eight models at KLAS/KMSP/KDCA/KSAT/KMSY on
+2026-09-13.
 
 ```bash
 cd /opt/weatheredge/forecaster
@@ -218,19 +242,27 @@ SLUGS=lv,min,satx,nola,dc
 # 2. Settlement truth from the IEM CLI archive (default --start-year is two
 #    calendar years back; the nightly timer only refreshes the current year).
 .venv/bin/python city_truth.py --db weather.db --backfill-iem --cities "$SLUGS"
-# 3. Scored rolling-origin EMOS rows at the two served leads.
+# 3. Scored rolling-origin EMOS rows at the two served leads. This is what
+#    marks the station onboarded (first forecast_emos_daily_high rows).
 .venv/bin/python emos_forecast.py --db weather.db --backfill --lead 1 --cities "$SLUGS"
 .venv/bin/python emos_forecast.py --db weather.db --backfill --lead 2 --cities "$SLUGS"
-# 4. Confirm the floor is cleared before expecting the city in a scan.
+# 4. Confirm the floors are cleared before expecting the city in a scan.
 .venv/bin/python city_truth.py --db weather.db --coverage --cities "$SLUGS"
+.venv/bin/python emos_forecast.py --db weather.db --serve-rolling --cities "$SLUGS"
 ```
 
-Then watch one paper-scan cycle: the new slugs must move from `skipped:
-calibration unavailable` to a normal per-target analysis. The next
-`sfo-forecaster-refresh` serves live EMOS for them without further action. No
-strategy fingerprint changes (the registry is not part of the config hash),
+Step 4's serve must print `served=N targets=N ... awaiting=0` for the new slugs
+and exit 0. Then watch one paper-scan cycle: the new slugs must move from
+`skipped: calibration unavailable` to a normal per-target analysis, and the
+`emos-live-onboarding` notices disappear from the published forecast health.
+No strategy fingerprint changes (the registry is not part of the config hash),
 but both books' opportunity sets grow, so the research and live ledgers gain
-new series from the first traded day onward.
+new series from the first traded day onward. Research-side note: the
+`REGION_BY_SERIES` entry a new city gets also places its station in the
+research climate-region pooling cohort (`research_candidates.py`), so once it
+has scored rows it contributes to the pooled calibration of the existing
+cities in that region (DC joins NYC/BOS/PHL in `northeast`, SATX joins
+DAL/AUS/HOU in `texas`, and so on).
 
 Not automatic: `weatheredge-google-nonsfo-refresh.service.in` carries a static
 `--cities` list bounded by the 260 events/day Google cap. It stays at the
