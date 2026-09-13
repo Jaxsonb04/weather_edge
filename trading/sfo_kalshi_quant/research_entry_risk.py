@@ -11,11 +11,39 @@ import math
 from .research_policy import TARGET_POLICY
 
 
-RESEARCH_ENTRY_RISK_VERSION = "research-entry-risk-v2-scaled-2026-09-12"
+RESEARCH_ENTRY_RISK_VERSION = "research-entry-risk-v3-scaling-2026-09-13"
 # Preserve the existing production ceiling while allowing strong conservative
 # edges to scale. The temporary $30 containment ceiling was not deployed.
 TARGET_ENTRY_FULL_LOSS_CAP = 90.0
 TARGET_ENTRY_FRACTIONAL_KELLY = 0.25
+
+# Resting maker TTL (2026-09-13). Every book rested 15 minutes. Measured on
+# the research target sleeve: maker fill delays run to 15.4 min and 8 of 43
+# maker fills landed in the LAST 3 minutes of the window, i.e. the fill
+# hazard is not exhausted at expiry; and the fresh public tape shows
+# day-ahead seller flow BUILDING through the US evening (22Z-07Z hours each
+# carry 1.5-4x the 14Z open hour, which is only 8.9% of day-ahead volume),
+# so an open-hour-only extension would rest on a refuted premise. The
+# target sleeve's day-ahead quotes therefore rest 30 minutes at every hour.
+# The longer rest doubles stale-quote exposure, which is why the scan now
+# cancels a resting quote whose CURRENT after-fee LCB edge has gone negative
+# (paper.PaperTrader.cancel_stale_research_resting_orders). Live keeps 15.
+DEFAULT_RESTING_ORDER_TTL_MINUTES = 15
+TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES = 30
+
+
+def resting_order_ttl_minutes(*, account_id: object, lead_bucket: object) -> int:
+    """Minutes a resting maker quote rests before TTL expiry.
+
+    Keyword-only because both journal sites call this BEFORE the order row
+    exists. Only the research target sleeve's day-ahead quotes get the
+    longer rest; the live book, the motion sleeve, and any same-day quote
+    keep the historical 15 minutes.
+    """
+
+    if account_id == TARGET_POLICY.account_id and lead_bucket == "day-ahead":
+        return TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES
+    return DEFAULT_RESTING_ORDER_TTL_MINUTES
 
 
 def _finite_number(value: object) -> float | None:

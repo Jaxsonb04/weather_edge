@@ -1210,8 +1210,13 @@ def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():
 
     # Overlap guard: a slow scan must not be double-run by the 5-minute timer.
     assert "SFO_PAPER_SCAN_LOCK" in runner
-    assert "flock -n" in runner
-    assert runner.count("flock -n") == 1
+    # A bounded wait, not skip-at-once: `flock -n` silently dropped the
+    # 14:00Z listing tick whenever the 13:55 scan overran (2026-09-13).
+    assert "flock -n 9" not in runner
+    assert 'flock -w "$SCAN_LOCK_WAIT_SECONDS" 9' in runner
+    assert runner.count("flock -w") == 1
+    assert 'SCAN_LOCK_WAIT_SECONDS="${SFO_PAPER_SCAN_LOCK_WAIT_SECONDS:-90}"' in runner
+    assert "SFO_PAPER_SCAN_LOCK_WAIT_SECONDS=90" in example_env
     assert runner.count("    portfolio-scan") == 1
     assert "tail-basket" not in runner
     assert " arbitrage" not in runner

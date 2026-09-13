@@ -500,22 +500,47 @@ def test_backfill_all_fail_and_research_failure_exit_nonzero(tmp_path: Path) -> 
 
 
 def _fake_flock(path: Path) -> None:
+    # Mirrors util-linux flock: -n fails at once, -w SECS retries until the
+    # deadline, bare LOCK_EX blocks, -u releases.
     _write_executable(
         path,
         f"""#!{sys.executable}
-import fcntl, os, sys
-nonblocking = '-n' in sys.argv
-fd = int(sys.argv[-1])
-if '-u' in sys.argv:
+import fcntl, os, sys, time
+args = sys.argv[1:]
+fd = int(args[-1])
+if '-u' in args:
     fcntl.flock(fd, fcntl.LOCK_UN)
     raise SystemExit(0)
-try: fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
-except BlockingIOError: raise SystemExit(1)
+timeout = None
+if '-n' in args:
+    timeout = 0.0
+elif '-w' in args:
+    timeout = float(args[args.index('-w') + 1])
+if timeout is None:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    raise SystemExit(0)
+deadline = time.monotonic() + timeout
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            raise SystemExit(1)
+        time.sleep(0.02)
+raise SystemExit(0)
 """,
     )
 
 
-def test_paper_scan_persistent_lock_prevents_overlap(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("wait_seconds", "second_tick_runs"),
+    [("5", True), ("0", False)],
+    ids=["waits-then-runs", "zero-wait-skips"],
+)
+def test_paper_scan_persistent_lock_prevents_overlap(
+    tmp_path: Path, wait_seconds: str, second_tick_runs: bool
+) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _fake_flock(fake_bin / "flock")
@@ -530,6 +555,7 @@ def test_paper_scan_persistent_lock_prevents_overlap(tmp_path: Path) -> None:
         "SFO_TRADING_ROOT": str(trading),
         "SFO_TRADING_PYTHON": str(python),
         "CALL_LOG": str(tmp_path / "calls"),
+        "SFO_PAPER_SCAN_LOCK_WAIT_SECONDS": wait_seconds,
     }
     first = subprocess.Popen(["bash", str(AWS_DIR / "run_paper_scan_profiles.sh")], env=env)
     calls_path = tmp_path / "calls"
@@ -546,8 +572,19 @@ def test_paper_scan_persistent_lock_prevents_overlap(tmp_path: Path) -> None:
     )
     assert first.wait() == 0
     assert second.returncode == 0
-    assert "previous paper scan still running" in second.stdout
-    assert calls_path.read_text().splitlines() == ["start", "done"]
+    calls = calls_path.read_text().splitlines()
+    if second_tick_runs:
+        # 2026-09-13: a late tick waits for the lock and then runs -- the
+        # start/done pairs never interleave (no overlap) and the tick never
+        # vanishes the way `flock -n` made the 14:00Z listing tick vanish.
+        assert "previous paper scan still running" not in second.stdout
+        assert calls == ["start", "done", "start", "done"]
+    else:
+        assert (
+            "previous paper scan still running after 0s; skipping this tick"
+            in second.stdout
+        )
+        assert calls == ["start", "done"]
     assert (tmp_path / "base" / ".locks" / "paper-scan.lock").exists()
 
 

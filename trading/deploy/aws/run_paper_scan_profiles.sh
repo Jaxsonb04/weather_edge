@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Skip this tick if a previous scan is still running. The 5-minute timer can fire
-# before a slow scan (portfolio-scan across both profiles)
-# finishes; WAL keeps the DB consistent but does not stop two scans doing
-# duplicate logical work or both placing paper entries. flock is a no-op where
-# unavailable (local macOS dev).
+# Serialize ticks behind the previous scan. The 5-minute timer can fire before
+# a slow scan (portfolio-scan across both profiles) finishes; WAL keeps the DB
+# consistent but does not stop two scans doing duplicate logical work or both
+# placing paper entries. Wait for the lock (default 90 s) rather than skipping
+# at once: `flock -n` silently dropped the 14:00Z day-ahead listing tick
+# whenever the 13:55 scan overran, so a late tick now runs instead of
+# vanishing. flock is a no-op where unavailable (local macOS dev).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-$(dirname "$TRADING_DIR")}}"
 SCAN_LOCK="${SFO_PAPER_SCAN_LOCK:-$BASE_DIR/.locks/paper-scan.lock}"
+SCAN_LOCK_WAIT_SECONDS="${SFO_PAPER_SCAN_LOCK_WAIT_SECONDS:-90}"
 if command -v flock >/dev/null 2>&1; then
   mkdir -p "$(dirname "$SCAN_LOCK")"
   exec 9>"$SCAN_LOCK"
-  if ! flock -n 9; then
-    echo "previous paper scan still running; skipping this tick"
+  if ! flock -w "$SCAN_LOCK_WAIT_SECONDS" 9; then
+    echo "previous paper scan still running after ${SCAN_LOCK_WAIT_SECONDS}s; skipping this tick"
     exit 0
   fi
 fi

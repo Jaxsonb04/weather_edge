@@ -76,9 +76,12 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     assert strategy_fingerprint(live, entry_mode="limit") == "93326de538852004fc08aa99"
     # Research without research_entry_risk_version hashes to
     # 4d812e63727caf1b3de6b127 under behaviour-v3; with it, the research
-    # identity moves.
+    # identity moves. Under research-entry-risk-v2-scaled-2026-09-12 it was
+    # 69a29d415bad6047b03264be; the v3 scaling release (2026-09-13: 30-minute
+    # day-ahead rest) moves it again while the live pin above stays put.
     assert strategy_fingerprint(research, entry_mode="limit") != "4d812e63727caf1b3de6b127"
-    assert strategy_fingerprint(research, entry_mode="limit") == "69a29d415bad6047b03264be"
+    assert strategy_fingerprint(research, entry_mode="limit") != "69a29d415bad6047b03264be"
+    assert strategy_fingerprint(research, entry_mode="limit") == "40806599ad7acb21eab44c8d"
     assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_pnl == 50.0

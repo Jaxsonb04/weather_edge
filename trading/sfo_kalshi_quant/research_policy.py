@@ -106,6 +106,34 @@ def lead_bucket_clock_is_ambiguous(created_at: datetime) -> bool:
     return hour in LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS
 
 
+# Research scan order (2026-09-13). cmd_portfolio_scan walks cities in
+# cities.CITIES registry order (mia, lax, chi, atl, ...). The research book
+# shares one daily budget and aggregate/region caps across cities, so the
+# first cities scanned take the room: 8/31-9/12 entered cost followed the
+# registry order (MIA scanned 1st: 14 positions/$439; ATL 4th: 13/$232,
+# -$84.87) while LAX -- 38% of measured day-ahead NO-seller flow -- got one
+# position for $4.77. Fresh public tape (events 9/5-9/13, day-ahead
+# taker-YES = NO-seller contracts/day): LAX 14,132; NY 4,482; MIA 3,122;
+# AUS 2,686; CHI 2,476; DEN 1,638; PHIL 1,336; BOS 1,313; PHX 978;
+# SEA/DAL/OKC/SFO/HOU/ATL lower. Research-only: the live profile keeps
+# registry order, and a city missing from this list scans LAST rather than
+# being skipped (research_scan_city_rank), so a future city cannot vanish.
+RESEARCH_SCAN_CITY_ORDER: tuple[str, ...] = (
+    "lax", "nyc", "mia", "aus", "chi", "den", "phl", "bos", "phx",
+    "sea", "dal", "okc", "sfo", "hou", "atl",
+)
+
+
+def research_scan_city_rank(slug: str) -> int:
+    """Position of a city in the research scan order; unlisted cities sort last."""
+
+    normalized = str(slug or "").strip().lower()
+    try:
+        return RESEARCH_SCAN_CITY_ORDER.index(normalized)
+    except ValueError:
+        return len(RESEARCH_SCAN_CITY_ORDER)
+
+
 TARGET_POLICY_V1 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-target-v1",

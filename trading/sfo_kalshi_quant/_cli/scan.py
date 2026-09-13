@@ -62,6 +62,7 @@ from ..probability import ResidualCalibrator
 from ..research_policy import (
     TARGET_POLICY,
     canonical_research_lead_bucket,
+    research_scan_city_rank,
 )
 from ..research_portfolio import ResearchOpportunity, ResearchPlans, allocate_research_plans
 from ..research_entry_risk import target_remaining_daily_risk
@@ -672,13 +673,25 @@ def _execute_research_scan_context(
     decisions = list(context.decisions)
     if not entry_allowed and entry_block_reason:
         decisions = _block_entry_decisions(decisions, entry_block_reason)
+    execution_config = strategy_config_for_profile("research")
+    trader = PaperTrader(
+        store,
+        execution_config,
+        risk_profile="research",
+        entry_mode="limit",
+        series_ticker=context.series_ticker,
+    )
+    # Stale-quote guard for the 30-minute day-ahead rest: pull any resting
+    # target quote this tick's fresh lower-bound probabilities no longer
+    # support, BEFORE the capacity read so the released reservation is
+    # visible to this tick's planning and admissions.
+    trader.cancel_stale_research_resting_orders(target.isoformat(), decisions)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
     target_realized = store.research_realized_pnl_for_day(
         account_id=TARGET_POLICY.account_id,
         objective_day=objective_day,
     )
     target_cash = _target_planning_cash(target_state, target_realized)
-    execution_config = strategy_config_for_profile("research")
     target_decisions = prepare_research_target_decisions(
         decisions,
         execution_config,
@@ -699,13 +712,7 @@ def _execute_research_scan_context(
     admit_target_orders = (
         place_paper if place_research_target is None else place_research_target
     )
-    execution = PaperTrader(
-        store,
-        execution_config,
-        risk_profile="research",
-        entry_mode="limit",
-        series_ticker=context.series_ticker,
-    ).execute_research_plans(
+    execution = trader.execute_research_plans(
         target.isoformat(),
         plans,
         source_decisions=target_decisions,
@@ -1706,6 +1713,25 @@ class ScanCommandDependencies:
     city_lookup: Callable[[str], CityConfig]
 
 
+def _scan_cities_for_profile(
+    cities: Iterable[CityConfig], risk_profile: str
+) -> tuple[CityConfig, ...]:
+    """Research scans cities where seller flow is; every other profile keeps
+    the registry order it was given.
+
+    The sort is stable, so cities absent from RESEARCH_SCAN_CITY_ORDER keep
+    their incoming (registry) order AFTER the listed ones -- a new city is
+    scanned last, never skipped. The live profile is untouched: it runs as a
+    separate process and records the shared context snapshots, and its
+    ordering is part of the frozen live-evidence cohort.
+    """
+
+    ordered = tuple(cities)
+    if risk_profile != "research":
+        return ordered
+    return tuple(sorted(ordered, key=lambda city: research_scan_city_rank(city.slug)))
+
+
 def _command_cities_for_args(args: argparse.Namespace) -> tuple[CityConfig, ...]:
     value = getattr(args, "cities", None) or os.getenv("PAPER_CITIES", "all")
     return parse_city_slugs(value)
@@ -1916,7 +1942,10 @@ def cmd_portfolio_scan(
     store = dependencies.store_factory(args.db_path)
     scanned_any = False
     fatal_containment = False
-    for city_idx, city in enumerate(dependencies.cities_for_args(args)):
+    cities = _scan_cities_for_profile(
+        dependencies.cities_for_args(args), _risk_profile_name(args)
+    )
+    for city_idx, city in enumerate(cities):
         if city_idx:
             print("")
             print("#" * 92)
