@@ -528,7 +528,11 @@ def test_partial_lot_money_uses_actual_pacific_day_and_counts_one_logical_decisi
             "UPDATE paper_orders SET account_id=?, research_sleeve='target', "
             "research_policy_version=?, policy_fingerprint=?, "
             "objective_day='2026-07-17', lead_bucket='day-ahead', "
-            "scan_run_id='goal-test-scan', reentry_fingerprint='goal-test-reentry' "
+            "scan_run_id='goal-test-scan', reentry_fingerprint='goal-test-reentry', "
+            # record_paper_order stamps created_at from the wall clock, not
+            # research_clock; pin it so the lead-bucket clock classification
+            # below does not depend on the hour the suite runs.
+            "created_at='2026-07-19T19:00:00+00:00' "
             "WHERE id=?",
             (
                 TARGET_POLICY.account_id,

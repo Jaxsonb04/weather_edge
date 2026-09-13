@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from sfo_kalshi_quant._cli import scan as scan_module
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import strategy_config_for_profile
 from test_target_execution_capacity import _candidate
 
@@ -14,6 +15,7 @@ from test_target_execution_capacity import _candidate
 def _scan(state, *, realized=0.0):
     context = SimpleNamespace(
         decisions=[_candidate()],
+        city=get_city("sfo"),
         series_ticker="KXHIGHTSFO",
         intraday=None,
         forecast=object(),
@@ -22,6 +24,9 @@ def _scan(state, *, realized=0.0):
     )
     store = Mock()
     store.research_objective_day.return_value = date(2026, 9, 11)
+    # SFO's fixed-standard station day agrees with the Pacific civil day
+    # here, so the target stays a day-ahead candidate on both clocks.
+    store.research_station_day.return_value = date(2026, 9, 11)
     store.research_account_state.return_value = state
     store.research_realized_pnl_for_day.return_value = realized
     trader = Mock()
