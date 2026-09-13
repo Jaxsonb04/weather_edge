@@ -98,3 +98,35 @@ def depth_levels_json(levels: tuple[OrderbookLevel, ...]) -> list[list[float]]:
     """Compact JSON-ready form: ``[[price, size], ...]``, preserving order."""
 
     return [[level.price, level.size] for level in levels]
+
+
+def side_ask_ladder(
+    depth: OrderbookDepth,
+    side: str,
+    *,
+    levels: int = 2,
+) -> tuple[tuple[float, float], ...]:
+    """Resting offers a buyer of ``side`` would lift, best (lowest) price first.
+
+    Kalshi publishes only bids: ``yes_dollars`` are YES bids and
+    ``no_dollars`` are NO bids (docs.kalshi.com/getting_started/
+    orderbook_responses). A YES buyer lifts NO bids at ``1 - no_bid``; a NO
+    buyer lifts YES bids at ``1 - yes_bid``. Verified against the public API
+    on 2026-09-13: the KXHIGHNY-26SEP13-B80.5 listing showed yes_ask 0.19 x
+    34 while the best ``no_dollars`` entry of its book was 0.81 x 34.
+
+    Pure and total. Empty or zero-size levels are dropped; the result is
+    sorted by price so it never depends on the API's list order, and is
+    truncated to ``levels`` entries (the two-level cross hard-caps at two).
+    """
+
+    bids = depth.no if str(side).upper() == "YES" else depth.yes
+    offers: list[tuple[float, float]] = []
+    for level in bids:
+        price = round(1.0 - float(level.price) + 1e-12, 6)
+        size = float(level.size)
+        if size <= 0.0 or not 0.0 < price < 1.0:
+            continue
+        offers.append((price, size))
+    offers.sort(key=lambda entry: entry[0])
+    return tuple(offers[: max(0, int(levels))])

@@ -145,6 +145,18 @@ class StrategyConfig:
     # is below this floor, fall back to the resting quote instead of burning
     # the candidate. The frozen/default profile keeps the historical $5 floor.
     limit_taker_cross_min_notional: float = 5.0
+    # DEPTH-AWARE TAKER CROSS (2026-09-13). 1 = the historical single-level
+    # cross, truncated to the displayed best-ask size. 2 = when that
+    # displayed size is below the sizing request and the decision carries a
+    # fresh pre-entry ask ladder, place ONE order at the SECOND ladder level
+    # for level-1 + level-2 depth, booked entirely at the level-2 cost
+    # (conservative: the exchange fills the level-1 slice at level 1),
+    # provided the after-fee lower-bound edge at that worse price still
+    # clears limit_taker_cross_min_edge_lcb and the booked lower-bound
+    # expected profit does not fall. Hard cap at two levels. It never blocks
+    # on the ladder: a missing, stale or malformed ladder is the single-level
+    # cross. Off (1) on the frozen baseline; see LIVE_PROFILE_OVERRIDES.
+    limit_taker_cross_max_levels: int = 1
     # When bid+1 violates the LCB buffer, rest deeper at the highest tick that
     # preserves the buffer by construction instead of dropping the candidate.
     # A deep fill carries at least the buffered lower-bound edge; no fill
@@ -622,6 +634,21 @@ LIVE_PROFILE_OVERRIDES = {
     # candidate on the maker path, which on this book is the higher-EV side.
     # Revisit only with a fresh measurement of live resting fill rates.
     "limit_taker_cross_min_notional": 1.0,
+    # TWO-LEVEL TAKER CROSS (2026-09-13, scaling release). What binds live
+    # size is not the position cap: over 2026-08-31..09-12 the largest live
+    # position was $17.56 (median $2.82, p75 $4.77) against a $30 cap, and
+    # 44 of 46 live fills were immediate crosses truncated to the displayed
+    # best ask (`_taker_cross_quote`: floor(min(recommended, ask_size))).
+    # Research ladders measured ~12 contracts at the best ask, ~38 one tick
+    # below and ~31 two ticks below (2026-09-06); day-ahead live books show a
+    # median touch of 24-29 with 70% of strikes at >= 2c spread. Walking one
+    # level buys roughly 3-4x the size for one tick plus its fee. The after-
+    # fee LCB floor is a real EV floor one tick worse too: live realized
+    # settlement frequency 0.9467 beat the modelled LCB 0.905 in every band
+    # (2026-09-03 audit). Signal gates, the $1 notional floor, the single
+    # entry slot and NORMAL_POSITION_CAP are unchanged. Ships inside the
+    # already-rotated behavior-v3 (STRATEGY_BEHAVIOR_VERSION).
+    "limit_taker_cross_max_levels": 2,
     "limit_resting_reservation_fallback": True,
 }
 
@@ -724,6 +751,11 @@ RESEARCH_PROFILE_OVERRIDES = {
     # cost. The floor itself is unchanged; admissions whose floor only
     # holds at the maker price still rest exactly as before.
     "limit_taker_cross_enabled": False,
+    # The two-level cross lives in the generic taker path, which research
+    # never reaches (limit_taker_cross_enabled is False here and the target
+    # book quotes through target_research_quote); pinned to 1 so the
+    # research fingerprint does not inherit a live execution lever.
+    "limit_taker_cross_max_levels": 1,
     "limit_resting_reservation_fallback": False,
     "research_target_taker_cross": True,
     # Observation only; see the StrategyConfig field comment. Piloted on

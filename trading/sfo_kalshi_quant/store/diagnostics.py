@@ -301,9 +301,23 @@ def _decision_signal_payload(decision: TradeDecision) -> dict[str, object]:
             "limit_cost_per_contract": _round_number(decision.limit_cost_per_contract),
             "limit_edge": _round_number(decision.limit_edge),
             "limit_edge_lcb": _round_number(decision.limit_edge_lcb),
+            # Two-level taker cross (2026-09-13): the pre-entry ask ladder
+            # the quote was judged against and the level it walked to.
+            # Both None (and dropped) unless the live scan attached a ladder.
+            "ask_levels": _ask_levels_payload(decision.ask_levels),
+            "taker_levels_used": decision.taker_levels_used,
             "reasons": list(decision.reasons),
         }
     )
+
+
+def _ask_levels_payload(levels: object) -> list[list[float]] | None:
+    if not levels:
+        return None
+    try:
+        return [[float(price), float(size)] for price, size in levels]
+    except (TypeError, ValueError):
+        return None
 
 
 def _forecast_diagnostics_payload(forecast: ForecastSnapshot | None) -> dict[str, object] | None:

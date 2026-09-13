@@ -928,6 +928,69 @@ def _entry_findings(
     return findings
 
 
+def _parsed_ask_levels(raw: object) -> list[tuple[float, float]] | None:
+    """The first two ``[price, size]`` ladder entries, or None when malformed."""
+
+    if not isinstance(raw, list) or len(raw) < 2:
+        return None
+    levels: list[tuple[float, float]] = []
+    for entry in raw[:2]:
+        if not isinstance(entry, list) or len(entry) != 2:
+            return None
+        price = _finite_number(entry[0], minimum=0, maximum=1)
+        size = _finite_number(entry[1], minimum=0)
+        if price is None or size is None:
+            return None
+        levels.append((price, size))
+    return levels
+
+
+def _immediate_entry_ladder_reference(
+    quote: dict[str, Any],
+    signal: dict[str, Any],
+) -> tuple[float, float, float, float] | None | bool:
+    """Reference price/depth for a two-level taker entry.
+
+    Returns None for a plain single-level cross (no ladder walk recorded),
+    ``(quote_ask, signal_ask, quote_depth, signal_depth)`` for a two-level
+    entry whose recorded ladders are well-formed -- the level-2 price from
+    each payload and the level-1 + level-2 size from each -- and False when
+    the row claims a two-level entry but its ladder evidence is malformed,
+    so the caller fails closed. Each ladder's best level must equal the
+    displayed ask its payload recorded: that is the consistency rule
+    execution enforced when it walked the book.
+    """
+
+    levels_used = quote.get("taker_levels_used")
+    if levels_used is None:
+        return None
+    if isinstance(levels_used, bool) or levels_used not in (1, 2):
+        return False
+    if levels_used == 1:
+        return None
+    quote_levels = _parsed_ask_levels(quote.get("ask_levels"))
+    signal_levels = _parsed_ask_levels(signal.get("ask_levels"))
+    if quote_levels is None or signal_levels is None:
+        return False
+    (quote_one, quote_one_size), (quote_two, quote_two_size) = quote_levels
+    (signal_one, signal_one_size), (signal_two, signal_two_size) = signal_levels
+    if not _close_number(quote_one, quote.get("ask")) or not _close_number(
+        signal_one, signal.get("entry_ask")
+    ):
+        return False
+    if (
+        quote_two <= quote_one + _REPLAY_TOLERANCE
+        or signal_two <= signal_one + _REPLAY_TOLERANCE
+    ):
+        return False
+    return (
+        quote_two,
+        signal_two,
+        quote_one_size + quote_two_size,
+        signal_one_size + signal_two_size,
+    )
+
+
 def _current_immediate_entry_findings(
     row: sqlite3.Row,
     entry_fill_rows: list[sqlite3.Row],
@@ -971,6 +1034,16 @@ def _current_immediate_entry_findings(
     signal_ask = _finite_number(
         signal.get("entry_ask"), minimum=0, maximum=1
     )
+    # A two-level taker cross (execution._taker_cross_quote, 2026-09-13) is
+    # booked at the SECOND ladder level for level-1 + level-2 depth, so its
+    # verified price and executable depth come from the recorded ladder,
+    # not the displayed best ask. Malformed ladder evidence fails closed.
+    ladder = _immediate_entry_ladder_reference(quote, signal)
+    if ladder is False:
+        _append_finding(findings, "CURRENT_ENTRY_QUOTE_INVALID")
+        ladder = None
+    if ladder is not None:
+        quote_ask, signal_ask = ladder[0], ladder[1]
     if entry_price is None or quote_ask is None or signal_ask is None:
         findings.append("CURRENT_ENTRY_QUOTE_INVALID")
     elif not _close_number(entry_price, quote_ask) or not _close_number(
@@ -1016,17 +1089,21 @@ def _current_immediate_entry_findings(
         _row_value(row, "entry_ask_size"), minimum=0
     )
     signal_depth = _finite_number(signal.get("entry_ask_size"), minimum=0)
+    executable_depth = displayed_depth if ladder is None else ladder[2]
+    executable_signal_depth = signal_depth if ladder is None else ladder[3]
     if displayed_depth is None or signal_depth is None:
         findings.append("CURRENT_ENTRY_QUOTE_INVALID")
     elif (
         filled is not None
         and (
-            displayed_depth + _REPLAY_TOLERANCE < filled
-            or signal_depth + _REPLAY_TOLERANCE < filled
+            executable_depth + _REPLAY_TOLERANCE < filled
+            or executable_signal_depth + _REPLAY_TOLERANCE < filled
         )
     ):
         findings.append("CURRENT_ENTRY_DEPTH_INSUFFICIENT")
-    elif not _close_number(displayed_depth, signal_depth):
+    elif not _close_number(displayed_depth, signal_depth) or not _close_number(
+        executable_depth, executable_signal_depth
+    ):
         findings.append("CURRENT_ENTRY_DEPTH_MISMATCH")
 
     fee = _finite_number(_row_value(row, "fee_per_contract"), minimum=0)

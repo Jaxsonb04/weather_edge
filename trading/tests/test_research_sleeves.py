@@ -294,8 +294,15 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # All of the above move served probabilities or recorded execution size, so
     # STRATEGY_BEHAVIOR_VERSION rotates once for the combined release and these
     # fingerprints move with it.
-    assert strategy_fingerprint(config, entry_mode="limit") == "93326de538852004fc08aa99"
-    assert strategy_fingerprint(config, entry_mode="market") == "cdfaeb3c0be77f5b9dcb1270"
+    # 2026-09-13 (scaling release, two-level taker cross): StrategyConfig
+    # gained `limit_taker_cross_max_levels` (live 2, frozen 1), which enters
+    # asdict(config) and therefore moves both fingerprints WITHOUT another
+    # STRATEGY_BEHAVIOR_VERSION rotation -- the change ships inside the
+    # already-rotated behaviour-v3 cohort. Before it the two values were
+    # 93326de538852004fc08aa99 / cdfaeb3c0be77f5b9dcb1270. Re-pin once more at
+    # integration if a sibling track adds a StrategyConfig field.
+    assert strategy_fingerprint(config, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
+    assert strategy_fingerprint(config, entry_mode="market") == "daac202606908834dcef5e78"
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1338,9 +1345,10 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION; see
+    # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION and moved again on
+    # 2026-09-13 by the `limit_taker_cross_max_levels` config field; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "cdfaeb3c0be77f5b9dcb1270"
+    assert row["strategy_fingerprint"] == "daac202606908834dcef5e78"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

@@ -782,7 +782,17 @@ class PaperTrader:
                 # fill model, not by the ask displayed at entry (sizing no
                 # longer applies this taker-era cap -- see RiskManager).
                 if quote.would_cross:
-                    adjusted = _clamp_to_displayed_ask(adjusted)
+                    # A two-level cross may consume level-1 + level-2 depth
+                    # (execution._second_level_taker_quote); the paper fill
+                    # is capped at exactly that ladder depth, never more.
+                    adjusted = _clamp_to_displayed_ask(
+                        adjusted,
+                        displayed_depth=(
+                            quote.displayed_depth
+                            if (quote.levels_used or 0) >= 2
+                            else None
+                        ),
+                    )
                     if adjusted is None:
                         continue
                 adjusted = with_buy_limit(adjusted, self.config)
@@ -1346,8 +1356,19 @@ def _decision_key(decision: TradeDecision) -> tuple[str, str]:
     return (decision.ticker, decision.side)
 
 
-def _clamp_to_displayed_ask(decision: TradeDecision) -> TradeDecision | None:
+def _clamp_to_displayed_ask(
+    decision: TradeDecision,
+    *,
+    displayed_depth: float | None = None,
+) -> TradeDecision | None:
     """Cap a TAKER fill at the ask depth the book displays right now.
+
+    ``displayed_depth`` overrides the decision's best-ask size with the depth
+    a two-level taker cross actually quoted against (level-1 + level-2 ladder
+    size, execution.BuyLimitQuote.displayed_depth). The paper ledger then
+    fills against exactly the resting size the ladder displayed -- it does
+    not invent depth beyond the two levels, and does not truncate a
+    level-2 order back to the best ask.
 
     Applies only where the order takes immediately -- market entry or a
     crossing limit -- because an instant fill cannot take more contracts than
@@ -1358,7 +1379,12 @@ def _clamp_to_displayed_ask(decision: TradeDecision) -> TradeDecision | None:
     exact fees for the clamped count.
     """
 
-    ask_size = float(decision.ask_size or 0.0)
+    if displayed_depth is not None:
+        ask_size = float(displayed_depth)
+        if not math.isfinite(ask_size) or ask_size <= 0:
+            return None
+    else:
+        ask_size = float(decision.ask_size or 0.0)
     if ask_size <= 0:
         # Runtime decisions carry entry_ask_size explicitly.  A zero there is
         # observed zero liquidity, not an unknown legacy field, and an

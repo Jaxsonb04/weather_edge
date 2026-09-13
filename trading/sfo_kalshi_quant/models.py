@@ -379,6 +379,20 @@ class TradeDecision:
     # guards were applied.
     signal_approved: bool | None = None
     entry_block_reason: str | None = None
+    # Pre-entry ask ladder in the decision's OWN side terms, best (lowest)
+    # price first: ((price, size), ...). The live portfolio scan attaches it
+    # only when the displayed best-ask size is below the sizing request and a
+    # fresh public orderbook was fetched inside the scan's ladder budget
+    # (_cli.scan._attach_pre_entry_ask_ladders). None otherwise -- no client,
+    # fetch failure, budget exhausted, research profile, market entry -- and
+    # execution then degrades to the single-level displayed-ask cross.
+    ask_levels: tuple[tuple[float, float], ...] | None = None
+    # Set by execution.with_buy_limit on a crossing quote: 1 = the displayed
+    # best ask only, 2 = one order at the second ladder level for level-1 +
+    # level-2 depth (booked entirely at the level-2 cost). None for a resting
+    # quote. Recorded into decision and order diagnostics so a later markout
+    # study can compare the two fill classes.
+    taker_levels_used: int | None = None
 
     @property
     def bid(self) -> float:

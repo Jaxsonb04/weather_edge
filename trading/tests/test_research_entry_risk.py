@@ -72,13 +72,17 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # test_research_sleeves.py: the research entry-risk identity added
     # here never reaches the live book. Before the 2026-09-07 rotation of
     # STRATEGY_BEHAVIOR_VERSION the same two values were
-    # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c.
-    assert strategy_fingerprint(live, entry_mode="limit") == "93326de538852004fc08aa99"
+    # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c; under behaviour-v3
+    # before the 2026-09-13 `limit_taker_cross_max_levels` field it was
+    # 93326de538852004fc08aa99.
+    assert strategy_fingerprint(live, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
     # Research without research_entry_risk_version hashes to
     # 4d812e63727caf1b3de6b127 under behaviour-v3; with it, the research
     # identity moves.
     assert strategy_fingerprint(research, entry_mode="limit") != "4d812e63727caf1b3de6b127"
-    assert strategy_fingerprint(research, entry_mode="limit") == "69a29d415bad6047b03264be"
+    # 69a29d415bad6047b03264be before the 2026-09-13 config field (research
+    # pins limit_taker_cross_max_levels to 1, but the key itself is hashed).
+    assert strategy_fingerprint(research, entry_mode="limit") == "0db3fd6d76056f7f7b141ff2"
     assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_pnl == 50.0

@@ -4153,18 +4153,27 @@ class PaperStore:
         )
         fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
         sleeve = sleeve_for(profile, list(decision.reasons), decision.side)
-        quote_snapshot_json = json.dumps(
-            {
-                "side": decision.side,
-                "bid": decision.bid,
-                "ask": decision.ask,
-                "limit_price": decision.limit_price,
-                "contracts": contracts,
-                "fee_per_contract": fee_per_contract,
-                "cost_per_contract": cost_per_contract,
-            },
-            sort_keys=True,
-        )
+        quote_snapshot: dict[str, object] = {
+            "side": decision.side,
+            "bid": decision.bid,
+            "ask": decision.ask,
+            "limit_price": decision.limit_price,
+            "contracts": contracts,
+            "fee_per_contract": fee_per_contract,
+            "cost_per_contract": cost_per_contract,
+        }
+        # Two-level taker cross (2026-09-13): the ladder the quote walked and
+        # how many levels it used. Recorded whenever a ladder was fetched --
+        # a level-1 fill WITH a ladder is the control group for the markout
+        # comparison -- and read back by restatement to verify the level-2
+        # entry price and executable depth. Absent on every earlier row.
+        if decision.taker_levels_used is not None:
+            quote_snapshot["taker_levels_used"] = int(decision.taker_levels_used)
+        if decision.ask_levels:
+            quote_snapshot["ask_levels"] = [
+                [float(price), float(size)] for price, size in decision.ask_levels
+            ]
+        quote_snapshot_json = json.dumps(quote_snapshot, sort_keys=True)
         fill_model = (
             "maker_trade_through_required"
             if normalized_status == "PAPER_LIMIT_RESTING"
