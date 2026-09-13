@@ -1,16 +1,46 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-09 22:02 PDT
+Last updated: 2026-09-12 (performance and scaling revision; deployment pending)
 
 Last complete production verification: 2026-09-04 21:57 PDT
 
-Last public artifact inspection: 2026-09-09 21:32 PDT (fresh shell/manifest;
+Last public artifact inspection: 2026-09-12 17:52 PDT (Strategy/signal hashes;
 not a full AWS audit)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Research performance and execution scaling (September 12, 17:50 PDT snapshot):**
+  fresh public Strategy and signal files matched the 17:52 PDT publication hashes.
+  Live Stability realized equity was $1,053.75; the economically separate
+  Research ROI account was $1,029.87 after approximately $90.95 realized losses
+  across September 11–12, an 8.11% drop from its reported account peak. Research
+  marked equity was $1,024.06 with $132.76 open cost. Three Atlanta/Miami NO
+  positions lost $97.94 before offsets. Thin conservative edge funded large
+  positions; partial-exit dollar guards could forget earlier realized slices.
+  The final local revision uses lower-bound quarter-Kelly within the existing
+  $90 entry ceiling, reserves open/pending cost against the remaining $150 daily
+  loss budget, and retains realized partial-exit losses across monitor processes.
+  The initial uniform $30 containment proposal was never deployed and is
+  superseded. Structural target taker quotes can exceed the generic 25-contract
+  placeholder within observed depth and exact fee/risk checks; a bounded
+  reservation-price fallback keeps otherwise valid maker opportunities. Existing
+  edge, concentration, duplicate, queue, 15-minute expiry and promotion gates
+  stay binding. No immediate fill increase is demonstrated by the fresh public
+  sample; current exposure plus daily losses exhausts projected daily capacity.
+  Stale historical analysis and per-account drawdown now warn; bootstrap and
+  promotion inference resample whole calendar dates across cities. Account and
+  daily-goal histories remain intact, with execution separately fingerprinted.
+  Losses cannot be guaranteed away. The isolated current-main release passed
+  2,928 Python 3.13 tests with eight skips, compilation and diff checks. Required
+  GitHub checks and deployment are pending; the user requested deployment. SSH is unreachable and the
+  AWS console needs owner sign-in. No production source, timer, account or live
+  execution flag has changed. Reconcile/drain old pending research orders, use
+  canonical backup/install gates, refresh full analysis from the verified
+  snapshot, and verify accounts/publication/timers at cutover. See
+  `docs/audits/2026-09-12-strategy-performance.md` for evidence and research.
 
 - **Recruiter-facing repository refresh merged (September 9, 22:02 PDT snapshot):**
   PR #119 merged at `17023478a6ae4f85b62f743c0d3628f84795fedd`.

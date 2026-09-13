@@ -763,6 +763,42 @@ def test_holm_adjustment_blocks_a_marginal_repeated_hypothesis_family() -> None:
     assert REASON_HOLM_NOT_SIGNIFICANT in combined.block_reasons
 
 
+def test_correlated_cities_cannot_turn_ten_inconclusive_days_into_promotion() -> None:
+    def evaluate(stations):
+        folds, replays, candidates = [], [], []
+        for i, delta in enumerate([1.0] * 7 + [-1.0] * 3):
+            for station in stations:
+                fold, replay, candidate = _cluster(
+                    i, station_id=station, baseline_pnl=0.0, challenger_pnl=delta,
+                )
+                folds.append(fold)
+                replays.append(replay)
+                candidates.append(candidate)
+        return evaluate_promotion(
+            _declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates,
+        )
+
+    original = evaluate(("KSFO",))
+    duplicated = evaluate(("KSFO", "KLAX", "KSEA"))
+    assert duplicated.independent_confirmatory_days == 30  # legacy breadth field
+    assert duplicated.distinct_calendar_target_days == 10
+    assert REASON_INSUFFICIENT_DAYS not in duplicated.block_reasons
+    assert REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS not in duplicated.block_reasons
+    assert duplicated.bootstrap_calendar_days == original.bootstrap_calendar_days == 10
+    assert duplicated.bootstrap_cluster_unit == "calendar_target_date"
+    assert duplicated.holm_p_value == original.holm_p_value
+    assert duplicated.holm_p_value > 0.05
+    assert duplicated.holm_adjusted_significant is False
+    assert REASON_HOLM_NOT_SIGNIFICANT in duplicated.block_reasons
+    assert REASON_ROI_LOWER_BOUND in duplicated.block_reasons
+    assert duplicated.eligible_for_target_paper is False
+    # Metric completeness still counts all 30 folds, not the ten date clusters.
+    assert duplicated.crps_score_coverage_folds == 30
+    assert duplicated.brier_score_coverage_folds == 30
+    assert REASON_CRPS_INCOMPLETE_COVERAGE not in duplicated.block_reasons
+    assert REASON_BRIER_INCOMPLETE_COVERAGE not in duplicated.block_reasons
+
+
 # ---------------------------------------------------------------------------
 # Happy path, determinism, live-activation safety
 # ---------------------------------------------------------------------------

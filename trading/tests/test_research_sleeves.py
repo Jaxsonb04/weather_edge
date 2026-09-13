@@ -884,6 +884,100 @@ def _linked_admission(
     )
 
 
+@pytest.mark.parametrize("resting", [True, False])
+def test_target_atomic_admission_rejects_forged_size_above_conservative_lcb(
+    tmp_path, resting,
+):
+    from sfo_kalshi_quant.db import PaperStore, ResearchEntryLimitError
+
+    store = PaperStore(tmp_path / "entry-risk.db", research_clock=_fixed_research_clock)
+    decision = _atomic_decision("KXHIGHTSFO-26JUL19-B80.5", contracts=25, resting=resting)
+    # Keep valid executable quotes but shrink the conservative margin until the
+    # scanner's structural request exceeds the independent atomic safety cap.
+    from sfo_kalshi_quant.paper import with_target_research_execution
+    config = strategy_config_for_profile("research")
+    decision = with_target_research_execution(
+        replace(decision, probability_lcb=0.801 if resting else 0.831), config,
+    )
+    assert decision is not None
+    decision = replace(decision, recommended_contracts=25, expected_profit=decision.edge * 25)
+    admission = _linked_admission(store, TARGET_POLICY, "forged", decision)
+    with pytest.raises(ResearchEntryLimitError, match="conservative entry-risk"):
+        store.record_research_order_atomic(
+            "2026-07-19", decision, admission=admission, strategy_config=config,
+        )
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
+
+
+def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_path, monkeypatch):
+    from sfo_kalshi_quant.db import PaperStore
+
+    monkeypatch.setattr("sfo_kalshi_quant.db._now", lambda: _fixed_research_clock().isoformat())
+    db_path = tmp_path / "daily-risk.db"
+    store = PaperStore(db_path, research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    order_ids = []
+    # Each crossing order costs $20.83 (fees included). Seven fit in $150;
+    # another city or target date cannot bypass the account-wide reservation.
+    for index in range(8):
+        target = f"2026-07-{19 + index:02d}"
+        decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
+        admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
+        result = store.record_research_order_atomic(
+            target, decision, admission=admission, strategy_config=config,
+        )
+        if index < 7:
+            assert result is not None
+            order_ids.append(result)
+        else:
+            assert result is None
+    store = PaperStore(db_path, research_clock=_fixed_research_clock)
+    before = store.account_policy_capacity(
+        target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
+        risk_profile="research", requested_spend=20.0, account_id=TARGET_POLICY.account_id,
+    )
+    assert before["allowed_spend"] < 20.0
+    store.close_paper_order(order_ids[0], 0.01)
+    after = store.account_policy_capacity(
+        target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
+        risk_profile="research", requested_spend=20.0, account_id=TARGET_POLICY.account_id,
+    )
+    assert after["allowed_spend"] < 20.0
+    assert "projected daily-loss" in after["reason"]
+
+
+def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from sfo_kalshi_quant.db import PaperStore
+
+    db_path = tmp_path / "concurrent-daily-risk.db"
+    store = PaperStore(db_path, research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    attempts = []
+    for index in range(8):
+        target = f"2026-07-{19 + index:02d}"
+        decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
+        admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
+        if index < 6:
+            assert store.record_research_order_atomic(
+                target, decision, admission=admission, strategy_config=config,
+            ) is not None
+        else:
+            attempts.append((target, decision, admission))
+    stores = [PaperStore(db_path, research_clock=_fixed_research_clock) for _ in attempts]
+
+    def admit(index):
+        target, decision, admission = attempts[index]
+        return stores[index].record_research_order_atomic(
+            target, decision, admission=admission, strategy_config=config,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(admit, range(2)))
+    assert sum(result is not None for result in results) == 1
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) <= 150.0
+
+
 def test_research_admission_is_immutable() -> None:
     admission = _admission(TARGET_POLICY, "frozen")
 

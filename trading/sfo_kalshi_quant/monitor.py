@@ -458,6 +458,17 @@ def run_paper_monitor(
         net_exit = live_bid - exit_fee
         pnl_pct = (net_exit - entry_cost) / entry_cost if entry_cost > 0 else 0.0
         pnl_dollars = contracts * (net_exit - entry_cost)
+        veto_dollar_cap = RESEARCH_VETO_DOLLAR_CAPS.get(
+            str(row["account_id"] or "")
+        )
+        # A displayed-depth partial exit realizes money on child lots while
+        # shrinking the root. Applying the dollar floor to only the remainder
+        # could restore the model veto immediately after a catastrophic stop.
+        # Keep the logical position's realized loss in its guard across runs;
+        # the snapshot's unrealized fields still describe only open contracts.
+        position_loss_dollars = pnl_dollars
+        if veto_dollar_cap is not None:
+            position_loss_dollars += store.partial_close_realized_pnl(int(row["id"]))
 
         # Edge-based exit decision, shared with the dashboard mirror via exits.py.
         # Take-profit fires when the net exit reaches the model's fair value for
@@ -500,10 +511,8 @@ def run_paper_monitor(
             ),
             model_veto_buffer=args.model_veto_buffer,
             model_veto_max_loss_roi=model_veto_max_loss,
-            model_veto_max_loss_dollars=RESEARCH_VETO_DOLLAR_CAPS.get(
-                str(row["account_id"] or "")
-            ),
-            position_loss_dollars=pnl_dollars,
+            model_veto_max_loss_dollars=veto_dollar_cap,
+            position_loss_dollars=position_loss_dollars,
             legacy_take_profit_net=entry_cost * (1.0 + take_profit),
             stop_loss_pct=stop_loss_pct,
             settlement_first_no_min_cost=_settlement_first_no_min_cost_for_order(row),

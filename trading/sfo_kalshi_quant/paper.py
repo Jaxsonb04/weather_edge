@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from dataclasses import dataclass, replace
 from typing import NoReturn
@@ -22,7 +23,8 @@ from .fees import (
 from .execution import buy_limit_for_decision, target_research_quote, with_buy_limit
 from .models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
-from .research_portfolio import ResearchPlans
+from .research_entry_risk import target_entry_spend_limit
+from .research_portfolio import MAX_TARGET_CONTRACTS, ResearchPlans
 
 
 class ArbitrageContainmentError(RuntimeError):
@@ -106,9 +108,78 @@ def with_target_research_execution(
         limit_edge=quote.edge,
         limit_edge_lcb=quote.edge_lcb,
         binding_constraint=(
-            "visible_ask_depth" if quote.would_cross else decision.binding_constraint
+            (
+                "research_visible_ask_depth"
+                if decision.binding_constraint == "research_visible_ask_depth"
+                else "visible_ask_depth"
+            )
+            if quote.would_cross
+            else decision.binding_constraint
         ),
     )
+
+
+def _expanded_structural_target_taker(
+    decision: TradeDecision,
+    config: StrategyConfig,
+) -> TradeDecision | None:
+    """Recover actual target taker capacity before portfolio allocation only.
+
+    The structural scanner's quantity is a placeholder for its target
+    allocator. A taker quote used to replace that marker with its already
+    truncated 25-contract size, losing the deeper displayed capacity. Reprice
+    larger whole slices under exact fees and the LCB Kelly/position budget.
+    Once allocated, the regular execution helper can only preserve or shrink
+    quantity; it never calls this expansion path.
+    """
+
+    if (
+        not config.research_target_taker_cross
+        or not decision.approved
+        or decision.binding_constraint != "research_policy_allocator"
+        or decision.limit_price is not None
+    ):
+        return None
+    try:
+        ask = float(decision.ask)
+        depth = float(decision.ask_size)
+        source_contracts = float(decision.recommended_contracts)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not all(math.isfinite(value) for value in (ask, depth, source_contracts))
+        or not 0.0 < ask < 1.0
+        or depth <= 0.0
+        or source_contracts <= 0.0
+    ):
+        return None
+    upper = math.floor(
+        min(
+            depth,
+            MAX_TARGET_CONTRACTS,
+            # Zero fees are the most generous possible cost. The exact quote
+            # below can only tighten this bound, so avoid scanning quantities
+            # that cannot pass even before fees.
+            target_entry_spend_limit(ask, decision.probability_lcb) / ask,
+        )
+        + 1e-12
+    )
+    for contracts in range(upper, math.floor(source_contracts), -1):
+        candidate = replace(
+            decision,
+            recommended_contracts=float(contracts),
+            binding_constraint="research_visible_ask_depth",
+        )
+        quote = target_research_quote(candidate, config)
+        if quote is None or not quote.would_cross:
+            continue
+        spend_limit = target_entry_spend_limit(
+            quote.cost_per_contract, decision.probability_lcb
+        )
+        if quote.contracts * quote.cost_per_contract > spend_limit + 1e-9:
+            continue
+        return with_target_research_execution(candidate, config)
+    return None
 
 
 def prepare_research_target_decisions(
@@ -135,7 +206,9 @@ def prepare_research_target_decisions(
             )
             target.append(blocked)
             continue
-        target_quote = with_target_research_execution(decision, config)
+        target_quote = _expanded_structural_target_taker(decision, config)
+        if target_quote is None:
+            target_quote = with_target_research_execution(decision, config)
         if target_quote is None:
             target.append(
                 replace(

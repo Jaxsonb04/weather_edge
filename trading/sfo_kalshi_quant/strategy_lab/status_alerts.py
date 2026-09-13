@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,11 @@ from .._util import (
 from ..config import StrategyConfig
 from ..settlement_day import settlement_today
 from . import ACTIVE_CALIBRATION_SOURCE, CHALLENGER_CALIBRATION_SOURCE
+from .readiness import _stale_analysis_readiness
+
+
+# Informational review threshold, never a trading permission or loss guarantee.
+ACCOUNT_DRAWDOWN_WARNING_PCT = 0.05
 
 
 def _status_payload(
@@ -25,6 +31,8 @@ def _status_payload(
     signal_quality: dict[str, Any],
     paper: dict[str, Any],
     forecast_health: dict[str, Any],
+    accounting: dict[str, Any] | None = None,
+    analysis_generated_at: str | None = None,
 ) -> dict[str, Any]:
     latest_targets = [
         str(row.get("target_date"))
@@ -46,6 +54,8 @@ def _status_payload(
         paper=paper,
         entry_block_reason=entry_block_reason,
         forecast_health=forecast_health,
+        accounting=accounting,
+        analysis_generated_at=analysis_generated_at,
     )
     return {
         "active_calibration_source": ACTIVE_CALIBRATION_SOURCE,
@@ -132,6 +142,8 @@ def _strategy_alerts(
     daily_budget: float | None = None,
     now: datetime | None = None,
     forecast_health: dict[str, Any] | None = None,
+    accounting: dict[str, Any] | None = None,
+    analysis_generated_at: str | None = None,
 ) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
     current_utc = now or datetime.now(UTC)
@@ -139,6 +151,24 @@ def _strategy_alerts(
         current_utc = current_utc.replace(tzinfo=UTC)
     else:
         current_utc = current_utc.astimezone(UTC)
+    if analysis_generated_at is not None:
+        stale = _stale_analysis_readiness(analysis_generated_at, now=current_utc)
+        if stale is not None:
+            alerts.append(_alert(
+                "warning", "analysis-stale", "Historical analysis unavailable or stale",
+                str(stale["reason"]),
+                "Refresh historical analysis from a verified snapshot before assessing promotion.",
+            ))
+    if accounting and accounting.get("available") is False:
+        alerts.append(_alert(
+            "critical", "accounting-unavailable", "Account validation failed",
+            str(accounting.get("reason") or "Current account balances could not be validated."),
+            "Reconcile the affected paper ledger before assessing performance.",
+        ))
+    elif accounting:
+        ledgers = accounting.get("active_ledgers") or {}
+        for key, label in (("live_stability", "Live Stability"), ("research_roi", "Research ROI")):
+            alerts.extend(_account_drawdown_alerts(ledgers.get(key), key=key, label=label))
     summary = paper.get("summary") or {}
     if not paper.get("available"):
         alerts.append(
@@ -315,6 +345,53 @@ def _strategy_alerts(
             )
         )
     return alerts
+
+
+def _account_drawdown_alerts(
+    account: dict[str, Any] | None, *, key: str, label: str,
+) -> list[dict[str, str]]:
+    """Use one canonical account's equity; never combine independent books.
+
+    This is current realized drawdown from the peak visible in the account's
+    reported window, not a full-history maximum drawdown or a marked return.
+    Include each day's opening balance so a decline on day one is retained.
+    """
+    if not isinstance(account, dict):
+        return []
+
+    def finite(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    current = finite(account.get("realized_equity"))
+    if current is None:
+        return []
+    balances = [current]
+    for day in account.get("days") or []:
+        if not isinstance(day, dict):
+            continue
+        for field in ("opening_equity", "closing_equity"):
+            balance = finite(day.get(field))
+            if balance is not None:
+                balances.append(balance)
+    peak = max(balances)
+    if peak <= 0:
+        return []
+    drawdown = peak - current
+    if drawdown / peak < ACCOUNT_DRAWDOWN_WARNING_PCT:
+        return []
+    return [_alert(
+        "warning", f"{key}-drawdown", f"{label} drawdown needs review",
+        f"{label} realized equity is ${drawdown:.2f} ({drawdown / peak:.2%}) below "
+        f"its ${peak:.2f} peak in the reported account window. Open-position marks "
+        "are separate from this realized drawdown.",
+        "Review concentrated losses, position sizing, and exit fills before adding risk.",
+    )]
 
 
 def _forecast_health_alerts(forecast_health: dict[str, Any] | None) -> list[dict[str, str]]:

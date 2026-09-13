@@ -214,6 +214,11 @@ TARGET_POLICY_V5 = ResearchSleevePolicy(
 # real ceiling on compounding at this size, but raising it is a change to the
 # published KPI and to the goal-freezing contract, so it waits for the day the
 # lock is measured actually firing rather than being bundled into a size step.
+#
+# September 12 safety overlay: these immutable account/goal identity fields
+# remain historical upper bounds. research_entry_risk.py now imposes tighter
+# entry sizing and a projected daily-loss reservation without resetting equity
+# or rewriting frozen goals. Its execution version is separately fingerprinted.
 TARGET_POLICY = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-roi-v6",

@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from .config import StrategyConfig
 from .fees import quadratic_fee_average_per_contract
 from .models import TradeDecision
+from .research_entry_risk import target_entry_spend_limit
 
 
 @dataclass(frozen=True)
@@ -212,7 +213,9 @@ def target_research_quote(
     that price would cross, take only whole contracts at the visible ask,
     downsized to displayed depth before fees are recomputed.  Unlike the legacy
     generic limit policy, the target research floor is exactly non-negative
-    after-fee LCB edge, not the 2-point buffer.
+    after-fee LCB edge, not the 2-point buffer. Active target execution can rest
+    at the bid or one tick below it when the improving quote fails either edge
+    floor; the same rounded maker fees and both edge floors still apply.
     """
 
     if not decision.approved or decision.recommended_contracts <= 0:
@@ -241,6 +244,13 @@ def target_research_quote(
         and decision.model_probability is not None
         else float(decision.probability)
     )
+    if (
+        not math.isfinite(point_probability)
+        or not 0.0 <= point_probability <= 1.0
+        or not math.isfinite(float(decision.probability_lcb))
+        or not 0.0 <= float(decision.probability_lcb) <= 1.0
+    ):
+        return None
     inside_price = _floor_to_tick(visible_bid + tick, tick)
     crosses = inside_price >= visible_ask - 1e-12
     if not crosses and config.research_target_taker_cross:
@@ -331,7 +341,20 @@ def target_research_quote(
         cost = price + fee
     edge = point_probability - cost
     edge_lcb = float(decision.probability_lcb) - cost
-    if edge < -1e-12 or edge_lcb < -1e-12:
+    cannot_fund_contract = (
+        config.research_target_taker_cross
+        and target_entry_spend_limit(cost, decision.probability_lcb) + 1e-9 < cost
+    )
+    if edge < -1e-12 or edge_lcb < -1e-12 or cannot_fund_contract:
+        if config.research_target_taker_cross:
+            return _target_reservation_resting_quote(
+                decision,
+                config,
+                contracts=requested_contracts,
+                point_probability=point_probability,
+                visible_bid=visible_bid,
+                visible_ask=visible_ask,
+            )
         return None
     return BuyLimitQuote(
         price=_round_price(price),
@@ -342,6 +365,63 @@ def target_research_quote(
         would_cross=crosses,
         contracts=contracts,
     )
+
+
+def _target_reservation_resting_quote(
+    decision: TradeDecision,
+    config: StrategyConfig,
+    *,
+    contracts: float,
+    point_probability: float,
+    visible_bid: float,
+    visible_ask: float,
+) -> BuyLimitQuote | None:
+    """Try the bid and one tick below it after the improving quote fails.
+
+    This bounded fallback preserves both target edge floors at exact maker
+    fees. It does not chase a distant reservation price or manufacture a fill;
+    the normal queue, public-tape evidence, and resting TTL still apply.
+    """
+
+    tick = float(config.limit_price_tick)
+    top_price = min(
+        _floor_to_tick(visible_bid, tick),
+        _floor_to_tick(visible_ask - tick, tick),
+    )
+    minimum_price = max(tick, _floor_to_tick(visible_bid - tick, tick))
+    for price in (top_price, _floor_to_tick(top_price - tick, tick)):
+        if price < minimum_price - 1e-12:
+            break
+        fee = quadratic_fee_average_per_contract(
+            price,
+            contracts,
+            maker=True,
+            fee_multiplier=config.fee_multiplier,
+            taker_rate=config.taker_fee_rate,
+            maker_rate=config.maker_fee_rate,
+            series_ticker=decision.ticker,
+        )
+        cost = price + fee
+        edge = point_probability - cost
+        edge_lcb = float(decision.probability_lcb) - cost
+        if (
+            edge >= -1e-12
+            and edge_lcb >= -1e-12
+            # A zero (or vanishing) LCB margin cannot fund even one contract
+            # under fractional Kelly. Try the remaining permitted tick before
+            # handing an unusable reservation quote to the allocator.
+            and target_entry_spend_limit(cost, decision.probability_lcb) + 1e-9 >= cost
+        ):
+            return BuyLimitQuote(
+                price=price,
+                fee_per_contract=fee,
+                cost_per_contract=cost,
+                edge=edge,
+                edge_lcb=edge_lcb,
+                would_cross=False,
+                contracts=contracts,
+            )
+    return None
 
 
 def with_buy_limit(

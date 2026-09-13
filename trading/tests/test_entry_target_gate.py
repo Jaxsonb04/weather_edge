@@ -127,7 +127,11 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
     )
     store = Mock()
     store.research_objective_day.return_value = date(2026, 7, 18)
-    store.research_account_state.return_value = {"available_cash": 900.0}
+    store.research_account_state.return_value = {
+        "available_cash": 900.0,
+        "open_cost_basis": 0.0,
+        "reservations": 0.0,
+    }
     store.research_realized_pnl_for_day.return_value = 12.0
     plans = SimpleNamespace(target=object(), motion=object())
     execution = object()
@@ -167,7 +171,7 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
     allocate.assert_called_once_with(
         [(decision, "2026-07-19", 1) for decision in target_decisions],
         motion_opportunities=[],
-        target_available_cash=900.0,
+        target_available_cash=150.0,
         motion_available_cash=0.0,
         realized_today=12.0,
         motion_realized_today=0.0,

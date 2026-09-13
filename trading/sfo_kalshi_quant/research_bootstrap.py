@@ -1,5 +1,4 @@
-"""Task 5 Step 4: deterministic day-clustered bootstrap over independent
-(station_id, target_date) clusters.
+"""Deterministic paired bootstrap that resamples whole calendar target days.
 
 Split out of ``research_evidence.py`` (Step 3's paired daily/capacity
 evidence) for the same file-size-cohesion reason ``research_scoring.py``
@@ -9,15 +8,13 @@ concern (resampling statistics over the fold-level paired deltas
 (``trading/tests/test_research_bootstrap.py``), and combining both would
 push a single module close to or past the project's 800-line file cap.
 
-Plan Task 5 Step 4, verbatim: "Resample independent (station_id,
-target_date) clusters with a fixed seed and 10,000 draws. Publish
-percentile 95% intervals for paired realized P&L/day, log growth/day,
-ROI, CRPS, and Brier deltas." The independent resampling unit is
-therefore one ``WalkForwardFold`` -- exactly the plan's own "indivisible
-station/target-day test group" -- never an individual paired case/ticker
-row, so a fold that happens to hold several correlated same-city-day
-cases (one per scan cycle) is not overrepresented relative to a fold that
-holds only one.
+Cases first aggregate into station-day folds; folds sharing a target date
+then travel together in every bootstrap draw. Treating cities on the same
+weather day as independent can manufacture precision from spatially
+correlated outcomes. The point estimate remains the mean station-day
+delta: sampled dates retain all their available folds, including their
+relative weights when date coverage differs. This protects same-date
+dependence, not serial dependence between successive weather days.
 
 Sign convention (documented once, applies to every delta this module
 reports): positive always means the CHALLENGER arm improved.
@@ -55,8 +52,8 @@ DEFAULT_BOOTSTRAP_DRAWS = 10000
 
 @dataclass(frozen=True)
 class FoldPairedAggregate:
-    """One (station_id, target_date) cluster's paired delta aggregate --
-    the bootstrap's independent resampling unit. Built from every paired
+    """One (station_id, target_date) fold's paired delta aggregate.
+    Same-date folds are resampled together. Built from every paired
     case in one fold (``PairedCaseRecord.fold_id``), summed/averaged so a
     fold with several cases contributes exactly one cluster value.
 
@@ -101,9 +98,8 @@ def fold_paired_aggregates(
     *,
     reference_equity: float = TARGET_POLICY.reference_equity,
 ) -> tuple[FoldPairedAggregate, ...]:
-    """Group paired case records into one aggregate per (station_id,
-    target_date) cluster (``fold_id``) -- the bootstrap's own resampling
-    unit, never an individual case/ticker row."""
+    """Group paired cases into station-day folds before calendar-day
+    resampling, never resampling individual case/ticker rows."""
 
     if reference_equity <= 0 or not math.isfinite(reference_equity):
         raise ValueError("reference_equity must be finite and positive")
@@ -187,9 +183,12 @@ def _percentile(values: Sequence[float], probability: float) -> float | None:
 
 @dataclass(frozen=True)
 class BootstrapInterval:
-    """One metric's deterministic day(station-day)-clustered bootstrap
-    result: the observed point estimate plus a percentile 95% interval
-    over ``samples`` resampled cluster means."""
+    """A percentile interval over resampled calendar-day clusters.
+
+    ``n_clusters`` counts sampled calendar dates; ``n_observations`` counts
+    available station-day folds for metric-coverage checks. The latter must
+    never be interpreted as an independent sample size.
+    """
 
     metric: str
     samples: int
@@ -198,6 +197,8 @@ class BootstrapInterval:
     point_estimate: float | None
     lower: float | None
     upper: float | None
+    n_observations: int = 0
+    cluster_unit: str = "calendar_target_date"
 
 
 _METRIC_NAMES = ("realized_pnl_per_day", "roi", "log_growth_per_day", "crps", "brier")
@@ -217,6 +218,44 @@ def _cluster_values(aggregates: Sequence[FoldPairedAggregate], metric: str) -> l
     raise ValueError(f"unknown bootstrap metric: {metric!r}")
 
 
+def _calendar_day_samples(
+    dated_values: Sequence[tuple[date, float]], *, seed: int, draws: int
+) -> tuple[int, list[float]]:
+    """Draw whole dates, preserving the observed station-day mean estimand."""
+
+    by_day: dict[date, list[float]] = {}
+    for target_date, value in dated_values:
+        by_day.setdefault(target_date, []).append(value)
+    clusters = [
+        (math.fsum(sorted(by_day[day])), len(by_day[day])) for day in sorted(by_day)
+    ]
+    if not clusters:
+        return 0, []
+    rng = random.Random(seed)
+    samples: list[float] = []
+    for _ in range(draws):
+        sampled = [rng.choice(clusters) for _ in clusters]
+        samples.append(math.fsum(total for total, _ in sampled) / sum(n for _, n in sampled))
+    return len(clusters), samples
+
+
+def calendar_day_bootstrap_p_value(
+    dated_values: Sequence[tuple[date, float]],
+    *,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    draws: int = DEFAULT_BOOTSTRAP_DRAWS,
+) -> float | None:
+    """One-sided percentile-bootstrap tail for positive paired ROI.
+
+    Uses the same date clusters and weighted statistic as the intervals.
+    This preserves the existing percentile-tail test while correcting its
+    resampling unit; it is not an anytime-valid or serial-dependence test.
+    """
+
+    _, samples = _calendar_day_samples(dated_values, seed=seed, draws=draws)
+    return sum(value <= 0.0 for value in samples) / len(samples) if samples else None
+
+
 def day_clustered_bootstrap(
     aggregates: Sequence[FoldPairedAggregate],
     *,
@@ -224,8 +263,8 @@ def day_clustered_bootstrap(
     draws: int = DEFAULT_BOOTSTRAP_DRAWS,
 ) -> dict[str, BootstrapInterval]:
     """Deterministic percentile-95% bootstrap for paired realized P&L/day,
-    ROI, log growth/day, CRPS, and Brier deltas, resampled over independent
-    (station_id, target_date) clusters (plan Task 5 Step 4).
+    ROI, log growth/day, CRPS, and Brier deltas, resampling all station-day
+    folds sharing a calendar target date together.
 
     Sorts ``aggregates`` by content first (never trusts caller order), so
     the same set of clusters -- supplied in any order -- always produces
@@ -239,7 +278,12 @@ def day_clustered_bootstrap(
     ordered = sorted(aggregates, key=lambda a: (a.target_date, a.station_id, a.fold_id))
     results: dict[str, BootstrapInterval] = {}
     for metric in _METRIC_NAMES:
-        values = _cluster_values(ordered, metric)
+        dated_values = [
+            (aggregate.target_date, value)
+            for aggregate in ordered
+            for value in _cluster_values((aggregate,), metric)
+        ]
+        values = [value for _, value in dated_values]
         if not values:
             results[metric] = BootstrapInterval(
                 metric=metric,
@@ -251,17 +295,14 @@ def day_clustered_bootstrap(
                 upper=None,
             )
             continue
-        rng = random.Random(seed)
-        size = len(values)
         point_estimate = statistics.fmean(values)
-        draw_means = [
-            statistics.fmean(rng.choice(values) for _ in range(size)) for _ in range(draws)
-        ]
+        calendar_days, draw_means = _calendar_day_samples(dated_values, seed=seed, draws=draws)
         results[metric] = BootstrapInterval(
             metric=metric,
             samples=draws,
             seed=seed,
-            n_clusters=size,
+            n_clusters=calendar_days,
+            n_observations=len(values),
             point_estimate=point_estimate,
             lower=_percentile(draw_means, 0.025),
             upper=_percentile(draw_means, 0.975),

@@ -557,6 +557,8 @@ def test_fast_publication_reuses_last_full_analysis_cache(tmp_path, monkeypatch)
 
     assert payload["generated_at"] != analysis_generated_at
     assert payload["analysis_generated_at"] == analysis_generated_at
+    assert "analysis-stale" in {alert["code"] for alert in payload["status"]["alerts"]}
+    assert "strategy-lab-healthy" not in {alert["code"] for alert in payload["status"]["alerts"]}
     assert payload["backtest_summary"] == cached_backtest
     assert payload["chronological_replay"] == cached_replay
     assert payload["research_shadow"] == cached_shadow
