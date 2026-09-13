@@ -466,9 +466,30 @@ def run_paper_monitor(
         # could restore the model veto immediately after a catastrophic stop.
         # Keep the logical position's realized loss in its guard across runs;
         # the snapshot's unrealized fields still describe only open contracts.
-        position_loss_dollars = pnl_dollars
+        position_loss_dollars: float | None = pnl_dollars
+        loss_evidence_error: str | None = None
         if veto_dollar_cap is not None:
-            position_loss_dollars += store.partial_close_realized_pnl(int(row["id"]))
+            try:
+                position_loss_dollars = pnl_dollars + store.partial_close_realized_pnl(
+                    int(row["id"])
+                )
+            except ValueError as exc:
+                # Malformed child-lot evidence on ONE root must not abort the
+                # whole tick (which also credits every other position's
+                # fills and expiries). Treat the dollar-floor input as
+                # unavailable for this position -- the ordinary stop, the
+                # ROI catastrophic floor and the model veto still apply --
+                # and carry the error text into this position's snapshot.
+                position_loss_dollars = None
+                loss_evidence_error = (
+                    f"partial-close loss evidence unavailable ({exc}); "
+                    "veto dollar floor not applied"
+                )
+                print(
+                    f"WARN order {row['id']} {row['market_ticker']} {side}: "
+                    f"{loss_evidence_error}",
+                    file=sys.stderr,
+                )
 
         # Edge-based exit decision, shared with the dashboard mirror via exits.py.
         # Take-profit fires when the net exit reaches the model's fair value for
@@ -517,6 +538,10 @@ def run_paper_monitor(
             stop_loss_pct=stop_loss_pct,
             settlement_first_no_min_cost=_settlement_first_no_min_cost_for_order(row),
         )
+        if loss_evidence_error is not None:
+            signal = replace(
+                signal, reason=f"{signal.reason}; {loss_evidence_error}"
+            )
 
         if signal.action in (
             "HOLD",
