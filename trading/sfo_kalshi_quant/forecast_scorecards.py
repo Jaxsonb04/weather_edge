@@ -499,6 +499,8 @@ def build_research_evaluation_report(run: EvaluationRun) -> dict[str, Any]:
             "block_reasons": list(decision.block_reasons),
             "independent_confirmatory_days": decision.independent_confirmatory_days,
             "distinct_calendar_target_days": decision.distinct_calendar_target_days,
+            "bootstrap_cluster_unit": decision.bootstrap_cluster_unit,
+            "bootstrap_calendar_days": decision.bootstrap_calendar_days,
             "holm_p_value": decision.holm_p_value,
             "holm_adjusted_significant": decision.holm_adjusted_significant,
             "prior_family_attempts": len(run.prior_family_attempts),

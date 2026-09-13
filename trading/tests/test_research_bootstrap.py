@@ -5,8 +5,7 @@ Covers plan Task 5 Step 1's named regressions that are specific to
 ``test_research_evidence.py``, a separate sibling per that module's own
 docstring):
 
-- weather-day clustering: bootstrap resampling by independent station-day
-  (``FoldPairedAggregate``/``fold_id``) rather than trade/case row;
+- weather-day clustering: same-date station folds travel together;
 - complete metric coverage (P&L/day, ROI, log growth/day, CRPS, Brier);
 - determinism (fixed seed, order-invariant, repeatable).
 """
@@ -14,7 +13,7 @@ docstring):
 from __future__ import annotations
 
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -25,6 +24,7 @@ from sfo_kalshi_quant.research_bootstrap import (
     FoldPairedAggregate,
     day_clustered_bootstrap,
     fold_paired_aggregates,
+    calendar_day_bootstrap_p_value,
 )
 from sfo_kalshi_quant.research_evidence import PairedCaseRecord
 from sfo_kalshi_quant.research_policy import TARGET_POLICY
@@ -252,8 +252,72 @@ def test_day_clustered_bootstrap_resamples_clusters_not_paired_case_rows() -> No
     # Point estimate is the mean of the two CLUSTER deltas (500 and 0),
     # i.e. 250 -- not the mean of the six underlying rows, which would
     # weight the KSFO cluster 5x more heavily.
-    assert results["realized_pnl_per_day"].n_clusters == 2
+    assert results["realized_pnl_per_day"].n_clusters == 1
+    assert results["realized_pnl_per_day"].n_observations == 2
     assert results["realized_pnl_per_day"].point_estimate == pytest.approx(250.0)
+
+
+def test_correlated_city_duplicates_cannot_manufacture_positive_interval_or_significance() -> None:
+    # Ten actual weather days, copied into three perfectly correlated cities.
+    # Treating those 30 city-days as independent falsely excludes zero.
+    single_city = [
+        _agg(
+            fold_id=f"KSFO:{i}", target_date=date(2026, 6, 1) + timedelta(days=i),
+            pnl_delta=delta, roi_delta=delta, log_growth_delta=delta,
+            crps_delta=delta, brier_delta=delta,
+        )
+        for i, delta in enumerate([1.0] * 7 + [-1.0] * 3)
+    ]
+    from dataclasses import replace
+
+    three_cities = [
+        replace(a, station_id=station, fold_id=f"{station}:{a.target_date}")
+        for a in single_city for station in ("KSFO", "KLAX", "KSEA")
+    ]
+    original = day_clustered_bootstrap(single_city, seed=20260912)
+    duplicated = day_clustered_bootstrap(three_cities, seed=20260912)
+    for metric, interval in original.items():
+        copied = duplicated[metric]
+        assert copied.point_estimate == interval.point_estimate
+        assert copied.lower == interval.lower
+        assert copied.upper == interval.upper
+        assert copied.lower <= 0.0
+        assert copied.n_clusters == interval.n_clusters == 10
+        assert copied.n_observations == 30
+
+    def p_value(rows):
+        return calendar_day_bootstrap_p_value(
+            [(a.target_date, a.roi_delta) for a in rows], seed=20260912,
+        )
+
+    assert p_value(three_cities) == p_value(single_city)
+    assert p_value(three_cities) > 0.05
+
+
+def test_calendar_clustering_preserves_station_day_weighting_when_coverage_differs() -> None:
+    # The existing estimand is a station-day mean, not an equal-date mean.
+    # Two cities on day one must still travel together during sampling.
+    rows = [
+        _agg(fold_id="A", target_date=date(2026, 6, 20), pnl_delta=0.0),
+        _agg(fold_id="B", station_id="KLAX", target_date=date(2026, 6, 20), pnl_delta=0.0),
+        _agg(fold_id="C", target_date=date(2026, 6, 21), pnl_delta=9.0),
+    ]
+    interval = day_clustered_bootstrap(rows, draws=100)["realized_pnl_per_day"]
+    assert interval.point_estimate == 3.0
+    assert interval.n_observations == 3
+    assert interval.n_clusters == 2
+    assert interval.cluster_unit == "calendar_target_date"
+
+
+def test_missing_metric_fold_on_shared_date_remains_visible_to_coverage_gate() -> None:
+    rows = [
+        _agg(fold_id="A", crps_delta=1.0),
+        _agg(fold_id="B", station_id="KLAX", crps_delta=None),
+    ]
+    interval = day_clustered_bootstrap(rows, draws=100)["crps"]
+    assert interval.n_clusters == 1
+    assert interval.n_observations == 1
+    assert interval.point_estimate == 1.0
 
 
 def test_day_clustered_bootstrap_crps_metric_only_resamples_available_clusters() -> None:

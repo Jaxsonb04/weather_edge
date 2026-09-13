@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -63,6 +64,7 @@ from ..research_policy import (
     canonical_research_lead_bucket,
 )
 from ..research_portfolio import ResearchOpportunity, ResearchPlans, allocate_research_plans
+from ..research_entry_risk import target_remaining_daily_risk
 from ..risk import TradeEvaluator
 from ..settlement_day import settlement_clock, settlement_today
 from ..standard_bins import fallback_bins
@@ -606,6 +608,36 @@ def _research_observed_high_state(intraday: IntradaySnapshot | None) -> str:
     return f"complete={int(bool(intraday and intraday.is_complete))};high={high}"
 
 
+def _target_planning_cash(state: object, realized_pnl: object) -> float:
+    """Bound spendable planning cash by the current account's daily room.
+
+    Account state separates remaining filled cost from pending reservations,
+    including partially filled orders. Use each component once, across every
+    open target date. Atomic admission still rechecks all account and regional
+    caps against the latest state before any reservation or fill.
+    """
+
+    if not isinstance(state, Mapping):
+        return 0.0
+    values: list[float] = []
+    for field in ("available_cash", "open_cost_basis", "reservations"):
+        value = state.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        try:
+            parsed = float(value)
+        except (OverflowError, ValueError):
+            return 0.0
+        if not math.isfinite(parsed) or parsed < 0.0:
+            return 0.0
+        values.append(parsed)
+    cash, open_cost, pending_cost = values
+    return min(
+        cash,
+        target_remaining_daily_risk(realized_pnl, open_cost + pending_cost),
+    )
+
+
 def _execute_research_scan_context(
     context: ScanContext,
     *,
@@ -632,11 +664,11 @@ def _execute_research_scan_context(
     if not entry_allowed and entry_block_reason:
         decisions = _block_entry_decisions(decisions, entry_block_reason)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
-    target_cash = float(target_state["available_cash"]) if target_state else 0.0
     target_realized = store.research_realized_pnl_for_day(
         account_id=TARGET_POLICY.account_id,
         objective_day=objective_day,
     )
+    target_cash = _target_planning_cash(target_state, target_realized)
     execution_config = strategy_config_for_profile("research")
     target_decisions = prepare_research_target_decisions(
         decisions,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -362,7 +363,26 @@ def test_github_verify_workflow_installs_test_import_dependencies():
     assert 'HEROUI_KEY: ${{ secrets.HEROUI_KEY }}' in workflow
     assert 'if [[ -z "$HEROUI_KEY" ]]' in workflow
     assert "missing from the GitHub Actions secret store" in workflow
-    assert "env -u CI npx -y hpsetup@4.7.0 --auto" in workflow
+    assert "env -u CI npx -y hpsetup@4.5.0 --auto" in workflow
+
+
+def test_web_ci_freezes_dependencies_before_licensed_setup_and_rejects_drift():
+    workflow = _read(ROOT / ".github" / "workflows" / "verify.yml")
+
+    # Newer hpsetup releases silently update Pro even with CI unset. Frozen
+    # install after that mutation validates the rewritten lock, not our lock.
+    frozen = workflow.index("bun install --frozen-lockfile --ignore-scripts")
+    licensed = workflow.index("env -u CI npx -y hpsetup@4.5.0 --auto")
+    drift_check = workflow.index("git diff --exit-code -- package.json bun.lock")
+    tests = workflow.index("bun run test")
+    assert frozen < licensed < drift_check < tests
+
+
+def test_explicit_licensed_setup_does_not_duplicate_heroui_postinstall_trust():
+    package = json.loads(_read(ROOT / "package.json"))
+    trusted = package["trustedDependencies"]
+    assert "@heroui-pro/react" not in trusted
+    assert "@zowe/secrets-for-zowe-sdk" in trusted
 
 
 def test_forecaster_refresh_only_refreshes_forecast_state():

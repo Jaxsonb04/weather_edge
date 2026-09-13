@@ -10,8 +10,9 @@ from zoneinfo import ZoneInfo
 from dataclasses import asdict
 from typing import Iterable, Sequence
 
-from .config import StrategyConfig, normalize_risk_profile_name
+from .config import StrategyConfig, normalize_risk_profile_name, strategy_config_for_profile
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleeve
+from .research_entry_risk import RESEARCH_ENTRY_RISK_VERSION
 
 SHARED_ACCOUNT_ID = "paper-shared"
 LIVE_STABILITY_ACCOUNT_ID = "paper-live-stability-v1"
@@ -174,7 +175,12 @@ def policy_capacity(
     return {"allowed_spend": max(0.0, allowed), "reason": None}
 
 
-def strategy_fingerprint(config: StrategyConfig | None, *, entry_mode: str) -> str:
+def strategy_fingerprint(
+    config: StrategyConfig | None,
+    *,
+    entry_mode: str,
+    risk_profile: str | None = None,
+) -> str:
     if config is None:
         return "legacy_independent_sizing"
     payload = {
@@ -185,6 +191,13 @@ def strategy_fingerprint(config: StrategyConfig | None, *, entry_mode: str) -> s
             "behavior_version": STRATEGY_BEHAVIOR_VERSION,
         },
     }
+    is_research = (
+        normalize_risk_profile_name(risk_profile) == "research"
+        if risk_profile is not None
+        else config == strategy_config_for_profile("research")
+    )
+    if is_research:
+        payload["execution"]["research_entry_risk_version"] = RESEARCH_ENTRY_RISK_VERSION
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
 

@@ -345,11 +345,14 @@ def test_report_publishes_pre_declaration_and_stale_evidence_persistence_diagnos
 
 
 def test_report_publishes_adjusted_promotion_gate_verdict() -> None:
-    report = build_research_evaluation_report(_evaluation_run())
+    run = _evaluation_run()
+    report = build_research_evaluation_report(run)
     gate = report["promotion_gate"]
     assert gate["eligible_for_target_paper"] is False
     assert REASON_INSUFFICIENT_DAYS in gate["block_reasons"]
     assert gate["live_activation_allowed"] is False
+    assert gate["bootstrap_cluster_unit"] == "calendar_target_date"
+    assert gate["bootstrap_calendar_days"] == run.decision.bootstrap_calendar_days
 
 
 def test_report_never_labels_the_50_dollar_target_as_guaranteed() -> None:

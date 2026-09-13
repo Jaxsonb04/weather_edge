@@ -84,6 +84,11 @@ from .research_policy import (
     canonical_research_lead_bucket,
 )
 from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
+from .research_entry_risk import (
+    TARGET_ENTRY_FULL_LOSS_CAP,
+    target_entry_spend_limit,
+    target_remaining_daily_risk,
+)
 from .research_portfolio import MAX_TARGET_CONTRACTS, ResearchPlans
 from .paper_pnl import closed_position_pnl, settled_position_pnl
 from .prediction_features import build_prediction_feature_snapshot
@@ -2309,9 +2314,14 @@ class PaperStore:
             if policy.one_contract
             else policy.max_position_risk_pct * equity
         )
+        projected_daily_room = math.inf
+        if policy is TARGET_POLICY:
+            position_room = min(position_room, TARGET_ENTRY_FULL_LOSS_CAP)
+            projected_daily_room = target_remaining_daily_risk(daily_pnl, aggregate)
         allowed = min(
             float(requested_spend),
             position_room,
+            projected_daily_room,
             policy.max_city_target_risk_pct * equity - city_target,
             policy.max_region_day_risk_pct * equity - region_day,
             policy.max_aggregate_risk_pct * equity - aggregate,
@@ -2320,7 +2330,11 @@ class PaperStore:
         if allowed + 1e-9 < requested_spend:
             return {
                 "allowed_spend": max(0.0, allowed),
-                "reason": "research account capacity below requested spend",
+                "reason": (
+                    "target projected daily-loss budget below requested spend"
+                    if projected_daily_room + 1e-9 < requested_spend
+                    else "research account capacity below requested spend"
+                ),
             }
         return {"allowed_spend": float(requested_spend), "reason": None}
 
@@ -3261,12 +3275,10 @@ class PaperStore:
                 "research strategy entry limits are invalid"
             ) from exc
         allowed_contracts = float(canonical.max_contracts_per_market)
-        # The active target allocator may deliberately resize a zero-fee,
-        # non-crossing maker quote beyond the scanner's structural 25-contract
-        # source cap. Keep that exception narrow and independently bounded by
-        # the immutable target policy. Crossing/taker quotes, fee-bearing
-        # quotes, archived policies, and every other binding constraint retain
-        # the canonical scanner cap.
+        # Structural target requests may exceed the scanner's generic
+        # 25-contract placeholder. Resting and explicitly marked structural
+        # taker quotes keep separate proofs; the latter must fit observed depth,
+        # exact fees, conservative Kelly and the existing target dollar ceiling.
         try:
             limit_price = float(decision.limit_price)
             limit_fee = float(decision.limit_fee_per_contract)
@@ -3306,6 +3318,30 @@ class PaperStore:
             allowed_contracts = float(
                 min(MAX_TARGET_CONTRACTS, policy_contract_cap)
             )
+        policy_sized_taking_target = (
+            policy is TARGET_POLICY
+            and policy.allocator_version == "policy-sized-v3"
+            and decision.binding_constraint == "research_visible_ask_depth"
+            and all(
+                math.isfinite(value)
+                for value in (limit_price, limit_fee, limit_cost, ask, represented_fee, ask_size)
+            )
+            and 0.0 < ask < 1.0
+            and abs(limit_price - ask) <= 1e-12
+            and limit_fee >= 0.0
+            and abs(limit_fee - represented_fee) <= 1e-12
+            and 0.0 < limit_cost < 1.0
+            and ask_size >= 1.0
+        )
+        if policy_sized_taking_target:
+            allowed_contracts = float(min(
+                MAX_TARGET_CONTRACTS,
+                math.floor(ask_size),
+                math.floor(
+                    target_entry_spend_limit(limit_cost, decision.probability_lcb)
+                    / limit_cost + 1e-12
+                ),
+            ))
         if (
             not math.isfinite(spread)
             or spread < 0
@@ -3688,6 +3724,10 @@ class PaperStore:
         ):
             return None
         requested_spend = contracts * cost_per_contract
+        if policy is TARGET_POLICY and requested_spend > target_entry_spend_limit(
+            cost_per_contract, decision.probability_lcb
+        ) + 1e-9:
+            raise ResearchEntryLimitError("target conservative entry-risk limit exceeded")
         status = "PAPER_LIMIT_RESTING" if resting else "PAPER_FILLED"
         created_at = _now()
         filled_at = None if resting else created_at
@@ -3702,7 +3742,9 @@ class PaperStore:
             if resting
             else 0.0
         )
-        fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
+        fingerprint = strategy_fingerprint(
+            strategy_config, entry_mode=entry_mode, risk_profile="research"
+        )
         expected_profit = edge * contracts
         quote_snapshot_json = json.dumps(
             {
@@ -6276,6 +6318,39 @@ class PaperStore:
 
     def open_paper_order(self, order_id: int) -> sqlite3.Row | None:
         return self._open_order(order_id)
+
+    def partial_close_realized_pnl(self, order_id: int) -> float:
+        """Read a root's realized exit slices without resetting its loss guard.
+
+        Partial closes keep the remainder on the root and persist proceeds on
+        child lots. Use those durable lots, including their actual rounded
+        fees, across monitor processes. The canonical projection rejects
+        missing/malformed money or cross-account/policy children instead of
+        silently dropping loss evidence. Both queries use existing ID indexes.
+        """
+
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM paper_orders WHERE id=? "
+                "UNION ALL "
+                "SELECT * FROM paper_orders WHERE parent_order_id=?",
+                (order_id, order_id),
+            ).fetchall()
+        positions = group_logical_positions(rows)
+        if (
+            len(positions) != 1
+            or positions[0].logical_order_id != order_id
+            or not positions[0].valid
+        ):
+            raise ValueError(
+                f"paper order {order_id} has invalid partial-close loss evidence"
+            )
+        return math.fsum(
+            float(lot["realized_pnl"])
+            for lot in positions[0].resolved_lots
+            if lot.get("parent_order_id") == order_id
+        )
 
     def resting_paper_orders(
         self,

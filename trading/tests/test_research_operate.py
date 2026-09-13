@@ -33,7 +33,9 @@ import pytest
 from sfo_kalshi_quant.cities import city_for_station
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import GoogleChallengerSnapshot
-from sfo_kalshi_quant.research_bootstrap import DEFAULT_BOOTSTRAP_DRAWS, DEFAULT_BOOTSTRAP_SEED
+from sfo_kalshi_quant.research_bootstrap import (
+    DEFAULT_BOOTSTRAP_DRAWS, DEFAULT_BOOTSTRAP_SEED, calendar_day_bootstrap_p_value,
+)
 from sfo_kalshi_quant.research_candidates import (
     GAUSSIAN_PIT_CANDIDATE_KEY,
     GAUSSIAN_PIT_CANDIDATE_VERSION,
@@ -47,7 +49,6 @@ from sfo_kalshi_quant.research_promotion import (
     ChallengerDeclaration,
 )
 from sfo_kalshi_quant.research_replay import FoldReplayEvidence
-from sfo_kalshi_quant.research_significance import one_sided_bootstrap_p_value
 from sfo_kalshi_quant.research_walkforward import _expected_lead_days
 import sfo_kalshi_quant.research_operate as research_operate
 from sfo_kalshi_quant.research_operate import (
@@ -770,8 +771,8 @@ def test_load_prior_family_attempts_round_trips_the_verdict_time_p_value_for_a_m
     # (target_date, station_id, fold_id), i.e. date-major -- is the ONLY
     # ordering "verdict time" ever feeds the bootstrap.
     expected_fold_deltas.sort(key=lambda item: (item[0], item[1], item[2]))
-    expected_deltas = [item[3] for item in expected_fold_deltas]
-    expected_p = one_sided_bootstrap_p_value(
+    expected_deltas = [(item[0], item[3]) for item in expected_fold_deltas]
+    expected_p = calendar_day_bootstrap_p_value(
         expected_deltas, seed=DEFAULT_BOOTSTRAP_SEED, draws=DEFAULT_BOOTSTRAP_DRAWS
     )
     assert expected_p is not None
@@ -784,6 +785,29 @@ def test_load_prior_family_attempts_round_trips_the_verdict_time_p_value_for_a_m
     # EXACT equality -- not approximate -- proving both the reload ORDER
     # and the per-fold summation algorithm match verdict time bit-for-bit.
     assert attempts[0].p_value == expected_p
+
+
+def test_prior_family_reload_keeps_correlated_cities_in_the_same_bootstrap_day(store: PaperStore) -> None:
+    declare_challenger(store, **_declaration_kwargs(experiment_id="exp-1", candidate_version="v1"))
+    dated_deltas = []
+    for i, delta in enumerate([1.0] * 7 + [-1.0] * 3):
+        target = date(2099, 1, 5) + timedelta(days=i)
+        for station in ("KSFO", "KLAX", "KSEA"):
+            candidate, replay = _multi_case_rows(
+                fold_id=f"{station}:{target}", station_id=station,
+                target_date_value=target, case_pnls=[(0.0, delta)],
+            )
+            persist_fold_evidence(
+                store, experiment_id="exp-1", candidate_row=candidate, replay_row=replay,
+            )
+        dated_deltas.append((target, delta / TARGET_POLICY.reference_equity))
+
+    attempts = load_prior_family_attempts(
+        store, hypothesis_family=HYPOTHESIS_FAMILY, exclude_candidate_version="v2",
+    )
+    assert len(attempts) == 1
+    assert attempts[0].p_value == calendar_day_bootstrap_p_value(dated_deltas)
+    assert attempts[0].p_value > 0.05
 
 
 def test_fold_roi_delta_sums_with_fsum_matching_research_bootstraps_own_precision() -> None:

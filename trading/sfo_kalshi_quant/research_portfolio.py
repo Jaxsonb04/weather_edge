@@ -16,6 +16,8 @@ from typing import Sequence
 
 from .account import REGION_BY_SERIES
 from .cities import city_for_market_ticker
+from .config import strategy_config_for_profile
+from .execution import target_research_quote
 from .models import TradeDecision
 from .portfolio import (
     PortfolioDisposition,
@@ -25,6 +27,7 @@ from .portfolio import (
     decision_pnl_at_settlement,
 )
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
+from .research_entry_risk import target_entry_spend_limit, target_remaining_daily_risk
 
 
 MIN_EXECUTABLE_CONTRACT_COST = 0.01
@@ -170,6 +173,10 @@ def allocate_research_plans(
     target_legs: list[PortfolioLeg] = []
     target_dispositions: list[PortfolioDisposition] = []
     target_cash_used = 0.0
+    target_daily_room = target_remaining_daily_risk(
+        realized_today,
+        sum(leg.spend for leg in normalized_target_active if not leg.is_partial_child),
+    )
     target_paused_reason = _pause_reason(TARGET_POLICY, realized_today)
     prepared_targets = [_prepare_target(source) for source in prepared_opportunities]
     for prepared in sorted(prepared_targets, key=_target_priority):
@@ -221,6 +228,7 @@ def allocate_research_plans(
             opportunity,
             desired=decision,
             remaining_cash=target_available_cash - target_cash_used,
+            remaining_daily_risk=target_daily_room - target_cash_used,
             exposure_legs=[*normalized_target_active, *target_legs],
         )
         if leg is None:
@@ -814,6 +822,18 @@ def _is_iso_date(value: object) -> bool:
 
 
 def _target_sized_decision(decision: TradeDecision) -> TradeDecision | None:
+    if decision.binding_constraint == "research_visible_ask_depth":
+        # The source was already clipped to displayed depth. Reprice every
+        # smaller whole quantity: rounded total fees do not scale linearly.
+        upper = min(MAX_TARGET_CONTRACTS, int(decision.recommended_contracts))
+        for contracts in range(upper, 0, -1):
+            priced = _target_decision_at_quantity(decision, contracts)
+            if priced is not None and (
+                priced.recommended_contracts * priced.cost_per_contract
+                <= target_entry_spend_limit(priced.cost_per_contract, priced.probability_lcb) + 1e-9
+            ):
+                return priced
+        return None
     structural_cap_is_expandable = (
         decision.binding_constraint == "research_policy_allocator"
         and float(decision.fee_per_contract) == 0.0
@@ -829,8 +849,7 @@ def _target_sized_decision(decision: TradeDecision) -> TradeDecision | None:
     )
     max_contracts = min(
         source_max_contracts,
-        TARGET_POLICY.reference_equity
-        * TARGET_POLICY.max_position_risk_pct
+        target_entry_spend_limit(decision.cost_per_contract, decision.probability_lcb)
         / float(decision.cost_per_contract),
     )
     contracts = min(MAX_TARGET_CONTRACTS, math.floor(max_contracts + 1e-12))
@@ -840,6 +859,46 @@ def _target_sized_decision(decision: TradeDecision) -> TradeDecision | None:
         decision,
         recommended_contracts=float(contracts),
         expected_profit=float(decision.edge) * float(contracts),
+    )
+
+
+def _target_decision_at_quantity(
+    decision: TradeDecision, contracts: int,
+) -> TradeDecision | None:
+    """Keep the expanded target's executable quote exact after every clip."""
+
+    resized = replace(
+        decision,
+        recommended_contracts=float(contracts),
+        expected_profit=float(decision.edge) * contracts,
+    )
+    if decision.binding_constraint != "research_visible_ask_depth":
+        return resized
+    quote = target_research_quote(resized, strategy_config_for_profile("research"))
+    if (
+        quote is None
+        or not quote.would_cross
+        or quote.contracts != float(contracts)
+        or decision.limit_price is None
+        or abs(quote.price - float(decision.limit_price)) > 1e-9
+        or abs(quote.price - float(decision.ask)) > 1e-9
+    ):
+        # Allocation may resize the displayed taker slice, but it must not
+        # silently change the established execution price or reservation mode.
+        return None
+    return replace(
+        resized,
+        recommended_contracts=quote.contracts,
+        fee_per_contract=quote.fee_per_contract,
+        cost_per_contract=quote.cost_per_contract,
+        edge=quote.edge,
+        edge_lcb=quote.edge_lcb,
+        expected_profit=quote.edge * quote.contracts,
+        limit_price=quote.price,
+        limit_fee_per_contract=quote.fee_per_contract,
+        limit_cost_per_contract=quote.cost_per_contract,
+        limit_edge=quote.edge,
+        limit_edge_lcb=quote.edge_lcb,
     )
 
 
@@ -885,6 +944,7 @@ def _fit_target_leg(
     *,
     desired: TradeDecision,
     remaining_cash: float,
+    remaining_daily_risk: float,
     exposure_legs: Sequence[PortfolioLeg],
 ) -> tuple[PortfolioLeg | None, str]:
     """Return the largest integer target quantity that satisfies every cap.
@@ -895,11 +955,17 @@ def _fit_target_leg(
     """
 
     cost = float(desired.cost_per_contract)
+    if desired.binding_constraint == "research_visible_ask_depth":
+        # Rounded fee averages need not shrink monotonically. Use the
+        # fee-free displayed ask only as an upper bound, then reprice exactly.
+        cost = float(desired.ask)
     desired_contracts = min(
         MAX_TARGET_CONTRACTS,
         int(desired.recommended_contracts),
     )
-    cash_ratio = max(0.0, remaining_cash) / cost
+    if remaining_daily_risk + 1e-9 < cost:
+        return None, "target projected daily-loss budget cannot fund one contract"
+    cash_ratio = max(0.0, min(remaining_cash, remaining_daily_risk)) / cost
     if not math.isfinite(cash_ratio) or cash_ratio >= desired_contracts:
         cash_contracts = desired_contracts
     else:
@@ -910,11 +976,17 @@ def _fit_target_leg(
 
     last_reason = "target scenario-loss capacity cannot fund one contract"
     for contracts in range(upper, 0, -1):
-        decision = replace(
-            desired,
-            recommended_contracts=float(contracts),
-            expected_profit=float(desired.edge) * float(contracts),
-        )
+        decision = _target_decision_at_quantity(desired, contracts)
+        if decision is None:
+            last_reason = "target quantity has no executable canonical quote"
+            continue
+        spend = decision.recommended_contracts * decision.cost_per_contract
+        if spend > min(remaining_cash, remaining_daily_risk) + 1e-9:
+            last_reason = "target exact quoted cost exceeds cash or daily-loss budget"
+            continue
+        if spend > target_entry_spend_limit(decision.cost_per_contract, decision.probability_lcb) + 1e-9:
+            last_reason = "target exact quoted cost exceeds conservative Kelly budget"
+            continue
         leg = _research_leg(opportunity, decision, sleeve="target")
         reason = _risk_cap_reason(
             [*exposure_legs, leg],

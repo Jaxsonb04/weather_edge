@@ -141,7 +141,9 @@ from typing import Mapping, Sequence
 from ._util import _parse_timestamp
 from .cities import city_for_station
 from .db import PaperStore, _pacific_declaration_date
-from .research_bootstrap import DEFAULT_BOOTSTRAP_DRAWS, DEFAULT_BOOTSTRAP_SEED
+from .research_bootstrap import (
+    DEFAULT_BOOTSTRAP_DRAWS, DEFAULT_BOOTSTRAP_SEED, calendar_day_bootstrap_p_value,
+)
 from .research_candidates import FoldCandidateEvidence, score_fold_candidates
 from .research_evidence import (
     PairedEvidenceReport,
@@ -157,7 +159,6 @@ from .research_promotion import (
     evaluate_promotion,
 )
 from .research_replay import FoldReplayEvidence, replay_fold_candidates
-from .research_significance import one_sided_bootstrap_p_value
 from .research_walkforward import (
     DEFAULT_EMBARGO_DAYS,
     UnavailableFold,
@@ -628,7 +629,7 @@ def load_prior_family_attempts(
     Recomputes each prior candidate version's own one-sided bootstrap
     p-value FRESH from its own persisted per-fold replay evidence (never a
     cached number, and never assumed stale-safe), using the exact same
-    ``one_sided_bootstrap_p_value``/seed/draws
+    ``calendar_day_bootstrap_p_value``/seed/draws
     ``research_promotion.evaluate_promotion`` uses internally for the
     CURRENT candidate, so a family history built here is directly
     comparable. A prior candidate version with no usable persisted evidence
@@ -654,11 +655,11 @@ def load_prior_family_attempts(
             # Carlo bootstrap a differently-ordered sequence than the one
             # verdict time itself used for a multi-station family.
             evidence_rows = conn.execute(
-                "SELECT baseline_json, challenger_json FROM research_evidence "
+                "SELECT target_date, baseline_json, challenger_json FROM research_evidence "
                 "WHERE experiment_id = ? ORDER BY target_date, station_id, fold_id",
                 (experiment_row["experiment_id"],),
             ).fetchall()
-            deltas: list[float] = []
+            deltas: list[tuple[date, float]] = []
             for evidence_row in evidence_rows:
                 baseline_payload = json.loads(evidence_row["baseline_json"])
                 challenger_payload = json.loads(evidence_row["challenger_json"])
@@ -666,10 +667,10 @@ def load_prior_family_attempts(
                     baseline_payload, challenger_payload, reference_equity=reference_equity
                 )
                 if delta is not None:
-                    deltas.append(delta)
+                    deltas.append((date.fromisoformat(evidence_row["target_date"]), delta))
             if not deltas:
                 continue
-            p_value = one_sided_bootstrap_p_value(deltas, seed=seed, draws=draws)
+            p_value = calendar_day_bootstrap_p_value(deltas, seed=seed, draws=draws)
             if p_value is None:
                 continue
             attempts.append(

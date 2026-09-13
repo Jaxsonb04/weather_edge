@@ -165,6 +165,7 @@ from .research_bootstrap import (
     DEFAULT_BOOTSTRAP_SEED,
     fold_paired_aggregates,
     day_clustered_bootstrap,
+    calendar_day_bootstrap_p_value,
 )
 from .research_candidates import IDENTITY_CANDIDATE_KEY, FoldCandidateEvidence, candidate_calibration_gap
 from .research_evidence import (
@@ -175,7 +176,7 @@ from .research_evidence import (
     build_paired_records_for_experiment,
 )
 from .research_replay import FoldReplayEvidence
-from .research_significance import holm_bonferroni_significant, one_sided_bootstrap_p_value
+from .research_significance import holm_bonferroni_significant
 from .research_walkforward import UnavailableFold, WalkForwardFold
 
 # Plan Task 6 Step 1 / spec Sec 8: "at least 30 independent ... days".
@@ -330,7 +331,13 @@ class PromotionDecision:
     ``paired_case_count``/``crps_score_coverage_folds``/
     ``brier_score_coverage_folds``/``calibration_pit_coverage_count`` are
     new structured evidence surfaced by the HIGH-2/HIGH-4 repairs -- see
-    the module docstring's "Repair notes" paragraph."""
+    the module docstring's "Repair notes" paragraph.
+
+    ``independent_confirmatory_days`` retains its legacy station-day breadth
+    meaning for compatibility; it is not the inferential sample count.
+    ``bootstrap_calendar_days`` and ``bootstrap_cluster_unit`` identify the
+    actual resampling unit. Score-coverage fields still count folds.
+    """
 
     experiment_id: str
     eligible_for_target_paper: bool
@@ -350,6 +357,8 @@ class PromotionDecision:
     crps_score_coverage_folds: int = 0
     brier_score_coverage_folds: int = 0
     calibration_pit_coverage_count: int = 0
+    bootstrap_cluster_unit: str = "calendar_target_date"
+    bootstrap_calendar_days: int = 0
 
 
 def reconcile_fold_inventory(
@@ -644,13 +653,13 @@ def evaluate_promotion(
     # HIGH-2 repair: a partially-missing score payload (some folds
     # available, some not) is no longer treated the same as fully
     # available evidence just because SOME point estimate exists --
-    # ``n_clusters`` (how many folds actually contributed a value) is
+    # ``n_observations`` (how many folds actually contributed a value) is
     # compared against ``independent_days`` (every fold this decision is
     # otherwise evaluated over), never just checked for "is it None".
     crps_interval = bootstrap_results["crps"]
     if crps_interval.point_estimate is None:
         block_reasons.append(REASON_CRPS_UNAVAILABLE)
-    elif crps_interval.n_clusters != independent_days:
+    elif crps_interval.n_observations != independent_days:
         block_reasons.append(REASON_CRPS_INCOMPLETE_COVERAGE)
     elif crps_interval.point_estimate < -declaration.crps_regression_tolerance:
         block_reasons.append(REASON_CRPS_REGRESSION)
@@ -658,7 +667,7 @@ def evaluate_promotion(
     brier_interval = bootstrap_results["brier"]
     if brier_interval.point_estimate is None:
         block_reasons.append(REASON_BRIER_UNAVAILABLE)
-    elif brier_interval.n_clusters != independent_days:
+    elif brier_interval.n_observations != independent_days:
         block_reasons.append(REASON_BRIER_INCOMPLETE_COVERAGE)
     elif brier_interval.point_estimate < -declaration.brier_regression_tolerance:
         block_reasons.append(REASON_BRIER_REGRESSION)
@@ -691,8 +700,8 @@ def evaluate_promotion(
     elif (challenger_gap - baseline_gap) > declaration.calibration_gap_regression_tolerance:
         block_reasons.append(REASON_CALIBRATION_GAP_REGRESSION)
 
-    current_p_value = one_sided_bootstrap_p_value(
-        [a.roi_delta for a in aggregates],
+    current_p_value = calendar_day_bootstrap_p_value(
+        [(a.target_date, a.roi_delta) for a in aggregates],
         seed=DEFAULT_BOOTSTRAP_SEED,
         draws=DEFAULT_BOOTSTRAP_DRAWS,
     )
@@ -729,7 +738,8 @@ def evaluate_promotion(
         coverage_exclusion_count=len(report.coverage_exclusions),
         max_daily_capacity_utilization_pct=target_capacity.max_daily_utilization_pct,
         paired_case_count=report.paired_case_count,
-        crps_score_coverage_folds=crps_interval.n_clusters,
-        brier_score_coverage_folds=brier_interval.n_clusters,
+        crps_score_coverage_folds=crps_interval.n_observations,
+        brier_score_coverage_folds=brier_interval.n_observations,
         calibration_pit_coverage_count=calibration_pit_coverage_count,
+        bootstrap_calendar_days=roi_interval.n_clusters,
     )

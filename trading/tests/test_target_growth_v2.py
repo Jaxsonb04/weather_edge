@@ -167,6 +167,117 @@ def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
     assert order["reserved_cost"] == 90.0
 
 
+def test_atomic_admission_cannot_max_size_a_thin_conservative_edge(tmp_path):
+    from sfo_kalshi_quant.db import PaperStore, ResearchEntryLimitError
+    from test_research_sleeves import _fixed_research_clock, _linked_admission
+
+    store = PaperStore(tmp_path / "full-loss-cap.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decision = with_target_research_execution(
+        replace(
+            _structural_target_candidate(bid=0.74, ask=0.76, ask_size=1.0),
+            probability_lcb=0.78,
+        ), config,
+    )
+    assert decision is not None
+    decision = replace(decision, recommended_contracts=120, expected_profit=decision.edge * 120)
+    admission = _linked_admission(
+        store, TARGET_POLICY, "old-size", decision, target_date="2026-07-30",
+    )
+    with pytest.raises(ResearchEntryLimitError, match="conservative entry-risk"):
+        store.record_research_order_atomic(
+            "2026-07-30", decision, admission=admission, strategy_config=config,
+        )
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
+
+
+def _expanded_taker_fixture() -> TradeDecision:
+    config = strategy_config_for_profile("research")
+    decision = with_target_research_execution(
+        replace(
+            _structural_target_candidate(bid=0.75, ask=0.76, ask_size=100.0),
+            recommended_contracts=60.0,
+        ), config,
+    )
+    assert decision is not None
+    return replace(decision, binding_constraint="research_visible_ask_depth")
+
+
+def test_atomic_target_taker_can_use_more_than_structural_25_with_verified_depth(tmp_path):
+    from sfo_kalshi_quant.db import PaperStore
+    from test_research_sleeves import _fixed_research_clock, _linked_admission
+
+    store = PaperStore(tmp_path / "expanded-taker.db", research_clock=_fixed_research_clock)
+    config = strategy_config_for_profile("research")
+    decision = _expanded_taker_fixture()
+    admission = _linked_admission(store, TARGET_POLICY, "expanded", decision, target_date="2026-07-30")
+    order_id = store.record_research_order_atomic(
+        "2026-07-30", decision, admission=admission, strategy_config=config,
+    )
+    row = store.paper_order(order_id)
+    assert row["status"] == "PAPER_FILLED"
+    assert row["contracts"] == 60.0
+    assert row["fee_per_contract"] > 0.0
+    assert row["contracts"] * row["cost_per_contract"] <= 90.0
+
+
+@pytest.mark.parametrize("tamper", ["generic", "depth", "fee", "kelly", "fractional"])
+def test_expanded_target_taker_exception_cannot_bypass_other_limits(tmp_path, tamper):
+    from sfo_kalshi_quant.db import PaperStore, ResearchEntryLimitError
+    from test_research_sleeves import _fixed_research_clock, _linked_admission
+
+    decision = _expanded_taker_fixture()
+    changes = {
+        "generic": {"binding_constraint": "visible_ask_depth"},
+        "depth": {"entry_ask_size": 59.0},
+        "fee": {"limit_fee_per_contract": 0.0},
+        "kelly": {"probability_lcb": 0.775},
+        "fractional": {"recommended_contracts": 59.5},
+    }
+    decision = replace(decision, **changes[tamper])
+    store = PaperStore(tmp_path / f"expanded-{tamper}.db", research_clock=_fixed_research_clock)
+    admission = _linked_admission(store, TARGET_POLICY, tamper, decision, target_date="2026-07-30")
+    with pytest.raises(ResearchEntryLimitError, match="entry limits"):
+        store.record_research_order_atomic(
+            "2026-07-30", decision, admission=admission,
+            strategy_config=strategy_config_for_profile("research"),
+        )
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
+
+
+def test_bounded_positive_reservation_survives_allocation_and_atomic_requote(tmp_path):
+    from sfo_kalshi_quant.db import PaperStore
+    from sfo_kalshi_quant.paper import PaperTrader, prepare_research_target_decisions
+
+    config = strategy_config_for_profile("research")
+    raw = replace(
+        _structural_target_candidate(bid=0.96, ask=0.98, ask_size=100.0),
+        probability=0.99, model_probability=0.99, probability_lcb=0.96,
+    )
+    prepared = prepare_research_target_decisions([raw], config)[0]
+    plans = allocate_research_plans(
+        [ResearchOpportunity(prepared, "2026-07-30", 1)], motion_opportunities=[],
+        run_id="reservation-admission",
+    )
+    store = PaperStore(
+        tmp_path / "reservation-admission.db",
+        research_clock=lambda: datetime(2026, 7, 25, 20, tzinfo=UTC),
+    )
+    result = PaperTrader(store, config, risk_profile="research", entry_mode="limit").execute_research_plans(
+        "2026-07-30", plans, source_decisions=[prepared], objective_day="2026-07-25",
+        lead_bucket="day-ahead", scan_run_id="reservation-admission",
+        observed_high_state="complete=0;high=unavailable",
+    )
+    assert len(result.target_order_ids) == 1
+    row = store.paper_order(result.target_order_ids[0])
+    assert row["status"] == "PAPER_LIMIT_RESTING"
+    assert row["limit_price"] == 0.95
+    assert row["contracts"] == 52.0
+    assert row["reserved_cost"] == pytest.approx(49.4)
+    assert row["limit_edge_lcb"] == pytest.approx(0.01)
+    assert row["queue_remaining"] == 100.0
+
+
 def test_crossing_structural_target_stays_clamped_to_visible_depth() -> None:
     prepared = with_target_research_execution(
         _structural_target_candidate(bid=0.75, ask=0.76, ask_size=5.9),

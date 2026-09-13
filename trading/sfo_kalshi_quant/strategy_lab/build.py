@@ -64,7 +64,7 @@ from .forecast_health import _forecast_health_payload
 from .paper_card import _paper_payload
 from .profiles import _default_profile, _profile_views
 from .readiness import _live_frequency_tuning_payload, _real_money_readiness_payload
-from .status_alerts import _status_payload
+from .status_alerts import _account_drawdown_alerts, _alert_level, _status_payload
 
 
 def build_strategy_research(
@@ -286,6 +286,8 @@ def build_strategy_research(
         signal_quality=signal_quality,
         paper=paper,
         forecast_health=forecast_health,
+        accounting=accounting,
+        analysis_generated_at=analysis_generated_at or "",
     )
     generated_at = readiness_now.isoformat()
     if not fast_publication:
@@ -1532,6 +1534,19 @@ def _bind_accounting_to_profiles(
             }
         )
         profile["daily_summary"] = daily
+        drawdown_alerts = _account_drawdown_alerts(
+            account, key=ledger_key,
+            label="Live Stability" if profile_key == "live" else "Research ROI",
+        )
+        if drawdown_alerts:
+            status = dict(profile.get("status") or {})
+            alerts = [
+                alert for alert in status.get("alerts") or []
+                if alert.get("code") != "strategy-lab-healthy"
+                and alert.get("code") != f"{ledger_key}-drawdown"
+            ] + drawdown_alerts
+            status.update(alerts=alerts, alert_level=_alert_level(alerts))
+            profile["status"] = status
 
     active_order = {"live": 0, "research-target": 1}
     return sorted(

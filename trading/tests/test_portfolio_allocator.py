@@ -585,16 +585,11 @@ def test_target_clips_to_correlated_region_scenario_room() -> None:
 
     plans = allocate_research_plans(candidates, target_active_legs=active)
 
-    assert [leg.decision.ticker for leg in plans.target.legs] == [
-        candidates[1].decision.ticker,
-        candidates[0].decision.ticker,
-    ]
-    # v6 geometry: west-coast region room is $360 - $340 pending = $20,
-    # so the TSFO leg clips to 40 contracts at $0.50.
-    assert plans.target.legs[1].decision.recommended_contracts == 40.0
-    assert plans.target.legs[1].spend == 20.0
+    # The new projected-loss budget binds before the old region allowance.
+    assert plans.target.legs == []
+    assert all("projected daily-loss" in row.reason for row in plans.target.dispositions)
     dispositions = {row.ticker: row for row in plans.target.dispositions}
-    assert dispositions[candidates[0].decision.ticker].status == "selected"
+    assert dispositions[candidates[0].decision.ticker].status == "capacity_blocked"
 
 
 def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
@@ -641,7 +636,7 @@ def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
 
     assert plans.target.legs == []
     assert plans.target.dispositions[0].status == "capacity_blocked"
-    assert "city-target" in (plans.target.dispositions[0].reason or "")
+    assert "projected daily-loss" in (plans.target.dispositions[0].reason or "")
 
 
 def test_partial_children_are_not_counted_as_separate_exposure_legs() -> None:
@@ -673,7 +668,7 @@ def test_partial_children_are_not_counted_as_separate_exposure_legs() -> None:
     assert city_target_worst_case_loss([root, child], range(68, 74)) == 20.0
 
 
-def test_target_roi_position_risk_is_hard_capped_at_the_policy_budget() -> None:
+def test_target_roi_position_risk_uses_kelly_below_the_policy_ceiling() -> None:
     candidate = ResearchOpportunity(
         _decision(
             _market(
@@ -684,7 +679,7 @@ def test_target_roi_position_risk_is_hard_capped_at_the_policy_budget() -> None:
                 yes_ask=0.20,
             ),
             side="YES",
-            # must exceed the v6 $90 position budget for the cap to bind
+            # Exceeds both the existing $90 ceiling and conservative Kelly.
             spend=200.0,
             probability=0.50,
             edge=0.30,
@@ -696,9 +691,9 @@ def test_target_roi_position_risk_is_hard_capped_at_the_policy_budget() -> None:
 
     plans = allocate_research_plans([candidate])
 
-    # v6 position budget: 9% of $1000 = $90 -> 450 contracts at $0.20.
-    assert plans.target.legs[0].spend == 90.0
-    assert plans.target.legs[0].decision.recommended_contracts == 450.0
+    # LCB .45, cost .20: quarter-Kelly budget $78.125 -> 390 contracts.
+    assert plans.target.legs[0].spend == 78.0
+    assert plans.target.legs[0].decision.recommended_contracts == 390.0
 
 
 def test_infeasible_growth_target_never_loosens_target_gates_or_count() -> None:
@@ -730,7 +725,7 @@ def test_infeasible_growth_target_never_loosens_target_gates_or_count() -> None:
 
     assert plans.target_pnl == 50.0
     assert plans.remaining_target == 99.0
-    assert plans.available_conservative_expected_profit == 1.0
+    assert plans.available_conservative_expected_profit == 0.78
     assert plans.target_feasible_from_current_opportunity_set is False
     assert [leg.decision.ticker for leg in plans.target.legs] == [valid.decision.ticker]
 
@@ -748,7 +743,7 @@ def test_target_allocation_is_input_order_invariant_and_uses_conservative_priori
                 ),
                 side="YES",
                 spend=20.0,
-                probability=0.50,
+                probability=0.70,
                 edge=0.20,
                 edge_lcb=lcb,
             ),
@@ -888,10 +883,9 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
     plans = allocate_research_plans([candidate], target_active_legs=[active])
 
     assert len(plans.target.legs) == 1
-    # v6 geometry: city-target room is $180 - $110 pending = $70 -> 350
-    # contracts at $0.20.
-    assert plans.target.legs[0].decision.recommended_contracts == 350.0
-    assert plans.target.legs[0].spend == 70.0
+    # Full pending loss consumes $110 of the $150 daily budget, leaving $40.
+    assert plans.target.legs[0].decision.recommended_contracts == 200.0
+    assert plans.target.legs[0].spend == 40.0
 
 
 def test_malformed_active_exposure_fails_closed_instead_of_omitting_risk() -> None:
@@ -1383,7 +1377,7 @@ def test_one_cent_contract_is_valid_and_huge_quantity_caps_at_max_target_contrac
         target_available_cash=1e308,
     )
 
-    # v6: MAX_TARGET_CONTRACTS = floor($1000 x 9% / $0.01) = 9000.
+    # Existing ceiling: floor($90 / $0.01) = 9000.
     assert plans.target.legs[0].decision.recommended_contracts == 9000.0
     assert plans.target.legs[0].spend == 90.0
     assert plans.motion.legs[0].decision.recommended_contracts == 1.0
@@ -1435,7 +1429,7 @@ def test_ninety_nine_cent_quote_with_sub_dollar_all_in_cost_is_valid() -> None:
     plans = allocate_research_plans(
         [
             ResearchOpportunity(
-                replace(decision, cost_per_contract=0.9907),
+                replace(decision, cost_per_contract=0.9907, probability_lcb=0.991),
                 "2026-07-20",
                 2,
             )
@@ -1644,9 +1638,9 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
 
     plans = allocate_research_plans([candidate], target_active_legs=active)
 
-    assert len(plans.target.legs) == 1
-    assert plans.target.legs[0].decision.recommended_contracts == 20.0
-    assert plans.target.legs[0].spend == 10.0
+    # Existing risk above the daily budget must drain before any new entry.
+    assert plans.target.legs == []
+    assert "projected daily-loss" in plans.target.dispositions[0].reason
 
 
 def test_motion_has_no_count_throttle_and_stops_only_at_scenario_cap() -> None:
