@@ -249,6 +249,10 @@ cd /opt/weatheredge/trading
 .venv/bin/python -m sfo_kalshi_quant.cli --no-color --db-path data/paper_trading.db paper-resettle --verify --days 14
 ```
 
+`paper-resettle --verify` also reconciles each settled lot against the
+exchange's own finalized result; an `EXCHANGE SETTLEMENT MISMATCH` line on
+stderr is an incident (see `docs/SETTLEMENT-OBSERVABILITY.md`, section 3).
+
 For an existing large journal, keep paper scan and monitor services paused and
 run `create_decision_snapshot_index.sh` once before resuming them. It builds the
 covering decision-report index without putting that expensive migration on

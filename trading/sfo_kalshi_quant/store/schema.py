@@ -16,6 +16,10 @@ from ..ladder_truth import (
     LADDER_OBSERVED_TOLERANCE_F,
     derive_integrity_verdict,
 )
+from .exchange_settlement_checks import (
+    EXCHANGE_SETTLEMENT_CHECK_INDEXES,
+    EXCHANGE_SETTLEMENT_CHECK_SCHEMA,
+)
 from .market_day_settlements import (
     MARKET_DAY_SETTLEMENT_INDEXES,
     MARKET_DAY_SETTLEMENT_SCHEMA,
@@ -504,7 +508,9 @@ CREATE TABLE IF NOT EXISTS google_challenger_snapshots (
   action TEXT NOT NULL,
   PRIMARY KEY(station_id, target_date, issued_at, policy_version)
 );
-""" + MARKET_DAY_SETTLEMENT_SCHEMA + LADDER_BIN_OUTCOME_SCHEMA
+""" + MARKET_DAY_SETTLEMENT_SCHEMA + LADDER_BIN_OUTCOME_SCHEMA + (
+    EXCHANGE_SETTLEMENT_CHECK_SCHEMA
+)
 
 # Created after column migrations in init() so they can reference late-added
 # columns (e.g. group_id) on databases that predate them.
@@ -556,7 +562,9 @@ CREATE INDEX IF NOT EXISTS idx_research_shadow_monitor_order
     ON research_shadow_monitor_snapshots (shadow_order_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_paper_account_ledger_account
     ON paper_account_ledger (account_id, created_at, id);
-""" + MARKET_DAY_SETTLEMENT_INDEXES + LADDER_BIN_OUTCOME_INDEXES
+""" + MARKET_DAY_SETTLEMENT_INDEXES + LADDER_BIN_OUTCOME_INDEXES + (
+    EXCHANGE_SETTLEMENT_CHECK_INDEXES
+)
 
 # Fresh databases can build this covering report index cheaply during normal
 # initialization. Existing journals deliberately skip it: production creates it

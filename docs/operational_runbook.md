@@ -196,6 +196,22 @@ python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --days 14
 The sweep records `MATCH`, `MISMATCH`, and `MISSING_FINAL` results in
 `paper_settlement_verifications` using each city's fixed-standard date window.
 
+Both `paper-auto-settle` and `paper-resettle --verify` also reconcile each
+settled lot against the exchange's own finalized market
+(`GET /markets/{ticker}`, then `/historical/markets/{ticker}` after a 404) and
+record `MATCH`, `MISMATCH`, `KALSHI_PENDING`, or `UNCHECKED` in
+`paper_settlement_exchange_checks`, with the exchange `result`, its
+`expiration_value`, and the journal's booked winner. A `MISMATCH` prints an
+`EXCHANGE SETTLEMENT MISMATCH` line on stderr and is counted in the
+`exchange settlement check:` summary line; `standing_mismatches` counts every
+one on record. Treat it as an incident and open a restatement; never edit the
+journal. The check never changes booked P&L and never fails or blocks
+settlement: an unreachable exchange is recorded as `UNCHECKED` and retried on
+a later run. The settle timer re-checks undecided lots settled in the last
+seven days; backfill older history with `paper-resettle --verify --days N`.
+Either command accepts `--skip-exchange-check` for offline use. Details:
+`docs/SETTLEMENT-OBSERVABILITY.md`, section 3.
+
 ## Edge Scan Diagnostic
 
 `sfo_kalshi_quant/edge_scan.py` measures the favorite-band maker opportunity
