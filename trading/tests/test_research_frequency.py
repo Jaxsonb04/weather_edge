@@ -1,18 +1,18 @@
-"""W2 research frequency (2026-09-13): seller-flow scan order, 30-minute
-day-ahead research rest with a stale-quote cancel guard, and a bounded scan
-lock wait. Research-only -- every test here also pins that the live book is
-untouched."""
+"""W2 research frequency (2026-09-13): seller-flow scan order and a 30-minute
+day-ahead research rest with a stale-quote cancel guard. Research-only --
+every test here also pins that the live book is untouched. Section 3 pins why
+a scan-lock change was reverted: systemd, not the shell lock, decides what
+happens to a tick that a slow scan overruns."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -35,10 +35,6 @@ from sfo_kalshi_quant.research_policy import (
     research_scan_city_rank,
 )
 from sfo_kalshi_quant.replay import _row_ttl_minutes
-from test_deploy_shell_behavior import (
-    _invoke_paper_scan_with_placement_flags,
-    _write_executable,
-)
 from test_expired_requote import TARGET as LIVE_TARGET
 from test_expired_requote import _limit_trader, _resting_decision
 from test_research_sleeves import (
@@ -54,9 +50,13 @@ from test_target_execution_capacity import _candidate
 # --------------------------------------------------------------------------
 
 
-def test_research_scan_order_covers_exactly_the_registry_cities() -> None:
+def test_research_scan_order_lists_only_registry_cities_without_duplicates() -> None:
     assert len(RESEARCH_SCAN_CITY_ORDER) == len(set(RESEARCH_SCAN_CITY_ORDER))
-    assert set(RESEARCH_SCAN_CITY_ORDER) == set(CITY_BY_SLUG)
+    # Every listed slug is a real registry city. The registry may grow past
+    # this list -- an unlisted city is appended, never dropped (tests below)
+    # -- so this is a subset check, not equality.
+    assert set(RESEARCH_SCAN_CITY_ORDER) <= set(CITY_BY_SLUG)
+    assert len(RESEARCH_SCAN_CITY_ORDER) == 15
     # The measured day-ahead NO-seller flow leaders come first.
     assert RESEARCH_SCAN_CITY_ORDER[:3] == ("lax", "nyc", "mia")
     # ...and the registry's first city (MIA) is no longer scanned first.
@@ -69,7 +69,14 @@ def test_unlisted_city_ranks_last_and_is_never_dropped() -> None:
     assert research_scan_city_rank("zzz") == len(RESEARCH_SCAN_CITY_ORDER)
     future = replace(get_city("sfo"), slug="zzz", name="Future City")
     ordered = scan_module._scan_cities_for_profile((future, *CITIES), "research")
-    assert [city.slug for city in ordered] == [*RESEARCH_SCAN_CITY_ORDER, "zzz"]
+    registry_unlisted = [
+        city.slug for city in CITIES if city.slug not in RESEARCH_SCAN_CITY_ORDER
+    ]
+    assert [city.slug for city in ordered] == [
+        *RESEARCH_SCAN_CITY_ORDER,
+        "zzz",
+        *registry_unlisted,
+    ]
     # The live profile keeps whatever order it was handed, future city included.
     assert scan_module._scan_cities_for_profile((future, *CITIES), "live") == (
         future,
@@ -77,14 +84,14 @@ def test_unlisted_city_ranks_last_and_is_never_dropped() -> None:
     )
 
 
-def _scanned_city_order(profile: str) -> tuple[list[str], list]:
+def _scanned_city_order(profile: str, cities: tuple = CITIES) -> tuple[list[str], list]:
     args = build_parser().parse_args(["--risk-profile", profile, "portfolio-scan"])
     target = date(2026, 9, 14)
     adapter = Mock()
     adapter.load_calibration_outcomes.return_value = [object()] * 30
     adapter.load_emos_mu_sigma.return_value = {}
     with (
-        patch("sfo_kalshi_quant.cli._cities_for_args", return_value=CITIES),
+        patch("sfo_kalshi_quant.cli._cities_for_args", return_value=cities),
         patch(
             "sfo_kalshi_quant.cli._resolve_analysis_targets",
             return_value=([target], {}),
@@ -117,9 +124,70 @@ def test_live_portfolio_scan_keeps_registry_order() -> None:
 
 def test_research_portfolio_scan_follows_seller_flow_order() -> None:
     slugs, _ = _scanned_city_order("research")
-    assert slugs == list(RESEARCH_SCAN_CITY_ORDER)
+    unlisted = [city.slug for city in CITIES if city.slug not in RESEARCH_SCAN_CITY_ORDER]
+    assert slugs == [*RESEARCH_SCAN_CITY_ORDER, *unlisted]
     assert slugs[0] == "lax"
     assert sorted(slugs) == sorted(city.slug for city in CITIES)
+
+
+# feat/five-more-high-cities appends these to cities.CITIES in this order (Las
+# Vegas, Minneapolis, San Antonio, New Orleans, Washington DC). They have no
+# measured seller flow, so they are deliberately absent from
+# RESEARCH_SCAN_CITY_ORDER -- and the research scan must still reach each one.
+_FIVE_NEW_CITY_SLUGS = ("lv", "min", "satx", "nola", "dc")
+
+
+def _registry_with_five_new_cities() -> tuple:
+    """The 20-city registry, whether or not that branch is integrated yet."""
+
+    template = get_city("sfo")
+    existing = tuple(city for city in CITIES if city.slug not in _FIVE_NEW_CITY_SLUGS)
+    new = tuple(
+        replace(
+            template,
+            slug=slug,
+            name=f"New city {slug}",
+            series_ticker=f"KXHIGHT{slug.upper()}",
+        )
+        for slug in _FIVE_NEW_CITY_SLUGS
+    )
+    return (*existing, *new)
+
+
+def test_research_scan_appends_configured_cities_missing_from_the_order() -> None:
+    registry = _registry_with_five_new_cities()
+    assert len(registry) == 20
+    for slug in _FIVE_NEW_CITY_SLUGS:
+        assert slug not in RESEARCH_SCAN_CITY_ORDER
+        assert research_scan_city_rank(slug) == len(RESEARCH_SCAN_CITY_ORDER)
+
+    ordered = scan_module._scan_cities_for_profile(registry, "research")
+
+    # Nothing dropped, nothing duplicated: listed cities in seller-flow order,
+    # then every unlisted configured city in its registry order.
+    assert [city.slug for city in ordered] == [
+        *RESEARCH_SCAN_CITY_ORDER,
+        *_FIVE_NEW_CITY_SLUGS,
+    ]
+    assert sorted(city.slug for city in ordered) == sorted(city.slug for city in registry)
+    # A PAPER_CITIES subset keeps the same contract.
+    by_slug = {city.slug: city for city in registry}
+    subset = (by_slug["dc"], by_slug["atl"], by_slug["lv"], by_slug["lax"])
+    assert [
+        city.slug for city in scan_module._scan_cities_for_profile(subset, "research")
+    ] == ["lax", "atl", "dc", "lv"]
+    # The live profile keeps the registry order untouched.
+    assert scan_module._scan_cities_for_profile(registry, "live") == registry
+
+
+def test_research_portfolio_scan_reaches_the_five_new_cities() -> None:
+    registry = _registry_with_five_new_cities()
+
+    research_slugs, _ = _scanned_city_order("research", cities=registry)
+    live_slugs, _ = _scanned_city_order("live", cities=registry)
+
+    assert research_slugs == [*RESEARCH_SCAN_CITY_ORDER, *_FIVE_NEW_CITY_SLUGS]
+    assert live_slugs == [city.slug for city in registry]
 
 
 # --------------------------------------------------------------------------
@@ -376,67 +444,73 @@ def test_research_scan_cancels_stale_quotes_before_planning_and_admission() -> N
 
 
 # --------------------------------------------------------------------------
-# 3. Scan lock waits instead of dropping the tick
+# 3. Scan tick overruns: systemd catches the tick up; the shell lock is not
+#    involved (2026-09-13 correction -- a bounded lock wait was reverted)
 # --------------------------------------------------------------------------
 
 
-def test_paper_scan_runner_waits_on_the_lock_for_the_configured_seconds(
-    tmp_path: Path,
-) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    flock_log = tmp_path / "flock.log"
-    _write_executable(
-        fake_bin / "flock",
-        f"#!{sys.executable}\nimport os, sys\n"
-        "open(os.environ['FLOCK_LOG'], 'a').write(' '.join(sys.argv[1:]) + '\\n')\n",
-    )
-    import os
-
-    result, calls = _invoke_paper_scan_with_placement_flags(
-        tmp_path,
-        PATH=f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-        FLOCK_LOG=str(flock_log),
-        SFO_PAPER_SCAN_LOCK_WAIT_SECONDS="7",
-    )
-    assert result.returncode == 0, result.stderr
-    assert flock_log.read_text().splitlines() == ["-w 7 9"]
-    assert "skipping this tick" not in result.stdout
-    # Both profiles still ran after the lock was taken.
-    assert [c[c.index("--risk-profile") + 1] for c in calls] == ["live", "research"]
+_AWS_DIR = Path(__file__).resolve().parents[1] / "deploy" / "aws"
+_SYSTEMD_DIR = _AWS_DIR / "systemd"
+_MONOTONIC_TIMER_KEYS = {
+    "OnActiveSec",
+    "OnBootSec",
+    "OnStartupSec",
+    "OnUnitActiveSec",
+    "OnUnitInactiveSec",
+}
 
 
-def test_paper_scan_runner_defaults_to_a_ninety_second_wait(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    flock_log = tmp_path / "flock.log"
-    _write_executable(
-        fake_bin / "flock",
-        f"#!{sys.executable}\nimport os, sys\n"
-        "open(os.environ['FLOCK_LOG'], 'a').write(' '.join(sys.argv[1:]) + '\\n')\n",
-    )
-    import os
-
-    result, _ = _invoke_paper_scan_with_placement_flags(
-        tmp_path,
-        PATH=f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-        FLOCK_LOG=str(flock_log),
-    )
-    assert result.returncode == 0, result.stderr
-    assert flock_log.read_text().splitlines() == ["-w 90 9"]
+def _unit_directives(name: str) -> list[str]:
+    return [
+        line.strip()
+        for line in (_SYSTEMD_DIR / name).read_text().splitlines()
+        if line.strip() and not line.strip().startswith(("#", ";"))
+    ]
 
 
-def test_paper_scan_runner_still_skips_when_the_wait_expires(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    _write_executable(fake_bin / "flock", "#!/bin/sh\nexit 1\n")
-    import os
+def test_scan_tick_overrun_is_caught_up_by_systemd_not_the_shell_lock() -> None:
+    """A scan that overruns its 5-minute slot delays the next tick; it does
+    not drop it -- and the runner's flock plays no part in that.
 
-    result, calls = _invoke_paper_scan_with_placement_flags(
-        tmp_path,
-        PATH=f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-        SFO_PAPER_SCAN_LOCK_WAIT_SECONDS="1",
-    )
-    assert result.returncode == 0
-    assert "still running after 1s; skipping this tick" in result.stdout
-    assert calls == []
+    systemd never starts this Type=oneshot service twice, and while a
+    timer-started run is active the timer is not armed (timer_dispatch
+    ignores an elapse outside TIMER_WAITING). When the run exits,
+    timer_trigger_notify re-enters timer_enter_waiting, which computes the
+    next OnCalendar elapse from last_trigger, so the elapse that passed during
+    the overrun (the 14:00Z listing tick behind a slow 13:55 scan) is already
+    due and starts at once. Reproduced on Ubuntu 24.04 / systemd 255.4, the
+    production OS: a 20 s calendar timer driving a 25 s oneshot started runs
+    back-to-back 25 s apart, not 40 s apart. Timer-driven runs therefore never
+    contend on the runner's lock, so a longer lock wait could not rescue a
+    tick. This pins the unit shape that catch-up depends on.
+    """
+
+    timer = _unit_directives("sfo-kalshi-paper-scan.timer")
+    service = _unit_directives("sfo-kalshi-paper-scan.service.in")
+
+    # Calendar-based, so the next elapse is computed from the last trigger; no
+    # monotonic base that would re-time the schedule from activation instead.
+    assert len([line for line in timer if line.startswith("OnCalendar=")]) == 1
+    assert not [
+        line for line in timer if line.split("=", 1)[0] in _MONOTONIC_TIMER_KEYS
+    ]
+    assert "Unit=sfo-kalshi-paper-scan.service" in timer
+
+    # One oneshot activation per trigger that goes inactive when the runner
+    # exits -- that deactivation is what re-arms the timer. RemainAfterExit=yes
+    # would leave the unit active and silently stop every later tick.
+    assert "Type=oneshot" in service
+    assert not [
+        line for line in service if line.lower().startswith("remainafterexit=")
+    ]
+    assert [line for line in service if line.startswith("ExecStart=")] == [
+        "ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_paper_scan_profiles.sh"
+    ]
+
+    # The lock stays skip-at-once: it only ever meets an out-of-band run.
+    runner = (_AWS_DIR / "run_paper_scan_profiles.sh").read_text()
+    assert runner.count("flock -n 9") == 1
+    assert "flock -w" not in runner
+    assert "SFO_PAPER_SCAN_LOCK_WAIT_SECONDS" not in runner
+    example_env = (_AWS_DIR / "sfo-weather.env.example").read_text()
+    assert "SFO_PAPER_SCAN_LOCK_WAIT_SECONDS" not in example_env

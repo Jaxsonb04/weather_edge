@@ -592,6 +592,15 @@ class PaperTrader:
         uses, which releases its reservation. A market with no fresh decision
         this tick is left alone -- missing information is not evidence of a
         stale quote, and the TTL still bounds it.
+
+        This is a partial mitigation, not an adverse-selection model. It runs
+        once per scan tick (5-minute cadence), so a quote can sit up to a tick
+        under a moved forecast; it sees only markets present in that tick's
+        decisions; and it re-checks the fresh LCB against the resting cost
+        only, not the spread/depth gates. Paper fills inside those gaps are
+        still credited whenever the tape trades through the price, which a
+        real-money book would mostly experience as adverse fills (see the
+        real-money divergence note in research_entry_risk).
         """
 
         if self.risk_profile != "research":

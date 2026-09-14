@@ -28,6 +28,23 @@ TARGET_ENTRY_FRACTIONAL_KELLY = 0.25
 # The longer rest doubles stale-quote exposure, which is why the scan now
 # cancels a resting quote whose CURRENT after-fee LCB edge has gone negative
 # (paper.PaperTrader.cancel_stale_research_resting_orders). Live keeps 15.
+#
+# OWNER DECISION (2026-09-13): this reverses the 2026-09-12
+# strategy-performance note, which kept the 15-minute expiry so forecast
+# staleness would not be stretched to manufacture fills. The reversal was
+# raised as a sign-off item and the owner APPROVED the 30-minute research
+# day-ahead rest to raise research trading frequency.
+#
+# REAL-MONEY DIVERGENCE: the paper maker model fills a resting quote whenever
+# the public tape trades through its price, with no adverse-selection
+# haircut. With real money, the fills that arrive late in a longer rest are
+# disproportionately adverse -- the counterparty trades into a quote the
+# forecast or the book has already moved away from. The extra late-window
+# fills this rest harvests therefore overstate real-money value: read the
+# paper uplift as an UPPER BOUND on real-money uplift, never as an estimate
+# of it. The stale-quote guard mitigates only partly (5-minute scan cadence,
+# markets present in that tick only, fresh LCB vs resting after-fee cost
+# only), and the 8-of-43 late-fill figure above is itself paper evidence.
 DEFAULT_RESTING_ORDER_TTL_MINUTES = 15
 TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES = 30
 

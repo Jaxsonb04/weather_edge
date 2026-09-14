@@ -505,6 +505,10 @@ def _replay_stamp(
         "reference_equity": reference_equity,
         "max_position_risk_pct": max_position_risk_pct,
         "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+        # The DEFAULT rest (live, motion, same-day). Target day-ahead cases
+        # rest day_ahead_order_ttl_minutes; each ticker's own ttl_minutes is
+        # the authoritative rest for that replayed order. The key keeps its
+        # historical name so existing persisted stamps stay comparable.
         "order_ttl_minutes": _TTL_MINUTES,
         "day_ahead_order_ttl_minutes": _DAY_AHEAD_TTL_MINUTES,
         "order_ttl_version": RESEARCH_ENTRY_RISK_VERSION,
