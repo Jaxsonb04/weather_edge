@@ -40,7 +40,9 @@ from ..forecast import (
 )
 from ..kalshi import KalshiPublicClient, load_event_snapshots
 from ..orderbook_capture import (
+    OrderbookDepth,
     capture_orderbook_depth,
+    capture_orderbook_depth_within,
     depth_levels_json,
     side_ask_ladder,
 )
@@ -756,6 +758,15 @@ def _target_sleeve_legs(plans: ResearchPlans):
 # A module constant on purpose -- a StrategyConfig field would move the strategy
 # fingerprint, and this is an operational guard rail, not execution identity.
 _ORDERBOOK_CAPTURE_BUDGET_SECONDS = 10.0
+# Hard wall-clock deadline for ONE pre-entry ladder fetch (two-level taker
+# cross, 2026-09-13). That fetch sits between the market listing and order
+# placement, so it must not inherit the shared client's 20s timeout x 3
+# attempts with backoff (~61s worst case, longer behind a Retry-After): it
+# runs on a single-attempt client with this socket timeout AND the caller
+# waits at most this long. Healthy fetches take ~100-300ms. A timeout or an
+# error leaves the leg on the single-level cross; a timeout also ends
+# pre-entry fetching for that target.
+_PRE_ENTRY_LADDER_DEADLINE_SECONDS = 2.0
 
 
 def _capture_orderbook_depth_for_legs(
@@ -772,9 +783,9 @@ def _capture_orderbook_depth_for_legs(
 ) -> None:
     """Best-effort ladder-depth telemetry for a book's gated legs.
 
-    ``skip_tickers`` are markets whose ladder this scan already fetched and
-    recorded pre-entry (_attach_pre_entry_ask_ladders); they are not fetched
-    a second time.
+    ``skip_tickers`` are markets this scan already fetched, or tried and
+    failed to fetch, pre-entry (_attach_pre_entry_ask_ladders); they are not
+    fetched a second time.
 
     Runs AFTER order placement so a capture failure can never affect it.
     Deduplicates by ticker: a scan can gate the same market on multiple
@@ -843,12 +854,21 @@ def _attach_pre_entry_ask_ladders(
     leg's own side, and threads it onto the decision so the recording
     restatement and placement quote against the same ladder.
 
+    It sits in front of placement, so its latency is bounded twice: each
+    fetch is ONE attempt under a hard ``_PRE_ENTRY_LADDER_DEADLINE_SECONDS``
+    wall-clock deadline (``capture_orderbook_depth_within`` on a
+    ``single_attempt`` client), and no fetch starts after ``deadline`` (the
+    per-target ladder budget). The first timeout ends fetching for the
+    target: the endpoint is degraded, and every further leg would cost
+    another deadline before placement.
+
     Best effort by construction: no client, a disabled cross, a market-mode
-    trader, a fetch failure, a malformed book or an exhausted budget all
-    leave the leg exactly as it was, and the single-level cross then applies.
-    It never blocks or drops a trade. Ladders it fetches are recorded as
-    depth telemetry (when that is enabled) and returned so the post-placement
-    capture skips them: the per-target budget is spent once.
+    trader, a timeout, a fetch failure, a malformed book or an exhausted
+    budget all leave the leg exactly as it was, and the single-level cross
+    then applies. It never blocks or drops a trade. Fetched ladders are
+    recorded as depth telemetry (when that is enabled). Returns the plan and
+    every ticker a fetch was ATTEMPTED for, so the post-placement telemetry
+    neither re-fetches a book nor re-hits an endpoint that just timed out.
     """
 
     if (
@@ -858,6 +878,45 @@ def _attach_pre_entry_ask_ladders(
         or int(config.limit_taker_cross_max_levels) < 2
     ):
         return plan, set()
+    wanted = _depth_bound_leg_indexes(plan)
+    if not wanted:
+        return plan, set()
+    levels = max(2, int(config.orderbook_depth_capture_levels))
+    ladder_client = _pre_entry_ladder_client(kalshi_client)
+    legs = list(plan.legs)
+    attempted: set[str] = set()
+    for ticker, indexes in wanted.items():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            # Out of budget: the remaining legs keep the single-level cross.
+            break
+        attempted.add(ticker)
+        depth, timed_out = capture_orderbook_depth_within(
+            ladder_client,
+            ticker,
+            levels=levels,
+            deadline_seconds=min(_PRE_ENTRY_LADDER_DEADLINE_SECONDS, remaining),
+        )
+        if timed_out:
+            break
+        if depth is None:
+            continue
+        _record_pre_entry_depth(
+            config,
+            store,
+            depth,
+            ticker=ticker,
+            levels=levels,
+            target_date=target_date,
+            risk_profile=risk_profile,
+        )
+        legs = _legs_with_side_ladders(legs, indexes, depth, config)
+    return replace(plan, legs=legs), attempted
+
+
+def _depth_bound_leg_indexes(plan: PortfolioPlan) -> dict[str, list[int]]:
+    """Approved directional legs whose displayed ask is below the request."""
+
     wanted: dict[str, list[int]] = {}
     for index, leg in enumerate(plan.legs):
         if leg.sleeve == "arbitrage":
@@ -877,48 +936,76 @@ def _attach_pre_entry_ask_ladders(
         ):
             continue
         wanted.setdefault(str(decision.ticker), []).append(index)
-    if not wanted:
-        return plan, set()
-    levels = max(2, int(config.orderbook_depth_capture_levels))
-    legs = list(plan.legs)
-    captured: set[str] = set()
-    for ticker, indexes in wanted.items():
-        if time.monotonic() >= deadline:
-            # Out of budget: the remaining legs keep the single-level cross.
-            break
-        depth = capture_orderbook_depth(kalshi_client, ticker, levels=levels)
-        if depth is None:
-            continue
-        captured.add(ticker)
-        if config.orderbook_depth_capture_enabled:
-            try:
-                store.record_orderbook_depth(
-                    target_date=target_date,
-                    market_ticker=ticker,
-                    yes_levels=depth_levels_json(depth.yes),
-                    no_levels=depth_levels_json(depth.no),
-                    levels_requested=levels,
-                    scan_run_id=None,
-                    risk_profile=risk_profile,
-                )
-            except Exception:  # noqa: BLE001 -- telemetry only, never affects placement
-                pass
-        for index in indexes:
-            leg = legs[index]
-            try:
-                ladder = side_ask_ladder(
-                    depth,
-                    leg.decision.side,
-                    levels=int(config.limit_taker_cross_max_levels),
-                )
-            except Exception:  # noqa: BLE001 -- a bad ladder must never touch a trade
-                continue
-            if len(ladder) < 2:
-                continue
-            legs[index] = replace(
-                leg, decision=replace(leg.decision, ask_levels=ladder)
+    return wanted
+
+
+def _pre_entry_ladder_client(kalshi_client):
+    """The scan's endpoint as a single-attempt, short-timeout client.
+
+    A test double that is not a KalshiPublicClient is used as given; the
+    hard deadline in capture_orderbook_depth_within bounds it regardless.
+    """
+
+    if isinstance(kalshi_client, KalshiPublicClient):
+        return kalshi_client.single_attempt(
+            timeout=_PRE_ENTRY_LADDER_DEADLINE_SECONDS
+        )
+    return kalshi_client
+
+
+def _record_pre_entry_depth(
+    config: StrategyConfig,
+    store: PaperStore,
+    depth: OrderbookDepth,
+    *,
+    ticker: str,
+    levels: int,
+    target_date: str,
+    risk_profile: str,
+) -> None:
+    """Record a pre-entry ladder as depth telemetry; never affects placement."""
+
+    if not config.orderbook_depth_capture_enabled:
+        return
+    try:
+        store.record_orderbook_depth(
+            target_date=target_date,
+            market_ticker=ticker,
+            yes_levels=depth_levels_json(depth.yes),
+            no_levels=depth_levels_json(depth.no),
+            levels_requested=levels,
+            scan_run_id=None,
+            risk_profile=risk_profile,
+        )
+    except Exception:  # noqa: BLE001 -- telemetry only, never affects placement
+        pass
+
+
+def _legs_with_side_ladders(
+    legs: list,
+    indexes: list[int],
+    depth: OrderbookDepth,
+    config: StrategyConfig,
+) -> list:
+    """A copy of ``legs`` with each indexed leg's own-side ask ladder attached."""
+
+    updated = list(legs)
+    for index in indexes:
+        leg = updated[index]
+        try:
+            ladder = side_ask_ladder(
+                depth,
+                leg.decision.side,
+                levels=int(config.limit_taker_cross_max_levels),
             )
-    return replace(plan, legs=legs), captured
+        except Exception:  # noqa: BLE001 -- a bad ladder must never touch a trade
+            continue
+        if len(ladder) < 2:
+            continue
+        updated[index] = replace(
+            leg, decision=replace(leg.decision, ask_levels=ladder)
+        )
+    return updated
 
 
 def _research_portfolio_scan_from_context(
@@ -1104,9 +1191,11 @@ def _portfolio_scan_one_target(
 
     # Pre-entry ask ladders for depth-bound live legs (two-level taker
     # cross, 2026-09-13). Runs BEFORE the recording restatement so the
-    # journal carries the quote execution will place, and shares the one
-    # per-target ladder budget with the post-placement telemetry below.
-    ladder_deadline = time.monotonic() + _ORDERBOOK_CAPTURE_BUDGET_SECONDS
+    # journal carries the quote execution will place. It shares the one
+    # per-target ladder budget with the post-placement telemetry below, but
+    # only its OWN fetch time is charged to that budget: the recording,
+    # placement and operator output in between must not starve telemetry.
+    prefetch_started = time.monotonic()
     prefetched_tickers: set[str] = set()
     if args.place_paper and entry_allowed and plan.approved:
         plan, prefetched_tickers = _attach_pre_entry_ask_ladders(
@@ -1117,8 +1206,9 @@ def _portfolio_scan_one_target(
             target_date=target.isoformat(),
             store=store,
             risk_profile=risk_profile,
-            deadline=ladder_deadline,
+            deadline=prefetch_started + _ORDERBOOK_CAPTURE_BUDGET_SECONDS,
         )
+    prefetch_seconds = time.monotonic() - prefetch_started
     decisions_to_record = _restate_recorded_execution(
         _portfolio_decisions_for_recording(decisions, plan), plan, paper_trader
     )
@@ -1189,7 +1279,9 @@ def _portfolio_scan_one_target(
         scan_run_id=None,
         store=store,
         risk_profile=risk_profile,
-        budget_seconds=max(0.0, ladder_deadline - time.monotonic()),
+        budget_seconds=max(
+            0.0, _ORDERBOOK_CAPTURE_BUDGET_SECONDS - prefetch_seconds
+        ),
         skip_tickers=prefetched_tickers,
     )
 

@@ -297,10 +297,16 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # 2026-09-13 (scaling release, two-level taker cross): StrategyConfig
     # gained `limit_taker_cross_max_levels` (live 2, frozen 1), which enters
     # asdict(config) and therefore moves both fingerprints WITHOUT another
-    # STRATEGY_BEHAVIOR_VERSION rotation -- the change ships inside the
-    # already-rotated behaviour-v3 cohort. Before it the two values were
-    # 93326de538852004fc08aa99 / cdfaeb3c0be77f5b9dcb1270. Re-pin once more at
-    # integration if a sibling track adds a StrategyConfig field.
+    # STRATEGY_BEHAVIOR_VERSION rotation. The readiness cohort is keyed on the
+    # EXACT live fingerprint (strategy_lab/build.py
+    # required_strategy_fingerprint), so this restarts the live evidence
+    # clock. Accepted by the owner: production still runs behavior-v2 and this
+    # ships in the same single deploy as behavior-v3, whose rotation restarts
+    # that clock anyway, so it resets exactly once. Pins recomputed from
+    # strategy_config_for_profile("live"); with the field removed from the
+    # hash the same config gives 93326de538852004fc08aa99 /
+    # cdfaeb3c0be77f5b9dcb1270. Re-pin at integration if a sibling track adds
+    # a StrategyConfig field.
     assert strategy_fingerprint(config, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
     assert strategy_fingerprint(config, entry_mode="market") == "daac202606908834dcef5e78"
 

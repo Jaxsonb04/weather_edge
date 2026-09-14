@@ -18,10 +18,10 @@ class BuyLimitQuote:
     edge_lcb: float
     would_cross: bool
     contracts: float
-    # Crossing quotes only. The resting depth the immediate paper fill may
-    # consume (displayed best-ask size, or level-1 + level-2 size for a
-    # two-level cross) and how many ladder levels the price walks (1 or 2).
-    # None on a resting quote.
+    # Crossing taker quotes only. The resting depth the immediate paper fill
+    # may consume -- the listing's displayed best-ask size, a FRESH ladder's
+    # level-1 size, or level-1 + level-2 size for a two-level cross -- and
+    # how many ladder levels the price walks (1 or 2). None otherwise.
     displayed_depth: float | None = None
     levels_used: int | None = None
 
@@ -138,15 +138,25 @@ def _taker_cross_quote(
 ) -> BuyLimitQuote | None:
     """Whole-contract taker fill at the displayed ask, or None to rest.
 
-    Depth-aware since 2026-09-13 (``limit_taker_cross_max_levels >= 2``):
-    when the displayed best-ask size is below the sizing request and the
-    decision carries a fresh pre-entry ask ladder, ONE order at the second
-    ladder level for level-1 + level-2 depth is preferred over the truncated
-    level-1 cross -- provided the after-fee lower-bound edge at the worse
-    price still clears ``limit_taker_cross_min_edge_lcb``, the notional floor
-    holds, and the booked lower-bound expected profit does not fall. Hard cap
-    at two levels. A missing, stale or malformed ladder degrades to the
-    level-1 cross; the ladder can never block a trade.
+    Depth-aware since 2026-09-13 (``limit_taker_cross_max_levels >= 2``). A
+    FRESH pre-entry ask ladder on the decision -- a public orderbook fetched
+    after the listing whose best offer is still the displayed ask the
+    candidate was approved against (``_fresh_ask_ladder``) -- replaces the
+    older listing size as the executable book:
+
+    * fresh level-1 size covers the request: the single-level cross at the
+      displayed ask for the whole request; nothing is booked a tick worse;
+    * otherwise ONE order at the second ladder level for
+      min(request, level-1 + level-2 size) is preferred over the level-1
+      cross truncated to the fresh level-1 size, provided the after-fee
+      lower-bound edge at the worse price still clears
+      ``limit_taker_cross_min_edge_lcb``, the notional floor holds and
+      ``_preferred_taker_level`` accepts it. Hard cap at two levels.
+
+    With no fresh ladder (none attached, a stale best price, a malformed
+    ladder, or ``limit_taker_cross_max_levels < 2``) this is exactly the
+    historical cross truncated to the listing's displayed best-ask size. The
+    ladder can never block a trade.
     """
 
     try:
@@ -163,49 +173,48 @@ def _taker_cross_quote(
     ):
         return None
     tick = float(config.limit_price_tick)
+    ladder = (
+        _fresh_ask_ladder(decision, ask=ask, tick=tick)
+        if int(config.limit_taker_cross_max_levels) >= 2
+        else None
+    )
+    level_one_depth = ask_size if ladder is None else ladder[0][1]
     level_one = _taker_quote_at_level(
         decision,
         config,
         price=_floor_to_tick(ask, tick),
-        contracts=float(math.floor(min(requested, ask_size) + 1e-12)),
-        displayed_depth=ask_size,
+        contracts=float(math.floor(min(requested, level_one_depth) + 1e-12)),
+        displayed_depth=level_one_depth,
         levels_used=1,
     )
-    if (
-        ask_size + 1e-12 >= requested
-        or int(config.limit_taker_cross_max_levels) < 2
-    ):
+    if ladder is None or level_one_depth + 1e-12 >= requested:
         return level_one
-    level_two = _second_level_taker_quote(
-        decision, config, ask=ask, requested=requested
+    (_, size_one), (price_two, size_two) = ladder
+    level_two = _taker_quote_at_level(
+        decision,
+        config,
+        price=_floor_to_tick(price_two, tick),
+        contracts=float(math.floor(min(requested, size_one + size_two) + 1e-12)),
+        displayed_depth=size_one + size_two,
+        levels_used=2,
     )
-    if level_two is None:
-        return level_one
-    if level_one is not None:
-        # The paper ledger books EVERY contract at the level-2 cost (the
-        # exchange would fill the level-1 slice at level 1, which is why that
-        # booking is conservative), so walking is only justified when it
-        # buys strictly more contracts AND the booked lower-bound expected
-        # profit does not fall. Trading booked EV for size would make the
-        # evidence ledger worse than the status quo on thin-edge names.
-        if level_two.contracts <= level_one.contracts + 1e-12:
-            return level_one
-        if (
-            level_two.contracts * level_two.edge_lcb + 1e-9
-            < level_one.contracts * level_one.edge_lcb
-        ):
-            return level_one
-    return level_two
+    return _preferred_taker_level(level_one, level_two)
 
 
-def _second_level_taker_quote(
+def _fresh_ask_ladder(
     decision: TradeDecision,
-    config: StrategyConfig,
     *,
     ask: float,
-    requested: float,
-) -> BuyLimitQuote | None:
-    """One order at the ladder's second level for level-1 + level-2 depth."""
+    tick: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """The first two ask-ladder levels when execution may use them, else None.
+
+    The ladder is a separate fetch from the listing that priced the decision.
+    It is used only when its best offer IS the displayed ask the candidate
+    was approved against -- anything else is a moved or stale book, and
+    mixing two snapshots would price from one and size from the other --
+    both levels carry positive size, and the second level is strictly worse.
+    """
 
     ladder = decision.ask_levels
     if not ladder or len(ladder) < 2:
@@ -219,28 +228,41 @@ def _second_level_taker_quote(
         math.isfinite(value) for value in (price_one, size_one, price_two, size_two)
     ):
         return None
-    if size_one < 0.0 or size_two <= 0.0 or not 0.0 < price_two < 1.0:
+    if size_one <= 0.0 or size_two <= 0.0 or not 0.0 < price_two < 1.0:
         return None
-    tick = float(config.limit_price_tick)
-    # The ladder is a separate fetch from the listing that priced the
-    # decision. Only walk a book whose best offer IS the displayed ask the
-    # candidate was approved against; anything else is stale and falls back
-    # to the single-level cross rather than mixing two snapshots.
     if abs(_floor_to_tick(price_one, tick) - _floor_to_tick(ask, tick)) > 1e-9:
         return None
     if price_two <= price_one + 1e-12:
         return None
-    contracts = float(math.floor(min(requested, size_one + size_two) + 1e-12))
-    if contracts < 1.0:
-        return None
-    return _taker_quote_at_level(
-        decision,
-        config,
-        price=_floor_to_tick(price_two, tick),
-        contracts=contracts,
-        displayed_depth=size_one + size_two,
-        levels_used=2,
-    )
+    return (price_one, size_one), (price_two, size_two)
+
+
+def _preferred_taker_level(
+    level_one: BuyLimitQuote | None,
+    level_two: BuyLimitQuote | None,
+) -> BuyLimitQuote | None:
+    """Walk to the second level only when it buys more without booking less.
+
+    The paper ledger books EVERY contract of a two-level order at the level-2
+    cost (the exchange would fill the level-1 slice at level 1, which is why
+    that booking is conservative), so walking is only justified when it buys
+    strictly more contracts AND the booked lower-bound expected profit does
+    not fall. Trading booked EV for size would make the evidence ledger worse
+    than the status quo on thin-edge names.
+    """
+
+    if level_two is None:
+        return level_one
+    if level_one is None:
+        return level_two
+    if level_two.contracts <= level_one.contracts + 1e-12:
+        return level_one
+    if (
+        level_two.contracts * level_two.edge_lcb + 1e-9
+        < level_one.contracts * level_one.edge_lcb
+    ):
+        return level_one
+    return level_two
 
 
 def _taker_quote_at_level(

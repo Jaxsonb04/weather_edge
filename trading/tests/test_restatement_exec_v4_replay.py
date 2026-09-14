@@ -2450,3 +2450,69 @@ def test_two_level_entry_cannot_fill_beyond_level_one_plus_level_two_depth() -> 
         _assert_current_execution_excluded(
             db_path, order_id, "CURRENT_ENTRY_DEPTH_INSUFFICIENT"
         )
+
+
+# Fresh level-1 depth (2026-09-13 review): a level-1 cross sized on a fresh
+# ladder whose level-1 size exceeds the older listing size is executable, but
+# only a FRESH ladder (best level == displayed ask) can vouch for that depth.
+
+
+def _level_one_ladder_settled_order(store: PaperStore, ask_levels: object) -> int:
+    decision = _decision(TICKER, side="NO", limit_price=0.72, contracts=5.0)
+    decision = replace(
+        decision,
+        entry_bid=0.71,
+        entry_ask=0.72,
+        entry_ask_size=2.0,
+        limit_price=0.72,
+        ask_levels=ask_levels,
+        taker_levels_used=1,
+    )
+    order_id = store.record_paper_order(
+        TARGET_DATE,
+        decision,
+        status="PAPER_FILLED",
+        entry_mode="limit",
+    )
+    assert order_id is not None
+    _settle(store)
+    return order_id
+
+
+def test_level_one_entry_sized_on_its_fresh_ladder_is_verified_and_replayed() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _level_one_ladder_settled_order(
+            store, ((0.72, 10.0), (0.73, 10.0))
+        )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "VERIFIED"
+        assert result["findings"] == []
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 1
+        assert replay["verified_decisions"] == 1
+
+
+@pytest.mark.parametrize(
+    "ask_levels",
+    [
+        None,
+        ((0.73, 10.0), (0.74, 10.0)),
+        ((0.72, 10.0), (0.72, 10.0)),
+        ((0.72, 3.0), (0.73, 10.0)),
+    ],
+    ids=["no-ladder", "stale-best-price", "flat-ladder", "fresh-but-thinner-than-fill"],
+)
+def test_level_one_entry_beyond_listing_depth_needs_fresh_ladder_depth(
+    ask_levels: object,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _level_one_ladder_settled_order(store, ask_levels)
+
+        _assert_current_execution_excluded(
+            db_path, order_id, "CURRENT_ENTRY_DEPTH_INSUFFICIENT"
+        )

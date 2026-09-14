@@ -782,16 +782,17 @@ class PaperTrader:
                 # fill model, not by the ask displayed at entry (sizing no
                 # longer applies this taker-era cap -- see RiskManager).
                 if quote.would_cross:
-                    # A two-level cross may consume level-1 + level-2 depth
-                    # (execution._second_level_taker_quote); the paper fill
-                    # is capped at exactly that ladder depth, never more.
+                    # The fill is capped at exactly the depth the crossing
+                    # quote was sized against (execution._taker_cross_quote):
+                    # the listing's displayed best-ask size, a fresh ladder's
+                    # level-1 size, or level-1 + level-2 size for a two-level
+                    # cross -- never more. Without a fresh ladder a taker
+                    # quote's depth IS the listing size (>= 1 whenever it
+                    # quotes), and a non-taker crossing quote carries None, so
+                    # both keep the historical clamp exactly.
                     adjusted = _clamp_to_displayed_ask(
                         adjusted,
-                        displayed_depth=(
-                            quote.displayed_depth
-                            if (quote.levels_used or 0) >= 2
-                            else None
-                        ),
+                        displayed_depth=quote.displayed_depth,
                     )
                     if adjusted is None:
                         continue
@@ -1363,12 +1364,13 @@ def _clamp_to_displayed_ask(
 ) -> TradeDecision | None:
     """Cap a TAKER fill at the ask depth the book displays right now.
 
-    ``displayed_depth`` overrides the decision's best-ask size with the depth
-    a two-level taker cross actually quoted against (level-1 + level-2 ladder
-    size, execution.BuyLimitQuote.displayed_depth). The paper ledger then
-    fills against exactly the resting size the ladder displayed -- it does
-    not invent depth beyond the two levels, and does not truncate a
-    level-2 order back to the best ask.
+    ``displayed_depth`` overrides the decision's listing best-ask size with
+    the depth a taker cross actually quoted against
+    (execution.BuyLimitQuote.displayed_depth): a fresh pre-entry ladder's
+    level-1 size, or level-1 + level-2 size for a two-level cross. The paper
+    ledger then fills against exactly the resting size that book displayed
+    -- it does not invent depth beyond it, and does not truncate an order
+    sized on the fresher book back to the older listing size.
 
     Applies only where the order takes immediately -- market entry or a
     crossing limit -- because an instant fill cannot take more contracts than

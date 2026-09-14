@@ -945,20 +945,50 @@ def _parsed_ask_levels(raw: object) -> list[tuple[float, float]] | None:
     return levels
 
 
+def _fresh_recorded_ladder(
+    raw: object,
+    recorded_ask: object,
+) -> list[tuple[float, float]] | None:
+    """A recorded two-level ladder execution could have used, or None.
+
+    Mirrors execution._fresh_ask_ladder: well-formed, its best level equals
+    the displayed ask the same payload recorded, both levels carry size, and
+    the second level is strictly worse.
+    """
+
+    levels = _parsed_ask_levels(raw)
+    if levels is None:
+        return None
+    (price_one, size_one), (price_two, size_two) = levels
+    if not _close_number(price_one, recorded_ask):
+        return None
+    if size_one <= 0.0 or size_two <= 0.0:
+        return None
+    if price_two <= price_one + _REPLAY_TOLERANCE:
+        return None
+    return levels
+
+
 def _immediate_entry_ladder_reference(
     quote: dict[str, Any],
     signal: dict[str, Any],
-) -> tuple[float, float, float, float] | None | bool:
-    """Reference price/depth for a two-level taker entry.
+) -> tuple[float | None, float | None, float, float] | None | bool:
+    """Reference price/depth for a taker entry quoted on a fresh ask ladder.
 
-    Returns None for a plain single-level cross (no ladder walk recorded),
-    ``(quote_ask, signal_ask, quote_depth, signal_depth)`` for a two-level
-    entry whose recorded ladders are well-formed -- the level-2 price from
-    each payload and the level-1 + level-2 size from each -- and False when
-    the row claims a two-level entry but its ladder evidence is malformed,
-    so the caller fails closed. Each ladder's best level must equal the
-    displayed ask its payload recorded: that is the consistency rule
-    execution enforced when it walked the book.
+    Returns ``(quote_price, signal_price, quote_depth, signal_depth)`` from
+    the recorded ladders, None when the entry is verified against the
+    listing's displayed best ask (the historical rule), and False when the
+    row claims a two-level entry whose ladder evidence is malformed or
+    inconsistent, so the caller fails closed.
+
+    * ``taker_levels_used == 2``: the level-2 price and the level-1 +
+      level-2 size from each payload.
+    * ``taker_levels_used == 1`` with a fresh ladder in BOTH payloads: the
+      recorded displayed ask and the FRESH level-1 size, which is what
+      execution sized the cross against since 2026-09-13. Without one (no
+      ladder, a stale or a malformed one) the fill is held to the listing's
+      displayed best-ask size -- the historical reference, so bad ladder
+      evidence can never verify a larger level-1 fill.
     """
 
     levels_used = quote.get("taker_levels_used")
@@ -966,23 +996,23 @@ def _immediate_entry_ladder_reference(
         return None
     if isinstance(levels_used, bool) or levels_used not in (1, 2):
         return False
+    quote_levels = _fresh_recorded_ladder(quote.get("ask_levels"), quote.get("ask"))
+    signal_levels = _fresh_recorded_ladder(
+        signal.get("ask_levels"), signal.get("entry_ask")
+    )
     if levels_used == 1:
-        return None
-    quote_levels = _parsed_ask_levels(quote.get("ask_levels"))
-    signal_levels = _parsed_ask_levels(signal.get("ask_levels"))
+        if quote_levels is None or signal_levels is None:
+            return None
+        return (
+            _finite_number(quote.get("ask"), minimum=0, maximum=1),
+            _finite_number(signal.get("entry_ask"), minimum=0, maximum=1),
+            quote_levels[0][1],
+            signal_levels[0][1],
+        )
     if quote_levels is None or signal_levels is None:
         return False
-    (quote_one, quote_one_size), (quote_two, quote_two_size) = quote_levels
-    (signal_one, signal_one_size), (signal_two, signal_two_size) = signal_levels
-    if not _close_number(quote_one, quote.get("ask")) or not _close_number(
-        signal_one, signal.get("entry_ask")
-    ):
-        return False
-    if (
-        quote_two <= quote_one + _REPLAY_TOLERANCE
-        or signal_two <= signal_one + _REPLAY_TOLERANCE
-    ):
-        return False
+    (_, quote_one_size), (quote_two, quote_two_size) = quote_levels
+    (_, signal_one_size), (signal_two, signal_two_size) = signal_levels
     return (
         quote_two,
         signal_two,
@@ -1034,10 +1064,11 @@ def _current_immediate_entry_findings(
     signal_ask = _finite_number(
         signal.get("entry_ask"), minimum=0, maximum=1
     )
-    # A two-level taker cross (execution._taker_cross_quote, 2026-09-13) is
-    # booked at the SECOND ladder level for level-1 + level-2 depth, so its
-    # verified price and executable depth come from the recorded ladder,
-    # not the displayed best ask. Malformed ladder evidence fails closed.
+    # A taker cross quoted on a fresh pre-entry ladder
+    # (execution._taker_cross_quote, 2026-09-13) is verified against the
+    # recorded ladder: a two-level entry at the SECOND level for level-1 +
+    # level-2 depth (malformed evidence fails closed), a level-1 entry at the
+    # displayed ask for the fresh level-1 depth.
     ladder = _immediate_entry_ladder_reference(quote, signal)
     if ladder is False:
         _append_finding(findings, "CURRENT_ENTRY_QUOTE_INVALID")

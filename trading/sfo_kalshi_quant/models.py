@@ -384,8 +384,10 @@ class TradeDecision:
     # only when the displayed best-ask size is below the sizing request and a
     # fresh public orderbook was fetched inside the scan's ladder budget
     # (_cli.scan._attach_pre_entry_ask_ladders). None otherwise -- no client,
-    # fetch failure, budget exhausted, research profile, market entry -- and
-    # execution then degrades to the single-level displayed-ask cross.
+    # fetch failure or timeout, budget exhausted, research profile, market
+    # entry -- and execution then degrades to the single-level displayed-ask
+    # cross. When present and fresh (its best level is the displayed ask) its
+    # level-1 size, not the older listing size, is the depth at the ask.
     ask_levels: tuple[tuple[float, float], ...] | None = None
     # Set by execution.with_buy_limit on a crossing quote: 1 = the displayed
     # best ask only, 2 = one order at the second ladder level for level-1 +

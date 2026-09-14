@@ -12,8 +12,12 @@ tests pin the scaling change:
   a missing / stale / malformed ladder is the historical single-level cross;
 * the paper fill model -- an immediate level-2 fill consumes exactly
   level-1 + level-2 displayed size at the level-2 cost, never more;
+* the fresh ladder, not the older listing size, decides the walk: when the
+  fresh level-1 size covers the request the order crosses at level 1 for all
+  of it;
 * the scan wiring -- ladders are fetched pre-entry for depth-bound live legs
-  only, inside the shared per-target budget, and never block a trade;
+  only, as ONE attempt under a hard per-call deadline inside the per-target
+  budget, and never block or delay a trade beyond that deadline;
 * a replay-style pass over a ladder captured from the public API.
 
 The frozen ``StrategyConfig()`` keeps ``limit_taker_cross_max_levels == 1``
@@ -22,23 +26,33 @@ so historical fingerprints and the conservative baseline stay reproducible.
 
 from __future__ import annotations
 
-import inspect
+import argparse
+import contextlib
 import json
 import math
 import sqlite3
+import threading
 import time
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+
+import pytest
 
 from sfo_kalshi_quant._cli import scan as scan_module
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.execution import buy_limit_for_decision, with_buy_limit
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
+from sfo_kalshi_quant.kalshi import KalshiPublicClient
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.orderbook_capture import (
+    capture_orderbook_depth_within,
     parse_orderbook_response,
     side_ask_ladder,
 )
@@ -232,6 +246,79 @@ def test_no_walk_when_the_displayed_ask_covers_the_request():
     assert quote.levels_used == 1
     assert quote.price == 0.82
     assert quote.contracts == 4.0
+
+
+def test_fresh_level_one_covering_the_request_crosses_at_level_one_for_all_of_it():
+    """Review 2026-09-13: the walk is keyed on the FRESH ladder, not the listing.
+
+    The listing showed 12 contracts at the ask; the ladder fetched after it
+    shows 34 there. A real order would fill all 30 at level 1, so nothing is
+    booked a tick worse -- and on a thin edge the lower-bound EV guard no
+    longer shrinks the order to the listing's 12 either.
+    """
+
+    config = _live_config()
+    thick = ((0.82, 34.0), (0.83, 110.0))
+    quote = buy_limit_for_decision(_decision(entry_ask_size=12.0, ask_levels=thick), config)
+    assert quote is not None
+    assert quote.would_cross is True
+    assert (quote.levels_used, quote.price, quote.contracts) == (1, 0.82, 30.0)
+    assert quote.displayed_depth == 34.0
+    assert math.isclose(
+        quote.cost_per_contract, _taker_cost(0.82, 30.0, config), abs_tol=1e-9
+    )
+    thin_edge = buy_limit_for_decision(
+        _decision(entry_ask_size=12.0, probability_lcb=0.842, ask_levels=thick), config
+    )
+    assert thin_edge is not None
+    assert (thin_edge.levels_used, thin_edge.price, thin_edge.contracts) == (1, 0.82, 30.0)
+    decided = with_buy_limit(_decision(entry_ask_size=12.0, ask_levels=thick), config)
+    assert decided.taker_levels_used == 1
+    assert decided.limit_price == 0.82
+    assert decided.recommended_contracts == 30.0
+    assert not any(r.startswith("execution: two-level") for r in decided.reasons)
+
+
+def test_level_one_is_sized_on_the_fresh_ladder_when_the_book_thinned():
+    config = _live_config()
+    # Level 2 fails the floor one tick worse, so the order is level 1 -- for
+    # the 5 contracts the fresh book shows, not the 12 the older listing did.
+    thinned = buy_limit_for_decision(
+        _decision(
+            entry_ask_size=12.0,
+            probability_lcb=0.835,
+            ask_levels=((0.82, 5.0), (0.83, 31.0)),
+        ),
+        config,
+    )
+    assert thinned is not None
+    assert (
+        thinned.levels_used,
+        thinned.price,
+        thinned.contracts,
+        thinned.displayed_depth,
+    ) == (1, 0.82, 5.0, 5.0)
+    # A ladder whose best offer is not the displayed ask is ignored entirely:
+    # the listing size applies, exactly as with no ladder at all.
+    stale = buy_limit_for_decision(
+        _decision(
+            entry_ask_size=12.0,
+            probability_lcb=0.835,
+            ask_levels=((0.83, 50.0), (0.84, 50.0)),
+        ),
+        config,
+    )
+    without = buy_limit_for_decision(
+        _decision(entry_ask_size=12.0, probability_lcb=0.835, ask_levels=None), config
+    )
+    assert without is not None
+    assert stale == without
+    assert (
+        without.levels_used,
+        without.price,
+        without.contracts,
+        without.displayed_depth,
+    ) == (1, 0.82, 12.0, 12.0)
 
 
 def test_walk_requires_strictly_more_contracts_and_no_lower_booked_lcb_profit():
@@ -453,6 +540,33 @@ def test_paper_fill_without_a_ladder_is_the_historical_single_level_fill():
     assert "ask_levels" not in quote
 
 
+def test_paper_fill_books_a_fresh_level_one_order_at_level_one():
+    thick = ((0.82, 34.0), (0.83, 110.0))
+    with TemporaryDirectory() as tmp:
+        trader, store = _live_trader(tmp)
+        order_ids = trader.place_approved(
+            TARGET_DATE,
+            [_decision(entry_ask_size=12.0, ask_levels=thick)],
+            bankroll=1000.0,
+        )
+        assert len(order_ids) == 1
+        row = _order_row(store, order_ids[0])
+    assert row["status"] == "PAPER_FILLED"
+    assert (row["contracts"], row["filled_contracts"], row["entry_price"]) == (
+        30.0,
+        30.0,
+        0.82,
+    )
+    expected_cost = _taker_cost(0.82, 30.0, strategy_config_for_profile("live"))
+    assert math.isclose(row["cost_per_contract"], expected_cost, abs_tol=1e-9)
+    # The older listing size stays on the row; the fresh ladder that sized
+    # the fill is in the quote snapshot restatement verifies against.
+    assert row["entry_ask_size"] == 12.0
+    quote = json.loads(row["quote_snapshot_json"])
+    assert quote["taker_levels_used"] == 1
+    assert quote["ask_levels"] == [[0.82, 34.0], [0.83, 110.0]]
+
+
 # ---------------------------------------------------------------------------
 # scan wiring
 # ---------------------------------------------------------------------------
@@ -569,14 +683,15 @@ def test_attach_never_blocks_a_trade_on_the_ladder():
     failing.get_orderbook.side_effect = OSError("network down")
     (attached, captured), store = _attach(plan, client=failing)
     assert attached.legs[0] is plan.legs[0]
-    assert captured == set()
+    # Attempted, so the post-placement telemetry does not re-hit the endpoint.
+    assert captured == {TICKER}
     store.record_orderbook_depth.assert_not_called()
     # Malformed book: same.
     malformed = Mock()
     malformed.get_orderbook.return_value = {"orderbook_fp": "nope"}
     (attached, captured), _ = _attach(plan, client=malformed)
     assert attached.legs[0] is plan.legs[0]
-    assert captured == set()
+    assert captured == {TICKER}
     # Budget exhausted before the first fetch: no API call at all.
     idle = Mock()
     idle.get_orderbook.return_value = LADDER_FIXTURE
@@ -602,20 +717,196 @@ def test_attach_never_blocks_a_trade_on_the_ladder():
     assert captured == {TICKER}
 
 
-def test_portfolio_scan_fetches_ladders_before_recording_inside_the_shared_budget():
-    source = inspect.getsource(scan_module._portfolio_scan_one_target)
-    attach_at = source.index("_attach_pre_entry_ask_ladders(")
-    restate_at = source.index("_restate_recorded_execution(")
-    record_at = source.index("store.record_decisions(")
-    place_at = source.index("_place_portfolio_orders(")
-    telemetry_at = source.index("_capture_orderbook_depth_for_legs(")
-    assert attach_at < restate_at < record_at < place_at < telemetry_at
-    # One per-target budget for both the pre-entry fetch and the telemetry.
-    assert "ladder_deadline = time.monotonic() + _ORDERBOOK_CAPTURE_BUDGET_SECONDS" in source
-    assert "budget_seconds=max(0.0, ladder_deadline - time.monotonic())" in source
-    assert "skip_tickers=prefetched_tickers" in source
-    # The research branch returns before any of this.
-    assert source.index('if risk_profile == "research":') < attach_at
+def _run_portfolio_scan(
+    store: PaperStore,
+    client,
+    decisions: list[TradeDecision],
+    *,
+    calls: list,
+    record_delay: float = 0.0,
+    real_telemetry: bool = True,
+) -> None:
+    """Execute the REAL _portfolio_scan_one_target around a live plan.
+
+    Context building, allocation, the entry gate and operator output are
+    stubbed. The ladder attach, the recording restatement, placement (a real
+    PaperTrader on a real PaperStore) and the post-placement telemetry run
+    for real behind spies that record the order and time each is reached;
+    ``store.record_decisions`` is a spy that can simulate a slow DB write.
+    """
+
+    plan = _plan([_leg(decision) for decision in decisions])
+    city = get_city("nyc")
+    context = SimpleNamespace(
+        city=city,
+        series_ticker=city.series_ticker,
+        forecast=None,
+        intraday=None,
+        ensemble=None,
+        event=SimpleNamespace(active_markets=[TICKER]),
+        markets=[],
+        event_title="two-level test event",
+        market_available=True,
+        probabilities={},
+        consensus=None,
+        risk_profile="live",
+        paper_bankroll=1000.0,
+        decisions=list(decisions),
+    )
+
+    def spy(name: str, *, call_real: bool = True):
+        real = getattr(scan_module, name)
+
+        def wrapper(*args, **kwargs):
+            calls.append((name, time.monotonic(), kwargs))
+            return real(*args, **kwargs) if call_real else None
+
+        return wrapper
+
+    def record_decisions(_target_date, recorded, **_kwargs):
+        calls.append(("record_decisions", time.monotonic(), {"decisions": list(recorded)}))
+        time.sleep(record_delay)
+        return []
+
+    replacements = {
+        "build_scan_context": lambda *_a, **_k: context,
+        "build_arbitrage_opportunities": lambda *_a, **_k: [],
+        "allocate_portfolio": lambda *_a, **_k: plan,
+        "_paper_entry_gate_for_target": lambda *_a, **_k: (True, None),
+        "_cached_paper_entry_pause_reason": lambda *_a, **_k: None,
+        "_print_portfolio_scan": lambda *_a, **_k: None,
+        "_attach_pre_entry_ask_ladders": spy("_attach_pre_entry_ask_ladders"),
+        "_restate_recorded_execution": spy("_restate_recorded_execution"),
+        "_place_portfolio_orders": spy("_place_portfolio_orders"),
+        "_capture_orderbook_depth_for_legs": spy(
+            "_capture_orderbook_depth_for_legs", call_real=real_telemetry
+        ),
+    }
+    args = argparse.Namespace(
+        place_paper=True,
+        paper_entry_mode="limit",
+        max_arb_spend=None,
+        min_profit=0.0,
+        skip_context_snapshots=True,
+    )
+    with contextlib.ExitStack() as stack:
+        for name, replacement in replacements.items():
+            stack.enter_context(patch.object(scan_module, name, replacement))
+        stack.enter_context(patch.object(store, "record_decisions", record_decisions))
+        scan_module._portfolio_scan_one_target(
+            args,
+            date.fromisoformat(TARGET_DATE),
+            Mock(),
+            Mock(),
+            strategy_config_for_profile("live"),
+            store,
+            Mock(),
+            city=city,
+            kalshi_client=client,
+            pause_reasons={},
+        )
+
+
+def _paper_orders(store: PaperStore) -> list[sqlite3.Row]:
+    with store.connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM paper_orders ORDER BY id").fetchall()
+
+
+def test_portfolio_scan_records_and_places_the_ladder_it_fetched():
+    """Executes the scan chain instead of reading its source (review 2026-09-13).
+
+    The ladder on ``plan.legs`` must reach BOTH payloads restatement joins --
+    the journalled decision and the placed order's quote snapshot and signal
+    -- and a slow recording write must not eat the telemetry budget: only the
+    pre-entry fetch time is charged to it.
+    """
+
+    client = Mock()
+    client.get_orderbook.return_value = LADDER_FIXTURE
+    calls: list = []
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        _run_portfolio_scan(
+            store, client, [_decision(ask_levels=None)], calls=calls, record_delay=1.2
+        )
+        rows = _paper_orders(store)
+
+    assert [name for name, _, _ in calls] == [
+        "_attach_pre_entry_ask_ladders",
+        "_restate_recorded_execution",
+        "record_decisions",
+        "_place_portfolio_orders",
+        "_capture_orderbook_depth_for_legs",
+    ]
+    client.get_orderbook.assert_called_once_with(TICKER, depth=3)
+    by_name = {name: kwargs for name, _, kwargs in calls}
+    (journal,) = [
+        d for d in by_name["record_decisions"]["decisions"] if d.ticker == TICKER
+    ]
+    assert journal.ask_levels == NO_LADDER
+    assert journal.taker_levels_used == 2
+    assert journal.limit_price == 0.83
+    assert journal.recommended_contracts == 30.0
+    assert len(rows) == 1
+    assert (rows[0]["contracts"], rows[0]["entry_price"]) == (30.0, 0.83)
+    walked = [[0.82, 4.0], [0.83, 31.0]]
+    assert json.loads(rows[0]["quote_snapshot_json"])["ask_levels"] == walked
+    assert json.loads(rows[0]["diagnostics_json"])["signal"]["ask_levels"] == walked
+    telemetry = by_name["_capture_orderbook_depth_for_legs"]
+    assert telemetry["skip_tickers"] == {TICKER}
+    # Charged for the millisecond prefetch, not the 1.2s recording write.
+    assert telemetry["budget_seconds"] > scan_module._ORDERBOOK_CAPTURE_BUDGET_SECONDS - 0.5
+
+
+def test_slow_ladder_fetch_never_delays_placement_beyond_its_deadline():
+    """A hung orderbook call costs at most one deadline; then placement runs."""
+
+    deadline = scan_module._PRE_ENTRY_LADDER_DEADLINE_SECONDS
+    assert 0.0 < deadline <= 3.0
+    release = threading.Event()
+
+    def _hang(*_args, **_kwargs):
+        release.wait(30.0)
+        return LADDER_FIXTURE
+
+    client = Mock()
+    client.get_orderbook.side_effect = _hang
+    other = _decision(ask_levels=None, ticker="KXHIGHNY-26SEP14-B78.5", label="78° to 79°")
+    calls: list = []
+    try:
+        with TemporaryDirectory() as tmp:
+            store = PaperStore(Path(tmp) / "paper.db")
+            started = time.monotonic()
+            _run_portfolio_scan(
+                store,
+                client,
+                [_decision(ask_levels=None), other],
+                calls=calls,
+                real_telemetry=False,
+            )
+            rows = _paper_orders(store)
+    finally:
+        release.set()
+
+    placed_at = next(at for name, at, _ in calls if name == "_place_portfolio_orders")
+    assert placed_at - started < deadline + 1.0
+    # The first timeout ends pre-entry fetching for the target: one deadline, not two.
+    assert client.get_orderbook.call_count == 1
+    assert rows
+    for row in rows:
+        assert (row["status"], row["contracts"], row["entry_price"]) == (
+            "PAPER_FILLED",
+            4.0,
+            0.82,
+        )
+        quote = json.loads(row["quote_snapshot_json"])
+        assert quote["taker_levels_used"] == 1
+        assert "ask_levels" not in quote
+    telemetry = next(
+        kwargs for name, _, kwargs in calls if name == "_capture_orderbook_depth_for_legs"
+    )
+    assert telemetry["skip_tickers"] == {TICKER}
 
 
 def test_telemetry_capture_skips_tickers_fetched_pre_entry():
@@ -675,3 +966,82 @@ def test_replay_of_the_captured_ladder_end_to_end():
     assert booked["taker_levels_used"] == 2
     # Median live entry was $2.82; this book books 30 x ~0.84.
     assert 24.0 < row["contracts"] * row["cost_per_contract"] < 26.0
+
+
+# ---------------------------------------------------------------------------
+# pre-entry fetch latency (review 2026-09-13)
+# ---------------------------------------------------------------------------
+
+
+def test_capture_within_a_deadline_abandons_a_hung_fetch_and_never_raises():
+    release = threading.Event()
+
+    def _hang(*_args, **_kwargs):
+        release.wait(30.0)
+        return LADDER_FIXTURE
+
+    hung = Mock()
+    hung.get_orderbook.side_effect = _hang
+    try:
+        started = time.monotonic()
+        result = capture_orderbook_depth_within(
+            hung, TICKER, levels=3, deadline_seconds=0.2
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert result == (None, True)
+    assert elapsed < 1.0
+
+    prompt = Mock()
+    prompt.get_orderbook.return_value = LADDER_FIXTURE
+    depth, timed_out = capture_orderbook_depth_within(
+        prompt, TICKER, levels=3, deadline_seconds=2.0
+    )
+    assert timed_out is False
+    assert depth == parse_orderbook_response(LADDER_FIXTURE)
+    prompt.get_orderbook.assert_called_once_with(TICKER, depth=3)
+
+    failing = Mock()
+    failing.get_orderbook.side_effect = OSError("network down")
+    assert capture_orderbook_depth_within(failing, TICKER, deadline_seconds=2.0) == (
+        None,
+        False,
+    )
+    idle = Mock()
+    for no_time in (0.0, -1.0, float("nan")):
+        assert capture_orderbook_depth_within(
+            idle, TICKER, deadline_seconds=no_time
+        ) == (None, True)
+    idle.get_orderbook.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["rate_limited", "socket_timeout"])
+def test_pre_entry_fetch_is_one_short_attempt_even_on_the_shared_client(failure):
+    """The scan client's defaults (20s x 3 with backoff, Retry-After) never apply."""
+
+    socket_timeouts: list = []
+
+    def _urlopen(request, timeout=None):
+        socket_timeouts.append(timeout)
+        if failure == "rate_limited":
+            raise HTTPError(
+                request.full_url, 429, "Too Many Requests", {"Retry-After": "30"}, None
+            )
+        raise TimeoutError("read timed out")
+
+    shared = KalshiPublicClient("https://kalshi.invalid/trade-api/v2")
+    plan = _plan([_leg(_decision(ask_levels=None))])
+    with patch("sfo_kalshi_quant.kalshi.urlopen", side_effect=_urlopen):
+        started = time.monotonic()
+        (attached, attempted), store = _attach(plan, client=shared)
+        elapsed = time.monotonic() - started
+
+    # One attempt, with the short socket timeout.
+    assert socket_timeouts == [scan_module._PRE_ENTRY_LADDER_DEADLINE_SECONDS]
+    assert elapsed < 1.0  # no backoff sleep, no 30s Retry-After wait
+    assert attached.legs[0] is plan.legs[0]
+    assert attempted == {TICKER}
+    store.record_orderbook_depth.assert_not_called()
+    # The scan's own client keeps its defaults for every other call.
+    assert (shared.timeout, shared.retries, shared.backoff) == (20, 3, 0.5)

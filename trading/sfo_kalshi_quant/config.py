@@ -146,16 +146,20 @@ class StrategyConfig:
     # the candidate. The frozen/default profile keeps the historical $5 floor.
     limit_taker_cross_min_notional: float = 5.0
     # DEPTH-AWARE TAKER CROSS (2026-09-13). 1 = the historical single-level
-    # cross, truncated to the displayed best-ask size. 2 = when that
-    # displayed size is below the sizing request and the decision carries a
-    # fresh pre-entry ask ladder, place ONE order at the SECOND ladder level
-    # for level-1 + level-2 depth, booked entirely at the level-2 cost
-    # (conservative: the exchange fills the level-1 slice at level 1),
-    # provided the after-fee lower-bound edge at that worse price still
-    # clears limit_taker_cross_min_edge_lcb and the booked lower-bound
-    # expected profit does not fall. Hard cap at two levels. It never blocks
-    # on the ladder: a missing, stale or malformed ladder is the single-level
-    # cross. Off (1) on the frozen baseline; see LIVE_PROFILE_OVERRIDES.
+    # cross, truncated to the listing's displayed best-ask size. 2 = when the
+    # decision carries a fresh pre-entry ask ladder (fetched because that
+    # listing size is below the sizing request), size against the fresher
+    # book: cross at level 1 when its fresh size covers the request;
+    # otherwise place ONE order at the SECOND ladder level for level-1 +
+    # level-2 depth, booked entirely at the level-2 cost (conservative: the
+    # exchange fills the level-1 slice at level 1), provided the after-fee
+    # lower-bound edge at that worse price still clears
+    # limit_taker_cross_min_edge_lcb, it buys more contracts and the booked
+    # lower-bound expected profit does not fall. Hard cap at two levels. It
+    # never blocks on the ladder: a missing, stale or malformed ladder is the
+    # single-level cross. Off (1) on the frozen baseline; see
+    # LIVE_PROFILE_OVERRIDES. As a StrategyConfig field it enters
+    # strategy_fingerprint (asdict), so it is part of execution identity.
     limit_taker_cross_max_levels: int = 1
     # When bid+1 violates the LCB buffer, rest deeper at the highest tick that
     # preserves the buffer by construction instead of dropping the candidate.
@@ -646,8 +650,13 @@ LIVE_PROFILE_OVERRIDES = {
     # fee LCB floor is a real EV floor one tick worse too: live realized
     # settlement frequency 0.9467 beat the modelled LCB 0.905 in every band
     # (2026-09-03 audit). Signal gates, the $1 notional floor, the single
-    # entry slot and NORMAL_POSITION_CAP are unchanged. Ships inside the
-    # already-rotated behavior-v3 (STRATEGY_BEHAVIOR_VERSION).
+    # entry slot and NORMAL_POSITION_CAP are unchanged. This field moves the
+    # live strategy fingerprint (and, since the key is hashed, the research
+    # one) without another STRATEGY_BEHAVIOR_VERSION rotation. The readiness
+    # cohort is keyed on the EXACT live fingerprint, so it restarts the live
+    # evidence clock -- accepted by the owner because production still runs
+    # behavior-v2 and this ships in the SAME single deploy as behavior-v3,
+    # whose rotation restarts that clock anyway: it resets exactly once.
     "limit_taker_cross_max_levels": 2,
     "limit_resting_reservation_fallback": True,
 }

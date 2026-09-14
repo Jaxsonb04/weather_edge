@@ -81,7 +81,9 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # identity moves.
     assert strategy_fingerprint(research, entry_mode="limit") != "4d812e63727caf1b3de6b127"
     # 69a29d415bad6047b03264be before the 2026-09-13 config field (research
-    # pins limit_taker_cross_max_levels to 1, but the key itself is hashed).
+    # pins limit_taker_cross_max_levels to 1, but the key itself is hashed,
+    # so the research identity moves too: a labelling change, no research
+    # behaviour change, shipped in the same single release deploy).
     assert strategy_fingerprint(research, entry_mode="limit") == "0db3fd6d76056f7f7b141ff2"
     assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     assert TARGET_POLICY.reference_equity == 1000.0
