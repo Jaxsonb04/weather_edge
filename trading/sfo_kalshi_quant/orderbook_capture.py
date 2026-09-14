@@ -10,14 +10,19 @@ api.elections.kalshi.com/trade-api/v2: ``{"orderbook_fp": {"yes_dollars":
 [[price_str, size_str], ...], "no_dollars": [...]}}``, dollar-string prices,
 best price last in each side's list).
 
-This is observation only. It never influences a gate, a size, or a price, and
-a failure here must never affect a scan or an order:
+Capture is best effort: a failure here must never affect a scan or an order.
 ``capture_orderbook_depth`` catches every exception and returns ``None``
-rather than propagating.
+rather than propagating, and ``capture_orderbook_depth_within`` adds a hard
+wall-clock deadline for the one caller that sits in front of placement. Since
+2026-09-13 the live book's taker cross sizes against a fresh ladder read
+through ``side_ask_ladder`` (execution._taker_cross_quote); a missing ladder
+there is the historical single-level cross, never a block.
 """
 
 from __future__ import annotations
 
+import math
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -94,7 +99,86 @@ def capture_orderbook_depth(client: Any, ticker: str, *, levels: int = 3) -> Ord
     return parse_orderbook_response(payload)
 
 
+def capture_orderbook_depth_within(
+    client: Any,
+    ticker: str,
+    *,
+    levels: int = 3,
+    deadline_seconds: float,
+) -> tuple[OrderbookDepth | None, bool]:
+    """``capture_orderbook_depth`` under a hard wall-clock deadline. Never raises.
+
+    Returns ``(depth, timed_out)``. The fetch runs on a daemon worker thread
+    and the caller waits at most ``deadline_seconds`` for it, whatever the
+    socket, a retry loop or a Retry-After header would otherwise do. A fetch
+    still in flight at the deadline is abandoned -- its late result is
+    discarded and a daemon thread never holds the process open -- and is
+    reported as ``(None, True)``. Pair it with a client that does not retry
+    and whose socket timeout is no longer than the deadline
+    (``KalshiPublicClient.single_attempt``) so an abandoned worker also ends
+    promptly. A non-positive or non-finite deadline fetches nothing and
+    reports a timeout; a worker that cannot start reports ``(None, False)``.
+    """
+
+    try:
+        wait = float(deadline_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return None, True
+    if not math.isfinite(wait) or wait <= 0.0:
+        return None, True
+    outcome: list[OrderbookDepth | None] = []
+
+    def _fetch() -> None:
+        outcome.append(capture_orderbook_depth(client, ticker, levels=levels))
+
+    worker = threading.Thread(
+        target=_fetch, name=f"orderbook-ladder:{ticker}", daemon=True
+    )
+    try:
+        worker.start()
+    except RuntimeError:
+        # No thread available (resource limits, interpreter shutdown). A
+        # synchronous fetch would defeat the deadline, so fetch nothing.
+        return None, False
+    worker.join(wait)
+    if worker.is_alive():
+        return None, True
+    return (outcome[0] if outcome else None), False
+
+
 def depth_levels_json(levels: tuple[OrderbookLevel, ...]) -> list[list[float]]:
     """Compact JSON-ready form: ``[[price, size], ...]``, preserving order."""
 
     return [[level.price, level.size] for level in levels]
+
+
+def side_ask_ladder(
+    depth: OrderbookDepth,
+    side: str,
+    *,
+    levels: int = 2,
+) -> tuple[tuple[float, float], ...]:
+    """Resting offers a buyer of ``side`` would lift, best (lowest) price first.
+
+    Kalshi publishes only bids: ``yes_dollars`` are YES bids and
+    ``no_dollars`` are NO bids (docs.kalshi.com/getting_started/
+    orderbook_responses). A YES buyer lifts NO bids at ``1 - no_bid``; a NO
+    buyer lifts YES bids at ``1 - yes_bid``. Verified against the public API
+    on 2026-09-13: the KXHIGHNY-26SEP13-B80.5 listing showed yes_ask 0.19 x
+    34 while the best ``no_dollars`` entry of its book was 0.81 x 34.
+
+    Pure and total. Empty or zero-size levels are dropped; the result is
+    sorted by price so it never depends on the API's list order, and is
+    truncated to ``levels`` entries (the two-level cross hard-caps at two).
+    """
+
+    bids = depth.no if str(side).upper() == "YES" else depth.yes
+    offers: list[tuple[float, float]] = []
+    for level in bids:
+        price = round(1.0 - float(level.price) + 1e-12, 6)
+        size = float(level.size)
+        if size <= 0.0 or not 0.0 < price < 1.0:
+            continue
+        offers.append((price, size))
+    offers.sort(key=lambda entry: entry[0])
+    return tuple(offers[: max(0, int(levels))])

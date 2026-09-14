@@ -846,7 +846,18 @@ class PaperTrader:
                 # fill model, not by the ask displayed at entry (sizing no
                 # longer applies this taker-era cap -- see RiskManager).
                 if quote.would_cross:
-                    adjusted = _clamp_to_displayed_ask(adjusted)
+                    # The fill is capped at exactly the depth the crossing
+                    # quote was sized against (execution._taker_cross_quote):
+                    # the listing's displayed best-ask size, a fresh ladder's
+                    # level-1 size, or level-1 + level-2 size for a two-level
+                    # cross -- never more. Without a fresh ladder a taker
+                    # quote's depth IS the listing size (>= 1 whenever it
+                    # quotes), and a non-taker crossing quote carries None, so
+                    # both keep the historical clamp exactly.
+                    adjusted = _clamp_to_displayed_ask(
+                        adjusted,
+                        displayed_depth=quote.displayed_depth,
+                    )
                     if adjusted is None:
                         continue
                 adjusted = with_buy_limit(adjusted, self.config)
@@ -1410,8 +1421,20 @@ def _decision_key(decision: TradeDecision) -> tuple[str, str]:
     return (decision.ticker, decision.side)
 
 
-def _clamp_to_displayed_ask(decision: TradeDecision) -> TradeDecision | None:
+def _clamp_to_displayed_ask(
+    decision: TradeDecision,
+    *,
+    displayed_depth: float | None = None,
+) -> TradeDecision | None:
     """Cap a TAKER fill at the ask depth the book displays right now.
+
+    ``displayed_depth`` overrides the decision's listing best-ask size with
+    the depth a taker cross actually quoted against
+    (execution.BuyLimitQuote.displayed_depth): a fresh pre-entry ladder's
+    level-1 size, or level-1 + level-2 size for a two-level cross. The paper
+    ledger then fills against exactly the resting size that book displayed
+    -- it does not invent depth beyond it, and does not truncate an order
+    sized on the fresher book back to the older listing size.
 
     Applies only where the order takes immediately -- market entry or a
     crossing limit -- because an instant fill cannot take more contracts than
@@ -1422,7 +1445,12 @@ def _clamp_to_displayed_ask(decision: TradeDecision) -> TradeDecision | None:
     exact fees for the clamped count.
     """
 
-    ask_size = float(decision.ask_size or 0.0)
+    if displayed_depth is not None:
+        ask_size = float(displayed_depth)
+        if not math.isfinite(ask_size) or ask_size <= 0:
+            return None
+    else:
+        ask_size = float(decision.ask_size or 0.0)
     if ask_size <= 0:
         # Runtime decisions carry entry_ask_size explicitly.  A zero there is
         # observed zero liquidity, not an unknown legacy field, and an

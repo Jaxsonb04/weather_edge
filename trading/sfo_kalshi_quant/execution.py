@@ -18,6 +18,15 @@ class BuyLimitQuote:
     edge_lcb: float
     would_cross: bool
     contracts: float
+    # Crossing taker quotes only. The resting depth the immediate paper fill
+    # may consume -- the listing's displayed best-ask size, a FRESH ladder's
+    # level-1 size, or level-1 + level-2 size for a two-level cross -- and
+    # how many ladder levels the price walks (1 or 2). None otherwise.
+    displayed_depth: float | None = None
+    levels_used: int | None = None
+
+
+_TWO_LEVEL_REASON_PREFIX = "execution: two-level taker cross"
 
 
 def initial_queue_ahead(
@@ -127,25 +136,148 @@ def _taker_cross_quote(
     decision: TradeDecision,
     config: StrategyConfig,
 ) -> BuyLimitQuote | None:
-    """Whole-contract taker fill at the displayed ask, or None to rest."""
+    """Whole-contract taker fill at the displayed ask, or None to rest.
+
+    Depth-aware since 2026-09-13 (``limit_taker_cross_max_levels >= 2``). A
+    FRESH pre-entry ask ladder on the decision -- a public orderbook fetched
+    after the listing whose best offer is still the displayed ask the
+    candidate was approved against (``_fresh_ask_ladder``) -- replaces the
+    older listing size as the executable book:
+
+    * fresh level-1 size covers the request: the single-level cross at the
+      displayed ask for the whole request; nothing is booked a tick worse;
+    * otherwise ONE order at the second ladder level for
+      min(request, level-1 + level-2 size) is preferred over the level-1
+      cross truncated to the fresh level-1 size, provided the after-fee
+      lower-bound edge at the worse price still clears
+      ``limit_taker_cross_min_edge_lcb``, the notional floor holds and
+      ``_preferred_taker_level`` accepts it. Hard cap at two levels.
+
+    With no fresh ladder (none attached, a stale best price, a malformed
+    ladder, or ``limit_taker_cross_max_levels < 2``) this is exactly the
+    historical cross truncated to the listing's displayed best-ask size. The
+    ladder can never block a trade.
+    """
 
     try:
         ask = float(decision.ask)
         ask_size = float(decision.ask_size)
-        contracts = float(decision.recommended_contracts)
+        requested = float(decision.recommended_contracts)
     except (TypeError, ValueError, OverflowError):
         return None
     if (
         not math.isfinite(ask)
         or not math.isfinite(ask_size)
-        or not math.isfinite(contracts)
+        or not math.isfinite(requested)
         or not 0.0 < ask < 1.0
     ):
         return None
-    contracts = float(math.floor(min(contracts, ask_size) + 1e-12))
-    if contracts < 1.0:
+    tick = float(config.limit_price_tick)
+    ladder = (
+        _fresh_ask_ladder(decision, ask=ask, tick=tick)
+        if int(config.limit_taker_cross_max_levels) >= 2
+        else None
+    )
+    level_one_depth = ask_size if ladder is None else ladder[0][1]
+    level_one = _taker_quote_at_level(
+        decision,
+        config,
+        price=_floor_to_tick(ask, tick),
+        contracts=float(math.floor(min(requested, level_one_depth) + 1e-12)),
+        displayed_depth=level_one_depth,
+        levels_used=1,
+    )
+    if ladder is None or level_one_depth + 1e-12 >= requested:
+        return level_one
+    (_, size_one), (price_two, size_two) = ladder
+    level_two = _taker_quote_at_level(
+        decision,
+        config,
+        price=_floor_to_tick(price_two, tick),
+        contracts=float(math.floor(min(requested, size_one + size_two) + 1e-12)),
+        displayed_depth=size_one + size_two,
+        levels_used=2,
+    )
+    return _preferred_taker_level(level_one, level_two)
+
+
+def _fresh_ask_ladder(
+    decision: TradeDecision,
+    *,
+    ask: float,
+    tick: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """The first two ask-ladder levels when execution may use them, else None.
+
+    The ladder is a separate fetch from the listing that priced the decision.
+    It is used only when its best offer IS the displayed ask the candidate
+    was approved against -- anything else is a moved or stale book, and
+    mixing two snapshots would price from one and size from the other --
+    both levels carry positive size, and the second level is strictly worse.
+    """
+
+    ladder = decision.ask_levels
+    if not ladder or len(ladder) < 2:
         return None
-    price = _floor_to_tick(ask, float(config.limit_price_tick))
+    try:
+        price_one, size_one = (float(value) for value in ladder[0])
+        price_two, size_two = (float(value) for value in ladder[1])
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(
+        math.isfinite(value) for value in (price_one, size_one, price_two, size_two)
+    ):
+        return None
+    if size_one <= 0.0 or size_two <= 0.0 or not 0.0 < price_two < 1.0:
+        return None
+    if abs(_floor_to_tick(price_one, tick) - _floor_to_tick(ask, tick)) > 1e-9:
+        return None
+    if price_two <= price_one + 1e-12:
+        return None
+    return (price_one, size_one), (price_two, size_two)
+
+
+def _preferred_taker_level(
+    level_one: BuyLimitQuote | None,
+    level_two: BuyLimitQuote | None,
+) -> BuyLimitQuote | None:
+    """Walk to the second level only when it buys more without booking less.
+
+    The paper ledger books EVERY contract of a two-level order at the level-2
+    cost (the exchange would fill the level-1 slice at level 1, which is why
+    that booking is conservative), so walking is only justified when it buys
+    strictly more contracts AND the booked lower-bound expected profit does
+    not fall. Trading booked EV for size would make the evidence ledger worse
+    than the status quo on thin-edge names.
+    """
+
+    if level_two is None:
+        return level_one
+    if level_one is None:
+        return level_two
+    if level_two.contracts <= level_one.contracts + 1e-12:
+        return level_one
+    if (
+        level_two.contracts * level_two.edge_lcb + 1e-9
+        < level_one.contracts * level_one.edge_lcb
+    ):
+        return level_one
+    return level_two
+
+
+def _taker_quote_at_level(
+    decision: TradeDecision,
+    config: StrategyConfig,
+    *,
+    price: float,
+    contracts: float,
+    displayed_depth: float,
+    levels_used: int,
+) -> BuyLimitQuote | None:
+    """Exact-fee taker quote for ``contracts`` at ``price``, or None."""
+
+    if contracts < 1.0 or not 0.0 < price < 1.0:
+        return None
     fee = quadratic_fee_average_per_contract(
         price,
         contracts,
@@ -166,7 +298,9 @@ def _taker_cross_quote(
     # costs $0.74-0.96 -- and leaves it on the maker path. That is deliberate
     # and measured, not an oversight: see the production fill rates and the
     # entry-slot substitution recorded at
-    # LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"].
+    # LIVE_PROFILE_OVERRIDES["limit_taker_cross_min_notional"]. A two-level
+    # order is judged on ITS notional: level-1 + level-2 depth is what turns
+    # a sub-$1 one-contract slice into an executable order.
     if contracts * cost + 1e-9 < config.limit_taker_cross_min_notional:
         return None
     return BuyLimitQuote(
@@ -177,6 +311,8 @@ def _taker_cross_quote(
         edge_lcb=edge_lcb,
         would_cross=True,
         contracts=contracts,
+        displayed_depth=displayed_depth,
+        levels_used=levels_used,
     )
 
 
@@ -500,6 +636,26 @@ def with_buy_limit(
     # ~20x in decision_snapshots. Mirrors `with_target_research_execution`.
     # Resting quotes carry the full request, so this is a no-op for them.
     clamped = quote.contracts < decision.recommended_contracts
+    # The two-level marker is re-derived on every quote (the account-policy
+    # fit re-quotes at the final size), so drop a prior one before deciding.
+    reasons = [
+        reason
+        for reason in decision.reasons
+        if not reason.startswith(_TWO_LEVEL_REASON_PREFIX)
+    ]
+    if clamped:
+        reasons.append(
+            "execution: displayed ask depth capped size "
+            f"{decision.recommended_contracts:g} -> {quote.contracts:g}"
+            " contracts"
+        )
+    if quote.levels_used == 2 and decision.ask_levels and len(decision.ask_levels) >= 2:
+        (price_one, size_one), (price_two, size_two) = decision.ask_levels[:2]
+        reasons.append(
+            f"{_TWO_LEVEL_REASON_PREFIX} {price_one:g}x{size_one:g} + "
+            f"{price_two:g}x{size_two:g} -> {quote.contracts:g} contracts "
+            f"booked at {quote.price:g}"
+        )
     return replace(
         decision,
         limit_price=quote.price,
@@ -509,6 +665,7 @@ def with_buy_limit(
         limit_edge_lcb=quote.edge_lcb,
         recommended_contracts=quote.contracts,
         expected_profit=quote.edge * quote.contracts,
+        taker_levels_used=quote.levels_used,
         binding_constraint=(
             "visible_ask_depth" if clamped else decision.binding_constraint
         ),
@@ -522,16 +679,7 @@ def with_buy_limit(
         # decision_snapshots carry no strategy/policy fingerprint (both columns
         # are NULL for all 121,248 live rows on 2026-09-06..07), so `created_at`
         # is otherwise the only thing separating the two conventions.
-        reasons=(
-            [
-                *decision.reasons,
-                "execution: displayed ask depth capped size "
-                f"{decision.recommended_contracts:g} -> {quote.contracts:g}"
-                " contracts",
-            ]
-            if clamped
-            else decision.reasons
-        ),
+        reasons=reasons if reasons != decision.reasons else decision.reasons,
     )
 
 

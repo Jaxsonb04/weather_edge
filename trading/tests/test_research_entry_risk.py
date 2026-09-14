@@ -103,8 +103,10 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # test_research_sleeves.py: the research entry-risk identity added
     # here never reaches the live book. Before the 2026-09-07 rotation of
     # STRATEGY_BEHAVIOR_VERSION the same two values were
-    # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c.
-    assert strategy_fingerprint(live, entry_mode="limit") == "93326de538852004fc08aa99"
+    # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c; under behaviour-v3
+    # before the 2026-09-13 `limit_taker_cross_max_levels` field it was
+    # 93326de538852004fc08aa99.
+    assert strategy_fingerprint(live, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
     # Research without research_entry_risk_version hashes to
     # 4d812e63727caf1b3de6b127 under behaviour-v3; with it, the research
     # identity moves. Under research-entry-risk-v2-scaled-2026-09-12 (PR #121)
@@ -113,7 +115,15 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # day-ahead rest) moves it again while the live pin above stays put.
     assert strategy_fingerprint(research, entry_mode="limit") != "4d812e63727caf1b3de6b127"
     assert strategy_fingerprint(research, entry_mode="limit") != "69a29d415bad6047b03264be"
-    assert strategy_fingerprint(research, entry_mode="limit") == "40806599ad7acb21eab44c8d"
+    # Two 2026-09-13 inputs move the research identity, and this release ships
+    # both in one deploy. The v3 version alone gave 40806599ad7acb21eab44c8d;
+    # the `limit_taker_cross_max_levels` config field alone (research pins it
+    # to 1, but the key itself is hashed: a labelling change, no research
+    # behaviour change) gave 0db3fd6d76056f7f7b141ff2. Together, recomputed
+    # from strategy_config_for_profile("research") at integration:
+    assert strategy_fingerprint(research, entry_mode="limit") != "40806599ad7acb21eab44c8d"
+    assert strategy_fingerprint(research, entry_mode="limit") != "0db3fd6d76056f7f7b141ff2"
+    assert strategy_fingerprint(research, entry_mode="limit") == "b123f57836129c1df1c995bd"
     assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_pnl == 50.0
