@@ -25,3 +25,6 @@ def _offline_exchange_settlement_client(monkeypatch: pytest.MonkeyPatch) -> None
         )
 
     monkeypatch.setattr(exchange_settlement, "default_exchange_client", _offline_client)
+    # An operator shell with the production off switch exported must not turn
+    # the guard's own tests into skips.
+    monkeypatch.delenv(exchange_settlement.EXCHANGE_CHECK_ENV_VAR, raising=False)

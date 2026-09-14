@@ -313,8 +313,6 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
     if args.days <= 0:
         raise ValueError("--days must be at least 1")
     exchange_max_fetches = _exchange_max_fetches(args)
-    adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = adapter.load_cli_settlement_truth()
     intervals = {}
     for city in CITIES:
         city_today = settlement_today(city=city)
@@ -323,6 +321,36 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
             city_today.isoformat(),
         )
     store = PaperStore(args.db_path)
+    if getattr(args, "exchange_check_only", False):
+        # Backfilling exchange verdicts must not move restatement evidence:
+        # verify_paper_settlements upserts paper_settlement_verifications, which
+        # restatement.py classifies settled lots from.
+        print(
+            color.cyan(
+                "paper settlement verification skipped (--exchange-check-only): "
+                "paper_settlement_verifications not read or written"
+            )
+        )
+    else:
+        _verify_booked_settlements(color, store, args, intervals)
+    _exchange_settlement_guard(
+        color,
+        store,
+        args,
+        verbose=True,
+        max_fetches=exchange_max_fetches,
+        intervals=intervals,
+    )
+    return 0
+
+
+def _verify_booked_settlements(
+    color: Color,
+    store: PaperStore,
+    args: argparse.Namespace,
+    intervals: dict[str, tuple[str, str]],
+) -> None:
+    settlements = SfoForecasterAdapter(args.forecaster_root).load_cli_settlement_truth()
     result = store.verify_paper_settlements(
         settlements,
         intervals=intervals,
@@ -352,15 +380,6 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
             "(booked P&L unchanged)"
         )
     )
-    _exchange_settlement_guard(
-        color,
-        store,
-        args,
-        verbose=True,
-        max_fetches=exchange_max_fetches,
-        intervals=intervals,
-    )
-    return 0
 
 
 def _exchange_max_fetches(args: argparse.Namespace) -> int:
@@ -387,16 +406,31 @@ def _exchange_settlement_guard(
     outcome: every failure, including a bug in the check itself, is reported on
     stderr and stops here. On the settle timer a non-zero exit fires the unit's
     ``OnFailure=`` alert as if settlement had failed, and settlement did not
-    fail. See ``store/exchange_settlement_checks.py``.
+    fail. ``--skip-exchange-check``, or ``SFO_EXCHANGE_SETTLEMENT_CHECK=off`` in
+    the unit's EnvironmentFile, turns it off. See
+    ``store/exchange_settlement_checks.py``.
     """
 
     if getattr(args, "skip_exchange_check", False):
         print(color.yellow("exchange settlement check skipped (--skip-exchange-check)"))
         return
+    enabled, env_warning = _exchange_settlement.exchange_check_env_setting()
+    if not enabled:
+        env_var = _exchange_settlement.EXCHANGE_CHECK_ENV_VAR
+        print(
+            color.yellow(
+                f"exchange settlement check skipped ({env_var}="
+                f"{os.environ.get(env_var, '').strip()})"
+            )
+        )
+        return
+    if env_warning:
+        print(color.yellow(env_warning), file=sys.stderr)
     try:
         summary = _exchange_settlement.run_exchange_settlement_checks(
             store, max_fetches=max_fetches, **selection
         )
+        _print_exchange_settlement_summary(color, summary, verbose=verbose)
     except Exception as exc:  # the guard must never fail or block settlement
         print(
             color.red(
@@ -407,7 +441,6 @@ def _exchange_settlement_guard(
             file=sys.stderr,
         )
         return
-    _print_exchange_settlement_summary(color, summary, verbose=verbose)
 
 
 def _print_exchange_settlement_summary(
@@ -446,8 +479,38 @@ def _print_exchange_settlement_summary(
             f"unchecked={summary['unchecked']} fetched={summary['fetched']} "
             f"cached={summary['cached']} "
             f"standing_mismatches={summary['standing_mismatches']}"
+            + (
+                ""
+                if summary.get("aging_undecided") is None
+                else f" aging_undecided={summary['aging_undecided']}"
+            )
         )
     )
+    if summary["standing_mismatches"]:
+        # Repeated on every run: the timer never re-selects a decided lot, so
+        # the per-lot MISMATCH line above reaches stderr only once.
+        print(
+            color.red(
+                "STANDING EXCHANGE SETTLEMENT MISMATCHES: "
+                f"{summary['standing_mismatches']} lot(s) hold a MISMATCH "
+                "exchange verdict (booked P&L unchanged; open an "
+                "incident/restatement instead of editing the journal)"
+            ),
+            file=sys.stderr,
+        )
+    if summary.get("aging_undecided"):
+        print(
+            color.yellow(
+                f"exchange settlement check: {summary['aging_undecided']} settled "
+                "lot(s) still have no MATCH/MISMATCH verdict "
+                f"{_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_AGING_DAYS}+ days "
+                "after settling and will leave the timer's "
+                f"{_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_LOOKBACK_DAYS}-day "
+                "re-check window; backfill with paper-resettle --verify "
+                "--exchange-check-only --days N"
+            ),
+            file=sys.stderr,
+        )
     if summary["fetch_stopped"]:
         print(
             color.yellow(
@@ -578,6 +641,7 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     # may only be decidable on a later tick with nothing left to settle.
     # It re-checks recently settled lots that still lack a MATCH or
     # MISMATCH verdict, and it can never change this command's exit status.
+    now = datetime.now(UTC)
     _exchange_settlement_guard(
         color,
         store,
@@ -585,12 +649,16 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
         verbose=False,
         max_fetches=_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_MAX_FETCHES,
         settled_since=(
-            datetime.now(UTC)
+            now
             - timedelta(
                 days=_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_LOOKBACK_DAYS
             )
         ).isoformat(),
         undecided_only=True,
+        aging_settled_before=(
+            now
+            - timedelta(days=_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_AGING_DAYS)
+        ).isoformat(),
     )
     return code
 

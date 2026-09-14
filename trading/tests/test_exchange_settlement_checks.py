@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import sqlite3
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +22,7 @@ from urllib.error import HTTPError
 import pytest
 
 from sfo_kalshi_quant import exchange_settlement
+from sfo_kalshi_quant._cli import paper as paper_cli
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
@@ -113,7 +114,11 @@ def _check_rows(db_path: Path) -> dict[int, dict]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM paper_settlement_exchange_checks").fetchall()
     return {
-        int(row["order_id"]): {key: row[key] for key in row.keys() if key != "checked_at"}
+        int(row["order_id"]): {
+            key: row[key]
+            for key in row.keys()
+            if key not in ("checked_at", "exchange_attempted_at")
+        }
         for row in rows
     }
 
@@ -131,6 +136,25 @@ def _cached_tickers(db_path: Path) -> list[str]:
 def _orders(db_path: Path) -> list:
     with sqlite3.connect(db_path) as conn:
         return conn.execute("SELECT * FROM paper_orders ORDER BY id").fetchall()
+
+
+def _verification_rows(db_path: Path) -> list[tuple[int, str]]:
+    with sqlite3.connect(db_path) as conn:
+        return [
+            (int(order_id), str(status))
+            for order_id, status in conn.execute(
+                "SELECT order_id, verification_status FROM "
+                "paper_settlement_verifications ORDER BY order_id"
+            )
+        ]
+
+
+def _set_settled_at(db_path: Path, settled_at: dict[int, str]) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "UPDATE paper_orders SET settled_at = ? WHERE id = ?",
+            [(value, order_id) for order_id, value in settled_at.items()],
+        )
 
 
 def _book(
@@ -812,3 +836,275 @@ def test_the_production_client_is_the_bounded_public_client(monkeypatch):
     assert isinstance(client, KalshiPublicClient)
     assert client.timeout == exchange_settlement.EXCHANGE_CHECK_TIMEOUT_SECONDS
     assert client.retries == exchange_settlement.EXCHANGE_CHECK_RETRIES
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: backfill scope, off switch, loudness, partial failure, order
+# ---------------------------------------------------------------------------
+
+
+def test_exchange_check_only_backfill_leaves_restatement_evidence_untouched():
+    """The backfill must not rewrite ``paper_settlement_verifications``.
+
+    ``restatement.py`` classifies settled lots from that table, so a wide plain
+    ``paper-resettle --verify`` adds rows (clearing
+    SETTLEMENT_VERIFICATION_REQUIRED) and flips MATCH to MISMATCH wherever a CLI
+    final changed.  ``--exchange-check-only`` writes the exchange verdicts alone.
+    """
+
+    target = _recent_sfo_target()
+    ticker = "KXHIGHTSFO-TEST-B70.5"
+    with TemporaryDirectory() as tmp:
+        # The archive's final now disagrees with the booked high.
+        root = _forecaster_root(Path(tmp), target=target, high=74)
+        db_path = Path(tmp) / "paper.db"
+        _, ids = _book(db_path, target, 71.0, [(ticker, "between", 70.0, 71.0)])
+        fake = _FakeExchange({f"markets/{ticker}": _market(ticker, result="yes", value="71.00")})
+        backfill = ("paper-resettle", "--verify", "--exchange-check-only", "--days", "30")
+
+        with patch.object(exchange_settlement, "default_exchange_client", lambda: fake):
+            code, out, _ = _cli(root, db_path, *backfill)
+
+        assert code == 0
+        assert "paper settlement verification skipped (--exchange-check-only)" in out
+        assert "paper settlement verification: checked=" not in out
+        assert _verification_rows(db_path) == []
+        assert _check_rows(db_path)[ids[ticker]]["verification_status"] == EXCHANGE_CHECK_MATCH
+        assert fake.calls == [f"markets/{ticker}"]
+
+        # The plain command is the one that moves restatement evidence.
+        with patch.object(exchange_settlement, "default_exchange_client", lambda: fake):
+            code, _, _ = _cli(root, db_path, "paper-resettle", "--verify", "--days", "30")
+        assert code == 0
+        assert _verification_rows(db_path) == [(ids[ticker], "MISMATCH")]
+
+        with pytest.raises(SystemExit):
+            _cli(root, db_path, *backfill, "--skip-exchange-check")
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "0", "false", " disabled "])
+def test_the_environment_switch_turns_the_guard_off_without_a_unit_edit(monkeypatch, value):
+    target = _recent_sfo_target()
+    ticker = "KXHIGHTSFO-TEST-B70.5"
+    monkeypatch.setenv(exchange_settlement.EXCHANGE_CHECK_ENV_VAR, value)
+    with TemporaryDirectory() as tmp:
+        root = _forecaster_root(Path(tmp), target=target, high=71)
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        store.record_paper_order(target, _decision(ticker, floor=70.0, cap=71.0))
+        fake = _FakeExchange({f"markets/{ticker}": _market(ticker, result="no", value="74.00")})
+
+        with patch.object(exchange_settlement, "default_exchange_client", lambda: fake):
+            code, out, _ = _cli(root, db_path, "paper-auto-settle", "--cities", "sfo")
+
+        assert code == 0
+        assert store.paper_orders(1)[0]["status"] == "PAPER_SETTLED"
+        assert "exchange settlement check skipped (SFO_EXCHANGE_SETTLEMENT_CHECK=" in out
+        assert fake.calls == []
+        assert _check_rows(db_path) == {}
+
+
+@pytest.mark.parametrize(
+    ("value", "enabled", "warns"),
+    [
+        (None, True, False),
+        ("on", True, False),
+        ("1", True, False),
+        ("Off", False, False),
+        ("no", False, False),
+        ("of", True, True),
+    ],
+)
+def test_environment_switch_values(value, enabled, warns):
+    environ = {} if value is None else {exchange_settlement.EXCHANGE_CHECK_ENV_VAR: value}
+
+    result = exchange_settlement.exchange_check_env_setting(environ)
+
+    assert (result[0], result[1] is not None) == (enabled, warns)
+
+
+def test_a_standing_mismatch_is_repeated_on_stderr_on_every_later_tick():
+    target = _recent_sfo_target()
+    ticker = "KXHIGHTSFO-TEST-B70.5"
+    with TemporaryDirectory() as tmp:
+        root = _forecaster_root(Path(tmp), target=target, high=71)
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        store.record_paper_order(target, _decision(ticker, floor=70.0, cap=71.0))
+        fake = _FakeExchange({f"markets/{ticker}": _market(ticker, result="no", value="74.00")})
+
+        with patch.object(exchange_settlement, "default_exchange_client", lambda: fake):
+            first = _cli(root, db_path, "paper-auto-settle", "--cities", "sfo")
+            second = _cli(root, db_path, "paper-auto-settle", "--cities", "sfo")
+
+        assert first[0] == second[0] == 0
+        assert "EXCHANGE SETTLEMENT MISMATCH: " in first[2]
+        # The decided lot is not re-selected, so its own line does not repeat...
+        assert "EXCHANGE SETTLEMENT MISMATCH: " not in second[2]
+        assert "exchange settlement check: checked=0" in second[1]
+        assert fake.calls == [f"markets/{ticker}"]
+        # ...but the standing count reaches stderr on every tick.
+        for _, _, err in (first, second):
+            assert "STANDING EXCHANGE SETTLEMENT MISMATCHES: 1 lot(s)" in err
+
+
+def test_a_crash_while_reporting_the_exchange_check_cannot_fail_settlement():
+    target = _recent_sfo_target()
+    ticker = "KXHIGHTSFO-TEST-B70.5"
+    with TemporaryDirectory() as tmp:
+        root = _forecaster_root(Path(tmp), target=target, high=71)
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        store.record_paper_order(target, _decision(ticker, floor=70.0, cap=71.0))
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("summary printer bug")
+
+        with patch.object(paper_cli, "_print_exchange_settlement_summary", explode):
+            code, out, err = _cli(root, db_path, "paper-auto-settle", "--cities", "sfo")
+
+        assert code == 0
+        assert store.paper_orders(1)[0]["status"] == "PAPER_SETTLED"
+        assert "settlement verification: checked=1 mismatches=0" in out
+        assert "EXCHANGE SETTLEMENT CHECK FAILED: RuntimeError: summary printer bug" in err
+
+
+def test_one_unclassifiable_lot_is_unchecked_and_does_not_void_the_run():
+    target = "2026-09-10"
+    bad, good = "KXHIGHTSFO-26SEP10-B70.5", "KXHIGHTSFO-26SEP10-B72.5"
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store, ids = _book(
+            db_path,
+            target,
+            71.0,
+            [(bad, "between", 70.0, 71.0), (good, "between", 72.0, 73.0)],
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE paper_orders SET settlement_high_f = 'unreadable' WHERE id = ?",
+                (ids[bad],),
+            )
+        fake = _FakeExchange(
+            {
+                f"markets/{bad}": _market(bad, result="yes", value="71.00"),
+                f"markets/{good}": _market(good, result="no", value="71.00"),
+            }
+        )
+
+        summary = _run_check(store, fake, intervals={SFO: (target, target)})
+
+        rows = _check_rows(db_path)
+        assert rows[ids[bad]]["verification_status"] == EXCHANGE_CHECK_UNCHECKED
+        assert rows[ids[bad]]["check_error"].startswith("lot could not be classified (ValueError")
+        assert (rows[ids[bad]]["booked_high_f"], rows[ids[bad]]["booked_winner"]) == (None, None)
+        assert rows[ids[good]]["verification_status"] == EXCHANGE_CHECK_MATCH
+        assert (summary["match"], summary["unchecked"]) == (1, 1)
+        assert _cached_tickers(db_path) == sorted([bad, good])
+
+
+def test_finalized_fetches_stay_cached_when_writing_the_verdicts_fails():
+    target = "2026-09-10"
+    ticker = "KXHIGHTSFO-26SEP10-B70.5"
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store, ids = _book(db_path, target, 71.0, [(ticker, "between", 70.0, 71.0)])
+        window = {SFO: (target, target)}
+        fake = _FakeExchange({f"markets/{ticker}": _market(ticker, result="yes", value="71.00")})
+
+        def locked(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(exchange_settlement, "record_exchange_settlement_checks", locked):
+            with pytest.raises(sqlite3.OperationalError):
+                _run_check(store, fake, intervals=window)
+
+        assert _cached_tickers(db_path) == [ticker]
+        assert _check_rows(db_path) == {}
+        summary = _run_check(store, fake, intervals=window)
+        assert (summary["match"], summary["fetched"], summary["cached"]) == (1, 0, 1)
+        assert fake.calls == [f"markets/{ticker}"]
+        assert _check_rows(db_path)[ids[ticker]]["verification_status"] == EXCHANGE_CHECK_MATCH
+
+
+def test_a_market_that_never_decides_cannot_starve_newly_settled_lots():
+    """Never-attempted markets go first, then the least recently attempted.
+
+    Lots the budget skipped also get an UNCHECKED row, so ordering by "has a
+    row" alone would put the stuck market first on every run.
+    """
+
+    target = "2026-09-10"
+    stuck, newer, older = (
+        "KXHIGHTSFO-26SEP10-B70.5",
+        "KXHIGHTSFO-26SEP10-B72.5",
+        "KXHIGHTSFO-26SEP10-B68.5",
+    )
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store, ids = _book(
+            db_path,
+            target,
+            71.0,
+            [
+                (stuck, "between", 70.0, 71.0),
+                (newer, "between", 72.0, 73.0),
+                (older, "between", 68.0, 69.0),
+            ],
+        )
+        _set_settled_at(
+            db_path,
+            {
+                ids[stuck]: "2026-09-11T20:00:00+00:00",
+                ids[newer]: "2026-09-11T14:00:00+00:00",
+                ids[older]: "2026-09-11T08:00:00+00:00",
+            },
+        )
+        # The most recently settled market is missing from both endpoints.
+        fake = _FakeExchange(
+            {
+                f"markets/{newer}": _market(newer, result="no", value="71.00"),
+                f"markets/{older}": _market(older, result="no", value="71.00"),
+            }
+        )
+        window = {SFO: (target, target)}
+
+        for _ in range(3):
+            _run_check(store, fake, intervals=window, undecided_only=True, max_fetches=1)
+
+        assert fake.calls == [
+            f"markets/{stuck}",
+            f"historical/markets/{stuck}",
+            f"markets/{newer}",
+            f"markets/{older}",
+        ]
+        rows = _check_rows(db_path)
+        assert rows[ids[stuck]]["verification_status"] == EXCHANGE_CHECK_UNCHECKED
+        assert rows[ids[newer]]["verification_status"] == EXCHANGE_CHECK_MATCH
+        assert rows[ids[older]]["verification_status"] == EXCHANGE_CHECK_MATCH
+
+
+def test_the_timer_warns_before_undecided_lots_leave_its_recheck_window():
+    target = _recent_sfo_target()
+    ticker = "KXHIGHTSFO-TEST-B70.5"
+    with TemporaryDirectory() as tmp:
+        root = _forecaster_root(Path(tmp), target=target, high=71)
+        db_path = Path(tmp) / "paper.db"
+        _, ids = _book(db_path, target, 71.0, [(ticker, "between", 70.0, 71.0)])
+
+        # conftest's offline client: the exchange cannot be reached.
+        code, out, err = _cli(root, db_path, "paper-auto-settle", "--cities", "sfo")
+        assert code == 0
+        assert "aging_undecided=0" in out
+        assert "re-check window" not in err
+
+        six_days_ago = (datetime.now(UTC) - timedelta(days=6)).isoformat()
+        _set_settled_at(db_path, {ids[ticker]: six_days_ago})
+        code, out, err = _cli(root, db_path, "paper-auto-settle", "--cities", "sfo")
+
+        assert code == 0
+        assert "aging_undecided=1" in out
+        assert (
+            "1 settled lot(s) still have no MATCH/MISMATCH verdict 5+ days after settling"
+        ) in err
+        assert "paper-resettle --verify --exchange-check-only" in err

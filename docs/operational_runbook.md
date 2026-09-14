@@ -207,9 +207,25 @@ record `MATCH`, `MISMATCH`, `KALSHI_PENDING`, or `UNCHECKED` in
 one on record. Treat it as an incident and open a restatement; never edit the
 journal. The check never changes booked P&L and never fails or blocks
 settlement: an unreachable exchange is recorded as `UNCHECKED` and retried on
-a later run. The settle timer re-checks undecided lots settled in the last
-seven days; backfill older history with `paper-resettle --verify --days N`.
-Either command accepts `--skip-exchange-check` for offline use. Details:
+a later run. Every run with a mismatch on record repeats
+`STANDING EXCHANGE SETTLEMENT MISMATCHES: N` on stderr. The settle timer
+re-checks undecided lots settled in the last seven days, at most 10 markets per
+run. When lots are about to leave that window undecided, it counts them as
+`aging_undecided` and warns on stderr.
+
+Backfill older history without touching restatement evidence:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --exchange-check-only --days N
+```
+
+Plain `paper-resettle --verify --days N` also re-runs the CLI sweep, which
+rewrites the `paper_settlement_verifications` rows `restatement.py` reads.
+Widen that window only as a deliberate, owner-approved step.
+
+Either command accepts `--skip-exchange-check` for offline use. Setting
+`SFO_EXCHANGE_SETTLEMENT_CHECK=off` in the unit's EnvironmentFile turns the
+check off on the timer without a unit edit. Details:
 `docs/SETTLEMENT-OBSERVABILITY.md`, section 3.
 
 ## Edge Scan Diagnostic

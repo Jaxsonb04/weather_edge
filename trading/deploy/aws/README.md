@@ -250,8 +250,14 @@ cd /opt/weatheredge/trading
 ```
 
 `paper-resettle --verify` also reconciles each settled lot against the
-exchange's own finalized result; an `EXCHANGE SETTLEMENT MISMATCH` line on
-stderr is an incident (see `docs/SETTLEMENT-OBSERVABILITY.md`, section 3).
+exchange's own finalized result. An `EXCHANGE SETTLEMENT MISMATCH` or
+`STANDING EXCHANGE SETTLEMENT MISMATCHES` line on stderr is an incident (see
+`docs/SETTLEMENT-OBSERVABILITY.md`, section 3).
+
+To backfill exchange verdicts for older lots, add `--exchange-check-only` and
+widen `--days`. That leaves alone the CLI verification rows that restatement
+reads. Setting `SFO_EXCHANGE_SETTLEMENT_CHECK=off` in the EnvironmentFile turns
+the check off on the settle timer without editing the unit.
 
 For an existing large journal, keep paper scan and monitor services paused and
 run `create_decision_snapshot_index.sh` once before resuming them. It builds the

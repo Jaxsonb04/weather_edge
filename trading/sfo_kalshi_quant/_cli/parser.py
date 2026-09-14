@@ -823,12 +823,22 @@ def register_paper_commands(sub) -> None:
         help="Record MATCH/MISMATCH audit results; never mutate settled orders",
     )
     resettle.add_argument("--days", type=int, default=14, help="Recent target days to verify")
-    resettle.add_argument(
+    resettle_exchange = resettle.add_mutually_exclusive_group()
+    resettle_exchange.add_argument(
         "--skip-exchange-check",
         action="store_true",
         help=(
             "Do not reconcile settled lots against the exchange's own finalized "
             "result (offline use)"
+        ),
+    )
+    resettle_exchange.add_argument(
+        "--exchange-check-only",
+        action="store_true",
+        help=(
+            "Only reconcile settled lots against the exchange; skip the CLI sweep "
+            "so paper_settlement_verifications (restatement evidence) is not "
+            "rewritten. Use this to backfill exchange verdicts."
         ),
     )
     resettle.add_argument(

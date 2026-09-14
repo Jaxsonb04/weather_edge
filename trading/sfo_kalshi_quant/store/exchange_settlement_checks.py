@@ -38,8 +38,15 @@ One row per settled lot in ``paper_settlement_exchange_checks``:
   ``KALSHI_PENDING``
       the exchange has not finalized the market yet;
   ``UNCHECKED``
-      the market could not be fetched or read (``check_error`` says why).  Never
+      the market could not be fetched or read, or the lot itself could not be
+      classified (``check_error`` says why; ``booked_high_f`` and
+      ``booked_winner`` are NULL when the booked high is unreadable).  Never
       read as agreement; retried on a later run.
+
+``exchange_attempted_at`` is when a run last tried to read the lot's market
+(from the exchange or the finalized cache).  Lots are re-checked
+least-recently-attempted first, so a market that never becomes decidable
+cannot starve newly settled lots of a small per-run budget.
 
 The result and the settlement value are compared separately on purpose.  A lot
 on a bin both numbers fall on the same side of (booked 85, exchange 90, bin
@@ -120,15 +127,16 @@ CREATE TABLE IF NOT EXISTS paper_settlement_exchange_checks (
     checked_at TEXT NOT NULL,
     market_ticker TEXT NOT NULL,
     target_date TEXT NOT NULL,
-    booked_high_f REAL NOT NULL,
-    booked_winner TEXT NOT NULL,
+    booked_high_f REAL,
+    booked_winner TEXT,
     kalshi_status TEXT,
     kalshi_result TEXT,
     kalshi_expiration_value REAL,
     kalshi_source_endpoint TEXT,
     verification_status TEXT NOT NULL,
     mismatch_reason TEXT,
-    check_error TEXT
+    check_error TEXT,
+    exchange_attempted_at TEXT
 );
 """
 
@@ -155,6 +163,15 @@ WHERE o.status = 'PAPER_SETTLED'
   AND o.settled_at IS NOT NULL
   AND o.settlement_high_f IS NOT NULL
 """
+# Markets never attempted first (newest settlement first), then the least
+# recently attempted.  Lots the per-run budget skipped still get an UNCHECKED
+# row, so "has a row" cannot be the priority; the attempt time is.  A market
+# that never becomes decidable -- missing from both endpoints, or stuck
+# unfinalized -- is tried once and then waits behind everything else.
+_LOT_ORDER = (
+    "ORDER BY (c.exchange_attempted_at IS NOT NULL), c.exchange_attempted_at, "
+    "o.settled_at DESC, o.id"
+)
 
 _CHECK_COLUMNS: tuple[str, ...] = (
     "order_id",
@@ -170,11 +187,22 @@ _CHECK_COLUMNS: tuple[str, ...] = (
     "verification_status",
     "mismatch_reason",
     "check_error",
+    "exchange_attempted_at",
 )
 _CHECK_INSERT_COLUMNS = ", ".join(_CHECK_COLUMNS)
 _CHECK_PLACEHOLDERS = ", ".join("?" for _ in _CHECK_COLUMNS)
+# ``exchange_attempted_at`` keeps its previous value when this run did not try
+# the lot's market (budget spent, or fetching stopped), so a skipped lot keeps
+# its place ahead of markets that were just tried.
 _CHECK_ASSIGNMENTS = ", ".join(
-    f"{column} = excluded.{column}" for column in _CHECK_COLUMNS if column != "order_id"
+    (
+        f"{column} = COALESCE(excluded.{column}, "
+        f"paper_settlement_exchange_checks.{column})"
+        if column == "exchange_attempted_at"
+        else f"{column} = excluded.{column}"
+    )
+    for column in _CHECK_COLUMNS
+    if column != "order_id"
 )
 # The WHERE clause is the no-downgrade rule: a decided verdict is only ever
 # replaced by another decided verdict.
@@ -259,6 +287,56 @@ def classify_exchange_settlement(
     }
 
 
+def build_exchange_settlement_check(
+    lot: object,
+    *,
+    resolution: Mapping[str, Any] | None,
+    error: str | None,
+    checked_at: str,
+    attempted: bool,
+) -> dict[str, Any]:
+    """One lot's ``paper_settlement_exchange_checks`` row; never raises on the lot.
+
+    A lot that cannot be classified -- an unreadable booked high, say -- becomes
+    ``UNCHECKED`` with the reason in ``check_error``, so one bad row cannot void
+    every other verdict in the run.  ``attempted`` says whether this run read
+    the lot's market (from the exchange or the cache); a lot it did not reach
+    records no attempt time, which keeps it ahead in the next run's order.
+    """
+
+    row = {
+        "order_id": int(lot["id"]),  # type: ignore[index]
+        "checked_at": checked_at,
+        "market_ticker": str(lot["market_ticker"]),  # type: ignore[index]
+        "target_date": str(lot["target_date"]),  # type: ignore[index]
+        "exchange_attempted_at": checked_at if attempted else None,
+    }
+    try:
+        booked_high = integer_settlement_high_f(_row_value(lot, "settlement_high_f"))
+        booked_winner = booked_winner_for_lot(lot)
+        verdict = classify_exchange_settlement(
+            booked_high_f=booked_high,
+            booked_winner=booked_winner,
+            resolution=resolution,
+            error=error,
+        )
+    except Exception as exc:  # one unclassifiable lot must not void the run
+        return {
+            **row,
+            "booked_high_f": _optional_float(_row_value(lot, "settlement_high_f")),
+            "booked_winner": None,
+            **_unchecked_verdict(
+                f"lot could not be classified ({type(exc).__name__}: {exc})"
+            ),
+        }
+    return {
+        **row,
+        "booked_high_f": booked_high,
+        "booked_winner": booked_winner,
+        **verdict,
+    }
+
+
 def settled_lots_for_exchange_check(
     conn: sqlite3.Connection,
     *,
@@ -297,7 +375,7 @@ def settled_lots_for_exchange_check(
     sql = (
         _LOT_SELECT
         + "".join(f"  AND {clause}\n" for clause in clauses)
-        + "ORDER BY o.target_date, o.id"
+        + _LOT_ORDER
     )
     return conn.execute(sql, params).fetchall()
 
@@ -376,5 +454,28 @@ def standing_exchange_mismatches(conn: sqlite3.Connection) -> int:
         "SELECT COUNT(*) FROM paper_settlement_exchange_checks "
         "WHERE verification_status = ?",
         (EXCHANGE_CHECK_MISMATCH,),
+    ).fetchone()
+    return int(row[0])
+
+
+def aging_undecided_exchange_checks(
+    conn: sqlite3.Connection, *, settled_since: str, settled_before: str
+) -> int:
+    """Settled lots in ``[settled_since, settled_before)`` with no decided verdict.
+
+    On the settle timer these are the lots about to leave its re-check window
+    without a ``MATCH`` or ``MISMATCH`` -- typically because the exchange has
+    been unreachable for days.  Uses the ``paper_orders (status, settled_at,
+    closed_at)`` index.
+    """
+
+    row = conn.execute(
+        "SELECT COUNT(*) FROM paper_orders AS o "
+        "LEFT JOIN paper_settlement_exchange_checks AS c ON c.order_id = o.id "
+        "WHERE o.status = 'PAPER_SETTLED' "
+        "AND o.settlement_high_f IS NOT NULL "
+        "AND o.settled_at >= ? AND o.settled_at < ? "
+        f"AND (c.order_id IS NULL OR c.verification_status NOT IN ({_DECIDED_SQL}))",
+        (settled_since, settled_before),
     ).fetchone()
     return int(row[0])

@@ -25,6 +25,7 @@ Rate
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import time
@@ -35,15 +36,14 @@ from urllib.error import HTTPError
 
 from ._util import _optional_float
 from .kalshi import KalshiPublicClient
-from .settlement_truth import integer_settlement_high_f
 from .store.exchange_settlement_checks import (
     EXCHANGE_CHECK_MATCH,
     EXCHANGE_CHECK_MISMATCH,
     EXCHANGE_CHECK_PENDING,
     EXCHANGE_CHECK_UNCHECKED,
-    booked_winner_for_lot,
+    aging_undecided_exchange_checks,
+    build_exchange_settlement_check,
     cached_exchange_resolutions,
-    classify_exchange_settlement,
     record_exchange_resolution,
     record_exchange_settlement_checks,
     settled_lots_for_exchange_check,
@@ -53,11 +53,17 @@ from .store.exchange_settlement_checks import (
 EXCHANGE_CHECK_TIMEOUT_SECONDS = 10
 EXCHANGE_CHECK_RETRIES = 2
 EXCHANGE_CHECK_MIN_INTERVAL_SECONDS = 0.4
-# The settle timer fires every thirty minutes; forty spaced markets is ~16 s of
-# polite fetching in the worst case, and a normal tick fetches only the handful
-# of recently settled markets that have not finalized yet.
-AUTO_SETTLE_EXCHANGE_CHECK_MAX_FETCHES = 40
+# The settle timer fires at :10 and :40 -- the same minutes as a trading scan --
+# and every process on the box shares one public-API allowance.  Ten spaced
+# markets is ~4 s of fetching, and 48 runs a day still reach ~480 markets, more
+# than five times the ~90 (15 city events of 6 brackets) that can settle in a
+# day.  Older history is backfilled once with ``paper-resettle --verify
+# --exchange-check-only``, off the trading minutes.
+AUTO_SETTLE_EXCHANGE_CHECK_MAX_FETCHES = 10
 AUTO_SETTLE_EXCHANGE_CHECK_LOOKBACK_DAYS = 7
+# A lot still undecided this many days after settling leaves the timer's
+# re-check window within two days; the timer names it on stderr.
+AUTO_SETTLE_EXCHANGE_CHECK_AGING_DAYS = 5
 # The operator backfill walks a whole --days window once; finalized results are
 # cached, so a second run over the same window fetches nothing.
 RESETTLE_EXCHANGE_CHECK_MAX_FETCHES = 400
@@ -65,6 +71,13 @@ RESETTLE_EXCHANGE_CHECK_MAX_FETCHES = 400
 LIVE_MARKET_ENDPOINT = "markets"
 HISTORICAL_MARKET_ENDPOINT = "historical/markets"
 _TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9._-]*$")
+
+# Runtime off switch read from the settle unit's EnvironmentFile, so production
+# can turn the guard off without editing a canonical unit (the post-install
+# integrity gate rejects drop-ins and ExecStart edits).
+EXCHANGE_CHECK_ENV_VAR = "SFO_EXCHANGE_SETTLEMENT_CHECK"
+_ENV_OFF_VALUES = frozenset({"off", "0", "false", "no", "disabled"})
+_ENV_ON_VALUES = frozenset({"", "on", "1", "true", "yes", "enabled"})
 
 
 class ExchangeCheckUnavailable(Exception):
@@ -79,6 +92,29 @@ class ExchangeJsonClient(Protocol):
     def get_json(
         self, path: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]: ...
+
+
+def exchange_check_env_setting(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[bool, str | None]:
+    """Whether the guard runs, and a warning for a value it does not recognize.
+
+    Unset or ``on`` runs the check; ``off`` (or ``0``, ``false``, ``no``,
+    ``disabled``) skips it.  An unrecognized value keeps it running -- the
+    check can never block settlement, so the safe reading of a typo is to keep
+    watching -- and says so.
+    """
+
+    raw = (os.environ if environ is None else environ).get(EXCHANGE_CHECK_ENV_VAR, "")
+    value = str(raw).strip().lower()
+    if value in _ENV_OFF_VALUES:
+        return False, None
+    if value in _ENV_ON_VALUES:
+        return True, None
+    return True, (
+        f"unrecognized {EXCHANGE_CHECK_ENV_VAR}={raw!r}; running the exchange "
+        "settlement check (set it to 'off' to disable)"
+    )
 
 
 def default_exchange_client() -> ExchangeJsonClient:
@@ -186,17 +222,17 @@ def _fetch_resolutions(
     max_fetches: int,
     client_factory: Callable[[], ExchangeJsonClient],
     spacer: _RequestSpacer,
-) -> tuple[dict[str, dict[str, Any]], dict[str, str], int, str | None]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str], str | None]:
     resolutions: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
-    attempted = 0
+    attempted: list[str] = []
     stopped: str | None = None
     client: ExchangeJsonClient | None = None
     for ticker in tickers:
         if stopped is not None:
             errors[ticker] = f"not fetched this run: {stopped}"
             continue
-        if attempted >= max_fetches:
+        if len(attempted) >= max_fetches:
             errors[ticker] = (
                 f"not fetched this run: per-run budget of {max_fetches} market "
                 "fetches spent"
@@ -209,7 +245,7 @@ def _fetch_resolutions(
                 stopped = f"exchange client unavailable ({type(exc).__name__}: {exc})"
                 errors[ticker] = stopped
                 continue
-        attempted += 1
+        attempted.append(ticker)
         try:
             resolutions[ticker] = fetch_market_resolution(client, ticker, spacer=spacer)
         except ExchangeMarketUnreadable as exc:
@@ -230,6 +266,7 @@ def run_exchange_settlement_checks(
     intervals: Mapping[str, tuple[str, str]] | None = None,
     settled_since: str | None = None,
     undecided_only: bool = False,
+    aging_settled_before: str | None = None,
     client_factory: Callable[[], ExchangeJsonClient] | None = None,
     min_interval_seconds: float | None = None,
     sleep: Callable[[float], object] | None = None,
@@ -237,8 +274,16 @@ def run_exchange_settlement_checks(
 ) -> dict[str, Any]:
     """Reconcile settled lots with the exchange and persist one verdict each.
 
-    Reads the lots and the cache, closes that connection, fetches what is not
-    cached, then writes every verdict in one short transaction.
+    Reads the lots and the cache, closes that connection, and fetches what is
+    not cached.  Finalized results are cached in their own short transaction
+    before any lot is classified, so nothing later in the run can discard a
+    fetch.  Each lot is classified on its own, so one lot that cannot be
+    classified is recorded ``UNCHECKED`` instead of voiding the rest.  Every
+    verdict is then written in one short transaction.
+
+    With ``settled_since``, ``aging_settled_before`` also counts lots settled in
+    ``[settled_since, aging_settled_before)`` that still hold no decided verdict
+    -- the ones about to leave the lookback window unchecked.
     """
 
     with store.connect() as conn:
@@ -267,34 +312,39 @@ def run_exchange_settlement_checks(
     )
 
     checked_at = datetime.now(UTC).isoformat()
+    if resolutions:
+        # Before anything is classified: a failure later in this run must not
+        # make the next run fetch these finalized markets again.
+        with store.connect() as conn:
+            for resolution in resolutions.values():
+                record_exchange_resolution(conn, resolution, fetched_at=checked_at)
+
+    tried = set(attempted).union(cached)
     checks: list[dict[str, Any]] = []
     for lot in lots:
         ticker = str(lot["market_ticker"])
-        booked_high = integer_settlement_high_f(lot["settlement_high_f"])
-        booked_winner = booked_winner_for_lot(lot)
-        verdict = classify_exchange_settlement(
-            booked_high_f=booked_high,
-            booked_winner=booked_winner,
-            resolution=cached.get(ticker) or resolutions.get(ticker),
-            error=errors.get(ticker),
-        )
         checks.append(
-            {
-                "order_id": int(lot["id"]),
-                "checked_at": checked_at,
-                "market_ticker": ticker,
-                "target_date": str(lot["target_date"]),
-                "booked_high_f": booked_high,
-                "booked_winner": booked_winner,
-                **verdict,
-            }
+            build_exchange_settlement_check(
+                lot,
+                resolution=cached.get(ticker) or resolutions.get(ticker),
+                error=errors.get(ticker),
+                checked_at=checked_at,
+                attempted=ticker in tried,
+            )
         )
 
     with store.connect() as conn:
-        for resolution in resolutions.values():
-            record_exchange_resolution(conn, resolution, fetched_at=checked_at)
         record_exchange_settlement_checks(conn, checks)
         standing = standing_exchange_mismatches(conn)
+        aging = (
+            aging_undecided_exchange_checks(
+                conn,
+                settled_since=settled_since,
+                settled_before=aging_settled_before,
+            )
+            if settled_since is not None and aging_settled_before is not None
+            else None
+        )
 
     def _count(verdict: str) -> int:
         return sum(1 for check in checks if check["verification_status"] == verdict)
@@ -305,8 +355,9 @@ def run_exchange_settlement_checks(
         "mismatches": _count(EXCHANGE_CHECK_MISMATCH),
         "kalshi_pending": _count(EXCHANGE_CHECK_PENDING),
         "unchecked": _count(EXCHANGE_CHECK_UNCHECKED),
-        "fetched": attempted,
+        "fetched": len(attempted),
         "cached": len(cached),
         "standing_mismatches": standing,
+        "aging_undecided": aging,
         "fetch_stopped": stopped,
     }
