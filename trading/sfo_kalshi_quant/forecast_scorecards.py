@@ -22,6 +22,7 @@ from .forecast_challengers import (
     evaluate_partial_pooled_intraday,
 )
 from .research_operate import EvaluationRun
+from .research_promotion import MIN_BOOTSTRAP_CALENDAR_DAYS, MIN_INDEPENDENT_CONFIRMATORY_DAYS
 
 
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
@@ -501,6 +502,8 @@ def build_research_evaluation_report(run: EvaluationRun) -> dict[str, Any]:
             "distinct_calendar_target_days": decision.distinct_calendar_target_days,
             "bootstrap_cluster_unit": decision.bootstrap_cluster_unit,
             "bootstrap_calendar_days": decision.bootstrap_calendar_days,
+            "required_station_day_folds": MIN_INDEPENDENT_CONFIRMATORY_DAYS,
+            "required_bootstrap_calendar_days": MIN_BOOTSTRAP_CALENDAR_DAYS,
             "holm_p_value": decision.holm_p_value,
             "holm_adjusted_significant": decision.holm_adjusted_significant,
             "prior_family_attempts": len(run.prior_family_attempts),

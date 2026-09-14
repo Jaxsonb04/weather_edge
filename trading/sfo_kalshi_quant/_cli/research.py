@@ -143,9 +143,12 @@ def _print_report(report: dict, *, color: Color) -> None:
         for reason in gate["block_reasons"]:
             print(f"  - {reason}")
     print(f"live_activation_allowed: {gate['live_activation_allowed']}")
+    bootstrap_calendar_days = gate.get("bootstrap_calendar_days")
     print(
         f"independent_confirmatory_days={gate['independent_confirmatory_days']} "
         f"distinct_calendar_target_days={gate['distinct_calendar_target_days']} "
+        "bootstrap_calendar_days="
+        f"{'missing' if bootstrap_calendar_days is None else bootstrap_calendar_days} "
         f"holm_adjusted_significant={gate['holm_adjusted_significant']}"
     )
 
