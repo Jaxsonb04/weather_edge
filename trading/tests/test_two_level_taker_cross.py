@@ -1045,3 +1045,21 @@ def test_pre_entry_fetch_is_one_short_attempt_even_on_the_shared_client(failure)
     store.record_orderbook_depth.assert_not_called()
     # The scan's own client keeps its defaults for every other call.
     assert (shared.timeout, shared.retries, shared.backoff) == (20, 3, 0.5)
+
+
+def test_pre_entry_ladder_client_ignores_a_stale_scan_client_binding(monkeypatch) -> None:
+    # cli._sync_scan_bindings copies cli.KalshiPublicClient into _cli.scan, so
+    # an earlier test that patched the cli name can leave a Mock bound there
+    # (test_research_frequency does exactly that). The type check must still
+    # recognise a real client and pass a test double through untouched.
+    monkeypatch.setattr(scan_module, "KalshiPublicClient", Mock())
+    real = KalshiPublicClient("https://kalshi.invalid/trade-api/v2")
+
+    single = scan_module._pre_entry_ladder_client(real)
+
+    assert isinstance(single, KalshiPublicClient)
+    assert single is not real
+    assert single.retries == 1
+    assert single.timeout == scan_module._PRE_ENTRY_LADDER_DEADLINE_SECONDS
+    double = object()
+    assert scan_module._pre_entry_ladder_client(double) is double

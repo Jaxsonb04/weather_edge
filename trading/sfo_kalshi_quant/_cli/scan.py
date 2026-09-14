@@ -774,6 +774,12 @@ _ORDERBOOK_CAPTURE_BUDGET_SECONDS = 10.0
 # error leaves the leg on the single-level cross; a timeout also ends
 # pre-entry fetching for that target.
 _PRE_ENTRY_LADDER_DEADLINE_SECONDS = 2.0
+# The real client class, bound once at import. ``KalshiPublicClient`` itself is
+# a test seam: cli._sync_scan_bindings copies cli's binding into this module
+# before every scan command, so a test that patches
+# ``sfo_kalshi_quant.cli.KalshiPublicClient`` leaves a Mock bound here after its
+# patch exits. An isinstance check must not read that seam.
+_KALSHI_PUBLIC_CLIENT_TYPE = KalshiPublicClient
 
 
 def _capture_orderbook_depth_for_legs(
@@ -953,7 +959,7 @@ def _pre_entry_ladder_client(kalshi_client):
     hard deadline in capture_orderbook_depth_within bounds it regardless.
     """
 
-    if isinstance(kalshi_client, KalshiPublicClient):
+    if isinstance(kalshi_client, _KALSHI_PUBLIC_CLIENT_TYPE):
         return kalshi_client.single_attempt(
             timeout=_PRE_ENTRY_LADDER_DEADLINE_SECONDS
         )
