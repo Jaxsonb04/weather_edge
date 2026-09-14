@@ -211,3 +211,157 @@ which raises:
 
 These are generation-gated the same way the settled-row checks already are, and
 after the migration a clean database raises none of them.
+
+---
+
+## 3. Exchange settlement reconciliation
+
+This is a measurement change like the two above: no `StrategyConfig` or
+`ResearchSleevePolicy` field and no version constant moved.
+
+### What was missing
+
+`verify_paper_settlements` compares the high a lot was booked against with the
+final NWS CLI maximum in `weather.db`. On the settle timer that is the number
+the lot was just settled from, so the check can only notice a CLI value that
+changed *after* settlement. Nothing compared the journal with what the exchange
+itself settled the market on (audit D.8 asked for exactly that).
+
+The gap has a measured failure shape. Kalshi moved daily-high settlement to The
+Weather Company on 2026-08-14/15. Since then its `expiration_value` has equalled
+the NWS CLI integer on 434 of 435 station-days, and all 53 auditable settled
+lots in this book match the exchange, so the scorer is not wrong. The exception
+was **Miami 2026-08-29**: the NWS issued two conflicting CLI versions (maximum
+90 at 04:24 EDT, then 85 at 05:10 EDT) and the exchange settled on 90.
+`forecaster/clisfo.py` keeps the newest final version it sees, so a lot settled
+from the archive would have been booked on 85: YES on "87 or below", NO on
+"90-91", and the booked-vs-CLI verification would have called both `MATCH`.
+
+### What changed
+
+`paper-auto-settle` and `paper-resettle --verify` now also read each settled
+lot's market from the exchange's public API and record the comparison in
+`paper_settlement_exchange_checks`, one row per settled lot:
+
+| Column | Meaning |
+| --- | --- |
+| `booked_high_f`, `booked_winner` | the integer high the journal settled on, and the market side (`YES`/`NO`) it paid out |
+| `kalshi_status`, `kalshi_result`, `kalshi_expiration_value` | the exchange's `status`, `result`, and `expiration_value` |
+| `kalshi_source_endpoint` | `markets` or `historical/markets` |
+| `verification_status` | `MATCH`, `MISMATCH`, `KALSHI_PENDING`, or `UNCHECKED` |
+| `mismatch_reason` | for `MISMATCH`: `result`, `expiration_value`, and/or `result_not_yes_no` |
+| `check_error` | for `UNCHECKED`: why the market could not be read, or why the lot could not be classified |
+| `exchange_attempted_at` | when a run last tried to read the lot's market; lots are re-checked least-recently-attempted first |
+
+- **`MATCH`**: finalized, and both the result and the settlement value agree.
+- **`MISMATCH`**: finalized, and either one disagrees. The value is compared on
+  its own because a lot on a bin both numbers fall on the same side of (Miami
+  "94-95") paid out correctly while its siblings did not. Reporting only payout
+  disagreements would hide the signal that the day's truth source diverged.
+- **`KALSHI_PENDING`**: the exchange has not finalized the market.
+- **`UNCHECKED`**: the market could not be fetched or read. It is never read as
+  agreement and is retried on a later run.
+
+A `MISMATCH` prints an `EXCHANGE SETTLEMENT MISMATCH` line on stderr and is
+counted in the `exchange settlement check:` summary each command prints, next
+to the existing `settlement verification:` line; `standing_mismatches` counts
+every `MISMATCH` on record. The timer never re-selects a decided lot, so that
+per-lot line reaches stderr once; every later run with a mismatch on record
+also prints `STANDING EXCHANGE SETTLEMENT MISMATCHES: N` on stderr. It is an
+incident signal: open a restatement, do not edit the journal. Neither line
+reaches an alert. The settle unit's `OnFailure=` fires only on a non-zero exit,
+which the check never causes, so a mismatch is visible in the settle unit's
+journal (`journalctl -u sfo-kalshi-paper-settle`) and in the table.
+
+On the timer, lots settled five to seven days ago that still hold no
+`MATCH`/`MISMATCH` are counted as `aging_undecided` and named on stderr. They
+are about to leave the timer's seven-day re-check window, usually because the
+exchange has been unreachable, and should be backfilled (below).
+
+### Never blocks settlement
+
+The check runs after the journal is written and holds no database lock while it
+talks to the network. Transport failures, HTTP errors, malformed payloads, and
+even an exception inside the check itself are reported on stderr and leave the
+exit status at 0; on the settle timer a non-zero exit would fire `OnFailure=` as
+though settlement had failed. The first transport failure stops fetching for
+the rest of that run, so an exchange outage costs one timeout rather than one
+per lot. Finalized results are cached before any lot is classified, and each
+lot is classified on its own: a lot that cannot be classified is `UNCHECKED`
+with the reason in `check_error`, and a later failure in the run (a locked
+database, say) cannot discard what was already fetched.
+
+`--skip-exchange-check` runs either command offline. In production,
+`SFO_EXCHANGE_SETTLEMENT_CHECK=off` in the settle unit's EnvironmentFile turns
+the check off without editing a canonical unit, which the post-install
+integrity gate rejects. An unrecognized value keeps the check on and says so on
+stderr.
+
+### Rate and caching
+
+- Requests are spaced at least 0.4 s apart, under the public API's ~3 requests
+  per second, with a 10 s timeout and 2 attempts per request.
+- The settle timer fetches at most 10 markets per run and re-checks only lots
+  settled in the last seven days that do not yet hold `MATCH`/`MISMATCH`. The
+  timer fires on the same minutes as a trading scan (`:10`, `:40`) and shares
+  the box's public-API allowance, so the budget stays small: ten spaced markets
+  take about four seconds, and 48 runs a day still reach ~480 markets against
+  at most ~90 (15 city events of 6 brackets) settling per day.
+- Markets never attempted come first, newest settlement first, then the least
+  recently attempted (`exchange_attempted_at`). A market that never becomes
+  decidable -- missing from both endpoints, or stuck unfinalized -- is tried
+  once per run at the back of the queue and cannot starve newly settled lots.
+- Finalized results are cached per ticker in `kalshi_market_resolutions` and are
+  never fetched again. Pending markets are not cached.
+- A decided verdict is never downgraded by a later `KALSHI_PENDING` or
+  `UNCHECKED` observation.
+- Neither table is archived. Both are reconstructible by re-running
+  `paper-resettle --verify --exchange-check-only` over the wanted window.
+
+### Backfilling history
+
+The timer looks back only seven days. Backfill older lots with:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --exchange-check-only --days N
+```
+
+It walks the whole window with a budget of 400 markets
+(`--exchange-max-fetches`) and writes only the two exchange tables.
+
+Do not use plain `paper-resettle --verify` for this. It first re-runs the
+booked-vs-CLI sweep, which upserts `paper_settlement_verifications`, and
+`restatement.py` classifies settled lots from that table. Over a wide window
+that adds rows for lots that had none, which clears
+`SETTLEMENT_VERIFICATION_REQUIRED`. It also flips `MATCH` to `MISMATCH`
+wherever a CLI final changed after settlement. Widening that sweep is a
+separate, owner-approved step that changes restatement findings; take a
+restatement diff before and after it.
+
+### Live and historical endpoints
+
+`GET /markets/{ticker}` serves only recent markets; older markets move to
+`GET /historical/markets/{ticker}`. Measured 2026-09-13,
+`KXHIGHMIA-26AUG29-T88` is live-only (historical 404) and
+`KXHIGHTSFO-26JUN12-T81` is historical-only (live 404). The book's settled
+history starts 2026-06-10, so the historical endpoint is asked after a live 404;
+a market missing from both is `UNCHECKED`.
+
+### CLI issuance is not recorded
+
+The check does not record which CLI issuance a booked high came from, because
+no machine-readable issuance exists where settlement truth is loaded.
+`cli_settlements` stores `station_id, local_date, max_temperature_f,
+fetched_at, source, is_final`, and `forecaster/clisfo.CliReport` parses only a
+report date, a maximum, and a preliminary flag. `fetched_at` is when this
+project fetched the product, not when the NWS issued it, so it is not recorded
+as an issuance. Recording the product's issuance time and version would need a
+forecaster-side change first.
+
+### Read-only by contract
+
+The check writes only its two tables. It never writes `paper_orders`, the
+ledger, or `paper_settlement_verifications`, and `restatement.py` does not read
+it, so it moves no evidence classification, gate, fingerprint, or version.
+`test_exchange_settlement_checks.py::test_nothing_in_the_trading_path_reads_the_exchange_check_tables`
+enforces that nothing else in the package reads the two tables.

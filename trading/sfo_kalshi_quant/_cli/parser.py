@@ -823,6 +823,33 @@ def register_paper_commands(sub) -> None:
         help="Record MATCH/MISMATCH audit results; never mutate settled orders",
     )
     resettle.add_argument("--days", type=int, default=14, help="Recent target days to verify")
+    resettle_exchange = resettle.add_mutually_exclusive_group()
+    resettle_exchange.add_argument(
+        "--skip-exchange-check",
+        action="store_true",
+        help=(
+            "Do not reconcile settled lots against the exchange's own finalized "
+            "result (offline use)"
+        ),
+    )
+    resettle_exchange.add_argument(
+        "--exchange-check-only",
+        action="store_true",
+        help=(
+            "Only reconcile settled lots against the exchange; skip the CLI sweep "
+            "so paper_settlement_verifications (restatement evidence) is not "
+            "rewritten. Use this to backfill exchange verdicts."
+        ),
+    )
+    resettle.add_argument(
+        "--exchange-max-fetches",
+        type=int,
+        default=None,
+        help=(
+            "Most exchange markets fetched this run (default 400; finalized "
+            "results are cached and never fetched again)"
+        ),
+    )
     resettle.set_defaults(func=cmd_paper_resettle)
 
     prune = sub.add_parser(
@@ -908,6 +935,14 @@ def register_paper_commands(sub) -> None:
         "--cities",
         default=None,
         help="'all' or comma-separated city slugs (default: env PAPER_CITIES or all)",
+    )
+    auto_settle.add_argument(
+        "--skip-exchange-check",
+        action="store_true",
+        help=(
+            "Do not reconcile settled lots against the exchange's own finalized "
+            "result (offline use)"
+        ),
     )
     auto_settle.set_defaults(func=cmd_paper_auto_settle)
 

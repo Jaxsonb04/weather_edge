@@ -196,6 +196,38 @@ python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --days 14
 The sweep records `MATCH`, `MISMATCH`, and `MISSING_FINAL` results in
 `paper_settlement_verifications` using each city's fixed-standard date window.
 
+Both `paper-auto-settle` and `paper-resettle --verify` also reconcile each
+settled lot against the exchange's own finalized market
+(`GET /markets/{ticker}`, then `/historical/markets/{ticker}` after a 404) and
+record `MATCH`, `MISMATCH`, `KALSHI_PENDING`, or `UNCHECKED` in
+`paper_settlement_exchange_checks`, with the exchange `result`, its
+`expiration_value`, and the journal's booked winner. A `MISMATCH` prints an
+`EXCHANGE SETTLEMENT MISMATCH` line on stderr and is counted in the
+`exchange settlement check:` summary line; `standing_mismatches` counts every
+one on record. Treat it as an incident and open a restatement; never edit the
+journal. The check never changes booked P&L and never fails or blocks
+settlement: an unreachable exchange is recorded as `UNCHECKED` and retried on
+a later run. Every run with a mismatch on record repeats
+`STANDING EXCHANGE SETTLEMENT MISMATCHES: N` on stderr. The settle timer
+re-checks undecided lots settled in the last seven days, at most 10 markets per
+run. When lots are about to leave that window undecided, it counts them as
+`aging_undecided` and warns on stderr.
+
+Backfill older history without touching restatement evidence:
+
+```bash
+python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --exchange-check-only --days N
+```
+
+Plain `paper-resettle --verify --days N` also re-runs the CLI sweep, which
+rewrites the `paper_settlement_verifications` rows `restatement.py` reads.
+Widen that window only as a deliberate, owner-approved step.
+
+Either command accepts `--skip-exchange-check` for offline use. Setting
+`SFO_EXCHANGE_SETTLEMENT_CHECK=off` in the unit's EnvironmentFile turns the
+check off on the timer without a unit edit. Details:
+`docs/SETTLEMENT-OBSERVABILITY.md`, section 3.
+
 ## Edge Scan Diagnostic
 
 `sfo_kalshi_quant/edge_scan.py` measures the favorite-band maker opportunity

@@ -89,7 +89,9 @@ Responsibilities:
   `cli_settlements.is_final=1` truth after the next-day 06:00 fixed-standard
   grace window, never a raw live product
 - audit booked settlements with non-mutating `paper-resettle --verify`, including
-  durable mismatch and missing-final records
+  durable mismatch and missing-final records, and reconcile every settled lot
+  against the exchange's own finalized result
+  (`paper_settlement_exchange_checks`, never blocking settlement)
 - record and monitor paper-only trades
 - run walk-forward calibration on either LSTM held-out outcomes or clean
   archived blend outcomes (SFO); warm/hot cohort blocks and GFS-ensemble

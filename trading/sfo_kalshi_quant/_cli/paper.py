@@ -19,6 +19,7 @@ from ..config import (
 )
 from ..db import PaperStore
 from ..forecast import SfoForecasterAdapter, parse_target_date
+from .. import exchange_settlement as _exchange_settlement
 from ..kalshi import KalshiPublicClient
 from ..models import target_date_from_event_ticker
 from ..report import build_daily_report, write_report
@@ -27,6 +28,11 @@ from ..ladder_truth import (
     previous_complete_settlement_day,
 )
 from ..settlement_day import settlement_clock, settlement_today
+from ..store.exchange_settlement_checks import (
+    EXCHANGE_CHECK_MISMATCH,
+    EXCHANGE_CHECK_PENDING,
+    EXCHANGE_CHECK_UNCHECKED,
+)
 from ..store.market_day_settlements import TRUTH_SOURCE_SETTLEMENT_PATH
 from ..summary import (
     build_paper_summary,
@@ -306,8 +312,7 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     if args.days <= 0:
         raise ValueError("--days must be at least 1")
-    adapter = SfoForecasterAdapter(args.forecaster_root)
-    settlements = adapter.load_cli_settlement_truth()
+    exchange_max_fetches = _exchange_max_fetches(args)
     intervals = {}
     for city in CITIES:
         city_today = settlement_today(city=city)
@@ -315,7 +320,38 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
             (city_today - timedelta(days=args.days - 1)).isoformat(),
             city_today.isoformat(),
         )
-    result = PaperStore(args.db_path).verify_paper_settlements(
+    store = PaperStore(args.db_path)
+    if getattr(args, "exchange_check_only", False):
+        # Backfilling exchange verdicts must not move restatement evidence:
+        # verify_paper_settlements upserts paper_settlement_verifications, which
+        # restatement.py classifies settled lots from.
+        print(
+            color.cyan(
+                "paper settlement verification skipped (--exchange-check-only): "
+                "paper_settlement_verifications not read or written"
+            )
+        )
+    else:
+        _verify_booked_settlements(color, store, args, intervals)
+    _exchange_settlement_guard(
+        color,
+        store,
+        args,
+        verbose=True,
+        max_fetches=exchange_max_fetches,
+        intervals=intervals,
+    )
+    return 0
+
+
+def _verify_booked_settlements(
+    color: Color,
+    store: PaperStore,
+    args: argparse.Namespace,
+    intervals: dict[str, tuple[str, str]],
+) -> None:
+    settlements = SfoForecasterAdapter(args.forecaster_root).load_cli_settlement_truth()
+    result = store.verify_paper_settlements(
         settlements,
         intervals=intervals,
     )
@@ -344,7 +380,150 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
             "(booked P&L unchanged)"
         )
     )
-    return 0
+
+
+def _exchange_max_fetches(args: argparse.Namespace) -> int:
+    value = getattr(args, "exchange_max_fetches", None)
+    if value is None:
+        return _exchange_settlement.RESETTLE_EXCHANGE_CHECK_MAX_FETCHES
+    if value < 1:
+        raise ValueError("--exchange-max-fetches must be at least 1")
+    return int(value)
+
+
+def _exchange_settlement_guard(
+    color: Color,
+    store: PaperStore,
+    args: argparse.Namespace,
+    *,
+    verbose: bool,
+    max_fetches: int,
+    **selection,
+) -> None:
+    """Reconcile booked settlements with the exchange's own finalized result.
+
+    Runs only after the journal is written and can never change the command's
+    outcome: every failure, including a bug in the check itself, is reported on
+    stderr and stops here. On the settle timer a non-zero exit fires the unit's
+    ``OnFailure=`` alert as if settlement had failed, and settlement did not
+    fail. ``--skip-exchange-check``, or ``SFO_EXCHANGE_SETTLEMENT_CHECK=off`` in
+    the unit's EnvironmentFile, turns it off. See
+    ``store/exchange_settlement_checks.py``.
+    """
+
+    if getattr(args, "skip_exchange_check", False):
+        print(color.yellow("exchange settlement check skipped (--skip-exchange-check)"))
+        return
+    enabled, env_warning = _exchange_settlement.exchange_check_env_setting()
+    if not enabled:
+        env_var = _exchange_settlement.EXCHANGE_CHECK_ENV_VAR
+        print(
+            color.yellow(
+                f"exchange settlement check skipped ({env_var}="
+                f"{os.environ.get(env_var, '').strip()})"
+            )
+        )
+        return
+    if env_warning:
+        print(color.yellow(env_warning), file=sys.stderr)
+    try:
+        summary = _exchange_settlement.run_exchange_settlement_checks(
+            store, max_fetches=max_fetches, **selection
+        )
+        _print_exchange_settlement_summary(color, summary, verbose=verbose)
+    except Exception as exc:  # the guard must never fail or block settlement
+        print(
+            color.red(
+                f"EXCHANGE SETTLEMENT CHECK FAILED: {type(exc).__name__}: {exc} "
+                "(settlement and booked P&L unaffected; undecided lots are "
+                "re-checked on a later run)"
+            ),
+            file=sys.stderr,
+        )
+        return
+
+
+def _print_exchange_settlement_summary(
+    color: Color, summary: dict, *, verbose: bool
+) -> None:
+    for row in summary["checked"]:
+        status = row["verification_status"]
+        where = (
+            f"order={row['order_id']} market={row['market_ticker']} "
+            f"target={row['target_date']}"
+        )
+        if status == EXCHANGE_CHECK_MISMATCH:
+            print(
+                color.red(
+                    f"EXCHANGE SETTLEMENT MISMATCH: {where} "
+                    f"booked_high={row['booked_high_f']:.0f}F "
+                    f"booked_winner={row['booked_winner']} "
+                    f"kalshi_result={row['kalshi_result']} "
+                    "kalshi_expiration_value="
+                    f"{_format_exchange_value(row['kalshi_expiration_value'])} "
+                    f"reason={row['mismatch_reason']} (booked P&L unchanged; open "
+                    "an incident/restatement instead of editing the journal)"
+                ),
+                file=sys.stderr,
+            )
+        elif verbose and status == EXCHANGE_CHECK_PENDING:
+            print(color.yellow(f"{status} {where} kalshi_status={row['kalshi_status']}"))
+        elif verbose and status == EXCHANGE_CHECK_UNCHECKED:
+            print(color.yellow(f"EXCHANGE {status} {where} error={row['check_error']}"))
+    print(
+        color.cyan(
+            "exchange settlement check: "
+            f"checked={len(summary['checked'])} match={summary['match']} "
+            f"mismatches={summary['mismatches']} "
+            f"kalshi_pending={summary['kalshi_pending']} "
+            f"unchecked={summary['unchecked']} fetched={summary['fetched']} "
+            f"cached={summary['cached']} "
+            f"standing_mismatches={summary['standing_mismatches']}"
+            + (
+                ""
+                if summary.get("aging_undecided") is None
+                else f" aging_undecided={summary['aging_undecided']}"
+            )
+        )
+    )
+    if summary["standing_mismatches"]:
+        # Repeated on every run: the timer never re-selects a decided lot, so
+        # the per-lot MISMATCH line above reaches stderr only once.
+        print(
+            color.red(
+                "STANDING EXCHANGE SETTLEMENT MISMATCHES: "
+                f"{summary['standing_mismatches']} lot(s) hold a MISMATCH "
+                "exchange verdict (booked P&L unchanged; open an "
+                "incident/restatement instead of editing the journal)"
+            ),
+            file=sys.stderr,
+        )
+    if summary.get("aging_undecided"):
+        print(
+            color.yellow(
+                f"exchange settlement check: {summary['aging_undecided']} settled "
+                "lot(s) still have no MATCH/MISMATCH verdict "
+                f"{_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_AGING_DAYS}+ days "
+                "after settling and will leave the timer's "
+                f"{_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_LOOKBACK_DAYS}-day "
+                "re-check window; backfill with paper-resettle --verify "
+                "--exchange-check-only --days N"
+            ),
+            file=sys.stderr,
+        )
+    if summary["fetch_stopped"]:
+        print(
+            color.yellow(
+                "exchange settlement check stopped fetching: "
+                f"{summary['fetch_stopped']} (unchecked lots are re-checked on a "
+                "later run)"
+            ),
+            file=sys.stderr,
+        )
+
+
+def _format_exchange_value(value: object) -> str:
+    return "-" if value is None else f"{float(value):g}"
 
 
 def cmd_paper_prune(args: argparse.Namespace) -> int:
@@ -454,6 +633,42 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
     cities = _cities_for_args(args)
+    code = _settle_completed_paper_targets(args, color, store, cities)
+    # The exchange reconciliation runs on every tick, not only on ticks
+    # that settled something: a market can still be unfinalized when its
+    # lot settles (KXHIGHMIA-26AUG29 settled at 12:00 UTC, an hour after
+    # Miami's 06:00 fixed-standard settle window opened), so its verdict
+    # may only be decidable on a later tick with nothing left to settle.
+    # It re-checks recently settled lots that still lack a MATCH or
+    # MISMATCH verdict, and it can never change this command's exit status.
+    now = datetime.now(UTC)
+    _exchange_settlement_guard(
+        color,
+        store,
+        args,
+        verbose=False,
+        max_fetches=_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_MAX_FETCHES,
+        settled_since=(
+            now
+            - timedelta(
+                days=_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_LOOKBACK_DAYS
+            )
+        ).isoformat(),
+        undecided_only=True,
+        aging_settled_before=(
+            now
+            - timedelta(days=_exchange_settlement.AUTO_SETTLE_EXCHANGE_CHECK_AGING_DAYS)
+        ).isoformat(),
+    )
+    return code
+
+
+def _settle_completed_paper_targets(
+    args: argparse.Namespace,
+    color: Color,
+    store: PaperStore,
+    cities: tuple[CityConfig, ...],
+) -> int:
     any_open = False
     db_settled = 0
     verification_truth: dict[tuple[str, str], float] = {}
