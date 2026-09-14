@@ -55,8 +55,8 @@ EXCHANGE_CHECK_RETRIES = 2
 EXCHANGE_CHECK_MIN_INTERVAL_SECONDS = 0.4
 # The settle timer fires at :10 and :40 -- the same minutes as a trading scan --
 # and every process on the box shares one public-API allowance.  Ten spaced
-# markets is ~4 s of fetching, and 48 runs a day still reach ~480 markets, more
-# than five times the ~90 (15 city events of 6 brackets) that can settle in a
+# markets is ~4 s of fetching, and 48 runs a day still reach ~480 markets,
+# four times the ~120 (20 city events of 6 brackets) that can settle in a
 # day.  Older history is backfilled once with ``paper-resettle --verify
 # --exchange-check-only``, off the trading minutes.
 AUTO_SETTLE_EXCHANGE_CHECK_MAX_FETCHES = 10

@@ -324,7 +324,7 @@ def _emos_health(
         }
 
     # Per-station, per-target: the serve writes one live row per city per
-    # rolling target per tick (15 cities x 3 targets at leads 0..2), so a
+    # rolling target per tick (20 cities x 3 targets at leads 0..2), so a
     # global "latest 12 rows" slice conflated cities and fired a false
     # "emos-live-missing" for today/today+1 on every scan. The freshest row
     # per (station, target) -- at ANY lead, which is how the trader reads it
@@ -611,7 +611,7 @@ def _clisfo_health(
         "rows": total_rows,
         "latest_date": row["latest_date"],
         "latest_fetched_at": row["latest_fetched_at"],
-        # Worst station lag: the honest headline number for a 15-city truth feed.
+        # Worst station lag: the honest headline number for a 20-city truth feed.
         "lag_days": worst_lag,
         "max_lag_days": FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS,
         "stations": stations,
