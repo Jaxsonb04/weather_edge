@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import statistics
@@ -12,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from .exit_audit import audited_exit_reason
 from .logical_positions import LogicalPaperPosition
+from .research_entry_risk import STALE_RESEARCH_QUOTE_REASON_PREFIX
 from .research_policy import lead_bucket_clock_is_ambiguous
 
 
@@ -362,6 +364,22 @@ def _lead_split(
     return split
 
 
+def _is_stale_research_quote_pull(root: dict[str, object]) -> bool:
+    raw = root.get("outcome_diagnostics_json")
+    if isinstance(raw, dict):
+        details = raw
+    else:
+        try:
+            details = json.loads(raw or "{}")  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(details, dict):
+        return False
+    return str(details.get("reason") or "").startswith(
+        STALE_RESEARCH_QUOTE_REASON_PREFIX
+    )
+
+
 def _execution_metrics(
     positions: Iterable[LogicalPaperPosition],
 ) -> dict[str, object]:
@@ -392,6 +410,15 @@ def _execution_metrics(
         if entry_price is not None and entry_ask is not None:
             slippage.append(entry_price - entry_ask)
 
+    expired_roots = [
+        root
+        for root in roots
+        if root.get("status") in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}
+    ]
+    stale_pulled_orders = sum(
+        _is_stale_research_quote_pull(root) for root in expired_roots
+    )
+
     lots = [lot for position in rows for lot in position.resolved_lots]
     entry_fees = math.fsum(
         (_finite(lot.get("fee_per_contract")) or 0.0)
@@ -414,10 +441,12 @@ def _execution_metrics(
         "partial_exit_positions": sum(
             len(position.resolved_lots) > 1 for position in rows
         ),
-        "expired_orders": sum(
-            root.get("status") in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}
-            for root in roots
-        ),
+        "expired_orders": len(expired_roots),
+        # The TTL-only count is the seller-flow evidence (an order that rested
+        # its full window unfilled); a stale-quote guard pull ends the same way
+        # in status but says nothing about seller flow at the quote's price.
+        "ttl_expired_orders": len(expired_roots) - stale_pulled_orders,
+        "stale_cancelled_orders": stale_pulled_orders,
         "entry_fees": entry_fees,
         "exit_fees": exit_fees,
         "total_fees": entry_fees + exit_fees,

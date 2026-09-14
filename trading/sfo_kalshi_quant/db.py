@@ -5367,6 +5367,12 @@ class PaperStore:
                 ),
                 "filled_quantity_retained": filled,
             }
+            # A pull requested earlier (request_resting_order_cancel) lives in
+            # the diagnostics this update replaces; keep its audit trail,
+            # including the TTL the quote carried before the pull.
+            cancel_request = _pending_cancel_request(row["outcome_diagnostics_json"])
+            if cancel_request is not None:
+                outcome_details["cancel_request"] = cancel_request
             if tape_reconciled_through is not None:
                 outcome_details["tape_reconciled_through"] = (
                     tape_reconciled_through
@@ -5391,6 +5397,89 @@ class PaperStore:
                     idempotency_key=f"order:{order_id}:cancel-release",
                     details={"reason": reason},
                 )
+        return self._order(order_id)
+
+    def request_resting_order_cancel(
+        self,
+        order_id: int,
+        *,
+        reason: str,
+        requested_at: str | None = None,
+    ) -> sqlite3.Row | None:
+        """Pull a resting maker quote at ``requested_at`` without losing tape fills.
+
+        A resting quote's fills are credited only by the monitor's public-tape
+        pass (``apply_maker_trade_batch``), which runs on its own 2-minute timer
+        and treats the tape as complete only
+        ``MAKER_TAPE_RECONCILIATION_GRACE_SECONDS`` after an instant. Cancelling
+        the row directly would discard every trade that had already traded
+        through the quote but was not yet credited -- and the allocator never
+        revisits a terminal row, so those fills are gone for good. They are also
+        the adverse ones: a pull fires exactly when the forecast has moved
+        against the quote, which is when sellers hit it.
+
+        So a request cuts the quote's own expiry to the request instant instead
+        of cancelling. The allocator already treats ``expires_at`` as the
+        inclusive end of the quote (earlier trades still fill, later ones never
+        do), and ``expire_stale_resting_orders`` cancels the unfilled remainder,
+        releasing its reservation, once the tape watermark covers that instant
+        plus the grace -- the same interlock every TTL expiry passes. The
+        request's reason and the original expiry are kept in the diagnostics and
+        carried into the final cancellation record.
+
+        Returns the updated row, or ``None`` when nothing changed: the order is
+        no longer resting, a request is already recorded (the first instant
+        stands), or the instant does not fall after placement.
+        """
+
+        requested = requested_at or _now()
+        try:
+            requested_time = _aware_utc(requested)
+        except ValueError:
+            return None
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM paper_orders WHERE id=? "
+                "AND status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
+                "AND settled_at IS NULL AND closed_at IS NULL",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if _pending_cancel_request(row["outcome_diagnostics_json"]) is not None:
+                return None
+            try:
+                placed_time = _aware_utc(row["created_at"])
+            except ValueError:
+                return None
+            if requested_time <= placed_time:
+                return None
+            original_expires_at = row["expires_at"]
+            new_expires_at = requested
+            if original_expires_at:
+                try:
+                    if _aware_utc(original_expires_at) <= requested_time:
+                        new_expires_at = str(original_expires_at)
+                except ValueError:
+                    pass
+            try:
+                details = json.loads(row["outcome_diagnostics_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {}
+            if not isinstance(details, dict):
+                details = {}
+            details["cancel_request"] = {
+                "reason": reason,
+                "requested_at": requested,
+                "original_expires_at": original_expires_at,
+            }
+            conn.execute(
+                "UPDATE paper_orders SET expires_at=?, outcome_diagnostics_json=? "
+                "WHERE id=?",
+                (new_expires_at, json.dumps(details, sort_keys=True), order_id),
+            )
         return self._order(order_id)
 
     def mark_arbitrage_group_degraded(
@@ -5452,7 +5541,8 @@ class PaperStore:
         cutoff = now or _now()
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT id, market_ticker, expires_at FROM paper_orders WHERE status IN "
+                "SELECT id, market_ticker, expires_at, outcome_diagnostics_json "
+                "FROM paper_orders WHERE status IN "
                 "('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
                 "AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at, id",
                 (cutoff,),
@@ -5497,10 +5587,18 @@ class PaperStore:
                     eligible_rows.append(row)
             rows = eligible_rows
         expired = 0
-        for order_id, ticker, _expires_at in rows:
+        for order_id, ticker, _expires_at, diagnostics_json in rows:
+            # A quote pulled by request_resting_order_cancel reaches this
+            # watermark-gated path through its shortened expiry; record why it
+            # ended rather than calling it a TTL expiry.
+            cancel_request = _pending_cancel_request(diagnostics_json)
             row = self.cancel_resting_limit_order(
                 int(order_id),
-                reason="maker TTL expired",
+                reason=(
+                    str(cancel_request["reason"])
+                    if cancel_request is not None and cancel_request.get("reason")
+                    else "maker TTL expired"
+                ),
                 tape_reconciled_through=(
                     reconciled_through_by_ticker.get(str(ticker))
                     if reconciled_through_by_ticker is not None
@@ -7304,6 +7402,27 @@ class PaperStore:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _aware_utc(value: object) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _pending_cancel_request(raw: object) -> dict[str, object] | None:
+    """The pull recorded by ``request_resting_order_cancel``, if any."""
+
+    if isinstance(raw, dict):
+        details = raw
+    else:
+        try:
+            details = json.loads(raw or "{}")  # type: ignore[arg-type]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    if not isinstance(details, dict):
+        return None
+    request = details.get("cancel_request")
+    return request if isinstance(request, dict) else None
 
 
 def _paper_profile_filter(risk_profile: str | None) -> tuple[str, tuple[str, ...]]:

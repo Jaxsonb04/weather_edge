@@ -23,7 +23,10 @@ from .fees import (
 from .execution import buy_limit_for_decision, target_research_quote, with_buy_limit
 from .models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
-from .research_entry_risk import target_entry_spend_limit
+from .research_entry_risk import (
+    STALE_RESEARCH_QUOTE_REASON_PREFIX,
+    target_entry_spend_limit,
+)
 from .research_portfolio import MAX_TARGET_CONTRACTS, ResearchPlans
 
 
@@ -581,17 +584,28 @@ class PaperTrader:
         target_date: str,
         decisions: list[TradeDecision],
     ) -> list[int]:
-        """Cancel target-sleeve quotes whose CURRENT after-fee LCB edge is negative.
+        """Pull target-sleeve quotes whose CURRENT after-fee LCB edge is negative.
 
         The 30-minute day-ahead rest (research_entry_risk) doubles how long a
-        quote can sit under a forecast that has moved. Every scan re-evaluates
-        each market it can see: when the fresh lower-bound probability for the
-        same market/side no longer covers the resting order's own after-fee
-        cost (``cost_per_contract`` is the maker cost at the resting price,
-        fees included), the quote is pulled through the same path TTL expiry
-        uses, which releases its reservation. A market with no fresh decision
-        this tick is left alone -- missing information is not evidence of a
-        stale quote, and the TTL still bounds it.
+        quote can sit under a forecast that has moved. Every placing scan
+        re-evaluates each market it can see: when the fresh lower-bound
+        probability for the same market/side no longer covers the resting
+        order's own after-fee cost (``cost_per_contract`` is the maker cost at
+        the resting price, fees included), the quote is pulled AT THIS INSTANT
+        through ``PaperStore.request_resting_order_cancel``. A market with no
+        fresh decision this tick is left alone -- missing information is not
+        evidence of a stale quote, and the TTL still bounds it.
+
+        The pull is not an immediate cancel, deliberately. Public tape that
+        already traded through the quote before this instant may not have been
+        credited yet (the monitor is a separate 2-minute timer that waits out a
+        5-minute ingestion grace), and a direct cancel would erase those fills
+        permanently -- precisely the adverse ones, since a pull fires when the
+        forecast has moved against the quote. Cutting the expiry instead keeps
+        every earlier trade creditable, rejects every later one, and leaves the
+        cancel and the reservation release to the monitor's watermark-gated
+        expiry pass. The reservation therefore stays charged until that pass,
+        roughly the grace plus one monitor tick, not for the rest of the TTL.
 
         This is a partial mitigation, not an adverse-selection model. It runs
         once per scan tick (5-minute cadence), so a quote can sit up to a tick
@@ -601,6 +615,9 @@ class PaperTrader:
         still credited whenever the tape trades through the price, which a
         real-money book would mostly experience as adverse fills (see the
         real-money divergence note in research_entry_risk).
+
+        Returns the ids pulled by this call; a quote already pulled keeps its
+        first instant and is not returned again.
         """
 
         if self.risk_profile != "research":
@@ -627,16 +644,15 @@ class PaperTrader:
             if edge_lcb >= -1e-12:
                 continue
             reason = (
-                "stale research quote: current after-fee LCB edge "
+                f"{STALE_RESEARCH_QUOTE_REASON_PREFIX}: current after-fee LCB edge "
                 f"{edge_lcb:.4f} at resting cost {resting_cost:.4f}"
             )
-            # The returned row is authoritative: a fill can win between this
-            # read and cancel's BEGIN IMMEDIATE transaction.
-            updated = self.store.cancel_resting_limit_order(int(row["id"]), reason=reason)
-            if updated is not None and str(updated["status"]) in {
-                "PAPER_EXPIRED",
-                "PAPER_PARTIAL_EXPIRED",
-            }:
+            # The store re-reads the row under BEGIN IMMEDIATE: a fill or TTL
+            # expiry can win between this read and the request.
+            updated = self.store.request_resting_order_cancel(
+                int(row["id"]), reason=reason
+            )
+            if updated is not None:
                 cancelled.append(int(row["id"]))
         return cancelled
 

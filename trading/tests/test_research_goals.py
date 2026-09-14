@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from dataclasses import replace
@@ -12,7 +13,11 @@ from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.logical_positions import group_logical_positions
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.profile_identity import published_profile_key
-from sfo_kalshi_quant.research_goals import daily_goal_state, summarize_daily_goals
+from sfo_kalshi_quant.research_goals import (
+    _execution_metrics,
+    daily_goal_state,
+    summarize_daily_goals,
+)
 from sfo_kalshi_quant.research_policy import LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
@@ -810,6 +815,51 @@ def test_report_uses_persisted_allocator_feasibility_including_empty_scan(
             "SELECT COUNT(*) FROM research_plan_snapshots "
             "WHERE scan_run_id='empty-opportunity-scan'"
         ).fetchone()[0] == 1
+
+
+def test_execution_metrics_split_ttl_expiries_from_stale_quote_pulls() -> None:
+    """Release review: guard pulls must not inflate the seller-flow expiry share."""
+
+    from types import SimpleNamespace
+
+    def position(status: str, diagnostics: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            root={
+                "status": status,
+                "entry_mode": "limit",
+                "requested_contracts": 2.0,
+                "filled_contracts": 1.0 if status == "PAPER_PARTIAL_EXPIRED" else 0.0,
+                "outcome_diagnostics_json": diagnostics,
+            },
+            resolved_lots=(),
+        )
+
+    stale = json.dumps(
+        {
+            "event": "cancellation",
+            "reason": "stale research quote: current after-fee LCB edge -0.0500 "
+            "at resting cost 0.8100",
+        }
+    )
+    metrics = _execution_metrics(
+        [
+            position(
+                "PAPER_EXPIRED",
+                json.dumps({"event": "cancellation", "reason": "maker TTL expired"}),
+            ),
+            position("PAPER_EXPIRED", stale),
+            position("PAPER_PARTIAL_EXPIRED", stale),
+            # A pre-guard expiry with no diagnostics is a TTL expiry.
+            position("PAPER_EXPIRED", None),
+            # Unparseable diagnostics never count as a pull.
+            position("PAPER_EXPIRED", "{not json"),
+            position("PAPER_FILLED", stale),
+        ]
+    )
+
+    assert metrics["expired_orders"] == 5
+    assert metrics["stale_cancelled_orders"] == 2
+    assert metrics["ttl_expired_orders"] == 3
 
 
 def test_report_exit_breakdown_uses_exact_audited_terminal_categories(tmp_path) -> None:

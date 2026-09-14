@@ -565,7 +565,11 @@ def _target_reservation_resting_quote(
     are not reproducible from public data. The expiry share is: the public
     strategy_research.json (2026-09-13T01:20Z) reports 317 of 437 research
     orders expired (72.5%), each having reserved its cost against the daily
-    budget for the 15-minute TTL. No shipped profile reaches this function
+    budget for the 15-minute TTL. Every one of those was a TTL expiry: the
+    stale-quote guard did not exist yet. From the 2026-09-13 release the goal
+    report splits ``ttl_expired_orders`` from ``stale_cancelled_orders``, and
+    only the TTL-only count is comparable with this figure. No shipped profile
+    reaches this function
     now (live: research_target_taker_cross=False; research: fallback off);
     it stays for a profile that opts in and is covered by opted-in tests.
     """

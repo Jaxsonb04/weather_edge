@@ -687,11 +687,24 @@ def _execute_research_scan_context(
         entry_mode="limit",
         series_ticker=context.series_ticker,
     )
+    admit_target_orders = (
+        place_paper if place_research_target is None else place_research_target
+    )
     # Stale-quote guard for the 30-minute day-ahead rest: pull any resting
     # target quote this tick's fresh lower-bound probabilities no longer
-    # support, BEFORE the capacity read so the released reservation is
-    # visible to this tick's planning and admissions.
-    trader.cancel_stale_research_resting_orders(target.isoformat(), decisions)
+    # support. It writes to the target ledger, so it runs only when this scan
+    # was asked to place target orders: a dry run, `portfolio-scan` without
+    # --place-paper, or the runner's shadow mode (PAPER_PLACE_RESEARCH_TARGET=0)
+    # must never touch resting quotes. It DOES run on a placing tick whose
+    # entry is blocked (single-source forecast, closed same-day window, no
+    # listed event): pulling a quote the fresh LCB no longer supports only
+    # reduces risk, and _block_entry_decisions keeps each decision's LCB.
+    # The pull cuts the quote's expiry rather than cancelling it (see
+    # PaperStore.request_resting_order_cancel), so its reservation is released
+    # by the monitor's reconciled expiry pass, not in time for this capacity
+    # read.
+    if admit_target_orders:
+        trader.cancel_stale_research_resting_orders(target.isoformat(), decisions)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
     target_realized = store.research_realized_pnl_for_day(
         account_id=TARGET_POLICY.account_id,
@@ -714,9 +727,6 @@ def _execute_research_scan_context(
         realized_today=target_realized,
         motion_realized_today=0.0,
         run_id=run_id,
-    )
-    admit_target_orders = (
-        place_paper if place_research_target is None else place_research_target
     )
     execution = trader.execute_research_plans(
         target.isoformat(),

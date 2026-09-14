@@ -21,6 +21,7 @@ from sfo_kalshi_quant.cities import CITIES, CITY_BY_SLUG, get_city
 from sfo_kalshi_quant.cli import build_parser, cmd_portfolio_scan
 from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.maker_fills import MAKER_TAPE_RECONCILIATION_GRACE_SECONDS
 from sfo_kalshi_quant.paper import PaperTrader
 from sfo_kalshi_quant.research_entry_risk import (
     DEFAULT_RESTING_ORDER_TTL_MINUTES,
@@ -327,21 +328,129 @@ def _ledger_events(store: PaperStore, order_id: int) -> list[str]:
         ]
 
 
-def test_stale_resting_research_quote_is_cancelled_and_reservation_released(
+def _backdate_resting_order(
+    store: PaperStore, order_id: int, *, placed_minutes_ago: float
+) -> datetime:
+    placed = datetime.now(UTC) - timedelta(minutes=placed_minutes_ago)
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE paper_orders SET created_at=?, expires_at=? WHERE id=?",
+            (
+                placed.isoformat(),
+                (placed + timedelta(minutes=30)).isoformat(),
+                order_id,
+            ),
+        )
+    return placed
+
+
+def _trade_through(row, *, trade_id: str, at: datetime) -> dict[str, object]:
+    """A public trade one cent through the resting quote, on its maker side."""
+
+    side = str(row["side"] or "YES").upper()
+    limit = float(
+        row["limit_price"] if row["limit_price"] is not None else row["entry_price"]
+    )
+    side_price = round(max(0.01, limit - 0.01), 2)
+    yes_price = side_price if side == "YES" else round(1.0 - side_price, 2)
+    return {
+        "trade_id": trade_id,
+        "created_time": at.isoformat(),
+        # An ask-side taker fills resting YES bids; a bid-side taker fills NO.
+        "taker_book_side": "ask" if side == "YES" else "bid",
+        "yes_price_dollars": f"{yes_price:.2f}",
+        "no_price_dollars": f"{1.0 - yes_price:.2f}",
+        "count_fp": "500.00",
+    }
+
+
+def test_stale_pull_keeps_a_trade_through_that_preceded_it_creditable(
+    tmp_path: Path,
+) -> None:
+    """Release review, cross-track HIGH: a direct cancel erased this fill.
+
+    The quote rested 10 minutes; the tape traded through it 5 minutes ago; the
+    monitor (a separate 2-minute timer that waits out a 5-minute ingestion
+    grace) had not credited it when the scan's stale guard fired. The guard
+    must not make that fill uncreditable -- apply_maker_trade_batch never
+    revisits a terminal row, and a pull fires exactly when sellers hit.
+    """
+
+    store = PaperStore(tmp_path / "pull.db", research_clock=_fixed_research_clock)
+    order_id, row, decision = _admit_resting_target_order(store, "PULL")
+    _backdate_resting_order(store, order_id, placed_minutes_ago=10)
+    stale = replace(decision, probability_lcb=float(row["cost_per_contract"]) - 0.05)
+
+    pulled = _research_trader(store).cancel_stale_research_resting_orders(
+        "2026-07-19", [stale]
+    )
+
+    assert pulled == [order_id]
+    after_pull = store.paper_order(order_id)
+    assert after_pull["status"] == "PAPER_LIMIT_RESTING"
+    assert float(after_pull["reserved_cost"]) > 0
+    before_pull = _trade_through(
+        row, trade_id="before-pull", at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    store.apply_maker_trade_batch(decision.ticker, [before_pull])
+
+    filled = store.paper_order(order_id)
+    assert float(filled["filled_contracts"] or 0.0) > 0.0
+    assert filled["status"] == "PAPER_FILLED"
+
+
+def test_stale_pull_rejects_later_tape_and_expires_with_its_reason_once_reconciled(
     tmp_path: Path,
 ) -> None:
     store = PaperStore(tmp_path / "stale.db", research_clock=_fixed_research_clock)
     order_id, row, decision = _admit_resting_target_order(store, "STALE")
-    resting_cost = float(row["cost_per_contract"])
+    _backdate_resting_order(store, order_id, placed_minutes_ago=10)
     assert float(row["reserved_cost"]) > 0
     # The forecast moved: the fresh LCB no longer covers the resting after-fee cost.
-    stale = replace(decision, probability_lcb=resting_cost - 0.05)
+    stale = replace(decision, probability_lcb=float(row["cost_per_contract"]) - 0.05)
+    trader = _research_trader(store)
 
-    cancelled = _research_trader(store).cancel_stale_research_resting_orders(
-        "2026-07-19", [stale]
+    assert trader.cancel_stale_research_resting_orders("2026-07-19", [stale]) == [order_id]
+
+    pulled = store.paper_order(order_id)
+    request = json.loads(pulled["outcome_diagnostics_json"])["cancel_request"]
+    assert request["reason"].startswith("stale research quote")
+    # The quote now ends at the pull instant; its 30-minute expiry is kept for audit.
+    assert pulled["expires_at"] == request["requested_at"]
+    assert request["original_expires_at"] != pulled["expires_at"]
+    # A later tick does not move the first pull instant.
+    assert trader.cancel_stale_research_resting_orders("2026-07-19", [stale]) == []
+    assert store.paper_order(order_id)["expires_at"] == request["requested_at"]
+
+    pulled_at = datetime.fromisoformat(request["requested_at"])
+    after_pull = _trade_through(
+        row, trade_id="after-pull", at=pulled_at + timedelta(seconds=30)
     )
+    store.apply_maker_trade_batch(decision.ticker, [after_pull])
+    assert float(store.paper_order(order_id)["filled_contracts"] or 0.0) == 0.0
 
-    assert cancelled == [order_id]
+    later = (pulled_at + timedelta(minutes=10)).isoformat()
+    short_watermark = (
+        pulled_at + timedelta(seconds=MAKER_TAPE_RECONCILIATION_GRACE_SECONDS - 1)
+    ).isoformat()
+    # Tape not yet complete through the pull: the remainder stays reconcilable.
+    assert (
+        store.expire_stale_resting_orders(
+            now=later, reconciled_through_by_ticker={decision.ticker: short_watermark}
+        )
+        == 0
+    )
+    assert store.paper_order(order_id)["status"] == "PAPER_LIMIT_RESTING"
+
+    watermark = (
+        pulled_at + timedelta(seconds=MAKER_TAPE_RECONCILIATION_GRACE_SECONDS)
+    ).isoformat()
+    assert (
+        store.expire_stale_resting_orders(
+            now=later, reconciled_through_by_ticker={decision.ticker: watermark}
+        )
+        == 1
+    )
     after = store.paper_order(order_id)
     assert after["status"] == "PAPER_EXPIRED"
     assert float(after["reserved_cost"] or 0.0) == 0.0
@@ -349,10 +458,48 @@ def test_stale_resting_research_quote_is_cancelled_and_reservation_released(
     diagnostics = json.loads(after["outcome_diagnostics_json"])
     assert diagnostics["event"] == "cancellation"
     assert diagnostics["reason"].startswith("stale research quote")
+    assert diagnostics["tape_reconciled_through"] == watermark
+    assert diagnostics["cancel_request"]["original_expires_at"] == (
+        request["original_expires_at"]
+    )
     assert "RESERVATION_RELEASE" in _ledger_events(store, order_id)
     # An expired quote must not block a fresh re-quote on the same market/side
     # (existing entries_for_market_side contract), so the market is free again.
     assert store.entries_for_market_side("2026-07-19", decision.ticker, "NO") == 0
+
+
+def test_unpulled_resting_quote_still_expires_as_a_ttl_expiry(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "ttl.db", research_clock=_fixed_research_clock)
+    order_id, _row, decision = _admit_resting_target_order(store, "TTLONLY")
+    placed = _backdate_resting_order(store, order_id, placed_minutes_ago=45)
+    expiry = placed + timedelta(minutes=30)
+    watermark = (
+        expiry + timedelta(seconds=MAKER_TAPE_RECONCILIATION_GRACE_SECONDS)
+    ).isoformat()
+
+    assert (
+        store.expire_stale_resting_orders(
+            now=datetime.now(UTC).isoformat(),
+            reconciled_through_by_ticker={decision.ticker: watermark},
+        )
+        == 1
+    )
+    diagnostics = json.loads(store.paper_order(order_id)["outcome_diagnostics_json"])
+    assert diagnostics["reason"] == "maker TTL expired"
+    assert "cancel_request" not in diagnostics
+
+
+def test_stale_pull_never_ends_a_quote_before_it_was_placed(tmp_path: Path) -> None:
+    store = PaperStore(tmp_path / "early.db", research_clock=_fixed_research_clock)
+    order_id, row, _decision = _admit_resting_target_order(store, "EARLY")
+
+    assert (
+        store.request_resting_order_cancel(
+            order_id, reason="stale research quote: test", requested_at=row["created_at"]
+        )
+        is None
+    )
+    assert store.paper_order(order_id)["expires_at"] == row["expires_at"]
 
 
 @pytest.mark.parametrize("lcb_offset", [0.0, 0.03])
@@ -396,6 +543,79 @@ def test_stale_guard_requires_the_research_profile(tmp_path: Path) -> None:
     live = PaperTrader(store, strategy_config_for_profile("live"), risk_profile="live")
     with pytest.raises(ValueError, match="research profile"):
         live.cancel_stale_research_resting_orders("2026-07-19", [])
+
+
+def _run_research_scan_context_with_mock_trader(
+    *,
+    place_paper: bool,
+    place_research_target: bool | None,
+    entry_allowed: bool = True,
+) -> Mock:
+    context = SimpleNamespace(
+        decisions=[_candidate()],
+        city=get_city("sfo"),
+        series_ticker="KXHIGHTSFO",
+        intraday=None,
+        forecast=object(),
+        event=object(),
+        consensus=object(),
+    )
+    store = Mock()
+    store.research_objective_day.return_value = date(2026, 9, 11)
+    store.research_station_day.return_value = date(2026, 9, 11)
+    store.research_account_state.return_value = {
+        "available_cash": 900.0,
+        "open_cost_basis": 0.0,
+        "reservations": 0.0,
+    }
+    store.research_realized_pnl_for_day.return_value = 0.0
+    trader = Mock()
+    with patch.object(scan_module, "PaperTrader", return_value=trader):
+        scan_module._execute_research_scan_context(
+            context,
+            target=date(2026, 9, 12),
+            store=store,
+            config=strategy_config_for_profile("research"),
+            entry_allowed=entry_allowed,
+            entry_block_reason=None if entry_allowed else "paper entry disabled: test",
+            place_paper=place_paper,
+            place_research_target=place_research_target,
+            forecast_snapshot_id=1,
+            market_snapshot_id=2,
+        )
+    return trader
+
+
+@pytest.mark.parametrize(
+    ("place_paper", "place_research_target", "entry_allowed", "expect_pull"),
+    [
+        # `portfolio-scan --risk-profile research` without --place-paper.
+        (False, None, True, False),
+        # The runner's shadow mode (PAPER_PLACE_RESEARCH_TARGET=0).
+        (False, False, True, False),
+        (True, False, True, False),
+        # The runner placing the target sleeve.
+        (False, True, True, True),
+        (True, None, True, True),
+        # A placing tick whose entry is blocked still pulls: it only reduces risk.
+        (True, None, False, True),
+    ],
+)
+def test_research_scan_pulls_stale_quotes_only_when_target_placement_was_requested(
+    place_paper: bool,
+    place_research_target: bool | None,
+    entry_allowed: bool,
+    expect_pull: bool,
+) -> None:
+    """Release review, MEDIUM: a dry-run scan wrote PAPER_EXPIRED rows."""
+
+    trader = _run_research_scan_context_with_mock_trader(
+        place_paper=place_paper,
+        place_research_target=place_research_target,
+        entry_allowed=entry_allowed,
+    )
+
+    assert trader.cancel_stale_research_resting_orders.called is expect_pull
 
 
 def test_research_scan_cancels_stale_quotes_before_planning_and_admission() -> None:

@@ -63,8 +63,11 @@ TARGET_OPEN_RISK_CHARGE_FRACTION = 0.60
 # so an open-hour-only extension would rest on a refuted premise. The
 # target sleeve's day-ahead quotes therefore rest 30 minutes at every hour.
 # The longer rest doubles stale-quote exposure, which is why the scan now
-# cancels a resting quote whose CURRENT after-fee LCB edge has gone negative
-# (paper.PaperTrader.cancel_stale_research_resting_orders). Live keeps 15.
+# pulls a resting quote whose CURRENT after-fee LCB edge has gone negative
+# (paper.PaperTrader.cancel_stale_research_resting_orders): its expiry is cut
+# to the scan instant, so tape that traded through it BEFORE that instant is
+# still credited, and the monitor cancels the remainder once the public tape
+# covers the instant plus the ingestion grace. Live keeps 15.
 #
 # OWNER DECISION (2026-09-13): this reverses the 2026-09-12
 # strategy-performance note, which kept the 15-minute expiry so forecast
@@ -84,6 +87,11 @@ TARGET_OPEN_RISK_CHARGE_FRACTION = 0.60
 # only), and the 8-of-43 late-fill figure above is itself paper evidence.
 DEFAULT_RESTING_ORDER_TTL_MINUTES = 15
 TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES = 30
+# Reason prefix the stale-quote guard stamps on the orders it pulls. The
+# research goal report splits these from genuine TTL expiries, because the
+# TTL-only share is the seller-flow evidence (execution.py) and a guard pull
+# is not an unfilled rest.
+STALE_RESEARCH_QUOTE_REASON_PREFIX = "stale research quote"
 
 
 def resting_order_ttl_minutes(*, account_id: object, lead_bucket: object) -> int:
