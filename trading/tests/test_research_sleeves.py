@@ -19,6 +19,7 @@ from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.db import ResearchEntryLimitError
 from sfo_kalshi_quant.execution import with_buy_limit
 from sfo_kalshi_quant.models import TradeDecision
+from sfo_kalshi_quant.research_entry_risk import TARGET_OPEN_RISK_CHARGE_FRACTION
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
@@ -933,16 +934,18 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     order_ids = []
-    # Each crossing order costs $20.83 (fees included). Seven fit in $150;
-    # another city or target date cannot bypass the account-wide reservation.
-    for index in range(8):
+    # Each crossing order costs $20.83 (fees included) and is charged at the
+    # 0.60 stop-scaled fraction ($12.50). Eleven fit in $150 ($137.48
+    # charged, $12.52 room < $20.83); another city or target date cannot
+    # bypass the account-wide reservation.
+    for index in range(12):
         target = f"2026-07-{19 + index:02d}"
         decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
         result = store.record_research_order_atomic(
             target, decision, admission=admission, strategy_config=config,
         )
-        if index < 7:
+        if index < 11:
             assert result is not None
             order_ids.append(result)
         else:
@@ -953,6 +956,8 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
         risk_profile="research", requested_spend=20.0, account_id=TARGET_POLICY.account_id,
     )
     assert before["allowed_spend"] < 20.0
+    # Closing one order at a ~$20 loss frees its $12.50 charge but adds the
+    # realized loss: $150 - $20.3 - 0.6 * $208.3 = $4.7, still under $20.
     store.close_paper_order(order_ids[0], 0.01)
     after = store.account_policy_capacity(
         target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
@@ -970,11 +975,13 @@ def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(t
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     attempts = []
-    for index in range(8):
+    # Ten $20.83 orders charge 0.6 * $208.3 = $125, leaving $25 of room:
+    # exactly one more $20.83 order fits, never two.
+    for index in range(12):
         target = f"2026-07-{19 + index:02d}"
         decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
-        if index < 6:
+        if index < 10:
             assert store.record_research_order_atomic(
                 target, decision, admission=admission, strategy_config=config,
             ) is not None
@@ -991,7 +998,10 @@ def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(t
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(admit, range(2)))
     assert sum(result is not None for result in results) == 1
-    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) <= 150.0
+    open_risk = store.research_open_risk(account_id=TARGET_POLICY.account_id)
+    # Eleven ~$20.8 orders are open: more than the old 100%-charge bound.
+    assert 150.0 < open_risk < 12 * 20.83
+    assert TARGET_OPEN_RISK_CHARGE_FRACTION * open_risk <= 150.0
 
 
 def test_research_admission_is_immutable() -> None:

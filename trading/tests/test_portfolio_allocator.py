@@ -733,7 +733,10 @@ def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
 
     assert plans.target.legs == []
     assert plans.target.dispositions[0].status == "capacity_blocked"
-    assert "projected daily-loss" in (plans.target.dispositions[0].reason or "")
+    # Under the 100% open-risk charge the $150 daily budget blocked first
+    # ($150 - $179.6 < 0). At the 0.60 stop-scaled charge the daily room is
+    # $42.24, so the binding cap is the one this test is named for.
+    assert plans.target.dispositions[0].reason == "city-target scenario-loss cap"
 
 
 def test_partial_children_are_not_counted_as_separate_exposure_legs() -> None:
@@ -980,9 +983,11 @@ def test_target_clips_to_remaining_city_scenario_room() -> None:
     plans = allocate_research_plans([candidate], target_active_legs=[active])
 
     assert len(plans.target.legs) == 1
-    # Full pending loss consumes $110 of the $150 daily budget, leaving $40.
-    assert plans.target.legs[0].decision.recommended_contracts == 200.0
-    assert plans.target.legs[0].spend == 40.0
+    # Pending loss is charged at 0.60: $66 of the $150 daily budget, leaving
+    # $84. The $180 city-target scenario cap less the $110 active leg leaves
+    # $70, which is what binds -- 350 contracts at $0.20.
+    assert plans.target.legs[0].decision.recommended_contracts == 350.0
+    assert plans.target.legs[0].spend == pytest.approx(70.0)
 
 
 def test_malformed_active_exposure_fails_closed_instead_of_omitting_risk() -> None:

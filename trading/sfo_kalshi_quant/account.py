@@ -38,18 +38,25 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # moved the *research* admission lead onto each station's fixed-standard
 # settlement clock and did move the research admission boundary, in both
 # directions, but
-#   * strategy_fingerprint() below is profile-agnostic -- it hashes this string
-#     for research and live orders alike -- so rotating it rotates the LIVE
-#     fingerprint too;
+#   * strategy_fingerprint() below hashes this string for research and live
+#     orders alike, so rotating it rotates the LIVE fingerprint too;
 #   * the cohort that consumes the rotation, replay.py, filters to
 #     READINESS_LIVE_ACCOUNT_IDS = {paper-shared, paper-live-stability-v1},
 #     which excludes every research account by construction, so a rotation
 #     would add nothing to the research book's evidence while restarting the
 #     live 30-day readiness clock (_portfolio_scan_one_target reaches the
 #     research scanner only under `if risk_profile == "research"`, and returns).
-# The research-side discontinuity is marked instead, not hidden: see
+# The REG-1 research-side discontinuity is marked instead, not hidden: see
 # LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS in research_policy.py, which the daily
 # goal report counts per lead bucket.
+#
+# Since PR #121 (2026-09-12) strategy_fingerprint() is research-aware: for a
+# research config (or risk_profile="research") it also hashes
+# RESEARCH_ENTRY_RISK_VERSION from research_entry_risk.py, and the live
+# payload never carries that key. A research-only discontinuity is therefore
+# taggable by bumping RESEARCH_ENTRY_RISK_VERSION, which rotates the research
+# fingerprint and leaves the live fingerprint -- and the live readiness
+# clock -- untouched. This constant is reserved for live-economics changes.
 STRATEGY_BEHAVIOR_VERSION = "behavior-v3-forecast-and-execution-2026-09-07"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
