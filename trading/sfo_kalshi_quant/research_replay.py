@@ -61,7 +61,13 @@ from .research_candidates import (
     CandidateDistribution,
     fit_fold_candidates,
 )
-from .research_policy import TARGET_POLICY
+from .research_entry_risk import (
+    DEFAULT_RESTING_ORDER_TTL_MINUTES,
+    RESEARCH_ENTRY_RISK_VERSION,
+    TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES,
+    resting_order_ttl_minutes,
+)
+from .research_policy import TARGET_POLICY, canonical_research_lead_bucket
 from .research_walkforward import ResearchCase, WalkForwardFold
 from .settlement_truth import integer_settlement_high_f
 
@@ -75,10 +81,22 @@ TickerReplayStatus = Literal["invalid_market_entry", "no_trade", "unfilled_expir
 # it is out of scope here rather than risk a silently inverted P&L sign.
 _SIDE = "YES"
 
-# A resting (non-crossing) order rides on the live engine's standard 15
-# minute TTL, matching every other ReplayOrder in this codebase
-# (replay.py's own default and replay_from_database's construction).
-_TTL_MINUTES = 15
+# A resting (non-crossing) order rests exactly as long as the journal would
+# have rested it: research_entry_risk.resting_order_ttl_minutes -- 30 minutes
+# for a target-sleeve day-ahead case, the historical 15 otherwise. The two
+# rule constants are stamped onto every persisted payload and the resolved
+# per-order value onto every ticker outcome, so a reader never has to guess.
+_TTL_MINUTES = DEFAULT_RESTING_ORDER_TTL_MINUTES
+_DAY_AHEAD_TTL_MINUTES = TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES
+
+
+def _case_ttl_minutes(case: ResearchCase) -> int:
+    """TTL the target sleeve would have journaled for this case's orders."""
+
+    return resting_order_ttl_minutes(
+        account_id=TARGET_POLICY.account_id,
+        lead_bucket=canonical_research_lead_bucket(int(case.lead_days)),
+    )
 
 # Scope labels stamped onto every persisted payload (F4): this module only
 # ever prices/sizes the YES side (see ``_SIDE`` above) and only ever fills
@@ -131,6 +149,7 @@ class TickerReplayOutcome:
     probability: float | None = None
     edge: float | None = None
     edge_lcb: float | None = None
+    ttl_minutes: int | None = None
     realized_pnl: float = 0.0
 
 
@@ -372,6 +391,7 @@ def _replay_ticker(
         if quote.would_cross
         else initial_queue_ahead(quote.price, market_bin.yes_bid, market_bin.yes_bid_size)
     )
+    ttl_minutes = _case_ttl_minutes(case)
     order = ReplayOrder(
         order_id=f"{case.source_context_hash}:{ticker}",
         placed_at=case.decision_at,
@@ -382,7 +402,7 @@ def _replay_ticker(
         contracts=quote.contracts,
         fee_per_contract=quote.fee_per_contract,
         queue_ahead=queue_ahead,
-        ttl_minutes=_TTL_MINUTES,
+        ttl_minutes=ttl_minutes,
         immediate=quote.would_cross,
         queue_price=market_bin.yes_bid,
     )
@@ -407,6 +427,7 @@ def _replay_ticker(
         probability=probability,
         edge=quote.edge,
         edge_lcb=quote.edge_lcb,
+        ttl_minutes=ttl_minutes,
         realized_pnl=result.realized_pnl if filled else 0.0,
     )
 
@@ -484,7 +505,13 @@ def _replay_stamp(
         "reference_equity": reference_equity,
         "max_position_risk_pct": max_position_risk_pct,
         "policy_fingerprint": TARGET_POLICY.policy_fingerprint,
+        # The DEFAULT rest (live, motion, same-day). Target day-ahead cases
+        # rest day_ahead_order_ttl_minutes; each ticker's own ttl_minutes is
+        # the authoritative rest for that replayed order. The key keeps its
+        # historical name so existing persisted stamps stay comparable.
         "order_ttl_minutes": _TTL_MINUTES,
+        "day_ahead_order_ttl_minutes": _DAY_AHEAD_TTL_MINUTES,
+        "order_ttl_version": RESEARCH_ENTRY_RISK_VERSION,
         "side_scope": _SIDE_SCOPE,
         "fill_scope": _FILL_SCOPE,
     }
@@ -528,6 +555,7 @@ def case_replay_payload(
                 "probability": ticker.probability,
                 "edge": ticker.edge,
                 "edge_lcb": ticker.edge_lcb,
+                "ttl_minutes": ticker.ttl_minutes,
                 "realized_pnl": round(ticker.realized_pnl, 6),
             }
             for ticker in evidence.tickers

@@ -576,6 +576,70 @@ class PaperTrader:
             motion_order_ids=tuple(motion_order_ids),
         )
 
+    def cancel_stale_research_resting_orders(
+        self,
+        target_date: str,
+        decisions: list[TradeDecision],
+    ) -> list[int]:
+        """Cancel target-sleeve quotes whose CURRENT after-fee LCB edge is negative.
+
+        The 30-minute day-ahead rest (research_entry_risk) doubles how long a
+        quote can sit under a forecast that has moved. Every scan re-evaluates
+        each market it can see: when the fresh lower-bound probability for the
+        same market/side no longer covers the resting order's own after-fee
+        cost (``cost_per_contract`` is the maker cost at the resting price,
+        fees included), the quote is pulled through the same path TTL expiry
+        uses, which releases its reservation. A market with no fresh decision
+        this tick is left alone -- missing information is not evidence of a
+        stale quote, and the TTL still bounds it.
+
+        This is a partial mitigation, not an adverse-selection model. It runs
+        once per scan tick (5-minute cadence), so a quote can sit up to a tick
+        under a moved forecast; it sees only markets present in that tick's
+        decisions; and it re-checks the fresh LCB against the resting cost
+        only, not the spread/depth gates. Paper fills inside those gaps are
+        still credited whenever the tape trades through the price, which a
+        real-money book would mostly experience as adverse fills (see the
+        real-money divergence note in research_entry_risk).
+        """
+
+        if self.risk_profile != "research":
+            raise ValueError(
+                "stale research quote cancellation requires the research profile"
+            )
+        current = {_decision_key(decision): decision for decision in decisions}
+        cancelled: list[int] = []
+        for row in self.store.resting_paper_orders(account_id=TARGET_POLICY.account_id):
+            if str(row["target_date"]) != str(target_date):
+                continue
+            key = (str(row["market_ticker"]), str(row["side"] or "YES").upper())
+            decision = current.get(key)
+            if decision is None:
+                continue
+            try:
+                probability_lcb = float(decision.probability_lcb)
+                resting_cost = float(row["cost_per_contract"])
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(probability_lcb) and math.isfinite(resting_cost)):
+                continue
+            edge_lcb = probability_lcb - resting_cost
+            if edge_lcb >= -1e-12:
+                continue
+            reason = (
+                "stale research quote: current after-fee LCB edge "
+                f"{edge_lcb:.4f} at resting cost {resting_cost:.4f}"
+            )
+            # The returned row is authoritative: a fill can win between this
+            # read and cancel's BEGIN IMMEDIATE transaction.
+            updated = self.store.cancel_resting_limit_order(int(row["id"]), reason=reason)
+            if updated is not None and str(updated["status"]) in {
+                "PAPER_EXPIRED",
+                "PAPER_PARTIAL_EXPIRED",
+            }:
+                cancelled.append(int(row["id"]))
+        return cancelled
+
     def _prepare_research_plan(
         self,
         target_date: str,

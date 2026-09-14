@@ -86,6 +86,7 @@ from .research_policy import (
 from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
 from .research_entry_risk import (
     TARGET_ENTRY_FULL_LOSS_CAP,
+    resting_order_ttl_minutes,
     target_entry_spend_limit,
     target_remaining_daily_risk,
 )
@@ -3760,8 +3761,17 @@ class PaperStore:
         status = "PAPER_LIMIT_RESTING" if resting else "PAPER_FILLED"
         created_at = _now()
         filled_at = None if resting else created_at
+        # Rest length is execution behaviour (research_entry_risk): the
+        # target sleeve's day-ahead quotes rest 30 minutes. The admission's
+        # lead bucket is re-validated against the station clock inside the
+        # transaction below, so a mismatched label never reaches the insert.
+        ttl_minutes = resting_order_ttl_minutes(
+            account_id=policy.account_id, lead_bucket=admission.lead_bucket
+        )
         expires_at = (
-            (datetime.fromisoformat(created_at) + timedelta(minutes=15)).isoformat()
+            (
+                datetime.fromisoformat(created_at) + timedelta(minutes=ttl_minutes)
+            ).isoformat()
             if resting
             else None
         )
@@ -4140,8 +4150,15 @@ class PaperStore:
         entry_account = account_for_profile(profile)
         created_at = _now()
         filled_at = created_at if normalized_status == "PAPER_FILLED" else None
+        # This path journals the live book (generic research returns None
+        # below), so the helper resolves to the unchanged 15 minutes here.
+        ttl_minutes = resting_order_ttl_minutes(
+            account_id=entry_account, lead_bucket=None
+        )
         expires_at = (
-            (datetime.fromisoformat(created_at) + timedelta(minutes=15)).isoformat()
+            (
+                datetime.fromisoformat(created_at) + timedelta(minutes=ttl_minutes)
+            ).isoformat()
             if normalized_status == "PAPER_LIMIT_RESTING"
             else None
         )
@@ -5474,7 +5491,7 @@ class PaperStore:
         for order_id, ticker, _expires_at in rows:
             row = self.cancel_resting_limit_order(
                 int(order_id),
-                reason="15-minute maker TTL expired",
+                reason="maker TTL expired",
                 tape_reconciled_through=(
                     reconciled_through_by_ticker.get(str(ticker))
                     if reconciled_through_by_ticker is not None

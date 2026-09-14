@@ -453,18 +453,22 @@ def _scan_command_dependencies() -> _scan.ScanCommandDependencies:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_analyze(args, dependencies=_scan_command_dependencies())
 
 
 def cmd_tail_basket(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_tail_basket(args, dependencies=_scan_command_dependencies())
 
 
 def cmd_arbitrage(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_arbitrage(args, dependencies=_scan_command_dependencies())
 
 
 def cmd_portfolio_scan(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_portfolio_scan(args, dependencies=_scan_command_dependencies())
 
 
