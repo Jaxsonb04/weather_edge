@@ -28,6 +28,10 @@ if [[ -n "${SYSTEMCTL_BIN:-}" ]]; then
 else
   SYSTEMCTL=(sudo systemctl)
 fi
+# sync_to_box.sh installs this marker before quiescing and removes it only
+# after a complete deploy. The override exists for the behavioural tests.
+DEPLOY_MAINTENANCE_MARKER="${WEATHEREDGE_DEPLOY_MAINTENANCE_MARKER:-/run/weatheredge-deploy-maintenance}"
+MAINTENANCE_MARKER_SENTINEL="@deploy-maintenance-marker-present"
 
 inspect_unit() {
   local unit="$1"
@@ -77,6 +81,13 @@ case "$MODE" in
         echo "$timer"
       fi
     done
+    # A deploy that died after quiescing leaves the marker behind. The marker
+    # lives in /run, so a reboot clears it while the disabled timers survive;
+    # sync_to_box.sh therefore treats both this line and an empty capture as a
+    # stranded host.
+    if [[ -e "$DEPLOY_MAINTENANCE_MARKER" ]]; then
+      echo "$MAINTENANCE_MARKER_SENTINEL"
+    fi
     ;;
   quiesce)
     if (( $# > 0 )); then

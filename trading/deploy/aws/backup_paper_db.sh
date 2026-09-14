@@ -96,6 +96,36 @@ if [[ -d "$BACKUP_DIR" ]]; then
     -mtime "+$KEEP_DAYS" -delete 2>/dev/null || true
 fi
 
+# A backup killed mid-flight (SIGKILL, dropped SSH, instance stop) never runs its
+# cleanup trap, and the sweep above cannot see what it leaves: it needs files at
+# least KEEP_DAYS+1 days old. Two leftovers are never a verified backup:
+#   * a hidden .restore-check.* directory, possibly holding a full restore copy;
+#   * a snapshot with no .sha256 beside it -- the checksum is written right after
+#     `.backup` returns, so an unhashed snapshot is an interrupted one.
+# Six hours is far longer than any backup round trip, so nothing an in-flight
+# backup still owns is that old. A hashed snapshot is deliberately left alone:
+# locally it cannot be told apart from a verified one that S3 also holds.
+STALE_BACKUP_ARTIFACT_MINUTES=360
+if [[ -d "$BACKUP_DIR" ]]; then
+  while IFS= read -r stale_dir; do
+    [[ -n "$stale_dir" ]] || continue
+    echo "reclaiming interrupted backup restore directory: $(basename "$stale_dir")" >&2
+    rm -rf -- "$stale_dir"
+  done < <(
+    find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '.restore-check.*' \
+      -mmin "+$STALE_BACKUP_ARTIFACT_MINUTES" 2>/dev/null || true
+  )
+  while IFS= read -r stale_snapshot; do
+    [[ -n "$stale_snapshot" ]] || continue
+    [[ -e "$stale_snapshot.sha256" ]] && continue
+    echo "reclaiming unhashed snapshot left by an interrupted backup: $(basename "$stale_snapshot")" >&2
+    rm -f -- "$stale_snapshot"
+  done < <(
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'paper_trading-*.sqlite3' \
+      -mmin "+$STALE_BACKUP_ARTIFACT_MINUTES" 2>/dev/null || true
+  )
+fi
+
 # A verified backup holds ONE copy at a time: the snapshot is deleted locally
 # once S3 has it, before the restore copy is pulled back for verification. So
 # the peak is a single database plus an operating margin, not two.
@@ -117,6 +147,10 @@ required_bytes=$((database_bytes + 1073741824))
 if (( available_bytes < required_bytes )); then
   echo "database backup needs space for one snapshot + 1 GiB headroom" >&2
   echo "required=$required_bytes available=$available_bytes; clean only verified old local backups first" >&2
+  if [[ -d "$BACKUP_DIR" ]]; then
+    echo "largest entries in $BACKUP_DIR (confirm S3 holds a newer verified copy before deleting any):" >&2
+    du -sk "$BACKUP_DIR"/* "$BACKUP_DIR"/.[!.]* 2>/dev/null | sort -rn | head -n 10 >&2 || true
+  fi
   exit 1
 fi
 

@@ -39,6 +39,7 @@ FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
+SCHEDULER_HEALTH_HELPER="$SCRIPT_DIR/check_scheduler_health.sh"
 
 # Audit F-07: this script deliberately needs NO local interpreter. It used to
 # stamp build provenance by importing two package constants, and discovering
@@ -194,8 +195,13 @@ enabled_timer_output="$(
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s capture < "$QUIESCE_HELPER"
 )"
 ENABLED_TIMERS=()
+CAPTURED_MAINTENANCE_MARKER=0
 while IFS= read -r timer; do
   [[ -n "$timer" ]] || continue
+  if [[ "$timer" == "@deploy-maintenance-marker-present" ]]; then
+    CAPTURED_MAINTENANCE_MARKER=1
+    continue
+  fi
   retired=0
   for retired_timer in ${RETIRED_TIMERS[@]+"${RETIRED_TIMERS[@]}"}; do
     if [[ "$timer" == "$retired_timer" ]]; then
@@ -208,11 +214,55 @@ while IFS= read -r timer; do
   fi
   ENABLED_TIMERS+=("$timer")
 done <<<"$enabled_timer_output"
+CAPTURED_TIMER_COUNT=${#ENABLED_TIMERS[@]}
 if (( SCHEDULER_WATCHDOG_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("sfo-scheduler-health.timer")
 fi
 if (( APPLE_PURGE_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("weatheredge-apple-purge.timer")
+fi
+
+# Stranded-host guard. A deploy that dies after quiescing but before its
+# recovery trap is armed (an SSH drop during the multi-gigabyte backup round
+# trip, a killed operator shell) deliberately leaves every timer disabled and
+# the maintenance marker in place. Capturing that state as "the policy to
+# restore" would make the next deploy restore nothing, remove the marker, never
+# re-arm the scheduler watchdog, and still report success -- a dark, unwatched
+# box. An empty capture or a leftover marker is therefore never guessed at:
+#   WEATHEREDGE_TIMER_RECOVERY=canonical  restore the canonical scheduler set
+#                                         (check_scheduler_health.sh) plus the
+#                                         watchdog after a successful deploy;
+#   WEATHEREDGE_TIMER_RECOVERY=captured   deploy with exactly what was captured
+#                                         (an intentionally paused host stays
+#                                         paused).
+if (( CAPTURED_TIMER_COUNT == 0 || CAPTURED_MAINTENANCE_MARKER == 1 )); then
+  case "${WEATHEREDGE_TIMER_RECOVERY:-}" in
+    canonical)
+      ENABLED_TIMERS=()
+      while IFS= read -r timer; do
+        [[ -n "$timer" ]] && ENABLED_TIMERS+=("$timer")
+      done < <(
+        sed -n '/^CANONICAL_TIMERS=(/,/^)/s/^[[:space:]]*"\([A-Za-z0-9@._-]*\.timer\)"[[:space:]]*$/\1/p' \
+          "$SCHEDULER_HEALTH_HELPER"
+      )
+      if (( ${#ENABLED_TIMERS[@]} == 0 )); then
+        echo "could not read CANONICAL_TIMERS from $SCHEDULER_HEALTH_HELPER" >&2
+        exit 1
+      fi
+      ENABLED_TIMERS+=("sfo-scheduler-health.timer")
+      echo "WEATHEREDGE_TIMER_RECOVERY=canonical: a successful deploy restores the ${#ENABLED_TIMERS[@]} canonical timer(s), not the captured policy (captured=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)" >&2
+      ;;
+    captured)
+      echo "WEATHEREDGE_TIMER_RECOVERY=captured: deploying with the captured policy (captured=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)" >&2
+      ;;
+    *)
+      echo "refusing to deploy: the host looks stranded by an earlier deploy (captured enabled timers=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)." >&2
+      echo "Nothing has been quiesced or changed. Inspect the host first (runbook Phase 0), then rerun with" >&2
+      echo "WEATHEREDGE_TIMER_RECOVERY=canonical to restore the canonical scheduler set, or" >&2
+      echo "WEATHEREDGE_TIMER_RECOVERY=captured to keep exactly the captured policy." >&2
+      exit 1
+      ;;
+  esac
 fi
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \

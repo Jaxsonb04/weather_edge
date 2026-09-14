@@ -504,6 +504,7 @@ if [ "$SOURCE_PHASE" = transfer ]; then touch "$SOURCE_CHANGED"; fi
             "SOURCE_CHANGE": change, "SOURCE_PHASE": phase,
             "SOURCE_CHANGED": str(tmp_path / "changed"),
             "SSH_LOG": str(ssh_log), "RSYNC_LOG": str(rsync_log),
+            "WEATHEREDGE_TIMER_RECOVERY": "captured",
         },
         capture_output=True, text=True,
     )
@@ -683,6 +684,7 @@ for token in sys.argv[1:-1]:
             "RSYNC_CALLS": str(calls),
             "SSH_CALLS": str(ssh_calls),
             "FAKE_REMOTE_BASE": str(tmp_path / "remote base"),
+            "WEATHEREDGE_TIMER_RECOVERY": "captured",
         },
         capture_output=True,
         text=True,
@@ -773,6 +775,7 @@ exit 0
             "REMOTE_BASE": "/opt/weatheredge",
             "TRANSFER_COUNT": str(transfer_count),
             "SSH_LOG": str(ssh_log),
+            "WEATHEREDGE_TIMER_RECOVERY": "captured",
         },
         capture_output=True,
         text=True,
@@ -829,6 +832,7 @@ exit 0
             "REMOTE_BASE": "/opt/weatheredge",
             "TRANSFER_COUNT": str(transfer_count),
             "ACTION_LOG": str(action_log),
+            "WEATHEREDGE_TIMER_RECOVERY": "captured",
         },
         capture_output=True,
         text=True,
@@ -988,6 +992,179 @@ elif 'restore' in args:
     # One producer timer, not two: the captured set no longer gains the
     # retired Apple refresh timer.
     assert "restored 1 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+
+
+def _run_full_sync_with_capture(
+    tmp_path: Path, capture_lines: tuple[str, ...], **extra_env: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
+    action_log = tmp_path / "actions.log"
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!{sys.executable}
+import os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+data = sys.stdin.read()
+with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:
+    handle.write('ssh|' + ' '.join(args) + '\\n')
+
+if args[-3:] == ['bash', '-s', 'capture']:
+    for line in os.environ['FAKE_CAPTURE'].split(','):
+        if line:
+            print(line)
+elif len(args) >= 2 and args[-2] == 'backup':
+    print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
+elif 'restore' in args:
+    restored = args[args.index('restore') + 1:]
+    with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:
+        handle.write('restore|' + ' '.join(restored) + '\\n')
+""",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\nprintf 'rsync|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n",
+    )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "WEATHEREDGE_ROOT": str(ROOT),
+        "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+        "EC2_IP": "ec2.example",
+        "EC2_KEY": str(key),
+        "REMOTE_BASE": "/opt/weatheredge",
+        "ACTION_LOG": str(action_log),
+        "FAKE_CAPTURE": ",".join(capture_lines),
+        **extra_env,
+    }
+    env.pop("WEATHEREDGE_TIMER_RECOVERY", None)
+    env.update(extra_env)
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    actions = action_log.read_text().splitlines() if action_log.exists() else []
+    return result, actions
+
+
+def _canonical_scheduler_timers() -> list[str]:
+    text = (AWS_DIR / "check_scheduler_health.sh").read_text(encoding="utf-8")
+    block = text.split("CANONICAL_TIMERS=(", 1)[1].split("\n)", 1)[0]
+    return [line.strip().strip('"') for line in block.splitlines() if line.strip()]
+
+
+@pytest.mark.parametrize(
+    "capture_lines",
+    [
+        # Every timer disabled: a deploy stranded after quiesce, host rebooted.
+        (),
+        # Timers still captured, but the previous deploy never released the host.
+        ("sfo-kalshi-paper-scan.timer", "@deploy-maintenance-marker-present"),
+        ("@deploy-maintenance-marker-present",),
+    ],
+)
+def test_full_sync_refuses_a_stranded_host_before_quiescing_anything(
+    tmp_path: Path, capture_lines: tuple[str, ...]
+) -> None:
+    """Release review, deploy HIGH: an empty capture used to 'succeed' dark."""
+
+    result, actions = _run_full_sync_with_capture(tmp_path, capture_lines)
+
+    assert result.returncode != 0
+    assert "refusing to deploy: the host looks stranded" in result.stderr
+    assert "WEATHEREDGE_TIMER_RECOVERY=canonical" in result.stderr
+    assert any(line.endswith("bash -s capture") for line in actions)
+    assert not any("weatheredge-deploy-maintenance" in line for line in actions)
+    assert not any(line.endswith("bash -s quiesce") for line in actions)
+    assert not any("bash -s backup" in line for line in actions)
+    assert not any(line.startswith(("rsync|", "restore|")) for line in actions)
+
+
+def test_full_sync_canonical_recovery_restores_the_whole_scheduler_after_a_stranded_deploy(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        ("@deploy-maintenance-marker-present",),
+        WEATHEREDGE_TIMER_RECOVERY="canonical",
+    )
+
+    assert result.returncode == 0, result.stderr
+    canonical = _canonical_scheduler_timers()
+    assert len(canonical) == 12
+    assert "weatheredge-apple-refresh.timer" not in canonical
+    restored = [
+        timer
+        for line in actions
+        if line.startswith("restore|")
+        for timer in line.removeprefix("restore|").split()
+    ]
+    assert set(restored) == {*canonical, "sfo-scheduler-health.timer"}
+    assert "weatheredge-apple-refresh.timer" not in restored
+    # 13 restored timers minus the watchdog, freshness check, publisher and
+    # Strategy Lab refresh, which the deploy sequences separately.
+    assert "Restored 9 producer timer(s); watchdog restored last=1." in result.stdout
+    assert "Scheduler watchdog restored after maintenance=1." in result.stdout
+    assert actions[-1].endswith("sudo systemctl start sfo-scheduler-health.service")
+
+
+def test_full_sync_captured_recovery_keeps_an_intentionally_paused_host_paused(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (), WEATHEREDGE_TIMER_RECOVERY="captured"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Restored 0 producer timer(s); watchdog restored last=0." in result.stdout
+    # Only the first-deploy enablement of a newly introduced unit is restored.
+    assert all(
+        line == "restore|weatheredge-apple-purge.timer"
+        for line in actions
+        if line.startswith("restore|")
+    )
+
+
+def test_timer_state_helper_reports_a_leftover_maintenance_marker(
+    tmp_path: Path,
+) -> None:
+    helper = AWS_DIR / "disable_systemd_timers.sh"
+    fake = tmp_path / "systemctl"
+    _write_executable(
+        fake,
+        """#!/usr/bin/env bash
+if [[ "$1" == show ]]; then echo loaded; exit 0; fi
+if [[ "$1" == is-enabled ]]; then exit 1; fi
+exit 0
+""",
+    )
+    marker = tmp_path / "weatheredge-deploy-maintenance"
+    env = {
+        **os.environ,
+        "SYSTEMCTL_BIN": str(fake),
+        "WEATHEREDGE_DEPLOY_MAINTENANCE_MARKER": str(marker),
+    }
+
+    clean = subprocess.run(
+        ["bash", str(helper), "capture"], env=env, capture_output=True, text=True
+    )
+    marker.write_text("")
+    stranded = subprocess.run(
+        ["bash", str(helper), "capture"], env=env, capture_output=True, text=True
+    )
+
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout == ""
+    assert stranded.returncode == 0, stranded.stderr
+    assert stranded.stdout.splitlines() == ["@deploy-maintenance-marker-present"]
 
 
 def test_full_sync_restores_writers_when_post_analysis_drain_fails(
@@ -2189,6 +2366,105 @@ def test_backup_preflight_sweeps_aged_snapshots_before_measuring_space(
     assert not aged.exists(), "aged snapshot should be reclaimed during preflight"
     assert not aged_sum.exists(), "aged checksum should be reclaimed too"
     assert fresh.exists(), "a snapshot inside the retention window must survive"
+
+
+def test_backup_preflight_reclaims_what_an_interrupted_backup_left_behind(
+    tmp_path: Path,
+) -> None:
+    """Release review, deploy MEDIUM: a killed 9/13 backup could block this deploy."""
+
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    seven_hours_ago = time.time() - 7 * 3600
+
+    stale_restore = backups / ".restore-check.AbC123"
+    stale_restore.mkdir()
+    (stale_restore / "paper_trading-20260913T012600Z.sqlite3").write_bytes(b"partial")
+    unhashed = backups / "paper_trading-20260913T012600Z.sqlite3"
+    unhashed.write_bytes(b"interrupted before the checksum")
+    hashed = backups / "paper_trading-20260913T002600Z.sqlite3"
+    hashed.write_bytes(b"possibly verified")
+    (backups / "paper_trading-20260913T002600Z.sqlite3.sha256").write_text("x  y\n")
+    for path in (stale_restore / "paper_trading-20260913T012600Z.sqlite3", unhashed, hashed):
+        os.utime(path, (seven_hours_ago, seven_hours_ago))
+    os.utime(stale_restore, (seven_hours_ago, seven_hours_ago))
+
+    # An in-flight backup's artifacts are young and must survive.
+    live_restore = backups / ".restore-check.Live99"
+    live_restore.mkdir()
+    live_snapshot = backups / "paper_trading-29991231T235959Z.sqlite3"
+    live_snapshot.write_bytes(b"being hashed right now")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_DIR": str(backups),
+            "SFO_DATABASE_BACKUP_KEEP_DAYS": "1",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not stale_restore.exists()
+    assert not unhashed.exists()
+    assert hashed.exists(), "a hashed snapshot may be the verified copy; never guess"
+    assert live_restore.exists()
+    assert live_snapshot.exists()
+    assert "reclaiming interrupted backup restore directory" in result.stderr
+    assert "reclaiming unhashed snapshot" in result.stderr
+
+
+def test_backup_gate_failure_names_the_largest_backup_entries(tmp_path: Path) -> None:
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    big = backups / "paper_trading-20260913T002600Z.sqlite3"
+    big.write_bytes(b"x" * 64 * 1024)
+    (backups / "paper_trading-20260913T002600Z.sqlite3.sha256").write_text("x  y\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "df",
+        "#!/bin/sh\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'fake 1 1 0 100%% /\\n'\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_DIR": str(backups),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "largest entries in" in result.stderr
+    assert big.name in result.stderr
+    assert big.exists()
 
 
 def test_backup_gate_requires_one_database_copy_not_two(tmp_path: Path) -> None:
