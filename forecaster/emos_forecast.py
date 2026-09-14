@@ -117,6 +117,27 @@ SERVE_RECAL_SIGMA = False
 # 0.865). Lead 1 is FC-3's per-station serve recalibration, not FC-2's. Whoever
 # lands FC-3 must exclude lead 0 from a per-station sigma correction or the two
 # will compose and double-correct.
+#
+# UNANALYZED PRODUCTION CONSUMER (2026-09-13 re-check). Everything above scores
+# the served Gaussian against settlement; none of FC-2's commit messages
+# (7a577d075, 75b6978d3, da80ac438) analyzed what reads this row back. The
+# paper monitor's settlement-day model read does. After the same-day entry
+# cutoff, with the same-day model heartbeat on (it was on in production at the
+# 2026-09-06 verification), monitor._refresh_same_day_model_reads loads this
+# lead-0 row's sigma_f through SfoForecasterAdapter.latest_emos_snapshot,
+# prices the open event's bins with it (ResidualCalibrator.bucket_probabilities,
+# emos_mu_sigma) and journals them. run_paper_monitor reads the latest journaled
+# probability back (PaperStore.latest_model_probability_read) as the
+# model-side probability exits.decide_exit uses for the NO-side model veto
+# (HOLD_MODEL_VETO) and for the take-profit fair value (plus the research-only
+# take-profit margin). A sharper sigma generally makes those bin probabilities
+# more extreme, so this table changes which stops are vetoed and where
+# take-profits fire, not just calibration. A replay of monitor exit decisions
+# against this table is still OWED, and it requires production database access:
+# the journaled model reads, open positions and exit decisions exist only in the
+# production paper database. Until that replay is done, treat the table as
+# validated for calibration only, not for its effect on exits.
+#
 # min(1.0, sqrt(measured lead-0 z^2)) as measured; LEAD0_SIGMA_SCALE_BOUNDS
 # below clamps the four entries that fall under 0.75 at the point of use.
 LEAD0_SIGMA_SCALE_BY_STATION = {

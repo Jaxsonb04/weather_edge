@@ -144,6 +144,18 @@ for the full day-unit rationale):
   -- previously only the folds-to-records/exclusions direction was
   checked, never the reverse.
 
+Repair note (2026-09-13, owner PR #121 decision (d) re-check): the
+date-clustered bootstrap made the calendar target date the inferential
+unit, but no floor required enough of those dates -- the 30-fold floor
+counts station-days and the distinct-date floor stops at 10.
+``MIN_BOOTSTRAP_CALENDAR_DAYS = 30`` now binds on
+``PromotionDecision.bootstrap_calendar_days`` (the fewest calendar dates
+behind the ROI or log-growth interval); a missing or malformed count
+fails closed with ``REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE``, and
+``PromotionDecision`` refuses to construct an eligible verdict without
+it. Promotion evidence only: no trading behavior or fingerprint input
+changes.
+
 HARD CONSTRAINTS: this module never imports ``config``, ``live_execution``,
 or ``db`` -- it has no way to read or write ``LIVE_PROFILE_OVERRIDES``,
 ``LIVE_ORDERS_ENABLED``, ``SFO_LIVE_TRADING_ENABLED``, any live fingerprint,
@@ -161,8 +173,10 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from .research_bootstrap import (
+    CALENDAR_TARGET_DATE_CLUSTER_UNIT,
     DEFAULT_BOOTSTRAP_DRAWS,
     DEFAULT_BOOTSTRAP_SEED,
+    BootstrapInterval,
     fold_paired_aggregates,
     day_clustered_bootstrap,
     calendar_day_bootstrap_p_value,
@@ -198,6 +212,19 @@ MIN_INDEPENDENT_CONFIRMATORY_DAYS = 30
 # decision note for the full rationale; Task 7 may strengthen this further.
 MIN_DISTINCT_CALENDAR_TARGET_DAYS = 10
 
+# Owner PR #121 decision (d) (re-checked 2026-09-13): the bootstrap resamples
+# whole calendar target dates, so the calendar date -- not the station-day
+# fold -- is the unit behind every promotion interval and the Holm p-value.
+# Neither floor above required enough of those clusters: 3 stations over 10
+# dates clear both (30 folds, 10 distinct dates) while the significance test
+# has only 10 independent draws. The project's promotion bar is "at least 30
+# independent days" (spec Sec 8, plan Task 6 Step 1), so it is now also
+# counted in the bootstrap's own unit. This floor BINDS alongside the
+# station-day-fold floor (still reported as ``independent_confirmatory_days``);
+# it makes the 10-date floor above redundant in practice without removing its
+# reason string. A missing, malformed or wrong-unit count fails closed.
+MIN_BOOTSTRAP_CALENDAR_DAYS = 30
+
 CONFIRMATORY_EVIDENCE_ROLE = "confirmatory"
 EXPLORATORY_EVIDENCE_ROLE = "exploratory"
 _VALID_EVIDENCE_ROLES = (EXPLORATORY_EVIDENCE_ROLE, CONFIRMATORY_EVIDENCE_ROLE)
@@ -227,6 +254,8 @@ REASON_COVERAGE_EXCLUSIONS_PRESENT = "incomplete_replay_evidence_coverage_exclus
 REASON_FOLD_NOT_PROMOTION_ELIGIBLE = "incomplete_replay_evidence_promotion_ineligible_fold"
 REASON_INSUFFICIENT_DAYS = "insufficient_independent_confirmatory_days"
 REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS = "insufficient_distinct_calendar_target_days"
+REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS = "insufficient_bootstrap_calendar_target_days"
+REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE = "bootstrap_calendar_target_day_count_unavailable"
 REASON_ROI_LOWER_BOUND = "roi_lower_confidence_bound_not_above_zero"
 REASON_LOG_GROWTH_LOWER_BOUND = "log_growth_lower_confidence_bound_not_above_zero"
 REASON_DRAWDOWN_TOLERANCE = "maximum_drawdown_exceeds_declared_tolerance"
@@ -316,6 +345,36 @@ class FoldInventoryMismatch:
     reason: str
 
 
+def _valid_bootstrap_calendar_day_count(count: object, cluster_unit: object) -> int | None:
+    """``count`` as a trusted calendar-target-date cluster count, else
+    ``None``. A count in any other resampling unit, a bool, a non-integer
+    or a negative number is missing evidence, never a guessed number."""
+
+    if cluster_unit != CALENDAR_TARGET_DATE_CLUSTER_UNIT:
+        return None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return count
+
+
+def _binding_bootstrap_calendar_days(
+    intervals: Sequence[BootstrapInterval | None],
+) -> int | None:
+    """The fewest calendar target dates behind any binding bootstrap
+    interval, or ``None`` (fail closed) when any interval or its count is
+    missing."""
+
+    counts = [
+        None
+        if interval is None
+        else _valid_bootstrap_calendar_day_count(interval.n_clusters, interval.cluster_unit)
+        for interval in intervals
+    ]
+    if not counts or any(count is None for count in counts):
+        return None
+    return min(count for count in counts if count is not None)
+
+
 @dataclass(frozen=True)
 class PromotionDecision:
     """Task 6's one output: a deterministic, fail-closed, structured
@@ -337,6 +396,14 @@ class PromotionDecision:
     meaning for compatibility; it is not the inferential sample count.
     ``bootstrap_calendar_days`` and ``bootstrap_cluster_unit`` identify the
     actual resampling unit. Score-coverage fields still count folds.
+
+    Both counts are gated (2026-09-13): the station-day-fold count against
+    ``MIN_INDEPENDENT_CONFIRMATORY_DAYS``, and ``bootstrap_calendar_days``
+    -- the fewest calendar target dates behind either binding bootstrap
+    interval (ROI or log growth/day) -- against
+    ``MIN_BOOTSTRAP_CALENDAR_DAYS``. ``None`` means the count was missing
+    or untrustworthy, never zero. An eligible decision cannot be
+    constructed without a trusted count at or above that floor.
     """
 
     experiment_id: str
@@ -357,8 +424,25 @@ class PromotionDecision:
     crps_score_coverage_folds: int = 0
     brier_score_coverage_folds: int = 0
     calibration_pit_coverage_count: int = 0
-    bootstrap_cluster_unit: str = "calendar_target_date"
-    bootstrap_calendar_days: int = 0
+    bootstrap_cluster_unit: str = CALENDAR_TARGET_DATE_CLUSTER_UNIT
+    bootstrap_calendar_days: int | None = None
+
+    def __post_init__(self) -> None:
+        # Fail closed at construction: an eligible verdict must carry the
+        # calendar-date cluster count that justified it. This only refuses;
+        # it never assigns a field.
+        count = _valid_bootstrap_calendar_day_count(
+            self.bootstrap_calendar_days, self.bootstrap_cluster_unit
+        )
+        if self.eligible_for_target_paper and (
+            count is None or count < MIN_BOOTSTRAP_CALENDAR_DAYS
+        ):
+            raise ValueError(
+                "an eligible PromotionDecision requires bootstrap_calendar_days >= "
+                f"{MIN_BOOTSTRAP_CALENDAR_DAYS} {CALENDAR_TARGET_DATE_CLUSTER_UNIT} "
+                f"clusters; got {self.bootstrap_calendar_days!r} "
+                f"{self.bootstrap_cluster_unit!r}"
+            )
 
 
 def reconcile_fold_inventory(
@@ -647,6 +731,19 @@ def evaluate_promotion(
     if not log_growth_ok:
         block_reasons.append(REASON_LOG_GROWTH_LOWER_BOUND)
 
+    # PR #121 (d) follow-up: the bootstrap's own resampling unit must clear
+    # the 30-independent-day bar, not just the station-day folds. The ROI
+    # interval and the Holm p-value share the same date clusters; the
+    # log-growth interval can have fewer (a fold with no log-growth delta
+    # drops out), so the binding count is the smaller of the two.
+    bootstrap_calendar_days = _binding_bootstrap_calendar_days(
+        (roi_interval, log_growth_interval)
+    )
+    if bootstrap_calendar_days is None:
+        block_reasons.append(REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE)
+    elif bootstrap_calendar_days < MIN_BOOTSTRAP_CALENDAR_DAYS:
+        block_reasons.append(REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS)
+
     if report.challenger_kpis.maximum_drawdown_pct > declaration.max_drawdown_tolerance_pct:
         block_reasons.append(REASON_DRAWDOWN_TOLERANCE)
 
@@ -741,5 +838,5 @@ def evaluate_promotion(
         crps_score_coverage_folds=crps_interval.n_observations,
         brier_score_coverage_folds=brier_interval.n_observations,
         calibration_pit_coverage_count=calibration_pit_coverage_count,
-        bootstrap_calendar_days=roi_interval.n_clusters,
+        bootstrap_calendar_days=bootstrap_calendar_days,
     )

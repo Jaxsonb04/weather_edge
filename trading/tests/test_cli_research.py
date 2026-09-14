@@ -162,7 +162,18 @@ def test_research_report_cli_formats_the_published_target_value(capsys) -> None:
 
     _print_report(report, color=Color(enabled=False))
 
-    assert "$62.50/day target" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "$62.50/day target" in output
+    # A gate without the bootstrap's calendar-date cluster count reads as
+    # missing, never as a number.
+    assert "bootstrap_calendar_days=missing" in output
+
+    counted = {
+        **report,
+        "promotion_gate": {**report["promotion_gate"], "bootstrap_calendar_days": 31},
+    }
+    _print_report(counted, color=Color(enabled=False))
+    assert "bootstrap_calendar_days=31" in capsys.readouterr().out
 
 
 def test_research_evaluate_requires_declare_on_first_run(db_paths, capsys) -> None:
