@@ -74,9 +74,16 @@ def test_daily_budget_charges_other_target_dates_and_cannot_recycle_losses():
     assert target_remaining_daily_risk(0.0, -1.0) == 0.0
 
 
-def test_open_risk_is_charged_at_worst_observed_stop_overshoot():
-    # 0.60 = the worst of the three 2026-09-11/12 incident exits (61.05%,
-    # 40.76%, 53.51% of cost realized against a 35% trigger).
+def test_open_risk_is_charged_at_design_fraction():
+    # 0.60 is a DESIGN fraction near the per-position median, not a worst
+    # case. Public research ledger (strategy_research.json generated
+    # 2026-09-13T01:20Z, paper-research-roi-v6, 22 losing closes):
+    # per-position loss/cost has median 0.61 and max 0.734; 12 of 22
+    # exceed 0.60. The three 2026-09-11/12 incident exits (61.05%, 40.76%,
+    # 53.51% of cost, against a 35% trigger) are the largest DOLLAR
+    # losses, not the worst ratios. The room below is a planning figure;
+    # the hard bound is the $150 REALIZED pause, pinned by
+    # test_daily_budget_charges_other_target_dates_and_cannot_recycle_losses.
     assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.60
     assert RESEARCH_ENTRY_RISK_VERSION == "research-entry-risk-v3-scaling-2026-09-13"
     assert target_remaining_daily_risk(0.0, 100.0) == pytest.approx(90.0)
