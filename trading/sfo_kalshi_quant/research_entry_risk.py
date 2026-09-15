@@ -13,7 +13,7 @@ from .research_policy import TARGET_POLICY
 
 RESEARCH_ENTRY_RISK_VERSION = "research-entry-risk-v3-scaling-2026-09-13"
 # Preserve the existing production ceiling. Strong conservative edges may use
-# more than the undeployed $30 containment design allowed, but nothing here can
+# more than the undeployed $30 containment design allowed, but no entry can
 # exceed what production already permitted -- see target_entry_spend_limit.
 # The v3 bump (2026-09-13) tags the research execution changes of the scaling
 # release: the stop-scaled DAILY room charge (TARGET_OPEN_RISK_CHARGE_FRACTION),
@@ -127,16 +127,26 @@ def target_entry_spend_limit(cost: object, probability_lcb: object) -> float:
     limit. Malformed inputs, or no conservative edge, fund nothing.
 
     Read this as CONTAINMENT, not scaling (owner PR #121 decision (a),
-    re-checked 2026-09-13). Every term sits under a ``min`` with the $90
-    per-position ceiling production already had, so this can only shrink an
-    entry, never grow one; before it, the allocator sized structural research
-    candidates up to that ceiling. The re-check put the effect at roughly a
-    40% cut in entered cost (the three 2026-09-12 incident entries, $193.85
-    entered in total, would have been capped at $104.98), with NO measured
-    P&L gain yet: no settled paper cohort shows the smaller entries improve
+    re-checked 2026-09-13). No entry can exceed the $90 per-position ceiling
+    production already had: every term sits under a ``min`` with it. That
+    does NOT make it shrink-only. Thin conservative edges are cut hard, but a
+    strong LCB edge can still be sized UP to $90, including structural taker
+    candidates that the pre-#121 25-contract taker truncation held smaller:
+    this limit is the quantity target of
+    ``paper._expanded_structural_target_taker`` and
+    ``research_portfolio._target_sized_decision``, not only a cap. The
+    2026-09-12 strategy-performance note's code-path regression ($0.76 ask,
+    100 contracts displayed, 0.90 LCB) grows a quote from 25 contracts
+    ($19.32 with fees) to 100 ($77.28). The 2026-09-13 re-check estimated
+    roughly a 40% cut in entered cost overall; that figure was not
+    re-measured here, and whether it nets out the taker growth above needs
+    the production database. The three 2026-09-12 incident entries alone
+    show a 46% cut ($193.85 entered vs $104.98 capped). There is NO measured
+    P&L gain yet: no settled paper cohort shows the resized entries improve
     research P&L. What it buys today is bounded exposure on thin conservative
-    edges. Do not cite it as a profit-validated sizing improvement, and do not
-    raise the fraction or the cap on its strength, until that evidence exists.
+    edges. Do not cite it as a profit-validated sizing improvement, and do
+    not raise the fraction or the cap on its strength, until that evidence
+    exists.
     """
 
     cost_value = _finite_number(cost)
