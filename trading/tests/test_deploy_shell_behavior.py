@@ -70,6 +70,7 @@ def _load_pages_branch_helpers() -> str:
     for name in (
         "publish_count() {",
         "record_publish_count() {",
+        "record_successful_publication() {",
         "start_orphan_branch() {",
         "prepare_pages_branch() {",
     ):
@@ -114,8 +115,14 @@ def _pages_branch_fixture(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _run_prepare_pages_branch(
-    tmp_path: Path, *, max_commits: int, publishes: int
-) -> tuple[str, bool]:
+    tmp_path: Path, *, max_commits: int, publishes: int, push_lands: bool = False
+) -> tuple[str, str]:
+    """Run the real branch helpers; return stdout and the counter afterwards.
+
+    ``push_lands`` runs the publisher's post-push bookkeeping, as a successful
+    push would; without it the cycle ends as a refused or failed push does.
+    """
+
     work, _remote = _pages_branch_fixture(tmp_path)
     state = tmp_path / "state"
     state.mkdir()
@@ -130,6 +137,7 @@ def _run_prepare_pages_branch(
         f"PAGES_HISTORY_MAX_COMMITS={max_commits}\n"
         "PAGES_FORCE_PUSH=0\n"
         'PAGES_FORCE_LEASE=""\n'
+        "PAGES_RESET_COUNT=0\n"
         "wait_for_remote_publication() { return 0; }\n"
         f"{_PAGES_BRANCH_HELPERS}\n"
         f'cd "{work}"\n'
@@ -137,7 +145,8 @@ def _run_prepare_pages_branch(
         'git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1 || true\n'
         'remote_tip="$(git rev-parse "refs/remotes/origin/$PAGES_BRANCH" 2>/dev/null || echo none)"\n'
         "prepare_pages_branch\n"
-        'printf "force=%s count=%s\\n" "$PAGES_FORCE_PUSH" "$(publish_count)"\n'
+        'printf "force=%s count=%s reset=%s\\n" "$PAGES_FORCE_PUSH" "$(publish_count)" "$PAGES_RESET_COUNT"\n'
+        f"{'record_successful_publication' if push_lands else ':'}\n"
         'if [[ "$PAGES_FORCE_LEASE" == "$remote_tip" ]]; then\n'
         '  printf "lease=tip\\n"\n'
         "else\n"
@@ -154,13 +163,13 @@ def _run_prepare_pages_branch(
         ["bash", str(harness)], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
-    return result.stdout, (state / "pages-publish-count").read_text().strip() == "0"
+    return result.stdout, (state / "pages-publish-count").read_text().strip()
 
 
 def test_pages_branch_is_re_rooted_once_the_publish_counter_hits_the_ceiling(
     tmp_path: Path,
 ) -> None:
-    stdout, counter_reset = _run_prepare_pages_branch(
+    stdout, counter_after = _run_prepare_pages_branch(
         tmp_path, max_commits=2, publishes=2
     )
 
@@ -172,11 +181,35 @@ def test_pages_branch_is_re_rooted_once_the_publish_counter_hits_the_ceiling(
     # unattended re-root cannot discard a commit that landed in between. The
     # lease has to be captured before start_orphan_branch drops the local ref.
     assert "lease=tip" in stdout
-    assert counter_reset
+    # The reset is staged, not written: until the push lands the counter stays
+    # at the ceiling, so a refused lease re-roots again on the next cycle
+    # instead of letting history grow for another full ceiling.
+    assert "reset=1" in stdout
+    assert counter_after == "2"
+
+
+def test_pages_re_root_counter_resets_once_the_push_lands(tmp_path: Path) -> None:
+    stdout, counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=2, publishes=2, push_lands=True
+    )
+
+    assert "force=1" in stdout
+    # The new root holds exactly this one publication.
+    assert counter_after == "1"
+
+
+def test_pages_publish_counter_increments_after_an_ordinary_push(tmp_path: Path) -> None:
+    stdout, counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=5, publishes=1, push_lands=True
+    )
+
+    assert "force=0" in stdout
+    assert "reset=0" in stdout
+    assert counter_after == "2"
 
 
 def test_pages_branch_keeps_its_history_below_the_ceiling(tmp_path: Path) -> None:
-    stdout, counter_reset = _run_prepare_pages_branch(
+    stdout, counter_after = _run_prepare_pages_branch(
         tmp_path, max_commits=5, publishes=1
     )
 
@@ -185,11 +218,12 @@ def test_pages_branch_keeps_its_history_below_the_ceiling(tmp_path: Path) -> Non
     assert "count=1" in stdout
     # No force, so no lease: an ordinary fast-forward push needs no protection.
     assert "lease=empty" in stdout
-    assert not counter_reset
+    assert "reset=0" in stdout
+    assert counter_after == "1"
 
 
 def test_pages_branch_re_root_is_disabled_by_a_zero_ceiling(tmp_path: Path) -> None:
-    stdout, _counter_reset = _run_prepare_pages_branch(
+    stdout, _counter_after = _run_prepare_pages_branch(
         tmp_path, max_commits=0, publishes=9999
     )
 

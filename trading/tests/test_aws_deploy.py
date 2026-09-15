@@ -1203,9 +1203,17 @@ def test_pages_publisher_periodically_re_roots_the_generated_branch():
     gate_idx = prepare_block.index("wait_for_remote_publication")
     reroot_idx = prepare_block.index("PAGES_HISTORY_MAX_COMMITS > 0")
     assert gate_idx < reroot_idx
-    # The counter only advances on a push that actually landed.
+    # The counter only moves on a push that actually landed: preparing a
+    # re-root stages the reset without writing it, and the one writer of the
+    # counter after a publication is called only past the push.
+    assert "record_publish_count" not in prepare_block
+    assert "PAGES_RESET_COUNT=1" in prepare_block
     push_idx = publisher.index("Published SFO weather dashboard")
-    assert publisher.index("record_publish_count \"$(( $(publish_count) + 1 ))\"") > push_idx
+    assert publisher.index("    record_successful_publication\n") > push_idx
+    record_start = publisher.index("record_successful_publication() {")
+    record_block = publisher[record_start : publisher.index("\n}\n", record_start)]
+    assert "record_publish_count 1" in record_block
+    assert 'record_publish_count "$(( $(publish_count) + 1 ))"' in record_block
 
 
 def test_pages_publisher_validates_manifest_and_copies_exact_validated_artifacts():

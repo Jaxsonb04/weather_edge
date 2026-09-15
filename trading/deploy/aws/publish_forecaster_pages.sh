@@ -204,6 +204,16 @@ record_publish_count() {
   mv -f "$tmp" "$PAGES_PUBLISH_COUNT_FILE"
 }
 
+record_successful_publication() {
+  # Called only after the push lands. A new root holds exactly this
+  # publication; otherwise the branch gained one more.
+  if (( PAGES_RESET_COUNT == 1 )); then
+    record_publish_count 1
+  else
+    record_publish_count "$(( $(publish_count) + 1 ))"
+  fi
+}
+
 # Returns 0 to proceed with publication, 1 to defer this cycle without error.
 # A gate that can only ever block would turn a genuinely failed or disabled
 # Pages build into a permanent publication outage, because the commit that
@@ -255,6 +265,11 @@ wait_for_remote_publication() {
 PAGES_FORCE_PUSH=0
 # The remote tip this cycle fetched and gated on, used as the force push's lease.
 PAGES_FORCE_LEASE=""
+# Set when this cycle starts a new root. The publish counter is reset only once
+# that root's push lands (record_successful_publication): a refused lease or a
+# failed push leaves the counter at the ceiling, so the next cycle re-roots again
+# instead of letting history grow for another full ceiling.
+PAGES_RESET_COUNT=0
 
 start_orphan_branch() {
   # Leave HEAD unborn on the Pages branch so the next commit is a new root.
@@ -275,6 +290,7 @@ prepare_pages_branch() {
   # most of the burstable instance's CPU and network budget.
   PAGES_FORCE_PUSH=0
   PAGES_FORCE_LEASE=""
+  PAGES_RESET_COUNT=0
   if git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1; then
     if ! wait_for_remote_publication; then
       return 1
@@ -290,11 +306,11 @@ prepare_pages_branch() {
       PAGES_FORCE_LEASE="$(git rev-parse "refs/remotes/origin/$PAGES_BRANCH")"
       start_orphan_branch
       PAGES_FORCE_PUSH=1
-      record_publish_count 0
+      PAGES_RESET_COUNT=1
     fi
   else
     start_orphan_branch
-    record_publish_count 0
+    PAGES_RESET_COUNT=1
   fi
 }
 
@@ -411,7 +427,7 @@ while true; do
   fi
   if git push "${push_args[@]}"; then
     echo "Published SFO weather dashboard to $PAGES_BRANCH"
-    record_publish_count "$(( $(publish_count) + 1 ))"
+    record_successful_publication
     exit 0
   fi
 
