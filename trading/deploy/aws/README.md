@@ -271,9 +271,12 @@ its timer count includes the disabled Apple refresh timer.
 1.1 Push `integration/audit-round2-rebased`, open the PR to `main`, wait for
 `verify.yml` to pass, and merge.
 
-1.2 In `/Users/jaxson/develop/WeatherEdge`: `git checkout main && git pull --ff-only`.
+1.2 In the deploy checkout: `git checkout main && git pull --ff-only`.
 HEAD must be the merge commit, `git status --porcelain` must be empty, and
-`.local/ec2.env` must hold `EC2_IP` and `EC2_KEY`.
+`.local/ec2.env` must hold `EC2_IP` and `EC2_KEY`. If the usual checkout
+holds unrelated work, deploy from a separate worktree of `main` instead and
+set `WEATHEREDGE_ENV_FILE` to the original checkout's `.local/ec2.env`,
+because `.local/` is not tracked.
 
 ### Phase 2: box environment, before deploying
 
@@ -283,7 +286,7 @@ HEAD must be the merge commit, `git status --porcelain` must be empty, and
 delivered: a failed prune, or any other failing unit, reaches only the journal.
 The webhook does not cover the exchange settlement `MISMATCH` verdicts or the
 Google client-error circuit breaker. Neither fails its unit (the settle command
-exits 0 regardless, and the Google refresh exits on the EMOS baseline's
+exits 0 whatever the exchange check finds (a real settlement failure still fails the unit), and the Google refresh exits on the EMOS baseline's
 result), so `OnFailure` never fires for them: they are log-only, with or
 without the webhook. Step 5.7 gives the journal checks.
 
@@ -305,7 +308,7 @@ and exits do not run while the host is quiesced.
 3.2 From the shared checkout on `main`:
 
 ```bash
-cd /Users/jaxson/develop/WeatherEdge
+cd "$WEATHEREDGE_CHECKOUT"  # the clean checkout of main at the merge commit
 nohup caffeinate -dimsu bash trading/deploy/aws/sync_to_box.sh \
   > /tmp/we-deploy-$(date -u +%Y%m%dT%H%M%SZ).log 2>&1 < /dev/null &
 ```
