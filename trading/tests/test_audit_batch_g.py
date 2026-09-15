@@ -118,8 +118,10 @@ def test_dataset_lock_retry_budget_is_coupled_to_service_deadline_and_documented
         )
     )
 
-    assert script_timeout == service_timeout == 1800
-    assert service_headroom == 1200
+    assert script_timeout == service_timeout == 2700
+    assert service_headroom == 2100
+    # The deadline rose for the twenty-city rebuild; lock recovery did not.
+    assert service_timeout - service_headroom == 600
     assert shell_busy_timeout_ms == store_busy_timeout_ms == 30000
     assert "MAX_LOCK_RETRY_BUDGET_SECONDS=$((DATASET_SERVICE_TIMEOUT_SECONDS - DATASET_SERVICE_HEADROOM_SECONDS))" in script
     assert "SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS=600" in env_example

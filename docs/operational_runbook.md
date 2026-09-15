@@ -254,6 +254,14 @@ the archive/prune unit's worst-case deadline and additionally runs:
 - NWP archive update (`--daily --cities all`, scheduled leads 1 and 2 only)
 - EMOS rolling-origin rebuild (leads 1 and 2)
 
+The chain's `TimeoutStartSec` is 2700 s, raised from 1800 s for the twenty-city
+registry; no twenty-city run has been timed yet. Time the first all-city EMOS
+rebuild: prefix the manual post-deploy `emos_forecast.py --backfill` runs with
+`time`, and after the first nightly run read
+`systemctl show -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p Result sfo-dataset-backfill.service`.
+A `Result=timeout` means the chain was killed mid-rebuild and the lead-2 archive
+is partially rebuilt; raise the limit before the next night.
+
 Dataset backfill and retention prune deliberately use `Persistent=false`.
 If a deploy or reboot misses either heavy-maintenance window, systemd waits for
 the next nightly run instead of replaying both jobs beside persistent forecast

@@ -23,12 +23,14 @@ LOCK_RETRY_DELAY_SECONDS="${SFO_DATASET_LOCK_RETRY_DELAY_SECONDS:-5}"
 LOCK_RETRY_BUDGET_SECONDS="${SFO_DATASET_LOCK_RETRY_BUDGET_SECONDS:-600}"
 MAX_LOCK_RETRY_ATTEMPTS=10
 MAX_LOCK_RETRY_DELAY_SECONDS=300
-# sfo-dataset-backfill.service has one 1,800-second start deadline covering this
+# sfo-dataset-backfill.service has one 2,700-second start deadline covering this
 # script plus dataset research and four sequential forecast-maintenance jobs.
-# Reserve two thirds of it for normal work; lock recovery may consume at most
-# the remaining third across the entire source batch.
-DATASET_SERVICE_TIMEOUT_SECONDS=1800
-DATASET_SERVICE_HEADROOM_SECONDS=1200
+# Lock recovery may consume at most 600 s of it across the entire source batch;
+# the rest is reserved for normal work. The deadline rose from 1,800 s for the
+# twenty-city EMOS rebuild (2026-09-13) and the headroom rose with it (1,200 s to
+# 2,100 s), so the extra time goes to that work rather than to waiting on locks.
+DATASET_SERVICE_TIMEOUT_SECONDS=2700
+DATASET_SERVICE_HEADROOM_SECONDS=2100
 MAX_LOCK_RETRY_BUDGET_SECONDS=$((DATASET_SERVICE_TIMEOUT_SECONDS - DATASET_SERVICE_HEADROOM_SECONDS))
 SQLITE_BUSY_TIMEOUT_MILLISECONDS=30000
 
