@@ -171,7 +171,7 @@ def refresh_live(
     timeout: int = 20,
 ) -> dict[str, int]:
     """Fetch recent live CLI reports for each city and upsert. Fail-soft per
-    city: one WFO outage must not stall truth for the other fourteen."""
+    city: one WFO outage must not stall truth for the other nineteen."""
 
     ensure_schema(conn)
     stored: dict[str, int] = {}

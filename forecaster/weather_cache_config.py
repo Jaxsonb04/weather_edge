@@ -103,6 +103,18 @@ GOOGLE_WEATHER_SOFT_MONTHLY_CEILING = min(
     __capped_env_int("GOOGLE_WEATHER_SOFT_MONTHLY_CEILING", 7800),
     GOOGLE_WEATHER_MONTHLY_EVENT_BUDGET,
 )
+# Client-error circuit breaker. The event budget above cannot tell a working
+# key from a dead one: production billed roughly 124 events a day for five days
+# of 100% HTTP 4xx (last success 2026-09-02T02:41Z, first failure 03:41Z the
+# same morning) and the ledger happily reserved every one of them. After this
+# many consecutive completed 4xx events on the same Pacific billing date the
+# ledger denies further reservations; one non-4xx outcome resets the run and
+# the next billing date starts clean. Sized at roughly two SFO bundles, so a
+# credential outage costs ~12 billable events a day instead of ~124. Set to 0
+# to disable the breaker entirely.
+GOOGLE_WEATHER_CLIENT_ERROR_BREAKER = max(
+    env_int("GOOGLE_WEATHER_CLIENT_ERROR_BREAKER", 12), 0
+)
 ENABLE_GOOGLE_DAILY_FORECAST = env_bool("ENABLE_GOOGLE_DAILY_FORECAST", True)
 ENABLE_GOOGLE_CURRENT_CONDITIONS = env_bool("ENABLE_GOOGLE_CURRENT_CONDITIONS", True)
 GOOGLE_DAILY_INTERNAL_WEIGHT = env_float("GOOGLE_DAILY_INTERNAL_WEIGHT", 0.15)

@@ -353,6 +353,10 @@ def test_report_publishes_adjusted_promotion_gate_verdict() -> None:
     assert gate["live_activation_allowed"] is False
     assert gate["bootstrap_cluster_unit"] == "calendar_target_date"
     assert gate["bootstrap_calendar_days"] == run.decision.bootstrap_calendar_days
+    # A decision that never measured a cluster count publishes it as missing.
+    assert gate["bootstrap_calendar_days"] is None
+    assert gate["required_station_day_folds"] == 30
+    assert gate["required_bootstrap_calendar_days"] == 30
 
 
 def test_report_never_labels_the_50_dollar_target_as_guaranteed() -> None:

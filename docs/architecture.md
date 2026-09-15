@@ -1,7 +1,7 @@
 # Architecture
 
 WeatherEdge deliberately keeps two deep modules with a small interface between
-them. The system covers fifteen US city daily-high markets; SFO is the
+them. The system covers twenty US city daily-high markets; SFO is the
 flagship.
 
 ## City Registry
@@ -26,7 +26,7 @@ Responsibilities:
 - fetch Apple WeatherKit for all station coordinates into a private,
   provider-expiring tmpfs cache (optional research source, weight zero)
 - blend Google, NWS, Open-Meteo, and SFO history (SFO only)
-- run the station-agnostic NWP→EMOS→CLI path for the other fourteen cities:
+- run the station-agnostic NWP→EMOS→CLI path for the other nineteen cities:
   Open-Meteo previous-runs archive (8 models) and rolling-origin EMOS per city.
   Scheduled daily maintenance archives operational leads 1 and 2; lead 3
   remains available only to explicit historical backfills and on-demand
@@ -89,7 +89,9 @@ Responsibilities:
   `cli_settlements.is_final=1` truth after the next-day 06:00 fixed-standard
   grace window, never a raw live product
 - audit booked settlements with non-mutating `paper-resettle --verify`, including
-  durable mismatch and missing-final records
+  durable mismatch and missing-final records, and reconcile every settled lot
+  against the exchange's own finalized result
+  (`paper_settlement_exchange_checks`, never blocking settlement)
 - record and monitor paper-only trades
 - run walk-forward calibration on either LSTM held-out outcomes or clean
   archived blend outcomes (SFO); warm/hot cohort blocks and GFS-ensemble
@@ -125,7 +127,7 @@ publishes `webdist` plus fresh `trading_signal.json`, `forecast_data.json`,
 `weather_story_data.json`, `strategy_research.json`, and `cities_data.json`
 (per-city forecasts, latest settlement, book activity) to the `gh-pages`
 branch, which GitHub Pages serves at
-`https://jaxsonb04.github.io/weather_edge/`. The site includes a fifteen-city
+`https://jaxsonb04.github.io/weather_edge/`. The site includes a twenty-city
 Coverage grid; SFO is presented as the flagship.
 
 ## Deepening Opportunities

@@ -2,7 +2,7 @@
 
 ## Current State
 
-WeatherEdge has a credential-ready Apple WeatherKit REST source for all fifteen
+WeatherEdge has a credential-ready Apple WeatherKit REST source for all twenty
 settlement stations. It is disabled by default, has **zero live trading
 weight**, and has not been deployed to production as of 2026-08-10. Enabling
 the source fetches data; it does not change the NWP→EMOS forecast, calibrated
@@ -25,7 +25,7 @@ duplicating information already present in the NWP ensemble.
 - derives the market-day high from 24 unique hourly forecasts inside the exact
   fixed-standard settlement window;
 - treats Apple's daily maximum only as a transient diagnostic;
-- isolates a failed city from the other fourteen;
+- isolates a failed city from the other nineteen;
 - writes only complete, normalized current highs to a private mode-0600 file
   under `/run/weatheredge`;
 - makes each value unavailable at the earliest relevant
@@ -56,10 +56,13 @@ request per city per vintage is 60 scheduled calls/day, or at most 1,860 calls
 in a 31-day month. A dedicated ten-minute Apple purge is an independent,
 alertable expiry safety net; it cannot be blocked by a Google purge failure.
 
-The timer is part of the canonical unit inventory but the command exits safely
-without a request while `ENABLE_APPLE_WEATHER=0`. If the flag is enabled with
-incomplete credentials, the service fails visibly instead of reporting a false
-success.
+The refresh timer is **no longer part of the canonical unit inventory**. It is **retired as of the 2026-09-03 audit (FC-4)**: its runtime cache had no reader anywhere outside `apple_weatherkit.py`, and Apple's terms do not permit retaining an archive, so it could not become a scored EMOS member either. The unit files are still installed and integrity-checked, so an operator can re-enable it with `sudo systemctl enable --now weatheredge-apple-refresh.timer`, but no deploy path turns it on.
+`weatheredge-apple-purge.timer` stays canonical and enabled: it makes no request
+and it is what guarantees any residual Apple runtime content still expires.
+
+The command still exits safely without a request while `ENABLE_APPLE_WEATHER=0`,
+and if the flag is enabled with incomplete credentials the service fails visibly
+instead of reporting a false success.
 
 ## Activation Inputs
 

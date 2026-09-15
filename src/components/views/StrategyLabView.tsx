@@ -6,6 +6,7 @@ import { pct } from "../../lib/data";
 import {
   activeProfiles,
   archivedProfiles,
+  decisionCountProvenance,
   deferralReason,
   findProfile,
   gateCounts,
@@ -45,18 +46,27 @@ export function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const no = side?.NO;
   const yes = side?.YES;
   const hasObservedSideSplit = (no?.trades ?? 0) > 0 && (yes?.trades ?? 0) > 0;
+  // The artifact publishes its own refusal to treat this sum as a balance.
+  // Lead with that refusal rather than letting the figure read as one book's.
+  const combinedReason =
+    s.daily_summary?.equity_unavailable_reason ??
+    "Combined profile P&L spans separate paper accounts.";
   return (
-    <Finding>
-      Across archive-inclusive, economically separate published profile attribution in the {s.daily_summary.window_days ?? "recent"}-day window, the journal recorded{" "}
-      <strong>{money(t.realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital) at a{" "}
-      <strong>{pct(t.hit_rate, 0)} hit rate</strong>.
-      {no && yes && hasObservedSideSplit && (
-        <>
-          {" "}By side, NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades,
-          while {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong>.
-        </>
-      )}
-      {" "}That cross-profile total is strategy attribution, not one account&apos;s balance.
+    <Finding label="Cross-account attribution" icon="solar:layers-minimalistic-bold">
+      <span className="block font-medium text-foreground">{combinedReason}</span>
+      <span className="mt-1 block">
+        Summed across those separate books — archive-inclusive published profile attribution in the {s.daily_summary.window_days ?? "recent"}-day window — the journal recorded{" "}
+        <strong>{money(t.realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital), with{" "}
+        <strong>{pct(t.hit_rate, 0)}</strong> of its closed-or-settled positions exiting profitably.
+        {no && yes && hasObservedSideSplit && (
+          <>
+            {" "}By side, NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades,
+            while {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong>.
+          </>
+        )}
+        {" "}That cross-profile total is strategy attribution, not one account&apos;s balance; each book&apos;s own
+        balance and record are published separately below.
+      </span>
     </Finding>
   );
 }
@@ -64,14 +74,14 @@ export function TrackRecordFinding({ s }: { s: StrategyLab }) {
 const SELECTIVITY_DESIGN_NOTE =
   "Live Stability keeps those gates binding; Research ROI takes more bounded paper risk without contributing to real-money readiness.";
 
-function SelectivityFinding({ s }: { s: StrategyLab }) {
+export function SelectivityFinding({ s }: { s: StrategyLab }) {
   const gate = s.daily_summary?.gate_behavior;
   if (!gate) return null;
   const { approved, total } = gateCounts(gate);
   // The bounded public refresh publishes the gate section unpopulated. Its zeros
   // mean "not evaluated in this artifact", not "nothing survived", so the
   // deferral is stated in place of any survival rate.
-  if (gateDeferred(gate) || total === 0) {
+  if (gateDeferred(gate, s.daily_summary?.decision_analytics) || total === 0) {
     return (
       <Finding label="Deferred" icon="solar:hourglass-line-bold">
         Gate evaluation counts for this window are not published in this artifact, so no approval or rejection rate
@@ -82,9 +92,23 @@ function SelectivityFinding({ s }: { s: StrategyLab }) {
   const live = gate.by_profile?.find((g) => g.risk_profile === "live");
   const liveSignals = live?.signals ?? 0;
   const liveTop = live?.top_rejections?.[0];
+  const counts = decisionCountProvenance(s);
   return (
-    <Finding>
-      Of <strong>{total.toLocaleString()}</strong> gate evaluations this window only{" "}
+    <Finding
+      label={counts.cached ? "Cached counts" : undefined}
+      icon={counts.cached ? "solar:archive-minimalistic-bold" : undefined}
+    >
+      {counts.cached && (
+        <span className="block font-medium text-foreground">
+          These gate counts come from the last deploy-time analysis and stop at{" "}
+          <strong>{counts.asOf}</strong>; they are not current-runtime totals.
+          {/* The publisher writes the most precise sentence available about the
+              cached window; print it rather than only the synthesized date. */}
+          {counts.reason ? ` ${counts.reason}` : ""}
+        </span>
+      )}
+      Of <strong>{total.toLocaleString()}</strong> gate evaluations{" "}
+      {counts.cached ? `in the window ending ${counts.asOf}` : "this window"} only{" "}
       <strong>{approved.toLocaleString()}</strong> ({pct(approved / total, 2)}) survived.
       {liveSignals > 0 && (
         <>
@@ -438,13 +462,13 @@ export function EvidenceDossier({ s }: { s: StrategyLab }) {
             <DossierStat
               label="Readiness paper balance"
               value={liveBalance == null ? "—" : money(liveBalance, { sign: "negative-only" })}
-              note={liveSummary ? `${money(liveSummary.realized_pnl)} P&L · ${liveSummary.closed_positions} resolved` : "Readiness record unavailable"}
+              note={liveSummary ? `${money(liveSummary.realized_pnl)} P&L · ${liveSummary.closed_positions} closed or settled` : "Readiness record unavailable"}
               tone={(liveSummary?.realized_pnl ?? 0) > 0 ? "pos" : (liveSummary?.realized_pnl ?? 0) < 0 ? "neg" : undefined}
             />
             <DossierStat
               label="Research paper balance"
               value={researchBalance == null ? "—" : money(researchBalance, { sign: "negative-only" })}
-              note={researchSummary ? `${money(researchSummary.realized_pnl)} P&L · ${researchSummary.closed_positions} resolved` : "Research record unavailable"}
+              note={researchSummary ? `${money(researchSummary.realized_pnl)} P&L · ${researchSummary.closed_positions} closed or settled` : "Research record unavailable"}
               tone={(researchSummary?.realized_pnl ?? 0) > 0 ? "pos" : (researchSummary?.realized_pnl ?? 0) < 0 ? "neg" : undefined}
             />
             <DossierStat
@@ -531,8 +555,8 @@ function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
             }
           />
           <HeroStat label="ROI · resolved" value={sum.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum.roi ?? 0) > 0 ? "pos" : (sum.roi ?? 0) < 0 ? "neg" : undefined} />
-          <HeroStat label="Hit rate" value={sum.hit_rate == null ? "—" : pct(sum.hit_rate, 1)} />
-          <HeroStat label="Resolved" value={`${sum.closed_positions ?? 0} · ${sum.win_count ?? 0}–${sum.loss_count ?? 0}`} />
+          <HeroStat label="Profitable exits" value={sum.hit_rate == null ? "—" : pct(sum.hit_rate, 1)} />
+          <HeroStat label="Closed or settled" value={`${sum.closed_positions ?? 0} · ${sum.win_count ?? 0}–${sum.loss_count ?? 0}`} />
         </dl>
       </div>
     </div>

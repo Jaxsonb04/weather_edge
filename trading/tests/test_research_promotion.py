@@ -37,6 +37,11 @@ paragraph for the full rationale on each):
 - MEDIUM-1: ``reconcile_fold_inventory`` also catches a fabricated
   record/exclusion row that matches no real fold at all.
 
+2026-09-13 (owner PR #121 decision (d) re-check): a binding >=30
+calendar-target-date floor on the bootstrap's own cluster count --
+below 30 blocks, 30 or more passes, and a missing, malformed or
+wrong-unit count blocks (and cannot back an eligible decision).
+
 Fixture convention matches the sibling Task 3-5 test files
 (test_research_evidence.py/test_research_replay.py/
 test_research_candidates.py): ``ResearchCase``/``WalkForwardFold``/
@@ -52,6 +57,7 @@ from pathlib import Path
 
 import pytest
 
+from sfo_kalshi_quant import research_promotion as research_promotion_module
 from sfo_kalshi_quant.research_candidates import GAUSSIAN_PIT_CANDIDATE_KEY, IDENTITY_CANDIDATE_KEY
 from sfo_kalshi_quant.research_evidence import (
     CaseCoverageExclusion,
@@ -63,10 +69,13 @@ from sfo_kalshi_quant.research_policy import TARGET_POLICY
 from sfo_kalshi_quant.research_promotion import (
     EFFECT_FOUND,
     INSUFFICIENT_INSTRUMENT_COVERAGE,
+    MIN_BOOTSTRAP_CALENDAR_DAYS,
     MIN_DISTINCT_CALENDAR_TARGET_DAYS,
+    MIN_INDEPENDENT_CONFIRMATORY_DAYS,
     NO_EFFECT,
     PREDICTED_EDGE_SCOPE_NO_SIDE_OR_MAKER,
     PREDICTED_EDGE_SCOPE_YES_SIDE_TAKER,
+    REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE,
     REASON_BRIER_INCOMPLETE_COVERAGE,
     REASON_BRIER_REGRESSION,
     REASON_CALIBRATION_GAP_INCOMPLETE_COVERAGE,
@@ -80,6 +89,7 @@ from sfo_kalshi_quant.research_promotion import (
     REASON_FOLD_INVENTORY_MISMATCH,
     REASON_FOLD_NOT_PROMOTION_ELIGIBLE,
     REASON_HOLM_NOT_SIGNIFICANT,
+    REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS,
     REASON_INSUFFICIENT_DAYS,
     REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS,
     REASON_INSUFFICIENT_FILLED_POSITIONS,
@@ -785,6 +795,7 @@ def test_correlated_cities_cannot_turn_ten_inconclusive_days_into_promotion() ->
     assert REASON_INSUFFICIENT_DAYS not in duplicated.block_reasons
     assert REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS not in duplicated.block_reasons
     assert duplicated.bootstrap_calendar_days == original.bootstrap_calendar_days == 10
+    assert REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS in duplicated.block_reasons
     assert duplicated.bootstrap_cluster_unit == "calendar_target_date"
     assert duplicated.holm_p_value == original.holm_p_value
     assert duplicated.holm_p_value > 0.05
@@ -815,6 +826,7 @@ def test_evaluate_promotion_happy_path_is_eligible() -> None:
     assert decision.eligible_for_target_paper is True
     assert decision.effect_classification == EFFECT_FOUND
     assert decision.independent_confirmatory_days == 30
+    assert decision.bootstrap_calendar_days == 30
     assert decision.live_activation_allowed is False
 
 
@@ -829,6 +841,7 @@ def test_evaluate_promotion_is_deterministic() -> None:
 def test_promotion_decision_default_fields_match_plan_step4_sketch() -> None:
     decision = PromotionDecision(experiment_id="e1", eligible_for_target_paper=False, block_reasons=("x",))
     assert decision.live_activation_allowed is False
+    assert decision.bootstrap_calendar_days is None
 
 
 def test_live_activation_allowed_is_always_false_across_scenarios() -> None:
@@ -1060,6 +1073,8 @@ def test_fifteen_stations_two_calendar_days_still_blocks_on_distinct_days() -> N
     assert REASON_INSUFFICIENT_DAYS not in decision.block_reasons
     assert decision.distinct_calendar_target_days == 2
     assert REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS in decision.block_reasons
+    assert decision.bootstrap_calendar_days == 2
+    assert REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS in decision.block_reasons
     assert decision.eligible_for_target_paper is False
 
 
@@ -1083,6 +1098,131 @@ def test_distinct_calendar_target_days_boundary(days: int, expect_blocked: bool)
     assert REASON_INSUFFICIENT_DAYS not in decision.block_reasons
     assert decision.distinct_calendar_target_days == days
     assert (REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS in decision.block_reasons) == expect_blocked
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-13 (owner PR #121 decision (d) re-check): the date-clustered
+# bootstrap's own unit -- calendar target dates -- must clear the
+# 30-independent-day bar. Station-day folds alone never prove it.
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_calendar_day_floor_matches_the_thirty_independent_day_bar() -> None:
+    assert MIN_BOOTSTRAP_CALENDAR_DAYS == 30 == MIN_INDEPENDENT_CONFIRMATORY_DAYS
+
+
+@pytest.mark.parametrize(
+    "days,expect_blocked",
+    [
+        (MIN_BOOTSTRAP_CALENDAR_DAYS - 1, True),
+        (MIN_BOOTSTRAP_CALENDAR_DAYS, False),
+        (MIN_BOOTSTRAP_CALENDAR_DAYS + 1, False),
+    ],
+)
+def test_bootstrap_calendar_days_boundary(days: int, expect_blocked: bool) -> None:
+    # 3 stations x `days` dates clears the 30-station-day-fold floor and the
+    # 10-distinct-date floor at every point; only the calendar-date cluster
+    # count the bootstrap resamples varies.
+    folds, replays, candidates = _multi_station_experiment(
+        stations=3, days=days, baseline_pnl=10.0, challenger_pnl=15.0,
+    )
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    # Both counts are surfaced: station-day breadth and the true cluster count.
+    assert decision.independent_confirmatory_days == 3 * days
+    assert decision.bootstrap_calendar_days == days
+    assert decision.bootstrap_cluster_unit == "calendar_target_date"
+    assert REASON_INSUFFICIENT_DAYS not in decision.block_reasons
+    assert REASON_INSUFFICIENT_DISTINCT_CALENDAR_DAYS not in decision.block_reasons
+    assert REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE not in decision.block_reasons
+    if expect_blocked:
+        # The calendar-day floor is the ONLY thing standing between this
+        # otherwise-clean evidence and promotion.
+        assert decision.block_reasons == (REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS,)
+        assert decision.eligible_for_target_paper is False
+    else:
+        assert decision.block_reasons == ()
+        assert decision.eligible_for_target_paper is True
+
+
+def _bootstrap_with_interval_changes(metric: str, **changes):
+    real_bootstrap = research_promotion_module.day_clustered_bootstrap
+
+    def fake(aggregates, **kwargs):
+        results = dict(real_bootstrap(aggregates, **kwargs))
+        results[metric] = dataclasses.replace(results[metric], **changes)
+        return results
+
+    return fake
+
+
+@pytest.mark.parametrize(
+    "metric,changes",
+    [
+        ("roi", {"n_clusters": None}),
+        ("log_growth_per_day", {"n_clusters": None}),
+        ("roi", {"n_clusters": True}),
+        ("roi", {"n_clusters": -1}),
+        ("roi", {"n_clusters": 30.0}),
+        ("roi", {"cluster_unit": "station_day_fold"}),
+    ],
+)
+def test_missing_bootstrap_calendar_day_count_fails_closed(monkeypatch, metric, changes) -> None:
+    monkeypatch.setattr(
+        research_promotion_module,
+        "day_clustered_bootstrap",
+        _bootstrap_with_interval_changes(metric, **changes),
+    )
+    folds, replays, candidates = _happy_path_evidence()
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert decision.bootstrap_calendar_days is None
+    assert decision.block_reasons == (REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE,)
+    assert decision.eligible_for_target_paper is False
+
+
+def test_fewer_log_growth_dates_bind_the_calendar_day_count(monkeypatch) -> None:
+    monkeypatch.setattr(
+        research_promotion_module,
+        "day_clustered_bootstrap",
+        _bootstrap_with_interval_changes("log_growth_per_day", n_clusters=MIN_BOOTSTRAP_CALENDAR_DAYS - 1),
+    )
+    folds, replays, candidates = _happy_path_evidence()
+    decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
+
+    assert decision.bootstrap_calendar_days == MIN_BOOTSTRAP_CALENDAR_DAYS - 1
+    assert decision.block_reasons == (REASON_INSUFFICIENT_BOOTSTRAP_CALENDAR_DAYS,)
+    assert decision.eligible_for_target_paper is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"bootstrap_calendar_days": None},
+        {"bootstrap_calendar_days": MIN_BOOTSTRAP_CALENDAR_DAYS - 1},
+        {"bootstrap_calendar_days": -1},
+        {"bootstrap_calendar_days": True},
+        {"bootstrap_calendar_days": 30.0},
+        {"bootstrap_calendar_days": MIN_BOOTSTRAP_CALENDAR_DAYS, "bootstrap_cluster_unit": "station_day_fold"},
+    ],
+)
+def test_an_eligible_decision_cannot_be_built_without_enough_calendar_clusters(overrides) -> None:
+    with pytest.raises(ValueError, match="bootstrap_calendar_days"):
+        PromotionDecision(experiment_id="e1", eligible_for_target_paper=True, block_reasons=(), **overrides)
+
+
+def test_decision_construction_accepts_a_trusted_count_and_any_blocked_verdict() -> None:
+    eligible = PromotionDecision(
+        experiment_id="e1", eligible_for_target_paper=True, block_reasons=(),
+        bootstrap_calendar_days=MIN_BOOTSTRAP_CALENDAR_DAYS,
+    )
+    assert eligible.bootstrap_calendar_days == MIN_BOOTSTRAP_CALENDAR_DAYS
+    blocked = PromotionDecision(
+        experiment_id="e1", eligible_for_target_paper=False,
+        block_reasons=(REASON_BOOTSTRAP_CALENDAR_DAYS_UNAVAILABLE,),
+    )
+    assert blocked.bootstrap_calendar_days is None
 
 
 # ---------------------------------------------------------------------------

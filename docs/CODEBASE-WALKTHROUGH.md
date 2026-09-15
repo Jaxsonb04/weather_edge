@@ -145,7 +145,7 @@ recheck.
 ## The system in one sentence
 
 WeatherEdge turns multi-source weather forecasts into calibrated daily-high
-temperature probabilities for 15 city prediction markets, applies fee,
+temperature probabilities for 20 city prediction markets, applies fee,
 liquidity, and risk gates, records simulated orders in isolated paper accounts,
 settles them from official NWS climate reports, and publishes a versioned
 read-only dashboard.
@@ -277,8 +277,11 @@ despite partial extraction into `store/`.
 
 ## Scheduled machinery
 
-The repository defines 14 timers. This is a code map, not proof that every
-timer is currently enabled or healthy.
+The repository defines 14 timers, one of which — Apple refresh — is retired:
+its unit files still ship and are integrity-checked, but no deploy path
+enables it and the scheduler watchdog's canonical set (12 timers) excludes
+it. This is a code map, not proof that every timer is currently enabled or
+healthy.
 
 | Timer gear | Repository cadence/purpose |
 |---|---|
@@ -293,7 +296,7 @@ timer is currently enabled or healthy.
 | Scheduler health | Offset five-minute watchdog of units, freshness, disk, and publication |
 | Strategy Lab | Wall-clock every 5 minutes; research/accounting artifact |
 | Apple purge | Every 10 minutes |
-| Apple refresh | Four fixed UTC vintages daily |
+| Apple refresh | Four fixed UTC vintages daily; **retired (FC-4)** — shipped and integrity-checked, never enabled by a deploy |
 | Non-SFO Google refresh | Daily |
 | Google purge | Every 10 minutes |
 
@@ -312,7 +315,7 @@ implementation details.
   no authenticated live-order client.
 - The two active paper accounts are economically separate.
 - Official final NWS CLI truth settles positions; raw observations do not.
-- SFO is the flagship evidence base; the other 14 cities have a shorter
+- SFO is the flagship evidence base; the other 19 cities have a shorter
   operational history and should not inherit SFO claims automatically.
 - Apple currently has zero model/trading weight and a strict non-durable
   boundary. The owner has directed that the later batch give Apple a genuine
@@ -333,7 +336,7 @@ claim/boundary change before we review code behavior?
 **Purpose:** make every source, forecast, market, and settlement refer to the
 same city and climate day.
 
-**Flow:** 15 registry entries define slug, city, market series, NWS station,
+**Flow:** 20 registry entries define slug, city, market series, NWS station,
 CLI site/issuer, coordinates, civil timezone, and fixed-standard UTC offset.
 The settlement calendar maps timestamps into midnight-to-midnight local
 standard-time days and rounds official reported highs.
@@ -417,7 +420,7 @@ appear healthy with insufficient model coverage.
 
 ### G05 — SFO-specific blend, residual calibration, and challengers
 
-**Purpose:** preserve the deeper SFO research stack while giving the other 14
+**Purpose:** preserve the deeper SFO research stack while giving the other 19
 cities a station-agnostic EMOS path.
 
 **Flow:** the legacy SFO path can blend Google, NWS, Open-Meteo, and history,

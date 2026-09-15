@@ -1,7 +1,7 @@
 # WeatherEdge Context
 
 WeatherEdge is a station-aligned weather forecasting and Kalshi paper-trading
-research project covering fifteen US city daily-high markets, with SFO as the
+research project covering twenty US city daily-high markets, with SFO as the
 flagship.
 
 ## Domain Terms
@@ -52,7 +52,7 @@ flagship.
   post-processing.
 - **Trading module**: `trading/sfo_kalshi_quant/`, the Kalshi market adapter,
   probability engine, risk gates, and paper-trading journal, looping all
-  fifteen cities with per-city forecaster adapters and settlement clocks.
+  twenty cities with per-city forecaster adapters and settlement clocks.
 - **Deployment module**: `trading/deploy/aws/`, the scripts and systemd units
   that preserve the current AWS split-folder runtime.
 - **Web app**: the React + HeroUI Pro SPA at the repo root (`src/`), built with

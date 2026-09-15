@@ -8,6 +8,9 @@ import pytest
 from sfo_kalshi_quant.account import strategy_fingerprint
 from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.research_entry_risk import (
+    RESEARCH_ENTRY_RISK_VERSION,
+    TARGET_ENTRY_FULL_LOSS_CAP,
+    TARGET_OPEN_RISK_CHARGE_FRACTION,
     target_entry_spend_limit,
     target_remaining_daily_risk,
 )
@@ -56,20 +59,71 @@ def test_strong_conservative_edge_can_scale_up_to_existing_production_ceiling():
 
 
 def test_daily_budget_charges_other_target_dates_and_cannot_recycle_losses():
-    assert target_remaining_daily_risk(0.0, 130.0) == 20.0
-    assert target_remaining_daily_risk(-50.0, 130.0) == 0.0
-    assert target_remaining_daily_risk(-50.0, 90.0) == 10.0
-    assert target_remaining_daily_risk(40.0, 130.0) == 20.0
+    # $150 budget less 60% of every open/pending cost across all target dates.
+    assert target_remaining_daily_risk(0.0, 130.0) == pytest.approx(72.0)
+    assert target_remaining_daily_risk(-50.0, 130.0) == pytest.approx(22.0)
+    assert target_remaining_daily_risk(-50.0, 90.0) == pytest.approx(46.0)
+    # Profits never expand the budget.
+    assert target_remaining_daily_risk(40.0, 130.0) == pytest.approx(72.0)
+    # The $150 realized pause is intact, and open risk alone can still
+    # exhaust the budget.
+    assert target_remaining_daily_risk(-150.0, 0.0) == 0.0
+    assert target_remaining_daily_risk(0.0, 250.0) == 0.0
     assert target_remaining_daily_risk(0.0, math.inf) == 0.0
     assert target_remaining_daily_risk(float("nan"), 0.0) == 0.0
     assert target_remaining_daily_risk(0.0, -1.0) == 0.0
 
 
+def test_open_risk_is_charged_at_design_fraction():
+    # 0.60 is a DESIGN fraction near the per-position median, not a worst
+    # case. Public research ledger (strategy_research.json generated
+    # 2026-09-13T01:20Z, paper-research-roi-v6, 22 losing closes):
+    # per-position loss/cost has median 0.61 and max 0.734; 12 of 22
+    # exceed 0.60. The three 2026-09-11/12 incident exits (61.05%, 40.76%,
+    # 53.51% of cost, against a 35% trigger) are the largest DOLLAR
+    # losses, not the worst ratios. The room below is a planning figure;
+    # the hard bound is the $150 REALIZED pause, pinned by
+    # test_daily_budget_charges_other_target_dates_and_cannot_recycle_losses.
+    assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.60
+    assert RESEARCH_ENTRY_RISK_VERSION == "research-entry-risk-v3-scaling-2026-09-13"
+    assert target_remaining_daily_risk(0.0, 100.0) == pytest.approx(90.0)
+    # Owner's 2026-09-12 public snapshot: -$50 realized, $132.76 open. The
+    # 100% charge left $0; the stop-scaled charge leaves $20.34, which still
+    # refuses a second $90 thin-edge entry at the per-entry cap.
+    room = target_remaining_daily_risk(-50.0, 132.76)
+    assert room == pytest.approx(150.0 - 50.0 - 0.6 * 132.76)
+    assert room == pytest.approx(20.344)
+    assert room < TARGET_ENTRY_FULL_LOSS_CAP
+
+
 def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved():
     live = strategy_config_for_profile("live")
     research = strategy_config_for_profile("research")
-    assert strategy_fingerprint(live, entry_mode="limit") == "88e417a64d8be9b1bb933b3b"
-    assert strategy_fingerprint(research, entry_mode="limit") != "92934c133d00d85deb078b3c"
+    # The live fingerprint must match the behaviour-v3 pin in
+    # test_research_sleeves.py: the research entry-risk identity added
+    # here never reaches the live book. Before the 2026-09-07 rotation of
+    # STRATEGY_BEHAVIOR_VERSION the same two values were
+    # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c; under behaviour-v3
+    # before the 2026-09-13 `limit_taker_cross_max_levels` field it was
+    # 93326de538852004fc08aa99.
+    assert strategy_fingerprint(live, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
+    # Research without research_entry_risk_version hashes to
+    # 4d812e63727caf1b3de6b127 under behaviour-v3; with it, the research
+    # identity moves. Under research-entry-risk-v2-scaled-2026-09-12 (PR #121)
+    # it was 69a29d415bad6047b03264be; the v3 scaling release (2026-09-13:
+    # stop-scaled daily open-risk charge, no behind-bid reservation, 30-minute
+    # day-ahead rest) moves it again while the live pin above stays put.
+    assert strategy_fingerprint(research, entry_mode="limit") != "4d812e63727caf1b3de6b127"
+    assert strategy_fingerprint(research, entry_mode="limit") != "69a29d415bad6047b03264be"
+    # Two 2026-09-13 inputs move the research identity, and this release ships
+    # both in one deploy. The v3 version alone gave 40806599ad7acb21eab44c8d;
+    # the `limit_taker_cross_max_levels` config field alone (research pins it
+    # to 1, but the key itself is hashed: a labelling change, no research
+    # behaviour change) gave 0db3fd6d76056f7f7b141ff2. Together, recomputed
+    # from strategy_config_for_profile("research") at integration:
+    assert strategy_fingerprint(research, entry_mode="limit") != "40806599ad7acb21eab44c8d"
+    assert strategy_fingerprint(research, entry_mode="limit") != "0db3fd6d76056f7f7b141ff2"
+    assert strategy_fingerprint(research, entry_mode="limit") == "b123f57836129c1df1c995bd"
     assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_pnl == 50.0

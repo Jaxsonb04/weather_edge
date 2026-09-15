@@ -101,7 +101,7 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
           <SectionHeading
             index="01"
             eyebrow="Coverage"
-            title="Fifteen city markets, one calibrated engine"
+            title="Twenty city markets, one calibrated engine"
             sub="Every market settles on its own official NWS climate report and runs the same NWP/EMOS forecast. Select any city to drill into its call — San Francisco is the flagship, with the full market microstructure."
           />
           <Reveal>
@@ -146,7 +146,7 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
           ) : (
             <Reveal>
               <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">
-                Per-city detail will appear once the fifteen-city coverage artifact is published.
+                Per-city detail will appear once the twenty-city coverage artifact is published.
               </p>
             </Reveal>
           )}

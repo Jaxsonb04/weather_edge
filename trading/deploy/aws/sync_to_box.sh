@@ -39,6 +39,7 @@ FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
+INSTALL_SYSTEMD_HELPER="$SCRIPT_DIR/install_systemd.sh"
 
 # Audit F-07: this script deliberately needs NO local interpreter. It used to
 # stamp build provenance by importing two package constants, and discovering
@@ -98,6 +99,10 @@ if [[ ! -f "$SYSTEMD_VERIFY_HELPER" ]]; then
   echo "Systemd unit verification helper not found: $SYSTEMD_VERIFY_HELPER" >&2
   exit 1
 fi
+if [[ ! -f "$INSTALL_SYSTEMD_HELPER" ]]; then
+  echo "Systemd installer not found: $INSTALL_SYSTEMD_HELPER" >&2
+  exit 1
+fi
 
 chmod 600 "$HOST_KEY"
 
@@ -123,7 +128,11 @@ verify_deploy_source_unchanged() {
     || ! git -C "$WEATHEREDGE_ROOT" diff --quiet \
     || ! git -C "$WEATHEREDGE_ROOT" diff --cached --quiet \
     || [[ -n "$(git -C "$WEATHEREDGE_ROOT" ls-files --others --exclude-standard)" ]]; then
-    echo "Deploy source changed during $phase; refusing to stamp or resume this deployment. Runtime remains quiesced." >&2
+    if (( ${PRE_TRANSFER_RECOVERY_ARMED:-0} == 1 )); then
+      echo "Deploy source changed during $phase; refusing to stamp or resume this deployment. No source was transferred, so the captured runtime is restored." >&2
+    else
+      echo "Deploy source changed during $phase; refusing to stamp or resume this deployment. Runtime remains quiesced." >&2
+    fi
     exit 1
   fi
 }
@@ -133,8 +142,20 @@ verify_deploy_source_unchanged() {
 # streamed for preflight and backup so an old remote source tree cannot weaken
 # the deployment gate.
 REMOTE_DB="$REMOTE_BASE/trading/data/paper_trading.db"
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  bash -s preflight "$REMOTE_DB" < "$BACKUP_HELPER"
+preflight_output="$(
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    bash -s preflight "$REMOTE_DB" < "$BACKUP_HELPER"
+)"
+if [[ -n "$preflight_output" ]]; then
+  printf '%s\n' "$preflight_output"
+fi
+# The preflight names an existing authoritative database with a dedicated line;
+# an explicitly authorized empty host never prints it. Only an established host
+# can be stranded by an earlier deploy, so the guard below keys on this.
+HOST_DATABASE_PRESENT=0
+if grep -qx 'WEATHEREDGE_DATABASE_PRESENT=1' <<<"$preflight_output"; then
+  HOST_DATABASE_PRESENT=1
+fi
 
 # Preserve an intentional pause if the independent scheduler watchdog already
 # exists, but enable it on the first deploy that introduces the unit.
@@ -152,24 +173,30 @@ case "$scheduler_probe_status" in
     ;;
 esac
 
-# Preserve an intentional pause once either Apple unit exists, but enable each
-# timer on the first deploy that introduces it. Otherwise the timerless install
-# would create a disabled unit that the canonical scheduler check immediately
-# reports as missing from the established host's captured policy.
-APPLE_REFRESH_WAS_ABSENT=0
-apple_refresh_probe_status=0
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-  bash -s probe weatheredge-apple-refresh.timer < "$QUIESCE_HELPER" \
-  || apple_refresh_probe_status=$?
-case "$apple_refresh_probe_status" in
-  0) ;;
-  10) APPLE_REFRESH_WAS_ABSENT=1 ;;
-  *)
-    echo "failed to inspect Apple refresh timer before quiescence (status=$apple_refresh_probe_status)" >&2
-    exit "$apple_refresh_probe_status"
-    ;;
-esac
+# FC-4 (2026-09-03 audit, re-verified 2026-09-06): the Apple WeatherKit refresh
+# is retired. Its 4x/day paid fetch fills `AppleRuntimeCache.active_highs`,
+# which has no caller anywhere outside apple_weatherkit.py; the service log says
+# so itself on every run ("live trading weight remains 0"); and the 10-minute
+# purge deletes the cache about an hour into each 6-hour cycle, so the data does
+# not exist most of the time. It cannot become a scored EMOS member either,
+# because Apple's terms do not permit retaining the archive that scoring needs.
+# The unit files stay installed so re-enabling is one systemctl command, but the
+# installed release must never restore this timer -- including on a host that
+# has it enabled right now, whose captured policy would otherwise put it
+# straight back. The one exception is a deploy that fails before its first
+# rsync: that host still runs the old release, whose check_scheduler_health.sh
+# requires every timer it had enabled, so the pre-transfer recovery below puts
+# retired timers back too.
+RETIRED_TIMERS=(
+  "weatheredge-apple-refresh.timer"
+)
 
+# Preserve an intentional pause once the Apple purge unit exists, but enable it
+# on the first deploy that introduces it. Otherwise the timerless install would
+# create a disabled unit that the canonical scheduler check immediately reports
+# as missing from the established host's captured policy. The purge survives the
+# refresh's retirement deliberately: it makes no API call and it guarantees any
+# residual Apple runtime content still expires.
 APPLE_PURGE_WAS_ABSENT=0
 apple_purge_probe_status=0
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
@@ -186,23 +213,223 @@ esac
 
 # Capture the established host's timer policy before quiescing it. Stream the
 # current helper because the remote source tree may be older than this deploy.
-# A failed transfer or install deliberately leaves the box quiesced; only a
-# completely successful deploy restores the exact set that was enabled before.
+# The capture yields two sets:
+#   CAPTURED_TIMERS  every timer enabled at capture, retired ones included. The
+#                    pre-transfer recovery restores exactly these: before the
+#                    first rsync the host still runs the old release, whose
+#                    scheduler watchdog can require a timer this release retires.
+#   ENABLED_TIMERS   the policy restored once the new release is installed: the
+#                    capture minus retired timers, plus the first-deploy
+#                    additions below.
+# A failed transfer or install deliberately leaves the box quiesced.
 enabled_timer_output="$(
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s capture < "$QUIESCE_HELPER"
 )"
 ENABLED_TIMERS=()
+CAPTURED_TIMERS=()
+CAPTURED_MAINTENANCE_MARKER=0
 while IFS= read -r timer; do
-  [[ -n "$timer" ]] && ENABLED_TIMERS+=("$timer")
+  [[ -n "$timer" ]] || continue
+  if [[ "$timer" == "@deploy-maintenance-marker-present" ]]; then
+    CAPTURED_MAINTENANCE_MARKER=1
+    continue
+  fi
+  CAPTURED_TIMERS+=("$timer")
+  retired=0
+  for retired_timer in ${RETIRED_TIMERS[@]+"${RETIRED_TIMERS[@]}"}; do
+    if [[ "$timer" == "$retired_timer" ]]; then
+      retired=1
+    fi
+  done
+  if (( retired == 1 )); then
+    echo "retired WeatherEdge timer captured; the installed release will not restore it, only a pre-transfer recovery would: $timer" >&2
+    continue
+  fi
+  ENABLED_TIMERS+=("$timer")
 done <<<"$enabled_timer_output"
+# Retired timers do not count: a host whose only enabled timer is retired runs
+# no production timer, so the stranded-host guard below treats it as empty.
+CAPTURED_TIMER_COUNT=${#ENABLED_TIMERS[@]}
 if (( SCHEDULER_WATCHDOG_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("sfo-scheduler-health.timer")
 fi
-if (( APPLE_REFRESH_WAS_ABSENT == 1 )); then
-  ENABLED_TIMERS+=("weatheredge-apple-refresh.timer")
-fi
 if (( APPLE_PURGE_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("weatheredge-apple-purge.timer")
+fi
+
+# The release canonical timer set: exactly what install_systemd.sh enables,
+# minus retired timers, plus the scheduler watchdog. Read literally from the
+# installer so this deploy needs no interpreter and cannot drift from it.
+canonical_release_timers() {
+  local enable_line=""
+  local line_count=""
+  local timer=""
+  local retired_timer=""
+  local retired=0
+  local has_watchdog=0
+  local -a words=()
+  enable_line="$(sed -n 's/^sudo systemctl enable --now //p' "$INSTALL_SYSTEMD_HELPER")"
+  line_count="$(grep -c . <<<"$enable_line" || true)"
+  if [[ "$line_count" != "1" ]]; then
+    echo "expected exactly one 'sudo systemctl enable --now' line in $INSTALL_SYSTEMD_HELPER (found $line_count)" >&2
+    return 1
+  fi
+  read -r -a words <<<"$enable_line"
+  for timer in ${words[@]+"${words[@]}"}; do
+    if [[ ! "$timer" =~ ^[A-Za-z0-9@._-]+\.timer$ ]]; then
+      echo "unexpected token in the installer's enabled timer list: $timer" >&2
+      return 1
+    fi
+    retired=0
+    for retired_timer in ${RETIRED_TIMERS[@]+"${RETIRED_TIMERS[@]}"}; do
+      if [[ "$timer" == "$retired_timer" ]]; then
+        retired=1
+      fi
+    done
+    if (( retired == 1 )); then
+      continue
+    fi
+    case "$timer" in
+      sfo-scheduler-health.timer) has_watchdog=1 ;;
+    esac
+    printf '%s\n' "$timer"
+  done
+  if (( has_watchdog == 0 )); then
+    printf '%s\n' "sfo-scheduler-health.timer"
+  fi
+}
+
+# Stranded-host guard (release decision 3). A deploy that dies after quiescing
+# and before its recovery trap is armed deliberately leaves every timer disabled
+# and the maintenance marker in place; production sat dark that way from
+# 2026-09-13T01:22Z. Capturing that state as "the policy to restore" would make
+# the next deploy restore nothing, remove the marker, never re-arm the scheduler
+# watchdog, and still report success -- a dark, unwatched box.
+#
+# The guard applies to an ESTABLISHED host: one whose preflight found the
+# authoritative database. A genuinely new host has neither timers nor a database
+# and keeps the historical first-deploy behaviour. On an established host an
+# empty capture, or any leftover maintenance marker, is never guessed at:
+#   SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1  a successful deploy restores the
+#                                          release canonical timer set, printed
+#                                          below before anything is quiesced;
+#   SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1      deploy with exactly what was captured,
+#                                          so an intentionally paused host stays
+#                                          paused.
+HOST_STRANDED=0
+if (( CAPTURED_MAINTENANCE_MARKER == 1 )) \
+  || (( HOST_DATABASE_PRESENT == 1 && CAPTURED_TIMER_COUNT == 0 )); then
+  HOST_STRANDED=1
+fi
+if (( HOST_STRANDED == 1 )); then
+  restore_canonical="${SFO_DEPLOY_RESTORE_CANONICAL_TIMERS:-0}"
+  keep_captured="${SFO_DEPLOY_KEEP_CAPTURED_TIMERS:-0}"
+  if [[ "$restore_canonical" == "1" && "$keep_captured" == "1" ]]; then
+    echo "refusing to deploy: set only one of SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1 and SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1" >&2
+    exit 1
+  elif [[ "$restore_canonical" == "1" ]]; then
+    canonical_output="$(canonical_release_timers)"
+    ENABLED_TIMERS=()
+    while IFS= read -r timer; do
+      if [[ -n "$timer" ]]; then
+        ENABLED_TIMERS+=("$timer")
+      fi
+    done <<<"$canonical_output"
+    echo "SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1: the host looks stranded (captured enabled timers=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER). A successful deploy restores these ${#ENABLED_TIMERS[@]} release canonical timer(s) instead of the captured policy:" >&2
+    printf '  %s\n' "${ENABLED_TIMERS[@]}" >&2
+  elif [[ "$keep_captured" == "1" ]]; then
+    echo "SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1: deploying with the captured policy (captured enabled timers=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)" >&2
+  else
+    echo "refusing to deploy: the host looks stranded by an earlier deploy (captured enabled timers=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)." >&2
+    echo "No timer has been quiesced, and no source, unit or maintenance marker has been changed. The backup preflight has already run its sweep, though: it deletes local database snapshot and checksum pairs older than SFO_DATABASE_BACKUP_KEEP_DAYS and, when no maintenance marker is present, interrupted-backup leftovers older than six hours." >&2
+    echo "Inspect the host first (trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0), then rerun with" >&2
+    echo "SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1 to restore the release canonical timer set, or" >&2
+    echo "SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1 to keep exactly the captured policy." >&2
+    exit 1
+  fi
+fi
+
+# Pre-transfer recovery (release review, deploy HIGH). From the maintenance
+# marker until the first rsync the remote source tree is still the running
+# revision, so a failure in that window -- a dropped SSH session during the
+# multi-gigabyte backup round trip, a failed backup gate, an operator Ctrl-C --
+# restores every timer enabled at capture (CAPTURED_TIMERS, retired ones
+# included, because the old release's scheduler watchdog still requires them)
+# and releases maintenance instead of leaving the host dark. Only an
+# established, non-stranded host is recovered
+# this way: a stranded host was already quiesced before this deploy began (its
+# tree may hold a partial earlier transfer), and a new host has nothing to
+# restore. From the first rsync on the tree may be mixed, so the historical rule
+# applies again and a failure leaves the host quiesced with the marker.
+RECOVERY_SSH_ATTEMPTS="${WEATHEREDGE_RECOVERY_SSH_ATTEMPTS:-4}"
+RECOVERY_SSH_RETRY_SECONDS="${WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS:-30}"
+if [[ ! "$RECOVERY_SSH_ATTEMPTS" =~ ^[1-9][0-9]*$ || ! "$RECOVERY_SSH_RETRY_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "WEATHEREDGE_RECOVERY_SSH_ATTEMPTS must be a positive integer and WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS a non-negative integer" >&2
+  exit 1
+fi
+# ssh exits 255 for its own connection failures and with the remote command's
+# status otherwise, so only a lost connection is retried; a remote command that
+# ran and failed is reported, never repeated.
+recovery_ssh() {
+  local input="$1"
+  shift
+  local attempt=1
+  local status=0
+  while true; do
+    status=0
+    if [[ -n "$input" ]]; then
+      ssh "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$REMOTE_USER@$HOST_IP" "$@" < "$input" || status=$?
+    else
+      ssh "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$REMOTE_USER@$HOST_IP" "$@" < /dev/null || status=$?
+    fi
+    if (( status != 255 || attempt >= RECOVERY_SSH_ATTEMPTS )); then
+      return "$status"
+    fi
+    echo "warning: SSH connection lost during pre-transfer recovery (attempt $attempt of $RECOVERY_SSH_ATTEMPTS); retrying in ${RECOVERY_SSH_RETRY_SECONDS}s" >&2
+    sleep "$RECOVERY_SSH_RETRY_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
+PRE_TRANSFER_RECOVERY_ARMED=0
+recover_pre_transfer_runtime() {
+  local interrupted_status="${1:-$?}"
+  local restore_status=0
+  local release_status=0
+  local watchdog_captured=0
+  local timer=""
+  trap - EXIT HUP INT TERM
+  if (( PRE_TRANSFER_RECOVERY_ARMED == 1 )); then
+    PRE_TRANSFER_RECOVERY_ARMED=0
+    echo "deploy stopped before any source was transferred (status=$interrupted_status); the remote tree is unchanged, so restoring the ${#CAPTURED_TIMERS[@]} captured timer(s) and releasing maintenance" >&2
+    if (( ${#CAPTURED_TIMERS[@]} > 0 )); then
+      recovery_ssh "$QUIESCE_HELPER" bash -s restore "${CAPTURED_TIMERS[@]}" || restore_status=$?
+    fi
+    if (( restore_status == 0 )); then
+      recovery_ssh "" "sudo rm -f -- '$DEPLOY_MAINTENANCE_MARKER'" || release_status=$?
+    fi
+    if (( restore_status == 0 && release_status == 0 )); then
+      for timer in ${CAPTURED_TIMERS[@]+"${CAPTURED_TIMERS[@]}"}; do
+        case "$timer" in
+          sfo-scheduler-health.timer) watchdog_captured=1 ;;
+        esac
+      done
+      if (( watchdog_captured == 1 )); then
+        recovery_ssh "" "sudo systemctl start sfo-scheduler-health.service" \
+          || echo "warning: scheduler health run after pre-transfer recovery failed; its timer is active" >&2
+      fi
+      echo "Pre-transfer recovery restored ${#CAPTURED_TIMERS[@]} timer(s) and released deployment maintenance." >&2
+    else
+      echo "warning: pre-transfer recovery failed (restore status=$restore_status, release status=$release_status). The host may remain quiesced with the maintenance marker: follow trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0." >&2
+    fi
+  fi
+  exit "$interrupted_status"
+}
+if (( HOST_STRANDED == 0 && HOST_DATABASE_PRESENT == 1 )); then
+  PRE_TRANSFER_RECOVERY_ARMED=1
+  trap 'recover_pre_transfer_runtime 129' HUP
+  trap 'recover_pre_transfer_runtime 130' INT
+  trap 'recover_pre_transfer_runtime 143' TERM
+  trap 'recover_pre_transfer_runtime $?' EXIT
 fi
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
@@ -233,6 +460,11 @@ verify_deploy_source_unchanged "backup verification"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo mkdir -p '$REMOTE_BASE/requirements' && sudo chown '$REMOTE_USER:$REMOTE_USER' '$REMOTE_BASE' '$REMOTE_BASE/requirements'"
+
+# Source transfer starts here. From now on the remote tree may be mixed, so a
+# failure must leave the host quiesced (see the pre-transfer recovery note).
+PRE_TRANSFER_RECOVERY_ARMED=0
+trap - EXIT HUP INT TERM
 
 # The sole Python manifest lives at the repository root and reads README.md
 # while discovering the package below trading/. Send those build inputs before

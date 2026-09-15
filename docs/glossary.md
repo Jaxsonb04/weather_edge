@@ -4,7 +4,7 @@
 
 - **City registry**: `forecaster/cities.py` (duplicated byte-identically as
   `trading/sfo_kalshi_quant/cities.py`, parity-tested), defining each of the
-  fifteen city markets: slug, name, Kalshi series ticker, NWS settlement
+  twenty city markets: slug, name, Kalshi series ticker, NWS settlement
   station, CLI product (site + issuedby), lat/lon, civil timezone, and fixed
   standard-time UTC offset.
 - **KSFO/SFO**: the airport weather station and flagship settlement target.
@@ -62,8 +62,8 @@
 - **Forecaster**: `forecaster/`, the weather data, SFO blend, multi-city
   NWP/EMOS archive, CLI settlement truth, and site data generator.
 - **Trading engine**: `trading/sfo_kalshi_quant/`, the Kalshi analyzer and
-  paper-trading CLI, looping all fifteen registered cities.
+  paper-trading CLI, looping all twenty registered cities.
 - **Dashboard**: the React + Vite SPA served from GitHub Pages. The publisher
   ships the prebuilt app from `/opt/weatheredge/webdist` plus fresh data JSONs
-  (including `cities_data.json` for the fifteen-city Coverage grid) to
+  (including `cities_data.json` for the twenty-city Coverage grid) to
   `gh-pages` every refresh cycle.

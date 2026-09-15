@@ -48,6 +48,10 @@ from .research_policy import TARGET_POLICY
 # each call, so there is no shared mutable state between the two modules.
 DEFAULT_BOOTSTRAP_SEED = 20260717
 DEFAULT_BOOTSTRAP_DRAWS = 10000
+# The one resampling unit every interval and p-value in this module uses.
+# Promotion gates compare against it, so a count in any other unit is never
+# mistaken for an independent-day count.
+CALENDAR_TARGET_DATE_CLUSTER_UNIT = "calendar_target_date"
 
 
 @dataclass(frozen=True)
@@ -198,7 +202,7 @@ class BootstrapInterval:
     lower: float | None
     upper: float | None
     n_observations: int = 0
-    cluster_unit: str = "calendar_target_date"
+    cluster_unit: str = CALENDAR_TARGET_DATE_CLUSTER_UNIT
 
 
 _METRIC_NAMES = ("realized_pnl_per_day", "roi", "log_growth_per_day", "crps", "brier")

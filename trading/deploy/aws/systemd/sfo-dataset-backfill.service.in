@@ -27,5 +27,10 @@ MemoryHigh=600M
 MemoryMax=800M
 # Five sequential network-bound backfill steps legitimately run long; raise
 # the start timeout above the 90 s oneshot default so a normal nightly run
-# is not killed mid-chain.
-TimeoutStartSec=1800
+# is not killed mid-chain. 2700 s (was 1800) since the registry grew to twenty
+# cities (2026-09-13): the all-city rolling-origin EMOS rebuild at leads 1 and 2
+# fits a third more stations and has no runtime measurement yet. The `-` prefix
+# ignores exit codes but not this timeout, which would SIGTERM the chain mid
+# rebuild. Nothing downstream waits on this unit, so the longer ceiling moves no
+# schedule. Time the first twenty-city run (operational runbook) and revisit.
+TimeoutStartSec=2700

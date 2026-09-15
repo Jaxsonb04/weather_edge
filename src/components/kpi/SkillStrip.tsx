@@ -4,7 +4,7 @@ import { KPIGroup } from "@heroui-pro/react/kpi-group";
 import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { Reveal } from "../ui/Reveal";
-import { skillStatus, type ForecastData, type TradingSignal } from "../../lib/data";
+import { fixtureCoverage, skillStatus, type ForecastData, type TradingSignal } from "../../lib/data";
 
 interface Metric {
   icon: string;
@@ -16,6 +16,12 @@ interface Metric {
 
 export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signal: TradingSignal }) {
   const c = signal.calibration;
+  // The last two KPIs come from the committed `forecast_data.json` study
+  // fixture, not from the running pipeline: the σ below is the held-out LSTM
+  // residual, several degrees wider than the operational EMOS σ the dial
+  // publishes. Date them so neither reads as a live number.
+  const coverage = fixtureCoverage(forecast);
+  const fixtureHint = coverage ? `static fixture · ${coverage}` : "static fixture";
   const metrics: Metric[] = [
     { icon: "solar:target-bold", title: "Brier skill", value: c?.brier_skill ?? null, kind: "pct", hint: "SFO vs climatology" },
     { icon: "solar:ranking-bold", title: "Rank-prob. skill", value: c?.ranked_probability_skill ?? null, kind: "pct", hint: "SFO ordered bins" },
@@ -24,8 +30,8 @@ export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signa
     // whole six-market ladder, so the bin count is 6x this. "Bin" also collides
     // with the market-bracket sense used everywhere else on the site.
     { icon: "solar:checklist-minimalistic-bold", title: "Settled days", value: c?.n ?? null, kind: "count", hint: "SFO scored settlement days" },
-    { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} KSFO days` },
-    { icon: "solar:graph-new-bold", title: "Forecast σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: forecast.lstm_sigma_days ? `SFO held-out residual · ${forecast.lstm_sigma_days} days` : "SFO held-out residual" },
+    { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} KSFO days · ${fixtureHint}` },
+    { icon: "solar:graph-new-bold", title: "LSTM study σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: forecast.lstm_sigma_days ? `SFO held-out residual · ${forecast.lstm_sigma_days} days · ${fixtureHint}` : `SFO held-out residual · ${fixtureHint}` },
   ];
 
   return (

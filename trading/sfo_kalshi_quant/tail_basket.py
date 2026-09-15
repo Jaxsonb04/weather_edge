@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from .config import StrategyConfig
 from .fees import quadratic_fee_average_per_contract, quadratic_fee_total
 from .models import BucketProbability, MarketBin, TradeDecision
+from .probability import raw_equivalent_source_spread_f
 from .risk import TradeEvaluator
 
 
@@ -62,6 +63,21 @@ class TailBasket:
             )
             for decision in self.decisions
         ]
+
+
+def _comfort_edge_sigma_proxy(source_spread_f: float | None) -> float | None:
+    """Raw-scale uncertainty proxy for the comfort-edge band.
+
+    ``risk._comfort_edge`` floors this at ``comfort_edge_sigma_floor_f`` (3.0 F)
+    and scales the block/full band off it -- constants fitted when
+    ``source_spread_f`` was the RAW cross-model range. Passing the debiased
+    statistic straight through would shrink the coin-flip block band and inflate
+    the far-tail size boost on every city at once.
+    """
+
+    if source_spread_f is None:
+        return None
+    return raw_equivalent_source_spread_f(source_spread_f)
 
 
 def build_tail_basket(
@@ -126,7 +142,10 @@ def build_tail_basket(
             # of None silently disables both gates and the basket can place NO
             # legs on exactly the anti-calibrated days live is configured to skip.
             forecast_high_f=predicted_high_f,
-            forecast_sigma_f=source_spread_f,
+            # The comfort-edge band's sigma floor/multipliers were tuned against
+            # the RAW cross-model spread; FC-1 shrank that statistic, so map it
+            # back onto the raw scale before using it as the uncertainty proxy.
+            forecast_sigma_f=_comfort_edge_sigma_proxy(source_spread_f),
         )
         decision = _with_budget_stake(decision, tail_stake, evaluator.config)
         legs.append(TailBasketLeg(kind="TAIL_NO", market=market, decision=decision))
@@ -146,7 +165,7 @@ def build_tail_basket(
                 # the forecast, so the regime block (and the new YES coin-flip
                 # guard) must see forecast_high_f or they silently no-op.
                 forecast_high_f=predicted_high_f,
-                forecast_sigma_f=source_spread_f,
+                forecast_sigma_f=_comfort_edge_sigma_proxy(source_spread_f),
             )
             decision = _with_budget_stake(decision, center_stake, evaluator.config)
             legs.append(TailBasketLeg(kind="CENTER_YES", market=center, decision=decision))

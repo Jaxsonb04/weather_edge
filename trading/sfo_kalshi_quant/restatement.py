@@ -928,6 +928,99 @@ def _entry_findings(
     return findings
 
 
+def _parsed_ask_levels(raw: object) -> list[tuple[float, float]] | None:
+    """The first two ``[price, size]`` ladder entries, or None when malformed."""
+
+    if not isinstance(raw, list) or len(raw) < 2:
+        return None
+    levels: list[tuple[float, float]] = []
+    for entry in raw[:2]:
+        if not isinstance(entry, list) or len(entry) != 2:
+            return None
+        price = _finite_number(entry[0], minimum=0, maximum=1)
+        size = _finite_number(entry[1], minimum=0)
+        if price is None or size is None:
+            return None
+        levels.append((price, size))
+    return levels
+
+
+def _fresh_recorded_ladder(
+    raw: object,
+    recorded_ask: object,
+) -> list[tuple[float, float]] | None:
+    """A recorded two-level ladder execution could have used, or None.
+
+    Mirrors execution._fresh_ask_ladder: well-formed, its best level equals
+    the displayed ask the same payload recorded, both levels carry size, and
+    the second level is strictly worse.
+    """
+
+    levels = _parsed_ask_levels(raw)
+    if levels is None:
+        return None
+    (price_one, size_one), (price_two, size_two) = levels
+    if not _close_number(price_one, recorded_ask):
+        return None
+    if size_one <= 0.0 or size_two <= 0.0:
+        return None
+    if price_two <= price_one + _REPLAY_TOLERANCE:
+        return None
+    return levels
+
+
+def _immediate_entry_ladder_reference(
+    quote: dict[str, Any],
+    signal: dict[str, Any],
+) -> tuple[float | None, float | None, float, float] | None | bool:
+    """Reference price/depth for a taker entry quoted on a fresh ask ladder.
+
+    Returns ``(quote_price, signal_price, quote_depth, signal_depth)`` from
+    the recorded ladders, None when the entry is verified against the
+    listing's displayed best ask (the historical rule), and False when the
+    row claims a two-level entry whose ladder evidence is malformed or
+    inconsistent, so the caller fails closed.
+
+    * ``taker_levels_used == 2``: the level-2 price and the level-1 +
+      level-2 size from each payload.
+    * ``taker_levels_used == 1`` with a fresh ladder in BOTH payloads: the
+      recorded displayed ask and the FRESH level-1 size, which is what
+      execution sized the cross against since 2026-09-13. Without one (no
+      ladder, a stale or a malformed one) the fill is held to the listing's
+      displayed best-ask size -- the historical reference, so bad ladder
+      evidence can never verify a larger level-1 fill.
+    """
+
+    levels_used = quote.get("taker_levels_used")
+    if levels_used is None:
+        return None
+    if isinstance(levels_used, bool) or levels_used not in (1, 2):
+        return False
+    quote_levels = _fresh_recorded_ladder(quote.get("ask_levels"), quote.get("ask"))
+    signal_levels = _fresh_recorded_ladder(
+        signal.get("ask_levels"), signal.get("entry_ask")
+    )
+    if levels_used == 1:
+        if quote_levels is None or signal_levels is None:
+            return None
+        return (
+            _finite_number(quote.get("ask"), minimum=0, maximum=1),
+            _finite_number(signal.get("entry_ask"), minimum=0, maximum=1),
+            quote_levels[0][1],
+            signal_levels[0][1],
+        )
+    if quote_levels is None or signal_levels is None:
+        return False
+    (_, quote_one_size), (quote_two, quote_two_size) = quote_levels
+    (_, signal_one_size), (signal_two, signal_two_size) = signal_levels
+    return (
+        quote_two,
+        signal_two,
+        quote_one_size + quote_two_size,
+        signal_one_size + signal_two_size,
+    )
+
+
 def _current_immediate_entry_findings(
     row: sqlite3.Row,
     entry_fill_rows: list[sqlite3.Row],
@@ -971,6 +1064,17 @@ def _current_immediate_entry_findings(
     signal_ask = _finite_number(
         signal.get("entry_ask"), minimum=0, maximum=1
     )
+    # A taker cross quoted on a fresh pre-entry ladder
+    # (execution._taker_cross_quote, 2026-09-13) is verified against the
+    # recorded ladder: a two-level entry at the SECOND level for level-1 +
+    # level-2 depth (malformed evidence fails closed), a level-1 entry at the
+    # displayed ask for the fresh level-1 depth.
+    ladder = _immediate_entry_ladder_reference(quote, signal)
+    if ladder is False:
+        _append_finding(findings, "CURRENT_ENTRY_QUOTE_INVALID")
+        ladder = None
+    if ladder is not None:
+        quote_ask, signal_ask = ladder[0], ladder[1]
     if entry_price is None or quote_ask is None or signal_ask is None:
         findings.append("CURRENT_ENTRY_QUOTE_INVALID")
     elif not _close_number(entry_price, quote_ask) or not _close_number(
@@ -1016,17 +1120,21 @@ def _current_immediate_entry_findings(
         _row_value(row, "entry_ask_size"), minimum=0
     )
     signal_depth = _finite_number(signal.get("entry_ask_size"), minimum=0)
+    executable_depth = displayed_depth if ladder is None else ladder[2]
+    executable_signal_depth = signal_depth if ladder is None else ladder[3]
     if displayed_depth is None or signal_depth is None:
         findings.append("CURRENT_ENTRY_QUOTE_INVALID")
     elif (
         filled is not None
         and (
-            displayed_depth + _REPLAY_TOLERANCE < filled
-            or signal_depth + _REPLAY_TOLERANCE < filled
+            executable_depth + _REPLAY_TOLERANCE < filled
+            or executable_signal_depth + _REPLAY_TOLERANCE < filled
         )
     ):
         findings.append("CURRENT_ENTRY_DEPTH_INSUFFICIENT")
-    elif not _close_number(displayed_depth, signal_depth):
+    elif not _close_number(displayed_depth, signal_depth) or not _close_number(
+        executable_depth, executable_signal_depth
+    ):
         findings.append("CURRENT_ENTRY_DEPTH_MISMATCH")
 
     fee = _finite_number(_row_value(row, "fee_per_contract"), minimum=0)

@@ -1,7 +1,7 @@
 # WeatherEdge
 
 **An end-to-end probabilistic weather system that forecasts daily highs across
-15 U.S. cities, prices those forecasts against prediction markets, and publishes
+20 U.S. cities, prices those forecasts against prediction markets, and publishes
 every decision to a live evidence dashboard.**
 
 WeatherEdge is a production-style student quant engineering project spanning
@@ -32,7 +32,7 @@ It runs unattended on AWS, but it cannot place real-money orders.
 | Area | What is implemented |
 |---|---|
 | Forecasting | 8-member NWP ensemble, rolling-origin EMOS per station, and deeper SFO-only LSTM/XGBoost research |
-| Coverage | 15 city markets, each mapped to its own NWS settlement station and local-standard climate day |
+| Coverage | 20 city markets, each mapped to its own NWS settlement station and local-standard climate day |
 | Decision engine | Bracket probabilities, market consensus, exact fees, spread/liquidity checks, lower-bound edge, and portfolio risk gates |
 | Paper execution | Reservation-price limits, bounded taker crosses, monitoring, exits, and official NWS settlement in isolated paper accounts |
 | Operations | AWS EC2, systemd timers, watchdogs, SQLite, S3 backups, atomic artifacts, and GitHub Pages publication |
@@ -88,7 +88,7 @@ accordingly.*
 Weather input, and marine-layer features are San Francisco–only evidence layers,
 not the universal point-forecast method. The current SFO point forecast can fall
 back to the shared EMOS weighted mean when optional inputs are absent. The other
-fourteen cities run that shared EMOS pipeline and have only a short operational
+nineteen cities run that shared EMOS pipeline and have only a short operational
 record. Active paper ledgers and archived strategy
 attribution are reported separately; see
 [Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) for the current
@@ -113,7 +113,7 @@ NWS Climatological Report (CLI)  ──► settlement truth   fee-aware edge + r
                                                         paper journal ─► React SPA
 ```
 
-Apple WeatherKit also runs as a private, temporary shadow source for all fifteen
+Apple WeatherKit also runs as a private, temporary shadow source for all twenty
 station coordinates. It is intentionally outside the prediction path: its live
 weight is zero, its values expire in tmpfs at Apple's provider deadline, and it
 does not enter `weather.db`, EMOS training, trading decisions, or public JSON.
@@ -225,7 +225,7 @@ Warnings about Git not being initialized or Semgrep not being installed are
 informational until you decide to turn those on.
 
 Analyze today and tomorrow with paper-trading gates. The loop covers all
-fifteen registered cities by default (env `PAPER_CITIES`, default `all`); pass
+twenty registered cities by default (env `PAPER_CITIES`, default `all`); pass
 `--cities` with a comma list of slugs to narrow it:
 
 ```bash
@@ -288,7 +288,7 @@ hourly+daily request per city at four UTC vintages per day, plus an independent
 expiry purge. The source remains shadow-only and cannot alter the forecast or
 trading engine.
 
-These commands drive the SFO legacy blend. The other fourteen cities run
+These commands drive the SFO legacy blend. The other nineteen cities run
 through the NWP→EMOS path (`nwp_archive.py`, `emos_forecast.py`) with CLI
 settlement truth from `city_truth.py`; the AWS timers run these with
 `--cities all`.
@@ -326,7 +326,7 @@ box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
 the `gh-pages` branch with the freshly generated data JSONs
 (`trading_signal.json`, `forecast_data.json`, `weather_story_data.json`,
 `strategy_research.json`, `cities_data.json`) overlaid on every refresh cycle.
-The site includes a fifteen-city Coverage grid fed by `cities_data.json`
+The site includes a twenty-city Coverage grid fed by `cities_data.json`
 (per-city forecasts, latest settlement, book activity), with SFO presented as
 the flagship.
 

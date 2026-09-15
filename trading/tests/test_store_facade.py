@@ -55,7 +55,6 @@ def test_policy_capacity_is_pure_and_applies_account_risk_rooms() -> None:
             "available_cash": 1000.0,
         },
         active_rows=[],
-        daily_pnl=0.0,
         target_date="2026-07-11",
         market_ticker="KXHIGHTSFO-TEST-B70",
         risk_profile="live",

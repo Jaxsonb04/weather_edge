@@ -245,20 +245,31 @@ def test_expanded_target_taker_exception_cannot_bypass_other_limits(tmp_path, ta
     assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
 
 
-def test_bounded_positive_reservation_survives_allocation_and_atomic_requote(tmp_path):
+def test_research_profile_refuses_behind_bid_reservation_end_to_end(tmp_path):
     from sfo_kalshi_quant.db import PaperStore
     from sfo_kalshi_quant.paper import PaperTrader, prepare_research_target_decisions
 
     config = strategy_config_for_profile("research")
+    assert config.research_target_taker_cross is True
+    assert config.limit_resting_reservation_fallback is False
     raw = replace(
         _structural_target_candidate(bid=0.96, ask=0.98, ask_size=100.0),
         probability=0.99, model_probability=0.99, probability_lcb=0.96,
     )
+    # Until 2026-09-13 this candidate rested 52 contracts at the 0.95
+    # reservation (bid+1 = 0.97 cannot fund a contract at lcb 0.96), reserving
+    # $49.40 of daily budget for a 15-minute TTL. The research profile now
+    # opts out of the behind-the-bid fallback, and atomic admission only
+    # accepts the canonical research config, so the candidate is dropped at
+    # preparation and nothing reaches allocation or the ledger.
     prepared = prepare_research_target_decisions([raw], config)[0]
+    assert not prepared.approved
+    assert prepared.recommended_contracts == 0.0
     plans = allocate_research_plans(
         [ResearchOpportunity(prepared, "2026-07-30", 1)], motion_opportunities=[],
         run_id="reservation-admission",
     )
+    assert plans.target.legs == []
     store = PaperStore(
         tmp_path / "reservation-admission.db",
         research_clock=lambda: datetime(2026, 7, 25, 20, tzinfo=UTC),
@@ -268,14 +279,8 @@ def test_bounded_positive_reservation_survives_allocation_and_atomic_requote(tmp
         lead_bucket="day-ahead", scan_run_id="reservation-admission",
         observed_high_state="complete=0;high=unavailable",
     )
-    assert len(result.target_order_ids) == 1
-    row = store.paper_order(result.target_order_ids[0])
-    assert row["status"] == "PAPER_LIMIT_RESTING"
-    assert row["limit_price"] == 0.95
-    assert row["contracts"] == 52.0
-    assert row["reserved_cost"] == pytest.approx(49.4)
-    assert row["limit_edge_lcb"] == pytest.approx(0.01)
-    assert row["queue_remaining"] == 100.0
+    assert result.target_order_ids == ()
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
 
 
 def test_crossing_structural_target_stays_clamped_to_visible_depth() -> None:

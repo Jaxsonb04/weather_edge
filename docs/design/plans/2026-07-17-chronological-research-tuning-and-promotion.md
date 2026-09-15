@@ -441,6 +441,12 @@ only -- no other task's files touched):
   Boundary-tested at 9/10/11 distinct days. Task 7 may strengthen this further (e.g. an explicit
   cross-city correlation adjustment to the bootstrap itself) once it has more evidence-window
   history to reason about; this repair does not attempt that.
+  **2026-09-13 follow-up (owner PR #121 decision (d) re-check):** once the bootstrap began
+  resampling whole calendar target dates, the date became the inferential unit, and neither
+  floor above required 30 of them. `MIN_BOOTSTRAP_CALENDAR_DAYS = 30` now binds on
+  `PromotionDecision.bootstrap_calendar_days` (the fewest dates behind the ROI or log-growth
+  interval), fails closed when that count is missing, and supersedes the 10-date floor in
+  practice; the 30 station-day-fold floor is unchanged and still reported.
 - **"Enough filled logical positions"** (spec Sec 8: "Promotion into `research-target` requires
   at least 30 independent complete days, enough filled logical positions, ..." -- no exact count
   given anywhere in the spec). Without this check, a challenger that never fills a single position

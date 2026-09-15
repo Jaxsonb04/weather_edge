@@ -17,7 +17,7 @@ a temperature: it must preserve forecast vintages, calibrate uncertainty, map a
 continuous distribution into settlement bins, price fees and liquidity, enforce
 risk, settle against independent truth, and explain the result.
 
-WeatherEdge implements that entire loop for fifteen U.S. city markets, with San
+WeatherEdge implements that entire loop for twenty U.S. city markets, with San
 Francisco as the deepest research case. It is intentionally paper-only.
 
 ## The System
@@ -79,7 +79,7 @@ system fails and how recovery is proved.
   ranked-probability skill over climatology and 29.5% Brier skill.
 - **Historical depth:** 3,419 observed KSFO days across ten years.
 - **Current scope boundary:** the deepest LSTM and optional-input evidence is
-  SFO-only. The other fourteen cities use the shared NWP→EMOS path and have a
+  SFO-only. The other nineteen cities use the shared NWP→EMOS path and have a
   shorter operational record.
 - **Verification:** CI runs Python 3.12 and 3.13, 141 Python test files, 178
   frontend tests, Semgrep, lint, production builds, deterministic icon checks,

@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sfo_kalshi_quant.cli import build_parser
-from sfo_kalshi_quant.config import StrategyConfig
+from sfo_kalshi_quant.config import StrategyConfig, strategy_config_for_profile
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.execution import (
     buy_limit_for_decision,
@@ -232,6 +232,120 @@ def test_with_buy_limit_exposes_limit_math_on_decision_for_reporting():
     assert limited.limit_price == 0.74
     assert limited.limit_cost_per_contract < limited.cost_per_contract
     assert limited.limit_edge_lcb >= 0.02
+
+
+def test_one_contract_of_depth_rests_rather_than_crossing():
+    """Audit TC-15b, the production shape of live orders 2611/2616/2679/2743.
+
+    Each was an approved favorite with exactly one contract of displayed ask
+    depth, and the $1 executable floor refused the one-contract cross (one
+    contract cost $0.82-0.93), so each rested 32-36 contracts and expired
+    unfilled. The audit asked for the floor to be dropped so those become
+    guaranteed one-contract fills; that was implemented, measured and
+    REVERTED, because on this book resting is the higher-EV side:
+
+      * live rests are not dead -- 414 orders / 12,479.6 contracts / 943.5
+        filled = 7.6% since 2026-07-01, above research's 5.2%;
+      * the sub-$1 class specifically fills 216.5 of 3,248.8 contracts (6.7%,
+        16 of 105 orders) for $14.14 realized = $0.135 per rest attempted,
+        against ~$0.043 of after-fee edge for the one-contract cross;
+      * and a fill consumes the market/side entry slot an expiry deliberately
+        leaves open, which 25 of the 43 groups that began with such a rest
+        later used to fill 152.1 contracts for $13.53 realized.
+
+    Pin both limbs: the live profile rests, and the dropped floor would have
+    crossed.
+    """
+
+    from dataclasses import replace as _replace
+
+    live = strategy_config_for_profile("live")
+    # Live order 2611 (KXHIGHTOKC-26SEP03-B101.5, 2026-09-02) as recorded:
+    # NO bid 0.90 / ask 0.92, one contract displayed, 32 recommended, model
+    # 0.9683 with a 0.9367 lower bound. It rested 32 contracts at 0.91 for
+    # $1.87 of expected profit and filled none of them.
+    production_shape = dict(
+        probability=0.9683,
+        probability_lcb=0.9367,
+        entry_bid=0.90,
+        entry_ask=0.92,
+        spread=0.02,
+        cost_per_contract=0.91,
+        edge=0.0583,
+        edge_lcb=0.0267,
+        recommended_contracts=32.0,
+        entry_ask_size=1.0,
+    )
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(store, live, risk_profile="live", entry_mode="limit")
+        [order_id] = trader.place_approved(
+            "2026-09-08", [_decision(**production_shape)], bankroll=1000.0
+        )
+        row = store.paper_order(order_id)
+        assert row is not None
+        assert row["status"] == "PAPER_LIMIT_RESTING"
+        assert row["contracts"] == 32.0
+        assert row["limit_price"] == 0.91
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "dropped.db")
+        dropped_floor = PaperTrader(
+            store,
+            _replace(live, limit_taker_cross_min_notional=0.01),
+            risk_profile="live",
+            entry_mode="limit",
+        )
+        [order_id] = dropped_floor.place_approved(
+            "2026-09-08", [_decision(**production_shape)], bankroll=1000.0
+        )
+        row = store.paper_order(order_id)
+        assert row is not None
+        assert row["status"] == "PAPER_FILLED"
+        assert row["contracts"] == 1.0
+        assert row["limit_price"] == 0.92
+
+
+def test_with_entry_mode_restates_a_crossing_quote_at_its_executable_size():
+    """Audit TC-15: the reporting path must not publish an unfillable size.
+
+    `with_entry_mode` is what both scans now apply before `record_decisions`,
+    so this is the seam where a ~90-contract policy request becomes the
+    2-contract order the book will actually place.
+    """
+
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader = PaperTrader(
+            store,
+            strategy_config_for_profile("live"),
+            risk_profile="live",
+            entry_mode="limit",
+        )
+        decision = _decision(
+            probability=0.90,
+            probability_lcb=0.86,
+            entry_bid=0.73,
+            entry_ask=0.74,
+            spread=0.01,
+            recommended_contracts=90.0,
+            entry_ask_size=2.0,
+        )
+
+        [restated] = trader.with_entry_mode([decision])
+
+        assert restated.recommended_contracts == 2.0
+        assert restated.binding_constraint == "visible_ask_depth"
+        assert restated.expected_profit == restated.limit_edge * 2.0
+        # The pre-clamp request stays recoverable from the recorded row.
+        assert (
+            "execution: displayed ask depth capped size 90 -> 2 contracts"
+            in restated.reasons
+        )
+        # The plan the allocator built is untouched; only the recorded copy moves.
+        assert decision.recommended_contracts == 90.0
+        assert "execution: displayed ask depth capped" not in " ".join(decision.reasons)
 
 
 def test_analyze_entry_mode_defaults_from_environment():

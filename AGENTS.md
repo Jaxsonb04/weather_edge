@@ -43,7 +43,7 @@ Required design workflow:
   `weather_story_data.json`, `strategy_research.json`, `cities_data.json`) at
   runtime; keep `src/lib/data.ts` / `src/lib/strategy.ts` parsing tolerant of
   missing fields.
-- The site covers fifteen city markets (Coverage grid fed by
+- The site covers twenty city markets (Coverage grid fed by
   `cities_data.json`), with SFO presented as the flagship. The site never says
   "Kalshi"; say "prediction market".
 - Keep the WeatherEdge visual direction: an operational meteorological

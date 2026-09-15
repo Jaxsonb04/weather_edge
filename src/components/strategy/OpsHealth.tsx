@@ -1,6 +1,6 @@
 import { Card } from "@heroui/react/card";
 import { Icon } from "@iconify/react/offline";
-import type { HealthAlert, StrategyLab } from "../../lib/strategy";
+import { decisionCountProvenance, type HealthAlert, type StrategyLab } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
 
 const COLLECTED_LABELS: [string, string][] = [
@@ -79,8 +79,7 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
   const rows = freshnessRows(s);
   const alerts = mergedAlerts(s);
   const mvm = s.daily_summary?.model_vs_market;
-  const analytics = s.daily_summary?.decision_analytics;
-  const cachedCounts = analytics?.status === "cached";
+  const counts = decisionCountProvenance(s);
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -96,9 +95,9 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
           </p>
           {collected && (
             <>
-              {cachedCounts && (
+              {counts.cached && (
                 <p role="status" className="text-xs font-medium text-warning">
-                  Historical counts as of {analytics.counts_stale_from ?? analytics.analysis_generated_at?.slice(0, 10) ?? "the last deploy-time analysis"}; runtime status above is current.
+                  Historical counts as of {counts.asOf}; runtime status above is current.
                 </p>
               )}
               <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
@@ -110,7 +109,10 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
           )}
           {mvm?.samples != null && (
             <p className="text-xs text-muted">
-              {cachedCounts ? "At that cutoff, model-vs-market gap was" : "Model-vs-market gap tracked"} across <span className="tnum font-medium text-foreground">{mvm.samples.toLocaleString()}</span>{" "}
+              {counts.cached
+                ? "As of that cutoff, the model-vs-market gap had been tracked"
+                : "Model-vs-market gap tracked"}{" "}
+              across <span className="tnum font-medium text-foreground">{mvm.samples.toLocaleString()}</span>{" "}
               snapshots · mean absolute gap {Math.round((mvm.mean_abs_gap ?? 0) * 1000) / 10}pp.
             </p>
           )}

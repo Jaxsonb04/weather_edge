@@ -9,9 +9,10 @@ Type=oneshot
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
-# Scheduled runs archive, verify, and FK-audit the journal. Live-DB deletion is
-# safe-off unless an operator explicitly selects quiesced-delete after stopping
-# journal writers; a failed archive always aborts before that optional path.
+# Scheduled runs archive, verify, and FK-audit the journal, then delete from the
+# live DB in bounded batches (SFO_PRUNE_MODE=bounded-delete, the default). A
+# failed archive or archive gate always aborts before any deletion; setting
+# SFO_PRUNE_MODE=archive-only restores the delete-nothing escape hatch.
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_archive_then_prune.sh
 Nice=10
 # Contain a runaway process to this unit instead of letting the kernel

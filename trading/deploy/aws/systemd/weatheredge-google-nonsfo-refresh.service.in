@@ -27,6 +27,14 @@ EnvironmentFile=__ENV_FILE__
 # CITIES' own declared order. trading/tests/test_aws_deploy.py's
 # test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily
 # fails if this list and cities.py ever drift apart.
+#
+# 2026-09-13 five-city expansion (lv, min, satx, nola, dc): deliberately NOT
+# added here. Nineteen non-SFO cities x 4 events = 76/day, 190 + 76 = 266/day,
+# which breaches the 260/day hard cap (and 8,246/31-day month breaches the
+# 7,800 soft ceiling). Google Weather is a research corroboration input the
+# scheduled EMOS forecast does not consume, so the new cities trade on the
+# NWP -> EMOS -> CLI path alone until an operator re-budgets this unit. The
+# drift-guard test carries the same exclusion list; change both together.
 # Google endpoint failures stay per-city fail-soft; only failure of the
 # production EMOS baseline makes the orchestrator return nonzero.
 ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities mia,lax,chi,atl,nyc,dal,sea,phl,phx,aus,hou,okc,bos,den

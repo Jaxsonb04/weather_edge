@@ -11,7 +11,7 @@ cd /path/to/WeatherEdge
 ## What This Project Does
 
 This project is a paper-trading research tool for daily-high prediction markets
-across fifteen U.S. cities. SFO is the flagship; all cities share the registry,
+across twenty U.S. cities. SFO is the flagship; all cities share the registry,
 portfolio allocator, settlement/finality rules, and paper journal.
 
 It does four jobs:

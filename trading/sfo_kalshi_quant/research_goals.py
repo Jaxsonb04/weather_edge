@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import statistics
@@ -12,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 from .exit_audit import audited_exit_reason
 from .logical_positions import LogicalPaperPosition
+from .research_entry_risk import STALE_RESEARCH_QUOTE_REASON_PREFIX
+from .research_policy import lead_bucket_clock_is_ambiguous
 
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -190,16 +193,30 @@ def summarize_daily_goals(
     }
 
 
-def _pacific_day(value: object) -> date | None:
+def _aware_timestamp(value: object) -> datetime | None:
+    """Parse a recorded ISO timestamp, or None when it is absent or naive."""
+
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(_PACIFIC).date()
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _pacific_day(value: object) -> date | None:
+    parsed = _aware_timestamp(value)
+    return None if parsed is None else parsed.astimezone(_PACIFIC).date()
+
+
+def _lead_bucket_clock_state(created_at: object) -> str:
+    """Classify how a row's ``lead_bucket`` label depends on its clock."""
+
+    parsed = _aware_timestamp(created_at)
+    if parsed is None:
+        return "unknown"
+    return "ambiguous" if lead_bucket_clock_is_ambiguous(parsed) else "stable"
 
 
 def _quantile(values: Iterable[float], probability: float) -> float | None:
@@ -288,6 +305,23 @@ def _finite(value: object) -> float | None:
 def _lead_split(
     positions: Iterable[LogicalPaperPosition],
 ) -> dict[str, dict[str, float | int]]:
+    """Group terminal positions by the ``lead_bucket`` label they carry.
+
+    The label's meaning changed once: research lead moved from the Los Angeles
+    civil day onto the station's fixed-standard settlement day (REG-1), and no
+    row was backfilled. Rather than pool two definitions silently, each bucket
+    reports how many of its rows could be affected:
+
+    ``clock_ambiguous_decisions``
+        rows stamped between 05:00 and 08:00 UTC, the only window in which the
+        two clocks disagree, so the only rows whose label depends on which one
+        wrote it. A bucket reporting 0 here pools exactly one definition.
+    ``clock_unknown_decisions``
+        rows with a missing or naive ``created_at``, which cannot be placed in
+        or out of that window. Counted separately so an unreadable timestamp is
+        never quietly reported as clean.
+    """
+
     split: dict[str, dict[str, float | int]] = {}
     for position in positions:
         row = position.as_row()
@@ -299,9 +333,20 @@ def _lead_split(
                 "resolved_lots": 0,
                 "realized_pnl": 0.0,
                 "capital_resolved": 0.0,
+                "clock_ambiguous_decisions": 0,
+                "clock_unknown_decisions": 0,
             },
         )
         bucket["logical_decisions"] = int(bucket["logical_decisions"]) + 1
+        clock_state = _lead_bucket_clock_state(row.get("created_at"))
+        if clock_state == "ambiguous":
+            bucket["clock_ambiguous_decisions"] = (
+                int(bucket["clock_ambiguous_decisions"]) + 1
+            )
+        elif clock_state == "unknown":
+            bucket["clock_unknown_decisions"] = (
+                int(bucket["clock_unknown_decisions"]) + 1
+            )
         bucket["resolved_lots"] = int(bucket["resolved_lots"]) + len(
             position.resolved_lots
         )
@@ -317,6 +362,22 @@ def _lead_split(
             float(bucket["realized_pnl"]) / capital if capital > 0 else None
         )
     return split
+
+
+def _is_stale_research_quote_pull(root: dict[str, object]) -> bool:
+    raw = root.get("outcome_diagnostics_json")
+    if isinstance(raw, dict):
+        details = raw
+    else:
+        try:
+            details = json.loads(raw or "{}")  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(details, dict):
+        return False
+    return str(details.get("reason") or "").startswith(
+        STALE_RESEARCH_QUOTE_REASON_PREFIX
+    )
 
 
 def _execution_metrics(
@@ -349,6 +410,15 @@ def _execution_metrics(
         if entry_price is not None and entry_ask is not None:
             slippage.append(entry_price - entry_ask)
 
+    expired_roots = [
+        root
+        for root in roots
+        if root.get("status") in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}
+    ]
+    stale_pulled_orders = sum(
+        _is_stale_research_quote_pull(root) for root in expired_roots
+    )
+
     lots = [lot for position in rows for lot in position.resolved_lots]
     entry_fees = math.fsum(
         (_finite(lot.get("fee_per_contract")) or 0.0)
@@ -371,10 +441,12 @@ def _execution_metrics(
         "partial_exit_positions": sum(
             len(position.resolved_lots) > 1 for position in rows
         ),
-        "expired_orders": sum(
-            root.get("status") in {"PAPER_EXPIRED", "PAPER_PARTIAL_EXPIRED"}
-            for root in roots
-        ),
+        "expired_orders": len(expired_roots),
+        # The TTL-only count is the seller-flow evidence (an order that rested
+        # its full window unfilled); a stale-quote guard pull ends the same way
+        # in status but says nothing about seller flow at the quote's price.
+        "ttl_expired_orders": len(expired_roots) - stale_pulled_orders,
+        "stale_cancelled_orders": stale_pulled_orders,
         "entry_fees": entry_fees,
         "exit_fees": exit_fees,
         "total_fees": entry_fees + exit_fees,

@@ -822,7 +822,7 @@ def replay_from_database(
                 ),
                 float(row["entry_bid_size"] or 0.0),
             ),
-            ttl_minutes=15,
+            ttl_minutes=_row_ttl_minutes(row, placed),
             immediate=immediate,
             queue_price=(
                 float(row["entry_bid"])
@@ -1613,6 +1613,24 @@ def _kind_order(kind: str) -> int:
 
 def as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _row_ttl_minutes(row, placed: datetime, default: int = 15) -> int:
+    """TTL a journaled resting order actually carried, from its own expires_at.
+
+    Live rows keep 15 (their expires_at is created_at + 15); the research
+    target sleeve's day-ahead rows carry 30 since 2026-09-13. A row with no
+    usable expiry (an immediate fill, or a legacy row) falls back to the
+    historical default so nothing previously replayed changes.
+    """
+
+    expires = _parse_time(_row_value(row, "expires_at"))
+    if expires is None:
+        return default
+    minutes = (expires - as_utc(placed)).total_seconds() / 60.0
+    if not math.isfinite(minutes) or minutes <= 0:
+        return default
+    return int(round(minutes))
 
 
 def _parse_time(value) -> datetime | None:

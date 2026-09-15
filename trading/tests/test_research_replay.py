@@ -28,6 +28,7 @@ from sfo_kalshi_quant.research_candidates import (
     CandidateDistribution,
     identity_candidate,
 )
+from sfo_kalshi_quant.research_entry_risk import RESEARCH_ENTRY_RISK_VERSION
 from sfo_kalshi_quant.research_policy import TARGET_POLICY
 from sfo_kalshi_quant.research_replay import (
     case_replay_payload,
@@ -659,6 +660,8 @@ def test_case_replay_payload_stamps_execution_and_sizing_identity() -> None:
     assert stamp["max_position_risk_pct"] == TARGET_POLICY.max_position_risk_pct
     assert stamp["policy_fingerprint"] == TARGET_POLICY.policy_fingerprint
     assert stamp["order_ttl_minutes"] == 15
+    assert stamp["day_ahead_order_ttl_minutes"] == 30
+    assert stamp["order_ttl_version"] == RESEARCH_ENTRY_RISK_VERSION
     assert stamp["side_scope"] == "yes_only"
     assert stamp["fill_scope"] == "taker_only_no_tape"
 
@@ -692,3 +695,5 @@ def test_fold_replay_evidence_stamps_execution_and_sizing_identity() -> None:
             assert stamp["side_scope"] == "yes_only"
             assert stamp["fill_scope"] == "taker_only_no_tape"
             assert stamp["order_ttl_minutes"] == 15
+            assert stamp["day_ahead_order_ttl_minutes"] == 30
+            assert stamp["order_ttl_version"] == RESEARCH_ENTRY_RISK_VERSION

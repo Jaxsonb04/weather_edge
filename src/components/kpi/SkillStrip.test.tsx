@@ -36,6 +36,30 @@ describe("SkillStrip", () => {
 
     expect(screen.getByText("Brier skill")).toBeInTheDocument();
     expect(screen.getByText("History")).toBeInTheDocument();
-    expect(screen.getByText("— KSFO days")).toBeInTheDocument();
+    expect(screen.getByText("— KSFO days · static fixture")).toBeInTheDocument();
+  });
+
+  it("dates the committed study fixture and never calls its sigma the live forecast sigma", () => {
+    render(
+      <SkillStrip
+        forecast={
+          {
+            n_years: 10,
+            years: [2016, 2020, 2026],
+            n_days_observed: 3419,
+            lstm_sigma: 4.66,
+            lstm_sigma_days: 812,
+          } as ForecastData
+        }
+        signal={{} as TradingSignal}
+      />,
+    );
+
+    expect(screen.getByText("3,419 KSFO days · static fixture · 2016–2026")).toBeInTheDocument();
+    expect(screen.getByText("LSTM study σ")).toBeInTheDocument();
+    expect(screen.queryByText("Forecast σ")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("SFO held-out residual · 812 days · static fixture · 2016–2026"),
+    ).toBeInTheDocument();
   });
 });

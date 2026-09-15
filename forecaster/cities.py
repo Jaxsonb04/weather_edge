@@ -13,9 +13,16 @@ drift apart, because settlement correctness depends on all of them agreeing:
 
 Station identities were verified against the live market rules text, the
 series ``settlement_sources`` URL, and the actual CLI product header on
-2026-07-06. The traps are real: Houston settles on Hobby (KHOU) not
-Intercontinental, Dallas on DFW not Love Field, Chicago on Midway not O'Hare,
-and New York on Central Park (KNYC) not any airport.
+2026-07-06 (first fifteen) and 2026-09-13 (Las Vegas, Minneapolis, San
+Antonio, New Orleans, Washington DC). The traps are real: Houston settles on
+Hobby (KHOU) not Intercontinental, Dallas on DFW not Love Field, Chicago on
+Midway not O'Hare, New York on Central Park (KNYC) not any airport, and
+Washington on Reagan National (KDCA) not Dulles.
+
+Since 2026-09 Kalshi's rules name The Weather Company as the settlement
+source and quote the station as a "CLIxxx" token (``CLILAS``, ``CLIDCA``,
+...); those tokens are the same NWS CLI product ids, and the whole scorer
+still reads the NWS CLI product. TWC-vs-NWS parity is measured separately.
 
 This file is deliberately duplicated as ``forecaster/cities.py`` and
 ``trading/sfo_kalshi_quant/cities.py`` (the two packages do not import each
@@ -76,9 +83,9 @@ class CityConfig:
         )
 
 
-# Ordered by 24h volume on 2026-07-06 (Miami ~1.34M contracts ... Denver ~33K).
-# All 15 settle on a CLI daily maximum, list 6 bins at 2F spacing, and close at
-# local midnight.
+# The first 15 are ordered by 24h volume on 2026-07-06 (Miami ~1.34M contracts
+# ... Denver ~33K); the five appended on 2026-09-13 follow. All 20 settle on a
+# CLI daily maximum, list 6 bins at 2F spacing, and close at local midnight.
 CITIES: tuple[CityConfig, ...] = (
     CityConfig(
         slug="mia", name="Miami", series_ticker="KXHIGHMIA",
@@ -179,6 +186,52 @@ CITIES: tuple[CityConfig, ...] = (
         nws_station_id="KDEN", cli_site="BOU", cli_issuedby="DEN",
         latitude=39.8466, longitude=-104.6562,
         civil_tz_name="America/Denver", standard_utc_offset_hours=-7,
+    ),
+    # ---- Added 2026-09-13: the five remaining US daily-HIGH series with
+    # day-ahead flow (LV ~1.5k, MIN/SATX/NOLA/DC ~0.7-0.8k NO-seller
+    # contracts/day on the fresh tape). Series tickers, settlement tokens
+    # (rules_primary "CLIxxx"), CLI product headers (issuing WFO) and ASOS
+    # coordinates (api.weather.gov/stations) all verified live 2026-09-13.
+    # Ordered by that day-ahead flow.
+    CityConfig(
+        slug="lv", name="Las Vegas", series_ticker="KXHIGHTLV",
+        # Harry Reid International; CLI issued by the Las Vegas WFO (KVEF).
+        nws_station_id="KLAS", cli_site="VEF", cli_issuedby="LAS",
+        latitude=36.0719, longitude=-115.1634,
+        civil_tz_name="America/Los_Angeles", standard_utc_offset_hours=-8,
+    ),
+    CityConfig(
+        slug="min", name="Minneapolis", series_ticker="KXHIGHTMIN",
+        # MSP International; the Twin Cities/Chanhassen WFO (KMPX) issues
+        # CLIMSP under the "TWIN CITIES MN" header.
+        nws_station_id="KMSP", cli_site="MPX", cli_issuedby="MSP",
+        latitude=44.8831, longitude=-93.2289,
+        civil_tz_name="America/Chicago", standard_utc_offset_hours=-6,
+    ),
+    CityConfig(
+        slug="satx", name="San Antonio", series_ticker="KXHIGHTSATX",
+        # San Antonio International; same WFO as Austin (KEWX), so a KEWX
+        # outage now stalls truth for two cities at once.
+        nws_station_id="KSAT", cli_site="EWX", cli_issuedby="SAT",
+        latitude=29.5328, longitude=-98.4636,
+        civil_tz_name="America/Chicago", standard_utc_offset_hours=-6,
+    ),
+    CityConfig(
+        slug="nola", name="New Orleans", series_ticker="KXHIGHTNOLA",
+        # Louis Armstrong International (Kenner), NOT the downtown Lakefront
+        # airport; CLI issued by the New Orleans/Slidell WFO (KLIX).
+        nws_station_id="KMSY", cli_site="LIX", cli_issuedby="MSY",
+        latitude=29.9928, longitude=-90.2508,
+        civil_tz_name="America/Chicago", standard_utc_offset_hours=-6,
+    ),
+    CityConfig(
+        slug="dc", name="Washington DC", series_ticker="KXHIGHTDC",
+        # Reagan National (KDCA), NOT Dulles (KIAD): the CLI header reads
+        # "WASHINGTON NATIONAL DC" and is issued by Baltimore/Washington
+        # (KLWX). Ticker prefix "KXHIGHTDC-" is distinct from "KXHIGHTDAL-".
+        nws_station_id="KDCA", cli_site="LWX", cli_issuedby="DCA",
+        latitude=38.8483, longitude=-77.0342,
+        civil_tz_name="America/New_York", standard_utc_offset_hours=-5,
     ),
 )
 

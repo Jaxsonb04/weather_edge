@@ -12,10 +12,47 @@ from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.research_policy import MOTION_POLICY, TARGET_POLICY
 from sfo_kalshi_quant.summary import (
+    _normalize_reason,
     build_paper_summary,
     write_paper_summary,
     write_paper_summary_csv,
 )
+
+
+def test_unmatched_rejection_reason_is_not_cut_mid_word():
+    """The site prints these verbatim, so a 48-character hard cut published
+    "live paper entry requires min_lead_days=1; same-" and read as a broken
+    gate rather than a display cap."""
+
+    reason = "live paper entry requires min_lead_days=1; same-day signals are research-only"
+
+    assert _normalize_reason(reason) == reason
+
+
+def test_overlong_reason_without_spaces_cuts_on_a_punctuation_boundary():
+    """Engine text separates on punctuation as often as on spaces. A reason with
+    no space at all fell straight through the word-boundary check and was still
+    published with a mid-token cut at exactly 96 characters."""
+
+    reason = ";".join(["min_lead_days=1"] * 12)
+    assert " " not in reason
+
+    normalized = _normalize_reason(reason)
+
+    assert normalized.endswith("\u2026")
+    assert normalized[:-1].endswith("min_lead_days=1")
+    assert reason.startswith(normalized[:-1])
+
+
+def test_overlong_rejection_reason_truncates_on_a_word_boundary():
+    reason = "live paper entry rejected because " + "diagnostic detail " * 12
+
+    normalized = _normalize_reason(reason.strip())
+
+    assert normalized.endswith("\u2026")
+    assert not normalized[:-1].endswith(" ")
+    assert reason.startswith(normalized[:-1])
+    assert len(normalized) <= 97
 
 
 def _decision(

@@ -10,7 +10,15 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   history_high_f: { label: "SFO history", color: "var(--temp-hot)" },
 };
 
-const SOURCE_SPREAD_GATE_F = 10;
+/** Mirrors `max_source_spread_f` on BOTH shipped profiles
+    (trading/sfo_kalshi_quant/config.py, LIVE_PROFILE_OVERRIDES and
+    RESEARCH_PROFILE_OVERRIDES). Re-derived 2026-09-07 from 10 when the
+    disagreement statistic became the range over BIAS-CORRECTED forecasts: a
+    provider or model that is reliably several degrees off is a known offset the
+    blend already corrects, not evidence that today is uncertain, so the number
+    it is compared against had to move with it. Keep this in step with the
+    profiles -- it is published as a factual claim about the engine. */
+const SOURCE_SPREAD_GATE_F = 7.3;
 
 /** Each live source plotted on a shared min–max temperature axis, so the
     spread between providers reads instantly (the gate's core input). */
@@ -62,7 +70,9 @@ export function SourceBlend({ target }: { target: Target }) {
         <Tooltip.Content showArrow placement="top" className="max-w-[15rem]">
           <Tooltip.Arrow />
           <p className="text-xs">
-            When published providers disagree by more than {SOURCE_SPREAD_GATE_F}°F, the paper engine refuses to size a new position.
+            Disagreement is measured after each source's known standing offset is
+            removed. When what is left exceeds {SOURCE_SPREAD_GATE_F}°F, the paper engine
+            refuses to size a new position.
           </p>
         </Tooltip.Content>
       </Tooltip>

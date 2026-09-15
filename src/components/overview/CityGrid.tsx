@@ -47,19 +47,41 @@ export function flagshipIntradayLock(targets: Target[]): IntradayLock | null {
   return null;
 }
 
-/** The high to display for one city forecast. `baselineF` is set only when the
-    intraday update actually moved the number, so callers label the adjustment
-    instead of silently swapping one published figure for the other. */
+/** The EMOS ensemble mean behind a published high, or null when the published
+    high IS that mean. On a settlement day the coverage artifact has already
+    folded the observed high into `predicted_high_f` for every city — not only
+    the flagship — and keeps the pre-update mean beside it, so a card must never
+    present the served number as the plain N-model forecast. */
+function emosIssue(forecast: CityForecast): number | null {
+  const pre = forecast.predicted_high_f_pre_intraday;
+  if (forecast.intraday_update?.applied !== true || typeof pre !== "number") return null;
+  return Math.abs(pre - forecast.predicted_high_f) >= LOCK_EPSILON_F ? pre : null;
+}
+
+/** The high to display for one city forecast. `baselineF` is the EMOS issue
+    behind it, set only when the intraday update actually moved the number, so
+    callers label the adjustment instead of silently swapping one published
+    figure for the other. `source` says WHICH publisher moved it: only San
+    Francisco has a flagship market signal, so copy that credits the flagship is
+    false for the other nineteen cities, whose fold-in comes from the coverage
+    artifact itself. */
 export function lockedHigh(
   slug: string | undefined,
   forecast: CityForecast,
   lock: IntradayLock | null | undefined,
-): { highF: number; baselineF: number | null } {
+): { highF: number; baselineF: number | null; source: "flagship" | "coverage" } {
+  const issue = emosIssue(forecast);
   if (!lock || lock.slug !== slug || lock.targetDate !== forecast.target_date) {
-    return { highF: forecast.predicted_high_f, baselineF: null };
+    return { highF: forecast.predicted_high_f, baselineF: issue, source: "coverage" };
   }
   const moved = Math.abs(lock.highF - forecast.predicted_high_f) >= LOCK_EPSILON_F;
-  return { highF: lock.highF, baselineF: moved ? forecast.predicted_high_f : null };
+  // When the flagship lock moves the card's number, the honest baseline is
+  // still the ensemble mean, not the coverage artifact's own post-intraday high.
+  return {
+    highF: lock.highF,
+    baselineF: moved ? issue ?? forecast.predicted_high_f : issue,
+    source: moved ? "flagship" : "coverage",
+  };
 }
 
 function CityCard({
@@ -80,14 +102,22 @@ function CityCard({
   const preLockHighF = display?.baselineF ?? null;
   const fresh = cityFreshness(city.forecasts);
   const settled = city.latest_settlement;
-  const openPositions =
-    (city.books?.live?.open_positions ?? 0) + (city.books?.research?.open_positions ?? 0);
+  // Live and Research are economically separate paper accounts, so their books
+  // are reported side by side and never summed into one headline count.
+  const live = city.books?.live;
+  const research = city.books?.research;
+  const liveOpen = live?.open_positions ?? 0;
+  const liveResting = live?.resting_orders ?? 0;
+  const researchOpen = research?.open_positions ?? 0;
+  const researchResting = research?.resting_orders ?? 0;
+  const hasBookActivity =
+    liveOpen > 0 || liveResting > 0 || researchOpen > 0 || researchResting > 0;
   const scans = city.books?.decisions_24h ?? 0;
 
   return (
     // No aria-label here: role=button computes its name from content, and an
     // aria-label would REPLACE every number on the card in the accessibility
-    // tree — a screen reader would hear fifteen identical "show city detail"
+    // tree — a screen reader would hear twenty identical "show city detail"
     // buttons and none of the forecast, settlement or book figures.
     <button
       type="button"
@@ -135,7 +165,13 @@ function CityCard({
             )}
           </div>
           <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
-            {fc ? `${shortDateUTC(fc.target_date)} · ${fc.n_models ?? "—"} models` : "no current forecast"}
+            {fc
+              ? `${shortDateUTC(fc.target_date)} · ${
+                  // "—-model EMOS" is worse than saying nothing about the member
+                  // count, so drop the prefix entirely when it is missing.
+                  fc.n_models == null ? "EMOS" : `${fc.n_models}-model EMOS`
+                }${preLockHighF == null ? "" : " + intraday"}`
+              : "no current forecast"}
           </p>
           {fc && preLockHighF != null && (
             <p className="mt-1 text-[10px] leading-snug text-muted">
@@ -157,13 +193,20 @@ function CityCard({
               "No settlement yet"
             )}
           </p>
-          <p className="tnum">
-            {!currentStateAvailable
-              ? "Current book status unavailable"
-              : openPositions > 0
-              ? `${openPositions} open position${openPositions === 1 ? "" : "s"}`
-              : `${scans.toLocaleString()} decision evaluations/24h`}
-          </p>
+          {!currentStateAvailable ? (
+            <p className="tnum">Current book status unavailable</p>
+          ) : hasBookActivity ? (
+            <>
+              <p className="tnum">
+                Live {liveOpen} open{liveResting > 0 ? ` · ${liveResting} resting` : ""}
+              </p>
+              <p className="tnum">
+                Research {researchOpen} open{researchResting > 0 ? ` · ${researchResting} resting` : ""}
+              </p>
+            </>
+          ) : (
+            <p className="tnum">{scans.toLocaleString()} decision evaluations/24h</p>
+          )}
         </div>
 
         {city.has_full_blend && (
@@ -182,7 +225,7 @@ function CityCard({
 function EmptyNote() {
   return (
     <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
-      Multi-city data not yet published — the fifteen-city coverage artifact will appear here on the
+      Multi-city data not yet published — the twenty-city coverage artifact will appear here on the
       next pipeline run.
     </p>
   );
@@ -198,7 +241,7 @@ function ErrorNote({ detail }: { detail?: string | null }) {
       className="rounded-2xl border border-dashed border-danger/40 px-4 py-8 text-center"
     >
       <p className="text-sm text-muted">
-        Couldn't load city coverage — the fifteen-city artifact did not load in this session.
+        Couldn't load city coverage — the twenty-city artifact did not load in this session.
         Reload the page to try again.
       </p>
       {detail && <p className="mt-2 font-mono text-[11px] text-muted">{detail}</p>}
@@ -215,7 +258,7 @@ interface CityGridProps {
   intradayLock?: IntradayLock | null;
 }
 
-/** The fifteen-city coverage grid, now the primary navigator: each card is a
+/** The twenty-city coverage grid, now the primary navigator: each card is a
     button that sets the active city; the selected card is clearly marked. Cards
     lead with the next calibrated high, with settlement + book activity quiet
     underneath. */
@@ -226,7 +269,7 @@ export function CityGrid({ data, error, selected, onSelect, intradayLock = null 
     if (error) return <ErrorNote detail={error} />;
     return (
       <div className={GRID} aria-hidden="true">
-        {Array.from({ length: 15 }).map((_, i) => (
+        {Array.from({ length: 20 }).map((_, i) => (
           <Skeleton key={i} className="h-44 rounded-2xl" />
         ))}
       </div>

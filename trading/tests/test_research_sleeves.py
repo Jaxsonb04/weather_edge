@@ -1,10 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import json
 import sqlite3
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,9 +15,12 @@ from sfo_kalshi_quant.account import (
     account_for_research_sleeve,
     strategy_fingerprint,
 )
-from sfo_kalshi_quant.config import strategy_config_for_profile
+from sfo_kalshi_quant.cities import CITIES
+from sfo_kalshi_quant.config import config_for_city, strategy_config_for_profile
+from sfo_kalshi_quant.db import ResearchEntryLimitError
 from sfo_kalshi_quant.execution import with_buy_limit
 from sfo_kalshi_quant.models import TradeDecision
+from sfo_kalshi_quant.research_entry_risk import TARGET_OPEN_RISK_CHARGE_FRACTION
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
@@ -278,8 +282,54 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # execution identity.
     # 2026-09-04: explicit behavior-version coverage rotates the evidence cohort
     # for the audited exit-policy correction instead of silently blending it.
-    assert strategy_fingerprint(config, entry_mode="limit") == "88e417a64d8be9b1bb933b3b"
-    assert strategy_fingerprint(config, entry_mode="market") == "ea635b48bd45aad3d28d9c5b"
+    # 2026-09-07 (audit TC-6/TC-15): StrategyConfig's executable minimum is
+    # unchanged -- the drop was implemented, measured and reverted -- but
+    # behaviour outside StrategyConfig did change: recorded execution size is
+    # now the ask-clamped order rather than the policy request, and the live YES
+    # sleeve moved from $4.00 to $16.00.
+    # 2026-09-07 (audit FC-1/FC-2): `source_spread_f` is now the DEBIASED
+    # cross-model range, so `max_source_spread_f` was re-derived into those units
+    # (10.0 -> 7.3, pooled veto 16.9% -> 18.5%, with the per-station
+    # redistribution documented in config.py); the raw-tuned source-spread
+    # controls in probability.py now read a raw-EQUIVALENT value, and the
+    # same-day sigma is rescaled per station.
+    # All of the above move served probabilities or recorded execution size, so
+    # STRATEGY_BEHAVIOR_VERSION rotates once for the combined release and these
+    # fingerprints move with it.
+    # 2026-09-13 (scaling release, two-level taker cross): StrategyConfig
+    # gained `limit_taker_cross_max_levels` (live 2, frozen 1), which enters
+    # asdict(config) and therefore moves both fingerprints WITHOUT another
+    # STRATEGY_BEHAVIOR_VERSION rotation. The readiness cohort is keyed on the
+    # EXACT live fingerprint (strategy_lab/build.py
+    # required_strategy_fingerprint), so this restarts the live evidence
+    # clock. Accepted by the owner: production still runs behavior-v2 and this
+    # ships in the same single deploy as behavior-v3, whose rotation restarts
+    # that clock anyway, so it resets exactly once. Pins recomputed from
+    # strategy_config_for_profile("live"); with the field removed from the
+    # hash the same config gives 93326de538852004fc08aa99 /
+    # cdfaeb3c0be77f5b9dcb1270. Re-pin at integration if a sibling track adds
+    # a StrategyConfig field.
+    assert strategy_fingerprint(config, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
+    assert strategy_fingerprint(config, entry_mode="market") == "daac202606908834dcef5e78"
+    # Production stamps rows PER CITY: strategy_lab/build.py keys live readiness
+    # by strategy_fingerprint(config_for_city(live_config, city)), and
+    # config_for_city leaves SFO alone but changes the other cities. So the 19
+    # non-SFO live books carry their own fingerprint, which the deploy verifies
+    # (limit mode; production runs PAPER_ENTRY_MODE=limit). Release review
+    # 2026-09-13: the integration notes named only the SFO pins. Recomputed from
+    # this exact config through config_for_city.
+    live_by_city = {
+        city.slug: strategy_fingerprint(config_for_city(config, city), entry_mode="limit")
+        for city in CITIES
+    }
+    assert live_by_city.pop("sfo") == "e1b9704afa53970f4edbdca3"
+    assert len(live_by_city) == 19
+    assert set(live_by_city.values()) == {"d3751adbf7e84c6e424d46da"}
+    research = strategy_config_for_profile("research")
+    assert {
+        strategy_fingerprint(config_for_city(research, city), entry_mode="limit")
+        for city in CITIES
+    } == {"b123f57836129c1df1c995bd"}
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -917,16 +967,18 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     order_ids = []
-    # Each crossing order costs $20.83 (fees included). Seven fit in $150;
-    # another city or target date cannot bypass the account-wide reservation.
-    for index in range(8):
+    # Each crossing order costs $20.83 (fees included) and is charged at the
+    # 0.60 stop-scaled fraction ($12.50). Eleven fit in $150 ($137.48
+    # charged, $12.52 room < $20.83); another city or target date cannot
+    # bypass the account-wide reservation.
+    for index in range(12):
         target = f"2026-07-{19 + index:02d}"
         decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
         result = store.record_research_order_atomic(
             target, decision, admission=admission, strategy_config=config,
         )
-        if index < 7:
+        if index < 11:
             assert result is not None
             order_ids.append(result)
         else:
@@ -937,6 +989,8 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
         risk_profile="research", requested_spend=20.0, account_id=TARGET_POLICY.account_id,
     )
     assert before["allowed_spend"] < 20.0
+    # Closing one order at a ~$20 loss frees its $12.50 charge but adds the
+    # realized loss: $150 - $20.3 - 0.6 * $208.3 = $4.7, still under $20.
     store.close_paper_order(order_ids[0], 0.01)
     after = store.account_policy_capacity(
         target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
@@ -954,11 +1008,13 @@ def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(t
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     attempts = []
-    for index in range(8):
+    # Ten $20.83 orders charge 0.6 * $208.3 = $125, leaving $25 of room:
+    # exactly one more $20.83 order fits, never two.
+    for index in range(12):
         target = f"2026-07-{19 + index:02d}"
         decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
-        if index < 6:
+        if index < 10:
             assert store.record_research_order_atomic(
                 target, decision, admission=admission, strategy_config=config,
             ) is not None
@@ -975,7 +1031,10 @@ def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(t
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(admit, range(2)))
     assert sum(result is not None for result in results) == 1
-    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) <= 150.0
+    open_risk = store.research_open_risk(account_id=TARGET_POLICY.account_id)
+    # Eleven ~$20.8 orders are open: more than the old 100%-charge bound.
+    assert 150.0 < open_risk < 12 * 20.83
+    assert TARGET_OPEN_RISK_CHARGE_FRACTION * open_risk <= 150.0
 
 
 def test_research_admission_is_immutable() -> None:
@@ -1322,7 +1381,10 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     assert row["research_sleeve"] is None
     assert row["research_policy_version"] is None
     assert row["policy_fingerprint"] is None
-    assert row["strategy_fingerprint"] == "ea635b48bd45aad3d28d9c5b"
+    # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION and moved again on
+    # 2026-09-13 by the `limit_taker_cross_max_levels` config field; see
+    # test_live_account_cutover_preserves_strategy_fingerprints.
+    assert row["strategy_fingerprint"] == "daac202606908834dcef5e78"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
@@ -1354,7 +1416,7 @@ def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> 
         objective_day="2026-07-19",
     )
 
-    with pytest.raises(ValueError, match="current Pacific civil day"):
+    with pytest.raises(ResearchEntryLimitError, match="current Pacific civil day"):
         store.record_research_order_atomic(
             "2026-07-19",
             decision,
@@ -1398,7 +1460,7 @@ def test_atomic_admission_uses_current_pacific_day_at_dst_boundaries(
         objective_day=invalid_day,
         target_date=target_date,
     )
-    with pytest.raises(ValueError, match="current Pacific civil day"):
+    with pytest.raises(ResearchEntryLimitError, match="current Pacific civil day"):
         store.record_research_order_atomic(
             target_date,
             invalid_decision,
@@ -1699,7 +1761,7 @@ def test_target_atomic_admission_rejects_past_and_same_day_targets(
         lead_bucket=lead_bucket,
     )
 
-    with pytest.raises(ValueError, match="minimum lead"):
+    with pytest.raises(ResearchEntryLimitError, match="minimum lead"):
         store.record_research_order_atomic(
             target_date,
             decision,
@@ -1791,13 +1853,185 @@ def test_target_minimum_lead_uses_city_fixed_standard_day(tmp_path: Path) -> Non
         lead_bucket="day-ahead",
     )
 
-    with pytest.raises(ValueError, match="minimum lead"):
+    with pytest.raises(ResearchEntryLimitError, match="minimum lead"):
         store.record_research_order_atomic(
             "2026-07-19",
             decision,
             admission=admission,
             strategy_config=strategy_config_for_profile("research"),
         )
+
+
+def test_research_scan_rejects_same_day_station_target_before_admission(
+    tmp_path: Path,
+) -> None:
+    """REG-1: the scanner must measure lead on the station's settlement clock.
+
+    At 06:00 UTC Austin's fixed-standard (CST) clock has just rolled over to
+    Sep 6 while the Los Angeles civil day is still Sep 5. Measuring lead
+    against the civil day admitted the Sep 6 candidate as day-ahead, and the
+    atomic gate above then rejected it -- killing the whole research scan
+    tick. The candidate must be rejected upstream, with the ordinary reason,
+    and the scan must complete.
+    """
+
+    from sfo_kalshi_quant._cli import scan as scan_module
+    from sfo_kalshi_quant.cities import get_city
+    from sfo_kalshi_quant.db import PaperStore
+
+    now = datetime(2026, 9, 6, 6, 0, tzinfo=UTC)
+    store = PaperStore(
+        tmp_path / "aus-station-lead.db",
+        research_clock=lambda: now,
+    )
+    city = get_city("aus")
+    assert store.research_objective_day() == date(2026, 9, 5)
+    assert store.research_station_day(city) == date(2026, 9, 6)
+
+    decision = _atomic_decision("KXHIGHAUS-26SEP06-B80.5")
+    context = SimpleNamespace(
+        decisions=[decision],
+        city=city,
+        series_ticker=city.series_ticker,
+        intraday=None,
+        forecast=None,
+        event=None,
+        consensus=None,
+    )
+
+    plans, execution, recorded = scan_module._execute_research_scan_context(
+        context,
+        target=date(2026, 9, 6),
+        store=store,
+        config=strategy_config_for_profile("research"),
+        entry_allowed=True,
+        entry_block_reason=None,
+        place_paper=True,
+        place_research_target=True,
+        place_research_motion=False,
+        forecast_snapshot_id=None,
+        market_snapshot_id=None,
+        scan_run_id="reg-1-station-lead",
+    )
+
+    assert recorded == [decision]
+    assert plans.target.legs == []
+    assert [disposition.reason for disposition in plans.target.dispositions] == [
+        "target requires day-ahead lead"
+    ]
+    assert execution.target_order_ids == ()
+    assert execution.motion_order_ids == ()
+
+
+def test_research_scan_admits_day_ahead_target_on_lagging_station_clock(
+    tmp_path: Path,
+) -> None:
+    """REG-1, the other direction: the station clock also ADMITS.
+
+    Moving the scanner's lead measure onto the station clock is two-sided, and
+    this is the half that widens rather than narrows. At 07:30 UTC on a DST
+    date the Los Angeles civil day has already rolled to Sep 6 while SFO's
+    fixed-standard (PST) settlement day is still Sep 5, so a Sep 6 target is
+    lead 1 -- day-ahead -- at the station and lead 0 against the civil day.
+    Before the fix the scanner rejected it as "target requires day-ahead lead";
+    the store's atomic gate, which was already on the station clock, would not
+    have. The candidate is therefore admitted now where it previously was not,
+    and that is asserted here rather than left to a green suite: the same three
+    Pacific-standard cities (sfo, lax, sea) are the only ones this reaches, for
+    one hour a day, during DST only.
+    """
+
+    from sfo_kalshi_quant._cli import scan as scan_module
+    from sfo_kalshi_quant.cities import get_city
+    from sfo_kalshi_quant.db import PaperStore
+
+    now = datetime(2026, 9, 6, 7, 30, tzinfo=UTC)
+    store = PaperStore(
+        tmp_path / "sfo-station-lead.db",
+        research_clock=lambda: now,
+    )
+    city = get_city("sfo")
+    # The civil day is AHEAD of the station here -- the mirror of the Austin
+    # case above, where the station was ahead of the civil day.
+    assert store.research_objective_day() == date(2026, 9, 6)
+    assert store.research_station_day(city) == date(2026, 9, 5)
+
+    decision = _atomic_decision("KXHIGHTSFO-26SEP06-B80.5")
+    context = SimpleNamespace(
+        decisions=[decision],
+        city=city,
+        series_ticker=city.series_ticker,
+        intraday=None,
+        forecast=None,
+        event=None,
+        consensus=None,
+    )
+
+    plans, execution, recorded = scan_module._execute_research_scan_context(
+        context,
+        target=date(2026, 9, 6),
+        store=store,
+        config=strategy_config_for_profile("research"),
+        entry_allowed=True,
+        entry_block_reason=None,
+        place_paper=True,
+        place_research_target=True,
+        place_research_motion=False,
+        forecast_snapshot_id=None,
+        market_snapshot_id=None,
+        scan_run_id="reg-1-station-lead-admit",
+    )
+
+    assert recorded == [decision]
+    assert [disposition.reason for disposition in plans.target.dispositions] == [None]
+    assert len(plans.target.legs) == 1
+    assert len(execution.target_order_ids) == 1
+
+    order = store.paper_order(execution.target_order_ids[0])
+    assert order is not None
+    # Stamped from the station clock, not the civil day: the civil-day label
+    # would have been "same-day", and the atomic gate rejects a label that
+    # disagrees with the station lead.
+    assert order["lead_bucket"] == "day-ahead"
+    assert order["objective_day"] == "2026-09-06"
+
+
+def test_lead_bucket_clock_window_covers_every_station_disagreement() -> None:
+    """The declared 05:00-08:00 UTC window is derived, not asserted by hand.
+
+    ``lead_bucket`` labels written before and after REG-1 can only differ for
+    rows stamped while some station's fixed-standard day disagrees with the Los
+    Angeles civil day. Sweep every hour of a full year against the repo's own
+    settlement clock and confirm that set is exactly the declared window, so
+    research_goals' contamination counter cannot silently miss an hour if a city
+    with a new standard offset is added.
+    """
+
+    from sfo_kalshi_quant.cities import CITIES
+    from sfo_kalshi_quant.research_policy import (
+        LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS,
+        RESEARCH_OBJECTIVE_TZ,
+        lead_bucket_clock_is_ambiguous,
+    )
+    from sfo_kalshi_quant.settlement_day import settlement_clock
+
+    start = datetime(2026, 1, 1, 0, 30, tzinfo=UTC)
+    disagreeing_hours = {
+        moment.hour
+        for step in range(365 * 24)
+        if (moment := start + timedelta(hours=step))
+        and any(
+            settlement_clock(moment, city).date()
+            != moment.astimezone(RESEARCH_OBJECTIVE_TZ).date()
+            for city in CITIES
+        )
+    }
+
+    assert disagreeing_hours == set(LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS)
+    assert lead_bucket_clock_is_ambiguous(datetime(2026, 9, 6, 7, 30, tzinfo=UTC))
+    assert not lead_bucket_clock_is_ambiguous(datetime(2026, 9, 6, 8, 30, tzinfo=UTC))
+    with pytest.raises(ValueError, match="aware timestamp"):
+        lead_bucket_clock_is_ambiguous(datetime(2026, 9, 6, 7, 30))
 
 
 def test_atomic_admission_rejects_noncanonical_lead_bucket(
@@ -1819,7 +2053,7 @@ def test_atomic_admission_rejects_noncanonical_lead_bucket(
         lead_bucket="same-day",
     )
 
-    with pytest.raises(ValueError, match="canonical lead bucket"):
+    with pytest.raises(ResearchEntryLimitError, match="canonical lead bucket"):
         store.record_research_order_atomic(
             "2026-07-19",
             decision,

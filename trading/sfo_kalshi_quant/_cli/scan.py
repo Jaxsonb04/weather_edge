@@ -39,7 +39,13 @@ from ..forecast import (
     parse_target_dates,
 )
 from ..kalshi import KalshiPublicClient, load_event_snapshots
-from ..orderbook_capture import capture_orderbook_depth, depth_levels_json
+from ..orderbook_capture import (
+    OrderbookDepth,
+    capture_orderbook_depth,
+    capture_orderbook_depth_within,
+    depth_levels_json,
+    side_ask_ladder,
+)
 from ..models import (
     BucketProbability,
     EnsembleSnapshot,
@@ -62,6 +68,7 @@ from ..probability import ResidualCalibrator
 from ..research_policy import (
     TARGET_POLICY,
     canonical_research_lead_bucket,
+    research_scan_city_rank,
 )
 from ..research_portfolio import ResearchOpportunity, ResearchPlans, allocate_research_plans
 from ..research_entry_risk import target_remaining_daily_risk
@@ -657,19 +664,55 @@ def _execute_research_scan_context(
     """Evaluate the active research book from one immutable scan context."""
 
     objective_day = store.research_objective_day()
-    lead_days = (target - objective_day).days
-    lead_bucket = canonical_research_lead_bucket(lead_days)
+    # ``objective_day`` is the Pacific civil accounting day and stays that way.
+    # Lead is a settlement-clock quantity instead: the atomic admission gate
+    # recomputes it from the station's fixed-standard day, so measuring it here
+    # against the civil day admits a same-day Central/Eastern candidate between
+    # 05:00 and 07:00 UTC that the store then rejects mid-tick.  Reading the
+    # station day through the store keeps both gates on one clock.
+    station_day = store.research_station_day(context.city)
+    lead_days = (target - station_day).days
+    # A target already behind the station is rejected downstream as invalid
+    # candidate metadata; the audit label must not raise before it gets there.
+    lead_bucket = canonical_research_lead_bucket(max(lead_days, 0))
     run_id = scan_run_id or f"research-{uuid.uuid4().hex[:16]}"
     decisions = list(context.decisions)
     if not entry_allowed and entry_block_reason:
         decisions = _block_entry_decisions(decisions, entry_block_reason)
+    execution_config = strategy_config_for_profile("research")
+    trader = PaperTrader(
+        store,
+        execution_config,
+        risk_profile="research",
+        entry_mode="limit",
+        series_ticker=context.series_ticker,
+    )
+    admit_target_orders = (
+        place_paper if place_research_target is None else place_research_target
+    )
+    # Stale-quote guard for the 30-minute day-ahead rest: pull any resting
+    # target quote this tick's fresh lower-bound probabilities no longer
+    # support. It writes to the target ledger, so it runs only when this scan
+    # was asked to place target orders: a dry run, `portfolio-scan` without
+    # --place-paper, or the runner's shadow mode (PAPER_PLACE_RESEARCH_TARGET=0)
+    # must never touch resting quotes. It DOES run on a placing tick whose
+    # entry is blocked (single-source forecast, closed same-day window, no
+    # listed event): pulling a quote the fresh LCB no longer supports only
+    # reduces risk, and _block_entry_decisions keeps each decision's LCB.
+    # The pull cuts the quote's expiry rather than cancelling it (see
+    # PaperStore.request_resting_order_cancel), so its reservation is released
+    # by the monitor's reconciled expiry pass, not in time for this capacity
+    # read, and the duplicate-entry guard keeps that market unquotable until
+    # then -- typically this tick and the next (see
+    # PaperTrader.cancel_stale_research_resting_orders).
+    if admit_target_orders:
+        trader.cancel_stale_research_resting_orders(target.isoformat(), decisions)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
     target_realized = store.research_realized_pnl_for_day(
         account_id=TARGET_POLICY.account_id,
         objective_day=objective_day,
     )
     target_cash = _target_planning_cash(target_state, target_realized)
-    execution_config = strategy_config_for_profile("research")
     target_decisions = prepare_research_target_decisions(
         decisions,
         execution_config,
@@ -687,16 +730,7 @@ def _execute_research_scan_context(
         motion_realized_today=0.0,
         run_id=run_id,
     )
-    admit_target_orders = (
-        place_paper if place_research_target is None else place_research_target
-    )
-    execution = PaperTrader(
-        store,
-        execution_config,
-        risk_profile="research",
-        entry_mode="limit",
-        series_ticker=context.series_ticker,
-    ).execute_research_plans(
+    execution = trader.execute_research_plans(
         target.isoformat(),
         plans,
         source_decisions=target_decisions,
@@ -743,6 +777,21 @@ def _target_sleeve_legs(plans: ResearchPlans):
 # A module constant on purpose -- a StrategyConfig field would move the strategy
 # fingerprint, and this is an operational guard rail, not execution identity.
 _ORDERBOOK_CAPTURE_BUDGET_SECONDS = 10.0
+# Hard wall-clock deadline for ONE pre-entry ladder fetch (two-level taker
+# cross, 2026-09-13). That fetch sits between the market listing and order
+# placement, so it must not inherit the shared client's 20s timeout x 3
+# attempts with backoff (~61s worst case, longer behind a Retry-After): it
+# runs on a single-attempt client with this socket timeout AND the caller
+# waits at most this long. Healthy fetches take ~100-300ms. A timeout or an
+# error leaves the leg on the single-level cross; a timeout also ends
+# pre-entry fetching for that target.
+_PRE_ENTRY_LADDER_DEADLINE_SECONDS = 2.0
+# The real client class, bound once at import. ``KalshiPublicClient`` itself is
+# a test seam: cli._sync_scan_bindings copies cli's binding into this module
+# before every scan command, so a test that patches
+# ``sfo_kalshi_quant.cli.KalshiPublicClient`` leaves a Mock bound here after its
+# patch exits. An isinstance check must not read that seam.
+_KALSHI_PUBLIC_CLIENT_TYPE = KalshiPublicClient
 
 
 def _capture_orderbook_depth_for_legs(
@@ -755,8 +804,13 @@ def _capture_orderbook_depth_for_legs(
     store: PaperStore,
     risk_profile: str,
     budget_seconds: float = _ORDERBOOK_CAPTURE_BUDGET_SECONDS,
+    skip_tickers: Iterable[str] = (),
 ) -> None:
     """Best-effort ladder-depth telemetry for a book's gated legs.
+
+    ``skip_tickers`` are markets this scan already fetched, or tried and
+    failed to fetch, pre-entry (_attach_pre_entry_ask_ladders); they are not
+    fetched a second time.
 
     Runs AFTER order placement so a capture failure can never affect it.
     Deduplicates by ticker: a scan can gate the same market on multiple
@@ -772,7 +826,7 @@ def _capture_orderbook_depth_for_legs(
     if not legs:
         return
     deadline = time.monotonic() + max(0.0, budget_seconds)
-    seen_tickers: set[str] = set()
+    seen_tickers: set[str] = set(skip_tickers)
     for leg in legs:
         if time.monotonic() >= deadline:
             # Out of budget: drop the rest rather than delay the next scan.
@@ -803,6 +857,180 @@ def _capture_orderbook_depth_for_legs(
             )
         except Exception:  # noqa: BLE001 -- observation only, never affects a scan
             continue
+
+
+def _attach_pre_entry_ask_ladders(
+    plan: PortfolioPlan,
+    config: StrategyConfig,
+    kalshi_client: KalshiPublicClient | None,
+    paper_trader: PaperTrader,
+    *,
+    target_date: str,
+    store: PaperStore,
+    risk_profile: str,
+    deadline: float,
+) -> tuple[PortfolioPlan, set[str]]:
+    """Attach fresh pre-entry ask ladders to depth-bound directional legs.
+
+    The two-level taker cross (execution._taker_cross_quote) needs the book
+    BELOW the displayed best ask, which the market listing never carries.
+    This fetches the public orderbook for each approved directional leg whose
+    displayed best-ask size is below its sizing request, converts it to the
+    leg's own side, and threads it onto the decision so the recording
+    restatement and placement quote against the same ladder.
+
+    It sits in front of placement, so its latency is bounded twice: each
+    fetch is ONE attempt under a hard ``_PRE_ENTRY_LADDER_DEADLINE_SECONDS``
+    wall-clock deadline (``capture_orderbook_depth_within`` on a
+    ``single_attempt`` client), and no fetch starts after ``deadline`` (the
+    per-target ladder budget). The first timeout ends fetching for the
+    target: the endpoint is degraded, and every further leg would cost
+    another deadline before placement.
+
+    Best effort by construction: no client, a disabled cross, a market-mode
+    trader, a timeout, a fetch failure, a malformed book or an exhausted
+    budget all leave the leg exactly as it was, and the single-level cross
+    then applies. It never blocks or drops a trade. Fetched ladders are
+    recorded as depth telemetry (when that is enabled). Returns the plan and
+    every ticker a fetch was ATTEMPTED for, so the post-placement telemetry
+    neither re-fetches a book nor re-hits an endpoint that just timed out.
+    """
+
+    if (
+        kalshi_client is None
+        or getattr(paper_trader, "entry_mode", None) != "limit"
+        or not config.limit_taker_cross_enabled
+        or int(config.limit_taker_cross_max_levels) < 2
+    ):
+        return plan, set()
+    wanted = _depth_bound_leg_indexes(plan)
+    if not wanted:
+        return plan, set()
+    levels = max(2, int(config.orderbook_depth_capture_levels))
+    ladder_client = _pre_entry_ladder_client(kalshi_client)
+    legs = list(plan.legs)
+    attempted: set[str] = set()
+    for ticker, indexes in wanted.items():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            # Out of budget: the remaining legs keep the single-level cross.
+            break
+        attempted.add(ticker)
+        depth, timed_out = capture_orderbook_depth_within(
+            ladder_client,
+            ticker,
+            levels=levels,
+            deadline_seconds=min(_PRE_ENTRY_LADDER_DEADLINE_SECONDS, remaining),
+        )
+        if timed_out:
+            break
+        if depth is None:
+            continue
+        _record_pre_entry_depth(
+            config,
+            store,
+            depth,
+            ticker=ticker,
+            levels=levels,
+            target_date=target_date,
+            risk_profile=risk_profile,
+        )
+        legs = _legs_with_side_ladders(legs, indexes, depth, config)
+    return replace(plan, legs=legs), attempted
+
+
+def _depth_bound_leg_indexes(plan: PortfolioPlan) -> dict[str, list[int]]:
+    """Approved directional legs whose displayed ask is below the request."""
+
+    wanted: dict[str, list[int]] = {}
+    for index, leg in enumerate(plan.legs):
+        if leg.sleeve == "arbitrage":
+            continue
+        decision = leg.decision
+        try:
+            requested = float(decision.recommended_contracts)
+            ask_size = float(decision.ask_size)
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            continue
+        if (
+            not decision.approved
+            or not math.isfinite(requested)
+            or not math.isfinite(ask_size)
+            or requested <= 0.0
+            or ask_size + 1e-12 >= requested
+        ):
+            continue
+        wanted.setdefault(str(decision.ticker), []).append(index)
+    return wanted
+
+
+def _pre_entry_ladder_client(kalshi_client):
+    """The scan's endpoint as a single-attempt, short-timeout client.
+
+    A test double that is not a KalshiPublicClient is used as given; the
+    hard deadline in capture_orderbook_depth_within bounds it regardless.
+    """
+
+    if isinstance(kalshi_client, _KALSHI_PUBLIC_CLIENT_TYPE):
+        return kalshi_client.single_attempt(
+            timeout=_PRE_ENTRY_LADDER_DEADLINE_SECONDS
+        )
+    return kalshi_client
+
+
+def _record_pre_entry_depth(
+    config: StrategyConfig,
+    store: PaperStore,
+    depth: OrderbookDepth,
+    *,
+    ticker: str,
+    levels: int,
+    target_date: str,
+    risk_profile: str,
+) -> None:
+    """Record a pre-entry ladder as depth telemetry; never affects placement."""
+
+    if not config.orderbook_depth_capture_enabled:
+        return
+    try:
+        store.record_orderbook_depth(
+            target_date=target_date,
+            market_ticker=ticker,
+            yes_levels=depth_levels_json(depth.yes),
+            no_levels=depth_levels_json(depth.no),
+            levels_requested=levels,
+            scan_run_id=None,
+            risk_profile=risk_profile,
+        )
+    except Exception:  # noqa: BLE001 -- telemetry only, never affects placement
+        pass
+
+
+def _legs_with_side_ladders(
+    legs: list,
+    indexes: list[int],
+    depth: OrderbookDepth,
+    config: StrategyConfig,
+) -> list:
+    """A copy of ``legs`` with each indexed leg's own-side ask ladder attached."""
+
+    updated = list(legs)
+    for index in indexes:
+        leg = updated[index]
+        try:
+            ladder = side_ask_ladder(
+                depth,
+                leg.decision.side,
+                levels=int(config.limit_taker_cross_max_levels),
+            )
+        except Exception:  # noqa: BLE001 -- a bad ladder must never touch a trade
+            continue
+        if len(ladder) < 2:
+            continue
+        updated[index] = replace(
+            leg, decision=replace(leg.decision, ask_levels=ladder)
+        )
+    return updated
 
 
 def _research_portfolio_scan_from_context(
@@ -986,7 +1214,33 @@ def _portfolio_scan_one_target(
             entry_allowed = False
             entry_block_reason = pause_reason
 
-    decisions_to_record = _portfolio_decisions_for_recording(decisions, plan)
+    # Pre-entry ask ladders for depth-bound live legs (two-level taker
+    # cross, 2026-09-13). Runs BEFORE the recording restatement so the
+    # journal carries the quote execution will place. It shares the one
+    # per-target ladder budget with the post-placement telemetry below, but
+    # only its OWN fetch time is charged to that budget: the recording,
+    # placement and operator output in between must not starve telemetry.
+    prefetch_started = time.monotonic()
+    prefetched_tickers: set[str] = set()
+    if args.place_paper and entry_allowed and plan.approved:
+        plan, prefetched_tickers = _attach_pre_entry_ask_ladders(
+            plan,
+            config,
+            kalshi_client,
+            paper_trader,
+            target_date=target.isoformat(),
+            store=store,
+            risk_profile=risk_profile,
+            deadline=prefetch_started + _ORDERBOOK_CAPTURE_BUDGET_SECONDS,
+        )
+    prefetch_seconds = time.monotonic() - prefetch_started
+    decisions_to_record = _restate_recorded_execution(
+        _portfolio_decisions_for_recording(decisions, plan),
+        plan,
+        paper_trader,
+        target_date=target.isoformat(),
+        bankroll=paper_bankroll,
+    )
     if not entry_allowed and entry_block_reason:
         if risk_profile == "research":
             paper_trader.record_research_shadow_candidates(
@@ -1054,6 +1308,10 @@ def _portfolio_scan_one_target(
         scan_run_id=None,
         store=store,
         risk_profile=risk_profile,
+        budget_seconds=max(
+            0.0, _ORDERBOOK_CAPTURE_BUDGET_SECONDS - prefetch_seconds
+        ),
+        skip_tickers=prefetched_tickers,
     )
 
 
@@ -1245,7 +1503,7 @@ def _tail_basket_one_target(
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
     # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
-    # calls per target); at fifteen cities on a 5-minute cadence it would blow
+    # calls per target); at twenty cities on a 5-minute cadence it would blow
     # the free ensemble quota, so EMOS-only cities run without it -- their
     # sigma already comes from the calibrated EMOS fit.
     ensemble = (
@@ -1575,6 +1833,90 @@ def _portfolio_decision_key(decision) -> tuple[str, str]:
     return (str(decision.ticker), str(decision.side).upper())
 
 
+def _restate_recorded_execution(
+    decisions,
+    plan: PortfolioPlan,
+    paper_trader,
+    *,
+    target_date: str | None = None,
+    bankroll: float | None = None,
+):
+    """Record the order execution will place, not the allocator's request.
+
+    Audit TC-15: the portfolio scan recorded the ALLOCATOR'S REQUEST and never
+    the crossing quote derived from it. A crossing limit is capped at displayed
+    ask depth (`execution._taker_cross_quote`, `paper._clamp_to_displayed_ask`),
+    so live snapshots carried ~85 contracts / ~$77 of intended spend for orders
+    that were 2 contracts / $1.77: 7,561 recommended contracts against 427
+    executable, and $384.69 of expected_profit, over the 89 approved live rows
+    since 2026-09-04. The single-target scan has always applied the entry-mode
+    quote before recording; this makes the portfolio path agree. Placement is
+    untouched -- `_place_portfolio_orders` still reads `plan.legs`.
+
+    Arbitrage legs are skipped deliberately. A box leg's own after-fee LCB edge
+    is not the applicable test -- that is the point of a box -- so
+    `buy_limit_for_decision` can return None for one, and `with_buy_limit`
+    would then journal an approved, about-to-be-placed leg as approved=False /
+    0 contracts / "no buy-limit price preserves lower-bound edge" while
+    `_place_portfolio_orders` still places the group through `place_arbitrage`
+    on the opportunity's own sizing. That would be a journal-fidelity inversion
+    introduced by a journal-fidelity fix. Latent today (the live book has
+    recorded no arbitrage group) but `build_arbitrage_opportunities` runs on
+    every live portfolio scan.
+
+    Given ``target_date`` and ``bankroll`` -- the scan passes both -- the
+    directional legs are restated through ``PaperTrader.with_placement_terms``
+    in plan-leg order, which is placement's order. With the two-level live
+    cross the account-policy fit is no longer size-only: shrinking a level-2
+    order to a count the fresh level-1 depth covers re-quotes it at level 1
+    and the cheaper ask, so a journal built from ``with_entry_mode`` alone
+    recorded a level, price and size that were never ordered (release review
+    2026-09-13). Without them the historical ``with_entry_mode`` restatement
+    is used.
+    """
+
+    arbitrage_keys = {
+        _portfolio_decision_key(leg.decision)
+        for leg in plan.legs
+        if leg.sleeve == "arbitrage"
+    }
+    recorded = list(decisions)
+    restated = paper_trader.with_entry_mode(recorded)
+    if target_date is not None and bankroll is not None:
+        recorded_by_key = {
+            _portfolio_decision_key(decision): decision for decision in recorded
+        }
+        directional = [
+            recorded_by_key[key]
+            for key in (
+                _portfolio_decision_key(leg.decision)
+                for leg in plan.legs
+                if leg.sleeve != "arbitrage"
+            )
+            if key in recorded_by_key
+        ]
+        placed_by_key = {
+            _portfolio_decision_key(original): placed
+            for original, placed in zip(
+                directional,
+                paper_trader.with_placement_terms(
+                    target_date, directional, bankroll=bankroll
+                ),
+                strict=True,
+            )
+        }
+        restated = [
+            placed_by_key.get(_portfolio_decision_key(decision), fallback)
+            for decision, fallback in zip(recorded, restated, strict=True)
+        ]
+    return [
+        decision
+        if _portfolio_decision_key(decision) in arbitrage_keys
+        else restated_decision
+        for decision, restated_decision in zip(recorded, restated, strict=True)
+    ]
+
+
 def _same_day_entry_cutoff_hour() -> int:
     raw = os.getenv("PAPER_SAME_DAY_ENTRY_CUTOFF_HOUR", str(DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR))
     try:
@@ -1651,6 +1993,25 @@ class ScanCommandDependencies:
     arbitrage_target: "ArbitrageTarget"
     portfolio_target: "ScanTarget"
     city_lookup: Callable[[str], CityConfig]
+
+
+def _scan_cities_for_profile(
+    cities: Iterable[CityConfig], risk_profile: str
+) -> tuple[CityConfig, ...]:
+    """Research scans cities where seller flow is; every other profile keeps
+    the registry order it was given.
+
+    The sort is stable, so cities absent from RESEARCH_SCAN_CITY_ORDER keep
+    their incoming (registry) order AFTER the listed ones -- a new city is
+    scanned last, never skipped. The live profile is untouched: it runs as a
+    separate process and records the shared context snapshots, and its
+    ordering is part of the frozen live-evidence cohort.
+    """
+
+    ordered = tuple(cities)
+    if risk_profile != "research":
+        return ordered
+    return tuple(sorted(ordered, key=lambda city: research_scan_city_rank(city.slug)))
 
 
 def _command_cities_for_args(args: argparse.Namespace) -> tuple[CityConfig, ...]:
@@ -1863,7 +2224,10 @@ def cmd_portfolio_scan(
     store = dependencies.store_factory(args.db_path)
     scanned_any = False
     fatal_containment = False
-    for city_idx, city in enumerate(dependencies.cities_for_args(args)):
+    cities = _scan_cities_for_profile(
+        dependencies.cities_for_args(args), _risk_profile_name(args)
+    )
+    for city_idx, city in enumerate(cities):
         if city_idx:
             print("")
             print("#" * 92)

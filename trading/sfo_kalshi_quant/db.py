@@ -38,7 +38,7 @@ from .account import (
     strategy_fingerprint,
 )
 from .consensus import MarketConsensus
-from .cities import city_for_market_ticker
+from .cities import CityConfig, city_for_market_ticker
 from .fees import (
     contracts_for_budget,
     quadratic_fee_average_per_contract,
@@ -86,6 +86,7 @@ from .research_policy import (
 from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
 from .research_entry_risk import (
     TARGET_ENTRY_FULL_LOSS_CAP,
+    resting_order_ttl_minutes,
     target_entry_spend_limit,
     target_remaining_daily_risk,
 )
@@ -100,6 +101,17 @@ from .settlement_truth import (
     settlement_for_market,
 )
 from .settlement_day import settlement_clock
+from .ladder_truth import (
+    INTEGRITY_FLAGGED,
+    INTEGRITY_UNCHECKED,
+    LADDER_RETENTION_FULL_DAYS,
+    assess_ladder_coverage,
+    build_ladder_outcomes_for_date,
+    exchange_settlement_highs,
+    record_ladder_outcomes,
+    score_ladder_outcomes,
+    target_dates_in_range,
+)
 from .store.diagnostics import (
     _decision_diagnostics_payload,
     _decision_signal_payload,
@@ -629,6 +641,11 @@ def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
 # for contention is to shorten the lock HOLDER, not to lengthen the waiter.
 PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
+# Row cap for a single ladder-ledger read. Reaching it is an error rather
+# than a truncation, so no calibration number is ever computed over a
+# silently shortened range.
+LADDER_READ_LIMIT = 100_000
+
 
 class PaperStore:
     def __init__(
@@ -1108,6 +1125,19 @@ class PaperStore:
         """Return the current Pacific civil day used by both research books."""
 
         return self._research_objective_day()
+
+    def research_station_day(self, city: CityConfig | None = None) -> date:
+        """Return the settlement day now in progress at one station.
+
+        Research *lead* is measured on the station's fixed-standard settlement
+        clock, never on the Pacific civil objective day: between 05:00 and
+        07:00 UTC a Central/Eastern station has already rolled over while Los
+        Angeles has not.  Scanners must read the lead clock through the store
+        that owns the admission clock, so the upstream gate and the atomic
+        admission gate below can never disagree.
+        """
+
+        return settlement_clock(self._research_clock(), city).date()
 
     def research_daily_goal_state(
         self,
@@ -2142,19 +2172,11 @@ class PaperStore:
             }
         else:
             return {"allowed_spend": 0.0, "reason": "account/profile identity mismatch"}
-        today_start = datetime.now(SETTLEMENT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        # The account-level daily-loss query was deleted with DAILY_LOSS_PCT
+        # (audit TC-6): `paper_entry_pause_reason` pauses live entries at 1.0%
+        # of the clamped bankroll before any caller can reach this method, so
+        # the 2% account breaker this fed could never fire.
         with self.connect() as conn:
-            daily_pnl = float(conn.execute(
-                "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
-                "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED') "
-                "AND COALESCE(closed_at, settled_at) >= ? "
-                "AND COALESCE(account_id, ?) = ?",
-                (
-                    today_start.astimezone(UTC).isoformat(),
-                    SHARED_ACCOUNT_ID,
-                    entry_account,
-                ),
-            ).fetchone()[0] or 0.0)
             active = conn.execute(
                 "SELECT market_ticker, target_date, COALESCE(risk_profile, 'live'), "
                 "CASE WHEN status='PAPER_LIMIT_RESTING' THEN reserved_cost "
@@ -2174,7 +2196,6 @@ class PaperStore:
         return policy_capacity(
             state=state,
             active_rows=active,
-            daily_pnl=daily_pnl,
             target_date=target_date,
             market_ticker=market_ticker,
             risk_profile=risk_profile,
@@ -3606,8 +3627,17 @@ class PaperStore:
         except ValueError as exc:
             raise ValueError("research target date is invalid") from exc
         preflight_civil_day = self._research_objective_day()
+        # ResearchEntryLimitError, not ValueError: paper.py journals this via
+        # mark_research_decision_admission_blocked and keeps scanning the rest
+        # of the tick, instead of the exception escaping cmd_portfolio_scan and
+        # killing the unit mid-tick (REG-1/OPS-4). The cost is real and needs an
+        # owner: a systemic objective-day misconfiguration would now surface
+        # only as a rising count of "canonical research entry rejected"
+        # decision rows. That counter has fired 0 times to date, and nothing
+        # alerts on it while OPS-3 (SFO_FRESHNESS_ALERT_URL unset) is open, so
+        # it is the number to watch after this ships.
         if admission.objective_day != preflight_civil_day.isoformat():
-            raise ValueError(
+            raise ResearchEntryLimitError(
                 "research admission objective day must equal the current "
                 "Pacific civil day"
             )
@@ -3731,8 +3761,17 @@ class PaperStore:
         status = "PAPER_LIMIT_RESTING" if resting else "PAPER_FILLED"
         created_at = _now()
         filled_at = None if resting else created_at
+        # Rest length is execution behaviour (research_entry_risk): the
+        # target sleeve's day-ahead quotes rest 30 minutes. The admission's
+        # lead bucket is re-validated against the station clock inside the
+        # transaction below, so a mismatched label never reaches the insert.
+        ttl_minutes = resting_order_ttl_minutes(
+            account_id=policy.account_id, lead_bucket=admission.lead_bucket
+        )
         expires_at = (
-            (datetime.fromisoformat(created_at) + timedelta(minutes=15)).isoformat()
+            (
+                datetime.fromisoformat(created_at) + timedelta(minutes=ttl_minutes)
+            ).isoformat()
             if resting
             else None
         )
@@ -3768,23 +3807,23 @@ class PaperStore:
             civil_day = self._research_objective_day()
             if admission.objective_day != civil_day.isoformat():
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     "research admission objective day must equal the current "
                     "Pacific civil day"
                 )
             city = city_for_market_ticker(decision.ticker)
-            station_day = settlement_clock(self._research_clock(), city).date()
+            station_day = self.research_station_day(city)
             lead_days = (target_day - station_day).days
             if lead_days < policy.min_lead_days:
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     f"{policy.sleeve.value} research minimum lead is "
                     f"{policy.min_lead_days} station-standard day(s); got {lead_days}"
                 )
             canonical_lead_bucket = canonical_research_lead_bucket(lead_days)
             if admission.lead_bucket != canonical_lead_bucket:
                 conn.rollback()
-                raise ValueError(
+                raise ResearchEntryLimitError(
                     "research admission canonical lead bucket does not match target"
                 )
             entry_decision = self._research_entry_decision_on_connection(
@@ -3815,6 +3854,13 @@ class PaperStore:
                     reason=reason,
                 ):
                     conn.rollback()
+                    # Stays a plain ValueError on purpose, unlike the gates
+                    # above. This fires only when the pending decision row is
+                    # already gone -- exactly the state in which
+                    # mark_research_decision_admission_blocked matches nothing
+                    # and returns False, a return both paper.py call sites
+                    # discard. Converting it would turn a state-corruption
+                    # signal into a silent no-op rather than a journalled skip.
                     raise ValueError("research pending evidence changed during admission")
                 conn.commit()
                 return None
@@ -4104,8 +4150,15 @@ class PaperStore:
         entry_account = account_for_profile(profile)
         created_at = _now()
         filled_at = created_at if normalized_status == "PAPER_FILLED" else None
+        # This path journals the live book (generic research returns None
+        # below), so the helper resolves to the unchanged 15 minutes here.
+        ttl_minutes = resting_order_ttl_minutes(
+            account_id=entry_account, lead_bucket=None
+        )
         expires_at = (
-            (datetime.fromisoformat(created_at) + timedelta(minutes=15)).isoformat()
+            (
+                datetime.fromisoformat(created_at) + timedelta(minutes=ttl_minutes)
+            ).isoformat()
             if normalized_status == "PAPER_LIMIT_RESTING"
             else None
         )
@@ -4117,18 +4170,27 @@ class PaperStore:
         )
         fingerprint = strategy_fingerprint(strategy_config, entry_mode=entry_mode)
         sleeve = sleeve_for(profile, list(decision.reasons), decision.side)
-        quote_snapshot_json = json.dumps(
-            {
-                "side": decision.side,
-                "bid": decision.bid,
-                "ask": decision.ask,
-                "limit_price": decision.limit_price,
-                "contracts": contracts,
-                "fee_per_contract": fee_per_contract,
-                "cost_per_contract": cost_per_contract,
-            },
-            sort_keys=True,
-        )
+        quote_snapshot: dict[str, object] = {
+            "side": decision.side,
+            "bid": decision.bid,
+            "ask": decision.ask,
+            "limit_price": decision.limit_price,
+            "contracts": contracts,
+            "fee_per_contract": fee_per_contract,
+            "cost_per_contract": cost_per_contract,
+        }
+        # Two-level taker cross (2026-09-13): the ladder the quote walked and
+        # how many levels it used. Recorded whenever a ladder was fetched --
+        # a level-1 fill WITH a ladder is the control group for the markout
+        # comparison -- and read back by restatement to verify the level-2
+        # entry price and executable depth. Absent on every earlier row.
+        if decision.taker_levels_used is not None:
+            quote_snapshot["taker_levels_used"] = int(decision.taker_levels_used)
+        if decision.ask_levels:
+            quote_snapshot["ask_levels"] = [
+                [float(price), float(size)] for price, size in decision.ask_levels
+            ]
+        quote_snapshot_json = json.dumps(quote_snapshot, sort_keys=True)
         fill_model = (
             "maker_trade_through_required"
             if normalized_status == "PAPER_LIMIT_RESTING"
@@ -4570,7 +4632,7 @@ class PaperStore:
         """Capital already deployed for one settlement target.
 
         ``series_ticker`` scopes the cap to one city's event (multi-city scans
-        cap per city-day, not across all fifteen cities sharing one date).
+        cap per city-day, not across every city sharing one date).
         """
 
         profile_filter, profile_params = _paper_profile_filter(risk_profile)
@@ -5305,6 +5367,12 @@ class PaperStore:
                 ),
                 "filled_quantity_retained": filled,
             }
+            # A pull requested earlier (request_resting_order_cancel) lives in
+            # the diagnostics this update replaces; keep its audit trail,
+            # including the TTL the quote carried before the pull.
+            cancel_request = _pending_cancel_request(row["outcome_diagnostics_json"])
+            if cancel_request is not None:
+                outcome_details["cancel_request"] = cancel_request
             if tape_reconciled_through is not None:
                 outcome_details["tape_reconciled_through"] = (
                     tape_reconciled_through
@@ -5329,6 +5397,89 @@ class PaperStore:
                     idempotency_key=f"order:{order_id}:cancel-release",
                     details={"reason": reason},
                 )
+        return self._order(order_id)
+
+    def request_resting_order_cancel(
+        self,
+        order_id: int,
+        *,
+        reason: str,
+        requested_at: str | None = None,
+    ) -> sqlite3.Row | None:
+        """Pull a resting maker quote at ``requested_at`` without losing tape fills.
+
+        A resting quote's fills are credited only by the monitor's public-tape
+        pass (``apply_maker_trade_batch``), which runs on its own 2-minute timer
+        and treats the tape as complete only
+        ``MAKER_TAPE_RECONCILIATION_GRACE_SECONDS`` after an instant. Cancelling
+        the row directly would discard every trade that had already traded
+        through the quote but was not yet credited -- and the allocator never
+        revisits a terminal row, so those fills are gone for good. They are also
+        the adverse ones: a pull fires exactly when the forecast has moved
+        against the quote, which is when sellers hit it.
+
+        So a request cuts the quote's own expiry to the request instant instead
+        of cancelling. The allocator already treats ``expires_at`` as the
+        inclusive end of the quote (earlier trades still fill, later ones never
+        do), and ``expire_stale_resting_orders`` cancels the unfilled remainder,
+        releasing its reservation, once the tape watermark covers that instant
+        plus the grace -- the same interlock every TTL expiry passes. The
+        request's reason and the original expiry are kept in the diagnostics and
+        carried into the final cancellation record.
+
+        Returns the updated row, or ``None`` when nothing changed: the order is
+        no longer resting, a request is already recorded (the first instant
+        stands), or the instant does not fall after placement.
+        """
+
+        requested = requested_at or _now()
+        try:
+            requested_time = _aware_utc(requested)
+        except ValueError:
+            return None
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM paper_orders WHERE id=? "
+                "AND status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
+                "AND settled_at IS NULL AND closed_at IS NULL",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if _pending_cancel_request(row["outcome_diagnostics_json"]) is not None:
+                return None
+            try:
+                placed_time = _aware_utc(row["created_at"])
+            except ValueError:
+                return None
+            if requested_time <= placed_time:
+                return None
+            original_expires_at = row["expires_at"]
+            new_expires_at = requested
+            if original_expires_at:
+                try:
+                    if _aware_utc(original_expires_at) <= requested_time:
+                        new_expires_at = str(original_expires_at)
+                except ValueError:
+                    pass
+            try:
+                details = json.loads(row["outcome_diagnostics_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {}
+            if not isinstance(details, dict):
+                details = {}
+            details["cancel_request"] = {
+                "reason": reason,
+                "requested_at": requested,
+                "original_expires_at": original_expires_at,
+            }
+            conn.execute(
+                "UPDATE paper_orders SET expires_at=?, outcome_diagnostics_json=? "
+                "WHERE id=?",
+                (new_expires_at, json.dumps(details, sort_keys=True), order_id),
+            )
         return self._order(order_id)
 
     def mark_arbitrage_group_degraded(
@@ -5390,7 +5541,8 @@ class PaperStore:
         cutoff = now or _now()
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT id, market_ticker, expires_at FROM paper_orders WHERE status IN "
+                "SELECT id, market_ticker, expires_at, outcome_diagnostics_json "
+                "FROM paper_orders WHERE status IN "
                 "('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
                 "AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at, id",
                 (cutoff,),
@@ -5435,10 +5587,18 @@ class PaperStore:
                     eligible_rows.append(row)
             rows = eligible_rows
         expired = 0
-        for order_id, ticker, _expires_at in rows:
+        for order_id, ticker, _expires_at, diagnostics_json in rows:
+            # A quote pulled by request_resting_order_cancel reaches this
+            # watermark-gated path through its shortened expiry; record why it
+            # ended rather than calling it a TTL expiry.
+            cancel_request = _pending_cancel_request(diagnostics_json)
             row = self.cancel_resting_limit_order(
                 int(order_id),
-                reason="15-minute maker TTL expired",
+                reason=(
+                    str(cancel_request["reason"])
+                    if cancel_request is not None and cancel_request.get("reason")
+                    else "maker TTL expired"
+                ),
                 tape_reconciled_through=(
                     reconciled_through_by_ticker.get(str(ticker))
                     if reconciled_through_by_ticker is not None
@@ -5931,6 +6091,196 @@ class PaperStore:
                 "ORDER BY target_date DESC, market_ticker LIMIT ?",
                 (*params, limit),
             ).fetchall()
+
+    def backfill_ladder_bin_outcomes(
+        self,
+        *,
+        start: str,
+        end: str,
+        cli_settlement_highs: Mapping[tuple[str, str], float],
+        observed_settlement_highs: Mapping[tuple[str, str], float] | None = None,
+        dry_run: bool = False,
+        today: str | None = None,
+    ) -> dict:
+        """Resolve every offered ladder bin over a target-date range.
+
+        Reads ``decision_snapshots`` for the offered bins and ``paper_orders``
+        only to mark which of them the book actually held; writes nothing but
+        ``ladder_bin_outcomes``. Nothing on the trading path reads that table,
+        so this changes no decision, size, gate, or fee.
+
+        ``cli_settlement_highs`` carries the forecaster archive's final CLI
+        maxima keyed by ``(series_ticker, target_date)``, and
+        ``observed_settlement_highs`` the station observation-tape maxima that
+        give the integrity guard a second opinion in the era the exchange
+        dataset does not reach. Both live in ``weather.db``, which this store
+        does not own, so the caller loads them and passes them down -- the same
+        contract ``backfill_market_day_settlements`` uses.
+
+        LOCK-HOLD BUDGET (audit F-02). Every read here is pure and needs no
+        write lock, and the decision_snapshots passes cost seconds per target
+        date on the production journal. Holding one ``BEGIN IMMEDIATE`` across
+        the whole range would put all of that inside the write lock the
+        2-minute paper monitor and 5-minute scan wait on with a 30 s
+        busy_timeout; a fifteen-day backfill would outlive that wait and turn a
+        live tick into a FAILED oneshot -- lost, not deferred. So each target
+        date reads in autocommit, then takes the write lock only for its own
+        ~180-row upsert and commits immediately, exactly as
+        ``prune_decision_snapshots`` batches its deletes.
+        """
+
+        recorded_at = _now()
+        summary: dict[str, object] = {
+            "start": start,
+            "end": end,
+            "target_dates": 0,
+            "offered_bins": 0,
+            "resolved_bins": 0,
+            "recorded_bins": 0,
+            "missing_truth_bins": 0,
+            "unchecked_bins": 0,
+            "flagged": [],
+            "missing_truth": [],
+            "dry_run": dry_run,
+        }
+        dates = target_dates_in_range(start, end)
+        summary["target_dates"] = len(dates)
+        offered_by_city_day: dict[tuple[str, str], set[str]] = {}
+        with self.connect() as conn:
+            exchange_highs = exchange_settlement_highs(conn)
+            for target_date in dates:
+                # Pure reads, deliberately outside any write transaction.
+                resolved, unlabelled = build_ladder_outcomes_for_date(
+                    conn,
+                    target_date=target_date,
+                    settlement_highs=cli_settlement_highs,
+                    exchange_highs=exchange_highs,
+                    observed_highs=observed_settlement_highs,
+                )
+                summary["offered_bins"] += len(resolved) + len(unlabelled)
+                summary["resolved_bins"] += len(resolved)
+                summary["missing_truth_bins"] += len(unlabelled)
+                for quote in unlabelled:
+                    offered_by_city_day.setdefault(
+                        (quote.series_ticker, quote.target_date), set()
+                    ).add(quote.market_ticker)
+                    summary["missing_truth"].append(
+                        {
+                            "market_ticker": quote.market_ticker,
+                            "target_date": quote.target_date,
+                            "station_id": quote.station_id,
+                        }
+                    )
+                for outcome in resolved:
+                    offered_by_city_day.setdefault(
+                        (outcome.quote.series_ticker, outcome.quote.target_date), set()
+                    ).add(outcome.quote.market_ticker)
+                    if outcome.integrity_status == INTEGRITY_UNCHECKED:
+                        summary["unchecked_bins"] += 1
+                    if outcome.integrity_status != INTEGRITY_FLAGGED:
+                        continue
+                    entry = {
+                        "market_ticker": outcome.quote.market_ticker,
+                        "target_date": outcome.quote.target_date,
+                        "station_id": outcome.quote.station_id,
+                        "settlement_high_f": outcome.settlement_high_f,
+                        "exchange_settlement_high_f": outcome.exchange_settlement_high_f,
+                        "observed_settlement_high_f": outcome.observed_settlement_high_f,
+                        "truth_delta_f": outcome.truth_delta_f,
+                        "integrity_source": outcome.integrity_source,
+                    }
+                    summary["flagged"].append(entry)
+                    logger.warning("ladder settlement truth disagreement: %s", entry)
+                if dry_run or not resolved:
+                    continue
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    written = record_ladder_outcomes(
+                        conn, resolved, recorded_at=recorded_at
+                    )
+                except BaseException:
+                    conn.rollback()
+                    raise
+                conn.commit()
+                summary["recorded_bins"] += written
+        summary["coverage"] = assess_ladder_coverage(
+            {key: len(tickers) for key, tickers in offered_by_city_day.items()},
+            today=today or _now()[:10],
+            full_days=LADDER_RETENTION_FULL_DAYS,
+        )
+        return summary
+
+    def ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        series_ticker: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = LADDER_READ_LIMIT,
+    ) -> list[sqlite3.Row]:
+        """Read back resolved ladder bins. Measurement only."""
+
+        filters: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            filters.append("target_date >= ?")
+            params.append(start)
+        if end is not None:
+            filters.append("target_date <= ?")
+            params.append(end)
+        if series_ticker is not None:
+            filters.append("series_ticker = ?")
+            params.append(series_ticker)
+        if quote_lead is not None:
+            filters.append("quote_lead = ?")
+            params.append(quote_lead)
+        if side is not None:
+            # The ladder is evaluated on both sides, and a bin scored on both
+            # of them contributes two rows whose outcomes are exact
+            # complements: pooling them pins realized frequency at 0.5 and
+            # makes every calibration number meaningless. Callers comparing
+            # model against market pick one side.
+            filters.append("side = ?")
+            params.append(str(side).strip().upper())
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                f"SELECT * FROM ladder_bin_outcomes {where} "
+                "ORDER BY target_date, market_ticker, side LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+
+    def score_ladder_bin_outcomes(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        quote_lead: str | None = None,
+        side: str | None = None,
+        limit: int = LADDER_READ_LIMIT,
+    ) -> dict:
+        """Model-versus-market calibration over the recorded ladder.
+
+        The read is ``ORDER BY target_date, market_ticker, side LIMIT ?``, so a
+        range that overflows ``limit`` would otherwise return a metric over the
+        OLDEST prefix of the range with nothing in the result saying so. The
+        ledger is designed to accumulate (~180 rows a day, both sides), so that
+        is a dormant silent-wrong-answer, not a hypothetical: raise instead.
+        """
+
+        rows = self.ladder_bin_outcomes(
+            start=start, end=end, quote_lead=quote_lead, side=side, limit=limit
+        )
+        if len(rows) >= limit:
+            raise ValueError(
+                f"ladder scoring read hit its {limit}-row cap and would score a "
+                "truncated prefix of the range; narrow --start/--end or raise "
+                "the limit"
+            )
+        return score_ladder_outcomes(rows)
 
     def verify_paper_settlements(
         self,
@@ -7052,6 +7402,27 @@ class PaperStore:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _aware_utc(value: object) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _pending_cancel_request(raw: object) -> dict[str, object] | None:
+    """The pull recorded by ``request_resting_order_cancel``, if any."""
+
+    if isinstance(raw, dict):
+        details = raw
+    else:
+        try:
+            details = json.loads(raw or "{}")  # type: ignore[arg-type]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    if not isinstance(details, dict):
+        return None
+    request = details.get("cancel_request")
+    return request if isinstance(request, dict) else None
 
 
 def _paper_profile_filter(risk_profile: str | None) -> tuple[str, tuple[str, ...]]:

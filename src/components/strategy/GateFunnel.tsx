@@ -2,6 +2,7 @@ import { Card } from "@heroui/react/card";
 import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import {
+  decisionCountProvenance,
   deferralReason,
   gateCounts,
   gateDeferred,
@@ -56,11 +57,10 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
   const analytics = s.daily_summary?.decision_analytics;
   if (!gate) return null;
   const { approved, total } = gateCounts(gate);
-  if (gateDeferred(gate) || total === 0) return <DeferredFunnel reason={deferralReason(gate)} />;
+  if (gateDeferred(gate, analytics) || total === 0) return <DeferredFunnel reason={deferralReason(gate)} />;
   const approvedPct = approved / total;
-  const countsAsOf = analytics?.status === "cached"
-    ? analytics.counts_stale_from ?? analytics.analysis_generated_at?.slice(0, 10) ?? "the last deploy-time analysis"
-    : null;
+  const provenance = decisionCountProvenance(s);
+  const countsAsOf = provenance.cached ? provenance.asOf : null;
   const cats = Object.entries(aggregateCategories(gate.by_profile ?? []));
   const rejections = (gate.top_rejections_all?.length ? gate.top_rejections_all : gate.top_rejections ?? []).slice(0, 8);
   const max = rejections[0]?.count ?? 1;
@@ -75,7 +75,9 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
           <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             <p>
               <span className="tnum font-display text-2xl font-semibold">{total.toLocaleString()}</span>{" "}
-              <span className="text-sm text-muted">gate evaluations this window</span>
+              <span className="text-sm text-muted">
+                {countsAsOf ? `gate evaluations in the window ending ${countsAsOf}` : "gate evaluations this window"}
+              </span>
             </p>
             <p>
               <span className="tnum font-display text-2xl font-semibold text-success">{approved.toLocaleString()}</span>{" "}

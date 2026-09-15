@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Skip this tick if a previous scan is still running. The 5-minute timer can fire
-# before a slow scan (portfolio-scan across both profiles)
-# finishes; WAL keeps the DB consistent but does not stop two scans doing
-# duplicate logical work or both placing paper entries. flock is a no-op where
-# unavailable (local macOS dev).
+# Skip this invocation if another scan still holds the lock. WAL keeps the DB
+# consistent but does not stop two scans doing duplicate logical work or both
+# placing paper entries. flock is a no-op where unavailable (local macOS dev).
+#
+# The lock only ever meets an OUT-OF-BAND run (this script started by hand
+# while a scheduled scan runs). It does not drop scheduled ticks, and a longer
+# lock wait would rescue none: sfo-kalshi-paper-scan.timer (OnCalendar, every
+# 5 min) starts a Type=oneshot service, systemd never runs that service twice
+# at once, and while a timer-started run is active the timer is not armed.
+# When the run exits, systemd computes the next calendar elapse from the LAST
+# trigger, so an elapse that passed during an overrun -- e.g. the 14:00Z
+# listing tick behind a slow 13:55 scan -- is already due and starts at once:
+# late, not lost. Several missed elapses collapse into one catch-up run.
+# (systemd 255 src/core/timer.c: timer_dispatch, timer_trigger_notify,
+# timer_enter_waiting; reproduced on Ubuntu 24.04 / systemd 255.4, 2026-09-13.)
+# trading/tests/test_research_frequency.py pins the unit shape this relies on.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 BASE_DIR="${SFO_BASE_DIR:-${BASE_DIR:-$(dirname "$TRADING_DIR")}}"

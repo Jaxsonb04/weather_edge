@@ -145,6 +145,22 @@ class StrategyConfig:
     # is below this floor, fall back to the resting quote instead of burning
     # the candidate. The frozen/default profile keeps the historical $5 floor.
     limit_taker_cross_min_notional: float = 5.0
+    # DEPTH-AWARE TAKER CROSS (2026-09-13). 1 = the historical single-level
+    # cross, truncated to the listing's displayed best-ask size. 2 = when the
+    # decision carries a fresh pre-entry ask ladder (fetched because that
+    # listing size is below the sizing request), size against the fresher
+    # book: cross at level 1 when its fresh size covers the request;
+    # otherwise place ONE order at the SECOND ladder level for level-1 +
+    # level-2 depth, booked entirely at the level-2 cost (conservative: the
+    # exchange fills the level-1 slice at level 1), provided the after-fee
+    # lower-bound edge at that worse price still clears
+    # limit_taker_cross_min_edge_lcb, it buys more contracts and the booked
+    # lower-bound expected profit does not fall. Hard cap at two levels. It
+    # never blocks on the ladder: a missing, stale or malformed ladder is the
+    # single-level cross. Off (1) on the frozen baseline; see
+    # LIVE_PROFILE_OVERRIDES. As a StrategyConfig field it enters
+    # strategy_fingerprint (asdict), so it is part of execution identity.
+    limit_taker_cross_max_levels: int = 1
     # When bid+1 violates the LCB buffer, rest deeper at the highest tick that
     # preserves the buffer by construction instead of dropping the candidate.
     # A deep fill carries at least the buffered lower-bound edge; no fill
@@ -267,7 +283,14 @@ class StrategyConfig:
     # the point blend has no business making confident bracket bets: the
     # 2026-06-10 losses all entered with source spread 9.6-11.0F while the
     # blend missed the settled high by ~4F.
-    max_source_spread_f: float = 6.0
+    # RE-DERIVED 2026-09-07 (FC-1) from 6.0: source_spread_f is now the DEBIASED
+    # cross-model range, which is a systematically SMALLER number, so holding
+    # 6.0 would have quietly LOOSENED this frozen conservative baseline (raw-
+    # equivalent ~7.6F) rather than tightened it. 4.7 = 6.0 x the measured
+    # 0.79 debiased/raw quantile ratio, i.e. the same strictness in the new
+    # units. Both shipped profiles override this, so it binds only on the
+    # strict-test baseline and any non-profile caller.
+    max_source_spread_f: float = 4.7
     cheap_tail_max_ask: float = 0.05
     cheap_tail_min_yes_bid: float = 0.01
     cheap_tail_min_yes_bid_size: float = 25.0
@@ -483,7 +506,42 @@ LIVE_PROFILE_OVERRIDES = {
     # matching the research collector) -- posterior-mean Kelly + the source-spread
     # sigma inflation already size these uncertain days down, so let them trade
     # rather than sit out. 120 of the 240 rescored rejections were this gate.
-    "max_source_spread_f": 10.0,
+    # RE-DERIVED 2026-09-07 (FC-1): source_spread_f is now the DEBIASED
+    # cross-model range, so 10.0 -- tuned against the raw statistic -- no longer
+    # means anything. Held at roughly the same selectivity rather than retuned.
+    #
+    # Measured on the population the gate actually evaluates -- every
+    # decision_snapshots row, not the one-last-write-per-target
+    # forecast_emos_daily_high table (created_at >= 2026-09-01, n=665,128, each
+    # station's raw value mapped through its own archive quantile map): raw 10.0
+    # vetoed 16.9% of decision rows; equal selectivity in debiased units is
+    # 7.49; 7.3 vetoes 18.5%. So this bar is very slightly TIGHTER than the one
+    # it replaces, pooled -- the fail-closed side of the estimate. (A third
+    # population, the 2,820 live-served forecast rows, put the equal-selectivity
+    # point at 7.27; the three estimates bracket 7.3.)
+    #
+    # Pooled selectivity is not the point; the REDISTRIBUTION is. Per-station
+    # veto rate, raw 10.0 -> debiased 7.3, same population:
+    #   KSFO 58.7% -> 36.7%   KLAX 43.7% ->  0.0%   (the intended unblock)
+    #   KMDW 31.9% -> 41.7%   KNYC  1.0% -> 21.1%   KHOU 12.7% -> 26.6%
+    #   KDFW 12.8% -> 19.7%   KPHX 10.1% -> 13.5%   KDEN  6.6% -> 11.2%
+    #   KBOS  0.0% -> 10.1%   KATL  3.9% ->  9.2%   KOKC  3.7% ->  6.3%
+    # Eleven cities tighten so that the two coastal ones stop being vetoed for
+    # having coarse-grid members that resolve them as ocean. This is one honest
+    # bar for all fifteen, NOT "unblock SFO/LAX and leave everyone else alone";
+    # raising it to spare the inland books would need its own selectivity
+    # argument.
+    #
+    # DEPLOY ORDER. The debiased statistic only exists on rows written by the
+    # new code. Live rows refresh every forecaster tick (~25 min); the
+    # rolling_origin_v2 archive rows the trading read path falls back to are
+    # rewritten wholesale by the nightly sfo-dataset-backfill unit
+    # (emos_forecast.py --backfill, leads 1 and 2, all cities, INSERT OR
+    # REPLACE). Between deploying and that first nightly rebuild, a
+    # station/target with no live row is judged raw-against-debiased and vetoes
+    # more than it should -- fail-closed, self-healing within one night, and
+    # avoidable entirely by running the backfill by hand at deploy time.
+    "max_source_spread_f": 7.3,
     # Size against live paper equity (bankroll + realized PnL) so sizing
     # compounds correctly once the bigger caps let PnL accumulate -- Kelly
     # requires sizing off current wealth (Kelly 1956; Thorp 2006). Scoped to the
@@ -549,7 +607,57 @@ LIVE_PROFILE_OVERRIDES = {
     # point-in-time replay over the 2026-07-29..08-21 depth window moved the
     # capped Live book from 62 to 84 fills (+35%, 79-5) at a $1 floor, without
     # changing any signal, exposure, loss, liquidity, or position-size cap.
+    #
+    # 2026-09-07 (audit TC-15b). The audit asked for this floor to be dropped
+    # so a guaranteed one-contract cross is taken instead of rested. It was
+    # implemented at $0.01, MEASURED, and REVERTED: production says the trade
+    # is negative. The measurements, so nobody repeats the attempt (all
+    # read-only against /opt/weatheredge/trading/data/paper_trading.db):
+    #   * The premise "the live maker path never fills" is FALSE. Live resting
+    #     orders since 2026-07-01: 414 orders, 12,479.6 contracts requested,
+    #     943.5 filled = 7.6% of contracts -- a HIGHER rate than research's
+    #     5.2% (1,368 orders, 87,534.1 requested, 4,577.6 filled). The "0
+    #     fills" figure that motivated the drop came from a query filtered to
+    #     status='PAPER_EXPIRED', where zero fills is true by construction and
+    #     there is no denominator.
+    #   * The exact class this floor governs -- displayed depth below two
+    #     contracts, i.e. the sub-$1 cross -- fills too: 105 live rests,
+    #     3,248.8 contracts, 216.5 filled (6.7%) across 16 of 105 orders, for
+    #     $14.14 of REALIZED pnl = $0.135 per rest attempted. Crossing instead
+    #     buys one contract at roughly $0.043 of after-fee edge (order 2611's
+    #     book: NO 0.90/0.92, one contract displayed).
+    #   * A fill also consumes an entry slot that an expiry deliberately does
+    #     not. Live `max_entries_per_market_side` is 1 and
+    #     `entries_for_market_side` excludes PAPER_EXPIRED precisely so an
+    #     unfilled rest can re-quote. Of the 43 live (target_date, market,
+    #     side) groups since 2026-07-01 whose FIRST order was a thin-depth
+    #     expired rest, 25 went on to place later orders that filled 152.1
+    #     contracts for $13.53 realized -- every one of which a one-contract
+    #     fill in that market would have blocked for the rest of the day.
+    # The floor therefore stays at $1. It is what keeps the one-contract
+    # candidate on the maker path, which on this book is the higher-EV side.
+    # Revisit only with a fresh measurement of live resting fill rates.
     "limit_taker_cross_min_notional": 1.0,
+    # TWO-LEVEL TAKER CROSS (2026-09-13, scaling release). What binds live
+    # size is not the position cap: over 2026-08-31..09-12 the largest live
+    # position was $17.56 (median $2.82, p75 $4.77) against a $30 cap, and
+    # 44 of 46 live fills were immediate crosses truncated to the displayed
+    # best ask (`_taker_cross_quote`: floor(min(recommended, ask_size))).
+    # Research ladders measured ~12 contracts at the best ask, ~38 one tick
+    # below and ~31 two ticks below (2026-09-06); day-ahead live books show a
+    # median touch of 24-29 with 70% of strikes at >= 2c spread. Walking one
+    # level buys roughly 3-4x the size for one tick plus its fee. The after-
+    # fee LCB floor is a real EV floor one tick worse too: live realized
+    # settlement frequency 0.9467 beat the modelled LCB 0.905 in every band
+    # (2026-09-03 audit). Signal gates, the $1 notional floor, the single
+    # entry slot and NORMAL_POSITION_CAP are unchanged. This field moves the
+    # live strategy fingerprint (and, since the key is hashed, the research
+    # one) without another STRATEGY_BEHAVIOR_VERSION rotation. The readiness
+    # cohort is keyed on the EXACT live fingerprint, so it restarts the live
+    # evidence clock -- accepted by the owner because production still runs
+    # behavior-v2 and this ships in the SAME single deploy as behavior-v3,
+    # whose rotation restarts that clock anyway: it resets exactly once.
+    "limit_taker_cross_max_levels": 2,
     "limit_resting_reservation_fallback": True,
 }
 
@@ -615,7 +723,9 @@ RESEARCH_PROFILE_OVERRIDES = {
     "max_entries_per_market_side": 3,
     # Tolerates moderate source disagreement to collect more, but not the
     # 2026-06-10/12 regime where models were separated by double-digit F.
-    "max_source_spread_f": 10.0,
+    # RE-DERIVED 2026-09-07 (FC-1) at the same selectivity as the old raw-units
+    # 10.0 -- see the live profile above for the derivation.
+    "max_source_spread_f": 7.3,
     "cheap_tail_min_yes_bid": 0.01,
     "cheap_tail_min_yes_bid_size": 5.0,
     "cheap_tail_min_probability_lcb": 0.06,
@@ -650,6 +760,11 @@ RESEARCH_PROFILE_OVERRIDES = {
     # cost. The floor itself is unchanged; admissions whose floor only
     # holds at the maker price still rest exactly as before.
     "limit_taker_cross_enabled": False,
+    # The two-level cross lives in the generic taker path, which research
+    # never reaches (limit_taker_cross_enabled is False here and the target
+    # book quotes through target_research_quote); pinned to 1 so the
+    # research fingerprint does not inherit a live execution lever.
+    "limit_taker_cross_max_levels": 1,
     "limit_resting_reservation_fallback": False,
     "research_target_taker_cross": True,
     # Observation only; see the StrategyConfig field comment. Piloted on

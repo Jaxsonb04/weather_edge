@@ -37,7 +37,15 @@ from nwp_archive import (
 )
 
 DEFAULT_CITY = get_city("sfo")
-from postproc_models import EMOS_MIN_TRAIN, MIN_MODELS, apply_emos, emos_ngr_predictions, fit_emos
+from postproc_models import (
+    EMOS_MIN_TRAIN,
+    MIN_MODELS,
+    apply_emos,
+    debiased_range,
+    emos_ngr_predictions_with_spread,
+    fit_emos,
+)
+from scores import SIGMA_FLOOR_F
 from truth_store import load_clisfo_truth, load_nwp_forecasts
 
 DB_PATH = Path(__file__).resolve().parent / "weather.db"
@@ -59,6 +67,141 @@ OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # remain separately toggleable in recalibration_replay.py.
 SERVE_RECAL_BIAS = True
 SERVE_RECAL_SIGMA = False
+
+# Same-day (lead 0) dispersion. The NWP archive only holds leads >= 1, so a
+# lead-0 EMOS cannot be fit: the same-day serve borrows the lead-1 fit, whose
+# irreducible-error intercept ``var_c`` is a lead-1 quantity that never shrinks
+# for the shorter horizon. SERVE_RECAL_SIGMA is off, so nothing downstream
+# corrects it, and probability.py takes the sigma essentially unmodified.
+#
+# Measured on the append-only serve log (paper_trading.forecast_snapshots,
+# 2026-07-06..2026-09-07, every 5-minute serve rather than the last write of the
+# day) joined to final CLI settlements, with the debiased spread of FC-1 already
+# applied. Pooled lead-0 mean z^2 = 0.762 against an ideal of 1.0, so the
+# same-day Gaussian is on average 1.15x too wide; lead 1 sits at 0.865.
+#
+# THE POOLED NUMBER IS NOT A USABLE SCALE. Per-station lead-0 z^2 spans 0.39
+# (KAUS) to 1.17 (KHOU): a single pooled multiplier sharpens the stations that
+# are ALREADY too sharp, and an over-confident sigma over-prices the favorite
+# bin and over-sizes the stake -- the one direction that costs money. Measured
+# floor-aware effect of a pooled 0.886 on the same serve log: KOKC 1.145 ->
+# 1.401, KBOS 1.087 -> 1.345, KHOU 1.166 -> 1.287, KNYC 0.960 -> 1.194,
+# KSFO 0.924 -> 1.177. So the scale is PER STATION, and each station's scale is
+# min(1.0, sqrt(z^2_station)): a station whose same-day Gaussian is already at
+# or past calibration is left exactly alone (identity), and only genuinely
+# over-dispersed stations are sharpened. Every corrected station's z^2 rises --
+# that IS the correction -- but under this table none is pushed PAST 1.0: the
+# post-change per-station maximum is KHOU's own unchanged 1.166, and the three
+# stations that already sat above 1.0 (KBOS 1.087, KHOU 1.166, KOKC 1.145) are
+# bit-identical no-ops. The stations the pooled constant would have made
+# over-confident land exactly on 1.000 instead (KNYC 0.960 -> 1.000, KSFO
+# 0.924 -> 1.000, KPHL 0.796 -> 1.000). Pooled moves 0.762 -> 0.903
+# (floor-aware; 0.919 under the rejected pooled constant, so pooled calibration
+# is not materially given up).
+#
+# PRECISION. n = 107,491 counts ~100 five-minute serves of the same station-day;
+# the independent unit is the station-day, of which there are 742 pooled and
+# only 38-55 per station. SE(mean z^2) ~ sqrt(2/days) ~ 0.20 per station, so a
+# station scale is pinned to roughly +/-10% and the pooled day-equal-weighted
+# figure (0.811, not 0.762) is the honest central estimate. The 0.75 lower bound
+# below exists BECAUSE of that noise: it caps how far one 50-day estimate may
+# sharpen a served Gaussian.
+#
+# NOTE the population matters: the 2026-09-03 audit read z^2 = 0.55 from
+# forecast_emos_daily_high, which keeps only the LAST write per target
+# (INSERT OR REPLACE) -- the sharpest, end-of-day serve. That understates the
+# dispersion the book actually trades against all day.
+#
+# SCOPE / FC-3 INTERACTION. This calibrates lead 0 to z^2 = 1 per station, which
+# also absorbs the share of the over-dispersion lead 1 has and keeps (pooled
+# 0.865). Lead 1 is FC-3's per-station serve recalibration, not FC-2's. Whoever
+# lands FC-3 must exclude lead 0 from a per-station sigma correction or the two
+# will compose and double-correct.
+#
+# UNANALYZED PRODUCTION CONSUMERS (2026-09-13 re-check). Everything above
+# scores the served Gaussian against settlement; none of FC-2's commit
+# messages (7a577d075, 75b6978d3, da80ac438) analyzed what reads this row
+# back. Two trading paths do, both through
+# SfoForecasterAdapter._latest_emos_snapshot, which takes the FRESHEST
+# forecast_emos_daily_high row for the target across all leads (source
+# precedence, then fetched_at). For today's target that is normally this
+# scaled lead-0 row once the same-day serve has run; until it has, an
+# unscaled lead-1 row still inside max_forecast_age_hours can back the read.
+#  1. Before the 14:00 same-day entry cutoff the scanner still scans today's
+#     event (_cli/scan.py _rolling_live_event_targets), reads the row through
+#     latest_blend / latest_live_forecast (SFO reaches it only when its legacy
+#     blend is stale or missing), prices the bins from its sigma_f
+#     (matching_emos_distribution, which refuses the target when the profile
+#     has emos_distribution_enabled off; config_for_city forces it on for
+#     every city without the SFO blend), makes same-day ENTRY decisions on
+#     those probabilities and journals them (PaperStore.record_probabilities).
+#  2. After the cutoff, with the same-day model heartbeat on (it was on in
+#     production at the 2026-09-06 verification),
+#     monitor._refresh_same_day_model_reads loads the row through
+#     latest_emos_snapshot, prices the open event's bins with it
+#     (ResidualCalibrator.bucket_probabilities, emos_mu_sigma) and journals
+#     them.
+# run_paper_monitor reads the latest journaled probability from either path
+# back (PaperStore.latest_model_probability_read) as the model-side
+# probability exits.decide_exit uses for the NO-side model veto
+# (HOLD_MODEL_VETO) and for the take-profit fair value (plus the
+# research-only take-profit margin). A sharper sigma generally makes those
+# bin probabilities more extreme, so this table changes same-day entries,
+# which stops are vetoed and where take-profits fire, not just calibration.
+# A replay against this table is still OWED, and it requires production
+# database access: the journaled model reads, scan decisions, open positions
+# and exit decisions exist only in the production paper database. It must
+# cover same-day scan entries and exits before 14:00 as well as the monitor
+# heartbeat reads after it, and, because probability_snapshots does not
+# record which lead backed a read, it must join each journaled read to the
+# lead_days of the forecast_emos_daily_high row that backed it. Until that
+# replay is done, treat the table as validated for calibration only, not for
+# its effect on entries or exits.
+#
+# min(1.0, sqrt(measured lead-0 z^2)) as measured; LEAD0_SIGMA_SCALE_BOUNDS
+# below clamps the four entries that fall under 0.75 at the point of use.
+LEAD0_SIGMA_SCALE_BY_STATION = {
+    "KATL": 0.951,
+    "KAUS": 0.627,
+    "KBOS": 1.000,
+    "KDEN": 0.685,
+    "KDFW": 0.875,
+    "KHOU": 1.000,
+    "KLAX": 0.629,
+    "KMDW": 0.772,
+    "KMIA": 0.875,
+    "KNYC": 0.980,
+    "KOKC": 1.000,
+    "KPHL": 0.892,
+    "KPHX": 0.665,
+    "KSEA": 0.809,
+    "KSFO": 0.961,
+}
+# A station with no measured same-day dispersion (a new city, or one whose serve
+# log has not accumulated settled days) keeps the borrowed lead-1 width. That is
+# the over-dispersed, under-sized direction -- the safe one to be wrong in.
+LEAD0_SIGMA_SCALE_DEFAULT = 1.0
+# Hard guard on every entry above and on any future retune: a borrowed
+# longer-lead dispersion may only be sharpened (never widened -- a shorter
+# horizon cannot be more uncertain than the fit it borrows), and never below
+# 0.75, which bounds how much a single 38-55 day per-station estimate is allowed
+# to move a served Gaussian. Four stations (KAUS, KDEN, KLAX, KPHX) measure
+# below 0.75 and are deliberately under-corrected by this clamp.
+LEAD0_SIGMA_SCALE_BOUNDS = (0.75, 1.0)
+
+
+def _borrowed_lead_sigma_scale(station: str, stored_lead: int, fit_lead: int) -> float:
+    """Dispersion correction for a serve that borrows a longer lead's fit.
+
+    Identity whenever the serve is fit at its own lead; only the same-day serve
+    borrows today (see LEAD0_SIGMA_SCALE_BY_STATION).
+    """
+
+    if stored_lead != 0 or fit_lead <= stored_lead:
+        return 1.0
+    scale = LEAD0_SIGMA_SCALE_BY_STATION.get(station, LEAD0_SIGMA_SCALE_DEFAULT)
+    low, high = LEAD0_SIGMA_SCALE_BOUNDS
+    return min(max(scale, low), high)
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -126,14 +269,20 @@ def _migrate_station_key(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _model_spread_f(forecasts: dict[str, float]) -> float | None:
-    """Cross-model disagreement (max - min raw forecast) -- the multi-city
-    analogue of the blend's source_spread_f uncertain-day gate."""
+def _model_spread_f(forecasts: dict[str, float], biases: dict[str, float]) -> float | None:
+    """Cross-model disagreement (max - min) over *debiased* members -- the
+    multi-city analogue of the blend's source_spread_f uncertain-day gate.
+
+    The per-model biases must come off first. Without them the statistic mostly
+    measures which coarse grids resolve the station as ocean rather than how
+    uncertain the day is, and the gate it feeds
+    (``StrategyConfig.max_source_spread_f``) vetoed the KSFO and KLAX books
+    outright.
+    """
 
     if len(forecasts) < 2:
         return None
-    values = list(forecasts.values())
-    return round(max(values) - min(values), 2)
+    return debiased_range(forecasts, biases)
 
 
 def build_emos_archive(
@@ -156,7 +305,7 @@ def build_emos_archive(
     station = city.nws_station_id
     truth = load_clisfo_truth(conn, station)
     nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
-    predictions = emos_ngr_predictions(
+    predictions = emos_ngr_predictions_with_spread(
         sorted(nwp_by_date),
         truth,
         nwp_by_date,
@@ -174,13 +323,13 @@ def build_emos_archive(
             mu,
             sigma,
             len(nwp_by_date.get(target_date, {})),
-            _model_spread_f(nwp_by_date.get(target_date, {})),
+            spread_f,
             stamp,
             method,
             source,
             truth.get(target_date),
         )
-        for target_date, (mu, sigma) in predictions.items()
+        for target_date, (mu, sigma, spread_f) in predictions.items()
     ]
     conn.executemany(
         """
@@ -283,7 +432,9 @@ def serve_live_emos(
     ``store_lead_days`` (default: same) is the lead recorded on the persisted
     row. The same-day serve passes ``lead_days=1, store_lead_days=0``: lead 0
     has no archive of its own, and the lead-1 per-model biases/weights are the
-    closest learned coefficients for the current-run forecast of today.
+    closest learned coefficients for the current-run forecast of today. Its
+    *dispersion* is not borrowed unchanged -- see
+    LEAD0_SIGMA_SCALE_BY_STATION.
 
     ``recalibrate`` applies the serve-time trailing recalibration
     (emos_recalibration.py) as a post-process on the EMOS output. Rolling-origin
@@ -330,6 +481,13 @@ def serve_live_emos(
     if len(forecasts) < MIN_MODELS:
         return None
     mu, sigma = apply_emos(params, forecasts)
+    # A serve that borrows a longer lead's fit also borrows its dispersion; give
+    # the same-day horizon its own (FC-2). The floor apply_emos imposed has to be
+    # re-imposed after the rescale: a horizon correction must not push a served
+    # Gaussian below the absolute sharpness limit every other path respects.
+    sigma = max(
+        sigma * _borrowed_lead_sigma_scale(station, stored_lead, lead_days), SIGMA_FLOOR_F
+    )
 
     if recalibrate and (SERVE_RECAL_BIAS or SERVE_RECAL_SIGMA):
         # The serve happens on the day `stored_lead` days before the target;
@@ -360,7 +518,7 @@ def serve_live_emos(
             mu,
             sigma,
             len(forecasts),
-            _model_spread_f(forecasts),
+            _model_spread_f(forecasts, params.biases),
             stamp,
             _method_tag(weight_mode),
             LIVE_SOURCE,
@@ -379,6 +537,57 @@ def _settlement_today(city: CityConfig = DEFAULT_CITY) -> date:
 
 def _settlement_tomorrow(city: CityConfig = DEFAULT_CITY) -> date:
     return _settlement_today(city) + timedelta(days=1)
+
+
+def scored_history_days(
+    conn: sqlite3.Connection, city: CityConfig, lead_days: int = 1
+) -> int:
+    """Settlement days with CLI truth AND a >= MIN_MODELS NWP archive row at
+    ``lead_days`` -- the training set a live serve for ``city`` can see."""
+
+    station = city.nws_station_id
+    truth = load_clisfo_truth(conn, station)
+    nwp_by_date = load_nwp_forecasts(conn, lead_days, station)
+    return sum(
+        1
+        for target_iso, models in nwp_by_date.items()
+        if target_iso in truth and len(models) >= MIN_MODELS
+    )
+
+
+def is_onboarded(conn: sqlite3.Connection, city: CityConfig) -> bool:
+    """A station is onboarded once forecast_emos_daily_high holds ANY row for it.
+
+    Both writers respect the same floor: build_emos_archive only emits a
+    rolling-origin row once the station has EMOS_MIN_TRAIN scored days, and
+    serve_live_emos only emits a live row under the same floor. A registry row
+    whose post-deploy backfill (trading/deploy/aws/README.md, "Adding A City")
+    has not run therefore has no row of any source.
+    """
+
+    ensure_schema(conn)
+    row = conn.execute(
+        "SELECT 1 FROM forecast_emos_daily_high WHERE station_id = ? LIMIT 1",
+        (city.nws_station_id,),
+    ).fetchone()
+    return row is not None
+
+
+def awaiting_onboarding(conn: sqlite3.Connection, city: CityConfig) -> int | None:
+    """Scored lead-1 day count when ``city`` cannot serve yet AND never has.
+
+    Returns ``None`` for every station that is onboarded (see is_onboarded) or
+    already has EMOS_MIN_TRAIN scored days. A station that once served or was
+    scored but is now below the floor is NOT awaiting onboarding: that is a
+    real outage and must keep failing the scheduled serve.
+    """
+
+    if is_onboarded(conn, city):
+        return None
+    days = scored_history_days(conn, city, lead_days=1)
+    if days >= EMOS_MIN_TRAIN:
+        return None
+    return days
 
 
 # The scheduled paper scan trades a rolling window (today .. today+2); serve EMOS
@@ -403,7 +612,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("nothing to do; pass --backfill, --serve, or --serve-rolling")
 
     cities = parse_city_slugs(args.cities)
-    with sqlite3.connect(args.db) as conn:
+    # Onboarding backfills run beside the 30-minute refresh and the nightly
+    # dataset chain: wait out a concurrent writer instead of failing after
+    # sqlite3's 5 s default.
+    with sqlite3.connect(args.db, timeout=30) as conn:
         if args.backfill:
             for city in cities:
                 written = build_emos_archive(conn, city=city, lead_days=args.lead)
@@ -420,14 +632,33 @@ def main(argv: list[str] | None = None) -> int:
 
         served = 0
         total_targets = 0
+        # Freshly registered cities are excluded from the serve's health
+        # accounting until their onboarding backfill exists. Without this, a
+        # registry expansion turned every scheduled sfo-forecaster-refresh tick
+        # red (exit 1 -> OnFailure alert, 38x/day) for the ~60 days the nightly
+        # 5-day NWP window needs to reach EMOS_MIN_TRAIN, while the other
+        # cities' rows were written normally.
+        awaiting: list[str] = []
         for city in cities:
+            if args.serve or args.serve_rolling:
+                pending = awaiting_onboarding(conn, city)
+                if pending is not None:
+                    awaiting.append(city.slug)
+                    print(
+                        f"live EMOS [{city.slug}] awaiting onboarding backfill: "
+                        f"{pending}/{EMOS_MIN_TRAIN} scored lead-1 days and no EMOS "
+                        "row of any source; excluded from serve health "
+                        "(trading/deploy/aws/README.md, 'Adding A City')"
+                    )
+                    continue
             today = _settlement_today(city)
             # Serve each target at its TRUE lead so the EMOS fit's per-model
             # biases match the forecast horizon (next-day -> lead 1, 2-day-out
             # -> lead 2). The NWP archive only holds leads >= 1, so the
             # same-day target (lead 0) has no training history of its own; it
-            # is served with the lead-1 fit (per-model biases/weights and
-            # sigma) applied to the CURRENT-run forecast for today, stored at
+            # is served with the lead-1 fit (per-model biases/weights) applied
+            # to the CURRENT-run forecast for today, with the borrowed
+            # dispersion rescaled to the same-day horizon, stored at
             # lead_days=0 so every 30-minute tick refreshes the same-day
             # market's distribution instead of leaving it on a pre-midnight
             # mean all day.
@@ -481,12 +712,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.serve_rolling:
             print(
                 f"live EMOS rolling summary: served={served} targets={total_targets} "
-                f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1}"
+                f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1} "
+                f"awaiting={len(awaiting)}"
             )
         # A scheduled serve is only healthy when every requested city/target
         # was refreshed. Partial coverage is still a forecast outage: a single
         # successful row must not hide dozens of missing live distributions.
-        if (args.serve or args.serve_rolling) and served != total_targets:
+        # Cities awaiting onboarding are not targets, but serving NOTHING is
+        # never healthy either: a DB wiped of every station's history must not
+        # pass as "all cities awaiting onboarding".
+        if (args.serve or args.serve_rolling) and (
+            served != total_targets or total_targets == 0
+        ):
             return 1
     return 0
 

@@ -324,7 +324,7 @@ def _emos_health(
         }
 
     # Per-station, per-target: the serve writes one live row per city per
-    # rolling target per tick (15 cities x 3 targets at leads 0..2), so a
+    # rolling target per tick (20 cities x 3 targets at leads 0..2), so a
     # global "latest 12 rows" slice conflated cities and fired a false
     # "emos-live-missing" for today/today+1 on every scan. The freshest row
     # per (station, target) -- at ANY lead, which is how the trader reads it
@@ -378,6 +378,19 @@ def _emos_health(
         if (station, target) in latest_by_key
     ]
     max_age_hours = FORECAST_HEALTH_MAX_EMOS_AGE.total_seconds() / 3600
+    # A station with no EMOS row of ANY source has never been scored or served:
+    # it is a freshly registered city awaiting its onboarding backfill (the
+    # scanner skips it, "calibration unavailable"), not a serve outage. Mirrors
+    # emos_forecast.is_onboarded, which excludes the same stations from the
+    # scheduled serve's health accounting.
+    onboarded_stations = (
+        {
+            str(row[0])
+            for row in conn.execute("SELECT DISTINCT station_id FROM forecast_emos_daily_high")
+        }
+        if station_keyed
+        else set(expected_stations)
+    )
     for station in expected_stations:
         open_targets = [
             target for target in rolling_targets if (station, target) not in settled
@@ -385,6 +398,23 @@ def _emos_health(
         missing = [
             target for target in open_targets if (station, target) not in latest_by_key
         ]
+        if missing and profiles_using_emos and station not in onboarded_stations:
+            warnings.append(
+                _health_warning(
+                    "info",
+                    "emos-live-onboarding",
+                    "Live EMOS station awaiting onboarding",
+                    (
+                        f"{station} has no EMOS rows of any source (never scored or "
+                        f"served): a newly registered city awaiting its post-deploy "
+                        f"backfill. The scanner skips it until then."
+                    ),
+                    "Run the 'Adding A City' backfill in trading/deploy/aws/README.md.",
+                    target_date=missing[0],
+                    station=station,
+                )
+            )
+            continue
         if missing and profiles_using_emos:
             warnings.append(
                 _health_warning(
@@ -581,7 +611,7 @@ def _clisfo_health(
         "rows": total_rows,
         "latest_date": row["latest_date"],
         "latest_fetched_at": row["latest_fetched_at"],
-        # Worst station lag: the honest headline number for a 15-city truth feed.
+        # Worst station lag: the honest headline number for a 20-city truth feed.
         "lag_days": worst_lag,
         "max_lag_days": FORECAST_HEALTH_MAX_CLISFO_LAG_DAYS,
         "stations": stations,

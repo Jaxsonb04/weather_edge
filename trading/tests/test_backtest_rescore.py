@@ -16,7 +16,11 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
+import sfo_kalshi_quant.backtest_rescore as backtest_rescore
 from sfo_kalshi_quant.backtest_rescore import (
+    RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE,
+    _stored_source_spread_f,
+    _stored_source_spread_raw_scale_f,
     reconstruct_market,
     reconstruct_probability,
     run_rescore,
@@ -458,3 +462,39 @@ def test_backtest_rescore_cli_dispatches_and_exits_clean():
     text = out.getvalue()
     assert "config rescore" in text
     assert "approved_under_candidate_config: 1" in text
+
+
+def test_stored_source_spread_is_converted_out_of_legacy_raw_units(monkeypatch):
+    """FC-1 changed what decision_snapshots.forecast_source_spread_f MEANS (raw
+    cross-model range -> debiased range, ~0.79x). The candidate StrategyConfig a
+    rescore is handed expresses max_source_spread_f in the new units, so a
+    legacy row must be converted or every historical rescore vetoes far more
+    than the engine ever did."""
+
+    legacy = {"forecast_source_spread_f": 10.0, "created_at": "2026-08-01T00:00:00Z"}
+    modern = {"forecast_source_spread_f": 10.0, "created_at": "2026-09-20T00:00:00Z"}
+
+    # No deployment recorded yet: the whole journal is raw, so every row converts.
+    assert backtest_rescore.DEBIASED_SOURCE_SPREAD_FROM is None
+    assert _stored_source_spread_f(legacy) == 10.0 * RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE
+    assert _stored_source_spread_f(modern) == 10.0 * RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE
+    # The comfort-edge proxy is a raw-scale argument, so it passes through.
+    assert _stored_source_spread_raw_scale_f(legacy) == 10.0
+    assert _stored_source_spread_raw_scale_f(modern) == 10.0
+
+    # Once the cutover is recorded, only rows before it convert.
+    monkeypatch.setattr(
+        backtest_rescore, "DEBIASED_SOURCE_SPREAD_FROM", "2026-09-10T00:00:00Z"
+    )
+    assert _stored_source_spread_f(legacy) == 10.0 * RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE
+    assert _stored_source_spread_f(modern) == 10.0
+    assert _stored_source_spread_raw_scale_f(legacy) == 10.0
+    assert abs(
+        _stored_source_spread_raw_scale_f(modern)
+        - 10.0 / RAW_TO_DEBIASED_SOURCE_SPREAD_SCALE
+    ) < 1e-9
+
+    # A row with no recorded spread stays absent rather than becoming 0.0 (which
+    # would read as "the sources agree perfectly").
+    assert _stored_source_spread_f({"forecast_source_spread_f": None}) is None
+    assert _stored_source_spread_raw_scale_f({"forecast_source_spread_f": None}) is None

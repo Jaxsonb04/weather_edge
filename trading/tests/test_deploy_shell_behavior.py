@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 AWS_DIR = ROOT / "trading" / "deploy" / "aws"
 PULL_SCRIPT = AWS_DIR / "pull_paper_db.sh"
 
+# The retired Apple refresh timer stays in this list: its unit files are still
+# installed and quiesce/restore still knows it, which is exactly what these
+# behavioural stubs model. Whether a deploy may *enable* it is asserted in
+# test_aws_deploy.py.
 TIMERS = (
     "sfo-forecaster-refresh.timer",
     "weatheredge-google-nonsfo-refresh.timer",
@@ -52,6 +56,179 @@ def _load_read_version_helper() -> str:
 
 
 _READ_VERSION_HELPER = _load_read_version_helper()
+
+
+def _load_pages_branch_helpers() -> str:
+    """Extract the real branch-preparation helpers from the publisher.
+
+    Same idiom as `_load_read_version_helper`: the test drives the shipped
+    implementation, so the test and the script cannot drift apart.
+    """
+
+    text = (AWS_DIR / "publish_forecaster_pages.sh").read_text(encoding="utf-8")
+    blocks = []
+    for name in (
+        "publish_count() {",
+        "record_publish_count() {",
+        "record_successful_publication() {",
+        "start_orphan_branch() {",
+        "prepare_pages_branch() {",
+    ):
+        start = text.index(name)
+        end = text.index("\n}\n", start) + len("\n}\n")
+        blocks.append(text[start:end])
+    return "\n".join(blocks)
+
+
+_PAGES_BRANCH_HELPERS = _load_pages_branch_helpers()
+
+
+def _pages_branch_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    """A bare gh-pages remote with two commits plus a fresh working clone."""
+
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "--bare", "-b", "gh-pages", str(remote)], check=True)
+    subprocess.run(["git", "init", "-b", "gh-pages", str(seed)], check=True)
+    for command in (
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(command, cwd=seed, check=True)
+    for index in range(2):
+        (seed / "index.html").write_text(f"snapshot {index}", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=seed, check=True)
+        subprocess.run(["git", "commit", "-m", f"snapshot {index}"], cwd=seed, check=True)
+    subprocess.run(
+        ["git", "push", str(remote), "gh-pages"], cwd=seed, check=True
+    )
+
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-b", "gh-pages", str(work)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=work, check=True)
+    for command in (
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(command, cwd=work, check=True)
+    return work, remote
+
+
+def _run_prepare_pages_branch(
+    tmp_path: Path, *, max_commits: int, publishes: int, push_lands: bool = False
+) -> tuple[str, str]:
+    """Run the real branch helpers; return stdout and the counter afterwards.
+
+    ``push_lands`` runs the publisher's post-push bookkeeping, as a successful
+    push would; without it the cycle ends as a refused or failed push does.
+    """
+
+    work, _remote = _pages_branch_fixture(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "pages-publish-count").write_text(f"{publishes}\n", encoding="utf-8")
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        f'GATE_STATE_DIR="{state}"\n'
+        f'PAGES_PUBLISH_COUNT_FILE="{state}/pages-publish-count"\n'
+        'PAGES_BRANCH="gh-pages"\n'
+        f"PAGES_HISTORY_MAX_COMMITS={max_commits}\n"
+        "PAGES_FORCE_PUSH=0\n"
+        'PAGES_FORCE_LEASE=""\n'
+        "PAGES_RESET_COUNT=0\n"
+        "wait_for_remote_publication() { return 0; }\n"
+        f"{_PAGES_BRANCH_HELPERS}\n"
+        f'cd "{work}"\n'
+        # Resolve the remote tip the same way the helper will, before it runs.
+        'git fetch --depth=1 origin "$PAGES_BRANCH" >/dev/null 2>&1 || true\n'
+        'remote_tip="$(git rev-parse "refs/remotes/origin/$PAGES_BRANCH" 2>/dev/null || echo none)"\n'
+        "prepare_pages_branch\n"
+        'printf "force=%s count=%s reset=%s\\n" "$PAGES_FORCE_PUSH" "$(publish_count)" "$PAGES_RESET_COUNT"\n'
+        f"{'record_successful_publication' if push_lands else ':'}\n"
+        'if [[ "$PAGES_FORCE_LEASE" == "$remote_tip" ]]; then\n'
+        '  printf "lease=tip\\n"\n'
+        "else\n"
+        '  printf "lease=%s\\n" "${PAGES_FORCE_LEASE:-empty}"\n'
+        "fi\n"
+        'if git rev-parse --verify HEAD >/dev/null 2>&1; then\n'
+        '  printf "head=born\\n"\n'
+        "else\n"
+        '  printf "head=unborn\\n"\n'
+        "fi\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout, (state / "pages-publish-count").read_text().strip()
+
+
+def test_pages_branch_is_re_rooted_once_the_publish_counter_hits_the_ceiling(
+    tmp_path: Path,
+) -> None:
+    stdout, counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=2, publishes=2
+    )
+
+    assert "force=1" in stdout
+    # An orphan checkout leaves HEAD unborn: the next commit is a new root, which
+    # is exactly why the push has to be forced.
+    assert "head=unborn" in stdout
+    # Forced, but leased on the tip this cycle fetched and gated on, so an
+    # unattended re-root cannot discard a commit that landed in between. The
+    # lease has to be captured before start_orphan_branch drops the local ref.
+    assert "lease=tip" in stdout
+    # The reset is staged, not written: until the push lands the counter stays
+    # at the ceiling, so a refused lease re-roots again on the next cycle
+    # instead of letting history grow for another full ceiling.
+    assert "reset=1" in stdout
+    assert counter_after == "2"
+
+
+def test_pages_re_root_counter_resets_once_the_push_lands(tmp_path: Path) -> None:
+    stdout, counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=2, publishes=2, push_lands=True
+    )
+
+    assert "force=1" in stdout
+    # The new root holds exactly this one publication.
+    assert counter_after == "1"
+
+
+def test_pages_publish_counter_increments_after_an_ordinary_push(tmp_path: Path) -> None:
+    stdout, counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=5, publishes=1, push_lands=True
+    )
+
+    assert "force=0" in stdout
+    assert "reset=0" in stdout
+    assert counter_after == "2"
+
+
+def test_pages_branch_keeps_its_history_below_the_ceiling(tmp_path: Path) -> None:
+    stdout, counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=5, publishes=1
+    )
+
+    assert "force=0" in stdout
+    assert "head=born" in stdout
+    assert "count=1" in stdout
+    # No force, so no lease: an ordinary fast-forward push needs no protection.
+    assert "lease=empty" in stdout
+    assert "reset=0" in stdout
+    assert counter_after == "1"
+
+
+def test_pages_branch_re_root_is_disabled_by_a_zero_ceiling(tmp_path: Path) -> None:
+    stdout, _counter_after = _run_prepare_pages_branch(
+        tmp_path, max_commits=0, publishes=9999
+    )
+
+    assert "force=0" in stdout
+    assert "head=born" in stdout
 
 
 def _write_executable(path: Path, text: str) -> None:
@@ -695,14 +872,16 @@ exit 0
     actions = action_log.read_text().splitlines()
     assert actions[0].endswith("bash -s preflight /opt/weatheredge/trading/data/paper_trading.db")
     assert actions[1].endswith("bash -s probe sfo-scheduler-health.timer")
-    assert actions[2].endswith("bash -s probe weatheredge-apple-refresh.timer")
-    assert actions[3].endswith("bash -s probe weatheredge-apple-purge.timer")
-    assert actions[4].endswith("bash -s capture")
-    assert "weatheredge-deploy-maintenance" in actions[5]
-    assert actions[6].endswith("bash -s quiesce")
-    assert actions[7].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
-    assert "mkdir -p" in actions[8] and "chown" in actions[8]
-    assert actions[9].startswith("rsync|")
+    # FC-4 retired the Apple refresh timer, so the deploy no longer probes it;
+    # only the purge timer keeps its first-deploy enablement probe.
+    assert not any("probe weatheredge-apple-refresh.timer" in a for a in actions)
+    assert actions[2].endswith("bash -s probe weatheredge-apple-purge.timer")
+    assert actions[3].endswith("bash -s capture")
+    assert "weatheredge-deploy-maintenance" in actions[4]
+    assert actions[5].endswith("bash -s quiesce")
+    assert actions[6].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
+    assert "mkdir -p" in actions[7] and "chown" in actions[7]
+    assert actions[8].startswith("rsync|")
     assert not any("enable" in action or "start" in action for action in actions)
 
 
@@ -724,10 +903,7 @@ data = sys.stdin.read()
 with Path(os.environ['ACTION_LOG']).open('a', encoding='utf-8') as handle:
     handle.write('ssh|' + ' '.join(args) + '\\n')
 
-if args[-4:] in (
-    ['bash', '-s', 'probe', 'weatheredge-apple-refresh.timer'],
-    ['bash', '-s', 'probe', 'weatheredge-apple-purge.timer'],
-):
+if args[-4:] == ['bash', '-s', 'probe', 'weatheredge-apple-purge.timer']:
     raise SystemExit(10)
 elif args[-3:] == ['bash', '-s', 'capture']:
     print('sfo-operational-publish.timer')
@@ -831,10 +1007,9 @@ elif 'restore' in args:
         < public_wait_indexes[1]
         < post_writer_restore_idx
     )
-    assert actions[apple_restore_idx] == (
-        "restore|weatheredge-apple-refresh.timer "
-        "weatheredge-apple-purge.timer"
-    )
+    # Only the purge timer: FC-4 retired the Apple refresh timer, so no deploy
+    # path may enable it, including the first-deploy enablement of a new unit.
+    assert actions[apple_restore_idx] == "restore|weatheredge-apple-purge.timer"
     assert actions[initial_writer_restore_idx] == (
         "restore|sfo-strategy-lab-refresh.timer "
         "sfo-operational-publish.timer"
@@ -844,7 +1019,424 @@ elif 'restore' in args:
         "restore|sfo-strategy-lab-refresh.timer "
         "sfo-operational-publish.timer"
     )
-    assert "restored 2 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+    # One producer timer, not two: the captured set no longer gains the
+    # retired Apple refresh timer.
+    assert "restored 1 producer timer(s); watchdog restored last=1" in result.stdout.lower()
+
+
+def _run_full_sync_with_capture(
+    tmp_path: Path,
+    capture_lines: tuple[str, ...],
+    *,
+    database_present: bool = True,
+    fail_backup_status: int | None = None,
+    fail_first_rsync_status: int | None = None,
+    restore_connection_failures: int = 0,
+    **extra_env: str,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the real sync_to_box.sh against a scripted host.
+
+    ``database_present`` models the preflight's WEATHEREDGE_DATABASE_PRESENT
+    line, i.e. an established host. The failure knobs fail the backup step or
+    the first rsync, or make the first N remote restores lose the connection
+    (ssh exit 255).
+    """
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _stub_clean_main_git(fake_bin)
+    action_log = tmp_path / "actions.log"
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!{sys.executable}
+import os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+sys.stdin.read()
+log = Path(os.environ['ACTION_LOG'])
+with log.open('a', encoding='utf-8') as handle:
+    handle.write('ssh|' + ' '.join(args) + '\\n')
+
+if len(args) >= 2 and args[-2] == 'preflight':
+    if os.environ['FAKE_DATABASE_PRESENT'] == '1':
+        print('WEATHEREDGE_DATABASE_PRESENT=1')
+    print('database backup preflight passed')
+elif args[-3:] == ['bash', '-s', 'capture']:
+    for line in os.environ['FAKE_CAPTURE'].split(','):
+        if line:
+            print(line)
+elif len(args) >= 2 and args[-2] == 'backup':
+    if os.environ['FAKE_BACKUP_STATUS']:
+        raise SystemExit(int(os.environ['FAKE_BACKUP_STATUS']))
+    print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
+elif 'restore' in args:
+    counter = Path(os.environ['FAKE_RESTORE_COUNTER'])
+    attempts = (int(counter.read_text()) if counter.exists() else 0) + 1
+    counter.write_text(str(attempts))
+    if attempts <= int(os.environ['FAKE_RESTORE_CONNECTION_FAILURES']):
+        raise SystemExit(255)
+    restored = args[args.index('restore') + 1:]
+    with log.open('a', encoding='utf-8') as handle:
+        handle.write('restore|' + ' '.join(restored) + '\\n')
+""",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\n"
+        "printf 'rsync|%s\\n' \"$*\" >> \"$ACTION_LOG\"\n"
+        "if [ -n \"$FAKE_FIRST_RSYNC_STATUS\" ] && [ ! -e \"$ACTION_LOG.rsync-failed\" ]; then\n"
+        "  : > \"$ACTION_LOG.rsync-failed\"\n"
+        "  exit \"$FAKE_FIRST_RSYNC_STATUS\"\n"
+        "fi\n",
+    )
+    key = tmp_path / "key.pem"
+    key.write_text("test")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "WEATHEREDGE_ROOT": str(ROOT),
+        "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+        "EC2_IP": "ec2.example",
+        "EC2_KEY": str(key),
+        "REMOTE_BASE": "/opt/weatheredge",
+        "ACTION_LOG": str(action_log),
+        "FAKE_CAPTURE": ",".join(capture_lines),
+        "FAKE_DATABASE_PRESENT": "1" if database_present else "0",
+        "FAKE_BACKUP_STATUS": "" if fail_backup_status is None else str(fail_backup_status),
+        "FAKE_FIRST_RSYNC_STATUS": (
+            "" if fail_first_rsync_status is None else str(fail_first_rsync_status)
+        ),
+        "FAKE_RESTORE_COUNTER": str(tmp_path / "restore-attempts"),
+        "FAKE_RESTORE_CONNECTION_FAILURES": str(restore_connection_failures),
+        "WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS": "0",
+    }
+    for name in ("SFO_DEPLOY_RESTORE_CANONICAL_TIMERS", "SFO_DEPLOY_KEEP_CAPTURED_TIMERS"):
+        env.pop(name, None)
+    env.update(extra_env)
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "sync_to_box.sh")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    actions = action_log.read_text().splitlines() if action_log.exists() else []
+    return result, actions
+
+
+def _canonical_scheduler_timers() -> list[str]:
+    text = (AWS_DIR / "check_scheduler_health.sh").read_text(encoding="utf-8")
+    block = text.split("CANONICAL_TIMERS=(", 1)[1].split("\n)", 1)[0]
+    return [line.strip().strip('"') for line in block.splitlines() if line.strip()]
+
+
+def _release_canonical_timers() -> list[str]:
+    """What sync_to_box.sh reads: install_systemd.sh's enable line, minus retired timers."""
+
+    installer = (AWS_DIR / "install_systemd.sh").read_text(encoding="utf-8")
+    (line,) = [
+        line.removeprefix("sudo systemctl enable --now ")
+        for line in installer.splitlines()
+        if line.startswith("sudo systemctl enable --now ")
+    ]
+    return [timer for timer in line.split() if timer != "weatheredge-apple-refresh.timer"]
+
+
+def _action_index(actions: list[str], predicate) -> int:
+    return next(index for index, line in enumerate(actions) if predicate(line))
+
+
+_MARKER_RELEASE = "sudo rm -f -- '/run/weatheredge-deploy-maintenance'"
+_ESTABLISHED_CAPTURE = (
+    "sfo-kalshi-paper-scan.timer",
+    "sfo-kalshi-paper-monitor.timer",
+    "sfo-scheduler-health.timer",
+)
+
+
+def test_release_canonical_timer_set_is_the_installer_set_plus_the_watchdog() -> None:
+    """Release decision 3: canonical = what install_systemd.sh enables, minus
+    retired timers, plus the scheduler watchdog -- and the watchdog's own
+    CANONICAL_TIMERS list must describe the same scheduler."""
+
+    release = _release_canonical_timers()
+    assert len(release) == len(set(release)) == 13
+    assert "weatheredge-apple-refresh.timer" not in release
+    assert set(release) == {*_canonical_scheduler_timers(), "sfo-scheduler-health.timer"}
+
+
+@pytest.mark.parametrize(
+    ("capture_lines", "database_present"),
+    [
+        # Every timer disabled on an established host: stranded after quiesce, rebooted.
+        ((), True),
+        # Timers still captured, but the previous deploy never released the host.
+        (("sfo-kalshi-paper-scan.timer", "@deploy-maintenance-marker-present"), True),
+        (("@deploy-maintenance-marker-present",), True),
+        # A leftover marker is never ignored, database or not.
+        (("@deploy-maintenance-marker-present",), False),
+    ],
+)
+def test_full_sync_refuses_a_stranded_host_before_quiescing_anything(
+    tmp_path: Path, capture_lines: tuple[str, ...], database_present: bool
+) -> None:
+    """Release review, deploy HIGH: an empty capture used to 'succeed' dark."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, capture_lines, database_present=database_present
+    )
+
+    assert result.returncode != 0
+    assert "refusing to deploy: the host looks stranded" in result.stderr
+    assert "SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1" in result.stderr
+    assert "'Release deploy and rollback', phase 0" in result.stderr
+    # The backup preflight runs before the guard and has already swept aged
+    # snapshots, so the refusal must not claim that nothing changed.
+    assert "Nothing has been quiesced or changed" not in result.stderr
+    assert "older than SFO_DATABASE_BACKUP_KEEP_DAYS" in result.stderr
+    assert any(line.endswith("bash -s capture") for line in actions)
+    assert not any("weatheredge-deploy-maintenance" in line for line in actions)
+    assert not any(line.endswith("bash -s quiesce") for line in actions)
+    assert not any("bash -s backup" in line for line in actions)
+    assert not any(line.startswith(("rsync|", "restore|")) for line in actions)
+
+
+def test_full_sync_keeps_first_deploy_behaviour_for_a_host_without_a_database(
+    tmp_path: Path,
+) -> None:
+    """Release decision 3: a genuinely new host is not a stranded one."""
+
+    result, _actions = _run_full_sync_with_capture(tmp_path, (), database_present=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "refusing to deploy" not in result.stderr
+    assert "Restored 0 producer timer(s); watchdog restored last=0." in result.stdout
+
+
+def test_full_sync_canonical_recovery_restores_the_release_timer_set_after_a_stranded_deploy(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        ("@deploy-maintenance-marker-present",),
+        SFO_DEPLOY_RESTORE_CANONICAL_TIMERS="1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    canonical = _release_canonical_timers()
+    restored = [
+        timer
+        for line in actions
+        if line.startswith("restore|")
+        for timer in line.removeprefix("restore|").split()
+    ]
+    assert set(restored) == set(canonical)
+    assert "weatheredge-apple-refresh.timer" not in restored
+    # The operator is shown exactly what will be restored, before anything runs.
+    assert "restores these 13 release canonical timer(s)" in result.stderr
+    printed = [line.strip() for line in result.stderr.splitlines() if line.startswith("  ")]
+    assert printed == canonical
+    # 13 restored timers minus the watchdog, freshness check, publisher and
+    # Strategy Lab refresh, which the deploy sequences separately.
+    assert "Restored 9 producer timer(s); watchdog restored last=1." in result.stdout
+    assert "Scheduler watchdog restored after maintenance=1." in result.stdout
+    assert actions[-1].endswith("sudo systemctl start sfo-scheduler-health.service")
+
+
+def test_full_sync_recovery_overrides_are_mutually_exclusive(tmp_path: Path) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        (),
+        SFO_DEPLOY_RESTORE_CANONICAL_TIMERS="1",
+        SFO_DEPLOY_KEEP_CAPTURED_TIMERS="1",
+    )
+
+    assert result.returncode != 0
+    assert "set only one of" in result.stderr
+    assert not any(line.endswith("bash -s quiesce") for line in actions)
+
+
+def test_full_sync_keep_captured_keeps_an_intentionally_paused_host_paused(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (), SFO_DEPLOY_KEEP_CAPTURED_TIMERS="1"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Restored 0 producer timer(s); watchdog restored last=0." in result.stdout
+    # Only the first-deploy enablement of a newly introduced unit is restored.
+    assert all(
+        line == "restore|weatheredge-apple-purge.timer"
+        for line in actions
+        if line.startswith("restore|")
+    )
+
+
+def test_full_sync_established_host_success_never_runs_pre_transfer_recovery(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(tmp_path, _ESTABLISHED_CAPTURE)
+
+    assert result.returncode == 0, result.stderr
+    assert "deploy stopped before any source was transferred" not in result.stderr
+    first_rsync = _action_index(actions, lambda line: line.startswith("rsync|"))
+    first_restore = _action_index(actions, lambda line: line.startswith("restore|"))
+    assert first_rsync < first_restore
+    assert "Restored 2 producer timer(s)" in result.stdout
+
+
+def test_full_sync_backup_failure_restores_the_captured_runtime_on_the_unchanged_tree(
+    tmp_path: Path,
+) -> None:
+    """Release review, deploy HIGH: the 2026-09-12 run died between quiesce and
+    rsync, and production sat quiesced and unwatched for 46.5 hours."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_backup_status=7
+    )
+
+    assert result.returncode == 7
+    quiesce = _action_index(actions, lambda line: line.endswith("bash -s quiesce"))
+    restore = _action_index(actions, lambda line: line.startswith("restore|"))
+    release = _action_index(actions, lambda line: _MARKER_RELEASE in line)
+    watchdog = _action_index(
+        actions, lambda line: line.endswith("sudo systemctl start sfo-scheduler-health.service")
+    )
+    assert quiesce < restore < release < watchdog
+    # Exactly the captured units: they are what exists on the unchanged tree.
+    assert actions[restore] == "restore|" + " ".join(_ESTABLISHED_CAPTURE)
+    assert not any(line.startswith("rsync|") for line in actions)
+    assert "deploy stopped before any source was transferred (status=7)" in result.stderr
+    assert "Pre-transfer recovery restored 3 timer(s)" in result.stderr
+
+
+# A v2 host: the retired Apple refresh timer is still enabled there.
+_RETIRED_CAPTURE = (
+    "sfo-kalshi-paper-scan.timer",
+    "weatheredge-apple-refresh.timer",
+    "sfo-kalshi-paper-monitor.timer",
+    "sfo-scheduler-health.timer",
+)
+
+
+def test_full_sync_pre_transfer_failure_restores_a_captured_retired_timer(
+    tmp_path: Path,
+) -> None:
+    """Before the first rsync the host still runs the old release, whose
+    check_scheduler_health.sh requires weatheredge-apple-refresh.timer. Leaving
+    it disabled would fail that watchdog on every tick."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _RETIRED_CAPTURE, fail_backup_status=7
+    )
+
+    assert result.returncode == 7
+    assert not any(line.startswith("rsync|") for line in actions)
+    assert [line for line in actions if line.startswith("restore|")] == [
+        "restore|" + " ".join(_RETIRED_CAPTURE)
+    ]
+    assert any(_MARKER_RELEASE in line for line in actions)
+    assert "Pre-transfer recovery restored 4 timer(s)" in result.stderr
+
+
+def test_full_sync_success_does_not_restore_a_captured_retired_timer(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(tmp_path, _RETIRED_CAPTURE)
+
+    assert result.returncode == 0, result.stderr
+    assert "deploy stopped before any source was transferred" not in result.stderr
+    restored = [
+        timer
+        for line in actions
+        if line.startswith("restore|")
+        for timer in line.removeprefix("restore|").split()
+    ]
+    assert "weatheredge-apple-refresh.timer" not in restored
+    assert set(restored) == set(_ESTABLISHED_CAPTURE)
+    assert "Restored 2 producer timer(s)" in result.stdout
+
+
+def test_full_sync_pre_transfer_recovery_retries_a_lost_connection(tmp_path: Path) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        _ESTABLISHED_CAPTURE,
+        fail_backup_status=255,
+        restore_connection_failures=2,
+    )
+
+    assert result.returncode == 255
+    assert (tmp_path / "restore-attempts").read_text() == "3"
+    assert [line for line in actions if line.startswith("restore|")] == [
+        "restore|" + " ".join(_ESTABLISHED_CAPTURE)
+    ]
+    assert any(_MARKER_RELEASE in line for line in actions)
+    assert result.stderr.count("SSH connection lost during pre-transfer recovery") == 2
+
+
+def test_full_sync_failure_after_the_first_rsync_leaves_an_established_host_quiesced(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_first_rsync_status=23
+    )
+
+    assert result.returncode == 23
+    assert any(line.startswith("rsync|") for line in actions)
+    assert not any(line.startswith("restore|") for line in actions)
+    assert not any(_MARKER_RELEASE in line for line in actions)
+    assert "deploy stopped before any source was transferred" not in result.stderr
+
+
+def test_full_sync_never_auto_restores_a_host_that_was_already_stranded(
+    tmp_path: Path,
+) -> None:
+    """Its tree may hold an earlier partial transfer; only a complete deploy restores it."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (), fail_backup_status=7, SFO_DEPLOY_RESTORE_CANONICAL_TIMERS="1"
+    )
+
+    assert result.returncode == 7
+    assert any(line.endswith("bash -s quiesce") for line in actions)
+    assert not any(line.startswith("restore|") for line in actions)
+    assert not any(_MARKER_RELEASE in line for line in actions)
+
+
+def test_timer_state_helper_reports_a_leftover_maintenance_marker(
+    tmp_path: Path,
+) -> None:
+    helper = AWS_DIR / "disable_systemd_timers.sh"
+    fake = tmp_path / "systemctl"
+    _write_executable(
+        fake,
+        """#!/usr/bin/env bash
+if [[ "$1" == show ]]; then echo loaded; exit 0; fi
+if [[ "$1" == is-enabled ]]; then exit 1; fi
+exit 0
+""",
+    )
+    marker = tmp_path / "weatheredge-deploy-maintenance"
+    env = {
+        **os.environ,
+        "SYSTEMCTL_BIN": str(fake),
+        "WEATHEREDGE_DEPLOY_MAINTENANCE_MARKER": str(marker),
+    }
+
+    clean = subprocess.run(
+        ["bash", str(helper), "capture"], env=env, capture_output=True, text=True
+    )
+    marker.write_text("")
+    stranded = subprocess.run(
+        ["bash", str(helper), "capture"], env=env, capture_output=True, text=True
+    )
+
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout == ""
+    assert stranded.returncode == 0, stranded.stderr
+    assert stranded.stdout.splitlines() == ["@deploy-maintenance-marker-present"]
 
 
 def test_full_sync_restores_writers_when_post_analysis_drain_fails(
@@ -2046,6 +2638,154 @@ def test_backup_preflight_sweeps_aged_snapshots_before_measuring_space(
     assert not aged.exists(), "aged snapshot should be reclaimed during preflight"
     assert not aged_sum.exists(), "aged checksum should be reclaimed too"
     assert fresh.exists(), "a snapshot inside the retention window must survive"
+
+
+def test_backup_preflight_reclaims_what_an_interrupted_backup_left_behind(
+    tmp_path: Path,
+) -> None:
+    """Release review, deploy MEDIUM: a killed 9/13 backup could block this deploy."""
+
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    seven_hours_ago = time.time() - 7 * 3600
+
+    stale_restore = backups / ".restore-check.AbC123"
+    stale_restore.mkdir()
+    (stale_restore / "paper_trading-20260913T012600Z.sqlite3").write_bytes(b"partial")
+    unhashed = backups / "paper_trading-20260913T012600Z.sqlite3"
+    unhashed.write_bytes(b"interrupted before the checksum")
+    hashed = backups / "paper_trading-20260913T002600Z.sqlite3"
+    hashed.write_bytes(b"possibly verified")
+    (backups / "paper_trading-20260913T002600Z.sqlite3.sha256").write_text("x  y\n")
+    for path in (stale_restore / "paper_trading-20260913T012600Z.sqlite3", unhashed, hashed):
+        os.utime(path, (seven_hours_ago, seven_hours_ago))
+    os.utime(stale_restore, (seven_hours_ago, seven_hours_ago))
+
+    # An in-flight backup's artifacts are young and must survive.
+    live_restore = backups / ".restore-check.Live99"
+    live_restore.mkdir()
+    live_snapshot = backups / "paper_trading-29991231T235959Z.sqlite3"
+    live_snapshot.write_bytes(b"being hashed right now")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_DIR": str(backups),
+            "SFO_DATABASE_BACKUP_KEEP_DAYS": "1",
+            "WEATHEREDGE_DEPLOY_MAINTENANCE_MARKER": str(tmp_path / "no-maintenance-marker"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "WEATHEREDGE_DATABASE_PRESENT=1" in result.stdout.splitlines()
+    assert not stale_restore.exists()
+    assert not unhashed.exists()
+    assert hashed.exists(), "a hashed snapshot may be the verified copy; never guess"
+    assert live_restore.exists()
+    assert live_snapshot.exists()
+    assert "reclaiming interrupted backup restore directory" in result.stderr
+    assert "reclaiming unhashed snapshot" in result.stderr
+
+
+def test_backup_gate_failure_names_the_largest_backup_entries(tmp_path: Path) -> None:
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    big = backups / "paper_trading-20260913T002600Z.sqlite3"
+    big.write_bytes(b"x" * 64 * 1024)
+    (backups / "paper_trading-20260913T002600Z.sqlite3.sha256").write_text("x  y\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "df",
+        "#!/bin/sh\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'fake 1 1 0 100%% /\\n'\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_DIR": str(backups),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "largest entries in" in result.stderr
+    assert big.name in result.stderr
+    assert big.exists()
+
+
+def test_backup_preflight_never_reclaims_while_a_deploy_holds_maintenance(
+    tmp_path: Path,
+) -> None:
+    """Release decision 4: reclaim only when no maintenance marker is present."""
+
+    db_path = tmp_path / "paper.db"
+    sqlite3.connect(db_path).close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    seven_hours_ago = time.time() - 7 * 3600
+    stale_restore = backups / ".restore-check.AbC123"
+    stale_restore.mkdir()
+    unhashed = backups / "paper_trading-20260913T012600Z.sqlite3"
+    unhashed.write_bytes(b"interrupted before the checksum")
+    for path in (unhashed, stale_restore):
+        os.utime(path, (seven_hours_ago, seven_hours_ago))
+    marker = tmp_path / "weatheredge-deploy-maintenance"
+    marker.write_text("")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    _write_executable(fake_aws, "#!/bin/sh\nexit 0\n")
+
+    result = subprocess.run(
+        ["bash", str(AWS_DIR / "backup_paper_db.sh"), "preflight", str(db_path)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SFO_WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
+            "SFO_ARCHIVE_S3_BUCKET": "weatheredge-test",
+            "SFO_ARCHIVE_AWS_CLI": str(fake_aws),
+            "SFO_DATABASE_BACKUP_DIR": str(backups),
+            "SFO_DATABASE_BACKUP_KEEP_DAYS": "1",
+            "WEATHEREDGE_DEPLOY_MAINTENANCE_MARKER": str(marker),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stale_restore.exists()
+    assert unhashed.exists()
+    assert "interrupted-backup reclaim skipped" in result.stderr
+    assert "reclaiming" not in result.stderr
 
 
 def test_backup_gate_requires_one_database_copy_not_two(tmp_path: Path) -> None:

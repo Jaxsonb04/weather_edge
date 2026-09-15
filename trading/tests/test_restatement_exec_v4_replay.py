@@ -2337,3 +2337,182 @@ def test_current_immediate_rejects_isolated_quantity_alias_mismatch(
             order_id,
             "CURRENT_ENTRY_QUANTITY_MISMATCH",
         )
+
+
+# ---------------------------------------------------------------------------
+# Two-level taker cross (2026-09-13): the level-2 entry is verified against
+# the recorded ladder, and the ladder is what makes it verifiable.
+# ---------------------------------------------------------------------------
+
+
+def _two_level_settled_order(store: PaperStore) -> int:
+    decision = _decision(TICKER, side="NO", limit_price=0.73, contracts=5.0)
+    decision = replace(
+        decision,
+        entry_bid=0.71,
+        entry_ask=0.72,
+        entry_ask_size=2.0,
+        limit_price=0.73,
+        ask_levels=((0.72, 2.0), (0.73, 10.0)),
+        taker_levels_used=2,
+    )
+    order_id = store.record_paper_order(
+        TARGET_DATE,
+        decision,
+        status="PAPER_FILLED",
+        entry_mode="limit",
+    )
+    assert order_id is not None
+    _settle(store)
+    return order_id
+
+
+def _rewrite_quote_snapshot(store: PaperStore, order_id: int, **changes: object) -> None:
+    with store.connect() as conn:
+        raw = conn.execute(
+            "SELECT quote_snapshot_json FROM paper_orders WHERE id=?", (order_id,)
+        ).fetchone()[0]
+        quote = json.loads(raw)
+        for key, value in changes.items():
+            if value is None:
+                quote.pop(key, None)
+            else:
+                quote[key] = value
+        conn.execute(
+            "UPDATE paper_orders SET quote_snapshot_json=? WHERE id=?",
+            (json.dumps(quote, sort_keys=True), order_id),
+        )
+
+
+def test_valid_two_level_immediate_entry_is_verified_and_replayed() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _two_level_settled_order(store)
+        with store.connect() as conn:
+            row = conn.execute(
+                "SELECT entry_price, entry_ask_size, quote_snapshot_json "
+                "FROM paper_orders WHERE id=?",
+                (order_id,),
+            ).fetchone()
+        # Booked at level 2 for more than the displayed best-ask size.
+        assert row[0] == 0.73
+        assert row[1] == 2.0
+        assert json.loads(row[2])["ask_levels"] == [[0.72, 2.0], [0.73, 10.0]]
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "VERIFIED"
+        assert result["findings"] == []
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 1
+        assert replay["verified_decisions"] == 1
+
+
+def test_two_level_entry_without_its_ladder_evidence_is_not_verifiable() -> None:
+    """The level-2 price is only verifiable because the ladder was recorded."""
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _two_level_settled_order(store)
+        _rewrite_quote_snapshot(store, order_id, taker_levels_used=None, ask_levels=None)
+
+        _assert_current_execution_excluded(
+            db_path, order_id, "CURRENT_ENTRY_PRICE_MISMATCH"
+        )
+
+
+def test_two_level_entry_with_malformed_ladder_claim_fails_closed() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _two_level_settled_order(store)
+        _rewrite_quote_snapshot(store, order_id, ask_levels=[[0.72, 2.0]])
+
+        _assert_current_execution_excluded(
+            db_path, order_id, "CURRENT_ENTRY_QUOTE_INVALID"
+        )
+
+
+def test_two_level_entry_cannot_fill_beyond_level_one_plus_level_two_depth() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _two_level_settled_order(store)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE paper_orders SET contracts=13, requested_contracts=13, "
+                "filled_contracts=13 WHERE id=?",
+                (order_id,),
+            )
+        _rewrite_quote_snapshot(store, order_id, contracts=13.0)
+
+        _assert_current_execution_excluded(
+            db_path, order_id, "CURRENT_ENTRY_DEPTH_INSUFFICIENT"
+        )
+
+
+# Fresh level-1 depth (2026-09-13 review): a level-1 cross sized on a fresh
+# ladder whose level-1 size exceeds the older listing size is executable, but
+# only a FRESH ladder (best level == displayed ask) can vouch for that depth.
+
+
+def _level_one_ladder_settled_order(store: PaperStore, ask_levels: object) -> int:
+    decision = _decision(TICKER, side="NO", limit_price=0.72, contracts=5.0)
+    decision = replace(
+        decision,
+        entry_bid=0.71,
+        entry_ask=0.72,
+        entry_ask_size=2.0,
+        limit_price=0.72,
+        ask_levels=ask_levels,
+        taker_levels_used=1,
+    )
+    order_id = store.record_paper_order(
+        TARGET_DATE,
+        decision,
+        status="PAPER_FILLED",
+        entry_mode="limit",
+    )
+    assert order_id is not None
+    _settle(store)
+    return order_id
+
+
+def test_level_one_entry_sized_on_its_fresh_ladder_is_verified_and_replayed() -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _level_one_ladder_settled_order(
+            store, ((0.72, 10.0), (0.73, 10.0))
+        )
+
+        result = _result(db_path, order_id)
+        assert result["verification"] == "VERIFIED"
+        assert result["findings"] == []
+        replay = replay_from_database(db_path, TRUTH)
+        assert replay["source_orders"] == 1
+        assert replay["verified_decisions"] == 1
+
+
+@pytest.mark.parametrize(
+    "ask_levels",
+    [
+        None,
+        ((0.73, 10.0), (0.74, 10.0)),
+        ((0.72, 10.0), (0.72, 10.0)),
+        ((0.72, 3.0), (0.73, 10.0)),
+    ],
+    ids=["no-ladder", "stale-best-price", "flat-ladder", "fresh-but-thinner-than-fill"],
+)
+def test_level_one_entry_beyond_listing_depth_needs_fresh_ladder_depth(
+    ask_levels: object,
+) -> None:
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = _store(db_path)
+        order_id = _level_one_ladder_settled_order(store, ask_levels)
+
+        _assert_current_execution_excluded(
+            db_path, order_id, "CURRENT_ENTRY_DEPTH_INSUFFICIENT"
+        )

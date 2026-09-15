@@ -3,7 +3,7 @@
 Date: 2026-06-12
 
 > Historical research record. Values and single-market assumptions below are
-> preserved for provenance; current operations use fifteen city markets, two
+> preserved for provenance; current operations use twenty city markets, two
 > paper profiles, and maker-first portfolio scanning.
 
 This note inventories the important hard-coded WeatherEdge trade-engine

@@ -25,6 +25,23 @@ AUDIT_RUNTIME_DEFAULTS = {
     "PAPER_RESEARCH_TAKE_PROFIT_MARGIN": "0.05",
     "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED": "true",
 }
+PRUNE_MODE_KEY = "SFO_PRUNE_MODE"
+# The first line doubles as a one-time migration marker: once an operator has
+# run the supervised catch-up and deleted the SFO_PRUNE_MODE line, the comment
+# stays behind and a later deploy does not append the key again. Plain words
+# only -- no quotes or apostrophes -- so every parser of the file accepts it.
+PRUNE_MODE_MIGRATION_MARKER = (
+    "# weatheredge-migration: SFO_PRUNE_MODE archive-only until the supervised catch-up (2026-09-13)"
+)
+PRUNE_MODE_MIGRATION_BLOCK = (
+    PRUNE_MODE_MIGRATION_MARKER,
+    "# This host had no SFO_PRUNE_MODE when the prune wrapper default became bounded-delete,",
+    "# so the nightly prune stays archive-only until an operator runs the supervised",
+    "# quiesced-delete catch-up and compaction (trading/deploy/aws/README.md, section",
+    "# Release deploy and rollback, step 5.5). Then delete only the SFO_PRUNE_MODE line",
+    "# below and keep this comment, which stops a later deploy from adding it back.",
+    f"{PRUNE_MODE_KEY}=archive-only",
+)
 
 
 def migrate_legacy_live_risk_defaults(text: str) -> tuple[str, bool]:
@@ -103,6 +120,33 @@ def migrate_audit_runtime_defaults(text: str) -> tuple[str, bool]:
     return "\n".join(lines) + "\n", True
 
 
+def migrate_prune_mode_default(text: str) -> tuple[str, bool]:
+    """Keep nightly deletion off on a host that predates the bounded-delete default.
+
+    ``run_archive_then_prune.sh`` now defaults to ``bounded-delete``. A host
+    whose env file has no ``SFO_PRUNE_MODE`` has been archive-only since its
+    last compaction, and its first unsupervised nightly delete would be a
+    catch-up with the writers running that the 2026-09-04 supervised run showed
+    peaking above the unit's memory ceiling. So an absent key is appended as
+    ``archive-only`` under a comment pointing at the supervised catch-up step.
+    Any existing assignment -- including duplicates and values this script does
+    not recognise -- is an operator choice and is left untouched, as is a file
+    that already carries the migration comment (the operator finished the
+    catch-up and removed the key).
+    """
+
+    lines = text.splitlines()
+    for line in lines:
+        stripped = line.strip()
+        if stripped == PRUNE_MODE_MIGRATION_MARKER:
+            return text, False
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip() == PRUNE_MODE_KEY:
+            return text, False
+    return "\n".join([*lines, *PRUNE_MODE_MIGRATION_BLOCK]) + "\n", True
+
+
 def _atomic_write(path: Path, text: str) -> None:
     existing = path.stat()
     fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -128,8 +172,15 @@ def main(argv: list[str]) -> int:
     original = path.read_text(encoding="utf-8")
     migrated, risk_changed = migrate_legacy_live_risk_defaults(original)
     migrated, audit_changed = migrate_audit_runtime_defaults(migrated)
-    if risk_changed or audit_changed:
+    migrated, prune_changed = migrate_prune_mode_default(migrated)
+    if risk_changed or audit_changed or prune_changed:
         _atomic_write(path, migrated)
+    if prune_changed:
+        print(
+            "notice: appended SFO_PRUNE_MODE=archive-only; nightly retention deletes "
+            "nothing until the supervised catch-up (see the comment in the env file)",
+            file=sys.stderr,
+        )
     if risk_changed:
         print("migrated legacy live risk defaults")
     else:

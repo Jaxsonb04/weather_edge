@@ -50,7 +50,7 @@ class KalshiPublicClient:
     def __init__(
         self,
         base_url: str | None = None,
-        timeout: int = 20,
+        timeout: float = 20,
         *,
         retries: int = 3,
         backoff: float = 0.5,
@@ -69,6 +69,21 @@ class KalshiPublicClient:
         self.timeout = timeout
         self.retries = max(1, retries)
         self.backoff = max(0.0, backoff)
+
+    def single_attempt(self, timeout: float) -> KalshiPublicClient:
+        """This client's endpoint with ONE attempt and a short socket timeout.
+
+        For a call inside a latency-critical path (the pre-entry orderbook
+        ladder fetched between the market listing and order placement): no
+        retry, no backoff sleep and no Retry-After wait, so a degraded
+        endpoint fails within one socket timeout instead of the default
+        20s x 3 attempts with backoff (~61s). The original client is
+        unchanged.
+        """
+
+        return KalshiPublicClient(
+            self.base_url, timeout=timeout, retries=1, backoff=0.0
+        )
 
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         query = f"?{urlencode(params)}" if params else ""

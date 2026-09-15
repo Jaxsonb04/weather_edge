@@ -301,6 +301,10 @@ def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
     return _paper_dispatch("cmd_paper_backfill_market_day_settlements", args)
 
 
+def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
+    return _paper_dispatch("cmd_paper_ladder_outcomes", args)
+
+
 def _completed_open_target_dates(*args, **kwargs):
     return _paper_dispatch("_completed_open_target_dates", *args, **kwargs)
 
@@ -449,18 +453,22 @@ def _scan_command_dependencies() -> _scan.ScanCommandDependencies:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_analyze(args, dependencies=_scan_command_dependencies())
 
 
 def cmd_tail_basket(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_tail_basket(args, dependencies=_scan_command_dependencies())
 
 
 def cmd_arbitrage(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_arbitrage(args, dependencies=_scan_command_dependencies())
 
 
 def cmd_portfolio_scan(args: argparse.Namespace) -> int:
+    _sync_scan_bindings()
     return _scan.cmd_portfolio_scan(args, dependencies=_scan_command_dependencies())
 
 
