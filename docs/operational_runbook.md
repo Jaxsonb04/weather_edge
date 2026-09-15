@@ -57,7 +57,7 @@ cd /path/to/WeatherEdge
 python -m sfo_kalshi_quant.cli --no-color analyze --target-date both
 ```
 
-`analyze` loops all fifteen registered cities by default (env `PAPER_CITIES`,
+`analyze` loops all twenty registered cities by default (env `PAPER_CITIES`,
 default `all`). Pass `--cities` with `all` or a comma list of slugs to
 override:
 
@@ -149,7 +149,7 @@ artifact is republished.
 No published artifact contains private DB state; the trading artifacts contain
 only paper-trading research. `cities_data.json`
 supplies per-city forecasts, latest settlement, and book activity for the
-fifteen-city Coverage grid.
+twenty-city Coverage grid.
 
 ## Paper Place
 
@@ -243,7 +243,8 @@ confidence.
 ## Scheduled Multi-City Refresh And Nightly Maintenance
 
 On AWS, the 30-minute forecaster refresh serves live EMOS forecasts for all
-fifteen cities (one batched Open-Meteo call per city) plus NWS observations
+twenty cities (one batched Open-Meteo call per city; a newly added city is
+reported as awaiting its onboarding backfill until that lands) plus NWS observations
 (`--days 2 --cities all`).
 
 The nightly dataset unit (10:01 UTC, or 03:01 PDT / 02:01 PST) starts after

@@ -1,6 +1,6 @@
 """Canonical city-scoped settlement truth for research and accounting.
 
-The same calendar date can settle fifteen different markets.  Every lookup is
+The same calendar date settles one market per registry city.  Every lookup is
 therefore keyed by ``(series_ticker, target_date)``.  Date-only inputs remain a
 temporary SFO compatibility path for old callers and fixtures; they can never
 settle another city's row.

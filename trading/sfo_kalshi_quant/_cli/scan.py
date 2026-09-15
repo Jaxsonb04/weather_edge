@@ -1497,7 +1497,7 @@ def _tail_basket_one_target(
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
         forecast = adapter.apply_intraday_update(forecast, intraday)
     # GFS-ensemble sharpening is an SFO-validated feature (2 ensemble-API
-    # calls per target); at fifteen cities on a 5-minute cadence it would blow
+    # calls per target); at twenty cities on a 5-minute cadence it would blow
     # the free ensemble quota, so EMOS-only cities run without it -- their
     # sigma already comes from the calibrated EMOS fit.
     ensemble = (

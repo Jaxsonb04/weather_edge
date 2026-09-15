@@ -1,7 +1,7 @@
 # Strategy Notes
 
 > Research record dated 2026-06-12. This documents the SFO-era strategy basis;
-> current operations cover fifteen cities with maker-first `live` and `research`
+> current operations cover twenty cities with maker-first `live` and `research`
 > paper profiles. See `trading/README.md` for active commands.
 
 This project treats the SFO Kalshi market as a probabilistic forecasting and

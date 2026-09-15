@@ -4632,7 +4632,7 @@ class PaperStore:
         """Capital already deployed for one settlement target.
 
         ``series_ticker`` scopes the cap to one city's event (multi-city scans
-        cap per city-day, not across all fifteen cities sharing one date).
+        cap per city-day, not across every city sharing one date).
         """
 
         profile_filter, profile_params = _paper_profile_filter(risk_profile)

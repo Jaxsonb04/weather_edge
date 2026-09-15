@@ -3,7 +3,7 @@
 This directory owns both layers of WeatherEdge forecasting:
 
 - the shared operational path: an eight-member NWP archive and rolling-origin
-  EMOS forecast for all fifteen stations; and
+  EMOS forecast for all twenty stations; and
 - the **San Francisco flagship** research path: Google/NWS/Open-Meteo inputs,
   an LSTM trained on ten years of NOAA observations, and marine-layer features.
 
@@ -59,7 +59,7 @@ The deeper SFO path can combine:
 
 The legacy configured blend is 38% Google Weather, 36% NWS, 18% Open-Meteo, and
 8% SFO history. Those weights describe that optional SFO path, not the shared
-fifteen-city EMOS method or a guarantee about today's served forecast. Missing
+twenty-city EMOS method or a guarantee about today's served forecast. Missing
 sources are reweighted automatically, live-station adjustments are capped, and
 the published method label remains the authority for what reached the dashboard.
 
@@ -206,7 +206,7 @@ That path uses only clean archived next-day blend forecasts that existed before
 the target day started. Same-day observed-high lock/floor rows are excluded.
 
 These SFO-only results are research evidence. They do not establish equal skill
-for the other fourteen cities, and the live SFO artifact can still serve the
+for the other nineteen cities, and the live SFO artifact can still serve the
 shared EMOS fallback when optional inputs are absent.
 
 ## Why It Works
@@ -237,7 +237,7 @@ Other limits:
 ## File Map
 
 ```text
-cities.py                        canonical fifteen-city market/station registry
+cities.py                        canonical twenty-city market/station registry
 city_truth.py                    live and IEM-backed per-city CLI settlement truth
 clisfo.py                        SFO NWS Daily Climate Report parser
 emos_forecast.py                 rolling multi-city EMOS fit and live serve

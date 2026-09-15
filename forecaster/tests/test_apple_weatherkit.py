@@ -201,7 +201,7 @@ def test_refresh_caches_one_station_aligned_forecast_generation(tmp_path) -> Non
     assert snapshot.expires_at == datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)
 
 
-def test_refresh_uses_the_canonical_registry_for_all_fifteen_cities(tmp_path) -> None:
+def test_refresh_uses_the_canonical_registry_for_every_city(tmp_path) -> None:
     payloads = iter(_weatherkit_payload_for_city(city) for city in CITIES)
     cache = AppleRuntimeCache(tmp_path / "apple_weather_runtime.json")
     client = WeatherKitClient(

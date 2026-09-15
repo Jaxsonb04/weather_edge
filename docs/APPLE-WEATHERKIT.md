@@ -2,7 +2,7 @@
 
 ## Current State
 
-WeatherEdge has a credential-ready Apple WeatherKit REST source for all fifteen
+WeatherEdge has a credential-ready Apple WeatherKit REST source for all twenty
 settlement stations. It is disabled by default, has **zero live trading
 weight**, and has not been deployed to production as of 2026-08-10. Enabling
 the source fetches data; it does not change the NWP→EMOS forecast, calibrated
@@ -25,7 +25,7 @@ duplicating information already present in the NWP ensemble.
 - derives the market-day high from 24 unique hourly forecasts inside the exact
   fixed-standard settlement window;
 - treats Apple's daily maximum only as a transient diagnostic;
-- isolates a failed city from the other fourteen;
+- isolates a failed city from the other nineteen;
 - writes only complete, normalized current highs to a private mode-0600 file
   under `/run/weatheredge`;
 - makes each value unavailable at the earliest relevant

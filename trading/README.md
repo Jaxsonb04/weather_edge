@@ -1,8 +1,8 @@
 # WeatherEdge Prediction-Market Engine
 
 Paper-trading and backtesting engine for daily-high temperature prediction
-markets across fifteen U.S. cities. SFO is the flagship and retains the deepest
-Google/NWS/Open-Meteo/LSTM blend; the other fourteen cities use the shared
+markets across twenty U.S. cities. SFO is the flagship and retains the deepest
+Google/NWS/Open-Meteo/LSTM blend; the other nineteen cities use the shared
 NWP→EMOS→CLI pipeline.
 
 The rolling-origin archive is versioned. Runtime calibration and ship scoring

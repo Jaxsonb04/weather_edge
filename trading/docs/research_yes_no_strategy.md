@@ -1,7 +1,7 @@
 # Research Note: YES/NO Weather Trading Design
 
 > Research record dated 2026-06-12. Examples are SFO-specific historical
-> analysis; current operations cover fifteen city markets and use the shared
+> analysis; current operations cover twenty city markets and use the shared
 > maker-first portfolio scanner.
 
 This note records the technical basis for the side-aware SFO Kalshi strategy.

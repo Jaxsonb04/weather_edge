@@ -9,7 +9,7 @@ current fee schedule, so this module re-measures the OPPORTUNITY on today's
 books and today's fees rather than trusting the paper's number.
 
 What a snapshot CAN measure (and this reports):
-* how many favorite-band maker posts the fifteen city ladders offer right now,
+* how many favorite-band maker posts the registry's city ladders offer right now,
 * the model edge of each post under the city's live EMOS Gaussian, after the
   CURRENT maker fee (25% of the 0.07 quadratic taker rate, fee_multiplier 1 --
   verified against the live series API on 2026-07-06),

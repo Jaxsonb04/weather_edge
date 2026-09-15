@@ -1493,7 +1493,7 @@ def test_default_baseline_inherits_service_stdio_for_failure_diagnostics(monkeyp
     assert calls[0][1].get("capture_output") is not True
 
 
-def test_one_city_failure_leaves_the_other_fourteen_intact(tmp_path):
+def test_one_city_failure_leaves_every_other_city_intact(tmp_path):
     usage = _usage_ledger(tmp_path)
     runtime = _runtime_store(tmp_path)
     transport = _full_bundle_transport(fail=("lax", "hourly"))

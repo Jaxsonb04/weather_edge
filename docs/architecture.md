@@ -26,7 +26,7 @@ Responsibilities:
 - fetch Apple WeatherKit for all station coordinates into a private,
   provider-expiring tmpfs cache (optional research source, weight zero)
 - blend Google, NWS, Open-Meteo, and SFO history (SFO only)
-- run the station-agnostic NWP→EMOS→CLI path for the other fourteen cities:
+- run the station-agnostic NWP→EMOS→CLI path for the other nineteen cities:
   Open-Meteo previous-runs archive (8 models) and rolling-origin EMOS per city.
   Scheduled daily maintenance archives operational leads 1 and 2; lead 3
   remains available only to explicit historical backfills and on-demand
@@ -127,7 +127,7 @@ publishes `webdist` plus fresh `trading_signal.json`, `forecast_data.json`,
 `weather_story_data.json`, `strategy_research.json`, and `cities_data.json`
 (per-city forecasts, latest settlement, book activity) to the `gh-pages`
 branch, which GitHub Pages serves at
-`https://jaxsonb04.github.io/weather_edge/`. The site includes a fifteen-city
+`https://jaxsonb04.github.io/weather_edge/`. The site includes a twenty-city
 Coverage grid; SFO is presented as the flagship.
 
 ## Deepening Opportunities

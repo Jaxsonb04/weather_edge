@@ -833,7 +833,7 @@ def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:
 
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
-    # weather.db truth, all fifteen stations at once. The adapter's city only
+    # weather.db truth, every registry station at once. The adapter's city only
     # selects a station for the per-city readers; this one is station-agnostic
     # and returns every (series, target_date) it holds.
     cli_settlement_highs = SfoForecasterAdapter(
@@ -916,7 +916,7 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
         start = args.start
         end = args.end or args.start
     store = PaperStore(args.db_path)
-    # weather.db truth, all fifteen stations at once; the adapter's city only
+    # weather.db truth, every registry station at once; the adapter's city only
     # selects a station for the per-city readers.
     adapter = SfoForecasterAdapter(args.forecaster_root)
     cli_settlement_highs = adapter.load_cli_settlement_truth()

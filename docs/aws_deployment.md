@@ -155,7 +155,7 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
   events/day would breach the 260/day Google hard cap, and Google Weather is
   research corroboration the scheduled forecast does not consume.
 - `weatheredge-apple-refresh.timer`: **disabled, not canonical.** Four fixed UTC
-  vintages/day for all fifteen stations, retaining only provider-valid temporary
+  vintages/day for all twenty stations, retaining only provider-valid temporary
   data in `/run/weatheredge` with zero trading weight. It is **retired as of the 2026-09-03 audit (FC-4)**: its runtime cache had no reader anywhere outside `apple_weatherkit.py`, and Apple's terms do not permit retaining an archive, so it could not become a scored EMOS member either. The unit files are still installed and integrity-checked, so an operator can re-enable it with `sudo systemctl enable --now weatheredge-apple-refresh.timer`, but no deploy path turns it on.
 - `weatheredge-apple-purge.timer`: every ten minutes, offset from Google;
   physically removes expired or unverifiable Apple values even when refresh is

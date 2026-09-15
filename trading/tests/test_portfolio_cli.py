@@ -744,7 +744,7 @@ def test_tail_basket_command_has_no_per_target_forecast_catch() -> None:
 
 
 def test_portfolio_scan_contains_a_fail_closed_city_and_still_succeeds() -> None:
-    # SFO failing closed must not take the other fourteen cities down with it,
+    # SFO failing closed must not take the other nineteen cities down with it,
     # and must not fail the publication cycle.
     args = build_parser().parse_args(
         ["--risk-profile", "live", "portfolio-scan", "--cities", "sfo,nyc"]
@@ -777,7 +777,7 @@ def test_portfolio_scan_contains_a_fail_closed_city_and_still_succeeds() -> None
 
 
 def test_emos_city_scan_prices_the_point_against_its_own_coupled_distribution() -> None:
-    # The fourteen EMOS cities keep the flag on, so the guard returns instead of
+    # The nineteen EMOS cities keep the flag on, so the guard returns instead of
     # raising and the SAME-ROW pair becomes authoritative for this target. In
     # production the hoisted archive lookup already agrees (495/495 station-days
     # checked), so this is a no-op there; here the lookup is deliberately made to
@@ -837,7 +837,7 @@ def test_emos_city_scan_prices_the_point_against_its_own_coupled_distribution() 
 def test_emos_coupling_guard_runs_before_the_intraday_recentering() -> None:
     # LOAD-BEARING CALL PLACEMENT: apply_intraday_update deliberately moves the
     # point away from mu, so a guard called after it would fail the coupling
-    # check and break all fourteen EMOS cities. Pin the ordering.
+    # check and break all nineteen EMOS cities. Pin the ordering.
     target = date(2026, 8, 16)
     city = get_city("nyc")
     config = config_for_city(strategy_config_for_profile("live"), city)
