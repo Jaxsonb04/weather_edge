@@ -15,7 +15,8 @@ from sfo_kalshi_quant.account import (
     account_for_research_sleeve,
     strategy_fingerprint,
 )
-from sfo_kalshi_quant.config import strategy_config_for_profile
+from sfo_kalshi_quant.cities import CITIES
+from sfo_kalshi_quant.config import config_for_city, strategy_config_for_profile
 from sfo_kalshi_quant.db import ResearchEntryLimitError
 from sfo_kalshi_quant.execution import with_buy_limit
 from sfo_kalshi_quant.models import TradeDecision
@@ -310,6 +311,25 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # a StrategyConfig field.
     assert strategy_fingerprint(config, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
     assert strategy_fingerprint(config, entry_mode="market") == "daac202606908834dcef5e78"
+    # Production stamps rows PER CITY: strategy_lab/build.py keys live readiness
+    # by strategy_fingerprint(config_for_city(live_config, city)), and
+    # config_for_city leaves SFO alone but changes the other cities. So the 19
+    # non-SFO live books carry their own fingerprint, which the deploy verifies
+    # (limit mode; production runs PAPER_ENTRY_MODE=limit). Release review
+    # 2026-09-13: the integration notes named only the SFO pins. Recomputed from
+    # this exact config through config_for_city.
+    live_by_city = {
+        city.slug: strategy_fingerprint(config_for_city(config, city), entry_mode="limit")
+        for city in CITIES
+    }
+    assert live_by_city.pop("sfo") == "e1b9704afa53970f4edbdca3"
+    assert len(live_by_city) == 19
+    assert set(live_by_city.values()) == {"d3751adbf7e84c6e424d46da"}
+    research = strategy_config_for_profile("research")
+    assert {
+        strategy_fingerprint(config_for_city(research, city), entry_mode="limit")
+        for city in CITIES
+    } == {"b123f57836129c1df1c995bd"}
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
