@@ -18,6 +18,19 @@ Public data only: it needs a local fetch of the gh-pages branch
 Reproduced 2026-09-13 for that window: 154 samples, open+pending mean $170,
 median $148, p90 $388; zero room in 52.6% of samples at the 1.00 charge,
 20.1% at 0.60, 0.6% at 0.35; no sample was under the $150 realized pause.
+
+Those snapshots were taken under the 15-minute research rest. The 30-minute
+day-ahead rest keeps unfilled reservations charged about twice as long, so
+--pending-scale (repeatable) re-scores every sample with only the pending
+(resting-reservation) term multiplied:
+
+    python scripts/replay_research_daily_room.py --pending-scale 1.5 --pending-scale 2.0
+
+It is an approximation: some of the extra rest converts to fills, which moves
+cost from pending to open rather than removing it. Reproduced 2026-09-14 for
+the same window with --pending-scale 1.5 --pending-scale 2.0: zero room at the
+0.60 charge in 20.1%, 23.4% and 27.9% of samples; mean room $57.63, $55.61 and
+$54.86.
 """
 
 from __future__ import annotations
@@ -100,8 +113,8 @@ def snapshot_state(repo: Path, sha: str) -> dict:
     }
 
 
-def room(sample: dict, charge: float) -> float:
-    active = sample["open"] + sample["pending"]
+def room(sample: dict, charge: float, pending_scale: float = 1.0) -> float:
+    active = sample["open"] + pending_scale * sample["pending"]
     return max(0.0, BUDGET + min(sample["realized"], 0.0) - charge * active)
 
 
@@ -128,7 +141,7 @@ def collect(repo: Path, start: datetime, end: datetime) -> list[dict]:
     return samples
 
 
-def report(samples: list[dict]) -> None:
+def report(samples: list[dict], pending_scales: tuple[float, ...] = (1.0,)) -> None:
     count = len(samples)
     print(f"snapshots={count}")
     if not count:
@@ -139,9 +152,17 @@ def report(samples: list[dict]) -> None:
         f"open+pending mean={sum(active) / count:.2f} "
         f"median={active[count // 2]:.2f} p90={p90:.2f}"
     )
-    for charge in FRACTIONS:
-        zero = sum(1 for s in samples if room(s, charge) <= 0.0)
-        print(f"charge={charge:.2f} zero_room={zero}/{count} ({100.0 * zero / count:.1f}%)")
+    for scale in pending_scales:
+        for charge in FRACTIONS:
+            rooms = [room(s, charge, scale) for s in samples]
+            zero = sum(1 for value in rooms if value <= 0.0)
+            label = f"charge={charge:.2f}"
+            if scale != 1.0:
+                label += f" pending_scale={scale:.2f}"
+            print(
+                f"{label} zero_room={zero}/{count} ({100.0 * zero / count:.1f}%) "
+                f"mean_room={sum(rooms) / count:.2f}"
+            )
     paused = sum(1 for s in samples if s["realized"] <= -BUDGET)
     print(f"realized_pause_snapshots={paused}")
 
@@ -152,11 +173,21 @@ def main() -> int:
     parser.add_argument("--start", type=date.fromisoformat, default=date(2026, 8, 31))
     parser.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 12))
     parser.add_argument("--samples-out", type=Path, default=None)
+    parser.add_argument(
+        "--pending-scale",
+        type=float,
+        action="append",
+        default=None,
+        help="also score with the pending term multiplied by this factor (repeatable)",
+    )
     args = parser.parse_args()
+    scales = (1.0, *(args.pending_scale or ()))
+    if any(not (0.0 < scale < float("inf")) for scale in scales):
+        parser.error("--pending-scale must be a positive finite number")
     start = datetime.combine(args.start, datetime.min.time(), tzinfo=TZ)
     end = datetime.combine(args.end + timedelta(days=1), datetime.min.time(), tzinfo=TZ)
     samples = collect(args.repo, start, end)
-    report(samples)
+    report(samples, tuple(dict.fromkeys(scales)))
     if args.samples_out is not None:
         args.samples_out.write_text(json.dumps(samples, indent=1))
     return 0

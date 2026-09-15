@@ -91,7 +91,19 @@ _DAY_AHEAD_TTL_MINUTES = TARGET_DAY_AHEAD_RESTING_ORDER_TTL_MINUTES
 
 
 def _case_ttl_minutes(case: ResearchCase) -> int:
-    """TTL the target sleeve would have journaled for this case's orders."""
+    """TTL the target sleeve would have journaled for this case's orders.
+
+    Applied retroactively: every historical day-ahead case replays with the
+    30-minute rest whatever its decision date, so replay figures for history
+    before 2026-09-13 shift without any data change (like the fallback removal
+    noted in ``execution.target_research_quote``). ``research_operate`` folds
+    persisted before this release carry a stamp without ``order_ttl_version``;
+    a recomputed fold then reports as stale evidence
+    (``EvaluationRun.stale_evidence_fold_ids``), but nothing blocks an
+    evaluation that spans the change, and prior family attempts bootstrap the
+    stored payloads as persisted. No unit runs ``research_operate`` today; add
+    a regime check before one does.
+    """
 
     return resting_order_ttl_minutes(
         account_id=TARGET_POLICY.account_id,

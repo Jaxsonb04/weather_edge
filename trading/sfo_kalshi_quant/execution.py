@@ -379,7 +379,9 @@ def target_research_quote(
     through this function, disabling the fallback also reclassifies the
     research orders it once placed (resting at or below the bid) as
     ``no_trade`` on replay; historical replay figures shift without any
-    data change.
+    data change. The 30-minute target day-ahead rest
+    (``research_entry_risk.resting_order_ttl_minutes``) reaches replayed
+    history the same way, through ``research_replay._case_ttl_minutes``.
     """
 
     if not decision.approved or decision.recommended_contracts <= 0:

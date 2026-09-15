@@ -52,6 +52,21 @@ TARGET_ENTRY_FRACTIONAL_KELLY = 0.25
 # same picture, different sampling.) The best research days (9/3 +$10.59,
 # 9/4 +$15.13, 9/10 +$16.93; verified from the same ledger) peaked at
 # $217-$417 open+pending, all forbidden at the 100% charge.
+# COMPOSED WITH THE 30-MINUTE REST (release review 2026-09-13): that replay
+# sampled snapshots taken under the 15-minute research rest. Resting
+# reservations are charged into the same projected room (the research capacity
+# read charges every PAPER_LIMIT_RESTING reserved_cost), and 72.5% of research
+# orders expired unfilled, so the 30-minute day-ahead rest roughly doubles the
+# pending term. Re-scoring the same 154 samples with only that term scaled
+# (replay_research_daily_room.py --pending-scale), at this 0.60 charge: zero
+# room in 20.1% of samples at x1.0, 23.4% at x1.5, 27.9% at x2.0; mean room
+# $57.63, $55.61, $54.86. An approximation -- some extra rest converts to
+# fills, moving cost from pending to open rather than removing it. The two
+# levers together cost frequency, not safety: the $150 realized pause stays
+# the hard bound. Re-derive this fraction from the first post-deploy week. If
+# the owner wants the full frequency of both levers, charge resting
+# reservations by their measured fill share rather than by this
+# filled-position fraction.
 TARGET_OPEN_RISK_CHARGE_FRACTION = 0.60
 
 # Resting maker TTL (2026-09-13). Every book rested 15 minutes. Measured on
