@@ -1191,6 +1191,10 @@ def test_full_sync_refuses_a_stranded_host_before_quiescing_anything(
     assert "refusing to deploy: the host looks stranded" in result.stderr
     assert "SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1" in result.stderr
     assert "'Release deploy and rollback', phase 0" in result.stderr
+    # The backup preflight runs before the guard and has already swept aged
+    # snapshots, so the refusal must not claim that nothing changed.
+    assert "Nothing has been quiesced or changed" not in result.stderr
+    assert "older than SFO_DATABASE_BACKUP_KEEP_DAYS" in result.stderr
     assert any(line.endswith("bash -s capture") for line in actions)
     assert not any("weatheredge-deploy-maintenance" in line for line in actions)
     assert not any(line.endswith("bash -s quiesce") for line in actions)
@@ -1306,6 +1310,53 @@ def test_full_sync_backup_failure_restores_the_captured_runtime_on_the_unchanged
     assert not any(line.startswith("rsync|") for line in actions)
     assert "deploy stopped before any source was transferred (status=7)" in result.stderr
     assert "Pre-transfer recovery restored 3 timer(s)" in result.stderr
+
+
+# A v2 host: the retired Apple refresh timer is still enabled there.
+_RETIRED_CAPTURE = (
+    "sfo-kalshi-paper-scan.timer",
+    "weatheredge-apple-refresh.timer",
+    "sfo-kalshi-paper-monitor.timer",
+    "sfo-scheduler-health.timer",
+)
+
+
+def test_full_sync_pre_transfer_failure_restores_a_captured_retired_timer(
+    tmp_path: Path,
+) -> None:
+    """Before the first rsync the host still runs the old release, whose
+    check_scheduler_health.sh requires weatheredge-apple-refresh.timer. Leaving
+    it disabled would fail that watchdog on every tick."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _RETIRED_CAPTURE, fail_backup_status=7
+    )
+
+    assert result.returncode == 7
+    assert not any(line.startswith("rsync|") for line in actions)
+    assert [line for line in actions if line.startswith("restore|")] == [
+        "restore|" + " ".join(_RETIRED_CAPTURE)
+    ]
+    assert any(_MARKER_RELEASE in line for line in actions)
+    assert "Pre-transfer recovery restored 4 timer(s)" in result.stderr
+
+
+def test_full_sync_success_does_not_restore_a_captured_retired_timer(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(tmp_path, _RETIRED_CAPTURE)
+
+    assert result.returncode == 0, result.stderr
+    assert "deploy stopped before any source was transferred" not in result.stderr
+    restored = [
+        timer
+        for line in actions
+        if line.startswith("restore|")
+        for timer in line.removeprefix("restore|").split()
+    ]
+    assert "weatheredge-apple-refresh.timer" not in restored
+    assert set(restored) == set(_ESTABLISHED_CAPTURE)
+    assert "Restored 2 producer timer(s)" in result.stdout
 
 
 def test_full_sync_pre_transfer_recovery_retries_a_lost_connection(tmp_path: Path) -> None:

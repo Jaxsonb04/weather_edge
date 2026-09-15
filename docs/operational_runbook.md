@@ -213,6 +213,16 @@ re-checks undecided lots settled in the last seven days, at most 10 markets per
 run. When lots are about to leave that window undecided, it counts them as
 `aging_undecided` and warns on stderr.
 
+None of this alerts. The check cannot change the command's exit status, so the
+settle unit's `OnFailure=sfo-alert@` never fires for a `MISMATCH`, whether or
+not `SFO_FRESHNESS_ALERT_URL` is set: the verdicts are log-only. Read them on
+the box:
+
+```bash
+sudo journalctl -u sfo-kalshi-paper-settle.service --since yesterday --no-pager \
+  | grep -E 'EXCHANGE SETTLEMENT (MISMATCH|CHECK FAILED)|STANDING EXCHANGE SETTLEMENT MISMATCHES'
+```
+
 Backfill older history without touching restatement evidence:
 
 ```bash
@@ -289,6 +299,16 @@ loud `ERROR: Google Weather client-error circuit breaker is OPEN` line. The unit
 still exits on the EMOS baseline's result, not Google's: the served forecast does
 not depend on Google, and failing the forecaster unit over a dead research
 credential would be worse than the outage.
+
+So an open breaker never fails either Google refresh unit and never fires
+`OnFailure=`, whether or not `SFO_FRESHNESS_ALERT_URL` is set: it is log-only.
+`sfo-forecaster-refresh.service` and `weatheredge-google-nonsfo-refresh.service`
+run the same command against one usage ledger, so read both on the box:
+
+```bash
+sudo journalctl -u sfo-forecaster-refresh.service -u weatheredge-google-nonsfo-refresh.service \
+  --since yesterday --no-pager | grep 'circuit breaker is OPEN'
+```
 
 To diagnose an open breaker:
 

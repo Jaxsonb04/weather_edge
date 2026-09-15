@@ -180,9 +180,13 @@ esac
 # purge deletes the cache about an hour into each 6-hour cycle, so the data does
 # not exist most of the time. It cannot become a scored EMOS member either,
 # because Apple's terms do not permit retaining the archive that scoring needs.
-# The unit files stay installed so re-enabling is one systemctl command, but a
-# deploy must never restore this timer -- including on a host that has it
-# enabled right now, whose captured policy would otherwise put it straight back.
+# The unit files stay installed so re-enabling is one systemctl command, but the
+# installed release must never restore this timer -- including on a host that
+# has it enabled right now, whose captured policy would otherwise put it
+# straight back. The one exception is a deploy that fails before its first
+# rsync: that host still runs the old release, whose check_scheduler_health.sh
+# requires every timer it had enabled, so the pre-transfer recovery below puts
+# retired timers back too.
 RETIRED_TIMERS=(
   "weatheredge-apple-refresh.timer"
 )
@@ -209,12 +213,20 @@ esac
 
 # Capture the established host's timer policy before quiescing it. Stream the
 # current helper because the remote source tree may be older than this deploy.
-# A failed transfer or install deliberately leaves the box quiesced; only a
-# completely successful deploy restores the exact set that was enabled before.
+# The capture yields two sets:
+#   CAPTURED_TIMERS  every timer enabled at capture, retired ones included. The
+#                    pre-transfer recovery restores exactly these: before the
+#                    first rsync the host still runs the old release, whose
+#                    scheduler watchdog can require a timer this release retires.
+#   ENABLED_TIMERS   the policy restored once the new release is installed: the
+#                    capture minus retired timers, plus the first-deploy
+#                    additions below.
+# A failed transfer or install deliberately leaves the box quiesced.
 enabled_timer_output="$(
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s capture < "$QUIESCE_HELPER"
 )"
 ENABLED_TIMERS=()
+CAPTURED_TIMERS=()
 CAPTURED_MAINTENANCE_MARKER=0
 while IFS= read -r timer; do
   [[ -n "$timer" ]] || continue
@@ -222,6 +234,7 @@ while IFS= read -r timer; do
     CAPTURED_MAINTENANCE_MARKER=1
     continue
   fi
+  CAPTURED_TIMERS+=("$timer")
   retired=0
   for retired_timer in ${RETIRED_TIMERS[@]+"${RETIRED_TIMERS[@]}"}; do
     if [[ "$timer" == "$retired_timer" ]]; then
@@ -229,16 +242,14 @@ while IFS= read -r timer; do
     fi
   done
   if (( retired == 1 )); then
-    echo "retired WeatherEdge timer captured but will not be restored: $timer" >&2
+    echo "retired WeatherEdge timer captured; the installed release will not restore it, only a pre-transfer recovery would: $timer" >&2
     continue
   fi
   ENABLED_TIMERS+=("$timer")
 done <<<"$enabled_timer_output"
+# Retired timers do not count: a host whose only enabled timer is retired runs
+# no production timer, so the stranded-host guard below treats it as empty.
 CAPTURED_TIMER_COUNT=${#ENABLED_TIMERS[@]}
-# Exactly the timers this host had enabled, before the first-deploy additions
-# below. Only these units exist on the unchanged pre-transfer tree, so they are
-# what the pre-transfer recovery restores.
-CAPTURED_TIMERS=(${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"})
 if (( SCHEDULER_WATCHDOG_WAS_ABSENT == 1 )); then
   ENABLED_TIMERS+=("sfo-scheduler-health.timer")
 fi
@@ -330,7 +341,8 @@ if (( HOST_STRANDED == 1 )); then
     echo "SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1: deploying with the captured policy (captured enabled timers=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)" >&2
   else
     echo "refusing to deploy: the host looks stranded by an earlier deploy (captured enabled timers=$CAPTURED_TIMER_COUNT, maintenance marker present=$CAPTURED_MAINTENANCE_MARKER)." >&2
-    echo "Nothing has been quiesced or changed. Inspect the host first (trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0), then rerun with" >&2
+    echo "No timer has been quiesced, and no source, unit or maintenance marker has been changed. The backup preflight has already run its sweep, though: it deletes local database snapshot and checksum pairs older than SFO_DATABASE_BACKUP_KEEP_DAYS and, when no maintenance marker is present, interrupted-backup leftovers older than six hours." >&2
+    echo "Inspect the host first (trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0), then rerun with" >&2
     echo "SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1 to restore the release canonical timer set, or" >&2
     echo "SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1 to keep exactly the captured policy." >&2
     exit 1
@@ -341,8 +353,10 @@ fi
 # marker until the first rsync the remote source tree is still the running
 # revision, so a failure in that window -- a dropped SSH session during the
 # multi-gigabyte backup round trip, a failed backup gate, an operator Ctrl-C --
-# restores the captured timer policy and releases maintenance instead of
-# leaving the host dark. Only an established, non-stranded host is recovered
+# restores every timer enabled at capture (CAPTURED_TIMERS, retired ones
+# included, because the old release's scheduler watchdog still requires them)
+# and releases maintenance instead of leaving the host dark. Only an
+# established, non-stranded host is recovered
 # this way: a stranded host was already quiesced before this deploy began (its
 # tree may hold a partial earlier transfer), and a new host has nothing to
 # restore. From the first rsync on the tree may be mixed, so the historical rule

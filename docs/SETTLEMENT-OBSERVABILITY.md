@@ -268,10 +268,17 @@ to the existing `settlement verification:` line; `standing_mismatches` counts
 every `MISMATCH` on record. The timer never re-selects a decided lot, so that
 per-lot line reaches stderr once; every later run with a mismatch on record
 also prints `STANDING EXCHANGE SETTLEMENT MISMATCHES: N` on stderr. It is an
-incident signal: open a restatement, do not edit the journal. Neither line
-reaches an alert. The settle unit's `OnFailure=` fires only on a non-zero exit,
-which the check never causes, so a mismatch is visible in the settle unit's
-journal (`journalctl -u sfo-kalshi-paper-settle`) and in the table.
+incident signal: open a restatement, do not edit the journal. Both lines are
+log-only and never alert, whether or not `SFO_FRESHNESS_ALERT_URL` is set: the
+settle unit's `OnFailure=` fires only on a non-zero exit, which the check never
+causes. A mismatch is visible only in the settle unit's journal and in the
+table. The per-lot line appears once and the standing line on every later run,
+so a daily check of this window cannot miss a mismatch on record:
+
+```bash
+sudo journalctl -u sfo-kalshi-paper-settle.service --since yesterday --no-pager \
+  | grep -E 'EXCHANGE SETTLEMENT (MISMATCH|CHECK FAILED)|STANDING EXCHANGE SETTLEMENT MISMATCHES'
+```
 
 On the timer, lots settled five to seven days ago that still hold no
 `MATCH`/`MISMATCH` are counted as `aging_undecided` and named on stderr. They

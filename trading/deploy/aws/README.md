@@ -184,8 +184,9 @@ or settlement services and never changes placement or live-trading flags.
 before quiescence. Scheduler checks skip while that root-owned marker exists;
 the deploy restores its captured timer policy, removes the marker, and runs one
 explicit scheduler-health check last. A deployment that fails before any source is
-transferred restores the captured timers and releases the marker itself; one
-that fails after the transfer starts leaves the marker intentionally present so
+transferred restores every timer it captured, retired ones included because the
+old release is still running, and releases the marker itself; one that fails
+after the transfer starts leaves the marker intentionally present so
 a partially installed tree is not auto-repaired (see Release Deploy And
 Rollback).
 
@@ -204,7 +205,9 @@ Recovery variables read by `sync_to_box.sh`:
 | `SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1` | A host deliberately paused by an operator: deploy and keep exactly the captured timers. Never together with the variable above. |
 | `WEATHEREDGE_RECOVERY_SSH_ATTEMPTS`, `WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS` | Retries for the pre-transfer recovery when SSH itself fails (defaults 4 and 30 s). |
 
-Without either override a stranded host is refused before anything changes.
+Without either override a stranded host is refused before anything is quiesced.
+The backup preflight has already run by then, so its sweep of aged and
+interrupted local snapshots (step 0.4) may have deleted files.
 A healthy host needs neither.
 
 ### Phase 0: confirm the host state (read-only)
@@ -277,8 +280,12 @@ HEAD must be the merge commit, `git status --porcelain` must be empty, and
 2.1 `sudo cp -p /etc/weatheredge.env /etc/weatheredge.env.pre-v3`
 
 2.2 Set `SFO_FRESHNESS_ALERT_URL` (OPS-3). Without it no `OnFailure` alert is
-delivered: an exchange settlement `MISMATCH`, an open Google circuit breaker, a
-failed prune and a failing unit all reach only the journal.
+delivered: a failed prune, or any other failing unit, reaches only the journal.
+The webhook does not cover the exchange settlement `MISMATCH` verdicts or the
+Google client-error circuit breaker. Neither fails its unit (the settle command
+exits 0 regardless, and the Google refresh exits on the EMOS baseline's
+result), so `OnFailure` never fires for them: they are log-only, with or
+without the webhook. Step 5.7 gives the journal checks.
 
 2.3 Confirm `PAPER_ENTRY_MODE=limit`. Leave
 `GOOGLE_WEATHER_CLIENT_ERROR_BREAKER`, `SFO_EXCHANGE_SETTLEMENT_CHECK` and
@@ -308,7 +315,7 @@ On a stranded host, prefix the command with
 
 3.3 Expect, in order: `WEATHEREDGE_DATABASE_PRESENT=1` and
 `database backup preflight passed`;
-`retired WeatherEdge timer captured but will not be restored: weatheredge-apple-refresh.timer`;
+`retired WeatherEdge timer captured; the installed release will not restore it, only a pre-transfer recovery would: weatheredge-apple-refresh.timer`;
 a `WEATHEREDGE_BACKUP_SNAPSHOT=` line; installer output including
 `notice: appended SFO_PRUNE_MODE=archive-only` and possibly a removed
 superseded journald drop-in; `units rendered and installed; all WeatherEdge timers remain disabled`;
@@ -319,10 +326,12 @@ the 13 timers are listed before the host is quiesced.
 3.4 If it fails:
 
 - **Before the first rsync** (preflight, capture, quiesce, backup): on an
-  established host the deploy restores the captured timers and releases the
-  marker itself, retrying lost SSH connections. Look for
-  `deploy stopped before any source was transferred` followed by
-  `Pre-transfer recovery restored N timer(s)`. If it prints
+  established host the deploy restores every timer it captured and releases
+  the marker itself, retrying lost SSH connections. That includes the retired
+  `weatheredge-apple-refresh.timer`, because v2's scheduler watchdog still
+  requires it. Look for `deploy stopped before any source was transferred`
+  followed by `Pre-transfer recovery restored N timer(s)` (14 on a healthy v2
+  host). If it prints
   `pre-transfer recovery failed`, return to step 0.2. A host that was already
   stranded is left quiesced.
 - **After the first rsync** (transfer, install, unit verification, account
@@ -372,8 +381,9 @@ expire 30 minutes after creation; live orders keep 15.
 4.8 The public manifest is under 20 minutes old, and the gh-pages commit
 message carries `(source <merge commit>)`.
 
-4.9 `df` is below 85%, and `systemctl --failed` is empty (except the non-SFO
-Google refresh if its key is still dead: look for `circuit breaker is OPEN`).
+4.9 `df` is below 85%, and `systemctl --failed` is empty. A dead Google key
+does not fail a unit by itself: the Google refresh units exit on the EMOS
+baseline's result, so an open breaker shows only in the journal (step 5.7).
 
 ### Phase 5: post-deploy data work, in order
 
@@ -440,15 +450,30 @@ SPA, including the twenty-city social card.
 - `canonical research entry rejected` decision rows, concurrent resting research
   quotes, and research zero-room time (the replay expects roughly 20-28% of
   samples with no room);
-- the Google breaker;
+- the Google breaker, which is log-only (below);
 - about ten days in, the first gh-pages re-root (`gh-pages history reached 1500
   publications; re-rooting the branch` in the `sfo-operational-publish`
   journal), after which the public manifest and SPA must still load
   (`SFO_PAGES_HISTORY_MAX_COMMITS=0` disables it).
 
-Until `SFO_FRESHNESS_ALERT_URL` is set, check daily by hand: the settle journal
-for `MISMATCH`, the non-SFO Google journal for `circuit breaker is OPEN`, and
-the public manifest's age.
+Two safety signals never alert, whether or not `SFO_FRESHNESS_ALERT_URL` is
+set: the exchange settlement `MISMATCH` verdicts and the Google client-error
+circuit breaker. `_exchange_settlement_guard` cannot change the settle
+command's exit status, and `google_multicity_refresh.py` returns the EMOS
+baseline's status even while it prints that the breaker is OPEN, so
+`OnFailure=sfo-alert@` never fires for either. They are log-only. Check both by
+hand every day, on the box; no output means neither fired:
+
+```bash
+sudo journalctl -u sfo-kalshi-paper-settle.service --since yesterday --no-pager \
+  | grep -E 'EXCHANGE SETTLEMENT (MISMATCH|CHECK FAILED)|STANDING EXCHANGE SETTLEMENT MISMATCHES'
+sudo journalctl -u sfo-forecaster-refresh.service -u weatheredge-google-nonsfo-refresh.service \
+  --since yesterday --no-pager | grep 'circuit breaker is OPEN'
+```
+
+Until `SFO_FRESHNESS_ALERT_URL` is set, also check the public manifest's age
+daily: a stale publication fails the freshness unit, and that failure alerts
+only through the webhook.
 
 ### Phase 6: rollback
 
@@ -642,7 +667,9 @@ cd /opt/weatheredge/trading
 `paper-resettle --verify` also reconciles each settled lot against the
 exchange's own finalized result. An `EXCHANGE SETTLEMENT MISMATCH` or
 `STANDING EXCHANGE SETTLEMENT MISMATCHES` line on stderr is an incident (see
-`docs/SETTLEMENT-OBSERVABILITY.md`, section 3).
+`docs/SETTLEMENT-OBSERVABILITY.md`, section 3). Neither line fails the settle
+unit, so neither alerts, even with `SFO_FRESHNESS_ALERT_URL` set; the daily
+journal check is in Release Deploy And Rollback, step 5.7.
 
 To backfill exchange verdicts for older lots, add `--exchange-check-only` and
 widen `--days`. That leaves alone the CLI verification rows that restatement
