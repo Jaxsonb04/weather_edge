@@ -226,8 +226,14 @@ After deploying a registry change, run the backfill detached from the
 forecaster directory with its venv (`__FORECASTER_DIR__` in the unit files;
 `SLUGS` is the comma list of new slugs, e.g. `lv,min,satx,nola,dc` for the
 2026-09-13 expansion). It only touches the new stations' rows, so it can run
-while the timers stay enabled; keep it off the top-of-hour deploy gate window
-so the two do not contend for the DB. Open-Meteo previous-runs depth was
+while the timers stay enabled, but it writes `weather.db` beside the 30-minute
+`sfo-forecaster-refresh` and the 10:01 UTC `sfo-dataset-backfill`. Start each
+step right after a :10 or :40 refresh has finished
+(`systemctl is-active sfo-forecaster-refresh.service` prints `inactive`), never
+inside the 10:01-10:46 UTC dataset window, and keep it off the top-of-hour
+deploy gate window. `emos_forecast.py` waits up to 30 s on a locked database
+instead of sqlite3's 5 s default, so a short overlap stalls rather than failing
+a refresh or a backfill step. Open-Meteo previous-runs depth was
 verified at 420 days for all eight models at KLAS/KMSP/KDCA/KSAT/KMSY on
 2026-09-13.
 

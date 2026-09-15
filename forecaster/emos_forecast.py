@@ -612,7 +612,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("nothing to do; pass --backfill, --serve, or --serve-rolling")
 
     cities = parse_city_slugs(args.cities)
-    with sqlite3.connect(args.db) as conn:
+    # Onboarding backfills run beside the 30-minute refresh and the nightly
+    # dataset chain: wait out a concurrent writer instead of failing after
+    # sqlite3's 5 s default.
+    with sqlite3.connect(args.db, timeout=30) as conn:
         if args.backfill:
             for city in cities:
                 written = build_emos_archive(conn, city=city, lead_days=args.lead)
