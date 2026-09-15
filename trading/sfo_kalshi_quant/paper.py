@@ -696,6 +696,19 @@ class PaperTrader:
         expiry pass. The reservation therefore stays charged until that pass,
         roughly the grace plus one monitor tick, not for the rest of the TTL.
 
+        The market stays locked for the same span. The pulled row is still
+        ``PAPER_LIMIT_RESTING`` until that pass, and the research duplicate
+        guard (one active entry per market and side, store/schema.py) matches
+        on status, so the scan cannot re-quote the market on the pull tick or,
+        typically, the next one: the grace equals the 5-minute scan cadence,
+        and the monitor expires the quote in the same pass that first carries
+        its tape watermark past the pull instant plus the grace. That lock is
+        the price of crediting fills, not an accident: until the tape covers
+        the pull instant the quote may already have filled, and a replacement
+        would be duplicate exposure. It costs about one scan tick per pull. A
+        quote that is merely outbid, with a non-negative LCB edge, is not
+        pulled and holds its market for its whole 30-minute rest.
+
         This is a partial mitigation, not an adverse-selection model. It runs
         once per scan tick (5-minute cadence), so a quote can sit up to a tick
         under a moved forecast; it sees only markets present in that tick's

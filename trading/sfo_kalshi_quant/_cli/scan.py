@@ -702,7 +702,9 @@ def _execute_research_scan_context(
     # The pull cuts the quote's expiry rather than cancelling it (see
     # PaperStore.request_resting_order_cancel), so its reservation is released
     # by the monitor's reconciled expiry pass, not in time for this capacity
-    # read.
+    # read, and the duplicate-entry guard keeps that market unquotable until
+    # then -- typically this tick and the next (see
+    # PaperTrader.cancel_stale_research_resting_orders).
     if admit_target_orders:
         trader.cancel_stale_research_resting_orders(target.isoformat(), decisions)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)

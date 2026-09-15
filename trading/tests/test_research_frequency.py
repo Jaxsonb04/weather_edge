@@ -631,6 +631,84 @@ def test_research_scan_pulls_stale_quotes_only_when_target_placement_was_request
     assert trader.cancel_stale_research_resting_orders.called is expect_pull
 
 
+def _paper_rows(store: PaperStore) -> tuple[list[tuple], list[tuple]]:
+    with sqlite3.connect(store.db_path) as conn:
+        return (
+            conn.execute("SELECT * FROM paper_orders ORDER BY id").fetchall(),
+            conn.execute("SELECT * FROM paper_account_ledger ORDER BY id").fetchall(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("place_paper", "place_research_target", "expect_pull"),
+    [
+        # `portfolio-scan --risk-profile research` without --place-paper.
+        (False, None, False),
+        # The runner's shadow mode (PAPER_PLACE_RESEARCH_TARGET=0).
+        (False, False, False),
+        (True, False, False),
+        # The runner placing the target sleeve.
+        (True, None, True),
+    ],
+)
+def test_non_placing_research_scan_writes_no_paper_rows_for_a_stale_quote(
+    tmp_path: Path,
+    place_paper: bool,
+    place_research_target: bool | None,
+    expect_pull: bool,
+) -> None:
+    """Release decision 1: shadow, dry-run and diagnostic scans write no rows.
+
+    Unlike the mock-trader test above, this drives the real scan step, trader
+    and store against a genuinely stale resting quote; only plan admission is
+    stubbed, because the context carries no forecast objects. The placing
+    control proves the same quote would be pulled.
+    """
+
+    store = PaperStore(tmp_path / "shadow.db", research_clock=_fixed_research_clock)
+    order_id, row, decision = _admit_resting_target_order(store, "SHADOW")
+    _backdate_resting_order(store, order_id, placed_minutes_ago=10)
+    stale = replace(decision, probability_lcb=float(row["cost_per_contract"]) - 0.05)
+    context = SimpleNamespace(
+        decisions=[stale],
+        city=get_city("sfo"),
+        series_ticker="KXHIGHTSFO",
+        intraday=None,
+        forecast=object(),
+        event=object(),
+        consensus=object(),
+    )
+    trader = _research_trader(store)
+    before = _paper_rows(store)
+
+    with patch.object(scan_module, "PaperTrader", return_value=trader), patch.object(
+        trader, "execute_research_plans"
+    ) as execute:
+        scan_module._execute_research_scan_context(
+            context,
+            target=date(2026, 7, 19),
+            store=store,
+            config=strategy_config_for_profile("research"),
+            entry_allowed=True,
+            entry_block_reason=None,
+            place_paper=place_paper,
+            place_research_target=place_research_target,
+            forecast_snapshot_id=None,
+            market_snapshot_id=None,
+        )
+
+    execute.assert_called_once()
+    after = _paper_rows(store)
+    if expect_pull:
+        pulled = store.paper_order(order_id)
+        request = json.loads(pulled["outcome_diagnostics_json"])["cancel_request"]
+        assert request["reason"].startswith("stale research quote")
+        assert pulled["status"] == "PAPER_LIMIT_RESTING"
+        assert after[0] != before[0]
+    else:
+        assert after == before
+
+
 def test_research_scan_cancels_stale_quotes_before_planning_and_admission() -> None:
     context = SimpleNamespace(
         decisions=[_candidate()],
