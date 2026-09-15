@@ -218,6 +218,7 @@ def test_env_migration_installs_audited_paper_defaults_without_overriding_custom
     custom = (
         "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=operator-managed\n"
         "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.08\n"
+        "SFO_PRUNE_MODE=bounded-delete\n"
     )
     env_path.write_text(custom, encoding="utf-8")
     subprocess.run(
@@ -271,6 +272,96 @@ def test_env_migration_preserves_ambiguous_legacy_assignments(
     assert migrated.startswith(original)
     assert "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=true" in migrated
     assert "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.05" in migrated
+
+
+def _env_assignments(text: str) -> list[tuple[str, str]]:
+    return [
+        (key.strip(), value)
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#") and "=" in line
+        for key, value in [line.split("=", 1)]
+    ]
+
+
+def test_env_migration_keeps_nightly_prune_archive_only_when_the_key_is_absent(
+    tmp_path: Path,
+) -> None:
+    """Release decision 2: the prune default is bounded-delete, but production
+    has no SFO_PRUNE_MODE, so the deploy must not start an unsupervised
+    catch-up delete on its first 08:20 UTC run."""
+
+    env_path = tmp_path / "weatheredge.env"
+    original = "SFO_ARCHIVE_S3_BUCKET=weatheredge-test\n"
+    env_path.write_text(original, encoding="utf-8")
+    migrate = [sys.executable, str(AWS_DIR / "migrate_weatheredge_env.py"), str(env_path)]
+
+    result = subprocess.run(migrate, check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "appended SFO_PRUNE_MODE=archive-only" in result.stderr
+    migrated = env_path.read_text(encoding="utf-8")
+    assert migrated.startswith(original)
+    prune = [value for key, value in _env_assignments(migrated) if key == "SFO_PRUNE_MODE"]
+    assert prune == ["archive-only"]
+    comment = [line for line in migrated.splitlines() if line.startswith("#")]
+    assert any("quiesced-delete catch-up" in line for line in comment)
+    assert any("Release deploy and rollback, step 5.5" in line for line in comment)
+    # No quote characters: every parser of the env file must accept the comment.
+    assert not any(ch in line for line in comment for ch in "'\"`")
+
+    # Idempotent on the next deploy.
+    subprocess.run(migrate, check=True, capture_output=True, text=True)
+    assert env_path.read_text(encoding="utf-8") == migrated
+
+    # The operator ran the supervised catch-up and deleted only the key line:
+    # the comment it leaves behind stops a later deploy from re-adding it.
+    finished = "".join(
+        line + "\n" for line in migrated.splitlines() if not line.startswith("SFO_PRUNE_MODE=")
+    )
+    env_path.write_text(finished, encoding="utf-8")
+    subprocess.run(migrate, check=True, capture_output=True, text=True)
+    assert env_path.read_text(encoding="utf-8") == finished
+
+
+@pytest.mark.parametrize(
+    "prune_line",
+    (
+        "SFO_PRUNE_MODE=bounded-delete",
+        "SFO_PRUNE_MODE=archive-only",
+        "SFO_PRUNE_MODE=quiesced-delete",
+        "SFO_PRUNE_MODE=",
+        "SFO_PRUNE_MODE=operator-typo",
+    ),
+)
+def test_env_migration_leaves_an_existing_prune_mode_untouched(
+    tmp_path: Path, prune_line: str
+) -> None:
+    env_path = tmp_path / "weatheredge.env"
+    original = (
+        "PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED=true\n"
+        "PAPER_RESEARCH_TAKE_PROFIT_MARGIN=0.05\n"
+        f"{prune_line}\n"
+    )
+    env_path.write_text(original, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(AWS_DIR / "migrate_weatheredge_env.py"), str(env_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SFO_PRUNE_MODE" not in result.stderr
+    assert env_path.read_text(encoding="utf-8") == original
+
+
+def test_prune_wrapper_code_default_stays_bounded_delete() -> None:
+    """Release decision 2 keeps the code default; only hosts without the key
+    are held at archive-only, by the env migration above."""
+
+    wrapper = _read(AWS_DIR / "run_archive_then_prune.sh")
+    assert 'PRUNE_MODE="${SFO_PRUNE_MODE:-bounded-delete}"' in wrapper
 
 
 def test_installers_run_the_guarded_runtime_env_migration() -> None:

@@ -330,10 +330,16 @@ default.
 | `quiesced-delete` | The same delete plus an operator assertion that every paper-journal writer is stopped. | Supervised catch-up after a long archive-only stretch. |
 | `archive-only` | Archive, upload, gate, FK audit; delete nothing. | Escape hatch only. |
 
-To enable nightly deletion on a host that predates this default, do nothing
-beyond deploying: the key is absent from `/etc/weatheredge.env` and the wrapper's
-default now deletes. To turn it back off, add `SFO_PRUNE_MODE=archive-only` to
-that file. Expect roughly an 88% collapse of `decision_snapshots` under the
+A host that predates this default does not start deleting on its own. Both
+installers run `migrate_weatheredge_env.py`, which appends
+`SFO_PRUNE_MODE=archive-only` under a comment pointing here when the key is
+absent, and leaves any existing value alone. Production has no key, so after the
+release deploy the nightly prune stays archive-only until an operator runs the
+supervised `quiesced-delete` catch-up and compaction
+(`trading/deploy/aws/README.md`, "Release deploy and rollback", step 5.5) and then
+deletes the `SFO_PRUNE_MODE` line, keeping the comment so a later deploy does not
+add it back. To turn deletion off again, set `SFO_PRUNE_MODE=archive-only`.
+Expect roughly an 88% collapse of `decision_snapshots` under the
 configured 45-day dedup, taking journal growth from ~0.67 GB/day to ~0.15 GB/day.
 Deletion frees SQLite pages but does not shrink the file; run the separately
 quiesced `compact_paper_db.sh` once when the filesystem needs the space back.
