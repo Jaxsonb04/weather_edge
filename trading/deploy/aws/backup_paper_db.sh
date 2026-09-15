@@ -106,7 +106,15 @@ fi
 # backup still owns is that old. A hashed snapshot is deliberately left alone:
 # locally it cannot be told apart from a verified one that S3 also holds.
 STALE_BACKUP_ARTIFACT_MINUTES=360
-if [[ -d "$BACKUP_DIR" ]]; then
+# Never while a deployment holds maintenance (release decision 4): that deploy's
+# own backup may own these files. sync_to_box.sh runs this preflight BEFORE it
+# installs the marker, so a normal deploy still reclaims them there. A marker
+# left behind by a deploy that died is stale; remove it only after confirming no
+# deploy is running (trading/deploy/aws/README.md, "Release deploy and rollback").
+DEPLOY_MAINTENANCE_MARKER="${WEATHEREDGE_DEPLOY_MAINTENANCE_MARKER:-/run/weatheredge-deploy-maintenance}"
+if [[ -d "$BACKUP_DIR" && -e "$DEPLOY_MAINTENANCE_MARKER" ]]; then
+  echo "deployment maintenance marker present; interrupted-backup reclaim skipped" >&2
+elif [[ -d "$BACKUP_DIR" ]]; then
   while IFS= read -r stale_dir; do
     [[ -n "$stale_dir" ]] || continue
     echo "reclaiming interrupted backup restore directory: $(basename "$stale_dir")" >&2
@@ -155,6 +163,9 @@ if (( available_bytes < required_bytes )); then
 fi
 
 if [[ "$MODE" == "preflight" ]]; then
+  # Machine-readable: sync_to_box.sh applies its stranded-host guard only to a
+  # host whose authoritative database exists.
+  echo "WEATHEREDGE_DATABASE_PRESENT=1"
   echo "database backup preflight passed"
   exit 0
 fi
