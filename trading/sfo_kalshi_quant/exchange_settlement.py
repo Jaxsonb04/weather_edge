@@ -57,15 +57,19 @@ EXCHANGE_CHECK_MIN_INTERVAL_SECONDS = 0.4
 # and every process on the box shares one public-API allowance.  Ten spaced
 # markets is ~4 s of fetching, and 48 runs a day still reach ~480 markets, more
 # than five times the ~90 (15 city events of 6 brackets) that can settle in a
-# day.  Older history is backfilled once with ``paper-resettle --verify
-# --exchange-check-only``, off the trading minutes.
+# day.  Older history is backfilled by an operator with ``paper-resettle
+# --verify --exchange-check-only`` (see RESETTLE_EXCHANGE_CHECK_MAX_FETCHES).
 AUTO_SETTLE_EXCHANGE_CHECK_MAX_FETCHES = 10
 AUTO_SETTLE_EXCHANGE_CHECK_LOOKBACK_DAYS = 7
 # A lot still undecided this many days after settling leaves the timer's
 # re-check window within two days; the timer names it on stderr.
 AUTO_SETTLE_EXCHANGE_CHECK_AGING_DAYS = 5
 # The operator backfill walks a whole --days window once; finalized results are
-# cached, so a second run over the same window fetches nothing.
+# cached, so a second run over the same window fetches nothing.  No backfill can
+# avoid the trading minutes: a scan fires every five minutes, and an older
+# market costs two spaced requests (live 404, then historical), so this full
+# budget is up to ~320 s of fetching.  ``--exchange-max-fetches 100`` keeps one
+# slice near 80 s; never-attempted lots go first, so slices resume in order.
 RESETTLE_EXCHANGE_CHECK_MAX_FETCHES = 400
 
 LIVE_MARKET_ENDPOINT = "markets"

@@ -1108,3 +1108,42 @@ def test_the_timer_warns_before_undecided_lots_leave_its_recheck_window():
             "1 settled lot(s) still have no MATCH/MISMATCH verdict 5+ days after settling"
         ) in err
         assert "paper-resettle --verify --exchange-check-only" in err
+
+
+def test_a_sliced_backfill_resumes_where_the_last_slice_stopped():
+    """``--exchange-max-fetches`` slices never re-fetch a finalized market.
+
+    The operator backfill selects every lot in its window, not only undecided
+    ones.  Finalized results come from the cache, and lots a slice's budget
+    skipped keep no attempt time, so the next slice reaches them first.
+    """
+
+    target = "2026-09-10"
+    lots = [
+        ("KXHIGHTSFO-26SEP10-B68.5", "between", 68.0, 69.0, "no"),
+        ("KXHIGHTSFO-26SEP10-B70.5", "between", 70.0, 71.0, "yes"),
+        ("KXHIGHTSFO-26SEP10-B72.5", "between", 72.0, 73.0, "no"),
+    ]
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store, ids = _book(
+            db_path, target, 71.0, [(ticker, kind, lo, hi) for ticker, kind, lo, hi, _ in lots]
+        )
+        fake = _FakeExchange(
+            {
+                f"markets/{ticker}": _market(ticker, result=result, value="71.00")
+                for ticker, _, _, _, result in lots
+            }
+        )
+        window = {SFO: (target, target)}
+
+        slices = [_run_check(store, fake, intervals=window, max_fetches=1) for _ in range(4)]
+
+        assert sorted(fake.calls) == sorted(f"markets/{ticker}" for ticker, *_ in lots)
+        assert [summary["fetched"] for summary in slices] == [1, 1, 1, 0]
+        assert [summary["cached"] for summary in slices] == [0, 1, 2, 3]
+        assert [summary["unchecked"] for summary in slices] == [2, 1, 0, 0]
+        rows = _check_rows(db_path)
+        assert {rows[ids[ticker]]["verification_status"] for ticker, *_ in lots} == {
+            EXCHANGE_CHECK_MATCH
+        }

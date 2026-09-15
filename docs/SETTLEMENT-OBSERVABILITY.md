@@ -329,6 +329,15 @@ python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --exchange-che
 It walks the whole window with a budget of 400 markets
 (`--exchange-max-fetches`) and writes only the two exchange tables.
 
+A trading scan fires every five minutes, so a backfill always overlaps one
+and shares its public-API allowance. A market old enough to have left the
+live endpoint costs two spaced requests, so the full budget is up to about
+five minutes of fetching. Keep each burst short by running it in slices, for
+example with `--exchange-max-fetches 100` (about 80 seconds). Finalized
+results are cached and never-attempted lots go first, so each slice resumes
+where the last one stopped; repeat until the `unchecked` count stops falling.
+Markets missing from both endpoints stay `UNCHECKED` and are retried each run.
+
 Do not use plain `paper-resettle --verify` for this. It first re-runs the
 booked-vs-CLI sweep, which upserts `paper_settlement_verifications`, and
 `restatement.py` classifies settled lots from that table. Over a wide window

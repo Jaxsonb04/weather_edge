@@ -219,6 +219,10 @@ Backfill older history without touching restatement evidence:
 python -m sfo_kalshi_quant.cli --no-color paper-resettle --verify --exchange-check-only --days N
 ```
 
+A trading scan fires every five minutes, so the backfill always overlaps one.
+Add `--exchange-max-fetches 100` to keep each run near 80 seconds, and repeat
+it until the `unchecked` count stops falling.
+
 Plain `paper-resettle --verify --days N` also re-runs the CLI sweep, which
 rewrites the `paper_settlement_verifications` rows `restatement.py` reads.
 Widen that window only as a deliberate, owner-approved step.
