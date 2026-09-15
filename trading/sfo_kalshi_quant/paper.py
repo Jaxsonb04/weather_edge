@@ -432,6 +432,95 @@ class PaperTrader:
             for decision in decisions
         ]
 
+    def with_placement_terms(
+        self,
+        target_date: str,
+        decisions: list[TradeDecision],
+        *,
+        bankroll: float,
+    ) -> list[TradeDecision]:
+        """Restate entries at the terms ``place_approved`` would book them at.
+
+        Audit TC-15 journal fidelity with the two-level live cross (release
+        review 2026-09-13). ``with_entry_mode`` quotes the allocator's request,
+        but placement then fits the size to the account policy and RE-QUOTES.
+        Before the two-level cross that fit could change only the size; now a
+        fit that shrinks a level-2 order to a count the fresh level-1 depth
+        covers re-selects level 1 at a different price, so a journal built from
+        ``with_entry_mode`` alone kept a level, price and size that were never
+        ordered. This runs placement's own chain -- contract rounding, the open
+        position and per-market-side guards, the per-target exposure cap, the
+        quote and depth clamp, the account-policy fit and the re-quote -- and
+        only reads the store.
+
+        An entry placement would skip keeps the plain ``with_entry_mode``
+        restatement, as before. Entries are simulated in order, each placeable
+        one charged against the per-target exposure cap as placement charges
+        it. The simulation cannot see account capacity that an earlier entry
+        of the same batch consumes, because placement records that entry
+        first; the position cap that binds two-level orders is per market, so
+        that residual only touches multi-leg batches near the daily limits.
+        """
+
+        restated = self.with_entry_mode(decisions)
+        exposure_remaining = self._target_exposure_remaining(target_date, bankroll)
+        result: list[TradeDecision] = []
+        for decision, fallback in zip(decisions, restated, strict=True):
+            placed = self._placement_preview(
+                target_date,
+                decision,
+                bankroll=bankroll,
+                exposure_remaining=exposure_remaining,
+            )
+            if placed is None:
+                result.append(fallback)
+                continue
+            result.append(placed)
+            if exposure_remaining is not None:
+                exposure_remaining -= placed.recommended_contracts * placed.cost_per_contract
+        return result
+
+    def _placement_preview(
+        self,
+        target_date: str,
+        decision: TradeDecision,
+        *,
+        bankroll: float,
+        exposure_remaining: float | None,
+    ) -> TradeDecision | None:
+        """The decision ``place_approved`` would record, or ``None`` if it skips it."""
+
+        if not decision.approved or decision.recommended_contracts <= 0:
+            return None
+        # Research exploration samples take a separate shadow-ledger path.
+        if _is_research_shadow_candidate(self.risk_profile, decision):
+            return None
+        adjusted = self._normalize_contracts(decision)
+        if adjusted is None:
+            return None
+        if adjusted.cost_per_contract >= 1.0 or adjusted.cost_per_contract <= 0:
+            return None
+        if self.store.has_active_paper_entry(
+            target_date,
+            adjusted.ticker,
+            risk_profile=self.risk_profile,
+        ):
+            return None
+        entries = self.store.entries_for_market_side(
+            target_date,
+            adjusted.ticker,
+            adjusted.side,
+            risk_profile=self.risk_profile,
+        )
+        if entries >= self.config.max_entries_per_market_side:
+            return None
+        if exposure_remaining is not None:
+            adjusted = self._fit_to_exposure(adjusted, exposure_remaining)
+            if adjusted is None:
+                return None
+        terms = self._placement_terms(target_date, adjusted, bankroll=bankroll)
+        return None if terms is None else terms[0]
+
     def execute_research_plans(
         self,
         target_date: str,
@@ -849,56 +938,10 @@ class PaperTrader:
                 adjusted = self._fit_to_exposure(adjusted, exposure_remaining)
                 if adjusted is None:
                     continue
-            status = "PAPER_FILLED"
-            entry_mode = "market"
-            if self.entry_mode == "limit":
-                quote = buy_limit_for_decision(adjusted, self.config)
-                if quote is None:
-                    continue
-                # A crossing limit is an instant taker fill against the
-                # visible ask, so it can never take more than the displayed
-                # depth. A RESTING quote is deliberately NOT ask-capped: its
-                # fill is gated by FUTURE traded volume via the queue-ahead
-                # fill model, not by the ask displayed at entry (sizing no
-                # longer applies this taker-era cap -- see RiskManager).
-                if quote.would_cross:
-                    # The fill is capped at exactly the depth the crossing
-                    # quote was sized against (execution._taker_cross_quote):
-                    # the listing's displayed best-ask size, a fresh ladder's
-                    # level-1 size, or level-1 + level-2 size for a two-level
-                    # cross -- never more. Without a fresh ladder a taker
-                    # quote's depth IS the listing size (>= 1 whenever it
-                    # quotes), and a non-taker crossing quote carries None, so
-                    # both keep the historical clamp exactly.
-                    adjusted = _clamp_to_displayed_ask(
-                        adjusted,
-                        displayed_depth=quote.displayed_depth,
-                    )
-                    if adjusted is None:
-                        continue
-                adjusted = with_buy_limit(adjusted, self.config)
-                if not adjusted.approved:
-                    continue
-                status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
-                entry_mode = "limit"
-            else:
-                # Market entry takes immediately at the displayed ask; cap the
-                # size at what the book actually displays.
-                adjusted = _clamp_to_displayed_ask(adjusted)
-                if adjusted is None:
-                    continue
-            if bankroll is not None:
-                adjusted = self._fit_to_account_policy(target_date, adjusted)
-                if adjusted is None:
-                    continue
-                # Fees depend on final contract count. Recompute once after
-                # sizing while preserving the single bid+tick/taker price rule.
-                if self.entry_mode == "limit":
-                    quote = buy_limit_for_decision(adjusted, self.config)
-                    if quote is None:
-                        continue
-                    adjusted = with_buy_limit(adjusted, self.config)
-                    status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
+            terms = self._placement_terms(target_date, adjusted, bankroll=bankroll)
+            if terms is None:
+                continue
+            adjusted, status, entry_mode = terms
             order_id = self.store.record_paper_order(
                 target_date,
                 adjusted,
@@ -919,6 +962,77 @@ class PaperTrader:
             if exposure_remaining is not None:
                 exposure_remaining -= adjusted.recommended_contracts * adjusted.cost_per_contract
         return order_ids
+
+    def _placement_terms(
+        self,
+        target_date: str,
+        decision: TradeDecision,
+        *,
+        bankroll: float | None,
+    ) -> tuple[TradeDecision, str, str] | None:
+        """Price, clamp and account-fit one sized entry exactly as it is booked.
+
+        Returns ``(decision, status, entry_mode)``, or ``None`` when placement
+        skips the entry. ``place_approved`` and the read-only journal
+        restatement (``with_placement_terms``) share it so they cannot drift;
+        it writes nothing -- ``account_policy_capacity`` only reads.
+        """
+
+        status = "PAPER_FILLED"
+        entry_mode = "market"
+        adjusted: TradeDecision | None = decision
+        if self.entry_mode == "limit":
+            quote = buy_limit_for_decision(adjusted, self.config)
+            if quote is None:
+                return None
+            # A crossing limit is an instant taker fill against the
+            # visible ask, so it can never take more than the displayed
+            # depth. A RESTING quote is deliberately NOT ask-capped: its
+            # fill is gated by FUTURE traded volume via the queue-ahead
+            # fill model, not by the ask displayed at entry (sizing no
+            # longer applies this taker-era cap -- see RiskManager).
+            if quote.would_cross:
+                # The fill is capped at exactly the depth the crossing
+                # quote was sized against (execution._taker_cross_quote):
+                # the listing's displayed best-ask size, a fresh ladder's
+                # level-1 size, or level-1 + level-2 size for a two-level
+                # cross -- never more. Without a fresh ladder a taker
+                # quote's depth IS the listing size (>= 1 whenever it
+                # quotes), and a non-taker crossing quote carries None, so
+                # both keep the historical clamp exactly.
+                adjusted = _clamp_to_displayed_ask(
+                    adjusted,
+                    displayed_depth=quote.displayed_depth,
+                )
+                if adjusted is None:
+                    return None
+            adjusted = with_buy_limit(adjusted, self.config)
+            if not adjusted.approved:
+                return None
+            status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
+            entry_mode = "limit"
+        else:
+            # Market entry takes immediately at the displayed ask; cap the
+            # size at what the book actually displays.
+            adjusted = _clamp_to_displayed_ask(adjusted)
+            if adjusted is None:
+                return None
+        if bankroll is not None:
+            adjusted = self._fit_to_account_policy(target_date, adjusted)
+            if adjusted is None:
+                return None
+            # Fees depend on final contract count. Recompute once after
+            # sizing while preserving the single bid+tick/taker price rule.
+            # With the two-level live cross this re-quote can move the level
+            # and price too: a fit that shrinks a level-2 order to a count the
+            # fresh level-1 depth covers re-selects level 1 at the cheaper ask.
+            if self.entry_mode == "limit":
+                quote = buy_limit_for_decision(adjusted, self.config)
+                if quote is None:
+                    return None
+                adjusted = with_buy_limit(adjusted, self.config)
+                status = "PAPER_FILLED" if quote.would_cross else "PAPER_LIMIT_RESTING"
+        return adjusted, status, entry_mode
 
     def _fit_to_account_policy(
         self, target_date: str, decision: TradeDecision

@@ -1233,7 +1233,11 @@ def _portfolio_scan_one_target(
         )
     prefetch_seconds = time.monotonic() - prefetch_started
     decisions_to_record = _restate_recorded_execution(
-        _portfolio_decisions_for_recording(decisions, plan), plan, paper_trader
+        _portfolio_decisions_for_recording(decisions, plan),
+        plan,
+        paper_trader,
+        target_date=target.isoformat(),
+        bankroll=paper_bankroll,
     )
     if not entry_allowed and entry_block_reason:
         if risk_profile == "research":
@@ -1827,7 +1831,14 @@ def _portfolio_decision_key(decision) -> tuple[str, str]:
     return (str(decision.ticker), str(decision.side).upper())
 
 
-def _restate_recorded_execution(decisions, plan: PortfolioPlan, paper_trader):
+def _restate_recorded_execution(
+    decisions,
+    plan: PortfolioPlan,
+    paper_trader,
+    *,
+    target_date: str | None = None,
+    bankroll: float | None = None,
+):
     """Record the order execution will place, not the allocator's request.
 
     Audit TC-15: the portfolio scan recorded the ALLOCATOR'S REQUEST and never
@@ -1850,6 +1861,16 @@ def _restate_recorded_execution(decisions, plan: PortfolioPlan, paper_trader):
     introduced by a journal-fidelity fix. Latent today (the live book has
     recorded no arbitrage group) but `build_arbitrage_opportunities` runs on
     every live portfolio scan.
+
+    Given ``target_date`` and ``bankroll`` -- the scan passes both -- the
+    directional legs are restated through ``PaperTrader.with_placement_terms``
+    in plan-leg order, which is placement's order. With the two-level live
+    cross the account-policy fit is no longer size-only: shrinking a level-2
+    order to a count the fresh level-1 depth covers re-quotes it at level 1
+    and the cheaper ask, so a journal built from ``with_entry_mode`` alone
+    recorded a level, price and size that were never ordered (release review
+    2026-09-13). Without them the historical ``with_entry_mode`` restatement
+    is used.
     """
 
     arbitrage_keys = {
@@ -1857,15 +1878,40 @@ def _restate_recorded_execution(decisions, plan: PortfolioPlan, paper_trader):
         for leg in plan.legs
         if leg.sleeve == "arbitrage"
     }
+    recorded = list(decisions)
+    restated = paper_trader.with_entry_mode(recorded)
+    if target_date is not None and bankroll is not None:
+        recorded_by_key = {
+            _portfolio_decision_key(decision): decision for decision in recorded
+        }
+        directional = [
+            recorded_by_key[key]
+            for key in (
+                _portfolio_decision_key(leg.decision)
+                for leg in plan.legs
+                if leg.sleeve != "arbitrage"
+            )
+            if key in recorded_by_key
+        ]
+        placed_by_key = {
+            _portfolio_decision_key(original): placed
+            for original, placed in zip(
+                directional,
+                paper_trader.with_placement_terms(
+                    target_date, directional, bankroll=bankroll
+                ),
+                strict=True,
+            )
+        }
+        restated = [
+            placed_by_key.get(_portfolio_decision_key(decision), fallback)
+            for decision, fallback in zip(recorded, restated, strict=True)
+        ]
     return [
         decision
         if _portfolio_decision_key(decision) in arbitrage_keys
-        else restated
-        for decision, restated in zip(
-            decisions,
-            paper_trader.with_entry_mode(list(decisions)),
-            strict=True,
-        )
+        else restated_decision
+        for decision, restated_decision in zip(recorded, restated, strict=True)
     ]
 
 

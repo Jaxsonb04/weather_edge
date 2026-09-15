@@ -527,6 +527,62 @@ def test_normal_position_cap_still_binds_a_two_level_order():
     assert json.loads(row["quote_snapshot_json"])["taker_levels_used"] == 2
 
 
+def test_journal_records_the_level_the_account_fit_places_not_the_pre_fit_level():
+    """Release review 2026-09-13 (cross-track MEDIUM): TC-15 x two-level cross x account fit.
+
+    A 60-contract request walks a fresh ladder to level 2 (0.83). The live
+    position cap shrinks it to 35 contracts, which the 40-deep level 1 covers,
+    so placement re-quotes at level 1 (0.82). A journal restated through
+    ``with_entry_mode`` alone kept level 2, 60 contracts and 0.83.
+    """
+
+    decision = _decision(
+        recommended_contracts=60.0, ask_levels=((0.82, 40.0), (0.83, 100.0))
+    )
+    with TemporaryDirectory() as tmp:
+        trader, store = _live_trader(tmp)
+        plan = _plan([_leg(decision)])
+        (pre_fit,) = scan_module._restate_recorded_execution([decision], plan, trader)
+        (journal,) = scan_module._restate_recorded_execution(
+            [decision], plan, trader, target_date=TARGET_DATE, bankroll=1000.0
+        )
+        order_ids = trader.place_approved(TARGET_DATE, [decision], bankroll=1000.0)
+        assert len(order_ids) == 1
+        row = _order_row(store, order_ids[0])
+
+    # Premise: without the account fit the restatement walks to level 2.
+    assert (pre_fit.taker_levels_used, pre_fit.limit_price, pre_fit.recommended_contracts) == (
+        2,
+        0.83,
+        60.0,
+    )
+    quote = json.loads(row["quote_snapshot_json"])
+    assert (quote["taker_levels_used"], row["limit_price"], row["contracts"]) == (1, 0.82, 35.0)
+    assert journal.approved is True
+    assert journal.taker_levels_used == quote["taker_levels_used"]
+    assert journal.limit_price == row["limit_price"]
+    assert journal.recommended_contracts == row["contracts"]
+    assert math.isclose(journal.limit_cost_per_contract, row["cost_per_contract"], abs_tol=1e-9)
+
+
+def test_journal_restatement_keeps_the_entry_mode_quote_for_an_entry_placement_skips():
+    decision = _decision(
+        recommended_contracts=60.0, ask_levels=((0.82, 40.0), (0.83, 100.0))
+    )
+    with TemporaryDirectory() as tmp:
+        trader, _store = _live_trader(tmp)
+        plan = _plan([_leg(decision)])
+        assert trader.place_approved(TARGET_DATE, [decision], bankroll=1000.0)
+        (journal,) = scan_module._restate_recorded_execution(
+            [decision], plan, trader, target_date=TARGET_DATE, bankroll=1000.0
+        )
+        (plain,) = trader.with_entry_mode([decision])
+
+    # The market already holds a position, so placement would skip it; the
+    # journal keeps the historical entry-mode quote instead of inventing terms.
+    assert journal == plain
+
+
 def test_paper_fill_without_a_ladder_is_the_historical_single_level_fill():
     with TemporaryDirectory() as tmp:
         trader, store = _live_trader(tmp)
@@ -848,6 +904,11 @@ def test_portfolio_scan_records_and_places_the_ladder_it_fetched():
     assert journal.taker_levels_used == 2
     assert journal.limit_price == 0.83
     assert journal.recommended_contracts == 30.0
+    # The scan hands the restatement placement's own inputs, so the account
+    # fit the journal applies is the one placement applies.
+    restatement = by_name["_restate_recorded_execution"]
+    assert restatement["target_date"] == TARGET_DATE
+    assert restatement["bankroll"] > 0
     assert len(rows) == 1
     assert (rows[0]["contracts"], rows[0]["entry_price"]) == (30.0, 0.83)
     walked = [[0.82, 4.0], [0.83, 31.0]]
