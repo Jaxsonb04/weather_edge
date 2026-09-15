@@ -315,7 +315,7 @@ implementation details.
   no authenticated live-order client.
 - The two active paper accounts are economically separate.
 - Official final NWS CLI truth settles positions; raw observations do not.
-- SFO is the flagship evidence base; the other 14 cities have a shorter
+- SFO is the flagship evidence base; the other 19 cities have a shorter
   operational history and should not inherit SFO claims automatically.
 - Apple currently has zero model/trading weight and a strict non-durable
   boundary. The owner has directed that the later batch give Apple a genuine
@@ -420,7 +420,7 @@ appear healthy with insufficient model coverage.
 
 ### G05 — SFO-specific blend, residual calibration, and challengers
 
-**Purpose:** preserve the deeper SFO research stack while giving the other 14
+**Purpose:** preserve the deeper SFO research stack while giving the other 19
 cities a station-agnostic EMOS path.
 
 **Flow:** the legacy SFO path can blend Google, NWS, Open-Meteo, and history,

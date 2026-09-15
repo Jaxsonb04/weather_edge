@@ -1,7 +1,7 @@
 # WeatherEdge
 
 **An end-to-end probabilistic weather system that forecasts daily highs across
-15 U.S. cities, prices those forecasts against prediction markets, and publishes
+20 U.S. cities, prices those forecasts against prediction markets, and publishes
 every decision to a live evidence dashboard.**
 
 WeatherEdge is a production-style student quant engineering project spanning
@@ -32,7 +32,7 @@ It runs unattended on AWS, but it cannot place real-money orders.
 | Area | What is implemented |
 |---|---|
 | Forecasting | 8-member NWP ensemble, rolling-origin EMOS per station, and deeper SFO-only LSTM/XGBoost research |
-| Coverage | 15 city markets, each mapped to its own NWS settlement station and local-standard climate day |
+| Coverage | 20 city markets, each mapped to its own NWS settlement station and local-standard climate day |
 | Decision engine | Bracket probabilities, market consensus, exact fees, spread/liquidity checks, lower-bound edge, and portfolio risk gates |
 | Paper execution | Reservation-price limits, bounded taker crosses, monitoring, exits, and official NWS settlement in isolated paper accounts |
 | Operations | AWS EC2, systemd timers, watchdogs, SQLite, S3 backups, atomic artifacts, and GitHub Pages publication |
