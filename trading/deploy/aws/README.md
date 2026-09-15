@@ -183,9 +183,309 @@ or settlement services and never changes placement or live-trading flags.
 `sync_to_box.sh` creates `/run/weatheredge-deploy-maintenance` immediately
 before quiescence. Scheduler checks skip while that root-owned marker exists;
 the deploy restores its captured timer policy, removes the marker, and runs one
-explicit scheduler-health check last. A failed or interrupted deployment can
-leave the marker intentionally present so a partially installed tree is not
-auto-repaired.
+explicit scheduler-health check last. A deployment that fails before any source is
+transferred restores the captured timers and releases the marker itself; one
+that fails after the transfer starts leaves the marker intentionally present so
+a partially installed tree is not auto-repaired (see Release Deploy And
+Rollback).
+
+## Release Deploy And Rollback
+
+The ordered operator runbook for the single deploy of the 2026-09-13
+audit-remediation release (`behavior-v3-forecast-and-execution-2026-09-07`,
+`research-entry-risk-v3-scaling-2026-09-13`). Production runs v2, source
+`2a6432e3b`. Phase 0 and the recovery variables apply to any deploy.
+
+Recovery variables read by `sync_to_box.sh`:
+
+| Variable | Use |
+|---|---|
+| `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1` | Stranded host (maintenance marker left over, or the database exists and no timer is enabled). A successful deploy restores the release canonical timer set -- what `install_systemd.sh` enables, minus retired timers, plus the scheduler watchdog, 13 timers -- and prints the list before anything is quiesced. |
+| `SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1` | A host deliberately paused by an operator: deploy and keep exactly the captured timers. Never together with the variable above. |
+| `WEATHEREDGE_RECOVERY_SSH_ATTEMPTS`, `WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS` | Retries for the pre-transfer recovery when SSH itself fails (defaults 4 and 30 s). |
+
+Without either override a stranded host is refused before anything changes.
+A healthy host needs neither.
+
+### Phase 0: confirm the host state (read-only)
+
+0.1 Prove SSH from the deploy machine over the network you will deploy on.
+Opening the security group, Tailscale or SSM is the owner's action. Use a
+stable link: the host is quiesced for roughly 30-45 minutes.
+
+0.2 On the box:
+
+```bash
+test ! -e /run/weatheredge-deploy-maintenance && echo "no maintenance marker"
+systemctl list-unit-files 'sfo-*.timer' 'weatheredge-*.timer' --state=enabled --no-legend | wc -l   # 14 on v2
+cat /opt/weatheredge/forecaster/build_info.json                                          # v2: 2a6432e3b
+find /opt/weatheredge/trading/sfo_kalshi_quant /opt/weatheredge/forecaster -name '*.py' \
+  -newer /opt/weatheredge/forecaster/build_info.json | head                              # expect nothing
+pgrep -af 'sync_to_box|backup_paper_db|sqlite3 .*backup' || echo "no deploy or backup running"
+systemctl --failed
+df -P /opt/weatheredge
+ls -l /opt/weatheredge/trading/data/paper_trading.db
+ls -la --time-style=full-iso /opt/weatheredge/trading/data/backups/
+sudo grep -nE '^(SFO_PRUNE_MODE|SFO_DATABASE_BACKUP_KEEP_DAYS|PAPER_ENTRY_MODE|SFO_FRESHNESS_ALERT_URL)=|weatheredge-migration' /etc/weatheredge.env
+sudo journalctl -u weatheredge-google-nonsfo-refresh -n 30 -o cat
+curl -s https://jaxsonb04.github.io/weather_edge/publication_manifest.json \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["published_at"])'
+```
+
+0.3 Classify the host:
+
+- **Healthy v2:** no marker, 14 enabled timers, a public manifest under 20
+  minutes old. Deploy with no recovery variable.
+- **Stranded:** a marker, or 0 enabled timers while the database exists. The
+  deploy refuses on its own. If `build_info.json` still says `2a6432e3b` and
+  no `.py` file is newer (the earlier deploy died before its first rsync),
+  you may restore it by hand and then treat it as healthy: from the Mac,
+  `ssh ... bash -s restore <timers> < trading/deploy/aws/disable_systemd_timers.sh`
+  with producers first and `sfo-scheduler-health.timer` last, then
+  `sudo rm -f /run/weatheredge-deploy-maintenance`. Otherwise deploy with
+  `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`.
+- **Deliberately paused:** `SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1`.
+
+A leftover marker also stops the backup preflight from reclaiming what an
+interrupted backup left (`.restore-check.*` directories and unhashed
+snapshots older than six hours). After `pgrep` shows no deploy or backup
+running, remove a stale marker before deploying; an empty timer capture still
+forces the canonical override.
+
+0.4 Disk. The preflight needs free space of at least the database size plus
+1 GiB after its sweep. The sweep removes snapshot and checksum pairs older
+than `SFO_DATABASE_BACKUP_KEEP_DAYS` (default 1, which `find` rounds to about
+48 hours). A younger hashed snapshot is never removed automatically: wait for
+it to age out -- the stranded `paper_trading-20260913T013049Z.sqlite3` is swept
+from about 2026-09-15T01:31Z -- or delete it by hand after confirming
+`database-snapshots/` in S3 holds it. Starting too early fails the preflight
+safely, before anything is quiesced. The runbook staged on the Mac at
+`/tmp/deploy_round3.sh` is retired: its free-space step ignores the sweep and
+its timer count includes the disabled Apple refresh timer.
+
+### Phase 1: source
+
+1.1 Push `integration/audit-round2-rebased`, open the PR to `main`, wait for
+`verify.yml` to pass, and merge.
+
+1.2 In `/Users/jaxson/develop/WeatherEdge`: `git checkout main && git pull --ff-only`.
+HEAD must be the merge commit, `git status --porcelain` must be empty, and
+`.local/ec2.env` must hold `EC2_IP` and `EC2_KEY`.
+
+### Phase 2: box environment, before deploying
+
+2.1 `sudo cp -p /etc/weatheredge.env /etc/weatheredge.env.pre-v3`
+
+2.2 Set `SFO_FRESHNESS_ALERT_URL` (OPS-3). Without it no `OnFailure` alert is
+delivered: an exchange settlement `MISMATCH`, an open Google circuit breaker, a
+failed prune and a failing unit all reach only the journal.
+
+2.3 Confirm `PAPER_ENTRY_MODE=limit`. Leave
+`GOOGLE_WEATHER_CLIENT_ERROR_BREAKER`, `SFO_EXCHANGE_SETTLEMENT_CHECK` and
+`SFO_PAGES_HISTORY_MAX_COMMITS` unset; their defaults are 12, on and 1500. No
+key is renamed.
+
+2.4 Do not add `SFO_PRUNE_MODE` by hand. The installer's env migration appends
+`SFO_PRUNE_MODE=archive-only`, under a comment, to a file that lacks the key,
+and production's file lacks it. Nightly deletion stays off until step 5.5.
+
+### Phase 3: deploy
+
+3.1 Timing: avoid 07:50-09:30 UTC (prune) and 09:50-10:50 UTC (dataset
+backfill, now allowed 45 minutes), and prefer to avoid 13:55-14:05 UTC. Stops
+and exits do not run while the host is quiesced.
+
+3.2 From the shared checkout on `main`:
+
+```bash
+cd /Users/jaxson/develop/WeatherEdge
+nohup caffeinate -dimsu bash trading/deploy/aws/sync_to_box.sh \
+  > /tmp/we-deploy-$(date -u +%Y%m%dT%H%M%SZ).log 2>&1 < /dev/null &
+```
+
+On a stranded host, prefix the command with
+`SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`.
+
+3.3 Expect, in order: `WEATHEREDGE_DATABASE_PRESENT=1` and
+`database backup preflight passed`;
+`retired WeatherEdge timer captured but will not be restored: weatheredge-apple-refresh.timer`;
+a `WEATHEREDGE_BACKUP_SNAPSHOT=` line; installer output including
+`notice: appended SFO_PRUNE_MODE=archive-only` and possibly a removed
+superseded journald drop-in; `units rendered and installed; all WeatherEdge timers remain disabled`;
+and finally `Restored 9 producer timer(s); watchdog restored last=1.` and
+`Scheduler watchdog restored after maintenance=1.` With the canonical override
+the 13 timers are listed before the host is quiesced.
+
+3.4 If it fails:
+
+- **Before the first rsync** (preflight, capture, quiesce, backup): on an
+  established host the deploy restores the captured timers and releases the
+  marker itself, retrying lost SSH connections. Look for
+  `deploy stopped before any source was transferred` followed by
+  `Pre-transfer recovery restored N timer(s)`. If it prints
+  `pre-transfer recovery failed`, return to step 0.2. A host that was already
+  stranded is left quiesced.
+- **After the first rsync** (transfer, install, unit verification, account
+  cutover): the host stays quiesced with the marker by design. Fix the cause and
+  rerun; the rerun captures no timers, so it needs
+  `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`. Or roll back (phase 6).
+- **After the cutover gate:** the deploy's own recovery trap restores the timers
+  or quiesces again.
+- In every case, check `data/backups` for a leftover snapshot.
+
+3.5 What the migrations touch: the first `PaperStore` init runs inside the
+quiesced window (`validate_account_cutover.py`). It creates three empty tables
+(`ladder_bin_outcomes`, `kalshi_market_resolutions`,
+`paper_settlement_exchange_checks`) with their indexes and records one
+`schema_migrations` row. There is no `ALTER` and no index on
+`decision_snapshots` or `paper_orders`, so nothing is rewritten on the ~24 GB
+journal. `weather.db`, `production.lock` and `pyproject.toml` are unchanged.
+
+### Phase 4: verify
+
+4.1 `build_info.json` shows the merge commit and `"source_dirty": false`.
+
+4.2 13 enabled timers (the command in 0.2);
+`systemctl is-enabled weatheredge-apple-refresh.timer` prints `disabled`; no
+marker; `/etc/systemd/journald.conf.d` holds only `zz-weatheredge.conf`.
+
+4.3 `sudo grep -n -B6 '^SFO_PRUNE_MODE=' /etc/weatheredge.env` shows
+`archive-only` under the migration comment.
+
+4.4 `sqlite3 'file:/opt/weatheredge/trading/data/paper_trading.db?mode=ro' .tables`
+lists the three new tables.
+
+4.5 The forecaster refresh exits 0 and logs `awaiting onboarding backfill` for
+`lv`, `min`, `satx`, `nola` and `dc`; the scan logs
+`[lv] skipped: calibration unavailable` and the same for the other four.
+
+4.6 Fingerprints, from new rows:
+`SELECT risk_profile, strategy_fingerprint, count(*) FROM paper_orders WHERE created_at > '<deploy UTC>' GROUP BY 1, 2`.
+Live SFO `e1b9704afa53970f4edbdca3`, live elsewhere
+`d3751adbf7e84c6e424d46da`, research `b123f57836129c1df1c995bd` in every city
+(all pinned in `test_research_sleeves.py`). Research day-ahead resting orders
+expire 30 minutes after creation; live orders keep 15.
+
+4.7 The settle journal has an `exchange settlement check:` line and no
+`MISMATCH`.
+
+4.8 The public manifest is under 20 minutes old, and the gh-pages commit
+message carries `(source <merge commit>)`.
+
+4.9 `df` is below 85%, and `systemctl --failed` is empty (except the non-SFO
+Google refresh if its key is still dead: look for `circuit breaker is OPEN`).
+
+### Phase 5: post-deploy data work, in order
+
+Run the forecaster steps as the app user from `/opt/weatheredge/forecaster`,
+starting each right after a :10 or :40 refresh finishes (see Adding A City).
+
+5.1 Backfill the five new cities: steps 1 and 2 of the Adding A City block with
+`SLUGS=lv,min,satx,nola,dc`.
+
+5.2 One all-city EMOS rebuild. It rewrites the fifteen existing cities' archive
+with debiased spreads and onboards the five new ones. Time it: the nightly
+chain's limit is 2700 s and no twenty-city run has been measured.
+
+```bash
+time .venv/bin/python emos_forecast.py --db weather.db --backfill --lead 1 --cities all
+time .venv/bin/python emos_forecast.py --db weather.db --backfill --lead 2 --cities all
+```
+
+5.3 Step 4 of the Adding A City block must print `awaiting=0` and exit 0; the
+next scan analyses all five cities.
+
+5.4 Exchange settlement backfill, from `/opt/weatheredge/trading`, away from
+the :10 and :40 minutes. Repeat while `unchecked` keeps falling. Any
+`EXCHANGE SETTLEMENT MISMATCH` is an incident. Never run a wide plain
+`paper-resettle --verify`.
+
+```bash
+.venv/bin/python -m sfo_kalshi_quant.cli --no-color --db-path data/paper_trading.db \
+  paper-resettle --verify --exchange-check-only --exchange-max-fetches 100 --days 100
+```
+
+5.5 Supervised catch-up prune, which turns nightly deletion on:
+
+```bash
+sudo install -o root -g root -m 600 /dev/null /run/weatheredge-deploy-maintenance
+TIMERS="sfo-kalshi-paper-scan.timer sfo-kalshi-paper-monitor.timer sfo-kalshi-paper-settle.timer sfo-dataset-backfill.timer sfo-strategy-lab-refresh.timer sfo-operational-publish.timer sfo-kalshi-paper-prune.timer sfo-forecast-freshness.timer"
+sudo systemctl stop $TIMERS          # stop, do not disable; wait until their services are inactive
+systemctl show -p User sfo-kalshi-paper-prune.service   # confirm the app user
+sudo sed -i 's/^SFO_PRUNE_MODE=archive-only$/SFO_PRUNE_MODE=quiesced-delete/' /etc/weatheredge.env
+sudo systemd-run --unit=weatheredge-catchup-prune --uid=ubuntu \
+  -p EnvironmentFile=/etc/weatheredge.env -p WorkingDirectory=/opt/weatheredge/trading \
+  -p MemoryMax=3700M /usr/bin/env bash /opt/weatheredge/trading/deploy/aws/run_archive_then_prune.sh
+journalctl -fu weatheredge-catchup-prune
+sqlite3 /opt/weatheredge/trading/data/paper_trading.db 'ANALYZE;'
+# In the same window, decide whether to run compact_paper_db.sh.
+sudo sed -i '/^SFO_PRUNE_MODE=/d' /etc/weatheredge.env   # keep the migration comment above it
+sudo systemctl start $TIMERS
+sudo rm -f /run/weatheredge-deploy-maintenance
+sudo systemctl start sfo-scheduler-health.service
+```
+
+After the next 08:20 UTC run, read `journalctl -u sfo-kalshi-paper-prune.service`.
+
+5.6 From the Mac shared checkout at the merge commit:
+`bash trading/deploy/aws/deploy_web_app.sh`. The next publish serves the new
+SPA, including the twenty-city social card.
+
+5.7 Watch for 48 hours:
+
+- the first nightly dataset-backfill wall time against 2700 s:
+  `systemctl show -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p Result sfo-dataset-backfill.service`;
+- `PAPER_EXPIRED` research rows whose reason starts `stale research quote`,
+  each of which holds its market for about one scan tick;
+- `canonical research entry rejected` decision rows, concurrent resting research
+  quotes, and research zero-room time (the replay expects roughly 20-28% of
+  samples with no room);
+- the Google breaker;
+- about ten days in, the first gh-pages re-root (`gh-pages history reached 1500
+  publications; re-rooting the branch` in the `sfo-operational-publish`
+  journal), after which the public manifest and SPA must still load
+  (`SFO_PAGES_HISTORY_MAX_COMMITS=0` disables it).
+
+Until `SFO_FRESHNESS_ALERT_URL` is set, check daily by hand: the settle journal
+for `MISMATCH`, the non-SFO Google journal for `circuit breaker is OPEN`, and
+the public manifest's age.
+
+### Phase 6: rollback
+
+Triggers: a ledger or restatement defect, a unit failing every tick, or an
+exchange `MISMATCH` traced to code.
+
+6.1 On the box first: `sudo systemctl enable --now weatheredge-apple-refresh.timer`.
+This release disables that timer, v2's `check_scheduler_health.sh` still lists
+it as canonical, and v2's `sync_to_box.sh` re-enables it only when the unit is
+absent, so without this step the v2 watchdog fails every five minutes.
+
+6.2 Revert the merge on `main` through a PR (`git revert -m 1 <merge commit>`),
+then pull the shared checkout clean at the revert commit.
+
+6.3 Repeat step 0.2. v2's `sync_to_box.sh` has neither the stranded-host guard
+nor pre-transfer recovery: it must start on a healthy host (no marker, timers
+enabled), and on a quiesced host it would restore nothing. Then run the same
+`nohup` deploy command, with no recovery variable (v2 ignores them). Its backup
+gate still needs the database size plus 1 GiB free.
+
+6.4 Leave the `SFO_PRUNE_MODE=archive-only` line and its comment: v2's prune
+wrapper already defaults to archive-only.
+
+6.5 Redeploy the v2 SPA with `deploy_web_app.sh` from the reverted tree.
+
+6.6 Harmless leftovers: the three new tables and their migration row, the
+`zz-weatheredge.conf` journald drop-in, `cancel_request` diagnostics on expired
+research quotes, and level-2 live fills whose `ask_levels` v2's restatement
+ignores (they may show as unverified). Fingerprints return to v2 (live SFO
+`88e417a64d8be9b1bb933b3b`, live elsewhere `36be72cf3bf65bb5fb4441f0`,
+research `92934c133d00d85deb078b3c`), which resets the live readiness clock a
+second time.
+
+6.7 Restore the paper database from the deploy's S3 snapshot under
+`database-snapshots/` only for proven ledger corruption: it loses every write
+since the deploy. Restore to a new path with paper services stopped and run
+`paper-check-foreign-keys` before any swap.
 
 ## Adding A City (Post-Deploy Backfill)
 
