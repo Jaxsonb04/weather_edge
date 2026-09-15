@@ -91,7 +91,8 @@ def canonical_research_lead_bucket(lead_days: int) -> str:
 # Historical rows are NOT backfilled. Consumers that group by ``lead_bucket``
 # across the change must therefore report how many of their rows fall in this
 # window rather than assume one definition -- research_goals._lead_split does.
-# The window is a property of the 15 station offsets, not a guess: it is
+# The window is a property of the registry's station offsets (twenty cities
+# since 2026-09-13), not a guess: it is
 # re-derived for every hour of a full year by
 # test_lead_bucket_clock_window_covers_every_station_disagreement.
 LEAD_BUCKET_CLOCK_AMBIGUOUS_UTC_HOURS = frozenset({5, 6, 7})
@@ -108,19 +109,26 @@ def lead_bucket_clock_is_ambiguous(created_at: datetime) -> bool:
 
 # Research scan order (2026-09-13). cmd_portfolio_scan walks cities in
 # cities.CITIES registry order (mia, lax, chi, atl, ...). The research book
-# shares one daily budget and aggregate/region caps across cities, so the
-# first cities scanned take the room: 8/31-9/12 entered cost followed the
-# registry order (MIA scanned 1st: 14 positions/$439; ATL 4th: 13/$232,
-# -$84.87) while LAX -- 38% of measured day-ahead NO-seller flow -- got one
-# position for $4.77. Fresh public tape (events 9/5-9/13, day-ahead
-# taker-YES = NO-seller contracts/day): LAX 14,132; NY 4,482; MIA 3,122;
-# AUS 2,686; CHI 2,476; DEN 1,638; PHIL 1,336; BOS 1,313; PHX 978;
-# SEA/DAL/OKC/SFO/HOU/ATL lower. Research-only: the live profile keeps
-# registry order, and a city missing from this list scans LAST rather than
-# being skipped (research_scan_city_rank), so a future city cannot vanish.
+# shares one daily budget and aggregate/region caps across cities, so the first
+# cities scanned take the room: 8/31-9/12 entered cost followed the registry
+# order (MIA scanned 1st: 14 positions/$439; ATL 4th: 13/$232, -$84.87) while
+# LAX got one position for $4.77. Public tape, every registry series measured
+# the same way (events 2026-09-05..13; day-ahead taker-YES = NO-seller
+# contracts per event day): LAX 14,132; NYC 4,482; MIA 3,122; AUS 2,686; CHI
+# 2,476; DAL 1,943; SFO 1,794; OKC 1,753; DEN 1,638; LV 1,530; ATL 1,427; PHL
+# 1,336; BOS 1,313; SEA 1,217; HOU 1,005; PHX 978; SATX 786; MIN 758; NOLA 721;
+# DC 680. LAX alone is 31% of the twenty-series total. Fourteen series were
+# measured on 2026-09-13; SEA, DAL, OKC, SFO, HOU and ATL were measured at
+# integration on 2026-09-14 (re-measuring PHX and DC reproduced the 09-13
+# counts exactly). All six measured above PHX, which the first version of this
+# list had assumed they trailed, and DAL, SFO and OKC also measured above DEN.
+# The five 2026-09-13 registry additions (LV, MIN, SATX, NOLA, DC) rank by the
+# same measurement. Research-only: the live profile keeps registry order, and a
+# city missing from this list scans LAST rather than being skipped
+# (research_scan_city_rank), so a future city cannot vanish.
 RESEARCH_SCAN_CITY_ORDER: tuple[str, ...] = (
-    "lax", "nyc", "mia", "aus", "chi", "den", "phl", "bos", "phx",
-    "sea", "dal", "okc", "sfo", "hou", "atl",
+    "lax", "nyc", "mia", "aus", "chi", "dal", "sfo", "okc", "den", "lv", "atl",
+    "phl", "bos", "sea", "hou", "phx", "satx", "min", "nola", "dc",
 )
 
 

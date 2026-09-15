@@ -51,13 +51,28 @@ from test_target_execution_capacity import _candidate
 # --------------------------------------------------------------------------
 
 
-def test_research_scan_order_lists_only_registry_cities_without_duplicates() -> None:
+_MEASURED_DAY_AHEAD_NO_SELLER_FLOW = {
+    "lax": 14132, "nyc": 4482, "mia": 3122, "aus": 2686, "chi": 2476,
+    "dal": 1943, "sfo": 1794, "okc": 1753, "den": 1638, "lv": 1530,
+    "atl": 1427, "phl": 1336, "bos": 1313, "sea": 1217, "hou": 1005,
+    "phx": 978, "satx": 786, "min": 758, "nola": 721, "dc": 680,
+}
+
+
+def test_research_scan_order_ranks_every_registry_city_by_measured_seller_flow() -> None:
+    # Day-ahead NO-seller contracts per event day on the public tape
+    # (taker-YES trades dated before the event date, events 2026-09-05..13);
+    # the table above is the evidence recorded beside RESEARCH_SCAN_CITY_ORDER.
     assert len(RESEARCH_SCAN_CITY_ORDER) == len(set(RESEARCH_SCAN_CITY_ORDER))
-    # Every listed slug is a real registry city. The registry may grow past
-    # this list -- an unlisted city is appended, never dropped (tests below)
-    # -- so this is a subset check, not equality.
-    assert set(RESEARCH_SCAN_CITY_ORDER) <= set(CITY_BY_SLUG)
-    assert len(RESEARCH_SCAN_CITY_ORDER) == 15
+    # Every registry city is measured and listed. research_scan_city_rank still
+    # appends a city added later without a measurement (tests below).
+    assert set(_MEASURED_DAY_AHEAD_NO_SELLER_FLOW) == set(CITY_BY_SLUG)
+    assert set(RESEARCH_SCAN_CITY_ORDER) == set(CITY_BY_SLUG)
+    assert len(RESEARCH_SCAN_CITY_ORDER) == len(CITIES) == 20
+    assert list(RESEARCH_SCAN_CITY_ORDER) == sorted(
+        _MEASURED_DAY_AHEAD_NO_SELLER_FLOW,
+        key=lambda slug: -_MEASURED_DAY_AHEAD_NO_SELLER_FLOW[slug],
+    )
     # The measured day-ahead NO-seller flow leaders come first.
     assert RESEARCH_SCAN_CITY_ORDER[:3] == ("lax", "nyc", "mia")
     # ...and the registry's first city (MIA) is no longer scanned first.
@@ -132,9 +147,9 @@ def test_research_portfolio_scan_follows_seller_flow_order() -> None:
 
 
 # feat/five-more-high-cities appends these to cities.CITIES in this order (Las
-# Vegas, Minneapolis, San Antonio, New Orleans, Washington DC). They have no
-# measured seller flow, so they are deliberately absent from
-# RESEARCH_SCAN_CITY_ORDER -- and the research scan must still reach each one.
+# Vegas, Minneapolis, San Antonio, New Orleans, Washington DC). They are
+# ranked in RESEARCH_SCAN_CITY_ORDER by the same measured seller flow as every
+# other city, and the research scan must reach each one at that rank.
 _FIVE_NEW_CITY_SLUGS = ("lv", "min", "satx", "nola", "dc")
 
 
@@ -155,28 +170,25 @@ def _registry_with_five_new_cities() -> tuple:
     return (*existing, *new)
 
 
-def test_research_scan_appends_configured_cities_missing_from_the_order() -> None:
+def test_research_scan_ranks_the_five_new_cities_by_measured_flow() -> None:
     registry = _registry_with_five_new_cities()
     assert len(registry) == 20
     for slug in _FIVE_NEW_CITY_SLUGS:
-        assert slug not in RESEARCH_SCAN_CITY_ORDER
-        assert research_scan_city_rank(slug) == len(RESEARCH_SCAN_CITY_ORDER)
+        assert slug in RESEARCH_SCAN_CITY_ORDER
+        assert research_scan_city_rank(slug) == RESEARCH_SCAN_CITY_ORDER.index(slug)
+        assert research_scan_city_rank(slug) < len(RESEARCH_SCAN_CITY_ORDER)
 
     ordered = scan_module._scan_cities_for_profile(registry, "research")
 
-    # Nothing dropped, nothing duplicated: listed cities in seller-flow order,
-    # then every unlisted configured city in its registry order.
-    assert [city.slug for city in ordered] == [
-        *RESEARCH_SCAN_CITY_ORDER,
-        *_FIVE_NEW_CITY_SLUGS,
-    ]
+    # Nothing dropped, nothing duplicated, every city at its measured rank.
+    assert [city.slug for city in ordered] == list(RESEARCH_SCAN_CITY_ORDER)
     assert sorted(city.slug for city in ordered) == sorted(city.slug for city in registry)
     # A PAPER_CITIES subset keeps the same contract.
     by_slug = {city.slug: city for city in registry}
     subset = (by_slug["dc"], by_slug["atl"], by_slug["lv"], by_slug["lax"])
     assert [
         city.slug for city in scan_module._scan_cities_for_profile(subset, "research")
-    ] == ["lax", "atl", "dc", "lv"]
+    ] == ['lax', 'lv', 'atl', 'dc']
     # The live profile keeps the registry order untouched.
     assert scan_module._scan_cities_for_profile(registry, "live") == registry
 
@@ -187,7 +199,8 @@ def test_research_portfolio_scan_reaches_the_five_new_cities() -> None:
     research_slugs, _ = _scanned_city_order("research", cities=registry)
     live_slugs, _ = _scanned_city_order("live", cities=registry)
 
-    assert research_slugs == [*RESEARCH_SCAN_CITY_ORDER, *_FIVE_NEW_CITY_SLUGS]
+    assert research_slugs == list(RESEARCH_SCAN_CITY_ORDER)
+    assert set(_FIVE_NEW_CITY_SLUGS) <= set(research_slugs)
     assert live_slugs == [city.slug for city in registry]
 
 
