@@ -1,0 +1,69 @@
+name: Publication freshness
+
+# Off-box staleness watch. Everything that monitors publication today runs ON
+# the production box, so a deploy that dies mid-flight and leaves the box
+# quiesced silences the watchers along with the publisher -- which is exactly
+# how production went dark for 46.8 h and then 22.3 h this month with nobody
+# told. This job reads only the published artifact over HTTPS and files a
+# GitHub issue, so it still reports when the box, the build Mac and the
+# owner's laptop are all unreachable.
+
+#
+# Two operational facts about this file, because a watchdog that quietly turns
+# itself off is the failure class it exists to prevent:
+#   * the schedule only runs from the default branch, so nothing watches until
+#     this merges to main;
+#   * GitHub disables scheduled workflows in a public repository after 60 days
+#     without repository activity, and warns by email first. That email is
+#     load-bearing -- re-enable the workflow when it arrives.
+
+on:
+  schedule:
+    # Off the hour: GitHub's scheduler is heavily contended at :00.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  # Read-only: the deploy records that suppress alerts during a real deploy are
+  # written by the deploy path, never by this monitor.
+  deployments: read
+
+concurrency:
+  group: publication-freshness
+  cancel-in-progress: false
+
+jobs:
+  freshness:
+    name: Check published manifest freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The monitor talks to the REST API with GH_TOKEN explicitly; it never
+          # pushes, so no git credential belongs in the work tree.
+          persist-credentials: false
+
+      - name: Check published manifest freshness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # Attended maintenance that stops publishing on purpose -- deploy
+          # runbook phase 5.5 -- sets this repository variable to an ISO-8601
+          # instant to hold off new issues until then. Recovery still closes an
+          # open one, and an empty value (the normal state) mutes nothing:
+          #   gh variable set FRESHNESS_MUTE_UNTIL --body '2026-09-20T18:00:00Z'
+          #   gh variable delete FRESHNESS_MUTE_UNTIL
+          FRESHNESS_MUTE_UNTIL: ${{ vars.FRESHNESS_MUTE_UNTIL }}
+        # Standard-library only, so no dependency install step can stand between
+        # an outage and the alert.
+        run: |
+          python3 scripts/check_publication_freshness.py \
+            --manifest-url https://jaxsonb04.github.io/weather_edge/publication_manifest.json \
+            --base-open-minutes 90 \
+            --deploy-margin-minutes 45 \
+            --max-deploy-window-minutes 480 \
+            --close-at-or-below-minutes 20
