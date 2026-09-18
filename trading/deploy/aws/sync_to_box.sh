@@ -40,6 +40,62 @@ QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
 INSTALL_SYSTEMD_HELPER="$SCRIPT_DIR/install_systemd.sh"
+DEADMAN_HELPER="$SCRIPT_DIR/deploy_deadman.sh"
+
+# Box-side deploy dead-man. Recovery used to live only in this script's bash
+# traps, so a host that could no longer reach the box -- a laptop that slept on
+# battery mid-backup, a network that handed it an address the security group
+# blocks -- left production quiesced and dark: 46.8 h from 2026-09-13T01:22Z and
+# 22.3 h from 2026-09-15T02:32Z. deploy_deadman.sh is armed ON THE BOX before
+# anything is quiesced, so it survives this host vanishing and restores the
+# runtime itself once this host stops proving it is alive.
+DEADMAN_BIN="/usr/local/libexec/weatheredge/deploy_deadman.sh"
+DEADMAN_STATE_DIR="/var/lib/weatheredge/deploy-deadman"
+DEADMAN_ENABLED=1
+if [[ "${SFO_DEPLOY_DEADMAN_DISABLE:-0}" == "1" ]]; then
+  DEADMAN_ENABLED=0
+fi
+DEADMAN_LEASE_SECONDS="${SFO_DEPLOY_DEADMAN_LEASE_SECONDS:-600}"
+DEADMAN_BEAT_SECONDS="${SFO_DEPLOY_DEADMAN_BEAT_SECONDS:-30}"
+DEADMAN_TICK_WAIT_SECONDS="${SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS:-180}"
+DEADMAN_CLEAR_INCIDENT_FLAG=""
+if [[ "${SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT:-0}" == "1" ]]; then
+  DEADMAN_CLEAR_INCIDENT_FLAG="--clear-incident"
+fi
+DEADMAN_BEAT_PID=""
+DEADMAN_FENCE=""
+DEADMAN_PRE_TRANSFER_RESTORE=0
+# How many beats in a row may fail before this host declares itself unwatched.
+# The lease tolerates 20 consecutive misses, so three is far inside it, and a
+# single blip -- a tick holding the box-side lock, a momentary sudo hiccup --
+# must never take a healthy deploy down.
+DEADMAN_BEAT_FAILURE_LIMIT="${SFO_DEPLOY_DEADMAN_BEAT_FAILURE_LIMIT:-3}"
+MAIN_PID=$$
+if [[ ! "$DEADMAN_LEASE_SECONDS" =~ ^[0-9]+$ ]] || (( DEADMAN_LEASE_SECONDS < 60 )); then
+  echo "SFO_DEPLOY_DEADMAN_LEASE_SECONDS must be an integer of at least 60" >&2
+  exit 1
+fi
+if [[ ! "$DEADMAN_BEAT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "SFO_DEPLOY_DEADMAN_BEAT_SECONDS must be a non-negative integer" >&2
+  exit 1
+fi
+if [[ ! "$DEADMAN_TICK_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS must be a non-negative integer" >&2
+  exit 1
+fi
+if [[ ! "$DEADMAN_BEAT_FAILURE_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "SFO_DEPLOY_DEADMAN_BEAT_FAILURE_LIMIT must be a positive integer" >&2
+  exit 1
+fi
+if (( DEADMAN_ENABLED == 0 )); then
+  echo "warning: SFO_DEPLOY_DEADMAN_DISABLE=1; no box-side dead-man will be armed." >&2
+  echo "warning: deploying without it is how production sat dark for 46.8 h from 2026-09-13T01:22Z and 22.3 h from 2026-09-15T02:32Z." >&2
+elif (( DEADMAN_BEAT_SECONDS == 0 )); then
+  echo "warning: SFO_DEPLOY_DEADMAN_BEAT_SECONDS=0; the box-side dead-man is armed but this host will not refresh its lease between phases, so it can fire mid-deploy." >&2
+fi
+if (( DEADMAN_ENABLED == 1 && DEADMAN_TICK_WAIT_SECONDS == 0 )); then
+  echo "warning: SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS=0; arming will not wait for a box-side trigger to actually run the payload, so 'cron and systemd work on that box' goes back to being an assumption." >&2
+fi
 
 # Audit F-07: this script deliberately needs NO local interpreter. It used to
 # stamp build provenance by importing two package constants, and discovering
@@ -103,6 +159,10 @@ if [[ ! -f "$INSTALL_SYSTEMD_HELPER" ]]; then
   echo "Systemd installer not found: $INSTALL_SYSTEMD_HELPER" >&2
   exit 1
 fi
+if [[ ! -f "$DEADMAN_HELPER" ]]; then
+  echo "Deploy dead-man helper not found: $DEADMAN_HELPER" >&2
+  exit 1
+fi
 
 chmod 600 "$HOST_KEY"
 
@@ -118,6 +178,388 @@ if ! git -C "$WEATHEREDGE_ROOT" diff --quiet \
   echo "Deploy requires an exact clean commit; source_dirty would be true." >&2
   exit 1
 fi
+
+# Deploy identity for the box-side dead-man. Bash builtins plus `date`, so the
+# audit F-07 rule that this script needs no local interpreter still holds.
+DEPLOY_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+DEADMAN_DEPLOY_HOST="$(hostname -s 2>/dev/null || echo unknown)"
+if [[ ! "$DEADMAN_DEPLOY_HOST" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+  DEADMAN_DEPLOY_HOST="unknown"
+fi
+# Read literally, the same no-interpreter idiom as read_source_version_constant.
+DEADMAN_LOCAL_VERSION="$(
+  sed -n 's/^DEADMAN_VERSION="\([^"]*\)"$/\1/p' "$DEADMAN_HELPER" | head -n 1
+)"
+if [[ -z "$DEADMAN_LOCAL_VERSION" ]]; then
+  echo "could not read DEADMAN_VERSION from $DEADMAN_HELPER" >&2
+  exit 1
+fi
+
+# --- box-side deploy dead-man, host side -------------------------------------
+deadman_fence_reason() {
+  if [[ -n "${DEADMAN_FENCE:-}" && -f "$DEADMAN_FENCE" ]]; then
+    head -n 1 "$DEADMAN_FENCE" 2>/dev/null || true
+  fi
+}
+
+deadman_set_fence() {
+  if [[ -n "${DEADMAN_FENCE:-}" ]]; then
+    printf '%s\n' "$1" > "$DEADMAN_FENCE" 2>/dev/null || true
+  fi
+}
+
+# "unwatched" is a recoverable observation, so a later healthy beat retracts it.
+# "revoked" is a fact about the box and is never retracted.
+deadman_clear_soft_fence() {
+  if [[ -n "${DEADMAN_FENCE:-}" && -f "$DEADMAN_FENCE" ]]; then
+    if [[ "$(deadman_fence_reason)" == "unwatched" ]]; then
+      rm -f "$DEADMAN_FENCE" 2>/dev/null || true
+    fi
+  fi
+}
+
+# The heartbeat loop is a background child: it cannot see the main shell's
+# variables, so the main shell records here whether a recovery trap is armed.
+# A SIGTERM into the untrapped transfer/install window would kill bash outright
+# and leave a half-synced box dark -- worse than the deploy it interrupted.
+deadman_traps_armed() {
+  if [[ -n "${DEADMAN_FENCE:-}" ]]; then
+    : > "$DEADMAN_FENCE.traps" 2>/dev/null || true
+  fi
+}
+
+deadman_traps_cleared() {
+  if [[ -n "${DEADMAN_FENCE:-}" ]]; then
+    rm -f "$DEADMAN_FENCE.traps" 2>/dev/null || true
+  fi
+}
+
+deadman_cleanup_fence() {
+  if [[ -n "${DEADMAN_FENCE:-}" ]]; then
+    rm -f "$DEADMAN_FENCE" "$DEADMAN_FENCE.traps" 2>/dev/null || true
+  fi
+}
+
+# Only signal the main shell where a handler exists to receive it. Everywhere
+# else the fence is picked up by the next deadman_abort_if_revoked checkpoint,
+# which is entered before every remote mutation.
+deadman_signal_main() {
+  if [[ -n "${DEADMAN_FENCE:-}" && -f "$DEADMAN_FENCE.traps" ]]; then
+    kill -TERM "$MAIN_PID" 2>/dev/null || true
+  fi
+}
+
+# One fresh short-lived SSH connection per beat -- never a remote loop. A remote
+# `while :; do touch f; sleep 30; done` keeps the lease fresh for hours after the
+# laptop vanishes, because Ubuntu's sshd ships ClientAliveInterval 0 and a
+# sleeping laptop never sends a FIN. Each beat is an independent proof that this
+# host reached the box within the last SFO_DEPLOY_DEADMAN_BEAT_SECONDS.
+deadman_beat_ssh() {
+  ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=15 \
+    "$REMOTE_USER@$HOST_IP" "sudo -n '$DEADMAN_BIN' beat '$DEPLOY_ID'" \
+    < /dev/null > /dev/null 2>&1
+}
+
+# Only two statuses PROVE the box-side dead-man acted: 14 (it fired, or this
+# deploy no longer owns the state) and 127 (a RESTORED teardown removed the
+# payload, so ssh cannot find it). Everything else -- 1 from a payload that
+# could not write a full /var, 2, 11, 12, 126 -- is a failure of the messenger,
+# not evidence about production. Reading those as "already restored" is how a
+# recoverable abort would turn into a quiesced, dark box with the host-side
+# recovery deliberately switched off.
+deadman_classify_beat() {
+  case "$1" in
+    0|255) printf 'alive' ;;
+    14|127) printf 'revoked' ;;
+    13) printf 'unwatched' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+deadman_beat_once() {
+  local status=0
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  deadman_beat_ssh || status=$?
+  case "$(deadman_classify_beat "$status")" in
+    alive) ;;
+    revoked) deadman_set_fence revoked ;;
+    unwatched) deadman_set_fence unwatched ;;
+    *)
+      echo "warning: unexpected box-side dead-man beat status=$status; this host stays in control and will recover normally." >&2
+      ;;
+  esac
+  return 0
+}
+
+deadman_heartbeat_loop() {
+  local status=0
+  local consecutive=0
+  local verdict=""
+  while :; do
+    sleep "$DEADMAN_BEAT_SECONDS"
+    kill -0 "$MAIN_PID" 2>/dev/null || return 0
+    status=0
+    deadman_beat_ssh || status=$?
+    verdict="$(deadman_classify_beat "$status")"
+    if [[ "$verdict" == "revoked" ]]; then
+      deadman_set_fence revoked
+      deadman_signal_main
+      return 0
+    fi
+    if [[ "$verdict" == "alive" ]]; then
+      consecutive=0
+      deadman_clear_soft_fence
+      continue
+    fi
+    consecutive=$((consecutive + 1))
+    if (( consecutive == 1 )); then
+      echo "warning: a box-side dead-man beat failed (status=$status); retrying." >&2
+    fi
+    if (( consecutive >= DEADMAN_BEAT_FAILURE_LIMIT )); then
+      # Armed but nothing is polling it, or unreachable for long enough to
+      # matter. Record it and keep beating: the box may come back, and killing
+      # a healthy deploy over a lost trigger is strictly worse than today.
+      deadman_set_fence unwatched
+      deadman_signal_main
+      consecutive=0
+    fi
+  done
+}
+
+deadman_stop_heartbeat() {
+  if [[ -n "${DEADMAN_BEAT_PID:-}" ]]; then
+    kill "$DEADMAN_BEAT_PID" 2>/dev/null || true
+    wait "$DEADMAN_BEAT_PID" 2>/dev/null || true
+    DEADMAN_BEAT_PID=""
+  fi
+}
+
+deadman_revoked_notice() {
+  echo "ATTENTION: the box-side deploy dead-man fired and already acted on this host." >&2
+  echo "This deploy is revoked. Nothing further will be changed remotely." >&2
+  echo "Read: sudo $DEADMAN_BIN status; cat $DEADMAN_STATE_DIR/last-action" >&2
+  echo "Then trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0." >&2
+}
+
+# Checked before every remote mutation. A SIGTERM from the heartbeat loop cannot
+# interrupt a foreground ssh or rsync, so the abort latency is one deploy step --
+# but no step that changes the box is entered without this check.
+deadman_abort_if_revoked() {
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  if [[ "$(deadman_fence_reason)" != "revoked" ]]; then
+    return 0
+  fi
+  deadman_stop_heartbeat
+  PRE_TRANSFER_RECOVERY_ARMED=0
+  RUNTIME_RECOVERY_REQUIRED=0
+  trap - EXIT HUP INT TERM
+  deadman_traps_cleared
+  deadman_revoked_notice
+  deadman_cleanup_fence
+  exit 70
+}
+
+# Run first in both recovery traps, after they disarm themselves.
+deadman_recovery_gate() {
+  local reason=""
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  deadman_traps_cleared
+  deadman_stop_heartbeat
+  reason="$(deadman_fence_reason)"
+  if [[ "$reason" != "revoked" && "$reason" != "unwatched" ]]; then
+    # Close the window between beats: without this, a trap firing shortly after
+    # connectivity returned could re-quiesce a box the dead-man had just
+    # restored, or restore timers it had deliberately left alone.
+    deadman_beat_once
+    reason="$(deadman_fence_reason)"
+  fi
+  case "$reason" in
+    revoked)
+      PRE_TRANSFER_RECOVERY_ARMED=0
+      RUNTIME_RECOVERY_REQUIRED=0
+      deadman_revoked_notice
+      deadman_cleanup_fence
+      exit 70
+      ;;
+    unwatched)
+      echo "warning: the box-side dead-man stopped ticking; recovering from the host and aborting." >&2
+      ;;
+  esac
+  return 0
+}
+
+deadman_remote_arm_command() {
+  local phase="$1"
+  local tick_wait="$2"
+  local extra="$3"
+  local timer_args="$4"
+  local remote_command=""
+  remote_command="sudo '$DEADMAN_BIN' arm"
+  remote_command="$remote_command --deploy-id '$DEPLOY_ID' --phase '$phase'"
+  remote_command="$remote_command --source-sha '$SOURCE_SHA'"
+  remote_command="$remote_command --deploy-host '$DEADMAN_DEPLOY_HOST'"
+  remote_command="$remote_command --lease-seconds '$DEADMAN_LEASE_SECONDS'"
+  remote_command="$remote_command --tick-wait-seconds '$tick_wait'"
+  remote_command="$remote_command --pre-transfer-restore '$DEADMAN_PRE_TRANSFER_RESTORE'"
+  remote_command="$remote_command --expect-version '$DEADMAN_LOCAL_VERSION'"
+  if [[ -n "$extra" ]]; then
+    remote_command="$remote_command $extra"
+  fi
+  remote_command="$remote_command --"
+  if [[ -n "$timer_args" ]]; then
+    remote_command="$remote_command $timer_args"
+  fi
+  printf '%s' "$remote_command"
+}
+
+deadman_timer_arguments() {
+  local timer=""
+  local timer_args=""
+  for timer in "$@"; do
+    if [[ ! "$timer" =~ ^[A-Za-z0-9@._-]+\.timer$ ]]; then
+      echo "refusing to hand the box-side dead-man an unexpected timer name: $timer" >&2
+      return 1
+    fi
+    if [[ -n "$timer_args" ]]; then
+      timer_args="$timer_args $timer"
+    else
+      timer_args="$timer"
+    fi
+  done
+  printf '%s' "$timer_args"
+}
+
+deadman_arm_initial() {
+  local status=0
+  local timer_args=""
+  local extra=""
+  local output=""
+  local reported_version=""
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  timer_args="$(
+    deadman_timer_arguments ${CAPTURED_TIMERS[@]+"${CAPTURED_TIMERS[@]}"}
+  )" || return 1
+  extra="--install-helper --await-tick"
+  if [[ -n "$DEADMAN_CLEAR_INCIDENT_FLAG" ]]; then
+    extra="$extra $DEADMAN_CLEAR_INCIDENT_FLAG"
+  fi
+  # tee+mv, never a direct write: a trigger must never execute a half-copied
+  # script, and /usr/local/libexec is deliberately outside the rsync target.
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "sudo install -d -m 755 /usr/local/libexec/weatheredge && sudo tee '$DEADMAN_BIN.new' >/dev/null && sudo chown root:root '$DEADMAN_BIN.new' && sudo chmod 0755 '$DEADMAN_BIN.new' && sudo mv -f '$DEADMAN_BIN.new' '$DEADMAN_BIN'" \
+    < "$DEADMAN_HELPER" || status=$?
+  if (( status != 0 )); then
+    return "$status"
+  fi
+  # The quiesce helper rides in on stdin and is pinned beside the payload, so
+  # every box-side restore goes through this deploy's audited unit allowlist.
+  output="$(
+    ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      "$(deadman_remote_arm_command pre-transfer "$DEADMAN_TICK_WAIT_SECONDS" "$extra" "$timer_args")" \
+      < "$QUIESCE_HELPER"
+  )" || status=$?
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output"
+  fi
+  if (( status != 0 )); then
+    return "$status"
+  fi
+  reported_version="$(sed -n 's/^DEADMAN_VERSION=//p' <<<"$output" | head -n 1)"
+  if [[ -n "$reported_version" && "$reported_version" != "$DEADMAN_LOCAL_VERSION" ]]; then
+    echo "box-side dead-man reports version $reported_version; this deploy carries $DEADMAN_LOCAL_VERSION" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Phase is data, never a re-arm by stop-and-recreate: there is no unprotected
+# window and no create race. The same call is the compare-and-swap fence, so an
+# 11 or 14 means this deploy has been revoked.
+deadman_phase() {
+  local phase="$1"
+  shift
+  local status=0
+  local timer_args=""
+  local attempt=1
+  local attempts_max="${WEATHEREDGE_RECOVERY_SSH_ATTEMPTS:-4}"
+  local retry_seconds="${WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS:-30}"
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  timer_args="$(deadman_timer_arguments "$@")" || return 1
+  [[ "$attempts_max" =~ ^[1-9][0-9]*$ ]] || attempts_max=4
+  [[ "$retry_seconds" =~ ^[0-9]+$ ]] || retry_seconds=30
+  # ssh exits 255 for its own connection failures and with the remote command's
+  # status otherwise. A phase advance is pure bookkeeping, so a lost connection
+  # is retried exactly like the recovery path rather than failing a deploy whose
+  # install has already passed every gate.
+  while :; do
+    status=0
+    ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      "$(deadman_remote_arm_command "$phase" 0 "" "$timer_args")" < /dev/null \
+      || status=$?
+    if (( status != 255 || attempt >= attempts_max )); then
+      break
+    fi
+    echo "warning: SSH connection lost while advancing the box-side dead-man to phase $phase (attempt $attempt of $attempts_max); retrying in ${retry_seconds}s" >&2
+    sleep "$retry_seconds"
+    attempt=$((attempt + 1))
+  done
+  if (( status == 0 )); then
+    return 0
+  fi
+  case "$status" in
+    11|14|127)
+      deadman_set_fence revoked
+      echo "the box-side deploy dead-man no longer recognises this deploy (status=$status)." >&2
+      ;;
+  esac
+  echo "failed to advance the box-side deploy dead-man to phase $phase (status=$status)" >&2
+  return "$status"
+}
+
+deadman_disarm() {
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "sudo '$DEADMAN_BIN' disarm '$DEPLOY_ID'" < /dev/null
+}
+
+# Move the box-side dead-man to ATTENTION. Used only by a recovery that has
+# decided to leave this box quiesced on purpose.
+deadman_hold() {
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "sudo '$DEADMAN_BIN' hold '$DEPLOY_ID'" < /dev/null
+}
+
+# Called at the END of a recovery, once its outcome is known. A recovery that
+# put the runtime back owns the box and takes the dead-man down with it; a
+# recovery that deliberately left the box quiesced must stop the dead-man from
+# re-enabling those same timers ten minutes later. A recovery that FAILED to
+# reach the box leaves the dead-man armed on purpose -- that is the case it
+# exists for, and the failing ssh is itself the evidence that it is needed.
+deadman_finalize_recovery() {
+  local action="$1"
+  local status=0
+  (( DEADMAN_ENABLED == 1 )) || return 0
+  case "$action" in
+    disarm)
+      deadman_disarm > /dev/null 2>&1 || status=$?
+      if (( status != 0 && status != 14 && status != 127 )); then
+        echo "warning: could not disarm the box-side dead-man after recovery (status=$status); run 'sudo $DEADMAN_BIN clear --force' on the box" >&2
+      fi
+      ;;
+    hold)
+      deadman_hold > /dev/null 2>&1 || status=$?
+      if (( status == 0 || status == 14 || status == 127 )); then
+        echo "The box-side dead-man was moved to ATTENTION so it cannot undo this deliberate quiesce." >&2
+      else
+        echo "warning: could not hold the box-side dead-man after a failed recovery (status=$status)." >&2
+        echo "warning: it may re-enable the release timer set and release maintenance on its own; run 'sudo $DEADMAN_BIN clear --force' on the box if that is not what you want." >&2
+      fi
+      ;;
+  esac
+  return 0
+}
+# --- end box-side deploy dead-man, host side ---------------------------------
 
 verify_deploy_source_unchanged() {
   local phase="$1"
@@ -349,6 +791,49 @@ if (( HOST_STRANDED == 1 )); then
   fi
 fi
 
+# Arm the box-side dead-man before the pre-transfer traps, the maintenance
+# marker and the quiesce. Production is fully live at this point, so a failure
+# to arm costs nothing: nothing is quiesced and no marker exists.
+#
+# PRE_TRANSFER_RESTORE is the host's own rule, handed to the box verbatim, so
+# the dead-man can never invent a policy this deploy would not apply: a host
+# that was already stranded, or a genuinely new one, is never auto-restored.
+if (( HOST_STRANDED == 0 && HOST_DATABASE_PRESENT == 1 )); then
+  DEADMAN_PRE_TRANSFER_RESTORE=1
+fi
+if (( DEADMAN_ENABLED == 1 )); then
+  DEADMAN_ARM_STATUS=0
+  deadman_arm_initial || DEADMAN_ARM_STATUS=$?
+  if (( DEADMAN_ARM_STATUS != 0 )); then
+    echo "refusing to deploy: could not arm the box-side deploy dead-man (status=$DEADMAN_ARM_STATUS)." >&2
+    echo "Nothing has been quiesced and no maintenance marker was installed; production is untouched." >&2
+    if (( DEADMAN_ARM_STATUS == 11 )); then
+      # The box is owned by an unacknowledged incident or by another deploy's
+      # state. Turning the dead-man OFF is the worst possible response to that,
+      # so name the right escape hatch and not the blanket one.
+      echo "Status 11 means the box already holds dead-man state: an incident nobody has" >&2
+      echo "acknowledged, or another deploy's lease. Inspect it before anything else:" >&2
+      echo "  ssh <box> sudo $DEADMAN_BIN status" >&2
+      echo "  ssh <box> cat $DEADMAN_STATE_DIR/last-action" >&2
+      echo "Then follow trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0." >&2
+      echo "To take the box over once you have read the incident: SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1" >&2
+      echo "(equivalently, run 'sudo $DEADMAN_BIN clear --force' on the box)." >&2
+    else
+      echo "Deploying without it is how production sat dark for 46.8 h from 2026-09-13T01:22Z and" >&2
+      echo "22.3 h from 2026-09-15T02:32Z. To proceed anyway: SFO_DEPLOY_DEADMAN_DISABLE=1" >&2
+    fi
+    exit 1
+  fi
+  DEADMAN_FENCE="$(mktemp)"
+  rm -f "$DEADMAN_FENCE"
+  if (( DEADMAN_BEAT_SECONDS > 0 )); then
+    # Its own ssh output is already discarded inside deadman_beat_ssh, so the
+    # only thing this can print is a warning the operator needs in the log.
+    deadman_heartbeat_loop > /dev/null &
+    DEADMAN_BEAT_PID=$!
+  fi
+fi
+
 # Pre-transfer recovery (release review, deploy HIGH). From the maintenance
 # marker until the first rsync the remote source tree is still the running
 # revision, so a failure in that window -- a dropped SSH session during the
@@ -398,6 +883,7 @@ recover_pre_transfer_runtime() {
   local watchdog_captured=0
   local timer=""
   trap - EXIT HUP INT TERM
+  deadman_recovery_gate
   if (( PRE_TRANSFER_RECOVERY_ARMED == 1 )); then
     PRE_TRANSFER_RECOVERY_ARMED=0
     echo "deploy stopped before any source was transferred (status=$interrupted_status); the remote tree is unchanged, so restoring the ${#CAPTURED_TIMERS[@]} captured timer(s) and releasing maintenance" >&2
@@ -418,10 +904,18 @@ recover_pre_transfer_runtime() {
           || echo "warning: scheduler health run after pre-transfer recovery failed; its timer is active" >&2
       fi
       echo "Pre-transfer recovery restored ${#CAPTURED_TIMERS[@]} timer(s) and released deployment maintenance." >&2
+      # The box is fully back, so leave nothing behind. A dead-man left armed
+      # here would keep refusing the next deploy for the rest of its lease.
+      deadman_finalize_recovery disarm
     else
       echo "warning: pre-transfer recovery failed (restore status=$restore_status, release status=$release_status). The host may remain quiesced with the maintenance marker: follow trading/deploy/aws/README.md, 'Release deploy and rollback', phase 0." >&2
+      # Deliberately NOT disarmed: this is exactly the box-side dead-man's case,
+      # and the tree is still the running revision, so its pre-transfer restore
+      # is safe.
+      echo "The box-side dead-man is still armed and will attempt this restore itself." >&2
     fi
   fi
+  deadman_cleanup_fence
   exit "$interrupted_status"
 }
 if (( HOST_STRANDED == 0 && HOST_DATABASE_PRESENT == 1 )); then
@@ -430,6 +924,7 @@ if (( HOST_STRANDED == 0 && HOST_DATABASE_PRESENT == 1 )); then
   trap 'recover_pre_transfer_runtime 130' INT
   trap 'recover_pre_transfer_runtime 143' TERM
   trap 'recover_pre_transfer_runtime $?' EXIT
+  deadman_traps_armed
 fi
 
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
@@ -441,6 +936,7 @@ backup_output="$(
     bash -s backup "$REMOTE_DB" < "$BACKUP_HELPER"
 )"
 printf '%s\n' "$backup_output"
+deadman_abort_if_revoked
 ANALYSIS_DB_SNAPSHOT="$(
   sed -n 's/^WEATHEREDGE_BACKUP_SNAPSHOT=//p' <<<"$backup_output" | tail -n 1
 )"
@@ -463,8 +959,13 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 
 # Source transfer starts here. From now on the remote tree may be mixed, so a
 # failure must leave the host quiesced (see the pre-transfer recovery note).
+# The box-side dead-man is told the same thing, with no timers at all: from here
+# until the install is verified it may never enable one, only record and alert.
+deadman_abort_if_revoked
+deadman_phase mixed
 PRE_TRANSFER_RECOVERY_ARMED=0
 trap - EXIT HUP INT TERM
+deadman_traps_cleared
 
 # The sole Python manifest lives at the repository root and reads README.md
 # while discovering the package below trading/. Send those build inputs before
@@ -629,6 +1130,7 @@ recover_deploy_runtime() {
   local restore_status=0
   local release_status=0
   trap - EXIT HUP INT TERM
+  deadman_recovery_gate
 
   if (( RUNTIME_RECOVERY_REQUIRED == 1 )); then
     if (( ${#ENABLED_TIMERS[@]} > 0 )); then
@@ -664,12 +1166,34 @@ recover_deploy_runtime() {
       fi
     fi
   fi
+  if (( RUNTIME_RECOVERY_REQUIRED == 0 )); then
+    deadman_finalize_recovery disarm
+  else
+    # This recovery deliberately left the box quiesced with the marker. The
+    # box-side dead-man is still in post-install and would re-enable every one
+    # of those timers about a lease later, defeating the split-brain protection
+    # it sits next to -- so it is moved to ATTENTION instead.
+    deadman_finalize_recovery hold
+  fi
+  deadman_cleanup_fence
   exit "$interrupted_status"
 }
 trap 'recover_deploy_runtime 129' HUP
 trap 'recover_deploy_runtime 130' INT
 trap 'recover_deploy_runtime 143' TERM
 trap 'recover_deploy_runtime $?' EXIT
+deadman_traps_armed
+# --- end deployment runtime recovery -----------------------------------------
+
+# Only now is the box-side dead-man told that the install is verified.
+# ENABLED_TIMERS is final here, so handing it over makes its recovery and
+# recover_deploy_runtime's the same policy. The advance is an ssh round trip
+# like any other and therefore sits INSIDE the trap's cover: run before the
+# traps, a transient failure killed the deploy with no handler at all and left
+# a fully installed, fully gated box quiesced behind a `mixed` dead-man that by
+# design never restores a timer.
+deadman_abort_if_revoked
+deadman_phase post-install ${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"}
 
 # Historical analysis is diagnostic and the frequent builder has an explicit
 # deferred state. Run it while deployment maintenance still holds every
@@ -880,10 +1404,20 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo rm -f -- '$DEPLOY_MAINTENANCE_MARKER'"
 RUNTIME_RECOVERY_REQUIRED=0
 trap - EXIT HUP INT TERM
+deadman_traps_cleared
 if (( SCHEDULER_WATCHDOG_ENABLED == 1 )); then
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
     "sudo systemctl start sfo-scheduler-health.service"
 fi
+
+# Heartbeat first, so a beat cannot race the disarm. A failed disarm is a
+# warning, not a deploy failure: the deploy has already succeeded, and the worst
+# case is a post-install dead-man that later idempotently re-enables timers that
+# are already enabled and then removes itself.
+deadman_stop_heartbeat
+deadman_disarm \
+  || echo "warning: dead-man disarm failed; run 'sudo $DEADMAN_BIN clear --force' on the box" >&2
+deadman_cleanup_fence
 
 echo "Synced root packaging inputs, forecaster, and trading source to $REMOTE_USER@$HOST_IP:$REMOTE_BASE"
 echo "Local source: $WEATHEREDGE_ROOT"

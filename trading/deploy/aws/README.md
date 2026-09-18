@@ -204,11 +204,20 @@ Recovery variables read by `sync_to_box.sh`:
 | `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1` | Stranded host (maintenance marker left over, or the database exists and no timer is enabled). A successful deploy restores the release canonical timer set -- what `install_systemd.sh` enables, minus retired timers, plus the scheduler watchdog, 13 timers -- and prints the list before anything is quiesced. |
 | `SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1` | A host deliberately paused by an operator: deploy and keep exactly the captured timers. Never together with the variable above. |
 | `WEATHEREDGE_RECOVERY_SSH_ATTEMPTS`, `WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS` | Retries for the pre-transfer recovery when SSH itself fails (defaults 4 and 30 s). |
+| `SFO_DEPLOY_DEADMAN_DISABLE=1` | Skip the box-side dead-man entirely: no arm, no heartbeat, no disarm. The deploy then strands the box exactly as it did on 2026-09-13 and 2026-09-15 if this host dies. Use only when arming is broken and the deploy cannot wait. |
+| `SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1` | Arm over dead-man state this deploy does not own: an unacknowledged incident (`PHASE=attention`), or a previous deploy whose heartbeat is already older than its own lease. Read `last-action` first; equivalent to `deploy_deadman.sh clear --force` on the box. **This, not `SFO_DEPLOY_DEADMAN_DISABLE=1`, is the answer to an `arm` that exits 11.** |
+| `SFO_DEPLOY_DEADMAN_LEASE_SECONDS` | How long the box waits for a heartbeat before firing (default 600). Minimum 60. |
+| `SFO_DEPLOY_DEADMAN_BEAT_SECONDS` | Heartbeat interval from this host (default 30; `0` disables the background loop). |
+| `SFO_DEPLOY_DEADMAN_BEAT_FAILURE_LIMIT` | Consecutive failed beats before this host declares itself unwatched (default 3). The lease tolerates 20 consecutive misses, so a single blip never takes a healthy deploy down. |
+| `SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS` | How long `arm` waits for a box-side trigger to actually run the payload (default 180). `0` skips that proof entirely and turns "cron and systemd work on that box" back into an assumption; the deploy warns when it is 0. |
 
 Without either override a stranded host is refused before anything is quiesced.
 The backup preflight has already run by then, so its sweep of aged and
 interrupted local snapshots (step 0.4) may have deleted files.
 A healthy host needs neither.
+
+Every deploy arms a box-side dead-man before quiescing anything; a deploy that
+cannot arm it refuses before the maintenance marker is installed.
 
 ### Phase 0: confirm the host state (read-only)
 
@@ -245,6 +254,8 @@ sudo grep -nE '^(SFO_PRUNE_MODE|SFO_DATABASE_BACKUP_KEEP_DAYS|PAPER_ENTRY_MODE|S
 sudo journalctl -u weatheredge-google-nonsfo-refresh -n 30 -o cat
 curl -s https://jaxsonb04.github.io/weather_edge/publication_manifest.json \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["published_at"])'
+sudo /usr/local/libexec/weatheredge/deploy_deadman.sh status 2>/dev/null || echo "no dead-man armed"
+cat /var/lib/weatheredge/deploy-deadman/last-action 2>/dev/null || echo "no dead-man incident on file"
 ```
 
 0.3 Classify the host:
@@ -260,6 +271,11 @@ curl -s https://jaxsonb04.github.io/weather_edge/publication_manifest.json \
   `sudo rm -f /run/weatheredge-deploy-maintenance`. Otherwise deploy with
   `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`.
 - **Deliberately paused:** `SFO_DEPLOY_KEEP_CAPTURED_TIMERS=1`.
+- **Dead-man incident:** `last-action` says `attention-mixed-tree`. The tree may
+  be half-synced, so do **not** enable timers on it. Re-sync from a clean `main`,
+  or restore by hand exactly as in the stranded bullet once you have confirmed
+  the tree, then `sudo /usr/local/libexec/weatheredge/deploy_deadman.sh clear
+  --force`. A deploy refuses to arm until the incident is cleared.
 
 A leftover marker also stops the backup preflight from reclaiming what an
 interrupted backup left (`.restore-check.*` directories and unhashed
@@ -277,6 +293,77 @@ from about 2026-09-15T01:31Z -- or delete it by hand after confirming
 safely, before anything is quiesced. The runbook staged on the Mac at
 `/tmp/deploy_round3.sh` is retired: its free-space step ignores the sweep and
 its timer count includes the disabled Apple refresh timer.
+
+### 0.5 The box-side dead-man
+
+Recovery used to live only in `sync_to_box.sh`'s bash traps, so a deploy host
+that could no longer reach the box left production quiesced and dark: 46.8 h
+from 2026-09-13T01:22Z, and 22.3 h from 2026-09-15T02:32Z when the Mac slept on
+battery mid-integrity-check and woke on an address the security group blocks.
+
+Before it quiesces anything, every deploy now installs
+`/usr/local/libexec/weatheredge/deploy_deadman.sh` on the box and arms it. Two
+independent triggers run it once a minute -- `/etc/cron.d/weatheredge-deploy-deadman`
+and `weatheredge-deploy-deadman.timer` -- and the deploy host proves it is alive
+with one short SSH connection every 30 s. If 600 s pass with no heartbeat, or if
+the box reboots mid-deploy, the dead-man acts on its own. Worst case dark:
+roughly 11.5 minutes.
+
+What it does depends on the phase the deploy last recorded:
+
+| Phase | Deploy position | Action |
+|---|---|---|
+| `pre-transfer` | marker installed, no source copied yet | Restore the captured timer set (retired timers included, because the box still runs the old release) and remove the marker. This is the case that caused both outages. |
+| `mixed` | first rsync started, install not finished | Never enables a timer. The tree may be half-synced and enabling producers over it risks the database. Records an incident, keeps the marker, alerts. |
+| `post-install` | install, unit-integrity and cutover gates all passed | Restore the release timer set and remove the marker, but only if `build_info.json` still names this deploy's `source_sha`. |
+
+Two guards narrow that further. A host the deploy would not have auto-restored
+itself -- already stranded, or genuinely new -- is never auto-restored by the
+dead-man either. And in `pre-transfer` the dead-man asks two independent
+questions before it enables anything:
+
+1. Has any `.py` file been **written** since this deploy armed? `rsync -a`
+   preserves the source mtime, so a transferred file can easily look older than
+   the release stamp -- but rsync writes a temp file and renames it, so its
+   ctime is the transfer time. The dead-man drops an arm stamp and compares
+   ctimes against it, which detects a partial transfer whatever the mtimes say.
+2. Step 0.2's own question: does any `.py` file post-date `build_info.json`?
+   That still catches a tree left mixed by an *earlier* deploy.
+
+Either answer being yes records an incident and stays dark rather than enabling
+producers over a mixed tree. A *missing* `build_info.json` is not that signal
+(no rsync landed either), so it restores anyway.
+
+The host's own recovery traps take the dead-man with them. A recovery that put
+the runtime back disarms it; a recovery that deliberately left the box quiesced
+(`recover_deploy_runtime` could not restore or could not release the marker)
+moves it to `PHASE=attention` with `outcome=attention-host-recovery-held`, so it
+cannot re-enable those timers a lease later and undo a stay-dark decision. A
+recovery that could not reach the box at all leaves it armed on purpose -- that
+is exactly the case it exists for.
+
+`/var/lib/weatheredge/deploy-deadman/last-action` is the durable record:
+
+```bash
+cat /var/lib/weatheredge/deploy-deadman/last-action
+cat /var/lib/weatheredge/deploy-deadman/state
+sudo journalctl -t weatheredge-deploy-deadman --since -2h
+sudo journalctl -u weatheredge-deploy-deadman.service --since -2h
+sudo /usr/local/libexec/weatheredge/deploy_deadman.sh status
+sudo /usr/local/libexec/weatheredge/deploy_deadman.sh clear          # refuses while a lease is live
+sudo /usr/local/libexec/weatheredge/deploy_deadman.sh clear --force  # always works
+```
+
+`clear --force` is the manual escape for every stuck state, including the one
+where `arm` refuses with `another deploy already owns this box` and the other
+deploy is gone. Read `last-action` and `status` first; never reach for
+`SFO_DEPLOY_DEADMAN_DISABLE=1` to get past a refusal, because that deploys with
+no dead-man at all on the one box that just demonstrated it needs one.
+
+A dead-man that restored removes itself and leaves only `last-action`; one that
+raised an incident keeps its state and payload so `status` still works, removes
+both triggers so it acts exactly once, and makes the next deploy refuse until a
+human clears it. A successful deploy disarms it and leaves the box as it was.
 
 ### Phase 1: source
 
@@ -328,7 +415,30 @@ nohup caffeinate -dimsu bash trading/deploy/aws/sync_to_box.sh \
 On a stranded host, prefix the command with
 `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`.
 
-3.3 Expect, in order: `WEATHEREDGE_DATABASE_PRESENT=1` and
+3.3 Expect a pause of roughly 65 s early on, before anything is quiesced, while
+the box proves a trigger really runs the dead-man payload (`DEADMAN_VERSION=`,
+`DEADMAN_DEPLOY_ID=` and `DEADMAN_TRIGGERS=cron,systemd`). If it cannot arm, the
+deploy refuses with
+
+```text
+refusing to deploy: could not arm the box-side deploy dead-man (status=N).
+Nothing has been quiesced and no maintenance marker was installed; production is untouched.
+```
+
+The remedy depends on the status, and the deploy prints the right one:
+
+- **`status=11`** -- the box already holds dead-man state: an incident nobody
+  has acknowledged, or another deploy's lease. Read
+  `deploy_deadman.sh status` and `last-action`, work through phase 0, then take
+  the box over with `SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1` (or
+  `deploy_deadman.sh clear --force` on the box). Do **not** use
+  `SFO_DEPLOY_DEADMAN_DISABLE=1` here.
+- **`status=12`** -- the box cannot run the dead-man at all (no writable
+  `/var/lib`, no cron and no systemd, or no trigger ever ran the payload). Fix
+  the box. `SFO_DEPLOY_DEADMAN_DISABLE=1` is the only way past this one, and it
+  deploys with the 2026-09-13 / 2026-09-15 failure mode fully re-armed.
+
+3.4 Expect, in order: `WEATHEREDGE_DATABASE_PRESENT=1` and
 `database backup preflight passed`;
 `retired WeatherEdge timer captured; the installed release will not restore it, only a pre-transfer recovery would: weatheredge-apple-refresh.timer`;
 a `WEATHEREDGE_BACKUP_SNAPSHOT=` line; installer output including
@@ -338,7 +448,7 @@ and finally `Restored 9 producer timer(s); watchdog restored last=1.` and
 `Scheduler watchdog restored after maintenance=1.` With the canonical override
 the 13 timers are listed before the host is quiesced.
 
-3.4 If it fails:
+3.5 If it fails:
 
 - **Before the first rsync** (preflight, capture, quiesce, backup): on an
   established host the deploy restores every timer it captured and releases
@@ -348,16 +458,25 @@ the 13 timers are listed before the host is quiesced.
   followed by `Pre-transfer recovery restored N timer(s)` (14 on a healthy v2
   host). If it prints
   `pre-transfer recovery failed`, return to step 0.2. A host that was already
-  stranded is left quiesced.
+  stranded is left quiesced. If the deploy host itself died here, the box-side
+  dead-man (0.5) does the same restore about 11 minutes later, and the rerun
+  then sees a healthy host. A recovery that succeeded also disarms the dead-man;
+  a recovery that failed deliberately leaves it armed, and says so.
 - **After the first rsync** (transfer, install, unit verification, account
   cutover): the host stays quiesced with the marker by design. Fix the cause and
   rerun; the rerun captures no timers, so it needs
-  `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`. Or roll back (phase 6).
+  `SFO_DEPLOY_RESTORE_CANONICAL_TIMERS=1`. Or roll back (phase 6). The box-side
+  dead-man is in `mixed` here and will never enable a timer; expect
+  `attention-mixed-tree` in `last-action` and a rerun that also needs
+  `SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1`.
 - **After the cutover gate:** the deploy's own recovery trap restores the timers
-  or quiesces again.
+  or quiesces again. If it quiesced again, it also moves the dead-man to
+  `PHASE=attention` (`The box-side dead-man was moved to ATTENTION`) so the
+  deliberate quiesce stands; clear that with
+  `SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1` or `deploy_deadman.sh clear --force`.
 - In every case, check `data/backups` for a leftover snapshot.
 
-3.5 What the migrations touch: the first `PaperStore` init runs inside the
+3.6 What the migrations touch: the first `PaperStore` init runs inside the
 quiesced window (`validate_account_cutover.py`). It creates three empty tables
 (`ladder_bin_outcomes`, `kalshi_market_resolutions`,
 `paper_settlement_exchange_checks`) with their indexes and records one
@@ -527,7 +646,10 @@ gate still needs the database size plus 1 GiB free.
 6.4 Leave the `SFO_PRUNE_MODE=archive-only` line and its comment: v2's prune
 wrapper already defaults to archive-only.
 
-6.5 Redeploy the v2 SPA with `deploy_web_app.sh` from the reverted tree.
+6.5 Redeploy the v2 SPA with `deploy_web_app.sh` from the reverted tree. The
+dead-man is disarmed by the successful deploy, so a rollback arms a fresh one;
+`sudo /usr/local/libexec/weatheredge/deploy_deadman.sh clear --force` is the
+manual escape if one is ever left behind.
 
 6.6 Harmless leftovers: the three new tables and their migration row, the
 `zz-weatheredge.conf` journald drop-in, `cancel_request` diagnostics on expired
