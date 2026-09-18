@@ -289,6 +289,11 @@ def _arm_awaiting_ticks(
     assert process.stdin is not None
     process.stdin.write(QUIESCE_HELPER.read_text(encoding="utf-8"))
     process.stdin.close()
+    # Detach the closed pipe before communicate(). Python 3.12's _communicate
+    # flushes self.stdin unconditionally and raises ValueError on an already
+    # closed one; 3.13 tolerates it, so CI's production interpreter failed
+    # where the development one passed.
+    process.stdin = None
 
     start = time.time()
     deadline = start + float(tick_wait) + 20
