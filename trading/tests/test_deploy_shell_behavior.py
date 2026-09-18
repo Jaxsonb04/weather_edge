@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
+import re
 import shutil
 import sqlite3
 import struct
@@ -530,6 +531,7 @@ if [ "$SOURCE_PHASE" = transfer ]; then touch "$SOURCE_CHANGED"; fi
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -540,6 +542,8 @@ if [ "$SOURCE_PHASE" = transfer ]; then touch "$SOURCE_CHANGED"; fi
             "SSH_LOG": str(ssh_log), "RSYNC_LOG": str(rsync_log),
         },
         capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
     )
     assert result.returncode != 0
     assert f"Deploy source changed during {'backup verification' if phase == 'backup' else 'source transfer'}" in result.stderr
@@ -707,6 +711,7 @@ for token in sys.argv[1:-1]:
         cwd=arbitrary_cwd,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -719,6 +724,8 @@ for token in sys.argv[1:-1]:
             "FAKE_REMOTE_BASE": str(tmp_path / "remote base"),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 
@@ -799,6 +806,7 @@ exit 0
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -809,6 +817,8 @@ exit 0
             "SSH_LOG": str(ssh_log),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 
@@ -855,6 +865,7 @@ exit 0
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -865,6 +876,8 @@ exit 0
             "ACTION_LOG": str(action_log),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 
@@ -877,12 +890,31 @@ exit 0
     assert not any("probe weatheredge-apple-refresh.timer" in a for a in actions)
     assert actions[2].endswith("bash -s probe weatheredge-apple-purge.timer")
     assert actions[3].endswith("bash -s capture")
-    assert "weatheredge-deploy-maintenance" in actions[4]
-    assert actions[5].endswith("bash -s quiesce")
-    assert actions[6].endswith("bash -s backup /opt/weatheredge/trading/data/paper_trading.db")
-    assert "mkdir -p" in actions[7] and "chown" in actions[7]
-    assert actions[8].startswith("rsync|")
-    assert not any("enable" in action or "start" in action for action in actions)
+    # The box-side dead-man is delivered and armed before anything is quiesced,
+    # so a host that dies during the backup never leaves production dark.
+    payload_idx = _action_index(actions, lambda line: "deploy_deadman.sh.new" in line)
+    arm_idx = _action_index(actions, lambda line: "deploy_deadman.sh' arm " in line)
+    marker_idx = _action_index(actions, lambda line: "weatheredge-deploy-maintenance" in line)
+    quiesce_idx = _action_index(actions, lambda line: line.endswith("bash -s quiesce"))
+    backup_idx = _action_index(actions, lambda line: "bash -s backup " in line)
+    mkdir_idx = _action_index(actions, lambda line: "mkdir -p" in line and "chown" in line)
+    rsync_idx = _action_index(actions, lambda line: line.startswith("rsync|"))
+    assert payload_idx == 4 and arm_idx == 5
+    assert arm_idx < marker_idx < quiesce_idx < backup_idx < mkdir_idx < rsync_idx
+    assert "--phase 'pre-transfer'" in actions[arm_idx]
+    assert "--install-helper --await-tick" in actions[arm_idx]
+    # Only the dead-man's own verbs are exempt, not every line that happens to
+    # name the payload: a future change that enabled a timer from inside a
+    # dead-man command line must still fail here.
+    assert not any(
+        "enable" in action or "start" in action
+        for action in actions
+        if not any(
+            f"deploy_deadman.sh' {verb}" in action
+            for verb in ("arm", "beat", "disarm", "hold")
+        )
+        and "deploy_deadman.sh.new" not in action
+    )
 
 
 def test_full_sync_reinstalls_units_and_restores_exact_enabled_timers_after_success(
@@ -929,6 +961,7 @@ elif 'restore' in args:
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -938,6 +971,8 @@ elif 'restore' in args:
             "ACTION_LOG": str(action_log),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 
@@ -1032,6 +1067,12 @@ def _run_full_sync_with_capture(
     fail_backup_status: int | None = None,
     fail_first_rsync_status: int | None = None,
     restore_connection_failures: int = 0,
+    fail_deadman_arm_status: int | None = None,
+    fail_deadman_phase: tuple[str, int] | None = None,
+    beat_status: int = 0,
+    slow_backup_seconds: float = 0.0,
+    slow_install_seconds: float = 0.0,
+    deadman_version: str | None = None,
     **extra_env: str,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run the real sync_to_box.sh against a scripted host.
@@ -1039,7 +1080,14 @@ def _run_full_sync_with_capture(
     ``database_present`` models the preflight's WEATHEREDGE_DATABASE_PRESENT
     line, i.e. an established host. The failure knobs fail the backup step or
     the first rsync, or make the first N remote restores lose the connection
-    (ssh exit 255).
+    (ssh exit 255). ``fail_deadman_arm_status`` fails every box-side `arm`,
+    ``fail_deadman_phase`` fails one named phase advance only,
+    ``deadman_version`` is the version the box reports back, and ``beat_status``
+    is what the box answers a heartbeat with (14 = revoked).
+    ``slow_backup_seconds`` holds the backup step open, which is the only way to
+    observe the background heartbeat at all: a fully stubbed deploy finishes in
+    well under one beat interval. ``slow_install_seconds`` does the same for the
+    install step, which is inside the deploy's one untrapped window.
     """
 
     fake_bin = tmp_path / "bin"
@@ -1049,7 +1097,7 @@ def _run_full_sync_with_capture(
     _write_executable(
         fake_bin / "ssh",
         f"""#!{sys.executable}
-import os, sys
+import os, sys, time
 from pathlib import Path
 
 args = sys.argv[1:]
@@ -1058,7 +1106,18 @@ log = Path(os.environ['ACTION_LOG'])
 with log.open('a', encoding='utf-8') as handle:
     handle.write('ssh|' + ' '.join(args) + '\\n')
 
-if len(args) >= 2 and args[-2] == 'preflight':
+command = args[-1] if args else ''
+if "deploy_deadman.sh' arm " in command:
+    if os.environ['FAKE_DEADMAN_ARM_STATUS']:
+        raise SystemExit(int(os.environ['FAKE_DEADMAN_ARM_STATUS']))
+    phase = os.environ['FAKE_DEADMAN_PHASE_FAILURE']
+    if phase and ("--phase '" + phase + "'") in command:
+        raise SystemExit(int(os.environ['FAKE_DEADMAN_PHASE_STATUS']))
+    print('DEADMAN_VERSION=' + os.environ['FAKE_DEADMAN_VERSION'])
+    print('DEADMAN_TRIGGERS=cron,systemd')
+elif "deploy_deadman.sh' beat " in command:
+    raise SystemExit(int(os.environ['FAKE_BEAT_STATUS']))
+elif len(args) >= 2 and args[-2] == 'preflight':
     if os.environ['FAKE_DATABASE_PRESENT'] == '1':
         print('WEATHEREDGE_DATABASE_PRESENT=1')
     print('database backup preflight passed')
@@ -1067,9 +1126,16 @@ elif args[-3:] == ['bash', '-s', 'capture']:
         if line:
             print(line)
 elif len(args) >= 2 and args[-2] == 'backup':
+    delay = float(os.environ['FAKE_BACKUP_SECONDS'] or 0)
+    if delay:
+        time.sleep(delay)
     if os.environ['FAKE_BACKUP_STATUS']:
         raise SystemExit(int(os.environ['FAKE_BACKUP_STATUS']))
     print('WEATHEREDGE_BACKUP_SNAPSHOT=/opt/weatheredge/trading/data/backups/paper_trading-test.sqlite3')
+elif 'install_systemd_notimers.sh' in command:
+    delay = float(os.environ['FAKE_INSTALL_SECONDS'] or 0)
+    if delay:
+        time.sleep(delay)
 elif 'restore' in args:
     counter = Path(os.environ['FAKE_RESTORE_COUNTER'])
     attempts = (int(counter.read_text()) if counter.exists() else 0) + 1
@@ -1108,8 +1174,27 @@ elif 'restore' in args:
             "" if fail_first_rsync_status is None else str(fail_first_rsync_status)
         ),
         "FAKE_RESTORE_COUNTER": str(tmp_path / "restore-attempts"),
+        "FAKE_DEADMAN_ARM_STATUS": (
+            "" if fail_deadman_arm_status is None else str(fail_deadman_arm_status)
+        ),
+        "FAKE_DEADMAN_VERSION": (
+            _deadman_version() if deadman_version is None else deadman_version
+        ),
+        "FAKE_DEADMAN_PHASE_FAILURE": (
+            "" if fail_deadman_phase is None else fail_deadman_phase[0]
+        ),
+        "FAKE_DEADMAN_PHASE_STATUS": (
+            "" if fail_deadman_phase is None else str(fail_deadman_phase[1])
+        ),
+        "FAKE_BACKUP_SECONDS": str(slow_backup_seconds),
+        "FAKE_INSTALL_SECONDS": str(slow_install_seconds),
+        "FAKE_BEAT_STATUS": str(beat_status),
         "FAKE_RESTORE_CONNECTION_FAILURES": str(restore_connection_failures),
         "WEATHEREDGE_RECOVERY_SSH_RETRY_SECONDS": "0",
+        # No background heartbeat and no arm-time tick wait: both would make the
+        # action log non-deterministic. The dead-man's own tests drive them.
+        "SFO_DEPLOY_DEADMAN_BEAT_SECONDS": "0",
+        "SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS": "0",
     }
     for name in ("SFO_DEPLOY_RESTORE_CANONICAL_TIMERS", "SFO_DEPLOY_KEEP_CAPTURED_TIMERS"):
         env.pop(name, None)
@@ -1118,8 +1203,13 @@ elif 'restore' in args:
         ["bash", str(AWS_DIR / "sync_to_box.sh")],
         cwd=tmp_path,
         env=env,
+        # The fake ssh always drains stdin and the deploy now forks a background
+        # heartbeat inside this subprocess: an inherited terminal stdin turns a
+        # failure into a hang that only the CI job timeout would end.
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        timeout=300,
     )
     actions = action_log.read_text().splitlines() if action_log.exists() else []
     return result, actions
@@ -1147,7 +1237,51 @@ def _action_index(actions: list[str], predicate) -> int:
     return next(index for index, line in enumerate(actions) if predicate(line))
 
 
+# Every direct sync_to_box.sh run pins these. A real background heartbeat holds
+# the captured stderr pipe, so a test that let the default 30 s loop start would
+# hang until the loop noticed the deploy had exited -- and the arm-time tick wait
+# would make the action log non-deterministic. The dead-man's own tests drive
+# both deliberately.
+_DEADMAN_TEST_ENV = {
+    "SFO_DEPLOY_DEADMAN_BEAT_SECONDS": "0",
+    "SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS": "0",
+}
+
 _MARKER_RELEASE = "sudo rm -f -- '/run/weatheredge-deploy-maintenance'"
+_DEADMAN_BIN = "/usr/local/libexec/weatheredge/deploy_deadman.sh"
+
+
+def _deadman_version() -> str:
+    """The payload's own DEADMAN_VERSION literal, read the way the deploy reads it."""
+
+    text = (AWS_DIR / "deploy_deadman.sh").read_text(encoding="utf-8")
+    (version,) = re.findall(r'^DEADMAN_VERSION="([^"]*)"$', text, re.MULTILINE)
+    return version
+
+
+def _deadman_arm_calls(actions: list[str]) -> list[str]:
+    return [line for line in actions if f"sudo '{_DEADMAN_BIN}' arm " in line]
+
+
+def _deadman_arm_call(actions: list[str], phase: str) -> str:
+    (call,) = [
+        line for line in _deadman_arm_calls(actions) if f"--phase '{phase}'" in line
+    ]
+    return call
+
+
+def _deadman_arm_timers(call: str) -> list[str]:
+    return call.split(" -- ", 1)[1].split() if " -- " in call else []
+
+
+def _deadman_deploy_id(actions: list[str]) -> str:
+    (deploy_id,) = {
+        re.search(r"--deploy-id '([^']+)'", line).group(1)
+        for line in _deadman_arm_calls(actions)
+    }
+    return deploy_id
+
+
 _ESTABLISHED_CAPTURE = (
     "sfo-kalshi-paper-scan.timer",
     "sfo-kalshi-paper-monitor.timer",
@@ -1241,7 +1375,9 @@ def test_full_sync_canonical_recovery_restores_the_release_timer_set_after_a_str
     # Strategy Lab refresh, which the deploy sequences separately.
     assert "Restored 9 producer timer(s); watchdog restored last=1." in result.stdout
     assert "Scheduler watchdog restored after maintenance=1." in result.stdout
-    assert actions[-1].endswith("sudo systemctl start sfo-scheduler-health.service")
+    # The dead-man is disarmed last of all, after the runtime is fully restored.
+    assert f"sudo '{_DEADMAN_BIN}' disarm " in actions[-1]
+    assert actions[-2].endswith("sudo systemctl start sfo-scheduler-health.service")
 
 
 def test_full_sync_recovery_overrides_are_mutually_exclusive(tmp_path: Path) -> None:
@@ -1405,6 +1541,353 @@ def test_full_sync_never_auto_restores_a_host_that_was_already_stranded(
     assert not any(_MARKER_RELEASE in line for line in actions)
 
 
+def test_full_sync_refuses_to_deploy_when_the_box_side_dead_man_cannot_be_armed(
+    tmp_path: Path,
+) -> None:
+    """Stranding is exactly the risk being removed, so a deploy that cannot arm
+    the dead-man refuses -- before the marker, the quiesce or any transfer."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_deadman_arm_status=12
+    )
+
+    assert result.returncode != 0
+    assert "could not arm the box-side deploy dead-man (status=12)" in result.stderr
+    assert "production is untouched" in result.stderr
+    assert "SFO_DEPLOY_DEADMAN_DISABLE=1" in result.stderr
+    assert "46.8 h from 2026-09-13T01:22Z" in result.stderr
+    assert "22.3 h from 2026-09-15T02:32Z" in result.stderr
+    assert not any("weatheredge-deploy-maintenance" in line for line in actions)
+    assert not any(line.endswith("bash -s quiesce") for line in actions)
+    assert not any(line.startswith(("rsync|", "restore|")) for line in actions)
+
+
+def test_full_sync_escape_hatch_skips_the_dead_man_entirely(tmp_path: Path) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, SFO_DEPLOY_DEADMAN_DISABLE="1"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not any("deploy_deadman.sh" in line for line in actions)
+    assert "SFO_DEPLOY_DEADMAN_DISABLE=1; no box-side dead-man will be armed" in result.stderr
+    assert "46.8 h from 2026-09-13T01:22Z" in result.stderr
+    assert "Restored 2 producer timer(s)" in result.stdout
+
+
+def test_full_sync_moves_the_dead_man_through_every_deploy_phase_in_order(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(tmp_path, _ESTABLISHED_CAPTURE)
+
+    assert result.returncode == 0, result.stderr
+    pre_transfer = _action_index(actions, lambda line: "--phase 'pre-transfer'" in line)
+    marker = _action_index(actions, lambda line: "weatheredge-deploy-maintenance" in line)
+    quiesce = _action_index(actions, lambda line: line.endswith("bash -s quiesce"))
+    backup = _action_index(actions, lambda line: "bash -s backup " in line)
+    mixed = _action_index(actions, lambda line: "--phase 'mixed'" in line)
+    first_rsync = _action_index(actions, lambda line: line.startswith("rsync|"))
+    install = _action_index(actions, lambda line: "install_systemd_notimers.sh" in line)
+    post_install = _action_index(actions, lambda line: "--phase 'post-install'" in line)
+    disarm = _action_index(actions, lambda line: f"sudo '{_DEADMAN_BIN}' disarm " in line)
+    assert (
+        pre_transfer
+        < marker
+        < quiesce
+        < backup
+        < mixed
+        < first_rsync
+        < install
+        < post_install
+        < disarm
+    )
+    # Mid-transfer the tree may be mixed, so the dead-man is handed no timer at
+    # all: enabling one is unreachable, not merely unchosen.
+    assert _deadman_arm_timers(actions[mixed]) == []
+    assert len(_deadman_arm_calls(actions)) == 3
+
+
+def test_dead_man_post_install_policy_matches_the_deploy_runtime_recovery(
+    tmp_path: Path,
+) -> None:
+    """The box-side restore and recover_deploy_runtime must be one policy, so
+    the retired Apple refresh timer is absent from both."""
+
+    result, actions = _run_full_sync_with_capture(tmp_path, _RETIRED_CAPTURE)
+
+    assert result.returncode == 0, result.stderr
+    pre_transfer = _deadman_arm_timers(_deadman_arm_call(actions, "pre-transfer"))
+    post_install = _deadman_arm_timers(_deadman_arm_call(actions, "post-install"))
+    # Before the first rsync the box still runs the old release, whose watchdog
+    # requires every timer it had enabled, retired ones included.
+    assert pre_transfer == list(_RETIRED_CAPTURE)
+    assert "weatheredge-apple-refresh.timer" not in post_install
+    assert post_install == list(_ESTABLISHED_CAPTURE)
+
+
+@pytest.mark.parametrize(
+    ("capture_lines", "extra_env", "expected"),
+    [
+        (_ESTABLISHED_CAPTURE, {}, "1"),
+        (
+            ("@deploy-maintenance-marker-present",),
+            {"SFO_DEPLOY_RESTORE_CANONICAL_TIMERS": "1"},
+            "0",
+        ),
+    ],
+)
+def test_dead_man_never_invents_a_restore_policy_the_host_would_refuse(
+    tmp_path: Path,
+    capture_lines: tuple[str, ...],
+    extra_env: dict[str, str],
+    expected: str,
+) -> None:
+    """PRE_TRANSFER_RESTORE is the host's own rule, handed over verbatim: a host
+    that was already stranded is never auto-restored, box-side either."""
+
+    result, actions = _run_full_sync_with_capture(tmp_path, capture_lines, **extra_env)
+
+    assert result.returncode == 0, result.stderr
+    call = _deadman_arm_call(actions, "pre-transfer")
+    assert f"--pre-transfer-restore '{expected}'" in call
+
+
+def test_full_sync_recovery_defers_to_a_dead_man_that_already_acted(
+    tmp_path: Path,
+) -> None:
+    """A beat answered 14: the box-side dead-man owns this host now, so the
+    host-side recovery must not touch a single timer."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_backup_status=7, beat_status=14
+    )
+
+    assert result.returncode == 70
+    assert "This deploy is revoked" in result.stderr
+    assert f"sudo {_DEADMAN_BIN} status" in result.stderr
+    assert "last-action" in result.stderr
+    assert not any(line.startswith("restore|") for line in actions)
+    assert not any(_MARKER_RELEASE in line for line in actions)
+    assert not any("systemctl start" in line for line in actions)
+    assert "Pre-transfer recovery restored" not in result.stderr
+
+
+def test_full_sync_recovery_still_runs_when_the_dead_man_stopped_ticking(
+    tmp_path: Path,
+) -> None:
+    """13 means armed but unwatched: recover from the host and abort."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_backup_status=7, beat_status=13
+    )
+
+    assert result.returncode == 7
+    assert "the box-side dead-man stopped ticking" in result.stderr
+    assert [line for line in actions if line.startswith("restore|")] == [
+        "restore|" + " ".join(_ESTABLISHED_CAPTURE)
+    ]
+    assert any(_MARKER_RELEASE in line for line in actions)
+
+
+def test_the_heartbeat_actually_refreshes_the_lease_during_a_slow_step(
+    tmp_path: Path,
+) -> None:
+    """The lease is the whole mechanism, and only a beat keeps it fresh.
+
+    A fully stubbed deploy finishes in well under one beat interval, so without
+    holding a step open this asserts nothing: deleting the heartbeat spawn
+    entirely still leaves every other host-side test green. The real deploy's
+    backup round trip runs for 45 minutes.
+    """
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        _ESTABLISHED_CAPTURE,
+        slow_backup_seconds=4.0,
+        SFO_DEPLOY_DEADMAN_BEAT_SECONDS="1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    deploy_id = _deadman_deploy_id(actions)
+    beats = [
+        line
+        for line in actions
+        if f"sudo -n '{_DEADMAN_BIN}' beat '{deploy_id}'" in line
+    ]
+    assert len(beats) >= 2, actions
+    # Every beat is its own short-lived connection, never a remote loop: a
+    # remote `while :; do touch; sleep; done` would keep the lease fresh for
+    # hours after this host vanished.
+    assert all("ConnectTimeout=15" in line and "BatchMode=yes" in line for line in beats)
+    settled = (tmp_path / "actions.log").read_text()
+    time.sleep(2)
+    assert (tmp_path / "actions.log").read_text() == settled
+
+
+def test_no_heartbeat_is_sent_when_the_interval_is_zero(tmp_path: Path) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        _ESTABLISHED_CAPTURE,
+        slow_backup_seconds=1.0,
+        SFO_DEPLOY_DEADMAN_BEAT_SECONDS="0",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not any("' beat '" in line for line in actions)
+    assert "the box-side dead-man is armed but this host will not refresh its lease" in result.stderr
+
+
+def test_a_heartbeat_that_learns_the_dead_man_fired_aborts_at_the_next_trap(
+    tmp_path: Path,
+) -> None:
+    """End to end through the background loop: a beat answers 14 while the trap
+    is armed, so the deploy is interrupted mid-step and changes nothing."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        _ESTABLISHED_CAPTURE,
+        slow_backup_seconds=6.0,
+        beat_status=14,
+        SFO_DEPLOY_DEADMAN_BEAT_SECONDS="1",
+    )
+
+    assert result.returncode == 70
+    assert "This deploy is revoked" in result.stderr
+    assert not any(line.startswith(("rsync|", "restore|")) for line in actions)
+    assert not any(_MARKER_RELEASE in line for line in actions)
+
+
+def test_a_dead_man_that_stops_ticking_mid_transfer_never_kills_the_deploy(
+    tmp_path: Path,
+) -> None:
+    """Assumption #6: configuration management can reap the cron entry and unit
+    pair. Between the `mixed` advance and the runtime trap the deploy has NO
+    handler at all, so a SIGTERM there would kill bash outright and leave a
+    half-synced box dark -- strictly worse than the deploy it interrupted. The
+    loss is recorded and the deploy is allowed to finish."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        _ESTABLISHED_CAPTURE,
+        slow_install_seconds=6.0,
+        beat_status=13,
+        SFO_DEPLOY_DEADMAN_BEAT_SECONDS="1",
+        SFO_DEPLOY_DEADMAN_BEAT_FAILURE_LIMIT="2",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "a box-side dead-man beat failed (status=13)" in result.stderr
+    assert "Restored 2 producer timer(s)" in result.stdout
+    assert f"sudo '{_DEADMAN_BIN}' disarm " in actions[-1]
+
+
+def test_a_failed_mixed_phase_advance_stops_the_deploy_before_any_transfer(
+    tmp_path: Path,
+) -> None:
+    """The `mixed` advance is what makes "never enable a timer over a half-synced
+    tree" true. If it silently failed the box would still say `pre-transfer`
+    while rsync rewrote the tree underneath it."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_deadman_phase=("mixed", 12)
+    )
+
+    assert result.returncode != 0
+    assert "failed to advance the box-side deploy dead-man to phase mixed" in result.stderr
+    assert not any(line.startswith("rsync|") for line in actions)
+    # Still inside the pre-transfer trap's cover, so production comes back.
+    assert [line for line in actions if line.startswith("restore|")] == [
+        "restore|" + " ".join(_ESTABLISHED_CAPTURE)
+    ]
+    assert any(_MARKER_RELEASE in line for line in actions)
+
+
+def test_a_failed_post_install_phase_advance_is_caught_by_the_runtime_trap(
+    tmp_path: Path,
+) -> None:
+    """It used to run in the one stretch of the deploy with no trap installed,
+    so a transient ssh failure there left a fully installed, fully gated box
+    quiesced behind a `mixed` dead-man that by design never restores."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_deadman_phase=("post-install", 12)
+    )
+
+    assert result.returncode != 0
+    assert "phase post-install" in result.stderr
+    assert any(line.startswith("rsync|") for line in actions)
+    # The runtime recovery trap owns this window and restores the release set.
+    assert [line for line in actions if line.startswith("restore|")] == [
+        "restore|" + " ".join(_ESTABLISHED_CAPTURE)
+    ]
+    assert any(_MARKER_RELEASE in line for line in actions)
+    assert f"sudo '{_DEADMAN_BIN}' disarm " in actions[-1]
+
+
+def test_a_revoking_post_install_phase_advance_changes_nothing_remotely(
+    tmp_path: Path,
+) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_deadman_phase=("post-install", 14)
+    )
+
+    assert result.returncode == 70
+    assert "This deploy is revoked" in result.stderr
+    assert not any(line.startswith("restore|") for line in actions)
+    assert not any(_MARKER_RELEASE in line for line in actions)
+
+
+def test_full_sync_refuses_a_box_running_a_different_payload_version(
+    tmp_path: Path,
+) -> None:
+    """A failed tee+mv would leave the previous payload in place, and a state
+    format it cannot parse is exactly the box we could not quiesce behind."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, deadman_version="999"
+    )
+
+    assert result.returncode != 0
+    assert "box-side dead-man reports version 999" in result.stderr
+    assert not any("weatheredge-deploy-maintenance" in line for line in actions)
+    assert not any(line.endswith("bash -s quiesce") for line in actions)
+
+
+def test_an_arm_refusal_over_an_incident_points_at_the_incident_not_the_kill_switch(
+    tmp_path: Path,
+) -> None:
+    """Status 11 is the most likely refusal, and it means the box already holds
+    dead-man state. Telling the operator to disable the dead-man there would
+    send them back into the 46.8 h failure by following our own advice."""
+
+    result, _actions = _run_full_sync_with_capture(
+        tmp_path, _ESTABLISHED_CAPTURE, fail_deadman_arm_status=11
+    )
+
+    assert result.returncode != 0
+    assert "could not arm the box-side deploy dead-man (status=11)" in result.stderr
+    assert "SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1" in result.stderr
+    assert f"sudo {_DEADMAN_BIN} clear --force" in result.stderr
+    assert f"cat /var/lib/weatheredge/deploy-deadman/last-action" in result.stderr
+    assert "SFO_DEPLOY_DEADMAN_DISABLE=1" not in result.stderr
+
+
+def test_full_sync_refuses_a_capture_line_that_is_not_a_unit_name(
+    tmp_path: Path,
+) -> None:
+    """CAPTURED_TIMERS is filled verbatim from the box's own capture output and
+    is then interpolated into a remote command string."""
+
+    result, actions = _run_full_sync_with_capture(
+        tmp_path,
+        ("sfo-kalshi-paper-scan.timer", "x.timer; rm -rf /"),
+    )
+
+    assert result.returncode != 0
+    assert "refusing to hand the box-side dead-man an unexpected timer name" in result.stderr
+    assert not any("weatheredge-deploy-maintenance" in line for line in actions)
+    assert not any(line.endswith("bash -s quiesce") for line in actions)
+
+
 def test_timer_state_helper_reports_a_leftover_maintenance_marker(
     tmp_path: Path,
 ) -> None:
@@ -1486,6 +1969,7 @@ elif any(
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -1495,6 +1979,8 @@ elif any(
             "ACTION_LOG": str(action_log),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 
@@ -1561,6 +2047,7 @@ elif any("wait_for_publication_manifest.sh" in arg for arg in args):
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -1570,6 +2057,8 @@ elif any("wait_for_publication_manifest.sh" in arg for arg in args):
             "ACTION_LOG": str(action_log),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 
@@ -1868,6 +2357,7 @@ def test_full_sync_rejects_unsafe_remote_base_before_any_action(
         cwd=tmp_path,
         env={
             **os.environ,
+            **_DEADMAN_TEST_ENV,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "WEATHEREDGE_ROOT": str(ROOT),
             "WEATHEREDGE_ENV_FILE": str(tmp_path / "missing.env"),
@@ -1877,6 +2367,8 @@ def test_full_sync_rejects_unsafe_remote_base_before_any_action(
             "ACTION_LOG": str(action_log),
         },
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
         text=True,
     )
 

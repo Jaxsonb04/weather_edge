@@ -2165,3 +2165,104 @@ def test_deploy_removes_the_verified_snapshot_before_runtime_health_restoration(
         "maintenance still holds producers; otherwise a near-capacity snapshot "
         "can trip the restored runtime's disk-health gate"
     )
+
+
+# --- box-side deploy dead-man: coupling guards -------------------------------
+#
+# The dead-man installs two units of its own and a cron entry, outside every
+# list the deploy's own gates police. These tests fail in CI the moment that
+# stops being true, which is the only place it can be caught: the box cannot be
+# reached to find out the hard way.
+
+DEADMAN_UNITS = (
+    "weatheredge-deploy-deadman.timer",
+    "weatheredge-deploy-deadman.service",
+)
+
+
+def test_unit_integrity_gate_tolerates_the_dead_man_reboot_backstop() -> None:
+    """`verify_systemd_unit_integrity.sh` runs between install and timer
+    restoration. It iterates a fixed MANAGED_UNITS list and only globs the unit
+    search roots for `sfo-alert@?*`, so unknown units pass. If that is ever
+    tightened to "no unexpected units in /etc/systemd/system", this fails first
+    and the deploy does not reject its own backstop on the box."""
+
+    guard = _read(AWS_DIR / "verify_systemd_unit_integrity.sh")
+    managed = guard[guard.index("MANAGED_UNITS=(") : guard.index("\n)", guard.index("MANAGED_UNITS=("))]
+
+    for unit in DEADMAN_UNITS:
+        assert unit not in managed
+        assert unit not in guard
+    globbed = re.findall(r'"\$root"/([A-Za-z0-9@?*.-]+)', guard)
+    assert set(globbed) == {"sfo-alert@?*.service", "sfo-alert@?*.service.d"}
+
+
+def test_scheduler_watchdog_does_not_require_the_dead_man_timer() -> None:
+    """The dead-man is absent for all but a few minutes of a deploy, so the
+    canonical scheduler check must never expect it enabled and active."""
+
+    health = _read(AWS_DIR / "check_scheduler_health.sh")
+    canonical = health[health.index("CANONICAL_TIMERS=(") : health.index("APP_USER=")]
+
+    for unit in DEADMAN_UNITS:
+        assert unit not in canonical
+
+
+def test_dead_man_derives_every_unit_name_from_the_pinned_quiesce_helper() -> None:
+    """`disable_systemd_timers.sh`'s UNIT_PAIRS is the only allowlist of unit
+    names in the system. The payload must not grow a second copy of it."""
+
+    quiesce = _read(AWS_DIR / "disable_systemd_timers.sh")
+    payload = _read(AWS_DIR / "deploy_deadman.sh")
+    block = quiesce[quiesce.index("UNIT_PAIRS=(") : quiesce.index("\n)", quiesce.index("UNIT_PAIRS=("))]
+    pairs = [line.strip().strip('"') for line in block.splitlines()[1:] if line.strip()]
+    timers = [pair.split()[0] for pair in pairs]
+
+    assert len(timers) == 14
+    assert "weatheredge-apple-refresh.timer" in timers
+    # The one exception mirrors recover_pre_transfer_runtime: a restored
+    # scheduler watchdog gets one immediate run so the box is not unwatched
+    # until its next tick.
+    for timer in timers:
+        if timer == "sfo-scheduler-health.timer":
+            continue
+        assert timer not in payload, timer
+        assert timer.removesuffix(".timer") + ".service" not in payload, timer
+    # Exactly two services may be started by name: the scheduler watchdog it
+    # just restored, and its own best-effort alert instance.
+    started = set(re.findall(r'SYSTEMCTL" start ([^\s>|]+)', payload))
+    assert started == {"sfo-scheduler-health.service", '"$DEADMAN_ALERT_UNIT"'}
+
+
+def test_release_runbook_documents_the_dead_man() -> None:
+    runbook = _read(AWS_DIR / "README.md")
+
+    assert "| `SFO_DEPLOY_DEADMAN_DISABLE=1` |" in runbook
+    assert "| `SFO_DEPLOY_DEADMAN_CLEAR_INCIDENT=1` |" in runbook
+    assert "`SFO_DEPLOY_DEADMAN_LEASE_SECONDS`" in runbook
+    assert "`SFO_DEPLOY_DEADMAN_BEAT_SECONDS`" in runbook
+    assert (
+        "Every deploy arms a box-side dead-man before quiescing anything; a deploy that\n"
+        "cannot arm it refuses before the maintenance marker is installed." in runbook
+    )
+    assert "### 0.5 The box-side dead-man" in runbook
+    assert (
+        "sudo /usr/local/libexec/weatheredge/deploy_deadman.sh status 2>/dev/null "
+        '|| echo "no dead-man armed"' in runbook
+    )
+    assert (
+        "cat /var/lib/weatheredge/deploy-deadman/last-action 2>/dev/null "
+        '|| echo "no dead-man incident on file"' in runbook
+    )
+    assert "attention-mixed-tree" in runbook
+    assert "refusing to deploy: could not arm the box-side deploy dead-man" in runbook
+    assert "`SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS`" in runbook
+    assert "`SFO_DEPLOY_DEADMAN_BEAT_FAILURE_LIMIT`" in runbook
+    # An `arm` that exits 11 means the box holds dead-man state. Sending an
+    # operator to the kill switch there is how they would re-enter the very
+    # outage this exists to prevent, so the runbook has to separate the two.
+    assert "**`status=11`**" in runbook
+    assert "**`status=12`**" in runbook
+    assert "Do **not** use" in runbook
+    assert "`SFO_DEPLOY_DEADMAN_DISABLE=1` here." in runbook
+    assert "attention-host-recovery-held" in runbook
