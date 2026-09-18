@@ -214,7 +214,19 @@ A healthy host needs neither.
 
 0.1 Prove SSH from the deploy machine over the network you will deploy on.
 Opening the security group, Tailscale or SSM is the owner's action. Use a
-stable link: the host is quiesced for roughly 30-45 minutes.
+stable link on mains power: at the current ~23 GB database the host stays
+quiesced for roughly two hours. The backup and its restore verification
+dominate that window -- the 30-45 minute figure this runbook used to quote
+predates the database's growth, and the 2026-09-15 deploy was still inside `integrity_check` 45 minutes
+after it started. Publication is dark for the whole window, so mute the off-box
+freshness monitor before you begin, and clear the mute once phase 4 shows a
+fresh publish:
+
+```bash
+gh variable set FRESHNESS_MUTE_UNTIL --repo Jaxsonb04/weather_edge --body '<now + 4h, ISO-8601>'
+# ... deploy ...
+gh variable delete FRESHNESS_MUTE_UNTIL --repo Jaxsonb04/weather_edge
+```
 
 0.2 On the box:
 
@@ -418,7 +430,22 @@ the :10 and :40 minutes. Repeat while `unchecked` keeps falling. Any
   paper-resettle --verify --exchange-check-only --exchange-max-fetches 100 --days 100
 ```
 
-5.5 Supervised catch-up prune, which turns nightly deletion on:
+5.5 Supervised catch-up prune, which turns nightly deletion on. This stops
+`sfo-operational-publish.timer` for an operator-paced window, so the off-box
+freshness monitor (`.github/workflows/publication-freshness.yml`) will file
+"Production publication is stale" once publication is 90 minutes old. Before
+starting, mute it for as long as you expect to need, and clear the mute the
+moment the timers are back:
+
+```bash
+gh variable set FRESHNESS_MUTE_UNTIL --repo Jaxsonb04/weather_edge --body '2026-09-20T18:00:00Z'
+# ... phase 5.5 ...
+gh variable delete FRESHNESS_MUTE_UNTIL --repo Jaxsonb04/weather_edge
+```
+
+A mute only suppresses *new* issues; recovery still closes an open one. A
+release deploy (phase 3) needs the same mute: it darkens publication for about
+two hours, well past the 90-minute threshold.
 
 ```bash
 sudo install -o root -g root -m 600 /dev/null /run/weatheredge-deploy-maintenance
