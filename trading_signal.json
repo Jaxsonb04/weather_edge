@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-09-25T06:02:25+00:00",
+  "generated_at": "2026-09-25T06:12:25+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-09-25T06:02:29+00:00",
+  "market_data_at": "2026-09-25T06:12:29+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -768,7 +768,7 @@
         "p75_f": 77.0152,
         "p90_f": 77.3303
       },
-      "market_data_at": "2026-09-25T06:02:27+00:00",
+      "market_data_at": "2026-09-25T06:12:27+00:00",
       "target_date": "2026-09-24",
       "target_status": "settlement_day",
       "warnings": []
@@ -1013,6 +1013,7 @@
           "probability_lcb": 0.5762,
           "reasons": [
             "forecast source spread 11.7F exceeds max 10.0F; point blend is unreliable",
+            "NO ask size 0.10 below min 1.00; no displayed entry liquidity",
             "NO price 0.68 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
             "lower-bound edge -0.124 below min 0.000"
           ],
@@ -1060,6 +1061,38 @@
           "trade_quality_score": 37.4
         },
         {
+          "action": "BUY_YES",
+          "approved": false,
+          "ask": 0.39,
+          "bid": 0.38,
+          "decision": "NO_TRADE",
+          "edge": -0.0268,
+          "edge_lcb": -0.3557,
+          "ensemble_probability": 0.871,
+          "expected_profit": -0.0,
+          "intraday_probability": null,
+          "label": "71\u00b0 to 72\u00b0",
+          "market_probability": 0.3702,
+          "model_probability": 0.4074,
+          "probability": 0.3832,
+          "probability_lcb": 0.0543,
+          "reasons": [
+            "forecast source spread 11.7F exceeds max 10.0F; point blend is unreliable",
+            "YES price 0.39 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "edge -0.027 below min 0.012",
+            "lower-bound edge -0.356 below min 0.000",
+            "YES lower-bound edge -0.356 is not positive"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": null,
+          "residual_probability": 0.2087,
+          "side": "YES",
+          "spread": 0.01,
+          "ticker": "KXHIGHTSFO-26SEP25-B71.5",
+          "trade_quality_score": 36.9
+        },
+        {
           "action": "BUY_NO",
           "approved": false,
           "ask": 0.81,
@@ -1092,38 +1125,6 @@
         {
           "action": "BUY_YES",
           "approved": false,
-          "ask": 0.39,
-          "bid": 0.38,
-          "decision": "NO_TRADE",
-          "edge": -0.0268,
-          "edge_lcb": -0.3557,
-          "ensemble_probability": 0.871,
-          "expected_profit": -0.0,
-          "intraday_probability": null,
-          "label": "71\u00b0 to 72\u00b0",
-          "market_probability": 0.3702,
-          "model_probability": 0.4074,
-          "probability": 0.3832,
-          "probability_lcb": 0.0543,
-          "reasons": [
-            "forecast source spread 11.7F exceeds max 10.0F; point blend is unreliable",
-            "YES price 0.39 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "edge -0.027 below min 0.012",
-            "lower-bound edge -0.356 below min 0.000",
-            "YES lower-bound edge -0.356 is not positive"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": null,
-          "residual_probability": 0.2087,
-          "side": "YES",
-          "spread": 0.01,
-          "ticker": "KXHIGHTSFO-26SEP25-B71.5",
-          "trade_quality_score": 30.6
-        },
-        {
-          "action": "BUY_YES",
-          "approved": false,
           "ask": 0.33,
           "bid": 0.32,
           "decision": "NO_TRADE",
@@ -1139,6 +1140,7 @@
           "probability_lcb": 0.0,
           "reasons": [
             "forecast source spread 11.7F exceeds max 10.0F; point blend is unreliable",
+            "YES bid size 0.10 below min 1.00",
             "YES price 0.33 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
             "edge -0.138 below min 0.012",
             "lower-bound edge -0.350 below min 0.000",
@@ -1283,7 +1285,7 @@
         "p75_f": 72.4615,
         "p90_f": 74.0474
       },
-      "market_data_at": "2026-09-25T06:02:29+00:00",
+      "market_data_at": "2026-09-25T06:12:29+00:00",
       "target_date": "2026-09-25",
       "target_status": "upcoming",
       "warnings": []
