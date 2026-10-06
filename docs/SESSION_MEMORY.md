@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-05 (Mac research offload and unused Lightsail cost investigation; backend cutover deferred)
+Last updated: 2026-10-05 (bounded hybrid implementation, independent V7 audit and ML comparison; backend cutover deferred)
 
-Last complete production verification: 2026-10-05 21:49 PDT (bounded read-only verification)
+Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last public artifact inspection: 2026-10-05 21:50 PDT (stable manifest and all five JSON hashes)
+Last public artifact inspection: 2026-10-05 23:02 PDT (stable manifest and all five JSON hashes)
 
 Last public app verification: 2026-10-05 21:46 PDT (exact Pages success, app and runtime hashes, desktop/mobile canary)
 
@@ -13,26 +13,90 @@ operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **Mac offload and billing snapshot (October 5, 22:41 PDT):** user requested
-  local compute and removal of unused Lightsail. A six-hour local LaunchAgent
-  completed fresh read-only paper/forecast audits and a bias-only comparison,
-  preserving exports/results privately. Job-scoped caffeinate and non-overlap
-  locks are installed, but future scheduled runs were subsequently disabled
-  at the user's request to review plans first. Any new compute delegation or
-  major EC2 change now requires explicit plan approval before implementation. A transaction-aware full paper-database replica started
-  on the Mac; no successful integrity/restore receipt exists yet. AWS disk
-  remained healthy and origin WAL was empty at the bounded transfer check.
-  No AWS timer or trading setting changed. EC2 hourly pricing is unchanged;
-  actual heavy production analysis and durable backup integration remain work.
-  Authenticated bill at 22:31 PDT showed $8.00 accrued, not a monthly forecast.
-  Lightsail charged $1.17 for unused static IPs; inventory showed two unattached
-  allocations and no instances. Approximate forward cost is $7.30/month for
-  both. The old recurring estimate omitted these resources. Irreversible
-  release was performed by the user for one allocation; a fresh console
-  inspection still showed one unattached allocation, approximately $3.65/month.
-  No assistant deletion ran. No paid
-  expansion, commitment, data deletion or backend cutover occurred. See
-  `docs/local_compute.md`; private access/configuration stays in ignored state.
+- **Hybrid implementation and authorization (October 5, 23:23 PDT):** in this
+  chat the owner authorized designing and implementing bounded Mac/AWS
+  delegation, superseding the earlier pause on local scheduling. Real money,
+  increased AWS charges, hardware/power changes and sustained intensive local
+  computation remain forbidden. AWS retains its ledger, operational collection
+  and public runtime authority. The Mac implementation provides six-hour
+  offline-first audits, fixed chronological ML comparisons and a separate free
+  noncommercial prospective weather shadow. Native AC/thermal/memory/load/disk
+  admission, one numerical thread, half-core pacing, a 20-minute wall deadline,
+  ten-minute observed CPU budget, 2-GiB sampled process-group RSS limit and a
+  shared lock bound work; resource warnings terminate descendants and preserve
+  the last successful result. Recurring AWS downloads default off because
+  remaining free egress has not been verified. Source/input hashes bind results.
+  The actual full Strategy builder is prepared and exercised on a small isolated
+  fixture, but requires a complete verified weather snapshot and guarded import
+  before replacing production work. See `docs/local_compute.md` and
+  `docs/design/plans/2026-10-05-hybrid-v7.md` for workflow and limits.
+  The four-city rotating LaunchAgent is now enabled with no installation-time
+  run. Its first complete execution finished at October 5, 23:32:31 PDT:
+  all four research jobs passed, exactly eight free-provider GETs produced
+  twelve new issued forecasts (fifteen retained), source/input post-hashes
+  matched, 20.335 wall seconds and 8.57 observed CPU seconds were used, with
+  366.9 MiB maximum sampled group RSS. No issued target is resolved yet. The
+  earlier real SFO sample made two free requests, issued three original
+  distributions, used 1.15 observed CPU seconds and 263 MB sampled memory, and
+  correctly kept preliminary NWS truth nonfinal. Latest-only CLI retrieval on
+  a thirty-hour city rotation can miss final reports; gaps are explicit, not
+  imputed. SIGTERM/SIGHUP now clean up separately sessioned children. Final
+  independent focused validation passed 101 tests and 31 subtests.
+- **Research decision (October 5):** the fixed exploratory comparison covers
+  6,656 matched cases over 246 distinct target dates with zero qualified
+  original vintages. Minimum-CRPS location/scale calibration worsened CRPS
+  versus existing bias correction (1.3090 versus 1.2944°F); shallow boosted
+  quantiles worsened mean pinball loss (0.4741 versus 0.4683°F). Both remain
+  unpromoted. Raw historical weather error is not after-fee trading evidence.
+  New Mac shadow records have a separate producer/model identity and cannot
+  extend the AWS ledger or satisfy its V7 readiness clock. Capital feasibility
+  code preserves gross losses, fixed observed fills, complete zero/outage days,
+  blocked bootstrap uncertainty and engineering risk assumptions. Live
+  allocation remains $0; no evidence-backed initial-bankroll optimum exists.
+  October 31 is an engineering/evidence review date. Thirty completed V7
+  post-change weather dates cannot mature by then from this undeployed state.
+- **Billing and recoverability snapshot (October 5, 23:04 PDT):** authenticated
+  billing showed $8.00 month-to-date, $54.50 October forecast and $52.81 September
+  actual. The user previously released both unused Lightsail allocations;
+  22:50 inspection found all Lightsail inventories empty. Their approximate
+  $7.30/month forward saving is separate from unchanged EC2 hourly pricing;
+  past charges remain. Lower CPU load does not itself reduce provisioned cost.
+  No downsize is justified by an instantaneous quiet reading: the dated archive
+  peak already exceeds a 2-GiB candidate's capacity. No paid expansion,
+  commitment, retention deletion or cloud resource mutation was performed.
+  The transaction-aware 31-GiB paper replica completed integrity/foreign-key/
+  checksum verification at 22:54:58 PDT; FileVault is enabled and the local WAL
+  is empty. This local receipt does not satisfy the durable S3 independent
+  restore/cutover contract. AWS's journal was 31.04 GiB with 20.13 GiB free;
+  the canonical backup gate was short 11.91 GiB. No demonstrated disposable
+  content can close that gap. Preserve archive-only policy and defer backend
+  activation rather than bypass recovery or increase spending.
+- **Current runtime snapshot (October 5, 23:02–23:04 PDT):** all five public
+  artifact hashes matched a stable manifest. Backend remained September 4
+  source `2a6432e3`, execution `exec-v4`, fifteen deployed cities and Research ROI
+  V6; neither V7 append-only issued/member table exists there. Historical
+  analysis remained September 4 (`ANALYSIS_STALE`). Live Stability realized
+  equity was $1,053.67 and Research ROI V6 $1,017.93, each an economically
+  separate $1,000 simulation ledger, with two and five open positions respectively.
+  Never combine their bankrolls or borrow their results for V7. All fourteen
+  inherited timers remained active, twenty-nine canonical units passed integrity,
+  no unit failed and no maintenance marker existed. Live execution was disabled
+  and dry-run enabled. Source configures twenty cities; this is not proof of
+  deployment. See `docs/audits/2026-10-05-hybrid-v7-verification.md`.
+- **Hybrid release validation (October 5):** the final local full suite passed
+  3,658 Python tests with ten skips and 31 subtests. All 216 web tests passed;
+  compilation, build, icons, project health and diff checks passed. Lint retains
+  two existing Fast Refresh warnings. Observed landing assets remain 224.26 KiB
+  JS and 18.87 KiB CSS, within budget. Semgrep is absent locally; required exact-
+  candidate CI must supply it before merge. Desktop interaction shows the active
+  V6 identity, separate Mac collection, both negative model comparisons, 6,656
+  cases, 246 dates, zero qualified original historical vintages and $0 live
+  allocation. Historical July fixture labels were independently checked:
+  they are static climatology/LSTM studies; live forecasts use current city and
+  signal feeds. Phone checks at 390 and 320 CSS pixels verified expansion,
+  keyboard reopening, the negative evidence and no horizontal overflow or page
+  errors. Exact-candidate CI, integration and guarded static release remain
+  pending; no backend cutover or new cloud spend has occurred.
 
 - **V7 audit (October 5, 19:56 PDT paper snapshot):** Live Stability and Research
   ROI V6 remain economically separate paper ledgers, each initially $1,000.
@@ -70,8 +134,9 @@ operational claim; all production observations below are dated snapshots.
   improved CRPS by 1.44%, MAE by 0.027°F, with sigma unchanged. It diagnoses an
   existing serving correction, remains exploratory, and proves no trading edge.
   See `docs/research/2026-10-05-v7-audit.md` and its hashed baselines. The $40/day
-  and 5%-daily objectives remain unproven; a proposed October research schedule
-  is documented, with no recurring automation installed.
+  and 5%-daily objectives remain unproven; at that earlier audit the proposed
+  October research schedule had no recurring automation installed. The newer
+  bounded local schedule is described above.
   Core V7 local validation passed 3,533 Python 3.13 tests with nine skips,
   211 web tests, build, compilation, icons, health and diff checks. Desktop and
   393/320px browser checks verified retained negative/zero eras, keyboard
@@ -98,8 +163,9 @@ operational claim; all production observations below are dated snapshots.
   `8649030b1`; draft PR #116 remains separate, unpromoted research. Superseded
   PRs #99, #29 and #103 were closed after their changes were verified integrated.
   Unique incident research and dependency work remain open. No history or
-  assistant attribution was removed. Capacity expansion to 128 GiB was proposed
-  for approximately $6.14/month additional storage; approval remains pending.
+  assistant attribution was removed. Capacity expansion to 128 GiB was previously
+  proposed for approximately $6.14/month additional storage. The current user
+  instruction forbids increased AWS spending; no such purchase is authorized.
   A static-deployment review reproduced the existing web script partially
   replacing the live tree and falsely declaring public delivery. The V7
   follow-up stages/hashes the app, excludes local runtime JSON, atomically
