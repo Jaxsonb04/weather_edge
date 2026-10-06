@@ -647,7 +647,16 @@ function DisclosureHeading({ icon, title, note }: { icon: string; title: string;
 export function ReleaseFindings({ s }: { s: StrategyLab }) {
   const release = s.release;
   const findings = release?.findings?.filter((finding) => finding?.title || finding?.impact) ?? [];
-  if (!release || !findings.length) return null;
+  if (!release || !findings.length) return (
+    <section aria-label="Dated V7 research audit" className="mt-6 min-w-0 rounded-2xl border border-border/70 bg-surface/80 p-4 sm:p-5">
+      <h3 className="text-base font-semibold text-foreground">V7 audit and preserved results</h3>
+      <p className="mt-2 text-sm leading-relaxed text-muted">
+        October 5, 2026 baseline: separate paper-ledger histories, losses, data limitations,
+        and validation of the V7 corrections. The active runtime version is reported above.
+      </p>
+      <a href="https://github.com/Jaxsonb04/weather_edge/blob/main/docs/research/2026-10-05-v7-audit.md" className="mt-3 inline-flex min-h-11 items-center text-sm font-medium text-[color:var(--accent-text)] underline underline-offset-4 hover:text-foreground focus-visible:rounded focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]">Read the dated audit and complete preserved results</a>
+    </section>
+  );
   const reportUrl = release.baseline_report_url?.startsWith("https://github.com/Jaxsonb04/weather_edge/")
     ? release.baseline_report_url : undefined;
   return (

@@ -21,7 +21,11 @@ operational claim; all production observations below are dated snapshots.
   and 170 unassigned legacy roots are retained separately; the latter include
   158 resolved roots and −$66.1495 without an invented bankroll or ROI.
   Never combine these accounts or attribute older results to V7.
-- **Source release and history:** V7 starts a new research identity and copies
+- **Source release and history:** V7 merged in PR #127 on October 5 at 21:01
+  PDT, merge revision `2ce54c9c7989ebb83ba75c5ec800dfdae687a1c7`. Both Python
+  versions and the licensed web/build/browser bundle gate passed on exact
+  candidate `c93f9706b`; the Python 3.13 full gate includes Semgrep. V7 starts a
+  new research identity and copies
   current-main numeric controls without loosening gates. V6 filled exposure,
   ledger events, goals and losses retain their original lineage. Old-generation
   unfilled remainders expire at initialization before new-generation execution.
@@ -50,7 +54,7 @@ operational claim; all production observations below are dated snapshots.
   393/320px browser checks verified retained negative/zero eras, keyboard
   selection, evidence expansion and no overflow/errors. Initial observed assets
   were 224.26 KiB JS and 18.87 KiB CSS; two prior Fast Refresh warnings remain.
-  Required CI status belongs to the V7 PR; local Semgrep was unavailable.
+  Local Semgrep was unavailable; the required GitHub full gate passed.
 - **Operational snapshot and deliberate deferment:** the host was healthy,
   twenty-nine canonical units passed integrity, no unit failed and maintenance
   was absent. All five public artifact hashes matched a stable manifest.
@@ -64,6 +68,34 @@ operational claim; all production observations below are dated snapshots.
   Real-money execution remains disabled. Three Phoenix final-truth warnings
   remain unproven; do not invent settlement. Capacity remediation, guarded
   cutover, refreshed analysis and prospective evidence remain required.
+- **Repository integration:** the primary local checkout now tracks merged V7
+  source on `codex/weatheredge-v7-local` and is clean. The inherited September
+  and October edits were committed intact on the local preservation branch at
+  `8649030b1`; draft PR #116 remains separate, unpromoted research. Superseded
+  PRs #99, #29 and #103 were closed after their changes were verified integrated.
+  Unique incident research and dependency work remain open. No history or
+  assistant attribution was removed. Capacity expansion to 128 GiB was proposed
+  for approximately $6.14/month additional storage; approval remains pending.
+  A static-deployment review reproduced the existing web script partially
+  replacing the live tree and falsely declaring public delivery. The V7
+  follow-up stages/hashes the app, excludes local runtime JSON, atomically
+  exchanges directories under the installed publisher's exact lock, loads its
+  native systemd environment and directly publishes without backend builders.
+  Exact Pages success, public asset hashes and all five JSON/manifest hashes are
+  required, with atomic restoration/republication on failure. Focused validation
+  passed 210 tests and independent review; one Linux-only stress check remains
+  for CI. A dated audit link is verified on desktop and 393/320px browsers.
+  Static release remains pending CI and exclusive backend-deploy coordination.
+  This does not satisfy the blocked journal backup/backend cutover gate.
+- **Phoenix source check (October 5, 21:20 PDT):** the September 27 post-day
+  NWS CLI maximum is missing, and none of twenty-two inspected CLI products
+  establishes a numeric final correction. Monthly CF6 contains 97°F, but its
+  final-posting marker does not mean final data under NWS guidance. A later
+  100°F report belongs to September 26. The three separately owned paper
+  positions remain unresolved. V7 alert copy now correctly requires explicit
+  station/date final-truth recovery and verification; auto-settle does not fetch
+  live CLI. All eighty-four Strategy tests passed. Official raw sources/hashes
+  are preserved privately; no production or account mutation occurred.
 
 ## Prior session briefs (dated snapshots)
 

@@ -423,9 +423,11 @@ describe("readiness accounting gate", () => {
 
 
 describe("published release findings", () => {
-  it("keeps old artifacts free of an unsupported new-release claim", () => {
-    const { container } = render(<ReleaseFindings s={{} as StrategyLab} />);
-    expect(container).toBeEmptyDOMElement();
+  it("links a dated source audit without claiming an old runtime has upgraded", () => {
+    render(<ReleaseFindings s={{} as StrategyLab} />);
+    expect(screen.getByText(/October 5, 2026 baseline/)).toHaveTextContent("The active runtime version is reported above.");
+    expect(screen.getByRole("link", { name: /complete preserved results/i })).toHaveAttribute("href", "https://github.com/Jaxsonb04/weather_edge/blob/main/docs/research/2026-10-05-v7-audit.md");
+    expect(screen.queryByText("V7 research audit")).not.toBeInTheDocument();
   });
 
   it("shows evidence and validation state without treating a correction as profit", () => {

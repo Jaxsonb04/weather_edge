@@ -3538,6 +3538,8 @@ def test_settlement_alert_is_a_benign_warning_during_normal_overnight_lag():
     assert "settlement-pending" in by_code
     assert "settlement-backlog" not in by_code
     assert by_code["settlement-pending"]["level"] == "warning"
+    assert "CLISFO" not in by_code["settlement-pending"]["detail"]
+    assert "until verified final truth is stored" in by_code["settlement-pending"]["detail"]
 
 
 def test_settlement_alert_escalates_to_critical_when_two_days_stale():
@@ -3552,6 +3554,13 @@ def test_settlement_alert_escalates_to_critical_when_two_days_stale():
     assert "settlement-pending" not in by_code
     assert by_code["settlement-backlog"]["level"] == "critical"
     assert "3 days" in by_code["settlement-backlog"]["detail"]
+    alert = by_code["settlement-backlog"]
+    assert "CLISFO" not in alert["detail"] + alert["action"]
+    assert "station/date" in alert["action"]
+    assert "verified final" in alert["action"]
+    assert "paper-resettle --verify" in alert["action"]
+    assert "does not fetch live CLI" in alert["action"]
+    assert "backfills older" not in alert["action"]
 
 
 def _all_strings(value):
