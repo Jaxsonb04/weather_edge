@@ -189,11 +189,10 @@ def _strategy_alerts(
             f"{row.get('target_date')} ({int(row.get('open_orders') or 0)})"
             for row in unresolved_targets[:4]
         )
-        # A paper position settles the MORNING AFTER its target date, once the NWS
-        # CLISFO daily climate report for that date is published (it cannot exist
-        # earlier -- the day's high is not known until the day ends). So a position
-        # whose target was yesterday is in NORMAL settlement lag, not a failure: the
-        # paper-settle timer clears it within hours. Flagging that benign, expected
+        # A paper position normally settles the morning after its target date,
+        # once that station's full-day numeric CLI high is stored as final.
+        # A target from yesterday is in normal settlement lag, not a failure.
+        # Flagging that benign, expected
         # state as a CRITICAL "backlog" is a false alarm. Escalate to critical only
         # when a target is >= 2 days stale, i.e. the settlement-high lookup genuinely
         # failed to resolve it. See docs/trading_engine_diagnosis_2026-06-16.md.
@@ -213,10 +212,11 @@ def _strategy_alerts(
                     "settlement-backlog",
                     "Settlement backlog",
                     f"Paper positions are up to {max_age} days past settlement for completed "
-                    f"target dates: {target_text}. The settlement-high lookup could not resolve "
-                    f"them from CLISFO or WeatherEdge ground truth.",
-                    "Run paper-auto-settle (it backfills older CLISFO versions) or inspect the "
-                    "settlement source for those dates.",
+                    f"target dates: {target_text}. Final station/date NWS CLI settlement truth "
+                    f"has not resolved these positions.",
+                    "Inspect the affected station/date and explicitly backfill only verified final "
+                    "NWS CLI truth. Once stored, run paper-auto-settle for the affected city, then "
+                    "paper-resettle --verify. Auto-settle does not fetch live CLI reports.",
                 )
             )
         else:
@@ -225,10 +225,11 @@ def _strategy_alerts(
                     "warning",
                     "settlement-pending",
                     "Settlement pending",
-                    f"Positions for {target_text} are awaiting the official CLISFO high, which "
-                    f"publishes the morning after the target date. Auto-settle resolves them on "
-                    f"its next run.",
-                    "No action needed; the paper-settle timer settles these automatically.",
+                    f"Positions for {target_text} are awaiting their station's final NWS CLI high, "
+                    f"normally published the morning after the target date. Auto-settle waits "
+                    f"until verified final truth is stored.",
+                    "Allow the station's final CLI truth refresh; the paper-settle timer uses "
+                    "the stored final report.",
                 )
             )
 

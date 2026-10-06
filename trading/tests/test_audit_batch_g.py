@@ -973,7 +973,9 @@ printf '\n' >> "$CALL_LOG"
     assert calls[1].startswith("ssh ")
     assert "operator key.pem" not in calls[2]
     assert "<--protect-args>" in calls[2]
-    assert "<deploy@host.example:/srv/weather edge/webdist/>" in calls[2]
+    assert "<deploy@host.example:/srv/weather edge/.web-deploy/" in calls[2]
+    assert "/candidate/>" in calls[2]
+    assert not any(":/srv/weather edge/webdist/" in call for call in calls)
     wrapper_path = calls[2].split("<-e><", 1)[1].split(">", 1)[0]
     assert " " not in wrapper_path
     assert not Path(wrapper_path).exists()
@@ -1088,7 +1090,8 @@ raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
     calls = [json.loads(line) for line in ssh_log.read_text().splitlines()]
     rsync_call = next(call for call in calls if "rsync" in call)
     assert rsync_call[rsync_call.index("-i") + 1] == str(key)
-    assert rsync_call[-1] == "/opt/weatheredge/webdist/"
+    assert rsync_call[-1].startswith("/opt/weatheredge/.web-deploy/")
+    assert rsync_call[-1].endswith("/candidate/")
 
 
 @pytest.mark.skipif(

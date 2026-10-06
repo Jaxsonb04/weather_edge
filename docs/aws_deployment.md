@@ -135,6 +135,27 @@ Every rsync mode rejects root and noncanonical aliases (repeated/trailing
 slashes or `.`/`..` components) before build; protect-args mode still permits
 spaces within otherwise canonical path components.
 
+V7 web releases transfer into a private, separate staging directory and remove
+all six runtime JSON files from the built app. `web_app_release.py` rejects
+incomplete or altered uploads, probes Linux atomic directory exchange, and
+swaps the complete app under the installed publisher's exact Pages lock. A
+separate lock serializes web releases. The transient release unit loads the
+installed publisher's required EnvironmentFile natively with its user and
+working directory; shell expansion of environment values is not used.
+The installed publisher runs directly without forecast, strategy or trading
+builders. Success requires the exact `gh-pages` commit's successful deployment,
+matching public static files, and all five runtime JSON hashes matching that
+commit's validated manifest. A manifest-only propagation check cannot prove a
+new app release. Failure restores and republishes the previous app; both trees
+and private verification evidence remain in the stage for operator review.
+
+Coordinate web releases exclusively against backend installation. Legacy backend
+installers do not take the web release lock; a maintenance/deadman-state check is
+a rejection gate, not a cross-installer lock. Normal paper, forecast and artifact
+generation may continue. A static-only release needs no paper-journal backup and
+does not upgrade the trading backend, refresh historical analysis, or establish
+V7 paper performance.
+
 The environment installed at `/etc/weatheredge.env` is based on
 `trading/deploy/aws/sfo-weather.env.example`. Apple WeatherKit remains
 safe-off until an operator configures a WeatherKit Service ID and private key,

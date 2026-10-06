@@ -561,10 +561,14 @@ def test_operational_publish_service_runs_fast_builder_then_publisher():
     assert "CPUWeight=50" in service
 
 
-def test_web_app_deploy_triggers_fast_operational_publication():
+def test_web_app_deploy_invokes_publisher_without_data_builders():
     deployer = _read(AWS_DIR / "deploy_web_app.sh")
+    helper = _read(AWS_DIR / "web_app_release.py")
 
-    assert "systemctl start sfo-operational-publish.service" in deployer
+    assert "systemctl show -p User --value sfo-operational-publish.service" in deployer
+    assert "publish_forecaster_pages.sh" in helper
+    assert "run_publication_cycle.sh" not in helper
+    assert "systemctl start" not in deployer
     assert "systemctl start sfo-strategy-lab-refresh.service" not in deployer
 
 
