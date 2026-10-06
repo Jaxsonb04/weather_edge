@@ -36,7 +36,11 @@ from .forecast import (
     has_forecaster_observed_high_adjustment,
 )
 from .kalshi import KalshiPublicClient, KalshiUnavailable
-from .maker_fills import EXECUTION_MODEL_VERSION, normalize_public_trade
+from .maker_fills import (
+    EXECUTION_MODEL_VERSION,
+    depth_observation_is_contemporaneous,
+    normalize_public_trade,
+)
 from .models import MarketBin
 from .probability import ResidualCalibrator
 from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
@@ -109,16 +113,32 @@ def _validate_monitor_args(args: argparse.Namespace) -> None:
 
 
 def _monitor_market_lookup(
-    client: KalshiPublicClient, tickers: list[str]
+    client: KalshiPublicClient,
+    tickers: list[str],
+    *,
+    observed_at_by_ticker: dict[str, str] | None = None,
+    clock=None,
 ) -> dict[str, MarketBin | Exception]:
-    """Resolve each unique monitor ticker once, with documented batch fallback."""
+    """Resolve each unique ticker and preserve a conservative quote-read clock.
 
+    A batch may span several requests and retries. Its request-start timestamp
+    bounds every returned quote's age conservatively; missing tickers get their
+    own fallback request-start time. Stamping later at execution would hide the
+    time spent fetching other markets or processing earlier positions.
+    """
+
+    clock = clock or (lambda: datetime.now(UTC))
     unique = list(dict.fromkeys(str(ticker) for ticker in tickers if ticker))
     resolved: dict[str, MarketBin | Exception] = {}
     batch = getattr(client, "get_markets", None)
     if callable(batch) and unique:
         try:
+            observed_at = clock().isoformat()
             resolved.update({market.ticker: market for market in batch(unique)})
+            if observed_at_by_ticker is not None:
+                observed_at_by_ticker.update(
+                    {ticker: observed_at for ticker in resolved}
+                )
         except HTTPError as exc:
             if exc.code in (401, 403, 429) or exc.code >= 500:
                 return {ticker: exc for ticker in unique}
@@ -131,7 +151,10 @@ def _monitor_market_lookup(
         if ticker in resolved:
             continue
         try:
+            observed_at = clock().isoformat()
             resolved[ticker] = client.get_market(ticker)
+            if observed_at_by_ticker is not None:
+                observed_at_by_ticker[ticker] = observed_at
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
             resolved[ticker] = exc
     return resolved
@@ -330,7 +353,9 @@ def run_paper_monitor(
     strategy_config_factory=strategy_config_for_profile,
     decide_exit_fn=decide_exit,
     refresh_model_reads=_refresh_same_day_model_reads,
+    clock=None,
 ) -> int:
+    clock = clock or (lambda: datetime.now(UTC))
     color = Color.from_no_color(args.no_color)
     store = PaperStore(args.db_path)
 
@@ -366,9 +391,17 @@ def run_paper_monitor(
             log=lambda message: print(color.yellow(message), file=sys.stderr),
         )
     quote_rows = [row for row in rows if not _is_guaranteed_payoff_group_row(row)]
+    quote_observed_at: dict[str, str] = {}
     market_lookup = _monitor_market_lookup(
-        client, [str(row["market_ticker"]) for row in quote_rows]
+        client,
+        [str(row["market_ticker"]) for row in quote_rows],
+        observed_at_by_ticker=quote_observed_at,
+        clock=clock,
     )
+    # Economically separate paper accounts are independent scenarios. Within
+    # one account, a single fetched top bid is finite even when retained legacy
+    # lots share its ticker/side. New-entry uniqueness remains a separate guard.
+    depth_consumed: dict[tuple[str, str, str], float] = {}
     closed = 0
     inspected = 0
     for row in rows:
@@ -607,6 +640,28 @@ def run_paper_monitor(
         reason = signal.reason
         exit_kind = signal.action  # "TAKE_PROFIT" | "STOP_LOSS"
 
+        observed_at = quote_observed_at.get(str(row["market_ticker"]))
+        if not depth_observation_is_contemporaneous(observed_at, clock().isoformat()):
+            stale_reason = (
+                f"{reason}; close deferred: fetched quote is stale or undated "
+                f"(observed_at={observed_at})"
+            )
+            store.record_monitor_snapshot(
+                row,
+                side=side,
+                action="HOLD_STALE_QUOTE",
+                reason=stale_reason,
+                market_status=market.status,
+                live_bid=live_bid,
+                exit_fee_per_contract=exit_fee,
+                net_exit_per_contract=net_exit,
+                unrealized_pnl=pnl_dollars,
+                unrealized_roi=pnl_pct,
+                model_read=model_read_info,
+            )
+            print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {stale_reason}")
+            continue
+
         if args.dry_run:
             store.record_monitor_snapshot(
                 row,
@@ -630,10 +685,18 @@ def run_paper_monitor(
 
         # An exit may only book the quantity the displayed top-bid liquidity
         # supports (audit EX-02). With no displayed size the close waits.
-        bid_size = market.side_bid_size(side)
+        depth_key = (
+            str(row["account_id"] or "paper-shared"),
+            str(row["market_ticker"]),
+            side,
+        )
+        displayed_bid_size = market.side_bid_size(side)
+        prior_consumed = depth_consumed.get(depth_key, 0.0)
+        bid_size = max(0.0, displayed_bid_size - prior_consumed)
         if bid_size <= 0:
             no_depth_reason = (
-                f"{reason}; close deferred: displayed {side} bid size is zero"
+                f"{reason}; close deferred: no unconsumed displayed {side} bid depth "
+                "remains for this account"
             )
             store.record_monitor_snapshot(
                 row,
@@ -675,10 +738,12 @@ def run_paper_monitor(
                 liquidity_evidence={
                     "bid": live_bid,
                     "displayed_bid_size": bid_size,
+                    "original_displayed_bid_size": displayed_bid_size,
+                    "account_depth_consumed_before_exit": prior_consumed,
                     "market_status": market.status,
                     "monitor_action": action,
                     "exit_reason": exit_kind,
-                    "observed_at": datetime.now(UTC).isoformat(),
+                    "observed_at": observed_at,
                     "source": "monitor_market_lookup",
                 },
             )
@@ -695,6 +760,7 @@ def run_paper_monitor(
             continue
         closed += 1
         executed = float(closed_row["contracts"])
+        depth_consumed[depth_key] = prior_consumed + executed
         remaining = max(0.0, contracts - executed)
         pnl = f"${closed_row['realized_pnl']:.2f}"
         pnl = color.green(pnl) if closed_row["realized_pnl"] >= 0 else color.red(pnl)

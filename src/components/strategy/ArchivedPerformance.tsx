@@ -5,7 +5,6 @@ import { useRef, useState, type KeyboardEvent } from "react";
 import { pct } from "../../lib/data";
 import {
   archivedProfiles,
-  featuredArchivedProfiles,
   money,
   profileDisplayLabel,
   type AccountSnapshot,
@@ -58,6 +57,16 @@ const ARCHIVE_STORIES: Record<string, ArchiveStory> = {
     color: "accent",
   },
 };
+
+function archiveStory(profile: ProfileEntry): ArchiveStory {
+  return ARCHIVE_STORIES[profile.risk_profile] ?? {
+    stage: "Archived experiment",
+    title: profileDisplayLabel(profile),
+    note: "This published profile retains its original result and dated evidence. A policy conclusion is not published for this era; zero trades and missing evidence remain visible.",
+    icon: "solar:archive-check-bold",
+    color: "default",
+  };
+}
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -272,6 +281,7 @@ function ArchiveEvidenceCard({
   const activityFieldsPublished = days.some(hasPublishedActivityFields);
   const evidenceStart = profile.daily_summary?.window_start ?? days[0]?.date;
   const evidenceEnd = profile.daily_summary?.window_end ?? days.at(-1)?.date;
+  const fullEra = profile.daily_summary?.window_basis === "profile_era";
   const activity = activeDays.length
     ? `Visible activity ${dateRange(activeDays[0].date, activeDays.at(-1)?.date)}`
     : activityFieldsPublished
@@ -327,8 +337,8 @@ function ArchiveEvidenceCard({
                 emphasis="secondary"
                 height={176}
                 eyebrow="Attribution only"
-                title={`${story.title} — full-run P&L`}
-                description={`${dateRange(evidenceStart, evidenceEnd)} · this experiment's full run, attribution not account equity`}
+                title={`${story.title} — ${fullEra ? "full-run" : "published"} P&L`}
+                description={`${dateRange(evidenceStart, evidenceEnd)} · ${fullEra ? "this experiment's full run" : "published evidence window"}, attribution not account equity`}
                 className="min-w-0 max-w-full"
               />
             </div>
@@ -421,8 +431,7 @@ function ArchiveEvidenceCard({
 }
 
 export function ArchivedPerformance({ s }: { s: StrategyLab }) {
-  const allProfiles = archivedProfiles(s);
-  const profiles = featuredArchivedProfiles(s);
+  const profiles = archivedProfiles(s);
   const defaultKey = profiles.find((profile) => profile.risk_profile === "research-target-v4")?.risk_profile
     ?? profiles.at(-1)?.risk_profile
     ?? "";
@@ -441,7 +450,7 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
     profiles.findIndex((profile) => profile.risk_profile === effectiveKey),
   );
   const selected = profiles[selectedIndex];
-  const selectedStory = ARCHIVE_STORIES[selected.risk_profile];
+  const selectedStory = archiveStory(selected);
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex: number | null = null;
@@ -472,16 +481,13 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
               Research decision trail
             </h3>
             <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted">
-              Choose an evidence-bearing era to inspect its dated graph, exact record, and policy decision. One detail panel keeps the lineage compact without hiding the audit trail.
+              Every published prior profile is available, including zero-trade experiments. Choose a profile to inspect its dated graph, exact record, and any published policy decision.
             </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2 sm:justify-end">
           <Chip size="sm" variant="soft" color="accent">
-            <Chip.Label>{profiles.length} featured eras</Chip.Label>
-          </Chip>
-          <Chip size="sm" variant="soft" color="default">
-            <Chip.Label>{allProfiles.length} frozen profiles retained</Chip.Label>
+            <Chip.Label>{profiles.length} archived profiles</Chip.Label>
           </Chip>
         </div>
       </div>
@@ -492,12 +498,11 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
       >
         <div
           role="tablist"
-          aria-label="Featured strategy eras"
+          aria-label="Archived strategy profiles"
           className="grid min-w-0 grid-cols-2 gap-2 lg:grid-cols-1"
         >
           {profiles.map((profile, index) => {
-            const story = ARCHIVE_STORIES[profile.risk_profile];
-            if (!story) return null;
+            const story = archiveStory(profile);
             const summary = profile.paper_trading?.summary;
             // Only the selected era's panel is mounted, so an unselected tab must
             // not advertise aria-controls for an element that does not exist.
@@ -560,8 +565,8 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
       <aside className="flex min-w-0 items-start gap-2 px-1 text-xs leading-relaxed text-muted">
         <Icon icon="solar:filter-bold" className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
         <p>
-          <strong className="font-semibold text-foreground">Curated, not deleted.</strong>{" "}
-          Zero-trade, superseded short-run, execution-only, and non-comparable legacy profiles remain in the public audit artifact but are intentionally omitted from this recruiter-facing lineage.
+          <strong className="font-semibold text-foreground">All published histories retained.</strong>{" "}
+          Balances from separate paper accounts are never combined. Shared-account legacy curves show strategy attribution; zero-trade profiles remain selectable and missing results remain unavailable.
         </p>
       </aside>
     </div>

@@ -16,6 +16,7 @@ from .forecast import (
     ForecastDataError,
     SfoForecasterAdapter,
     has_forecaster_observed_high_adjustment,
+    matching_emos_distribution,
     parse_target_date,
 )
 from .kalshi import KalshiPublicClient, load_event_snapshots
@@ -123,6 +124,9 @@ def build_target_report(
         max_age_hours=config.max_forecast_age_hours,
     )
     _enforce_live_forecast_freshness(forecast, config)
+    matching_emos = matching_emos_distribution(
+        forecast, enabled=config.emos_distribution_enabled
+    )
     intraday = _intraday_for_report(target, adapter, observed_high)
     observed_high_f = intraday.observed_high_f if intraday else None
     if intraday is not None and not has_forecaster_observed_high_adjustment(forecast):
@@ -153,6 +157,8 @@ def build_target_report(
     emos_lookup = (
         adapter.load_emos_mu_sigma(lead_days=None) if config.emos_distribution_enabled else {}
     )
+    if matching_emos is not None:
+        emos_lookup = {**emos_lookup, target: matching_emos}
     probabilities = calibrator.bucket_probabilities(
         markets,
         forecast.predicted_high_f,

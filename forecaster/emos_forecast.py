@@ -1,27 +1,25 @@
 """Persist EMOS (mu, sigma) day-high forecasts for the trade engine (Phase 2).
 
-The trade engine consumes a predictive distribution, not a point. Phase 1 proved
-the rolling-origin EMOS post-processor produces a calibrated Gaussian that beats
-both climatology and the heuristic blend on CRPS. This module writes that Gaussian
+The trade engine consumes a predictive distribution, not a point. This module fits
+an EMOS Gaussian to station-specific NWP history and writes that distribution
 to a ``forecast_emos_daily_high`` table -- the same forecaster -> trading handoff
 contract as ``forecast_blend_daily_high`` (both live in the shared weather.db) --
 so the trading ``ResidualCalibrator`` can read (mu, sigma) and build bucket
 probabilities directly from the EMOS distribution behind its inert config flag.
 
-Rolling-origin is preserved end to end: every archived (mu, sigma) is the
-out-of-sample prediction Phase 1 validated (fit on strictly-prior days only), so a
-backtest that reads this table is leakage-safe by construction.
-
-LIVE note: for *tomorrow* the day-ahead forecast is the current model run, not the
-``previous_day1`` reconstruction used for the historical archive. The live path
-(fetch current multi-model forecasts -> fit on all history -> apply) is a separate
-follow-up; this module ships the research/backtest archive the calibrator gate is
-validated against first.
+Historical rows enforce a prior-truth boundary, but their ``previous_dayN``
+members are stitched fixed-lead reconstructions, not a single run available at a
+trading decision time. They support weather-skill research, not executable-edge
+claims. Live serving uses current-run named model maxima. Separate append-only
+vintage tables preserve each served distribution, its members and training
+lineage without overwriting the current legacy handoff row. Provider model
+initialization and hourly completeness remain unknown for daily-only responses.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +28,7 @@ from urllib.parse import urlencode
 from cities import CITIES, CityConfig, get_city, parse_city_slugs
 from emos_recalibration import correction_for_serve
 from emos_sources import ROLLING_ORIGIN_V2_SOURCE
+from live_forecast_evidence import LiveModelForecast, record_live_forecast
 from nwp_archive import (
     NWP_MODELS,
     NwpArchiveError,
@@ -390,6 +389,7 @@ def fetch_live_model_forecasts_multi(
         payload = _http_get_json(f"{OPEN_METEO_FORECAST_URL}?{params}")
     except NwpArchiveError:
         return {}
+    retrieved_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     daily = payload.get("daily") or {}
     times = daily.get("time") or []
     out: dict[date, dict[str, float]] = {}
@@ -406,10 +406,10 @@ def fetch_live_model_forecasts_multi(
             if not highs or index >= len(highs):
                 continue
             value = highs[index]
-            if value is not None:
+            if type(value) in (int, float) and math.isfinite(value):
                 values[model] = float(value)
         if values:
-            out[target] = values
+            out[target] = LiveModelForecast(values, retrieved_at=retrieved_at)
     return out
 
 
@@ -443,8 +443,8 @@ def serve_live_emos(
 
     CONSISTENCY NOTE: the fit is trained on the previous_day1 archive while the
     serve input is the current run -- biases are dominated by lead-invariant model
-    offsets, but a future hardening step is to also archive the current-run
-    forecast for tomorrow daily so train and serve share a lead.
+    offsets. The immutable live evidence now preserves current-run inputs so a
+    future replay can measure this train/serve mismatch. It does not remove it.
     """
 
     ensure_schema(conn)
@@ -459,11 +459,12 @@ def serve_live_emos(
         # on. A current-day CLI row may still be preliminary, so its mere
         # presence must not freeze the same-day serve.
         return None
-    history = [
-        (nwp_by_date[d], truth[d])
+    training = [
+        (d, nwp_by_date[d], truth[d])
         for d in sorted(nwp_by_date)
         if d < target_iso and d in truth and len(nwp_by_date[d]) >= MIN_MODELS
     ]
+    history = [(models, actual) for _day, models, actual in training]
     if len(history) < EMOS_MIN_TRAIN:
         return None
     params = fit_emos(history, weight_mode=weight_mode)
@@ -477,7 +478,9 @@ def serve_live_emos(
     )
     # Drop live models with no learned bias (absent from training history) so an
     # unseen or renamed model cannot enter the debiased mean uncorrected.
-    forecasts = {model: value for model, value in forecasts.items() if model in params.biases}
+    raw_forecasts = forecasts
+    forecasts = {model: value for model, value in forecasts.items()
+                 if model in params.biases and type(value) in (int, float) and math.isfinite(value)}
     if len(forecasts) < MIN_MODELS:
         return None
     mu, sigma = apply_emos(params, forecasts)
@@ -503,7 +506,17 @@ def serve_live_emos(
         )
         mu, sigma = correction.apply(mu, sigma)
 
-    stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    record_live_forecast(
+        conn, city=city, target_date=target_date, recorded_at=stamp,
+        inputs=raw_forecasts, used_models=set(forecasts), mu=mu, sigma=sigma,
+        fit_lead_days=lead_days, legacy_lead_days=stored_lead, method=_method_tag(weight_mode),
+        training=training,
+        fit_params={name: getattr(params, name) for name in params.__slots__},
+        serve_policy={"bias_recalibration": recalibrate and SERVE_RECAL_BIAS,
+                      "sigma_recalibration": recalibrate and SERVE_RECAL_SIGMA,
+                      "borrowed_lead_sigma_scale": _borrowed_lead_sigma_scale(station, stored_lead, lead_days)},
+    )
     conn.execute(
         """
         INSERT OR REPLACE INTO forecast_emos_daily_high

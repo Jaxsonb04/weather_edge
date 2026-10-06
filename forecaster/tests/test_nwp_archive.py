@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import pytest
 from urllib.parse import parse_qs, urlparse
 
 import nwp_archive
@@ -16,14 +17,15 @@ from nwp_archive import (
 )
 
 
+def _hours(day):
+    return [f"{day}T{hour:02d}:00" for hour in range(24)]
+
+
 def test_reconstruct_groups_by_local_date_and_takes_max():
     payload = {
         "hourly": {
-            "time": [
-                "2025-06-10T08:00", "2025-06-10T14:00", "2025-06-10T20:00",
-                "2025-06-11T09:00", "2025-06-11T15:00",
-            ],
-            "temperature_2m_previous_day1": [55.0, 63.2, 58.0, 60.0, 61.5],
+            "time": _hours("2025-06-10") + _hours("2025-06-11"),
+            "temperature_2m_previous_day1": [63.2] + [55.0] * 23 + [61.5] + [60.0] * 23,
         }
     }
     out = reconstruct_daily_max(payload, lead_days=1)
@@ -35,30 +37,30 @@ def test_reconstruct_reads_previous_day_variable_not_base():
     # in favour of the day-ahead 'temperature_2m_previous_day1'.
     payload = {
         "hourly": {
-            "time": ["2025-06-10T14:00", "2025-06-10T15:00"],
-            "temperature_2m": [99.0, 98.0],                 # leaky -- must NOT be used
-            "temperature_2m_previous_day1": [63.2, 62.0],   # the honest day-ahead value
+            "time": _hours("2025-06-10"),
+            "temperature_2m": [99.0] * 24,                 # leaky -- must NOT be used
+            "temperature_2m_previous_day1": [63.2] + [62.0] * 23,
         }
     }
     out = reconstruct_daily_max(payload, lead_days=1)
     assert out == {"2025-06-10": 63.2}
 
 
-def test_reconstruct_skips_none_values():
+def test_reconstruct_rejects_partial_day_instead_of_understating_the_high():
     payload = {
         "hourly": {
-            "time": ["2025-06-10T08:00", "2025-06-10T14:00"],
-            "temperature_2m_previous_day1": [None, 61.0],
+            "time": _hours("2025-06-10"),
+            "temperature_2m_previous_day1": [None] + [61.0] * 23,
         }
     }
-    assert reconstruct_daily_max(payload, lead_days=1) == {"2025-06-10": 61.0}
+    assert reconstruct_daily_max(payload, lead_days=1) == {}
 
 
 def test_reconstruct_handles_higher_leads():
     payload = {
         "hourly": {
-            "time": ["2025-06-10T14:00"],
-            "temperature_2m_previous_day3": [70.5],
+            "time": _hours("2025-06-10"),
+            "temperature_2m_previous_day3": [70.5] * 24,
         }
     }
     assert reconstruct_daily_max(payload, lead_days=3) == {"2025-06-10": 70.5}
@@ -85,7 +87,7 @@ def test_fetch_requests_only_previous_day_variable():
 
     def fake_get(url, timeout=45.0):
         captured["url"] = url
-        return {"hourly": {"time": ["2025-06-01T14:00"], "temperature_2m_previous_day2": [70.0]}}
+        return {"hourly": {"time": _hours("2025-06-01"), "temperature_2m_previous_day2": [70.0] * 24}}
 
     original = nwp_archive._http_get_json
     nwp_archive._http_get_json = fake_get
@@ -132,10 +134,10 @@ def test_archive_batches_lead_variables_without_mixing_their_values(monkeypatch)
         requests.append(query)
         return {
             "hourly": {
-                "time": ["2025-06-10T14:00", "2025-06-11T14:00"],
-                "temperature_2m_previous_day1": [70.0, 71.0],
-                "temperature_2m_previous_day2": [72.0, 73.0],
-                "temperature_2m": [99.0, 99.0],
+                "time": _hours("2025-06-10") + _hours("2025-06-11"),
+                "temperature_2m_previous_day1": [70.0] * 24 + [71.0] * 24,
+                "temperature_2m_previous_day2": [72.0] * 24 + [73.0] * 24,
+                "temperature_2m": [99.0] * 48,
             }
         }
 
@@ -166,9 +168,9 @@ def test_archive_batch_keeps_present_lead_when_other_is_missing(monkeypatch):
     def fake_get(url, timeout=45.0):
         requests.append(url)
         return {"hourly": {
-            "time": ["2025-06-10T14:00"],
-            "temperature_2m_previous_day1": [70.0],
-            "temperature_2m": [99.0],
+            "time": _hours("2025-06-10"),
+            "temperature_2m_previous_day1": [70.0] * 24,
+            "temperature_2m": [99.0] * 24,
         }}
 
     monkeypatch.setattr(nwp_archive, "_http_get_json", fake_get)
@@ -194,9 +196,9 @@ def test_archive_batch_failure_isolated_to_model_and_chunk(monkeypatch):
         if query["models"] == ["unavailable"]:
             raise NwpArchiveError("upstream unavailable")
         return {"hourly": {
-            "time": [query["start_date"][0] + "T14:00"],
-            "temperature_2m_previous_day1": [70.0],
-            "temperature_2m_previous_day2": [72.0],
+            "time": _hours(query["start_date"][0]),
+            "temperature_2m_previous_day1": [70.0] * 24,
+            "temperature_2m_previous_day2": [72.0] * 24,
         }}
 
     monkeypatch.setattr(nwp_archive, "_http_get_json", fake_get)
@@ -280,3 +282,29 @@ def test_manual_backfill_default_retains_lead_three(monkeypatch):
 
     assert status == 0
     assert calls == [("sfo", (1, 2, 3))]
+
+
+@pytest.mark.parametrize("bad_value", [None, float("nan"), float("inf"), "invalid", True])
+def test_reconstruct_requires_every_hour_to_be_finite(bad_value):
+    payload = {"hourly": {
+        "time": _hours("2025-06-10") + _hours("2025-06-11"),
+        "temperature_2m_previous_day1": [bad_value] + [61.0] * 23 + [70.0] * 24,
+    }}
+    assert reconstruct_daily_max(payload, 1) == {"2025-06-11": 70.0}
+
+
+@pytest.mark.parametrize("times", [
+    _hours("2025-06-10")[:23],
+    _hours("2025-06-10") + ["2025-06-10T00:00"],
+    _hours("2025-06-10")[:23] + ["2025-06-10T23:30"],
+])
+def test_reconstruct_rejects_missing_duplicate_or_off_hour_coverage(times):
+    assert reconstruct_daily_max({"hourly": {
+        "time": times, "temperature_2m_previous_day1": [61.0] * len(times),
+    }}, 1) == {}
+
+
+def test_reconstruct_rejects_truncated_parallel_arrays():
+    assert reconstruct_daily_max({"hourly": {
+        "time": _hours("2025-06-10"), "temperature_2m_previous_day1": [61.0] * 23,
+    }}, 1) == {}

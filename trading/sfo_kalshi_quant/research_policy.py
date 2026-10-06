@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timezone
 from enum import Enum
 from zoneinfo import ZoneInfo
@@ -247,7 +247,7 @@ TARGET_POLICY_V5 = ResearchSleevePolicy(
 )
 
 
-# Active paper-only ROI experiment. v6 is the LAST uniform size step: the size
+# Frozen paper-only ROI experiment. v6 is the LAST uniform size step: the size
 # curve was replayed end-to-end against the recorded public tape (every maker
 # parent order re-run through the repo's own allocate_maker_fills and the db.py
 # capacity gate), and it saturates. Measured $/day by scale factor over v4:
@@ -284,7 +284,7 @@ TARGET_POLICY_V5 = ResearchSleevePolicy(
 # remain historical upper bounds. research_entry_risk.py now imposes tighter
 # entry sizing and a projected daily-loss reservation without resetting equity
 # or rewriting frozen goals. Its execution version is separately fingerprinted.
-TARGET_POLICY = ResearchSleevePolicy(
+TARGET_POLICY_V6 = ResearchSleevePolicy(
     sleeve=ResearchSleeve.TARGET,
     account_id="paper-research-roi-v6",
     policy_version="research-target-roi-v6",
@@ -300,6 +300,16 @@ TARGET_POLICY = ResearchSleevePolicy(
     allocator_version="policy-sized-v3",
 )
 
+
+# v7 is a correctness/evidence release, not another uniform risk increase.
+# Its independent paper ledger starts at the same declared reference capital;
+# v6 orders, realized losses, goals and unsettled positions retain their identity.
+# Keep the v6 object byte-for-byte frozen so its fingerprints still resolve.
+TARGET_POLICY = replace(
+    TARGET_POLICY_V6,
+    account_id="paper-research-roi-v7",
+    policy_version="research-target-roi-v7",
+)
 
 MOTION_POLICY = ResearchSleevePolicy(
     sleeve=ResearchSleeve.MOTION,
@@ -326,6 +336,7 @@ ALL_RESEARCH_POLICIES = (
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
+    TARGET_POLICY_V6,
     TARGET_POLICY,
     MOTION_POLICY,
 )

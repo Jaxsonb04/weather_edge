@@ -76,7 +76,17 @@ const profile = (
 });
 
 describe("ArchivedPerformance", () => {
-  it("shows only the evidence-bearing lineage with a dated attribution curve per era", () => {
+  it("claims a full run only when the publisher identifies a complete profile era", () => {
+    const archived = profile("research-target-v6", "Research ROI v6", 255, 184, 71, 17.93);
+    const s = { profiles: [archived] } as unknown as StrategyLab;
+    const { rerender } = render(<ArchivedPerformance s={s} />);
+    expect(screen.getByTestId("archive-curve")).toHaveTextContent("published evidence window");
+    expect(screen.getByTestId("archive-curve")).not.toHaveTextContent("full run");
+    rerender(<ArchivedPerformance s={{ ...s, profiles: [{ ...archived, daily_summary: { ...archived.daily_summary, window_basis: "profile_era" } }] } as unknown as StrategyLab} />);
+    expect(screen.getByTestId("archive-curve")).toHaveTextContent("this experiment's full run");
+  });
+
+  it("shows every published archive profile with a dated attribution curve per era", () => {
     const s = {
       profiles: [
         { label: "Live Stability", risk_profile: "live", profile_type: "primary" },
@@ -94,6 +104,8 @@ describe("ArchivedPerformance", () => {
           { open_positions: 1 },
         ),
         profile("research-target-v5", "Research ROI v5 (archived 1.5x step)", 2, 0, 2, -4.65),
+        profile("research-target-v6", "Research ROI v6", 255, 184, 71, 17.93),
+        profile("unknown-archive", "Unknown retained policy", 0, 0, 0, 0),
         profile("research-motion", "Research motion (archived execution learning)", 512, 262, 250, -0.08),
         profile("research", "Legacy research (archived)", 154, 77, 77, -107.53),
       ],
@@ -149,7 +161,7 @@ describe("ArchivedPerformance", () => {
     expect(screen.getByRole("tab", { name: /Baseline control record/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Rejected ROI policy/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Adopted ROI revision/i })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    expect(screen.getAllByRole("tab")).toHaveLength(10);
     expect(screen.getAllByTestId("archive-curve")).toHaveLength(1);
     expect(screen.getByTestId("archive-curve")).toHaveAttribute("data-days", "2");
     expect(screen.getByTestId("archive-curve")).toHaveAttribute("data-starting-bankroll", "0");
@@ -158,14 +170,20 @@ describe("ArchivedPerformance", () => {
     expect(screen.getByTestId("archive-curve")).toHaveTextContent(/Jul 27.*Aug 2, 2026/i);
     expect(screen.getByTestId("archive-curve")).toHaveTextContent(/not account equity/i);
 
-    expect(container.querySelectorAll("[data-archive-option]")).toHaveLength(4);
+    expect(container.querySelectorAll("[data-archive-option]")).toHaveLength(10);
+    fireEvent.click(screen.getByRole("tab", { name: /Research ROI v2/i }));
+    expect(container.querySelector('[data-archive-profile="research-target-v2"]')).toBeInTheDocument();
+    expect(screen.getAllByTestId("archive-curve")).toHaveLength(1);
+    fireEvent.keyDown(screen.getByRole("tab", { name: /Research ROI v2/i }), { key: "End" });
+    expect(screen.getByRole("tab", { name: /Unknown retained policy/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText(/A policy conclusion is not published for this era/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /Adopted ROI revision/i }));
     expect(container.querySelectorAll("[data-archive-profile]")).toHaveLength(1);
-    expect(screen.queryByText(/Research target v2/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Research ROI v5/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Research motion/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Legacy research \(archived\)/i)).not.toBeInTheDocument();
-    expect(screen.getByText("4 featured eras")).toBeInTheDocument();
-    expect(screen.getByText("8 frozen profiles retained")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Research ROI v2/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Research ROI v5/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Research motion/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Legacy research/i })).toBeInTheDocument();
+    expect(screen.getByText("10 archived profiles")).toBeInTheDocument();
     expect(screen.getByText("80 resolved")).toBeInTheDocument();
     expect(screen.getByText("Inspect Adopted ROI revision daily evidence")).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: /scrollable daily evidence table/i })).toHaveLength(1);
@@ -302,7 +320,7 @@ describe("ArchivedPerformance", () => {
     expect(screen.queryByText("$958.38")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: /Baseline control record/i }));
     expect(screen.getByText("$1,053.46 realized balance")).toBeInTheDocument();
-    expect(screen.getByText(/curated, not deleted/i)).toBeInTheDocument();
+    expect(screen.getByText(/all published histories retained/i)).toBeInTheDocument();
   });
 
   it("preserves unknown daily fields instead of fabricating zero activity", () => {

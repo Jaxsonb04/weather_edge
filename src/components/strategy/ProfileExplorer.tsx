@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Button } from "@heroui/react/button";
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
-import { activeProfiles, money, profileDisplayLabel, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
+import { activeProfiles, money, profileDisplayLabel, researchDailyTarget, type ProfileEntry, type StrategyLab } from "../../lib/strategy";
 import { ProfileDashboard } from "./ProfileDashboard";
 import { BorderBeam } from "../magicui/BorderBeam";
 
@@ -21,7 +21,8 @@ const ROLES: Record<string, string> = {
   "research-motion": "Execution learning",
 };
 
-function ProfileOption({ profile, index, active, onSelect }: {
+function ProfileOption({ s, profile, index, active, onSelect }: {
+  s: StrategyLab;
   profile: ProfileEntry;
   index: number;
   active: boolean;
@@ -51,7 +52,7 @@ function ProfileOption({ profile, index, active, onSelect }: {
           <span className="font-mono text-[10px] tracking-[0.16em] text-muted">0{index + 1}</span>
         </span>
         <span className="min-w-0">
-          <span className="block text-balance font-display text-base font-semibold leading-snug text-foreground">{profileDisplayLabel(profile)}</span>
+          <span className="block text-balance font-display text-base font-semibold leading-snug text-foreground">{profileDisplayLabel(profile, researchDailyTarget(s, profile)?.policy_version)}</span>
           <span className="mt-1 block text-xs text-muted">{ROLES[profile.risk_profile] ?? "Research profile"}</span>
         </span>
         <span className="flex items-end justify-between gap-3">
@@ -86,6 +87,7 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
       <div className="grid min-w-0 grid-cols-1 gap-3 pt-2 sm:grid-cols-2" role="group" aria-label="Choose a strategy profile">
         {profiles.map((profile, index) => (
           <ProfileOption
+            s={s}
             key={profile.risk_profile}
             profile={profile}
             index={index}

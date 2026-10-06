@@ -16,6 +16,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
+    TARGET_POLICY_V6,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
@@ -48,9 +49,9 @@ def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> No
     assert TARGET_POLICY_V2.daily_loss_pause_pct == 0.10
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # 2026-07-31: TARGET_POLICY is v5 (v4 breadth geometry scaled 1.5x).
-    assert TARGET_POLICY.account_id == "paper-research-roi-v6"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v6"
+    # V7 preserves the existing geometry while isolating corrected behavior.
+    assert TARGET_POLICY.account_id == "paper-research-roi-v7"
+    assert TARGET_POLICY.policy_version == "research-target-roi-v7"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_return == 0.05
     assert TARGET_POLICY.target_pnl == 50.0
@@ -67,6 +68,7 @@ def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> No
         TARGET_POLICY_V3,
         TARGET_POLICY_V4,
         TARGET_POLICY_V5,
+        TARGET_POLICY_V6,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -439,6 +441,7 @@ def test_fresh_store_bootstraps_every_research_policy_account(tmp_path) -> None:
         "paper-research-roi-v4",
         "paper-research-roi-v5",
         "paper-research-roi-v6",
+        "paper-research-roi-v7",
         "paper-research-motion-v1",
     }
     assert all(state is not None for state in states.values())

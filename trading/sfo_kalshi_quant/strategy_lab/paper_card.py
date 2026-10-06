@@ -629,6 +629,7 @@ def _research_book_profiles(
         "research-target-v3",
         "research-target-v4",
         "research-target-v5",
+        "research-target-v6",
         "research-motion",
         "research",
     ):

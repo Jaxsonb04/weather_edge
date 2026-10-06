@@ -126,7 +126,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
   const approvalRate = gateCount.signals > 0 ? gateCount.approved / gateCount.signals : null;
   const alertOk = currentStateAvailable && (p.status?.alert_level ?? "ok") === "ok";
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
-  const displayLabel = profileDisplayLabel(p);
+  const displayLabel = profileDisplayLabel(p, researchDailyTarget(s, p)?.policy_version);
 
   return (
     <Card className="h-full rounded-2xl ring-1 ring-border/70">

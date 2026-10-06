@@ -278,6 +278,7 @@ def test_nothing_in_the_trading_path_reads_the_observability_table():
 
     package = Path(__file__).resolve().parents[1] / "sfo_kalshi_quant"
     allowed = {
+        "archive.py",                       # lossless durability only
         "store/market_day_settlements.py",  # the recorder itself
         "store/schema.py",                  # table creation
         "db.py",                            # recording + read-back accessor

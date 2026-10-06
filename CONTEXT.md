@@ -4,6 +4,11 @@ WeatherEdge is a station-aligned weather forecasting and Kalshi paper-trading
 research project covering twenty US city daily-high markets, with SFO as the
 flagship.
 
+For canonical current source and runtime boundaries, read
+[the repository map](docs/REPOSITORY_MAP.md) and
+[architecture](docs/architecture.md). Production coverage and policy require
+artifact provenance; they need not match the current source registry.
+
 ## Domain Terms
 
 - **City registry**: `forecaster/cities.py` (duplicated byte-identically as
@@ -17,11 +22,11 @@ flagship.
 - **CLI settlement**: every market settles on its own NWS Climatological
   Report (CLI); each city's climate day is midnight-to-midnight in local
   standard time.
-- **Forecast blend**: weighted Google Weather, NWS, Open-Meteo, SFO history,
-  and capped live-station adjustment. SFO-only; non-SFO cities run the
-  station-agnostic NWP→EMOS→CLI path.
-- **Ground truth**: final station high from NWS observations or CLI settlement
-  sources, stored station-keyed in the `cli_settlements` table.
+- **Forecast blend**: optional legacy SFO weighted-source path. The shared
+  baseline is station-specific NWP→EMOS→CLI, including SFO when its artifact
+  names EMOS. Raw optional provider availability is not a promoted model.
+- **Ground truth**: admissible final station CLI high stored station/date-keyed
+  in `cli_settlements`. Observation-derived high-so-far is nonfinal context.
 - **Kalshi bin**: a mutually exclusive settlement bucket for a city's daily
   high temperature market.
 - **Observed-high lock**: same-day rule that prevents impossible lower bins once
@@ -30,11 +35,12 @@ flagship.
   edges, especially before the afternoon high window.
 - **Paper trade**: simulated trade recorded against real Kalshi market prices.
   It does not place a real order.
-- **Target exposure cap**: cumulative per-target-date paper risk limit as a
-  fraction of bankroll; there is no daily spend budget. Caps are series-scoped
-  per city.
-- **Balanced profile**: paper-research risk profile; statistically conservative
-  (lower-bound edge must be non-negative) with structural liquidity gates.
+- **Target exposure cap**: cumulative per-target-date paper risk limit,
+  series-scoped per city, alongside account cash, concentration and daily-loss
+  capacity checks. Requested size is not guaranteed filled exposure.
+- **Live Stability / Research ROI**: separate economic paper accounts. Live
+  Stability alone contributes to readiness; versioned Research ROI is bounded
+  paper research. Legacy CLI aliases do not create extra active accounts.
 - **Reservation-first entry**: production entry mode (`PAPER_ENTRY_MODE=limit`)
   normally rests limits at the reservation price. Profile-scoped guarded
   taker crosses may instead capture displayed whole-contract depth when exact

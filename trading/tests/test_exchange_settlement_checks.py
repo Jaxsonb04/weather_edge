@@ -794,6 +794,7 @@ def test_nothing_in_the_trading_path_reads_the_exchange_check_tables():
 
     package = Path(__file__).resolve().parents[1] / "sfo_kalshi_quant"
     allowed = {
+        "archive.py",  # lossless durability only; no decision/settlement authority
         "store/exchange_settlement_checks.py",  # schema, verdicts, SQL
         "store/schema.py",  # table creation
         "exchange_settlement.py",  # the network half of the check

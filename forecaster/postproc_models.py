@@ -1,7 +1,7 @@
 """Trained probabilistic post-processors for the SFO daily high (Phase 1).
 
-Two leakage-safe, rolling-origin predictors that turn the multi-model NWP archive
-into a calibrated predictive distribution -- the object the trade engine needs:
+Two rolling-origin predictors that turn the multi-model NWP archive into a
+predictive distribution for retrospective weather-skill research:
 
 * **EMOS / NGR** (Ensemble Model Output Statistics, a.k.a. non-homogeneous
   Gaussian regression; Gneiting et al. 2005). Per-model rolling bias-correction
@@ -20,12 +20,17 @@ into a calibrated predictive distribution -- the object the trade engine needs:
 Leakage discipline (the whole point -- two prior interventions in this repo died
 out-of-sample on subtle leakage):
 
-* Strict rolling-origin: a prediction for day D is fit using ONLY days strictly
-  before D. History is appended *after* the prediction is made.
+* A replay served lead days before D fits only truth through D-lead-1.
+  Callers must supply ``truth_lag_days``; the default zero is generic next-day
+  rolling origin. History is appended *after* the prediction is made.
 * Every standardisation/normalisation statistic the analog distance uses is
   computed from the training history alone, never the target day or the future.
 * A warm-up minimum-training guard: early days return no prediction (excluded and
   counted by the scoreboard) rather than being fit on too little history.
+
+These truth boundaries do not establish when reconstructed NWP inputs were
+available. Issued vintages and decision-time market evidence are required for
+trading-probability promotion.
 
 Pure standard library; depends only on the small scoring primitives module so
 there is no import cycle with either scoreboard that consumes these.
@@ -317,27 +322,40 @@ def analog_ensemble_predictions(
     *,
     k: int = ANALOG_K,
     min_train: int = ANALOG_MIN_TRAIN,
+    truth_lag_days: int = 0,
 ) -> dict[str, tuple[float, float]]:
     """Rolling-origin analog ensemble.
 
     Each past day is summarised by (ensemble mean, spread). For the target day,
     find the K nearest past days in that 2-D feature space -- standardised by the
-    *history's* own feature scales (leakage-safe) -- and use their realised CLISFO
-    highs as the predictive ensemble.
+    *available history's* own feature scales -- and use their realised CLISFO
+    highs as the predictive ensemble. A target D served lead days earlier uses
+    only truth through D-lead-1, matching the EMOS truth boundary.
     """
 
+    if truth_lag_days < 0:
+        raise ValueError("truth_lag_days must be non-negative")
+
     preds: dict[str, tuple[float, float]] = {}
-    history: list[tuple[float, float, float]] = []  # (mean, spread, truth)
+    history: list[tuple[str, float, float, float]] = []  # (date, mean, spread, truth)
     for date_str in dates_sorted:
         stats = day_mean_spread(nwp_by_date.get(date_str))
-        if stats is not None and len(history) >= min_train:
+        truth_cutoff = (
+            date.fromisoformat(date_str) - timedelta(days=truth_lag_days + 1)
+        ).isoformat()
+        available_history = [
+            (mean, spread, actual)
+            for history_date, mean, spread, actual in history
+            if history_date <= truth_cutoff
+        ]
+        if stats is not None and len(available_history) >= min_train:
             target_mean, target_spread, _ = stats
-            means = [h[0] for h in history]
-            spreads = [h[1] for h in history]
+            means = [h[0] for h in available_history]
+            spreads = [h[1] for h in available_history]
             mean_scale = pstdev(means) or 1.0
             spread_scale = pstdev(spreads) or 1.0
             scored = sorted(
-                history,
+                available_history,
                 key=lambda h: (
                     ((h[0] - target_mean) / mean_scale) ** 2
                     + ((h[1] - target_spread) / spread_scale) ** 2
@@ -349,7 +367,7 @@ def analog_ensemble_predictions(
                 sigma = max(stdev(analog_truths), SIGMA_FLOOR_F)
                 preds[date_str] = (mu, sigma)
         if stats is not None and date_str in truth:
-            history.append((stats[0], stats[1], truth[date_str]))
+            history.append((date_str, stats[0], stats[1], truth[date_str]))
     return preds
 
 

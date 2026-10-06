@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import ssl
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
@@ -242,21 +243,38 @@ def reconstruct_daily_max(payload: dict, lead_days: int) -> dict[str, float]:
     We read *only* ``temperature_2m_previous_day{N}`` -- never the plain
     ``temperature_2m`` (which is the freshest/analysis run and would leak). Hours
     are grouped by the fixed-PST local date in the API's ``time`` strings, so the
-    max covers the Kalshi settlement window.
+    max covers the settlement window. A day needs all 24 distinct, finite hourly
+    values: a maximum of a partial response is a high-so-far, not a daily high.
     """
 
     hourly = payload.get("hourly") or {}
     times = hourly.get("time") or []
     temps = hourly.get(previous_day_variable(lead_days)) or []
-    by_date: dict[str, float] = {}
+    if len(times) != len(temps):
+        return {}
+    by_date: dict[str, dict[int, float]] = {}
+    invalid_days: set[str] = set()
     for stamp, value in zip(times, temps):
-        if value is None:
+        try:
+            valid_at = datetime.fromisoformat(str(stamp))
+        except ValueError:
             continue
-        local_date = str(stamp)[:10]
-        current = by_date.get(local_date)
-        if current is None or value > current:
-            by_date[local_date] = float(value)
-    return by_date
+        local_date = valid_at.date().isoformat()
+        hours = by_date.setdefault(local_date, {})
+        if (
+            valid_at.minute or valid_at.second or valid_at.microsecond
+            or valid_at.hour in hours
+            or type(value) not in (int, float)
+            or not math.isfinite(value)
+        ):
+            invalid_days.add(local_date)
+            continue
+        hours[valid_at.hour] = float(value)
+    return {
+        local_date: max(hours.values())
+        for local_date, hours in by_date.items()
+        if local_date not in invalid_days and len(hours) == 24
+    }
 
 
 def fetch_model_range(

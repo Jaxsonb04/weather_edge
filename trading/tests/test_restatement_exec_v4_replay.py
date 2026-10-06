@@ -472,8 +472,8 @@ def test_restatement_rejects_price_time_priority_inversion() -> None:
                 "DROP INDEX ux_paper_orders_open_market_side_profile"
             )
             conn.execute(
-                "UPDATE paper_orders SET account_id='paper-shared' WHERE id=?",
-                (higher_id,),
+                "UPDATE paper_orders SET account_id=? WHERE id=?",
+                (store.paper_order(lower_id)["account_id"], higher_id),
             )
         _apply(store, "priority-inversion", no_price=0.70, quantity=5.0)
         with store.connect() as conn:

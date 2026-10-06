@@ -26,7 +26,7 @@ vi.mock("../ui/Reveal", () => ({
   Reveal: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-import { AnalysisFreshness, EvidenceDossier, LiveStatusStrip, OverviewEquity, TrackRecordFinding } from "./StrategyLabView";
+import { ReleaseFindings, AnalysisFreshness, EvidenceDossier, LiveStatusStrip, OverviewEquity, TrackRecordFinding } from "./StrategyLabView";
 import { ReadinessPanel } from "../strategy/ReadinessPanel";
 
 const degradedWithResearchBook = {
@@ -418,5 +418,26 @@ describe("readiness accounting gate", () => {
     expect(screen.queryByText(/8\/8 checks passed/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/go-live readiness/i)).not.toBeInTheDocument();
     expect(screen.queryByText("READY")).not.toBeInTheDocument();
+  });
+});
+
+
+describe("published release findings", () => {
+  it("keeps old artifacts free of an unsupported new-release claim", () => {
+    const { container } = render(<ReleaseFindings s={{} as StrategyLab} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows evidence and validation state without treating a correction as profit", () => {
+    render(<ReleaseFindings s={{ release: {
+      version: "v7",
+      comparison_note: "v6 remains a separate account.",
+      baseline_report_url: "https://github.com/Jaxsonb04/weather_edge/blob/main/docs/research/2026-10-05-v7-audit.md",
+      findings: [{ code: "exit-depth", title: "Shared quote depth", evidence: "reproduced source defect", state: "tested correction", impact: "Prior lots could reuse the same bid depth." }],
+    } } as StrategyLab} />);
+    expect(screen.getByText("V7 research audit")).toBeInTheDocument();
+    expect(screen.getByText("Evidence: reproduced source defect")).toBeInTheDocument();
+    expect(screen.getByText("tested correction")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /dated baseline/i })).toHaveAttribute("href", "https://github.com/Jaxsonb04/weather_edge/blob/main/docs/research/2026-10-05-v7-audit.md");
   });
 });

@@ -1192,7 +1192,7 @@ def _backfill_legacy_research_daily_goal_fingerprints(
 
 
 def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
-    """Bootstrap all ledgers and archive every policy except active target v3."""
+    """Bootstrap ledgers and archive every policy except the active target era."""
 
     for policy in ALL_RESEARCH_POLICIES:
         created_at = _now()

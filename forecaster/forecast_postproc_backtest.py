@@ -20,10 +20,12 @@ later phases have a baseline to beat:
 
 Honesty notes carried over from ``forecast_backtest.py``: CLISFO-truth only (days
 without a settlement are excluded and counted, never averaged against a
-fallback), pure standard library, and a *shared* sigma set for the Brier
-comparison so a candidate cannot look better calibrated merely because its own
-tighter errors shrink its own sigma. CRPS, by contrast, uses each predictor's
-own honest per-day sigma -- rewarding genuine sharpness.
+fallback), and pure standard library. CRPS and headline Brier use each
+predictor's per-day distribution. A separate shared-sigma location diagnostic
+selects its cohort from the predicted mean, never the outcome; its sigma is
+estimated in sample and it cannot justify probability promotion. Reconstructed
+fixed-lead NWP inputs establish retrospective weather skill, not forecasts
+available at a trading decision time.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ import argparse
 import math
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from statistics import fmean, pstdev, stdev
 
@@ -243,13 +245,19 @@ def score_predictor(name: str, predictor, truth: dict[str, float]) -> PredictorS
 
 def brier_with_shared_sigma(score: PredictorScore, shared_sigmas: dict[str, float]) -> float | None:
     """Mean multi-category Brier using a shared per-cohort sigma (calibration
-    isolated from sharpness, so a fair location-only comparison across arms)."""
+    isolated from sharpness, for a location-only diagnostic).
+
+    Cohort selection uses the prediction, never the outcome. When shared sigmas
+    are estimated from the evaluation period this remains an in-sample diagnostic,
+    not evidence of issued probabilities or grounds for probability promotion.
+    """
 
     if not score.per_day:
         return None
     total = 0.0
     for day in score.per_day:
-        sigma = shared_sigmas.get(day.settled_cohort) or shared_sigmas.get("overall") or SIGMA_FLOOR_F
+        forecast_cohort = predicted_temperature_cohort(day.mu)
+        sigma = shared_sigmas.get(forecast_cohort) or shared_sigmas.get("overall") or SIGMA_FLOOR_F
         total += _multicat_brier(day.mu, sigma, int(round(day.truth)))
     return round(total / score.days, 4)
 
@@ -260,9 +268,9 @@ def brier_by_cohort(
     """Per-settled-cohort mean multi-category Brier (shared sigma, like the
     aggregate ``brier_with_shared_sigma``).
 
-    The warm/hot trade block is justified by cohort *Brier* (~0.96), not CRPS, so
-    the cohort Brier row is what tells us whether a post-processor actually earns
-    a blocked cohort back -- a sharper CRPS with an uncalibrated Brier would not.
+    Settled cohorts only group already-computed scores for descriptive analysis;
+    they must not select the sigma of a probability distribution. Shared sigmas
+    estimated in sample do not qualify a post-processor for probability promotion.
     """
 
     out: dict[str, float | None] = {}
@@ -271,10 +279,28 @@ def brier_by_cohort(
         if not days:
             out[cohort] = None
             continue
-        sigma = shared_sigmas.get(cohort) or shared_sigmas.get("overall") or SIGMA_FLOOR_F
-        total = sum(_multicat_brier(d.mu, sigma, int(round(d.truth))) for d in days)
+        total = sum(_multicat_brier(
+            d.mu,
+            shared_sigmas.get(predicted_temperature_cohort(d.mu))
+            or shared_sigmas.get("overall") or SIGMA_FLOOR_F,
+            int(round(d.truth)),
+        ) for d in days)
         out[cohort] = round(total / len(days), 4)
     return out
+
+
+def brier_using_prediction_sigma(score: PredictorScore) -> float | None:
+    """Score the predictor's own distribution; no outcome-selected sigma.
+
+    This does not turn retrospective stitched NWP inputs into issued forecasts.
+    The climatology and baseline-blend arms still have in-sample sigma estimates.
+    """
+    if not score.per_day:
+        return None
+    return round(fmean(
+        _multicat_brier(day.mu, day.sigma, int(round(day.truth)))
+        for day in score.per_day
+    ), 4)
 
 
 def crps_gate(candidate: PredictorScore, reference: PredictorScore) -> dict:
@@ -309,25 +335,37 @@ def recalibrated_lookup_predictions(
     *,
     shrinkage_k: float = 40.0,
     min_train: int = 60,
+    truth_lag_days: int = 0,
 ) -> dict[str, tuple[float, float]]:
     """Rolling-origin per-cohort recalibration of a ``(mu, sigma)`` lookup.
 
     For each date, fit the per-cohort shift+scale correction (Phase 1a) ONLY on
-    strictly-earlier dates that already have settled truth -- leakage-safe, the
-    same discipline the EMOS arms use -- then apply the correction for that
-    date's *predicted* cohort. Days before ``min_train`` settled history pass
-    through unchanged. This is the honest OOS test of whether the recalibration
-    earns the blocked warm/hot cohorts back before it is wired into the engine.
+    dates whose truth is available before the serve day (D-truth_lag_days),
+    then apply the correction for that date's *predicted* cohort. Days before
+    ``min_train`` available settled history pass through unchanged. This is a
+    retrospective weather-skill diagnostic; reconstructed inputs do not qualify
+    as issued decision-time evidence or justify probability promotion.
     """
 
+    if truth_lag_days < 0:
+        raise ValueError("truth_lag_days must be non-negative")
+
     out: dict[str, tuple[float, float]] = {}
-    history: list[tuple[float, float, float, str]] = []  # (mu, sigma, realized, cohort)
+    history: list[tuple[str, float, float, float, str]] = []
     for date_str in sorted(base_preds):
         mu, sigma = base_preds[date_str]
         cohort = predicted_temperature_cohort(mu)
-        if len(history) >= min_train:
+        truth_cutoff = (
+            date.fromisoformat(date_str) - timedelta(days=truth_lag_days + 1)
+        ).isoformat()
+        available_history = [
+            (hmu, hsig, hy, hc)
+            for history_date, hmu, hsig, hy, hc in history
+            if history_date <= truth_cutoff
+        ]
+        if len(available_history) >= min_train:
             by_cohort: dict[str, list[tuple[float, float, float]]] = {}
-            for hmu, hsig, hy, hc in history:
+            for hmu, hsig, hy, hc in available_history:
                 by_cohort.setdefault(hc, []).append((hmu, hsig, hy))
             recal = fit_by_cohort(by_cohort, shrinkage_k=shrinkage_k).get(cohort)
             if recal is not None:
@@ -336,25 +374,36 @@ def recalibrated_lookup_predictions(
         # Record truth AFTER predicting so date_str never trains on its own outcome.
         if date_str in truth:
             base_mu, base_sigma = base_preds[date_str]
-            history.append((base_mu, base_sigma, truth[date_str], cohort))
+            history.append((date_str, base_mu, base_sigma, truth[date_str], cohort))
     return out
 
 
 def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> dict:
+    if lead_days < 0:
+        raise ValueError("lead_days must be non-negative")
     truth = load_clisfo_truth(conn)
     nwp_by_date = load_nwp_forecasts(conn, lead_days)
     blend_preds, blend_sigma = load_blend_predictions(conn)
     climatology = build_climatology(truth)
 
-    # Trained post-processors (rolling-origin, leakage-safe) over the NWP archive.
+    # Fit on truth available before the simulated serve day; the stitched NWP
+    # archive still supplies retrospective, rather than issued-vintage, inputs.
     nwp_dates = sorted(nwp_by_date)
-    emos_preds = emos_ngr_predictions(nwp_dates, truth, nwp_by_date)
-    analog_preds = analog_ensemble_predictions(nwp_dates, truth, nwp_by_date)
-    # Phase 4 candidate upgrades, gated against emos_ngr (ship only if they win OOS).
-    emos_wmean_preds = emos_ngr_predictions(nwp_dates, truth, nwp_by_date, weight_mode="inv_var")
+    emos_preds = emos_ngr_predictions(
+        nwp_dates, truth, nwp_by_date, truth_lag_days=lead_days
+    )
+    analog_preds = analog_ensemble_predictions(
+        nwp_dates, truth, nwp_by_date, truth_lag_days=lead_days
+    )
+    # Candidate weather-skill comparisons against emos_ngr, not a trading gate.
+    emos_wmean_preds = emos_ngr_predictions(
+        nwp_dates, truth, nwp_by_date, weight_mode="inv_var", truth_lag_days=lead_days
+    )
     emos_anen_blend = blend_gaussian_predictions(emos_preds, analog_preds)
     # Phase 1a: per-cohort recalibration on top of the winning emos_wmean arm.
-    emos_wmean_recal = recalibrated_lookup_predictions(emos_wmean_preds, truth)
+    emos_wmean_recal = recalibrated_lookup_predictions(
+        emos_wmean_preds, truth, truth_lag_days=lead_days
+    )
 
     predictors = {
         "climatology": make_climatology_predictor(climatology),
@@ -374,7 +423,8 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
         reference_name = "climatology"
         reference = scores["climatology"]
     shared_sigmas = cohort_sigmas(
-        [{"signed_error": d.signed_error, "settled_cohort": d.settled_cohort} for d in reference.per_day]
+        [{"signed_error": d.signed_error,
+          "forecast_cohort": predicted_temperature_cohort(d.mu)} for d in reference.per_day]
     )
 
     # Audit the consensus arm: how many models actually backed each scored day,
@@ -386,13 +436,22 @@ def evaluate(conn: sqlite3.Connection, lead_days: int, reference_name: str) -> d
 
     return {
         "lead_days": lead_days,
+        "truth_availability": "history_target_date < simulated_serve_date (target_date - lead_days)",
         "reference": reference_name,
         "truth_days": len(truth),
         "nwp_days": len(nwp_by_date),
         "scores": scores,
         "shared_sigmas": shared_sigmas,
-        "brier": {name: brier_with_shared_sigma(s, shared_sigmas) for name, s in scores.items()},
+        "brier": {name: brier_using_prediction_sigma(s) for name, s in scores.items()},
+        "diagnostic_shared_sigma_brier": {
+            name: brier_with_shared_sigma(s, shared_sigmas) for name, s in scores.items()
+        },
         "brier_by_cohort": {name: brier_by_cohort(s, shared_sigmas) for name, s in scores.items()},
+        "brier_qualification": {
+            "scope": "retrospective_weather_skill_not_issued_trading_probabilities",
+            "shared_sigma": "in_sample_location_diagnostic_not_probability_promotion_evidence",
+            "in_sample_sigma_arms": ["climatology", "baseline_blend"],
+        },
         "consensus_model_counts": consensus_model_counts,
         "gates": {
             name: crps_gate(s, reference)
@@ -407,10 +466,10 @@ def _print_report(result: dict) -> None:
     print(f"CLISFO truth days: {result['truth_days']}   NWP-archive days: {result['nwp_days']}")
     print(f"reference (skill baseline): {result['reference']}\n")
 
-    print("CRPS is the headline (date-matched gate below = the ship decision).")
+    print("CRPS is the weather-skill headline; date-matched comparisons cannot authorize trading promotion.")
     print("MAE/RMSE/CRPS/Brier columns are each over that arm's OWN scored days, so")
     print("cross-arm columns are NOT head-to-head -- only the gate is.\n")
-    print(f"{'predictor':16s} {'days':>5s} {'MAE':>6s} {'RMSE':>6s} {'<=3F%':>6s} {'CRPS':>7s} {'Brier*':>7s}")
+    print(f"{'predictor':16s} {'days':>5s} {'MAE':>6s} {'RMSE':>6s} {'<=3F%':>6s} {'CRPS':>7s} {'Brier':>7s}")
     for name, score in result["scores"].items():
         agg = score.aggregate()
         brier = result["brier"].get(name)
@@ -421,7 +480,8 @@ def _print_report(result: dict) -> None:
             f"{name:16s} {agg['days']:>5d} {agg['mae']:>6.2f} {agg['rmse']:>6.2f} "
             f"{agg['within3']:>6.1f} {agg['crps']:>7.3f} {brier if brier is not None else float('nan'):>7.3f}"
         )
-    print("  *Brier uses a shared per-cohort sigma (calibration isolated from sharpness).")
+    print("  Brier uses each predictor's own sigma; climatology/blend sigmas are in sample.")
+    print("  Retrospective stitched NWP scores do not establish issued trading probabilities.")
 
     counts = result.get("consensus_model_counts") or {}
     if counts:
@@ -437,7 +497,8 @@ def _print_report(result: dict) -> None:
         cells = " ".join(f"{(by_cohort[c] if by_cohort[c] is not None else float('nan')):>8.3f}" for c in COHORTS)
         print(f"{name:16s} {cells}")
 
-    print("\nBrier by settled cohort (shared sigma; the warm/hot trade block's own metric):")
+    print("\nBrier by settled cohort (in-sample shared-sigma location diagnostic only):")
+    print("  Sigma is selected by forecast cohort. These diagnostics cannot justify probability promotion.")
     print(f"{'predictor':16s} " + " ".join(f"{c:>8s}" for c in COHORTS))
     brier_cohorts = result.get("brier_by_cohort") or {}
     for name, score in result["scores"].items():

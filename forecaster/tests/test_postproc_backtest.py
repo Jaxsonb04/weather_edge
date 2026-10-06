@@ -5,17 +5,21 @@ from __future__ import annotations
 import sqlite3
 from datetime import date, timedelta
 
+import pytest
+
 from forecast_postproc_backtest import (
     MIN_CONSENSUS_MODELS,
     DayScore,
     PredictorScore,
     brier_by_cohort,
     brier_with_shared_sigma,
+    brier_using_prediction_sigma,
     build_climatology,
     crps_gate,
     evaluate,
     gaussian_crps,
     make_nwp_consensus_predictor,
+    recalibrated_lookup_predictions,
     score_predictor,
 )
 from google_weather_cache import predicted_temperature_cohort
@@ -94,6 +98,67 @@ def _seed_db() -> sqlite3.Connection:
     upsert_forecasts(conn, rows)
     conn.commit()
     return conn
+
+
+@pytest.mark.parametrize("lead_days", [1, 2])
+def test_recalibration_uses_only_truth_available_before_serve_day(lead_days):
+    dates = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(12)]
+    forecasts = {day: (70.0, 2.0) for day in dates}
+    truth = {day: 70.0 + i % 3 for i, day in enumerate(dates)}
+    target = dates[8]
+    before = recalibrated_lookup_predictions(
+        forecasts, truth, min_train=3, shrinkage_k=0, truth_lag_days=lead_days
+    )
+    unavailable = dict(truth)
+    for day in dates[8 - lead_days:9]:
+        unavailable[day] += 1000.0
+    after = recalibrated_lookup_predictions(
+        forecasts, unavailable, min_train=3, shrinkage_k=0, truth_lag_days=lead_days
+    )
+    assert after[target] == before[target]
+    assert after[dates[-1]] != before[dates[-1]]
+    available = dict(truth)
+    available[dates[8 - lead_days - 1]] += 1000.0
+    assert recalibrated_lookup_predictions(
+        forecasts, available, min_train=3, shrinkage_k=0, truth_lag_days=lead_days
+    )[target] != before[target]
+
+
+def test_recalibration_warmup_counts_only_available_truth():
+    dates = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(6)]
+    forecasts = {day: (70.0, 2.0) for day in dates}
+    truth = {day: 60.0 for day in dates}
+    out = recalibrated_lookup_predictions(
+        forecasts, truth, min_train=3, shrinkage_k=0, truth_lag_days=2
+    )
+    assert all(out[day] == forecasts[day] for day in dates[:5])
+    assert out[dates[5]][0] < forecasts[dates[5]][0]
+    with pytest.raises(ValueError, match="non-negative"):
+        recalibrated_lookup_predictions(forecasts, truth, truth_lag_days=-1)
+
+
+def test_evaluate_threads_lead_to_every_truth_trained_challenger(monkeypatch):
+    import forecast_postproc_backtest as backtest
+
+    calls = {"emos": [], "analog": [], "recalibration": []}
+
+    def emos(*args, truth_lag_days=0, **kwargs):
+        calls["emos"].append(truth_lag_days)
+        return {}
+
+    def analog(*args, truth_lag_days=0, **kwargs):
+        calls["analog"].append(truth_lag_days)
+        return {}
+
+    def recalibration(*args, truth_lag_days=0, **kwargs):
+        calls["recalibration"].append(truth_lag_days)
+        return {}
+
+    monkeypatch.setattr(backtest, "emos_ngr_predictions", emos)
+    monkeypatch.setattr(backtest, "analog_ensemble_predictions", analog)
+    monkeypatch.setattr(backtest, "recalibrated_lookup_predictions", recalibration)
+    evaluate(_seed_db(), lead_days=2, reference_name="climatology")
+    assert calls == {"emos": [2, 2], "analog": [2], "recalibration": [2]}
 
 
 def test_evaluate_runs_end_to_end_and_consensus_beats_climatology():
@@ -233,3 +298,50 @@ def test_evaluate_missing_nwp_table_does_not_raise():
     result = evaluate(conn, lead_days=1, reference_name="climatology")
     assert result["nwp_days"] == 0
     assert result["scores"]["nwp_consensus"].days == 0
+
+
+def test_shared_sigma_selection_depends_on_forecast_not_realized_cohort(monkeypatch):
+    import forecast_postproc_backtest as module
+    used_sigmas = []
+    monkeypatch.setattr(module, "_multicat_brier", lambda mu, sigma, truth: used_sigmas.append(sigma) or sigma)
+    score = PredictorScore(name="crosses-cohort")
+    score.per_day = [
+        DayScore("2025-06-01", 68.0, 3.0, 74.0, 6.0, -6.0, 0.0, "warm"),
+        DayScore("2025-06-02", 68.0, 3.0, 82.0, 14.0, -14.0, 0.0, "hot"),
+    ]
+    shared = {"normal": 2.0, "warm": 99.0, "hot": 0.1, "overall": 10.0}
+    assert brier_with_shared_sigma(score, shared) == 2.0
+    assert used_sigmas == [2.0, 2.0]
+    used_sigmas.clear()
+    assert brier_by_cohort(score, shared) == {"cold": None, "normal": None, "warm": 2.0, "hot": 2.0}
+    assert used_sigmas == [2.0, 2.0]
+    used_sigmas.clear()
+    assert brier_using_prediction_sigma(score) == 3.0
+    assert used_sigmas == [3.0, 3.0]
+
+
+def test_blend_diagnostic_calibration_cannot_choose_sigma_from_outcome(monkeypatch):
+    import forecast_backtest as module
+    used_sigmas = []
+    monkeypatch.setattr(module, "_multicat_brier", lambda mu, sigma, truth: used_sigmas.append(sigma) or sigma)
+    rows = [
+        {"date": "2025-06-01", "predicted": 68.0, "actual": 74.0,
+         "signed_error": -6.0, "forecast_cohort": "normal", "settled_cohort": "warm"},
+        {"date": "2025-06-02", "predicted": 68.0, "actual": 82.0,
+         "signed_error": -14.0, "forecast_cohort": "normal", "settled_cohort": "hot"},
+    ]
+    result = module._calibration_block(rows, {}, {"normal": 2.0, "warm": 99.0, "hot": 0.1})
+    assert result["overall"]["brier"] == 2.0
+    assert used_sigmas == [2.0, 2.0, 2.0, 2.0]
+    assert result["sigma_cohort_basis"] == "forecast"
+    assert "not_probability_promotion" in result["qualification"]
+    sigmas = module.cohort_sigmas(rows)
+    assert sigmas["warm"] == sigmas["hot"] == 1.5
+    assert sigmas["normal"] > 1.5
+
+
+def test_postproc_report_qualifies_retrospective_probability_diagnostics():
+    result = evaluate(_seed_db(), lead_days=1, reference_name="climatology")
+    assert "not_issued_trading_probabilities" in result["brier_qualification"]["scope"]
+    assert "not_probability_promotion" in result["brier_qualification"]["shared_sigma"]
+    assert result["brier"]["nwp_consensus"] == brier_using_prediction_sigma(result["scores"]["nwp_consensus"])

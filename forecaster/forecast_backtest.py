@@ -545,12 +545,14 @@ def _residual_sigma(signed_errors: list[float]) -> float:
 
 
 def cohort_sigmas(per_day: list[dict]) -> dict[str, float]:
-    """Per-cohort (and overall) residual sigma; shareable across arms for a fair
-    Brier comparison so a candidate cannot look better calibrated merely because
-    its own tighter errors shrink its own sigma."""
+    """In-sample residual sigma grouped by predicted cohort, for diagnostics.
+
+    A shared location diagnostic can compare point predictions, but a sigma
+    fitted on evaluation outcomes is not an issued predictive distribution.
+    """
 
     sigmas = {
-        cohort: _residual_sigma([d["signed_error"] for d in per_day if d["settled_cohort"] == cohort])
+        cohort: _residual_sigma([d["signed_error"] for d in per_day if d["forecast_cohort"] == cohort])
         for cohort in COHORTS
     }
     sigmas["overall"] = _residual_sigma([d["signed_error"] for d in per_day])
@@ -661,15 +663,19 @@ def run_forecast_backtest(
 def _calibration_block(
     per_day: list[dict], climatology: dict, shared_sigmas: dict[str, float] | None = None
 ) -> dict:
-    """Per-cohort residual sigma + Gaussian multi-cat Brier and skill vs climo.
+    """In-sample residual-sigma location diagnostic, not issued probabilities.
 
     When ``shared_sigmas`` is supplied (the production arm's sigma), both arms
     score Brier with the same sigma so a candidate cannot appear better calibrated
-    purely because its tighter errors shrink its own sigma.
+    purely because its tighter errors shrink its own sigma. Sigma is selected by
+    the prediction's cohort, never by the realized outcome. Because these sigmas
+    are estimated on the evaluation sample, this does not establish probability
+    calibration and cannot justify promotion of trading probabilities.
     """
 
     if not per_day:
-        return {"overall": None, "by_settled_cohort": {}}
+        return {"overall": None, "by_settled_cohort": {}, "sigma_cohort_basis": "forecast",
+                "qualification": "in_sample_location_diagnostic_not_probability_promotion_evidence"}
 
     sigmas = shared_sigmas or cohort_sigmas(per_day)
     sigma_by_cohort = {cohort: sigmas.get(cohort, SIGMA_FLOOR_F) for cohort in COHORTS}
@@ -682,7 +688,7 @@ def _calibration_block(
         climo_scores = []
         for record in records:
             realized = int(round(record["actual"]))
-            sigma = sigma_by_cohort.get(record["settled_cohort"], overall_sigma)
+            sigma = sigma_by_cohort.get(record["forecast_cohort"], overall_sigma)
             forecast_scores.append(_multicat_brier(record["predicted"], sigma, realized))
             climo = climatology.get(record["date"][5:]) if climatology else None
             if climo and _finite(climo.get("mean")) and _finite(climo.get("std")):
@@ -708,6 +714,8 @@ def _calibration_block(
         }
 
     return {
+        "qualification": "in_sample_location_diagnostic_not_probability_promotion_evidence",
+        "sigma_cohort_basis": "forecast",
         "overall": cohort_brier(per_day),
         "overall_residual_sigma_f": round(overall_sigma, 3),
         "residual_sigma_by_cohort_f": {k: round(v, 3) for k, v in sigma_by_cohort.items()},

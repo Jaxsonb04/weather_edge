@@ -550,7 +550,7 @@ def replay_from_database(
                         f"the recurring publication cap of {max_orders}"
                     ),
                 }
-            v4_allocation_owner_ids = {
+            current_allocation_owner_ids = {
                 order_id
                 for row in conn.execute(
                     "SELECT DISTINCT order_id FROM paper_maker_allocations "
@@ -710,7 +710,7 @@ def replay_from_database(
                 group.root.get("entry_mode"),
                 group.root.get("fill_model"),
             )
-            or root_id in v4_allocation_owner_ids
+            or root_id in current_allocation_owner_ids
             or (row_generation_is_current and root_id in claim_owner_ids)
             or root_id in plausible_current_maker_ids
         )
@@ -998,7 +998,7 @@ def replay_from_database(
     source_cohort = (
         f"live_strategy_{strategy_requirement_identity}_complete_weather_days"
         if required_strategy_fingerprint is not None
-        else "post_exec_v4_live"
+        else f"post_exec_{EXECUTION_MODEL_VERSION.split('-')[1]}_live"
     )
     result["verified_decisions"] = len(
         _verified_resolved_decision_groups(
@@ -1084,7 +1084,7 @@ def _post_boundary_readiness_metrics(
         str | Mapping[str, str] | None
     ) = None,
     qualified_days: set[str] | None = None,
-    source_cohort: str = "post_exec_v4_live",
+    source_cohort: str = f"post_exec_{EXECUTION_MODEL_VERSION.split('-')[1]}_live",
 ) -> dict[str, object]:
     """Economic readiness inputs from chronological post-boundary live rows."""
 
@@ -1151,7 +1151,7 @@ def _post_boundary_readiness_metrics(
         "fully qualified target-weather days under the exact current live "
         "policy fingerprint"
         if required_strategy_fingerprint is not None
-        else "post-boundary exec-v4 chronological outcomes across valid live eras"
+        else "post-boundary current-generation chronological outcomes across valid live eras"
     )
     return {
         "evidence_kind": "chronological_account_replay",
@@ -1159,7 +1159,7 @@ def _post_boundary_readiness_metrics(
         "config_basis": (
             "exact-current-policy-fingerprint complete live weather days only"
             if required_strategy_fingerprint is not None
-            else "post-boundary exec-v4 live evidence only"
+            else "post-boundary current-generation live evidence only"
         ),
         "semantics_boundary": semantics_boundary,
         "evidence_boundary": cohort_boundary,
@@ -1492,6 +1492,7 @@ def _readiness_root_profile_class(
         "research-target-v3",
         "research-target-v4",
         "research-target-v5",
+        "research-target-v6",
         "research-target",
         "research-motion",
     }:

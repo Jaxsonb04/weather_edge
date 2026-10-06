@@ -46,6 +46,7 @@ from ..research_policy import (
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
+    TARGET_POLICY_V6,
 )
 from ..replay import replay_from_database
 from ..summary import build_paper_summary
@@ -64,6 +65,7 @@ from .forecast_health import _forecast_health_payload
 from .paper_card import _paper_payload
 from .profiles import _default_profile, _profile_views
 from .readiness import _live_frequency_tuning_payload, _real_money_readiness_payload
+from .release import release_payload
 from .status_alerts import _account_drawdown_alerts, _alert_level, _status_payload
 
 
@@ -309,6 +311,7 @@ def build_strategy_research(
 
     payload = {
         "schema_version": 3,
+        "release": release_payload(),
         "available": True,
         "mode": "paper_research_only",
         "live_orders_enabled": False,
@@ -979,6 +982,14 @@ def _accounting_payload(
             "research-target-v5",
         ),
         (
+            "research_target_v6",
+            "research-target-v6",
+            "Research ROI v6 achieved performance",
+            TARGET_POLICY_V6.account_id,
+            "research_target_archived",
+            "research-target-v6",
+        ),
+        (
             "research_motion",
             "research-motion",
             "Research motion achieved performance",
@@ -1069,6 +1080,7 @@ def _accounting_payload(
             TARGET_POLICY_V3.account_id,
             TARGET_POLICY_V4.account_id,
             TARGET_POLICY_V5.account_id,
+            TARGET_POLICY_V6.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
         ],
@@ -1420,8 +1432,9 @@ def _bind_accounting_to_profiles(
         "research-target-v3": 3,
         "research-target-v4": 4,
         "research-target-v5": 5,
-        "research-motion": 6,
-        "research": 7,
+        "research-target-v6": 6,
+        "research-motion": 7,
+        "research": 8,
     }
     if accounting.get("available") is False:
         archived_rows = [
@@ -1447,7 +1460,7 @@ def _bind_accounting_to_profiles(
         ("live", "Live Stability", "primary", "live_stability"),
         (
             "research-target",
-            "Research ROI · fixed daily objective",
+            "Research ROI v7 · fixed daily objective",
             "experimental",
             "research_roi",
         ),

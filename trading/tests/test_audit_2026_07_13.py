@@ -177,6 +177,28 @@ def _move_to_target_account(
         )
 
 
+def _same_economic_account_legacy_fixture(
+    store: PaperStore, first: int, second: int
+) -> None:
+    """Retain July's shared-book conservation case under the current schema.
+
+    Separate experiments may each use the public tape. These regressions model
+    multiple lots inside one economic account, which predates the active-order
+    uniqueness guard and still must obey finite-volume price-time priority.
+    """
+
+    account_id = store.paper_order(first)["account_id"]
+    with store.connect() as conn:
+        conn.execute("DROP INDEX ux_paper_orders_open_market_side_profile")
+        conn.execute(
+            "UPDATE paper_orders SET account_id=? WHERE id=?", (account_id, second)
+        )
+        conn.execute(
+            "UPDATE paper_account_ledger SET account_id=? WHERE order_id=?",
+            (account_id, second),
+        )
+
+
 def _record_target_fixture_order(
     store: PaperStore,
     target_date: str,
@@ -404,8 +426,8 @@ def test_ex01_single_trade_never_fills_both_yes_and_no_makers() -> None:
 def test_ex01_trade_volume_is_allocated_once_across_same_side_orders() -> None:
     """Quantity 10 cannot fully fill two 8-contract same-price orders. The
     earlier order takes 8; the later order may receive at most the residual 2.
-    The orders use separate accounts because active-order uniqueness is now
-    account-scoped; public tape volume is still conserved globally."""
+    The retained lots share one economic account; independent experimental
+    accounts now each receive their own finite execution scenario."""
 
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
@@ -431,6 +453,7 @@ def test_ex01_trade_volume_is_allocated_once_across_same_side_orders() -> None:
         _move_to_target_account(
             store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
         )
+        _same_economic_account_legacy_fixture(store, first, second)
         client = _TradesClient(
             [
                 _trade(
@@ -480,6 +503,7 @@ def test_ex01_equal_price_priority_earlier_order_wins() -> None:
         _move_to_target_account(
             store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
         )
+        _same_economic_account_legacy_fixture(store, first, second)
         client = _TradesClient(
             [
                 _trade(
@@ -569,6 +593,7 @@ def test_ex01_volume_is_not_recredited_across_monitor_passes() -> None:
         _move_to_target_account(
             store, second, market_ticker="KXHIGHTSEA-26JUL13-B82.5"
         )
+        _same_economic_account_legacy_fixture(store, first, second)
         client = _TradesClient(
             [
                 _trade(
@@ -678,8 +703,9 @@ def test_ex02_partial_close_replays_as_targeted_exit_of_parent() -> None:
 def test_ex01_production_regression_shared_trade_ids_orders_261_262() -> None:
     """Production-derived fixture: live order 261 (33 NO @ 0.82, queue 8.18) and
     research order 262 (11 NO @ 0.82, queue 8.18) on KXHIGHTSEA-26JUL13-B82.5
-    were both credited the same five public trade ids. A public trade's volume
-    is finite: the sum of capital-consuming maker allocations per trade id must
+    shared an economic account and were both credited the same five public
+    trade ids. A public trade's volume is finite inside that account: the sum
+    of capital-consuming maker allocations per trade id must
     never exceed that trade's quantity, and the persisted evidence must carry
     the per-order allocation, not just a repeated list of source trade ids."""
 
@@ -708,6 +734,7 @@ def test_ex01_production_regression_shared_trade_ids_orders_261_262() -> None:
             queue_ahead=8.18,
             risk_profile="research",
         )
+        _same_economic_account_legacy_fixture(store, live_id, research_id)
         trades = [
             _trade(
                 trade_id,
@@ -1247,6 +1274,7 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
             ("paper-research-roi-v4", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v5", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v6", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-roi-v7", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-shadow", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v2", 1, 1000.0, 1000.0, 1000.0),
@@ -1259,6 +1287,7 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
             ("paper-research-roi-v4", 1, 1000.0),
             ("paper-research-roi-v5", 1, 1000.0),
             ("paper-research-roi-v6", 1, 1000.0),
+            ("paper-research-roi-v7", 1, 1000.0),
             ("paper-research-shadow", 1, 1000.0),
             ("paper-research-target-v1", 1, 1000.0),
             ("paper-research-target-v2", 1, 1000.0),

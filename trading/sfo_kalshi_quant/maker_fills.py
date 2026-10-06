@@ -33,7 +33,10 @@ MakerSide = Literal["YES", "NO"]
 #     maker fills across monitor passes and restarts.
 # v4: attach queue depth to its observed price so better-price tape clears it
 #     before a below-bid order becomes fill-eligible.
-EXECUTION_MODEL_VERSION = "exec-v4-2026-07-17"
+# v5: independent economic-account maker tape allocation; request-time quote
+#     freshness and account-scoped exit-depth conservation. Historical v4 rows
+#     retain their generation and never qualify as new v5 evidence.
+EXECUTION_MODEL_VERSION = "exec-v5-2026-10-05"
 EXIT_DEPTH_MAX_AGE_SECONDS = 120.0
 MAKER_TAPE_RECONCILIATION_GRACE_SECONDS = 300.0
 
@@ -46,7 +49,7 @@ def uses_current_maker_semantics(
     entry_mode: object,
     fill_model: object,
 ) -> bool:
-    """Identify v4 maker rows without trusting mutable evidence payloads."""
+    """Identify the current maker generation from durable row metadata."""
 
     return (
         str(execution_model_version or "") == EXECUTION_MODEL_VERSION

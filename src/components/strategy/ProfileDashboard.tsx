@@ -208,7 +208,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const rejections = (gate?.top_rejections_all?.length ? gate.top_rejections_all : gate?.top_rejections ?? []).slice(0, 5);
   const maxRejection = rejections[0]?.count ?? 1;
   const barColor = primary ? "bg-accent" : "bg-[color:var(--series-market)]";
-  const displayLabel = profileDisplayLabel(p);
+  const displayLabel = profileDisplayLabel(p, researchDailyTarget(s, p)?.policy_version);
 
   const ledger = ledgerForProfile(s, rp);
   const byCity = ledgerByCity(ledger);
