@@ -31,5 +31,6 @@ os.chmod(path, 0o600)
 # Refresh only our label; other local jobs are untouched.
 subprocess.run(['launchctl', 'bootout', f'gui/{os.getuid()}/{label}'],
                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run(['launchctl', 'enable', f'gui/{os.getuid()}/{label}'], check=True)
 subprocess.run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(path)], check=True)
 print('Installed local V7 research worker: every six hours, with job-scoped caffeinate.')

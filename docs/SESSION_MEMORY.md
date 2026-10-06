@@ -17,7 +17,9 @@ operational claim; all production observations below are dated snapshots.
   local compute and removal of unused Lightsail. A six-hour local LaunchAgent
   completed fresh read-only paper/forecast audits and a bias-only comparison,
   preserving exports/results privately. Job-scoped caffeinate and non-overlap
-  locks are installed. A transaction-aware full paper-database replica started
+  locks are installed, but future scheduled runs were subsequently disabled
+  at the user's request to review plans first. Any new compute delegation or
+  major EC2 change now requires explicit plan approval before implementation. A transaction-aware full paper-database replica started
   on the Mac; no successful integrity/restore receipt exists yet. AWS disk
   remained healthy and origin WAL was empty at the bounded transfer check.
   No AWS timer or trading setting changed. EC2 hourly pricing is unchanged;
@@ -26,7 +28,9 @@ operational claim; all production observations below are dated snapshots.
   Lightsail charged $1.17 for unused static IPs; inventory showed two unattached
   allocations and no instances. Approximate forward cost is $7.30/month for
   both. The old recurring estimate omitted these resources. Irreversible
-  release is waiting for action-time browser-policy confirmation. No paid
+  release was performed by the user for one allocation; a fresh console
+  inspection still showed one unattached allocation, approximately $3.65/month.
+  No assistant deletion ran. No paid
   expansion, commitment, data deletion or backend cutover occurred. See
   `docs/local_compute.md`; private access/configuration stays in ignored state.
 

@@ -5,6 +5,12 @@ restore verification. AWS remains responsible for continuous collection, the
 paper ledger and dashboard publication. A sleeping or disconnected Mac must not
 stop those services or change a trading policy.
 
+At the user's subsequent request, future local research runs are disabled pending
+plan approval. Any new compute delegation or major EC2 change requires an
+explicitly reviewed plan before implementation. No cloud timer was disabled.
+The already-started read-only replica transfer is separate from new scheduled
+work and has not been promoted as a deployment backup.
+
 On October 5, 2026, the first local worker successfully pulled fresh, bounded
 read-only evidence from AWS and completed the paper-performance audit, forecast
 skill audit and fixed bias-only comparison. These are retrospective diagnostics,
@@ -30,7 +36,7 @@ python3 scripts/local_compute/install_launch_agent.py \
   --config .local/v7-offload/worker-config.json
 ```
 
-The user LaunchAgent `com.weatheredge.v7.local-research` runs at login and every
+When explicitly enabled, the user LaunchAgent `com.weatheredge.v7.local-research` runs at login and every
 six hours. Its `caffeinate -i` assertion lasts only while a job runs. It uses low
 CPU/IO priority and does not keep a closed-lid Mac or a disconnected network
 available. It runs with the signed-in user's existing SSH access; no AWS keys
@@ -38,6 +44,7 @@ are copied to the Mac. Inspect `.local/v7-offload/research/status.json` for curr
 status and private launchd logs for scheduling errors. Disable this exact job:
 
 ```bash
+launchctl disable "gui/$(id -u)/com.weatheredge.v7.local-research"
 launchctl bootout "gui/$(id -u)/com.weatheredge.v7.local-research"
 ```
 
@@ -89,3 +96,7 @@ python3 -m compileall -q scripts/local_compute
 
 Tests verify the exporter leaves source database bytes unchanged, rejects a
 truncated export and preserves last-success evidence after a disconnected run.
+
+The user removed the first unused Lightsail allocation during this task. A
+fresh console inspection still showed one unattached allocation. Its approximate
+remaining cost is $3.65 per 730-hour month; no assistant deletion ran.
