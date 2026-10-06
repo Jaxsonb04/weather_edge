@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-05 (V7 audit/static release; backend cutover deferred)
+Last updated: 2026-10-05 (V7 release and budget-first backup review; backend cutover deferred)
 
 Last complete production verification: 2026-10-05 21:49 PDT (bounded read-only verification)
 
@@ -116,6 +116,23 @@ operational claim; all production observations below are dated snapshots.
   station/date final-truth recovery and verification; auto-settle does not fetch
   live CLI. All eighty-four Strategy tests passed. Official raw sources/hashes
   are preserved privately; no production or account mutation occurred.
+- **Budget-first follow-up (October 5, 22:28 PDT):** the user questioned paid
+  expansion and requested an explanation of staying within budget. A read-only
+  SQLite header check found zero free pages in the approximately 31.03 GiB
+  journal; ordinary compaction cannot recover the roughly 11.86 GiB backup
+  shortfall. Local database backups were empty and ordinary caches too small.
+  Paid expansion is one option for the current same-volume backup gate, not an
+  intrinsic V7 hardware requirement. The workstation has about 455 GiB free.
+  SQLite's official remote-copy utility offers a consistent off-server snapshot
+  candidate; it is not installed, integrated, or validated here. Any alternate
+  path must retain encrypted off-host recovery, independent checksum/integrity/
+  foreign-key verification, cutover-time lineage, and immutable analysis input.
+  No bypass, paid purchase, live-row deletion, retention change or backend
+  activation occurred. The September 5 cost audit recorded a $28 target and
+  approximately $51.19 recurring estimate; current billing and discounts remain
+  unverified. Review compute and full-snapshot retention before recommending
+  more recurring spend. Preserve full research history while designing hot/cold
+  storage and a budget-compatible verified deployment path.
 
 ## Prior session briefs (dated snapshots)
 
