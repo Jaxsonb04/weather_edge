@@ -130,7 +130,11 @@ operational claim; all production observations below are dated snapshots.
   No bypass, paid purchase, live-row deletion, retention change or backend
   activation occurred. The September 5 cost audit recorded a $28 target and
   approximately $51.19 recurring estimate; current billing and discounts remain
-  unverified. Review compute and full-snapshot retention before recommending
+  unverified. A fresh October billing read could not use local AWS credentials,
+  and the production role denied Cost Explorer access. Owner-authorized billing
+  access is required to establish current accrued charges and forecasts; host
+  health or public pricing cannot substitute for that account evidence.
+  Review compute and full-snapshot retention before recommending
   more recurring spend. Preserve full research history while designing hot/cold
   storage and a budget-compatible verified deployment path.
 
