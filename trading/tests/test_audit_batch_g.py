@@ -43,6 +43,17 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
+def _isolated_web_deployer(tmp_path: Path) -> Path:
+    """Exercise real deploy code without reading/writing the checkout's dist."""
+    repo = tmp_path / "isolated repo"
+    scripts = repo / "trading" / "deploy" / "aws"
+    scripts.mkdir(parents=True)
+    for name in ("deploy_web_app.sh", "web_app_release.py"):
+        shutil.copyfile(AWS_DIR / name, scripts / name)
+    assert not (repo / "dist").exists()
+    return scripts / "deploy_web_app.sh"
+
+
 def _write_fake_legacy_rsync(path: Path) -> None:
     _write_executable(
         path,
@@ -936,13 +947,16 @@ def test_paper_scan_truthy_is_bash3_portable_and_case_insensitive(tmp_path: Path
 
 
 def test_deploy_web_app_works_from_arbitrary_cwd_and_space_paths(tmp_path: Path) -> None:
+    deployer = _isolated_web_deployer(tmp_path)
+    build_root = deployer.parents[3]
     fake_bin = tmp_path / "fake bin"
     fake_bin.mkdir()
     log = tmp_path / "calls.log"
     for command in ("bun", "ssh"):
+        build_output = "\nmkdir -p dist/assets\nprintf 'fixture app' > dist/index.html\nprintf 'fixture asset' > dist/assets/app.js\n" if command == "bun" else ""
         _write_executable(
             fake_bin / command,
-            f"#!/bin/sh\nprintf '{command} cwd=%s args=' \"$PWD\" >> \"$CALL_LOG\"\nprintf '<%s>' \"$@\" >> \"$CALL_LOG\"\nprintf '\\n' >> \"$CALL_LOG\"\n[ \"${{FAIL_COMMAND:-}}\" != {command} ]\n",
+            f"#!/bin/sh\nset -e\nprintf '{command} cwd=%s args=' \"$PWD\" >> \"$CALL_LOG\"\nprintf '<%s>' \"$@\" >> \"$CALL_LOG\"\nprintf '\\n' >> \"$CALL_LOG\"\n[ \"${{FAIL_COMMAND:-}}\" != {command} ]\n{build_output}",
         )
     _write_executable(
         fake_bin / "rsync",
@@ -961,15 +975,17 @@ printf '\n' >> "$CALL_LOG"
         f"EC2_IP=host.example\nEC2_KEY='{key}'\nREMOTE_USER=deploy\nREMOTE_BASE='/srv/weather edge'\n"
     )
     result = subprocess.run(
-        ["bash", str(AWS_DIR / "deploy_web_app.sh"), str(env_file)],
+        ["bash", str(deployer), str(env_file)],
         cwd=tmp_path,
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "CALL_LOG": str(log)},
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
+    assert (build_root / "dist/index.html").read_text() == "fixture app"
+    assert (build_root / "dist/assets/app.js").read_text() == "fixture asset"
     calls = log.read_text().splitlines()
-    assert calls[0].startswith(f"bun cwd={ROOT} args=<run><build>")
+    assert calls[0].startswith(f"bun cwd={build_root} args=<run><build>")
     assert calls[1].startswith("ssh ")
     assert "operator key.pem" not in calls[2]
     assert "<--protect-args>" in calls[2]
@@ -1054,6 +1070,7 @@ def test_web_deploy_rejects_noncanonical_base_before_rsync_or_build(
 
 
 def test_legacy_rsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) -> None:
+    deployer = _isolated_web_deployer(tmp_path)
     key = tmp_path / "operator key.pem"
     key.touch()
     env_file = tmp_path / "target env"
@@ -1063,7 +1080,10 @@ def test_legacy_rsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) 
     _write_fake_legacy_rsync(fake_bin / "legacy-rsync")
     build_log = tmp_path / "build.log"
     ssh_log = tmp_path / "ssh.jsonl"
-    _write_executable(fake_bin / "bun", "#!/bin/sh\necho built > \"$BUILD_LOG\"\n")
+    _write_executable(
+        fake_bin / "bun",
+        "#!/bin/sh\nset -e\necho built > \"$BUILD_LOG\"\nmkdir -p dist/assets\nprintf 'fixture app' > dist/index.html\nprintf 'fixture asset' > dist/assets/app.js\n",
+    )
     _write_executable(
         fake_bin / "ssh",
         f"""#!{sys.executable}
@@ -1073,7 +1093,7 @@ raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
 """,
     )
     result = subprocess.run(
-        ["bash", str(AWS_DIR / "deploy_web_app.sh"), str(env_file)],
+        ["bash", str(deployer), str(env_file)],
         cwd=tmp_path,
         env={
             **os.environ,
@@ -1087,6 +1107,7 @@ raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
     )
     assert result.returncode == 19
     assert build_log.exists()
+    assert (deployer.parents[3] / "dist/index.html").read_text() == "fixture app"
     calls = [json.loads(line) for line in ssh_log.read_text().splitlines()]
     rsync_call = next(call for call in calls if "rsync" in call)
     assert rsync_call[rsync_call.index("-i") + 1] == str(key)
@@ -1225,6 +1246,39 @@ def test_deploy_web_app_failure_never_reports_success(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 23
+    assert "Done" not in result.stdout
+
+
+def test_web_deploy_rejects_build_without_output_despite_stale_caller_dist(tmp_path: Path) -> None:
+    deployer = _isolated_web_deployer(tmp_path)
+    stale = tmp_path / "dist"
+    stale.mkdir()
+    (stale / "index.html").write_text("stale caller app must not become the release")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "bun", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\n[ \"$1\" = --protect-args ] && [ \"$2\" = --version ]\n",
+    )
+    remote_calls = tmp_path / "remote-calls"
+    _write_executable(fake_bin / "ssh", "#!/bin/sh\necho contacted >> \"$REMOTE_CALLS\"\n")
+    key = tmp_path / "key"
+    key.touch()
+    env_file = tmp_path / "env"
+    env_file.write_text(f"EC2_IP=host\nEC2_KEY='{key}'\n")
+
+    result = subprocess.run(
+        ["bash", str(deployer), str(env_file)], cwd=tmp_path,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "REMOTE_CALLS": str(remote_calls)},
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "app tree must be a real directory" in result.stderr
+    assert not remote_calls.exists()
+    assert not (deployer.parents[3] / "dist").exists()
+    assert (stale / "index.html").read_text() == "stale caller app must not become the release"
     assert "Done" not in result.stdout
 
 
