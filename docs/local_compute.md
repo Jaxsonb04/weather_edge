@@ -32,8 +32,8 @@ ML score improvement nor a static app release starts V7 trading performance.
 
 ## Mac safeguards and schedule
 
-The worker runs every six hours as the signed-in user's background LaunchAgent.
-Installation does not start a run immediately. Its job-scoped `caffeinate -i`
+The reviewed installer creates a two-hour schedule as the signed-in user's
+background LaunchAgent. Installation does not start a run immediately. Its job-scoped `caffeinate -i`
 assertion ends with the job; it does not change system charging, fan, frequency,
 sleep or battery settings and does not promise closed-lid availability.
 
@@ -44,8 +44,13 @@ fails closed when a required native observation is unavailable. The same host
 checks repeat during computation. The worker has an exclusive lock shared with
 the manual full-analysis helper.
 
-Each complete run has a 20-minute wall-clock budget, 10-minute observed CPU-time
-budget and 2 GiB sampled aggregate process-group RSS budget. Numerical libraries
+Each scheduled run must have a wall-clock budget of at most five minutes and
+an observed CPU-time budget of at most two minutes. The installer rejects a
+weaker budget before creating a state directory, writing its plist or invoking
+`launchctl`. Installed arguments include `--scheduled`; the worker revalidates
+the same ceilings before state changes or work on every invocation, so later
+private configuration edits cannot weaken the background budget. The sampled
+aggregate process-group RSS budget remains 2 GiB. Numerical libraries
 use one thread. A process-group supervisor paces aggregate work to half of one
 logical CPU with short bursts and samples descendants every quarter second;
 resource or time failures terminate the entire group, including paused children.
@@ -54,6 +59,14 @@ battery lifetime or hardware temperature. Native monitoring and sampled RSS
 cannot guarantee zero transient overshoot. On the inspected 16-logical-CPU,
 48-GiB Mac, the pacing target is about 3.1% of aggregate CPU capacity while a
 job is active. No GPU/deep-learning workload or overclocking is installed.
+
+Twelve regular runs per day permit at most 60 minutes of wall time and 24 minutes
+of observed CPU time, below the original six-hour schedule's theoretical 80-minute
+wall and 40-minute CPU totals. The two observed initial full runs used about
+20 seconds wall time and 8.6 CPU seconds each; extrapolating that sample gives
+about four wall minutes and 103 CPU seconds per day, not a guaranteed future
+duration. The manual full Strategy helper retains its separate 20-minute wall
+and ten-minute CPU budget. Both entry points share the lock and native checks.
 
 Apple identifies temperature history and charging pattern as battery-aging
 factors, recommends Optimized Battery Charging, and recommends a ventilated
@@ -71,8 +84,12 @@ only the documented flags appropriate to the tested local installation:
   "fresh_export": false,
   "ml_boosting": true,
   "local_prospective_collection": true,
-  "shadow_cities": ["sfo"],
-  "shadow_rotate_registry": false
+  "shadow_cities": ["mia", "lax", "chi", "atl"],
+  "shadow_rotate_registry": true,
+  "limits": {
+    "wall_seconds": 300,
+    "cpu_seconds": 120
+  }
 }
 ```
 
@@ -81,9 +98,24 @@ allows at most four city slugs and eight HTTP requests per run. It uses only the
 collector's approved free-provider path and its separate shadow database; it
 never invokes an AWS API, paid weather credential, ledger writer or publisher.
 With `shadow_rotate_registry: true`, the city-list length selects a bounded batch
-from the twenty-city registry. Four-city batches on the six-hour schedule revisit
-a city approximately every thirty hours; missing final truth is reported rather
-than filled in. Provider access remains educational, noncommercial research.
+from the twenty-city registry. Four-city batches on the two-hour schedule revisit
+a city approximately every ten hours when admission passes. The durable ceiling
+remains eight requests per run and 96 per UTC day, including failed and manual
+calls. Twelve regular eight-request batches exhaust that allowance; further calls
+are refused without retries, paid fallback or raising the budget. Provider access
+remains educational, noncommercial research. [Open-Meteo terms](https://open-meteo.com/en/terms).
+
+The shorter revisit reduces missed full-day CLI outcomes. NWS describes an early
+morning prior-day report and a late-afternoon current-day report; its Chicago
+office publishes full summaries after 00:30 CST/01:30 CDT and intermediate
+summaries after 16:30, a roughly 15–16-hour window. A ten-hour revisit better fits
+that window than the original thirty-hour revisit. Issuance differs by office,
+intermediate or corrected products may intervene, and outages, sleeping, loss of
+AC power or resource deferrals still create gaps. Latest-only retrieval does not
+recover a missed report. Missing final truth stays explicit; the project's
+complete-day CLI finality is distinct from later NCEI certification. [NWS CLI
+format](https://www.weather.gov/media/notification/pdfs/scn00-56.pdf), [NWS observation
+FAQ](https://www.weather.gov/lot/weather_observations_faq).
 When the shadow hook is disabled and input hashes plus Python source are
 unchanged, duplicate analysis is skipped. A source-only reanalysis is explicitly
 different from new evidence. Source/Git identity is checked again before a
@@ -94,7 +126,7 @@ scikit-learn; no new dependency installation is necessary:
 
 ```bash
 .venv-dev/bin/python scripts/local_compute/worker.py \
-  --config .local/v7-offload/worker-config.json --checks-only
+  --config .local/v7-offload/worker-config.json --scheduled --checks-only
 .venv-dev/bin/python scripts/local_compute/install_launch_agent.py \
   --config .local/v7-offload/worker-config.json
 ```
@@ -109,7 +141,8 @@ launchctl disable "gui/$(id -u)/com.weatheredge.v7.local-research"
 launchctl bootout "gui/$(id -u)/com.weatheredge.v7.local-research"
 ```
 
-The schedule was installed and independently inspected on October 5, 2026. It
+The original six-hour schedule with 20-minute wall and ten-minute CPU budgets
+was installed and independently inspected on October 5, 2026. It
 was enabled and loaded, with no run at installation. The first complete guarded
 worker finished at 23:32 PDT: all four audit/bias/ML jobs succeeded in 20.335
 wall seconds, with 8.57 observed CPU seconds and 366.9 MiB peak group RSS.
@@ -141,6 +174,12 @@ measurements and receipt hashes. Private configuration, source maps, paths and
 account identifiers are excluded. A failed pair preserves the prior artifact.
 Future private collections do not automatically change the webpage's dated
 snapshot or its AWS runtime identity.
+
+The October 6 refinement requires the two-hour schedule and tighter 300/120-second
+budgets above. The dated October 5 runs retain their original limits and identity;
+they are not evidence that the refined schedule has been installed or run. Its
+private configuration, reinstall and native admission must be independently
+checked after the final source is committed.
 
 ## Network and billing boundary
 
@@ -197,7 +236,8 @@ unavailable and never falls back to a large unbounded copy. Original snapshots
 are retained. Zero-length WAL files are harmless; nonempty transactional
 sidecars are rejected.
 
-The helper runs under the same Mac budget and lock and installs a Python socket/DNS
+The manual helper retains its separate 20-minute wall/ten-minute observed CPU
+budget, the same native safeguards and shared lock, and installs a Python socket/DNS
 audit guard against network access. The inspected builder has no network subprocess;
 the hook is not a general operating-system network sandbox. It
 uses the direct diagnostic builder, and checks source identity again before
@@ -231,6 +271,11 @@ schema/unknown fields, non-finite limits, power/thermal/memory/load rejection,
 process-group termination, free-egress reservation, duplicate skipping,
 source/input-change rejection, shared locks, snapshot tampering, and actual
 SIGTERM/SIGHUP cancellation of a supervisor with a separate child session.
+Schedule regressions verify two-hour/background/no-immediate-run settings and
+prove weak, missing, nonfinite or relaxed scheduled limits leave the existing
+plist, state directory and `launchctl` untouched. Runtime regressions prove
+that a subsequently weakened private configuration starts no admission,
+subprocess, network, analysis or state mutation in installed scheduled mode.
 The combined operations/collector/ML check passed 90 tests and 31 subtests;
 local compilation and diff checks passed. Local compilation
 and the focused suite must pass before installation; the worker must complete a

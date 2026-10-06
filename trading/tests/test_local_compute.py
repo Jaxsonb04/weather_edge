@@ -1,6 +1,7 @@
 """Fail-closed power/resource/egress guards and preserved offline research evidence."""
 import importlib.util
 import fcntl
+import io
 import json
 import os
 from pathlib import Path
@@ -167,6 +168,53 @@ class GuardTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_installed_mode_rejects_later_weakened_config_before_state_or_work(self):
+        worker = load('worker')
+        for limits in ({'wall_seconds': 1200, 'cpu_seconds': 600},
+                       {'wall_seconds': 301, 'cpu_seconds': 120},
+                       {'wall_seconds': 300, 'cpu_seconds': 121}, {}):
+            for existing in (False, True):
+                with self.subTest(limits=limits, existing_state=existing), tempfile.TemporaryDirectory() as folder:
+                    state = Path(folder) / 'state'
+                    if existing:
+                        state.mkdir(mode=0o755)
+                        (state / 'latest-success.json').write_bytes(b'{"previous":"verified"}\n')
+                    before = {path.name: (path.stat().st_mode, path.stat().st_mtime_ns,
+                              path.read_bytes() if path.is_file() else None)
+                              for path in (state, *state.iterdir())} if existing else {}
+                    config = {'state_dir': str(state), 'fresh_export': True,
+                              'local_prospective_collection': True, 'limits': limits}
+                    with patch.object(worker, 'host_snapshot') as admission, \
+                         patch.object(worker, 'Budget') as budget, \
+                         patch.object(worker, 'collect_export') as network, \
+                         patch.object(worker, 'offline_inputs') as inputs, \
+                         patch.object(worker, 'source_identity') as source, \
+                         patch.object(worker.subprocess, 'run') as subprocess_run, \
+                         patch.object(worker.subprocess, 'Popen') as popen, \
+                         patch.object(worker.subprocess, 'check_output') as check_output, \
+                         self.assertRaisesRegex(ValueError, 'two-hour schedule'):
+                        worker.run(config, scheduled=True)
+                    for action in (admission, budget, network, inputs, source,
+                                   subprocess_run, popen, check_output):
+                        action.assert_not_called()
+                    after = {path.name: (path.stat().st_mode, path.stat().st_mtime_ns,
+                             path.read_bytes() if path.is_file() else None)
+                             for path in (state, *state.iterdir())} if state.exists() else {}
+                    self.assertEqual(after, before)
+
+    def test_scheduled_check_uses_tighter_limits_while_manual_check_retains_defaults(self):
+        worker = load('worker')
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(worker, 'host_snapshot', return_value={}) as admission, \
+             patch.object(worker.sys, 'stdout', io.StringIO()):
+            config = {'state_dir': folder, 'limits': {'wall_seconds': 300, 'cpu_seconds': 120}}
+            self.assertEqual(worker.run(config, checks_only=True, scheduled=True), 0)
+            self.assertEqual(admission.call_args.args[1]['wall_seconds'], 300)
+            self.assertEqual(admission.call_args.args[1]['cpu_seconds'], 120)
+            self.assertEqual(worker.run({'state_dir': folder}, checks_only=True), 0)
+            self.assertEqual(admission.call_args.args[1]['wall_seconds'], 1200)
+            self.assertEqual(admission.call_args.args[1]['cpu_seconds'], 600)
+
     def test_missing_egress_attestation_never_starts_ssh_and_preserves_success(self):
         worker = load('worker')
         with tempfile.TemporaryDirectory() as folder:
@@ -446,9 +494,55 @@ class FullAnalysisTests(unittest.TestCase):
         state = Path('/private/local')
         plist = installer.launch_document(state / 'config.json', state, '/python')
         self.assertFalse(plist['RunAtLoad'])
-        self.assertEqual(plist['StartInterval'], 21600)
+        self.assertEqual(plist['StartInterval'], 7200)
         self.assertTrue(plist['LowPriorityIO'])
         self.assertEqual(plist['ProcessType'], 'Background')
+        self.assertEqual(plist['Nice'], 10)
+        self.assertEqual(plist['ProgramArguments'][:2], ['/usr/bin/caffeinate', '-i'])
+        self.assertEqual(plist['ProgramArguments'][-1], '--scheduled')
+
+    def test_frequent_schedule_rejects_weak_budget_before_any_install_change(self):
+        installer = load('install_launch_agent')
+        for limits in (None, {'wall_seconds': 301, 'cpu_seconds': 120},
+                       {'wall_seconds': 300, 'cpu_seconds': 121},
+                       {'wall_seconds': 300}, {'cpu_seconds': 120},
+                       {'wall_seconds': float('nan'), 'cpu_seconds': 120},
+                       {'wall_seconds': 300, 'cpu_seconds': 120, 'cpu_fraction': .6}):
+            with self.subTest(limits=limits), tempfile.TemporaryDirectory() as folder:
+                home = Path(folder)
+                state = home / 'uncreated-state'
+                config = home / 'config.json'
+                value = {'state_dir': str(state)}
+                if limits is not None:
+                    value['limits'] = limits
+                config.write_text(json.dumps(value))
+                config.chmod(0o600)
+                plist = home / 'Library/LaunchAgents/com.weatheredge.v7.local-research.plist'
+                plist.parent.mkdir(parents=True)
+                original = b'previous independently verified schedule'
+                plist.write_bytes(original)
+                original_time = plist.stat().st_mtime_ns
+                with patch.object(installer.Path, 'home', return_value=home), \
+                     patch.object(installer.sys, 'argv', ['install', '--config', str(config)]), \
+                     patch.object(installer.subprocess, 'run') as launchctl, \
+                     patch.object(installer.sys, 'stderr', io.StringIO()), \
+                     self.assertRaises(SystemExit) as rejected:
+                    installer.main()
+                self.assertEqual(rejected.exception.code, 2)
+                launchctl.assert_not_called()
+                self.assertFalse(state.exists())
+                self.assertEqual(plist.read_bytes(), original)
+                self.assertEqual(plist.stat().st_mtime_ns, original_time)
+
+    def test_frequent_schedule_accepts_tighter_config_and_keeps_manual_default_budget(self):
+        installer = load('install_launch_agent')
+        limits = installer.scheduled_policy({'limits': {'wall_seconds': 300, 'cpu_seconds': 120}})
+        self.assertEqual(limits['wall_seconds'], 300)
+        self.assertEqual(limits['cpu_seconds'], 120)
+        self.assertEqual(limits['cpu_fraction'], .5)
+        self.assertEqual(limits['rss_bytes'], 2 * 1024**3)
+        self.assertEqual(installer.policy({})['wall_seconds'], 1200)
+        self.assertEqual(installer.policy({})['cpu_seconds'], 600)
 
 
 if __name__ == '__main__':

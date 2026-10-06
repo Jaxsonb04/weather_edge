@@ -18,11 +18,11 @@ operational claim; all production observations below are dated snapshots.
   delegation, superseding the earlier pause on local scheduling. Real money,
   increased AWS charges, hardware/power changes and sustained intensive local
   computation remain forbidden. AWS retains its ledger, operational collection
-  and public runtime authority. The Mac implementation provides six-hour
+  and public runtime authority. The Mac implementation provides two-hour
   offline-first audits, fixed chronological ML comparisons and a separate free
   noncommercial prospective weather shadow. Native AC/thermal/memory/load/disk
-  admission, one numerical thread, half-core pacing, a 20-minute wall deadline,
-  ten-minute observed CPU budget, 2-GiB sampled process-group RSS limit and a
+  admission, one numerical thread, half-core pacing, a five-minute scheduled wall
+  deadline, two-minute observed CPU budget, 2-GiB sampled process-group RSS limit and a
   shared lock bound work; resource warnings terminate descendants and preserve
   the last successful result. Recurring AWS downloads default off because
   remaining free egress has not been verified. Source/input hashes bind results.
@@ -30,8 +30,9 @@ operational claim; all production observations below are dated snapshots.
   fixture, but requires a complete verified weather snapshot and guarded import
   before replacing production work. See `docs/local_compute.md` and
   `docs/design/plans/2026-10-05-hybrid-v7.md` for workflow and limits.
-  The four-city rotating LaunchAgent is now enabled with no installation-time
-  run. Its first complete execution finished at October 5, 23:32:31 PDT:
+  The four-city rotating LaunchAgent is enabled with no installation-time run.
+  Its original six-hour schedule's first complete execution finished at
+  October 5, 23:32:31 PDT:
   all four research jobs passed, exactly eight free-provider GETs produced
   twelve new issued forecasts (fifteen retained), source/input post-hashes
   matched, 20.335 wall seconds and 8.57 observed CPU seconds were used, with
@@ -39,9 +40,19 @@ operational claim; all production observations below are dated snapshots.
   earlier real SFO sample made two free requests, issued three original
   distributions, used 1.15 observed CPU seconds and 263 MB sampled memory, and
   correctly kept preliminary NWS truth nonfinal. Latest-only CLI retrieval on
-  a thirty-hour city rotation can miss final reports; gaps are explicit, not
+  a thirty-hour city rotation could miss final reports; gaps are explicit, not
   imputed. SIGTERM/SIGHUP now clean up separately sessioned children. Final
   independent focused validation passed 101 tests and 31 subtests.
+  The October 6, 00:14 PDT refinement is installed, enabled and admitted by
+  native checks: every two hours, four cities, approximately ten-hour city
+  revisits. Installer and each `--scheduled` invocation reject weakened limits
+  before work; the manual full Strategy helper retains separate 20/10-minute
+  ceilings. Twelve nominal scheduled runs are capped at 60 wall/24 CPU minutes
+  per day, below the original 80/40 maxima, with the same 96-request UTC-day
+  ceiling including failures/manual calls. NWS's morning full-day and afternoon
+  interim reporting supports shorter revisits, without guaranteeing complete
+  truth. No power/hardware setting or AWS download was changed. Independent
+  revalidation of the revised installer/runtime passed 165 tests and 46 subtests.
 - **Research decision (October 5):** the fixed exploratory comparison covers
   6,656 matched cases over 246 distinct target dates with zero qualified
   original vintages. Minimum-CRPS location/scale calibration worsened CRPS

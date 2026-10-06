@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from guards import Budget, Deferred, host_snapshot, policy
+from install_launch_agent import scheduled_policy
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -106,11 +107,13 @@ def source_identity():
     }
 
 
-def run(config, *, checks_only=False):
+def run(config, *, checks_only=False, scheduled=False):
+    # Revalidate each installed invocation. Editing private configuration after
+    # installation cannot weaken the more frequent background run's ceilings.
+    limits = scheduled_policy(config) if scheduled else policy(config)
     state = Path(config['state_dir']).expanduser().resolve()
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(state, 0o700)
-    limits = policy(config)
     with (state / 'worker.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -216,7 +219,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--checks-only', action='store_true')
+    parser.add_argument('--scheduled', action='store_true',
+                        help='require the reviewed two-hour background resource budgets')
     args = parser.parse_args()
     if args.config.stat().st_mode & 0o077:
         parser.error('private configuration must have mode 0600')
-    sys.exit(run(json.loads(args.config.read_text()), checks_only=args.checks_only))
+    sys.exit(run(json.loads(args.config.read_text()), checks_only=args.checks_only,
+                 scheduled=args.scheduled))
