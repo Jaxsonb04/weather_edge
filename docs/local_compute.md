@@ -124,6 +124,24 @@ the same negative challenger comparisons. Original-vintage strict prequential
 cases remained zero; live allocation remained $0 and no bankroll recommendation
 was produced. No AWS export, full replica, ledger mutation or promotion ran.
 
+A second integrated run finished at October 5, 23:50 PDT from clean source
+`7e39093de`. Its next four-city batch added twelve vintages (twenty-seven retained)
+using eight requests; all four research jobs completed in 20.013 wall seconds,
+8.6 observed CPU seconds and 366.8 MiB maximum sampled group RSS. No scored
+issued target was available. This run's dated, allowlisted collection counts and
+resource measurements are included in `public/hybrid_research.json`, separately
+from the unchanged zero-qualified-vintage reconstructed comparison.
+
+Public research snapshots are deliberately reviewed releases, not automatic Mac
+uploads. `scripts/build_hybrid_research_summary.py` can take the optional paired
+`--worker-receipt` and `--collector-receipt` files, alongside `--report` and
+`--output`. It verifies their exact hash relationship, clocks, research-only
+identity, limits and observed usage before copying only dated counts, resource
+measurements and receipt hashes. Private configuration, source maps, paths and
+account identifiers are excluded. A failed pair preserves the prior artifact.
+Future private collections do not automatically change the webpage's dated
+snapshot or its AWS runtime identity.
+
 ## Network and billing boundary
 
 Scheduled AWS export is disabled by default. AWS states that internet egress

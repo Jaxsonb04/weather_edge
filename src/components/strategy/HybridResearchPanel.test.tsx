@@ -43,6 +43,27 @@ describe("Hybrid research boundaries", () => {
     expect(screen.getByText(/still reports research-target-roi-v70/)).toBeInTheDocument();
   });
 
+  it("shows a dated verified collection separately from completed days or filled profits", () => {
+    resource.data = { local_collection: {
+      finished_at: "2026-10-06T06:49:00+00:00", new_issued_forecasts: 12,
+      http_requests: 8, elapsed_seconds: 20.013,
+    } };
+    render(<HybridResearchPanel s={publication("research-target-roi-v6", false)} />);
+    expect(screen.getByText(/Dated Mac batch/).parentElement).toHaveTextContent(/12 newly issued forecasts from 8 public weather requests/);
+    expect(screen.getByText(/Dated Mac batch/).parentElement).toHaveTextContent(/not independent completed weather days or profitable fills/);
+    resource.data = null;
+  });
+
+  it("does not invent a successful batch from incomplete collection metadata", () => {
+    resource.data = { local_collection: {
+      finished_at: "2026-10-06T06:49:00+00:00", new_issued_forecasts: "12",
+      http_requests: 8, elapsed_seconds: -1,
+    } };
+    render(<HybridResearchPanel s={publication("research-target-roi-v6", false)} />);
+    expect(screen.queryByText(/Dated Mac batch/)).not.toBeInTheDocument();
+    resource.data = null;
+  });
+
   it("tolerates partially published candidates and never turns malformed counts into zero", () => {
     resource.data = {
       evaluation_kind: "retrospective_diagnostic", cases: "666", distinct_target_dates: -1,

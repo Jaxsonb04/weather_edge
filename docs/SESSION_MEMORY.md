@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-05 (bounded hybrid implementation, independent V7 audit and ML comparison; backend cutover deferred)
+Last updated: 2026-10-06 (bounded hybrid implementation, independent V7 audit and ML comparison; backend cutover deferred)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
@@ -103,6 +103,20 @@ operational claim; all production observations below are dated snapshots.
   combined focused gate passed 103 tests and 31 subtests after this correction;
   root independently passed 92 affected tests and 31 subtests. Exact final CI
   remains required before merge.
+  A subsequent clean-source integrated run finished October 5, 23:50 PDT at
+  `7e39093de`: eight requests, twelve new forecasts (twenty-seven retained),
+  20.013 wall seconds, 8.6 observed CPU seconds and 366.8 MiB peak sampled RSS.
+  All four jobs succeeded with source/input hashes preserved; no issued target
+  had completed. Its reviewed public summary allowlists dated measurements and
+  paired receipt hashes only. A separate paragraph discloses these collected
+  versions without changing historical qualified vintages (zero), AWS policy
+  identity or readiness. Final affected validation passed 161 Python tests and
+  31 subtests plus all 218 web tests; build, lint and icons passed. Independent
+  review hardened public date/schema/digest/count validation and privacy.
+  Desktop, iPhone-emulated 390-pixel and 320-pixel browser checks verified the
+  dated twelve-forecast/eight-request/20-second batch, unchanged historical zero,
+  both negative comparisons, expansion and keyboard reopening, with no overflow
+  or page errors. Exact-candidate CI, merge and static publication remain pending.
 
 - **V7 audit (October 5, 19:56 PDT paper snapshot):** Live Stability and Research
   ROI V6 remain economically separate paper ledgers, each initially $1,000.

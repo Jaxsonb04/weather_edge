@@ -9,6 +9,12 @@ interface ResearchSnapshot {
   distinct_target_dates?: number;
   qualified_original_vintage_cases?: number;
   candidates?: Array<{ name?: string; state?: string; comparison?: string }>;
+  local_collection?: {
+    finished_at?: string;
+    new_issued_forecasts?: number;
+    http_requests?: number;
+    elapsed_seconds?: number;
+  };
 }
 
 const REPO_DOCS = "https://github.com/Jaxsonb04/weather_edge/blob/main/docs/";
@@ -27,6 +33,15 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
   const date = stamp && Number.isFinite(stamp.getTime())
     ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "America/Los_Angeles" }).format(stamp)
     : null;
+  const collection = snapshot?.local_collection;
+  const collectionClock = typeof collection?.finished_at === "string" ? new Date(collection.finished_at) : null;
+  const collectionDate = collectionClock && Number.isFinite(collectionClock.getTime())
+    ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Los_Angeles" }).format(collectionClock)
+    : null;
+  const hasCollection = collectionDate && typeof collection?.new_issued_forecasts === "number"
+    && Number.isSafeInteger(collection.new_issued_forecasts) && collection.new_issued_forecasts >= 0
+    && typeof collection.http_requests === "number" && Number.isSafeInteger(collection.http_requests) && collection.http_requests >= 0
+    && typeof collection.elapsed_seconds === "number" && Number.isFinite(collection.elapsed_seconds) && collection.elapsed_seconds >= 0;
   const candidates = Array.isArray(snapshot?.candidates)
     ? snapshot.candidates.filter((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)).map((candidate) => ({
       name: typeof candidate.name === "string" ? candidate.name : "Unnamed candidate",
@@ -62,6 +77,11 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
           </div>
         ))}
       </dl>
+      {hasCollection && <p className="mt-4 text-sm leading-relaxed text-muted">
+        <strong className="text-foreground">Dated Mac batch · {collectionDate} Pacific.</strong>{" "}
+        {count(collection?.new_issued_forecasts)} newly issued forecasts from {count(collection?.http_requests)} public weather requests; the complete research run took {collection?.elapsed_seconds?.toFixed(1)} seconds.
+        {" "}These are collected forecast versions, not independent completed weather days or profitable fills. Later Mac runs remain private until another research snapshot is published.
+      </p>}
       <p className="mt-4 text-sm leading-relaxed text-muted">
         October 31 is an engineering and evidence review date. The current readiness policy requires 30 independent weather dates after a qualifying behavior change; an unactivated V7 cannot collect that record by the review date. Initial capital remains undetermined until a positive conservative net edge and an explicit loss budget support it.
       </p>
