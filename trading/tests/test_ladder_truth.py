@@ -703,6 +703,7 @@ def test_nothing_in_the_trading_path_reads_the_ladder_ledger():
 
     package = Path(__file__).resolve().parents[1] / "sfo_kalshi_quant"
     allowed = {
+        "archive.py",         # lossless durability only; no trading authority
         "ladder_truth.py",     # the ledger itself
         "store/schema.py",     # table creation + the integrity migration
         "db.py",               # backfill + read-back accessors

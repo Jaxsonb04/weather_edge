@@ -45,8 +45,8 @@ def test_dataset_research_promotes_only_sources_that_improve_heldout_accuracy():
         row["dataset_key"]: row
         for row in payload["accuracy_gate"]["candidates"]
     }
-    good = candidates["open-meteo-previous-runs/candidate_model/temperature_2m_max/0h"]
-    bad = candidates["open-meteo-previous-runs/worse_model/temperature_2m_max/0h"]
+    good = candidates["open-meteo-previous-runs/candidate_model/temperature_2m_max/24h"]
+    bad = candidates["open-meteo-previous-runs/worse_model/temperature_2m_max/24h"]
 
     assert payload["status"] == "collect_only"
     assert good["decision"] == "accuracy_candidate"
@@ -202,10 +202,10 @@ def _feature_row(source: str, model: str, target: date, value: float) -> dict[st
     return {
         "source": source,
         "model": model,
-        "issued_at": f"{target.isoformat()}T07:00:00+00:00",
+        "issued_at": f"{(target - timedelta(days=1)).isoformat()}T07:00:00+00:00",
         "target_date": target.isoformat(),
         "valid_time": target.isoformat(),
-        "lead_hours": 0.0,
+        "lead_hours": 24.0,
         "latitude": 37.62,
         "longitude": -122.38,
         "variable": "temperature_2m_max",

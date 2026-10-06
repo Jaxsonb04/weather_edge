@@ -79,6 +79,7 @@ from .research_policy import (
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
+    TARGET_POLICY_V6,
     ResearchSleeve,
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
@@ -572,6 +573,7 @@ _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY_V3.account_id: TARGET_POLICY_V3,
     TARGET_POLICY_V4.account_id: TARGET_POLICY_V4,
     TARGET_POLICY_V5.account_id: TARGET_POLICY_V5,
+    TARGET_POLICY_V6.account_id: TARGET_POLICY_V6,
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
@@ -784,8 +786,8 @@ class PaperStore:
                 "execution_model_version": EXECUTION_MODEL_VERSION,
                 "accounting_policy_version": ACCOUNTING_POLICY_VERSION,
                 "note": (
-                    "exec-v4 queue-price priority with replayable tape, "
-                    "conserved volume, and partial fills"
+                    "exec-v5 account-scoped queue-price priority with replayable "
+                    "tape, conserved volume, and partial fills"
                 ),
             },
         )
@@ -1926,6 +1928,7 @@ class PaperStore:
             TARGET_POLICY_V3.account_id: "research-target-v3",
             TARGET_POLICY_V4.account_id: "research-target-v4",
             TARGET_POLICY_V5.account_id: "research-target-v5",
+            TARGET_POLICY_V6.account_id: "research-target-v6",
             TARGET_POLICY.account_id: "research-target",
             MOTION_POLICY.account_id: "research-motion",
         }[account_id]
@@ -4904,7 +4907,8 @@ class PaperStore:
         Network pagination finishes before this method is called. The writer
         lock then makes tape archival, finite-volume allocation, queue progress,
         partial fills, reservations, and ledger charges one indivisible state
-        transition.
+        transition. Each economic paper account is an independent execution
+        scenario; tape stays finite within an account across lots and restarts.
         """
 
         payloads = list(trade_payloads)
@@ -4973,30 +4977,55 @@ class PaperStore:
             if not rows:
                 return []
 
-            claims: dict[str, float] = {}
-            for trade_id, quantity in conn.execute(
-                "SELECT trade_id, COALESCE(SUM(quantity), 0) "
-                "FROM maker_volume_claims WHERE market_ticker=? GROUP BY trade_id",
-                (market_ticker,),
-            ).fetchall():
-                claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
-                    quantity or 0.0
-                )
-            for trade_id, quantity in conn.execute(
+            # Join the complete owner history, including resolved lots: leaving
+            # the resting set never releases consumed tape. NULL legacy owners
+            # retain shared-account semantics. A claim with no remaining owner
+            # is unattributable, so conservatively deduct it in every scenario.
+            claims_by_account: dict[str, dict[str, float]] = {}
+            unattributed_claims: dict[str, float] = {}
+            for account_id, owner_missing, trade_id, quantity in conn.execute(
                 """
-                SELECT trade_id,
-                       COALESCE(SUM(queue_quantity + fill_quantity), 0)
-                FROM paper_maker_allocations
-                WHERE market_ticker=? AND counterfactual=0
-                GROUP BY trade_id
+                SELECT COALESCE(o.account_id, 'paper-shared') AS claim_account,
+                       o.id IS NULL AS owner_missing,
+                       c.trade_id, COALESCE(SUM(c.quantity), 0)
+                FROM maker_volume_claims c
+                LEFT JOIN paper_orders o ON o.id=c.order_id
+                WHERE c.market_ticker=?
+                GROUP BY claim_account, owner_missing, c.trade_id
                 """,
                 (market_ticker,),
             ).fetchall():
+                claims = (
+                    unattributed_claims
+                    if owner_missing
+                    else claims_by_account.setdefault(str(account_id), {})
+                )
+                claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
+                    quantity or 0.0
+                )
+            for account_id, owner_missing, trade_id, quantity in conn.execute(
+                """
+                SELECT COALESCE(o.account_id, 'paper-shared') AS claim_account,
+                       o.id IS NULL AS owner_missing,
+                       a.trade_id,
+                       COALESCE(SUM(a.queue_quantity + a.fill_quantity), 0)
+                FROM paper_maker_allocations a
+                LEFT JOIN paper_orders o ON o.id=a.order_id
+                WHERE a.market_ticker=? AND a.counterfactual=0
+                GROUP BY claim_account, owner_missing, a.trade_id
+                """,
+                (market_ticker,),
+            ).fetchall():
+                claims = (
+                    unattributed_claims
+                    if owner_missing
+                    else claims_by_account.setdefault(str(account_id), {})
+                )
                 claims[str(trade_id)] = claims.get(str(trade_id), 0.0) + float(
                     quantity or 0.0
                 )
 
-            capital_orders: list[RestingMakerOrder] = []
+            capital_orders_by_account: dict[str, list[RestingMakerOrder]] = {}
             shadow_orders: list[RestingMakerOrder] = []
             rows_by_id: dict[int, sqlite3.Row] = {}
             for row in rows:
@@ -5051,12 +5080,20 @@ class PaperStore:
                 if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID:
                     shadow_orders.append(order)
                 else:
-                    capital_orders.append(order)
+                    account_id = str(row["account_id"] or "paper-shared")
+                    capital_orders_by_account.setdefault(account_id, []).append(order)
                 rows_by_id[order.order_id] = row
 
-            allocations = allocate_maker_fills(
-                apply_volume_claims(all_trades, claims), capital_orders
-            )
+            allocations = {}
+            for account_id, capital_orders in capital_orders_by_account.items():
+                claims = dict(claims_by_account.get(account_id, {}))
+                for trade_id, quantity in unattributed_claims.items():
+                    claims[trade_id] = claims.get(trade_id, 0.0) + quantity
+                allocations.update(
+                    allocate_maker_fills(
+                        apply_volume_claims(all_trades, claims), capital_orders
+                    )
+                )
             for order in shadow_orders:
                 shadow_claims = {
                     str(trade_id): float(quantity or 0.0)
@@ -5146,7 +5183,7 @@ class PaperStore:
                     evidence = {}
                 evidence.update(
                     {
-                        "model": "maker_allocator_price_time_v4",
+                        "model": "maker_allocator_price_time_v5",
                         "execution_model_version": EXECUTION_MODEL_VERSION,
                         "requested_quantity": requested,
                         "filled_quantity": new_filled,
@@ -5154,6 +5191,9 @@ class PaperStore:
                         "queue_remaining": new_queue,
                         "research_shadow": counterfactual,
                         "counterfactual": counterfactual,
+                        "allocation_scope": (
+                            "legacy_per_order_shadow" if counterfactual else "economic_account"
+                        ),
                     }
                 )
                 cumulative = evidence.get("consumptions")
@@ -5341,14 +5381,20 @@ class PaperStore:
             if not isinstance(fill_evidence, dict):
                 fill_evidence = {}
             if tape_reconciled_through is not None:
+                counterfactual = str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID
                 requested = float(
                     row["requested_contracts"] or row["contracts"] or 0.0
                 )
                 remaining = float(row["remaining_contracts"] or 0.0)
                 fill_evidence.update(
                     {
-                        "model": "maker_allocator_price_time_v4",
+                        "model": "maker_allocator_price_time_v5",
                         "execution_model_version": EXECUTION_MODEL_VERSION,
+                        "allocation_scope": (
+                            "legacy_per_order_shadow" if counterfactual else "economic_account"
+                        ),
+                        "research_shadow": counterfactual,
+                        "counterfactual": counterfactual,
                         "requested_quantity": requested,
                         "filled_quantity": filled,
                         "remaining_quantity": remaining,

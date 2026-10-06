@@ -258,6 +258,11 @@ def _write_dataset_research(path: Path, keys: list[str]) -> None:
     path.write_text(
         json.dumps(
             {
+                "live_promotion": {
+                    "decision": "approved" if keys else "blocked",
+                    "after_cost_approved": bool(keys),
+                    "approved_dataset_keys": keys,
+                },
                 "accuracy_gate": {
                     "candidates": [
                         {
@@ -277,10 +282,11 @@ def _dataset_row(target: date, value: float, *, issued: str = "2026-06-25T18:00:
     return {
         "source": "noaa-lamp",
         "model": "lamp",
+        "station_id": "KSFO",
         "issued_at": issued,
         "target_date": target.isoformat(),
         "valid_time": target.isoformat(),
-        "lead_hours": 0.0,
+        "lead_hours": 24.0,
         "latitude": 37.62,
         "longitude": -122.38,
         "variable": "temperature_2m_max",
@@ -291,7 +297,7 @@ def _dataset_row(target: date, value: float, *, issued: str = "2026-06-25T18:00:
     }
 
 
-def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
+def test_promoted_dataset_guidance_reads_latest_explicitly_approved_vintage():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "dataset.db"
         research_path = Path(tmp) / "dataset_research.json"
@@ -303,9 +309,16 @@ def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
                 _dataset_row(target, 71.0, issued="2026-06-25T18:00:00+00:00"),
             ]
         )
+        with store.connect() as conn:
+            # Reproduce the actual pre-target collection clock; DatasetStore's
+            # default is the test run's current ingestion time, after this day.
+            conn.execute(
+                "UPDATE dataset_forecast_features SET fetched_at=?",
+                ("2026-06-25T19:00:00+00:00",),
+            )
         _write_dataset_research(
             research_path,
-            ["noaa-lamp/lamp/temperature_2m_max/0h"],
+            ["noaa-lamp/lamp/temperature_2m_max/24h"],
         )
 
         result = google_weather_cache.load_promoted_dataset_guidance(
@@ -316,7 +329,8 @@ def test_promoted_dataset_guidance_reads_latest_accuracy_candidate_only():
 
     assert result["highF"] == 71.0
     assert result["source"] == "Promoted dataset guidance"
-    assert result["components"][0]["dataset_key"] == "noaa-lamp/lamp/temperature_2m_max/0h"
+    assert result["components"][0]["dataset_key"] == "noaa-lamp/lamp/temperature_2m_max/24h"
+    assert result["components"][0]["observed_at"] == "2026-06-25T19:00:00+00:00"
     assert result["metadata"]["promoted_count"] == 1
 
 
@@ -327,6 +341,11 @@ def test_unpromoted_dataset_guidance_is_reported_but_not_weighted():
         target = date(2026, 6, 26)
         store = DatasetStore(db_path)
         store.upsert_forecast_features([_dataset_row(target, 71.0)])
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE dataset_forecast_features SET fetched_at=?",
+                ("2026-06-25T19:00:00+00:00",),
+            )
         _write_dataset_research(research_path, [])
 
         result = google_weather_cache.load_promoted_dataset_guidance(
@@ -361,8 +380,9 @@ def test_blend_snapshot_includes_promoted_dataset_source_and_postprocessor_metad
         google_weather_cache.load_promoted_dataset_guidance = lambda target_iso: {
             "highF": 76.0,
             "source": "Promoted dataset guidance",
-            "detail": "noaa-lamp/lamp/temperature_2m_max/0h",
-            "components": [{"dataset_key": "noaa-lamp/lamp/temperature_2m_max/0h", "corrected_high_f": 76.0}],
+            "detail": "noaa-lamp/lamp/temperature_2m_max/24h",
+            "components": [{"dataset_key": "noaa-lamp/lamp/temperature_2m_max/24h", "corrected_high_f": 76.0,
+                            "issued_at": "2026-06-25T18:00:00+00:00", "observed_at": "2026-06-25T19:00:00+00:00"}],
             "metadata": {"mode": "promoted", "promoted_count": 1},
         }
 

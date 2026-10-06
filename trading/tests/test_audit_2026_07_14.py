@@ -1123,7 +1123,7 @@ def test_readiness_strict_fingerprint_rejects_mixed_child_lot_day() -> None:
         assert result["evidence_scope"]["fingerprint_mismatch_target_days"] == 1
 
 
-def test_exec_v4_boundary_excludes_v3_evidence_without_rewriting() -> None:
+def test_current_execution_boundary_excludes_v3_evidence_without_rewriting() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
         store = PaperStore(db_path)
@@ -1172,8 +1172,8 @@ def test_exec_v4_boundary_excludes_v3_evidence_without_rewriting() -> None:
             )
             conn.execute(
                 "UPDATE paper_account_ledger SET created_at=? "
-                "WHERE idempotency_key='execution:exec-v4-2026-07-17'",
-                ((T0 - timedelta(minutes=1)).isoformat(),),
+                "WHERE idempotency_key=?",
+                ((T0 - timedelta(minutes=1)).isoformat(), f"execution:{EXECUTION_MODEL_VERSION}"),
             )
 
         replay = replay_from_database(
@@ -1181,7 +1181,7 @@ def test_exec_v4_boundary_excludes_v3_evidence_without_rewriting() -> None:
         )
 
         assert replay["source_orders"] == 1
-        assert replay["execution_model_version"] == "exec-v4-2026-07-17"
+        assert replay["execution_model_version"] == EXECUTION_MODEL_VERSION
         assert replay["semantics_boundary"] == (
             T0 - timedelta(minutes=1)
         ).isoformat()
@@ -1208,7 +1208,7 @@ def test_exec_v4_boundary_excludes_v3_evidence_without_rewriting() -> None:
             ).fetchone()
             assert current_version == EXECUTION_MODEL_VERSION
             assert json.loads(current_evidence)["model"] == (
-                "maker_allocator_price_time_v4"
+                "maker_allocator_price_time_v5"
             )
             assert conn.execute(
                 "SELECT DISTINCT execution_model_version "
@@ -1480,7 +1480,7 @@ def test_readiness_mixed_day_ignores_research_but_rejects_invalid_profile(
         assert result["verified_decisions"] == 1
         metrics = result["readiness_metrics"]
         assert metrics["counts"]["settled_decisions"] == 1
-        assert metrics["by_cohort"]["post_exec_v4_live"]["trades"] == 1
+        assert metrics["by_cohort"][f"post_exec_{EXECUTION_MODEL_VERSION.split('-')[1]}_live"]["trades"] == 1
         assert result["post_boundary_days"] == expected_post_boundary_days
 
 

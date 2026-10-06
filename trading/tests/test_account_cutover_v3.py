@@ -22,6 +22,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
+    TARGET_POLICY_V6,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.profile_identity import (
@@ -99,17 +100,15 @@ def test_fresh_store_activates_exact_live_bankroll_and_archives_legacy_accounts(
     assert opening_events[0]["amount"] == 1000.0
 
 
-def test_target_v2_is_frozen_and_target_v3_is_the_only_active_policy() -> None:
+def test_target_v2_is_frozen_and_v7_is_the_only_active_target_policy() -> None:
     assert TARGET_POLICY_V2.account_id == "paper-research-target-v2"
     assert TARGET_POLICY_V2.policy_version == "research-target-growth-v2"
     assert TARGET_POLICY_V2.target_return == 0.016
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # 2026-07-31: the active target policy is v5 -- the v4 breadth geometry
-    # scaled 1.5x on every dollar knob with ratios preserved, because v4's
-    # day-one winners were all request-truncated (size, not breadth, bound).
-    assert TARGET_POLICY.account_id == "paper-research-roi-v6"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v6"
+    # V7 starts a separate correctness era without increasing V6 risk knobs.
+    assert TARGET_POLICY.account_id == "paper-research-roi-v7"
+    assert TARGET_POLICY.policy_version == "research-target-roi-v7"
     assert TARGET_POLICY.reference_equity == 1000.0
     assert TARGET_POLICY.target_return == 0.05
     assert TARGET_POLICY.target_pnl == 50.0
@@ -128,6 +127,7 @@ def test_target_v2_is_frozen_and_target_v3_is_the_only_active_policy() -> None:
         TARGET_POLICY_V3,
         TARGET_POLICY_V4,
         TARGET_POLICY_V5,
+        TARGET_POLICY_V6,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -158,7 +158,7 @@ def test_published_identities_separate_fresh_live_and_every_research_era() -> No
     assert published(MOTION_POLICY) == "research-motion"
 
 
-def test_fresh_store_archives_every_research_policy_except_v3(tmp_path) -> None:
+def test_fresh_store_archives_every_research_policy_except_v7(tmp_path) -> None:
     store = PaperStore(tmp_path / "research-policy-cutover-v3.db")
 
     statuses = {
@@ -173,6 +173,7 @@ def test_fresh_store_archives_every_research_policy_except_v3(tmp_path) -> None:
         TARGET_POLICY_V3.account_id: "ARCHIVED",
         TARGET_POLICY_V4.account_id: "ARCHIVED",
         TARGET_POLICY_V5.account_id: "ARCHIVED",
+        TARGET_POLICY_V6.account_id: "ARCHIVED",
         TARGET_POLICY.account_id: "ACTIVE",
         MOTION_POLICY.account_id: "ARCHIVED",
     }

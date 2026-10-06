@@ -1,16 +1,83 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-09-12 (performance and scaling revision; deployment pending)
+Last updated: 2026-10-05 (V7 audit/release; production cutover deferred)
 
-Last complete production verification: 2026-09-04 21:57 PDT
+Last complete production verification: 2026-10-05 19:50 PDT
 
-Last public artifact inspection: 2026-09-12 17:52 PDT (Strategy/signal hashes;
-not a full AWS audit)
+Last public artifact inspection: 2026-10-05 19:52 PDT (all five JSON hashes)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **V7 audit (October 5, 19:56 PDT paper snapshot):** Live Stability and Research
+  ROI V6 remain economically separate paper ledgers, each initially $1,000.
+  Their realized equity was $1,058.67 and $1,017.93 respectively. Mean realized
+  P&L over complete calendar days was $0.98 and $0.30, including zero/outage
+  days and excluding activation/current partial days. V6 captured 4.88% of
+  requested contracts; its 72.16% win rate barely exceeded the observed payout
+  break-even rate. Atlanta contributed −$123.98. Ten matched account histories
+  and 170 unassigned legacy roots are retained separately; the latter include
+  158 resolved roots and −$66.1495 without an invented bankroll or ROI.
+  Never combine these accounts or attribute older results to V7.
+- **Source release and history:** V7 starts a new research identity and copies
+  current-main numeric controls without loosening gates. V6 filled exposure,
+  ledger events, goals and losses retain their original lineage. Old-generation
+  unfilled remainders expire at initialization before new-generation execution.
+  V7 corrects incomplete/source-mixed weather inputs, outcome-conditioned sigma,
+  serve-date truth leakage and challenger-policy mismatch; couples report
+  probabilities to their own distribution; isolates maker tape by economic
+  account; conserves exit depth and request-start quote age; guards dataset
+  promotion/availability/station scope and repeated-vintage MOS counts; parses
+  signed settlement labels; expands archives and shows all published eras.
+  New served forecast/member evidence is append-only. Unknown initialization
+  and hourly completeness remain NULL. Old outcomes are not silently restated.
+- **Data and validation boundary:** a bounded October 5, 20:35 PDT read-only
+  export retained 125,170 NWP member rows, 5,484 CLI rows and 22,970 EMOS rows.
+  Source-separated reconstructed pairs scored 10,642 cases over 355 dates:
+  1.80°F MAE, 1.30°F CRPS and 88.85% nominal-90% coverage, independently checked.
+  No scored row was recorded by its nominal serve day; these are retrospective
+  diagnostics, not original vintages, V7 performance or promotion evidence.
+  A strict fixed bias-only comparison on 4,890 paired cases over 163 dates
+  improved CRPS by 1.44%, MAE by 0.027°F, with sigma unchanged. It diagnoses an
+  existing serving correction, remains exploratory, and proves no trading edge.
+  See `docs/research/2026-10-05-v7-audit.md` and its hashed baselines. The $40/day
+  and 5%-daily objectives remain unproven; a proposed October research schedule
+  is documented, with no recurring automation installed.
+  Final local source validation passed 3,533 Python 3.13 tests with nine skips,
+  211 web tests, build, compilation, icons, health and diff checks. Desktop and
+  393/320px browser checks verified retained negative/zero eras, keyboard
+  selection, evidence expansion and no overflow/errors. Initial observed assets
+  were 224.26 KiB JS and 18.87 KiB CSS; two prior Fast Refresh warnings remain.
+  Required CI status belongs to the V7 PR; local Semgrep was unavailable.
+- **Operational snapshot and deliberate deferment:** the host was healthy,
+  twenty-nine canonical units passed integrity, no unit failed and maintenance
+  was absent. All five public artifact hashes matched a stable manifest.
+  Installed backend remained September 4 source `2a6432e3`; historical analysis
+  also remained September 4 and readiness reported `ANALYSIS_STALE`. Source
+  configures twenty cities but verified deployment still covered fifteen.
+  The journal was 30.98 GiB with 20.23 GiB free on a 64 GiB disk; canonical
+  backup verification requires about 31.98 GiB free. No V7 deployment, storage
+  purchase, retention-policy change or live-row deletion occurred. Preserve the
+  deployed archive-only setting during cutover; current-main defaults differ.
+  Real-money execution remains disabled. Three Phoenix final-truth warnings
+  remain unproven; do not invent settlement. Capacity remediation, guarded
+  cutover, refreshed analysis and prospective evidence remain required.
+
+## Prior session briefs (dated snapshots)
+
+- **October 2 outage recovery (08:13 PDT snapshot):** a redundant local rollback
+  snapshot plus journal growth exhausted disk space, interrupting forecasts,
+  paper scans and publication. The local snapshot was deleted only after its
+  entire checksum matched the retained encrypted off-host copy. Disposable
+  cache/Pages output was cleared; no financial or weather history was deleted.
+  Fourteen timers were restored, twenty-nine units passed integrity, both
+  separate ledgers reconciled, twelve recovered final station-days settled
+  twelve orders with zero mismatches, and all five fresh public hashes matched.
+  No backend deployment, paid storage or retention change occurred. The full
+  dated account and remaining truth/capacity gaps are retained in
+  `docs/audits/2026-10-02-website-outage.md`.
 
 - **Research performance and execution scaling (September 12, 17:50 PDT snapshot):**
   fresh public Strategy and signal files matched the 17:52 PDT publication hashes.

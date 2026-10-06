@@ -212,6 +212,7 @@ export interface ProfileDailySummary {
     capital_resolved?: number;
   };
   days?: DayRow[];
+  window_basis?: string;
   window_start?: string;
   window_end?: string;
   opening_attributed_pnl?: number;
@@ -475,7 +476,27 @@ export interface DecisionAnalytics {
   reason?: string | null;
 }
 
+export interface StrategyRelease {
+  version?: string;
+  policy_version?: string;
+  evidence_snapshot_at?: string;
+  research_objectives?: {
+    daily_return_on_initial?: number;
+    daily_dollars_by_october_31?: number;
+  };
+  baseline_report_url?: string;
+  comparison_note?: string;
+  findings?: Array<{
+    code?: string;
+    title?: string;
+    evidence?: string;
+    state?: string;
+    impact?: string;
+  }>;
+}
+
 export interface StrategyLab {
+  release?: StrategyRelease;
   schema_version?: number;
   available: boolean;
   reason?: string;
@@ -661,6 +682,7 @@ const ARCHIVED_PROFILE_ORDER = [
   "research-target-v3",
   "research-target-v4",
   "research-target-v5",
+  "research-target-v6",
   "research-motion",
   "research",
 ] as const;
@@ -688,26 +710,6 @@ export function archivedProfiles(s: StrategyLab): ProfileEntry[] {
     });
 }
 
-const FEATURED_ARCHIVED_PROFILE_ORDER = [
-  "live-legacy",
-  "research-target-v1",
-  "research-target-v3",
-  "research-target-v4",
-] as const;
-
-/** Recruiter-facing research lineage. The full archive remains published and
-    queryable, while this projection intentionally keeps the documented eras
-    that changed the live/ROI design. */
-export function featuredArchivedProfiles(s: StrategyLab): ProfileEntry[] {
-  const archived = new Map(
-    archivedProfiles(s).map((profile) => [profile.risk_profile, profile] as const),
-  );
-  return FEATURED_ARCHIVED_PROFILE_ORDER.flatMap((name) => {
-    const profile = archived.get(name);
-    return profile ? [profile] : [];
-  });
-}
-
 const PROFILE_DISPLAY_LABELS: Record<string, string> = {
   live: "Live Stability",
   "live-legacy": "Prior readiness benchmark",
@@ -718,14 +720,22 @@ const PROFILE_DISPLAY_LABELS: Record<string, string> = {
   "research-target-v3": "Research ROI v3 · rejected",
   "research-target-v4": "Research ROI v4 · adopted revision",
   "research-target-v5": "Research ROI v5 · superseded probe",
+  "research-target-v6": "Research ROI v6 · archived",
   "research-motion": "Research motion · archived",
 };
 
 /** Stable recruiter-facing identity. Runtime labels remain available in the
     raw artifact, but presentation does not inherit obsolete KPI or "live"
     wording from an older publisher. */
-export function profileDisplayLabel(profile: Pick<ProfileEntry, "risk_profile" | "label">): string {
-  return PROFILE_DISPLAY_LABELS[profile.risk_profile] ?? profile.label;
+export function profileDisplayLabel(
+  profile: Pick<ProfileEntry, "risk_profile" | "label"> & Partial<Pick<ProfileEntry, "daily_target">>,
+  policyVersion = profile.daily_target?.policy_version,
+): string {
+  if (profile.risk_profile === "research-target") {
+    const version = policyVersion?.match(/(?:^|-)v(\d+)(?:$|-)/i)?.[1];
+    return version ? `Research ROI v${version}` : "Research ROI";
+  }
+  return PROFILE_DISPLAY_LABELS[profile.risk_profile] ?? (profile.label || profile.risk_profile);
 }
 
 /** Resolve the target evidence from the profile first, then the top-level

@@ -4,7 +4,7 @@ import {
   archivedProfiles,
   equitySeries,
   equitySeriesFromDays,
-  featuredArchivedProfiles,
+  profileDisplayLabel,
   gateCounts,
   profileGateCounts,
   researchDailyTarget,
@@ -83,8 +83,10 @@ describe("active research books", () => {
     ).toEqual(["live-legacy", "research-target-v2", "research-motion"]);
   });
 
-  it("curates only the archive eras that changed the current strategy lineage", () => {
+  it("retains every published archive era including zero-trade and unknown profiles", () => {
     const archives = [
+      "research-target-v6",
+      "unknown-archive",
       "research-target-v5",
       "research-target-v2",
       "research-target-v4",
@@ -96,15 +98,28 @@ describe("active research books", () => {
     ].map((riskProfile) => ({ ...profile(riskProfile), archived: true }));
 
     expect(
-      featuredArchivedProfiles({ profiles: archives } as StrategyLab).map(
+      archivedProfiles({ profiles: archives } as StrategyLab).map(
         (entry) => entry.risk_profile,
       ),
     ).toEqual([
       "live-legacy",
       "research-target-v1",
+      "research-target-v2",
       "research-target-v3",
       "research-target-v4",
+      "research-target-v5",
+      "research-target-v6",
+      "research-motion",
+      "research",
+      "unknown-archive",
     ]);
+  });
+
+  it("uses the published policy for the active research label", () => {
+    const target = profile("research-target");
+    expect(profileDisplayLabel(target)).toBe("Research ROI");
+    expect(profileDisplayLabel(target, "research-target-roi-v6")).toBe("Research ROI v6");
+    expect(profileDisplayLabel(target, "research-target-roi-v7")).toBe("Research ROI v7");
   });
 
   it("tolerates a missing target artifact and falls back from profile to top-level data", () => {

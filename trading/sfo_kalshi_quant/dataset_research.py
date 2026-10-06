@@ -14,6 +14,7 @@ from typing import Any
 from ._util import _parse_timestamp, _table_exists
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .models import ForecastOutcome
+from .settlement_day import PACIFIC_STANDARD_TZ
 
 
 DEFAULT_MIN_MATCHED_ROWS = 30
@@ -99,6 +100,7 @@ def build_dataset_research(
             "dataset_stack": {"available": False, "decision": "collect_only"},
             "probabilistic_benchmarks": _probabilistic_benchmarks([]),
             "profitability_gate": _profitability_gate({}, min_after_cost_trades=min_after_cost_trades),
+            "live_promotion": _blocked_live_promotion(),
         }
 
     baseline_by_date = {row.local_date: row for row in baseline_outcomes}
@@ -163,12 +165,45 @@ def build_dataset_research(
         "dataset_stack": dataset_stack,
         "probabilistic_benchmarks": _probabilistic_benchmarks(candidates),
         "profitability_gate": profitability_gate,
+        "live_promotion": _blocked_live_promotion(),
+        "forecast_feature_evidence": {
+            "classification": "historical_forecast_accuracy_diagnostic",
+            "availability": "positive lead and reported issue before station-day start; original retrieval and provider initialization are not established",
+            "promotion_eligible": False,
+        },
         "promotion_rule": (
             "Collect broadly, but do not give a new source live model weight or "
             "loosen paper-trading gates until it improves held-out forecast error "
             "and then survives an after-cost market backtest with enough trades."
         ),
     }
+
+
+def _blocked_live_promotion() -> dict[str, Any]:
+    return {
+        "decision": "blocked",
+        "after_cost_approved": False,
+        "approved_dataset_keys": [],
+        "reason": "Accuracy candidates require a separate decision-time, after-cost evaluation and explicit live approval.",
+    }
+
+
+def _feature_is_point_in_time(
+    *, lead_hours: object, target_iso: str, issued_at: object
+) -> bool:
+    """Filter issue labels for diagnostics; this does not prove original vintages."""
+    lead = _maybe_float(lead_hours)
+    issued = _parse_timestamp(issued_at)
+    if lead is None or not math.isfinite(lead) or lead <= 0 or issued is None:
+        return False
+    try:
+        target_start = datetime.combine(
+            date.fromisoformat(target_iso), datetime.min.time(),
+            tzinfo=PACIFIC_STANDARD_TZ,
+        ).astimezone(UTC)
+    except (TypeError, ValueError):
+        return False
+    return issued < target_start
 
 
 def write_dataset_research(path: Path, payload: dict[str, Any]) -> None:
@@ -199,9 +234,15 @@ def _load_forecast_feature_candidates(db_path: Path) -> list[_FeatureCandidate]:
 
     latest_by_key_day: dict[tuple[str, str, str, float | None, str], tuple[str, float]] = {}
     for source, model, variable, lead_hours, target_iso, value, issued_at in rows:
+        if not _feature_is_point_in_time(
+            lead_hours=lead_hours, target_iso=str(target_iso), issued_at=issued_at
+        ):
+            continue
+        if not math.isfinite(float(value)):
+            continue
         key = (str(source), str(model), str(variable), _maybe_float(lead_hours), str(target_iso))
         current = latest_by_key_day.get(key)
-        if current is None or str(issued_at) > current[0]:
+        if current is None or _parse_timestamp(issued_at) > _parse_timestamp(current[0]):
             latest_by_key_day[key] = (str(issued_at), float(value))
 
     grouped: dict[tuple[str, str, str, float | None], list[tuple[date, float]]] = defaultdict(list)

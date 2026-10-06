@@ -29,6 +29,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V3,
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
+    TARGET_POLICY_V6,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -248,7 +249,9 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
     # size curve was replayed against recorded tape and saturates above 3.0x of
     # v4 (both sub-steps past 3.0x have bootstrap 95% lower bounds of $0.00),
     # so this pin also marks where scaling stops being evidence-led.
-    assert TARGET_POLICY.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
+    assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
+    # v7 preserves frozen v6 but opens its own correctness/evidence era.
+    assert TARGET_POLICY.policy_fingerprint == "ed3eb0933956b67edd85eff6"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
@@ -309,8 +312,9 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # hash the same config gives 93326de538852004fc08aa99 /
     # cdfaeb3c0be77f5b9dcb1270. Re-pin at integration if a sibling track adds
     # a StrategyConfig field.
-    assert strategy_fingerprint(config, entry_mode="limit") == "e1b9704afa53970f4edbdca3"
-    assert strategy_fingerprint(config, entry_mode="market") == "daac202606908834dcef5e78"
+    # v7 rotates behavior again for forecast validity and shared exit depth.
+    assert strategy_fingerprint(config, entry_mode="limit") == "762d7dba51749e6575f66858"
+    assert strategy_fingerprint(config, entry_mode="market") == "e6faa6a7cb7a66ca20bb72f4"
     # Production stamps rows PER CITY: strategy_lab/build.py keys live readiness
     # by strategy_fingerprint(config_for_city(live_config, city)), and
     # config_for_city leaves SFO alone but changes the other cities. So the 19
@@ -322,14 +326,14 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
         city.slug: strategy_fingerprint(config_for_city(config, city), entry_mode="limit")
         for city in CITIES
     }
-    assert live_by_city.pop("sfo") == "e1b9704afa53970f4edbdca3"
+    assert live_by_city.pop("sfo") == "762d7dba51749e6575f66858"
     assert len(live_by_city) == 19
-    assert set(live_by_city.values()) == {"d3751adbf7e84c6e424d46da"}
+    assert set(live_by_city.values()) == {"78f1881a23ed21329235cb7e"}
     research = strategy_config_for_profile("research")
     assert {
         strategy_fingerprint(config_for_city(research, city), entry_mode="limit")
         for city in CITIES
-    } == {"b123f57836129c1df1c995bd"}
+    } == {"d9c9ade236cf6ee9550b38c9"}
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1384,7 +1388,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION and moved again on
     # 2026-09-13 by the `limit_taker_cross_max_levels` config field; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "daac202606908834dcef5e78"
+    assert row["strategy_fingerprint"] == "e6faa6a7cb7a66ca20bb72f4"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

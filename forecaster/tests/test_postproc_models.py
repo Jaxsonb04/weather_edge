@@ -137,6 +137,41 @@ def test_analog_predicts_near_truth_and_is_rolling_origin():
         assert abs(preds[day][0] - mu) < 1e-9 and abs(preds[day][1] - sigma) < 1e-9
 
 
+@pytest.mark.parametrize("lead_days", [1, 2])
+def test_analog_uses_only_truth_available_before_serve_day(lead_days):
+    dates, truth, nwp = _synthetic_series(n=12)
+    target = dates[8]
+    before = analog_ensemble_predictions(
+        dates, truth, nwp, k=20, min_train=2, truth_lag_days=lead_days
+    )
+    unavailable = dict(truth)
+    for day in dates[8 - lead_days:9]:
+        unavailable[day] += 1000.0
+    after = analog_ensemble_predictions(
+        dates, unavailable, nwp, k=20, min_train=2, truth_lag_days=lead_days
+    )
+    assert after[target] == before[target]
+    # The same changed truth must enter the fit once it is actually available.
+    assert after[dates[-1]] != before[dates[-1]]
+    available = dict(truth)
+    available[dates[8 - lead_days - 1]] += 1000.0
+    assert analog_ensemble_predictions(
+        dates, available, nwp, k=20, min_train=2, truth_lag_days=lead_days
+    )[target] != before[target]
+
+
+def test_analog_warmup_counts_only_available_truth_and_calendar_lag():
+    dates, truth, nwp = _synthetic_series(n=8)
+    # Gaps in the target archive must not turn a calendar lead into a row lag.
+    retained = [dates[i] for i in (0, 1, 2, 6, 7)]
+    preds = analog_ensemble_predictions(
+        retained, truth, nwp, k=20, min_train=3, truth_lag_days=2
+    )
+    assert set(preds) == {dates[6], dates[7]}
+    with pytest.raises(ValueError, match="non-negative"):
+        analog_ensemble_predictions(dates, truth, nwp, truth_lag_days=-1)
+
+
 def test_emos_does_not_train_on_its_own_truth():
     # Same-day self-leak guard (distinct from the future-leak test): mutating a
     # day's OWN truth must not change that day's OWN prediction -- it is fit on

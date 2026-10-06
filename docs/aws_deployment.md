@@ -250,11 +250,14 @@ variables are `SFO_ARCHIVE_S3_PREFIX`, `SFO_ARCHIVE_AWS_CLI`, and
 `SFO_ARCHIVE_KEEP_DAYS`.
 
 Deployment is stricter than scheduled archive/prune: `sync_to_box.sh` fails its
-read-only preflight before stopping services unless the bucket and instance
+preflight before stopping services unless the bucket and instance
 role are available. The bucket must have public access blocked, versioning and
 default encryption enabled, and a lifecycle rule for both `paper_trading/` and
 `database-snapshots/`. The instance role needs bucket listing plus object
-put/get access limited to those two prefixes. After preflight, the deploy gate
+put/get access limited to those two prefixes. The capacity preflight can remove
+aged local backup artifacts; it is not a read-only diagnostic. Use direct file
+size and filesystem-capacity reads for an inspection that must not mutate state.
+After preflight, the deploy gate
 uploads a full SQLite snapshot and checksum, downloads the snapshot to a
 temporary path, verifies byte equality by SHA-256, and passes full
 `integrity_check` and `foreign_key_check` on that downloaded copy before any

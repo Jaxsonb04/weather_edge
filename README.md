@@ -1,415 +1,201 @@
 # WeatherEdge
 
-**An end-to-end probabilistic weather system that forecasts daily highs across
-20 U.S. cities, prices those forecasts against prediction markets, and publishes
-every decision to a live evidence dashboard.**
+WeatherEdge forecasts station daily-high temperatures, converts distributions
+into prediction-market bracket probabilities, and tests fee-aware trading
+policies in separate paper accounts. It combines weather ingestion,
+probabilistic calibration, orderbook evidence, simulated execution, official
+settlement, AWS operations, and a React evidence dashboard.
 
-WeatherEdge is a production-style student quant engineering project spanning
-data ingestion, probabilistic forecasting, market microstructure, paper
-execution, official settlement, cloud operations, and a responsive React app.
-It runs unattended on AWS, but it cannot place real-money orders.
-
-[**▶ Live dashboard**](https://jaxsonb04.github.io/weather_edge/) ·
-[Project case study](docs/PROJECT_CASE_STUDY.md) ·
-[Architecture](docs/architecture.md) ·
-[Methodology](https://jaxsonb04.github.io/weather_edge/#/methodology) ·
+[Live dashboard](https://jaxsonb04.github.io/weather_edge/) ·
 [Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) ·
-[Codebase walkthrough](docs/CODEBASE-WALKTHROUGH.md) ·
+[Repository map](docs/REPOSITORY_MAP.md) ·
+[Architecture](docs/architecture.md) ·
+[Project case study](docs/PROJECT_CASE_STUDY.md) ·
 [AI-assisted development](docs/ai-assisted-development.md)
 
 [![Verify](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml/badge.svg)](https://github.com/Jaxsonb04/weather_edge/actions/workflows/verify.yml)
 
 [![WeatherEdge dashboard](docs/assets/dashboard.png)](https://jaxsonb04.github.io/weather_edge/)
 
-> **Paper trading only.** This project reads real Kalshi market prices for research
-> and writes to a simulated journal. It places no live real-money orders — live
-> execution is unimplemented and fail-closed (`trading/sfo_kalshi_quant/live_execution.py`
-> raises `LiveTradingDisabled` and holds no authenticated client). Nothing here is
-> financial advice.
+**Paper trading only.** The engine reads real Kalshi public prices and records
+simulated orders. `live_execution.py` rejects non-dry orders; no authenticated
+real-money execution client is implemented. Paper fills do not establish that
+an equivalent real order would fill.
 
-## At a Glance
+## Current evidence and v7
 
-| Area | What is implemented |
+The **October 5, 2026, 19:52 PDT production snapshot** still ran backend revision
+`2a6432e3`, with fifteen city markets. The current source registry covers twenty.
+Repository source, installed backend, SPA assets, and generated runtime data
+have separate provenance; a merged fix is not proof of a deployed fix.
+
+| Area | Source capability and observed deployment |
 |---|---|
-| Forecasting | 8-member NWP ensemble, rolling-origin EMOS per station, and deeper SFO-only LSTM/XGBoost research |
-| Coverage | 20 city markets, each mapped to its own NWS settlement station and local-standard climate day |
-| Decision engine | Bracket probabilities, market consensus, exact fees, spread/liquidity checks, lower-bound edge, and portfolio risk gates |
-| Paper execution | Reservation-price limits, bounded taker crosses, monitoring, exits, and official NWS settlement in isolated paper accounts |
-| Operations | AWS EC2, systemd timers, watchdogs, SQLite, S3 backups, atomic artifacts, and GitHub Pages publication |
-| Interface | React 19, TypeScript, Vite, HeroUI Pro, responsive tables, search, dark/light themes, and accessibility checks |
-| Verification | Python 3.12/3.13 CI, 141 Python test files, 178 frontend tests, Semgrep, deterministic icons, and browser-observed bundle budgets |
+| Coverage | 20 city markets, with fifteen verified in the October 5 production snapshot |
+| Policy | v7 source revision; the October 5 production baseline was v6 |
 
-## What This Project Demonstrates
+At that snapshot, the separate $1,000 initial-capital accounts reported:
 
-- **End-to-end ownership:** weather and market ingestion, model evaluation,
-  decision logic, persistence, cloud scheduling, publication, and frontend UX
-  live in one auditable system.
-- **Probability over point estimates:** forecasts become calibrated settlement-bin
-  distributions before the engine considers price, fees, liquidity, or size.
-- **Evidence discipline:** statistically weak improvements are rejected, model
-  claims are scoped to their actual samples, and the system never grades itself
-  with its own forecast feed.
-- **Operational safety:** live execution is fail-closed, paper accounts remain
-  economically separate, deployment is backup-gated, and stale or incomplete
-  evidence blocks readiness rather than being silently accepted.
-
-For a recruiter-oriented walkthrough of the engineering decisions and the best
-places to inspect, read the [three-minute project case study](docs/PROJECT_CASE_STUDY.md).
-
-## Results
-
-**Forecast model — San Francisco flagship, held out-of-sample**
-
-| Paired model | MAE | Difference vs. LSTM |
+| Paper account | Realized P&L | Return on initial capital |
 |---|---:|---:|
-| **SFO LSTM residual model** | **3.12°F** | — |
-| XGBoost challenger | 3.71°F | +0.59°F |
+| Live Stability | +$58.67 | +5.867% |
+| Research ROI v6 | +$17.93 | +1.793% |
 
-*n = 442 held-out days. Diebold–Mariano p < 0.001; the LSTM wins 63% of days
-head-to-head, with a 15.8% MAE reduction. In the separate baseline summary,
-LSTM MAE is 3.30°F versus persistence at 3.97°F. Significance is tested, not
-asserted.*
+Research v6 earned $17.93 on $3,927.86 of resolved entry capital: **0.4564%
+resolved-capital ROI**. Its approximately 72% profitable-exit rate did not imply
+strong net profit. These accounts are economically separate; their profits and
+balances must not be treated as one bankroll.
 
-**Probability engine — San Francisco, scored outcomes**
+The [v7 audit](docs/research/2026-10-05-v7-audit.md) records the measured baseline,
+release gap, thin fill capture, concentrated losses, stale analysis, and
+reproduced forecast/exit evidence defects. Source corrections require verified
+deployment and prospective validation. v7 starts a separate research paper
+account; v6 and earlier histories keep their original attribution, policy, and
+settlement lifecycle. Strategy Lab shows the policy version in its artifact and
+all published archived profiles, including zero-trade experiments.
 
-| Metric | Value |
-|---|---:|
-| Ranked-probability skill over climatology | 45.4% |
-| Exact settlement-bin accuracy (~12 brackets, 2°F wide) | 56.1% |
-| Brier skill | 29.5% |
-| Held-out forecast residual (σ) | 4.66°F |
+The fresh [forecast baseline](docs/research/2026-10-05-v7-forecast-baseline.json)
+records 125,170 NWP member rows and 10,642 source-separated scored cases. Its
+1.80°F MAE and 1.30°F CRPS describe reconstructed archive skill; original
+decision-time availability remains unestablished. The dated incident reports,
+unassigned losses, and older ML challenger are retained alongside the audit.
 
-*n = 262 scored out-of-sample outcomes, anchored on 3,419 observed KSFO days
-across 10 years. Skill varies sharply by regime — strongest in the cold (<60°F)
-cohort, weakest in the normal 60–69°F band — and the risk gates size positions
-accordingly.*
+The research objectives are **5% daily return on initial capital** and **$40/day
+by October 31**. They are targets to evaluate, not achieved results or promised
+returns. Increasing capital, requested size, or activity does not create an
+edge or displayed liquidity. Scaling requires account-scoped net P&L after
+fees, calibrated probabilities, realizable execution, drawdown evidence, and
+chronological holdout validation.
 
-**What is not proven yet.** The LSTM residual-calibration study, optional Google
-Weather input, and marine-layer features are San Francisco–only evidence layers,
-not the universal point-forecast method. The current SFO point forecast can fall
-back to the shared EMOS weighted mean when optional inputs are absent. The other
-nineteen cities run that shared EMOS pipeline and have only a short operational
-record. Active paper ledgers and archived strategy
-attribution are reported separately; see
-[Strategy Lab](https://jaxsonb04.github.io/weather_edge/#/lab) for the current
-evidence and account-scoped standing.
-
-## How It Works
+## Forecasting and trading path
 
 ```text
-Open-Meteo previous-runs archive        ─┐
-  (8 NWP members, leads 1–3,             │
-   leakage-free: only cycles that        ├─► per-city EMOS ─► calibrated
-   existed before the target)            │   post-processing   Gaussian (μ, σ)
-                                         │
-NOAA/KSFO 10-year station history       ─┤                          │
-Google Weather (optional)  ── SFO only  ─┤                          ▼
-LSTM residual + marine     ── SFO only  ─┘            bracket probability engine
-                                                                    │
-                                                                    ▼
-NWS Climatological Report (CLI)  ──► settlement truth   fee-aware edge + risk gates
-  per city, its own station                                         │
-                                                                    ▼
-                                                        paper journal ─► React SPA
+NWP history + live vintages ► per-station EMOS ──► forecast distribution
+Final station CLI truth ────► training and independent scoring        │
+Fresh station observations ─► same-day feasible outcomes             ▼
+Real orderbook/tape ────────► market posterior + exact fees + risk gates
+                                                                  │
+                                                                  ▼
+                       separate paper accounts ──► AWS JSON ──► React SPA
 ```
 
-Apple WeatherKit also runs as a private, temporary shadow source for all twenty
-station coordinates. It is intentionally outside the prediction path: its live
-weight is zero, its values expire in tmpfs at Apple's provider deadline, and it
-does not enter `weather.db`, EMOS training, trading decisions, or public JSON.
-Activation therefore cannot change a forecast, risk gate, position size, or
-paper decision. See
-[the WeatherKit boundary](docs/APPLE-WEATHERKIT.md).
+The shared operational weather path uses eight NWP members and per-station
+EMOS post-processing. Each city has a defined market series, settlement station,
+NWS Climatological Report, and fixed-standard climate-day clock. SFO also has
+legacy blend adapters, station history, LSTM/XGBoost research, and marine-layer
+features. Those historical studies are not proof of current twenty-city serving
+accuracy. An EMOS point must be paired with its matching EMOS distribution.
 
-Every market settles on its own NWS Climatological Report, and each city's
-climate day runs midnight-to-midnight in local standard time. The forecaster
-never grades itself — settlement truth comes from the official CLI product.
+Google Weather runs through a budgeted, provider-expiring private runtime store.
+The scheduled orchestrator serves the non-Google baseline first. Research
+challengers and legacy SFO interfaces have explicit boundaries; optional source
+availability does not establish a promoted forecast improvement. Apple
+WeatherKit is a temporary private shadow source with zero live weight; see
+[its boundary](docs/APPLE-WEATHERKIT.md). Neither provider's historical conditions
+should be treated as an original decision-time forecast vintage.
 
-**Design decisions worth noting.** The NWP archive is pulled leakage-free (only
-model cycles that were actually available before the target time). EMOS is
-fitted rolling-origin per station rather than pooled. The trade engine uses
-reservation-price limit execution with gated taker crosses where configured,
-and the whole book is gated on a readiness
-check that has not yet passed — which is why it remains paper-only.
+Scheduled entry uses `portfolio-scan`: reservation-price maker limits and
+configured bounded taker crosses must pass exact fee, edge, lower-bound,
+liquidity, concentration, loss, and account admission checks. Monitoring and
+settlement preserve each account's identity. Final settlement uses the city's
+official final CLI truth; a partial or preliminary report cannot fabricate a
+resolved outcome.
 
-## Stack
+## Evidence library
 
-| Layer | Tech |
+| Evidence | Scope and limitation |
 |---|---|
-| Forecasting | Python, PyTorch (LSTM), XGBoost, EMOS post-processing, SQLite |
-| Trading engine | Python, fee-aware edge, risk gates, paper journal |
-| Web | React, TypeScript, Vite, HeroUI Pro, bun |
-| Infra | AWS EC2, systemd timers, S3 archive, GitHub Pages |
-| Quality | pytest (141 test files), Vitest (178 tests), semgrep, oxlint, hash-pinned deps, CI bundle budget |
+| [v7 audit](docs/research/2026-10-05-v7-audit.md) | October baseline and corrections; prospective v7 profit is unproven |
+| [CRPS pilot](docs/research/2026-09-04-crps-pilot.md) | 2,658 reconstructed fixed-lead forecasts; exploratory, not execution replay |
+| [ML challenger](docs/research/2026-09-05-ml-challenger.md) | MAE improved 2.34% on the exploratory sample, interval included no gain, CRPS worsened; not promoted |
+| [Historical SFO evaluation](docs/accuracy_evaluation_2026-07-06.md) | Older station/model-specific experiment; not current account ROI or universal forecast skill |
+| [Rejected retune](docs/trading_retune_validation_2026-06-17.md) | Apparent improvement rejected as statistically weak |
 
-## Engineering Notes
+Use proper scores such as CRPS, Brier/log loss and calibration alongside point
+error. Evaluate independent calendar-date clusters and account/policy eras;
+repeated scans and correlated city outcomes are not independent observations.
+Readiness evidence belongs to Live Stability, while research histories remain
+separate.
 
-Things a reviewer might want to look at directly:
+## Local setup and verification
 
-- **[docs/accuracy_evaluation_2026-07-06.md](docs/accuracy_evaluation_2026-07-06.md)** —
-  Diebold–Mariano-gated CRPS head-to-head, including a section on hypotheses
-  *not* acted on because the confidence intervals overlapped.
-- **[docs/trading_retune_validation_2026-06-17.md](docs/trading_retune_validation_2026-06-17.md)** —
-  a retune that measured +8.49% and was rejected as noise.
-- **[docs/trade_engine_overhaul_plan_2026-06-17.md](docs/trade_engine_overhaul_plan_2026-06-17.md)** —
-  why win-rate was refused as a success metric (it is trivially maximized by
-  betting deep favorites into an EV-negative book).
-- **[docs/MULTICITY-2026-07.md](docs/MULTICITY-2026-07.md)** — the 1→15 city
-  redesign, with the required sample size derived from published variance.
-- **[trading/docs/strategy.md](trading/docs/strategy.md)** — posterior
-  construction, gate structure, and the two risk profiles.
-- **[docs/ai-assisted-development.md](docs/ai-assisted-development.md)** — how
-  this project uses AI coding agents, the verification harness that gates them,
-  and three cases where that harness failed.
-- **[.github/workflows/verify.yml](.github/workflows/verify.yml)** — CI across
-  two Python versions with a semgrep pass, a bytecode gate, and an enforced
-  SPA bundle budget.
-
-## Cities
-
-The city registry is `forecaster/cities.py`, duplicated byte-identically as
-`trading/sfo_kalshi_quant/cities.py` (a parity test enforces this). Each entry
-defines the slug, name, Kalshi series ticker, NWS settlement station, CLI
-product (site + issuedby), lat/lon, civil timezone, and fixed standard-time UTC
-offset.
-
-Forecasting is two-tier:
-
-- **SFO** is blend-capable: it can add a fresh budgeted Google Weather value,
-  LSTM residual-calibration evidence, and marine-layer features to the shared
-  NWP/EMOS base. Its operational point forecast falls back to EMOS when optional
-  inputs are unavailable.
-- **All other cities** run the station-agnostic NWP→EMOS→CLI path only:
-  Open-Meteo previous-runs archive (8 members, leads 1-3), rolling-origin EMOS
-  per city, and settlement truth in the station-keyed `cli_settlements` table
-  fed by live CLI scans plus the IEM archive backfill
-  (`forecaster/city_truth.py`).
-
-## What Is Here
-
-```text
-WeatherEdge/
-  forecaster/   weather pipeline: SFO blend, multi-city NWP/EMOS archive,
-                cities.py registry, CLI settlement truth
-  trading/      Kalshi probability, risk gates, CLI, paper journal, AWS scripts
-  src/          React SPA (the public site), built with bun + Vite
-  docs/         unified guides, glossary, sync/deploy notes
-  pyproject.toml
-  CONTEXT.md
-```
-
-## Quick Start
+Use Python 3.12 or 3.13 (the project minimum is 3.11):
 
 ```bash
-cd /path/to/WeatherEdge
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-python -m pytest trading/tests forecaster/tests -q
-```
-
-Without installing first, use the helper:
-
-```bash
+python3.13 -m venv .venv-dev
+.venv-dev/bin/python -m pip install -e '.[dev]'
 bash scripts/run_tests.sh
-```
-
-Before syncing, pushing, or deploying, run the full local verification gate:
-
-```bash
 bash scripts/verify_project.sh
 ```
 
-It runs the WeatherEdge health check, trading tests, and Python compile check.
-Warnings about Git not being initialized or Semgrep not being installed are
-informational until you decide to turn those on.
+The full Python gate runs the repository health check, Semgrep, the backend and
+forecaster suites, and compilation. Local Semgrep absence produces a warning;
+CI requires the scan. These checks do not build or validate the web app.
 
-Analyze today and tomorrow with paper-trading gates. The loop covers all
-twenty registered cities by default (env `PAPER_CITIES`, default `all`); pass
-`--cities` with a comma list of slugs to narrow it:
+Read-only analysis from the repository root:
 
 ```bash
-python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --side both
-python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --side both --cities sfo,lax
+.venv-dev/bin/python -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --cities all
+.venv-dev/bin/python -m sfo_kalshi_quant.cli --no-color paper-report
+.venv-dev/bin/python -m sfo_kalshi_quant.cli --no-color backtest-signals --sample-mode entry-per-market-side
 ```
 
-Without installing first:
+The root `pyproject.toml` is the sole Python install manifest. It owns the
+`sfo_kalshi_quant` package and `sfo-kalshi` console entrypoint. Heavy model
+training uses `.[train]` locally; production uses lightweight dependencies.
+See [forecaster instructions](forecaster/README.md) and
+[trading instructions](trading/README.md) for data and command boundaries.
+
+## Web app
+
+The public site is the root React + TypeScript + Vite + HeroUI Pro SPA (`src/`).
+Licensed components require `HEROUI_KEY` and the version-preserving installer
+used in [CI](.github/workflows/verify.yml); plain package installation supplies
+stubs and may not reproduce the app.
 
 ```bash
-bash scripts/paper_analyze.sh
+bun install --frozen-lockfile --ignore-scripts
+env -u CI npx -y hpsetup@4.5.0 --auto
+git diff --exit-code -- package.json bun.lock
+bun install --frozen-lockfile
+bun run lint
+bun run test
+bun run build
+bun run preview --host 127.0.0.1 --port 4173
 ```
 
-Paper analysis defaults to the `live` paper-readiness profile. The
-`--risk-profile research` option evaluates the research candidate path; with
-`--place-paper`, the current policy routes admitted entries into the active
-versioned Research ROI sleeve. Archived motion and superseded policy rows are
-read-only evidence:
-
-```bash
-python -m sfo_kalshi_quant.cli --no-color --risk-profile live analyze --target-date both
-python -m sfo_kalshi_quant.cli --no-color --risk-profile research analyze --target-date rolling --side both --place-paper --paper-stake 5
-```
-
-To run live and research side by side in one paper DB, set:
-
-```bash
-PAPER_RISK_PROFILES=live,research bash scripts/paper_analyze.sh --target-date rolling --place-paper
-```
-
-Record paper trades only when the CLI says `TRADE`:
-
-```bash
-python -m sfo_kalshi_quant.cli --no-color analyze --target-date both --side both --paper-stake 10 --place-paper
-```
-
-## Forecast Workflow
-
-Run forecaster commands from `forecaster/` because the offline research tools
-use project-relative data and artifact paths:
-
-```bash
-cd /path/to/WeatherEdge/forecaster
-python research/combine_psv.py --dir "2016-2026 weather data" --out combined_weather.csv
-python research/load_to_db.py
-python research/features.py
-python research/forecast_tomorrow.py
-python nws_ground_truth.py --days 14
-python google_weather_cache.py
-```
-
-Refreshing Google Weather requires `GOOGLE_WEATHER_API_KEY`. The project keeps
-usage bounded with explicit monthly and daily event budgets; current limits and
-provider terms are operator configuration rather than README promises.
-
-The Apple source runs separately with `python apple_weatherkit.py --cities all`.
-It exits safely without a request unless WeatherKit REST credentials and
-`ENABLE_APPLE_WEATHER=1` are configured. Production uses one bundled
-hourly+daily request per city at four UTC vintages per day, plus an independent
-expiry purge. The source remains shadow-only and cannot alter the forecast or
-trading engine.
-
-These commands drive the SFO legacy blend. The other nineteen cities run
-through the NWP→EMOS path (`nwp_archive.py`, `emos_forecast.py`) with CLI
-settlement truth from `city_truth.py`; the AWS timers run these with
-`--cities all`.
-
-## Public Website (React SPA)
-
-The public site is a React + Vite + HeroUI Pro single-page app at the repo root
-(`src/`, `index.html`, `vite.config.ts`), built with bun:
-
-```bash
-bun install --frozen-lockfile # HeroUI Pro registry auth required (HEROUI_AUTH_TOKEN)
-bun run build # outputs dist/
-```
-
-> **Note for reviewers:** the SPA depends on `@heroui-pro/react`, a commercially
-> licensed component library. Without a HeroUI Pro token the web build cannot be
-> reproduced locally. The Python forecasting and trading packages have no such
-> restriction and build and test freely. Publication freshness at the link above
-> is reported by the public manifest.
-
-Before releasing a new SPA build, capture the initial hard-load resource list
-with browser automation and run both bundle views. The manifest report is
-structural only; the browser-observed gate is the runtime proof:
+Check desktop and mobile behavior in a browser against that `dist/` build.
+Initial browser-observed resource capture and budgets are separate verification gates:
 
 ```bash
 bun run bundle:report
+bun run bundle:capture -- /tmp/weatheredge-initial-resources.txt
 bun run bundle:check:observed -- /tmp/weatheredge-initial-resources.txt
 ```
 
-The observed list must come from the same `dist/` build. The gate rejects stale
-chunk hashes and enforces the initial JS/CSS budgets.
+The SPA fetches runtime JSON at load. AWS publishes prebuilt assets plus fresh
+`trading_signal.json`, `forecast_data.json`, `weather_story_data.json`,
+`strategy_research.json`, and `cities_data.json` to GitHub Pages. Freshness and
+hashes come from `publication_manifest.json`; HTTP 200 alone proves no data
+freshness.
 
-Production serves the prebuilt app from the deployment web root on the EC2
-box; `trading/deploy/aws/publish_forecaster_pages.sh` publishes it to
-the `gh-pages` branch with the freshly generated data JSONs
-(`trading_signal.json`, `forecast_data.json`, `weather_story_data.json`,
-`strategy_research.json`, `cities_data.json`) overlaid on every refresh cycle.
-The site includes a twenty-city Coverage grid fed by `cities_data.json`
-(per-city forecasts, latest settlement, book activity), with SFO presented as
-the flagship.
+## Repository and runtime authority
 
-## Kalshi Workflow
-
-Run trading commands from the repository root after installing with
-`pip install -e .`. The root `pyproject.toml` is the repository's sole Python
-install manifest and owns both the `sfo_kalshi_quant` package and the
-`sfo-kalshi` console script.
-
-Important commands:
-
-```bash
-python -m sfo_kalshi_quant.cli backtest-calibration
-python -m sfo_kalshi_quant.cli backtest-calibration --source clean-blend
-python -m sfo_kalshi_quant.cli daily-report --target-date both --side both --format json --no-live-market --output forecaster/trading_signal.json
-python -m sfo_kalshi_quant.cli strategy-research --output forecaster/strategy_research.json
-python -m sfo_kalshi_quant.cli analyze --target-date both --side both
-python -m sfo_kalshi_quant.cli analyze --target-date both --side both --cities sfo,lax
-python -m sfo_kalshi_quant.cli backtest-signals
-python -m sfo_kalshi_quant.cli paper-report
-python -m sfo_kalshi_quant.cli paper-monitor
-python -m sfo_kalshi_quant.cli paper-settle --target-date YYYY-MM-DD --settlement-high 67
-```
-
-`daily-report` is read-only dashboard input; it does not record DB snapshots or
-place paper orders.
-
-Strategy Lab defaults to the Live Stability paper-readiness view. The active
-versioned Research ROI sleeve and every archive remain economically separate,
-so their balances, positions, and P&L are never presented as one account. The
-AWS strategy-lab refresh timer republishes those results every five
-minutes without calling the paid Google Weather refresh path.
-
-`backtest-calibration --source clean-blend` validates the archived live blend on
-clean next-day forecasts only. It excludes same-day observed-high lock/floor
-rows.
-
-`--settlement-high 67` means the official resolved SFO high was 67°F for that
-date. Exposure caps and settlement are series-scoped, so one city's high can
-never settle another city's bins; automatic settlement walks each city's own
-NWS CLI product, with archived CLI truth as fallback.
-
-## Repository Sync
-
-Configure a Git remote and review ignored files before publishing changes:
-
-```bash
-git status
-git status --ignored
-```
-
-See [docs/aws_deployment.md](docs/aws_deployment.md) for the deployment layout.
-
-## Data And Artifacts
-
-Local WeatherEdge may include copied raw KSFO NOAA station files and ignored
-runtime artifacts from previous runs. After AWS sync and refresh, live
-DB/cache/dashboard state is authoritative on AWS, not on a local machine. Clear
-stale local runtime state before dashboard design smoke tests:
+Source belongs to Git; production weather/paper databases and current artifacts
+belong to AWS. Ignored MacBook state can be stale. Before local dashboard design
+checks, clear disposable local runtime state with the canonical helper:
 
 ```bash
 python3 scripts/clear_local_runtime_state.py --confirm
 ```
 
-The root `.gitignore` prevents large raw data and live runtime DB/cache files
-from being committed accidentally.
+This is a local cleanup, not a production data migration. Keep raw data,
+credentials, private exports, keys, and operator details out of Git. Preserve
+attribution and dated research records. The
+[repository map](docs/REPOSITORY_MAP.md) identifies canonical entrypoints,
+intentional mirrored files, and compatibility wrappers. Use the
+[deployment runbook](docs/aws_deployment.md) for clean-revision deployment,
+verified backups, account reconciliation, timer recovery, and publication
+verification.
 
-See [docs/data_and_artifacts.md](docs/data_and_artifacts.md).
-
-## Learning Path
-
-Start with:
-
-1. [docs/glossary.md](docs/glossary.md)
-2. [trading/docs/user_guide.md](trading/docs/user_guide.md)
-3. [docs/architecture.md](docs/architecture.md)
-4. [docs/operational_runbook.md](docs/operational_runbook.md)
-5. [docs/research_improvement_review.md](docs/research_improvement_review.md)
-
-The math should stay auditable: probability, calibration, risk gates, observed
-high locks, and paper PnL should be explainable from code and docs.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).

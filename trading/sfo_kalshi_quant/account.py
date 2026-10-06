@@ -57,7 +57,9 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # taggable by bumping RESEARCH_ENTRY_RISK_VERSION, which rotates the research
 # fingerprint and leaves the live fingerprint -- and the live readiness
 # clock -- untouched. This constant is reserved for live-economics changes.
-STRATEGY_BEHAVIOR_VERSION = "behavior-v3-forecast-and-execution-2026-09-07"
+# v7 changes forecast input validity and monitor quote/depth semantics.
+# Rotate live/research cohorts instead of relabeling older evidence as v7.
+STRATEGY_BEHAVIOR_VERSION = "behavior-v4-v7-correctness-2026-10-05"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)

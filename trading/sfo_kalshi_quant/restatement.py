@@ -10,7 +10,8 @@ Classification rules (conservative -- insufficient evidence is UNVERIFIABLE,
 never "filled by assumption"):
 
 Entry evidence
-  - ``maker_allocator_price_time_v4`` fill evidence: VERIFIED when its
+  - ``maker_allocator_price_time_v5`` account-scoped and original v4 pooled
+    fill evidence: VERIFIED when its
     persisted queue-price allocation and public tape reproduce cleanly.
   - ``maker_allocator_price_time_v3`` evidence remains historical and is
     reported as pre-corrected queue semantics; it is never rewritten as v4.
@@ -388,6 +389,24 @@ def _replay_order(row: sqlite3.Row) -> RestingMakerOrder | None:
     )
 
 
+_HISTORICAL_V4_MODEL = "maker_allocator_price_time_v4"
+_CURRENT_MAKER_MODEL = "maker_allocator_price_time_v5"
+_MAKER_REPLAY_MODELS = (_HISTORICAL_V4_MODEL, _CURRENT_MAKER_MODEL)
+_HISTORICAL_V4_VERSION = "exec-v4-2026-07-17"
+
+
+def _maker_evidence_version(evidence: dict[str, Any]) -> str:
+    return (
+        _HISTORICAL_V4_VERSION
+        if evidence.get("model") == _HISTORICAL_V4_MODEL
+        else EXECUTION_MODEL_VERSION
+    )
+
+
+def _maker_account(row: object) -> str:
+    return str(_row_value(row, "account_id") or "paper-shared")
+
+
 def _maker_replay_scope(row: sqlite3.Row, evidence: dict[str, Any]) -> bool:
     if row["parent_order_id"]:
         return False
@@ -397,7 +416,7 @@ def _maker_replay_scope(row: sqlite3.Row, evidence: dict[str, Any]) -> bool:
         return False
     return (
         str(row["execution_model_version"] or "") == EXECUTION_MODEL_VERSION
-        or evidence.get("model") == "maker_allocator_price_time_v4"
+        or evidence.get("model") in _MAKER_REPLAY_MODELS
     )
 
 
@@ -441,9 +460,10 @@ def _exec_v4_replay_findings(
     *,
     known_order_ids: set[int] | None = None,
     known_order_tickers: dict[int, str] | None = None,
+    known_order_accounts: dict[int, str] | None = None,
     plausible_current_maker_ids: set[int] | None = None,
 ) -> dict[int, list[str]]:
-    """Reproduce v4 allocation evidence through the production allocator."""
+    """Replay original pooled v4 and account-isolated v5 without mixing eras."""
 
     evidences = {
         order_id: _json_object(row["fill_evidence_json"])
@@ -456,7 +476,7 @@ def _exec_v4_replay_findings(
         if (order_id := _positive_row_id(row["id"])) is not None
         and (
             evidences[order_id].get("model")
-            == "maker_allocator_price_time_v4"
+            in _MAKER_REPLAY_MODELS
             or order_id in (plausible_current_maker_ids or set())
         )
     }
@@ -467,6 +487,11 @@ def _exec_v4_replay_findings(
     persisted_order_ids = known_order_ids or set(evidences)
     persisted_order_tickers = known_order_tickers or {
         order_id: str(row["market_ticker"])
+        for row in orders
+        if (order_id := _positive_row_id(row["id"])) is not None
+    }
+    persisted_order_accounts = known_order_accounts or {
+        order_id: _maker_account(row)
         for row in orders
         if (order_id := _positive_row_id(row["id"])) is not None
     }
@@ -493,6 +518,7 @@ def _exec_v4_replay_findings(
         *,
         identity_prefix: str | None = None,
         provably_unrelated: bool = False,
+        owner_id: int | None = None,
     ) -> None:
         attached_reasons = list(reasons)
         normalized_ticker = _strict_text_identity(ticker)
@@ -509,6 +535,14 @@ def _exec_v4_replay_findings(
         else:
             target_ids = candidate_ids_by_ticker[normalized_ticker]
         for candidate_id in target_ids:
+            # Known other-account evidence is a separate economic scenario.
+            # Orphan or ambiguous owners remain shared fail-closed evidence.
+            if (
+                evidences[candidate_id].get("model") == _CURRENT_MAKER_MODEL
+                and owner_id in persisted_order_accounts
+                and persisted_order_accounts[owner_id] != _maker_account(candidates[candidate_id])
+            ):
+                continue
             for reason in attached_reasons:
                 _append_finding(findings[candidate_id], reason)
 
@@ -534,6 +568,7 @@ def _exec_v4_replay_findings(
         attach_to_ticker(
             allocation["market_ticker"],
             allocation_findings,
+            owner_id=allocation_order_id,
             identity_prefix="EXEC_V4_ALLOCATION_TICKER",
             provably_unrelated=(
                 allocation_order_id is not None
@@ -586,6 +621,7 @@ def _exec_v4_replay_findings(
         attach_to_ticker(
             claim["market_ticker"],
             claim_findings,
+            owner_id=claim_order_id,
             identity_prefix="EXEC_V4_PRIOR_CLAIM_TICKER",
             provably_unrelated=(
                 claim_order_id is not None
@@ -598,17 +634,25 @@ def _exec_v4_replay_findings(
 
     for order_id, row in candidates.items():
         evidence = evidences[order_id]
-        if str(row["execution_model_version"] or "") != EXECUTION_MODEL_VERSION:
+        expected_version = _maker_evidence_version(evidence)
+        if str(row["execution_model_version"] or "") != expected_version:
             _append_finding(findings[order_id], "EXEC_V4_ORDER_VERSION_MISMATCH")
-        if str(evidence.get("execution_model_version") or "") != EXECUTION_MODEL_VERSION:
+        if str(evidence.get("execution_model_version") or "") != expected_version:
             _append_finding(findings[order_id], "EXEC_V4_EVIDENCE_VERSION_MISMATCH")
+        if evidence.get("model") == _CURRENT_MAKER_MODEL:
+            expected_scope = (
+                "legacy_per_order_shadow"
+                if _maker_account(row) == RESEARCH_ACCOUNT_ID else "economic_account"
+            )
+            if evidence.get("allocation_scope") != expected_scope:
+                _append_finding(findings[order_id], "EXEC_V5_ACCOUNT_SCOPE_MISMATCH")
         seen_trade_ids: set[str] = set()
         for allocation in allocations_by_order.get(order_id, []):
             trade_id = str(allocation["trade_id"])
             if trade_id in seen_trade_ids:
                 _append_finding(findings[order_id], "EXEC_V4_ALLOCATION_DUPLICATE")
             seen_trade_ids.add(trade_id)
-            if str(allocation["execution_model_version"] or "") != EXECUTION_MODEL_VERSION:
+            if str(allocation["execution_model_version"] or "") != expected_version:
                 _append_finding(
                     findings[order_id], "EXEC_V4_ALLOCATION_VERSION_MISMATCH"
                 )
@@ -620,18 +664,23 @@ def _exec_v4_replay_findings(
         and _maker_replay_scope(row, evidences[order_id])
     ]
     for row in scope_rows:
-        attach_to_ticker(row["market_ticker"], _order_replay_input_findings(row))
-    scope_by_key: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
+        attach_to_ticker(
+            row["market_ticker"], _order_replay_input_findings(row),
+            owner_id=_positive_row_id(row["id"]),
+        )
+    scope_by_key: dict[tuple[str, str, str], list[sqlite3.Row]] = defaultdict(list)
     for row in scope_rows:
         order_id = _positive_row_id(row["id"])
         if order_id is None:
             continue
+        generation = _maker_evidence_version(evidences[order_id])
         isolation = (
             f"research:{order_id}"
             if str(row["account_id"] or "") == RESEARCH_ACCOUNT_ID
+            else f"account:{_maker_account(row)}" if generation == EXECUTION_MODEL_VERSION
             else "capital"
         )
-        scope_by_key[(str(row["market_ticker"]), isolation)].append(row)
+        scope_by_key[(str(row["market_ticker"]), generation, isolation)].append(row)
 
     tape_by_ticker: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for tape_row in tape_rows:
@@ -642,7 +691,7 @@ def _exec_v4_replay_findings(
         for row in scope_rows
         if (order_id := _positive_row_id(row["id"])) is not None
     }
-    for (ticker, isolation), rows in scope_by_key.items():
+    for (ticker, generation, isolation), rows in scope_by_key.items():
         candidate_ids = {
             order_id
             for row in rows
@@ -685,7 +734,19 @@ def _exec_v4_replay_findings(
                 _append_finding(findings[order_id], "INSUFFICIENT_REPLAY_EVIDENCE")
             continue
 
-        if isolation == "capital":
+        if not isolation.startswith("research:"):
+            scope_ids = set(replay_orders_by_id)
+            account = _maker_account(rows[0])
+
+            def external_owner_matches(order_id: int | None) -> bool:
+                if order_id in scope_ids:
+                    return False
+                if generation != EXECUTION_MODEL_VERSION:
+                    return order_id not in all_scope_ids
+                # Match runtime LEFT JOIN semantics: unknown owner consumes
+                # every scenario; known NULL account maps to paper-shared.
+                return order_id not in persisted_order_accounts or persisted_order_accounts[order_id] == account
+
             external_claims: dict[str, float] = defaultdict(float)
             for claim in maker_claim_rows:
                 claim_order_id = _positive_row_id(claim["order_id"])
@@ -693,7 +754,7 @@ def _exec_v4_replay_findings(
                 if (
                     str(claim["market_ticker"]) == ticker
                     and claim_order_id is not None
-                    and claim_order_id not in all_scope_ids
+                    and external_owner_matches(claim_order_id)
                     and claim_quantity is not None
                 ):
                     external_claims[str(claim["trade_id"])] += claim_quantity
@@ -710,7 +771,7 @@ def _exec_v4_replay_findings(
                     str(allocation["market_ticker"]) == ticker
                     and counterfactual is False
                     and allocation_order_id is not None
-                    and allocation_order_id not in all_scope_ids
+                    and external_owner_matches(allocation_order_id)
                     and queue_quantity is not None
                     and fill_quantity is not None
                 ):
@@ -750,7 +811,7 @@ def _exec_v4_replay_findings(
                 _append_finding(
                     findings[order_id], "EXEC_V4_ALLOCATION_REPLAY_MISMATCH"
                 )
-            expected_counterfactual = isolation != "capital"
+            expected_counterfactual = isolation.startswith("research:")
             for trade_id in set(expected) & set(actual_by_trade):
                 allocation = actual_by_trade[trade_id]
                 trade = trade_by_id.get(trade_id)
@@ -905,13 +966,13 @@ def _entry_findings(
     model = str(evidence.get("model") or "")
     if status in ("PAPER_LIMIT_RESTING", "PAPER_CANCELLED"):
         return []  # never filled -> no entry evidence needed
-    if status == "PAPER_EXPIRED" and model != "maker_allocator_price_time_v4":
+    if status == "PAPER_EXPIRED" and model not in _MAKER_REPLAY_MODELS:
         return []  # legacy zero-fill rows have no replayable tape contract
     if entry_mode != "limit" or fill_model == "immediate_visible_quote":
         if str(row["created_at"] or "") < TAKER_SIZING_FIX_DATE:
             return ["TAKER_PRE_SIZING_FIX"]
         return []
-    if model == "maker_allocator_price_time_v4":
+    if model in _MAKER_REPLAY_MODELS:
         return list(current_findings or [])
     if model == "maker_allocator_price_time_v3":
         return ["EXEC_V3_HISTORICAL_SEMANTICS"]
@@ -1538,7 +1599,7 @@ def _logical_maker_authority_findings(
     group: LogicalPaperPosition,
     allocations_by_order: dict[int, list[sqlite3.Row]],
 ) -> list[str]:
-    """Reconcile a v4 maker decision to immutable entry and lot evidence."""
+    """Reconcile a maker decision to immutable entry and lot evidence."""
 
     root = group.root
     lots = group.lots
@@ -1548,7 +1609,7 @@ def _logical_maker_authority_findings(
     findings: list[str] = []
 
     evidence = _json_object(root.get("fill_evidence_json"))
-    if evidence.get("model") != "maker_allocator_price_time_v4":
+    if evidence.get("model") not in _MAKER_REPLAY_MODELS:
         findings.append("EXEC_V4_EVIDENCE_MODEL_MISMATCH")
     if (
         str(root.get("entry_mode") or "") != "limit"
@@ -1738,7 +1799,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
         ).fetchall()
         all_order_identity_rows = conn.execute(
-            "SELECT id, market_ticker, target_date FROM paper_orders"
+            "SELECT id, market_ticker, target_date, account_id FROM paper_orders"
         ).fetchall()
         settlement_rows = conn.execute(
             "SELECT * FROM paper_settlement_verifications"
@@ -1826,7 +1887,7 @@ def restate(db_path: Path) -> dict[str, Any]:
     for order_id, row in orders_by_id.items():
         if (
             _json_object(row["fill_evidence_json"]).get("model")
-            == "maker_allocator_price_time_v4"
+            in _MAKER_REPLAY_MODELS
             or str(row["execution_model_version"] or "")
             == EXECUTION_MODEL_VERSION
         ):
@@ -1897,7 +1958,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             )
 
     allocations_by_order: dict[int, list[sqlite3.Row]] = defaultdict(list)
-    capital_consumption: dict[str, float] = defaultdict(float)
+    capital_consumption: dict[tuple[str, str], float] = defaultdict(float)
     for allocation_row in allocation_rows:
         allocation_order_id = _positive_row_id(allocation_row["order_id"])
         if allocation_order_id is not None:
@@ -1912,12 +1973,17 @@ def restate(db_path: Path) -> dict[str, Any]:
             and queue_quantity is not None
             and fill_quantity is not None
         ):
-            capital_consumption[str(allocation_row["trade_id"])] += (
+            allocation_scope = (
+                f"account:{_maker_account(all_orders_by_id[allocation_order_id])}"
+                if str(allocation_row["execution_model_version"] or "") == EXECUTION_MODEL_VERSION
+                and allocation_order_id in all_orders_by_id else "legacy-capital"
+            )
+            capital_consumption[(allocation_scope, str(allocation_row["trade_id"]))] += (
                 queue_quantity + fill_quantity
             )
     tape_by_id = {str(tape_row["trade_id"]): tape_row for tape_row in tape_rows}
-    overclaimed_trade_ids: set[str] = set()
-    for trade_id, consumed in capital_consumption.items():
+    overclaimed_trade_ids: set[tuple[str, str]] = set()
+    for (allocation_scope, trade_id), consumed in capital_consumption.items():
         tape = tape_by_id.get(trade_id)
         tape_quantity = (
             _finite_number(tape["count"], minimum=0) if tape is not None else None
@@ -1925,7 +1991,7 @@ def restate(db_path: Path) -> dict[str, Any]:
         if tape is None or (
             tape_quantity is not None and consumed > tape_quantity + 1e-9
         ):
-            overclaimed_trade_ids.add(trade_id)
+            overclaimed_trade_ids.add((allocation_scope, trade_id))
 
     current_findings_by_order: dict[int, list[str]] = {}
     for row in orders:
@@ -1933,7 +1999,7 @@ def restate(db_path: Path) -> dict[str, Any]:
         if order_id is None:
             continue
         evidence = _json_object(row["fill_evidence_json"])
-        if evidence.get("model") != "maker_allocator_price_time_v4":
+        if evidence.get("model") not in _MAKER_REPLAY_MODELS:
             continue
         findings: list[str] = []
         order_allocations = allocations_by_order.get(order_id, [])
@@ -2010,7 +2076,8 @@ def restate(db_path: Path) -> dict[str, Any]:
                 )
             ):
                 findings.append("EXEC_V4_PRICE_INVALID")
-            if trade_id in overclaimed_trade_ids:
+            row_scope = f"account:{_maker_account(row)}" if evidence.get("model") == _CURRENT_MAKER_MODEL else "legacy-capital"
+            if (row_scope, trade_id) in overclaimed_trade_ids:
                 findings.append("EXEC_V4_VOLUME_OVERCLAIMED")
         current_findings_by_order[order_id] = list(dict.fromkeys(findings))
 
@@ -2024,6 +2091,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             order_id: str(row["market_ticker"])
             for order_id, row in all_orders_by_id.items()
         },
+        known_order_accounts={order_id: _maker_account(row) for order_id, row in all_orders_by_id.items()},
         plausible_current_maker_ids=plausible_current_maker_ids,
     )
     for order_id, findings in replay_findings.items():
@@ -2109,9 +2177,9 @@ def restate(db_path: Path) -> dict[str, Any]:
             ):
                 _append_finding(findings, finding)
         if (
-            evidence.get("model") == "maker_allocator_price_time_v4"
+            evidence.get("model") in _MAKER_REPLAY_MODELS
             and str(row["execution_model_version"] or "")
-            != EXECUTION_MODEL_VERSION
+            != _maker_evidence_version(evidence)
         ):
             _append_finding(findings, "EXEC_V4_ORDER_VERSION_MISMATCH")
         findings += _exit_findings(row, outcome)
@@ -2125,7 +2193,7 @@ def restate(db_path: Path) -> dict[str, Any]:
             str(row["execution_model_version"] or "")
             == EXECUTION_MODEL_VERSION
         )
-        if evidence.get("model") == "maker_allocator_price_time_v4":
+        if evidence.get("model") in _MAKER_REPLAY_MODELS:
             findings += global_settlement_findings
         if row_generation_is_current:
             findings += global_settlement_findings

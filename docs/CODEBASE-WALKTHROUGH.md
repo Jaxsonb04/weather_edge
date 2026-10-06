@@ -1,5 +1,10 @@
 # WeatherEdge Codebase Walkthrough and Review Ledger
 
+This is a retained historical review ledger. For current file ownership and
+entrypoints, see [the repository map](REPOSITORY_MAP.md); for the October
+performance investigation, see [the v7 audit](research/2026-10-05-v7-audit.md).
+The dated findings below keep their original evidence and revision scope.
+
 Research baseline: 2026-08-11, local Git revision
 `a176972a25108fa1c5d948bd0cdc5710e1d4b99f` (`main`).
 

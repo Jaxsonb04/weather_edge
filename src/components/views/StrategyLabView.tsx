@@ -267,7 +267,7 @@ export function LiveStatusStrip({ s }: { s: StrategyLab }) {
       </div>
       <dl className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(11.5rem,1fr))] gap-x-6 gap-y-4">
         {profiles.map((profile) => (
-          <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profileDisplayLabel(profile)} />
+          <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profileDisplayLabel(profile, researchDailyTarget(s, profile)?.policy_version)} />
         ))}
       </dl>
       <AnalysisFreshness s={s} />
@@ -644,6 +644,40 @@ function DisclosureHeading({ icon, title, note }: { icon: string; title: string;
   );
 }
 
+export function ReleaseFindings({ s }: { s: StrategyLab }) {
+  const release = s.release;
+  const findings = release?.findings?.filter((finding) => finding?.title || finding?.impact) ?? [];
+  if (!release || !findings.length) return null;
+  const reportUrl = release.baseline_report_url?.startsWith("https://github.com/Jaxsonb04/weather_edge/")
+    ? release.baseline_report_url : undefined;
+  return (
+    <section aria-labelledby="release-findings-title" className="mt-6 min-w-0 rounded-2xl border border-border/70 bg-surface/80 p-4 sm:p-5">
+      <h3 id="release-findings-title" className="text-base font-semibold text-foreground">
+        {release.version ? `${release.version.toUpperCase()} research audit` : "Published research audit"}
+      </h3>
+      {release.comparison_note && <p className="mt-2 text-sm leading-relaxed text-muted">{release.comparison_note}</p>}
+      {release.evidence_snapshot_at && (
+        <p className="mt-2 text-xs leading-relaxed text-muted">
+          Findings describe the baseline captured {release.evidence_snapshot_at.slice(0, 16).replace("T", " ")} UTC.
+          Current runtime and readiness are reported separately above.
+        </p>
+      )}
+      <p className="mt-2 text-xs leading-relaxed text-muted">Each finding distinguishes measured history, tested corrections, and remaining validation. A code fix does not establish future profit.</p>
+      <ul className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
+        {findings.map((finding, index) => (
+          <li key={finding.code ?? index} className="min-w-0 rounded-xl bg-surface-secondary/60 p-3 ring-1 ring-border/50">
+            <h4 className="break-words text-sm font-semibold text-foreground">{finding.title ?? "Research finding"}</h4>
+            {finding.evidence && <p className="mt-1 text-xs text-muted">Evidence: {finding.evidence}</p>}
+            {finding.impact && <p className="mt-2 break-words text-xs leading-relaxed text-muted">{finding.impact}</p>}
+            {finding.state && <p className="mt-2 text-xs font-medium text-[color:var(--accent-text)]">{finding.state}</p>}
+          </li>
+        ))}
+      </ul>
+      {reportUrl && <a href={reportUrl} className="mt-4 inline-flex min-h-11 items-center text-sm font-medium text-[color:var(--accent-text)] underline underline-offset-4 hover:text-foreground focus-visible:rounded focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]">Read the dated baseline and validation report</a>}
+    </section>
+  );
+}
+
 export default function StrategyLabView() {
   const { data: s, error } = useStrategyLab();
   const canonicalTargetPublished = !!s && activeProfiles(s).some((profile) => profile.risk_profile === "research-target");
@@ -703,10 +737,11 @@ export default function StrategyLabView() {
               <SectionHeading
                 index="02"
                 eyebrow="Research lineage"
-                title="Experiments that changed the system"
-                sub="A compact switchboard of evidence-bearing experiments. Choose an era to inspect its dated attribution curve, exact resolved record, and the decision it informed; superseded profiles remain in the public artifact."
+                title="Every prior paper profile"
+                sub="Select any published prior profile, including zero-trade experiments and superseded policies. Its dated attribution, resolved record, and separate account balance stay inspectable."
               />
               <ArchivedPerformance s={s} />
+              <ReleaseFindings s={s} />
             </section>
 
             {/* ---- System-wide results and conclusions after profile inspection. ---- */}

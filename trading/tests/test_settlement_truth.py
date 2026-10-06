@@ -9,6 +9,7 @@ from sfo_kalshi_quant import archive, db, strategy_research
 from sfo_kalshi_quant.forecast import SfoForecasterAdapter
 from sfo_kalshi_quant.models import MarketBin
 from sfo_kalshi_quant.settlement_truth import (
+    label_resolves_yes,
     load_final_cli_high_for_station_date,
     load_cli_settlement_truth,
     normalize_settlement_truth,
@@ -266,6 +267,40 @@ def test_legacy_row_without_typed_strikes_keeps_label_fallback() -> None:
     assert db._row_resolves_yes(below, 70.0) is False
     assert db._row_resolves_yes(above, 74.0) is True
     assert db._row_resolves_yes(above, 73.0) is False
+
+
+@pytest.mark.parametrize(
+    ("label", "high", "expected"),
+    [
+        ("-5 or below", -6.0, True),
+        ("-5 or below", 0.0, False),
+        ("-1° or above", 0.0, True),
+        ("-1° or above", -2.0, False),
+        ("-3° to -2°", -2.0, True),
+        ("-3° to -2°", -1.0, False),
+        ("-3--2", -2.0, True),
+        ("-3–-2", -2.0, True),
+        ("-3 through -2", -2.0, True),
+        ("-1.5 to +0.5", 0.0, True),
+        ("68-69", 68.0, True),
+        ("68°-69°", 69.0, True),
+        ("68-69", 70.0, False),
+        ("66F to 67F", 67.0, True),
+        ("-0.5 or below", 0.0, False),
+        ("+.5 or above", 0.0, False),
+    ],
+)
+def test_legacy_settlement_label_preserves_signed_boundaries(label, high, expected) -> None:
+    row = _resolution_row(
+        strike_type=None,
+        floor_strike=None,
+        cap_strike=None,
+        label=label,
+    )
+
+    assert label_resolves_yes(label, high) is expected
+    assert db._row_resolves_yes(row, high) is expected
+    assert db._decision_row_resolves_yes(row, high) is expected
 
 
 def test_pre_resolution_rule_has_one_shared_home() -> None:

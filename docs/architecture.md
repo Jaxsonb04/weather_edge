@@ -1,141 +1,84 @@
 # Architecture
 
-WeatherEdge deliberately keeps two deep modules with a small interface between
-them. The system covers twenty US city daily-high markets; SFO is the
-flagship.
+WeatherEdge connects a weather runtime, an account-scoped paper engine and a
+static evidence app through versioned forecast rows and atomic public artifacts.
+The [repository map](REPOSITORY_MAP.md) owns file navigation and canonical
+entrypoints; this document owns data-flow and correctness boundaries.
 
-## City Registry
+## Weather and settlement
 
-The registry of markets lives in `forecaster/cities.py` and is duplicated
-byte-identically as `trading/sfo_kalshi_quant/cities.py` (a parity test
-enforces this). Each entry defines the slug, name, Kalshi series ticker, NWS
-settlement station, CLI product (site + issuedby), lat/lon, civil timezone,
-and fixed standard-time UTC offset. Every market settles on its own NWS
-Climatological Report (CLI); each city's climate day is midnight-to-midnight
-in local standard time.
+The current source registry defines twenty station/market pairs. The deployed
+registry is a release property, not inferred from a checkout: the October 5,
+2026 audit found fifteen on an older backend. Registry copies in forecaster and
+trading are parity-tested because their deployed Python import roots differ.
 
-## Forecaster Module
+Each pair defines its market series, official NWS station/CLI product,
+coordinates, civil timezone and fixed-standard climate-day window. NWP hourly
+values are reduced only over a complete station-day window. Provider daily-max
+responses do not expose constituent-hour completeness or initialization; the
+new original-serving evidence leaves those fields unavailable. Final CLI truth is
+stored by station/date in `cli_settlements`; preliminary reports and observed
+high-so-far remain separate. Official truth independently scores forecasts and
+resolves paper outcomes.
 
-Path: `forecaster/`
+The shared serve uses eight NWP members and per-station EMOS post-processing.
+Training uses earlier settled targets and a version-scoped rolling-origin
+archive. Consumers prefer `rolling_origin_v2` within the relevant station/lead
+scope, with legacy fallback only where v2 is absent. The live distribution's
+mean and spread stay coupled when used to price brackets. Historical backfills,
+reconstructed runs and original decision-time vintages have different evidence
+strength and must stay labeled.
 
-Responsibilities:
+SFO retains optional legacy blend/residual adapters and offline ML research.
+Their historical scores do not describe every serving city or today's method.
+Google's orchestrator serves the all-city non-Google baseline first, then uses
+budgeted private expiring provider storage. Apple remains a temporary shadow
+source with no live weight. Provider-data retention and promotion boundaries
+are documented in [data and artifacts](data_and_artifacts.md) and
+[WeatherKit](APPLE-WEATHERKIT.md).
 
-- ingest KSFO station history
-- archive NWS observations and daily highs
-- fetch/cache Google Weather within the event budget (SFO only)
-- fetch Apple WeatherKit for all station coordinates into a private,
-  provider-expiring tmpfs cache (optional research source, weight zero)
-- blend Google, NWS, Open-Meteo, and SFO history (SFO only)
-- run the station-agnostic NWP→EMOS→CLI path for the other nineteen cities:
-  Open-Meteo previous-runs archive (8 models) and rolling-origin EMOS per city.
-  Scheduled daily maintenance archives operational leads 1 and 2; lead 3
-  remains available only to explicit historical backfills and on-demand
-  research, so it is not part of the nightly fetch budget
-- maintain CLI settlement truth in the station-keyed `cli_settlements` table,
-  fed by live CLI scans plus the IEM archive backfill; only confirmed products
-  without preliminary `AS OF` markers become `is_final=1`, while unconfirmed
-  IEM rows observe a conservative stability delay
-  (`forecaster/city_truth.py`)
-- generate the site data JSONs consumed by the public SPA
-- keep forecast archive tables in `weather.db`; `nwp_model_forecasts` and
-  `forecast_emos_daily_high` are station-keyed (auto-migration)
-- score forecast skill only on clean next-day snapshots; same-day observed-high
-  rows are settlement context
+## Probability, execution and account identity
 
-Main interface consumed by trading:
+The trading adapter supplies station/date forecasts, freshness and same-day
+observations. The probability engine conditions feasible settlement outcomes,
+then compares weather probabilities with an orderbook-derived market prior.
+Candidate sides face exact fee and conservative-edge checks, quote/liquidity
+requirements, exposure/concentration limits, loss capacity and account-policy
+admission.
 
-- `weather.db`
-- `google_weather_cache.json`
-- `ab_test_results.json`
+Scheduled `portfolio-scan` allocates across cities. Reservation-price maker
+limits and configured bounded taker crosses share the admission/risk boundary.
+Requested, pending, partially filled and filled quantities are distinct states.
+Maker tape evidence is a fill proxy without reconstructed real queue priority.
+Exit lots consume shared displayed bid depth; quote time stays distinct from
+execution time. Simulation evidence is not a guaranteed real fill.
 
-The Apple runtime cache is deliberately **not** an interface consumed by the
-trading module. It cannot enter `nwp_model_forecasts`, `weather.db`, public
-artifacts, or decision snapshots. The full contract and current licensing
-constraint are documented in [APPLE-WEATHERKIT.md](APPLE-WEATHERKIT.md).
+The SQLite journal retains decision context, orders, lots, exits, settlements
+and account identities. Account reconciliation checks the full lifecycle.
+Strategy attribution is separate from economic account balances. Live Stability
+alone contributes readiness evidence; Research ROI and archives remain
+excluded. v7 uses a new paper research ledger while v6 and prior account/policy
+histories remain unchanged and their existing positions continue settling.
+Real-money order placement stays unimplemented and rejects non-dry orders.
 
-## Trading Module
+## Publication and release provenance
 
-Path: `trading/sfo_kalshi_quant/`
+AWS runtime state is authoritative. `strategy_research.py` is a stable facade
+over the `strategy_lab/` builder. Frequent public builds refresh current account
+state while historical analysis has its own generation time, source revision
+and configuration fingerprint. A fresh public shell or recent publication clock
+does not make cached analysis current.
 
-Responsibilities:
+The root React/HeroUI Pro SPA is built to `dist/` and installed separately in the
+runtime web root. The publisher overlays five AWS-generated data JSONs and a
+validated manifest on those prebuilt assets, then publishes GitHub Pages.
+Desktop/mobile behavior, public hashes and freshness gates validate the actual
+release. Runtime source, SPA source, analysis source and public artifacts may
+have distinct revisions; report each independently.
 
-- loop all registered cities in `analyze`/`portfolio-scan` (`--cities`, env
-  `PAPER_CITIES=all`)
-- read forecaster snapshots through a per-city forecaster adapter (SFO uses
-  the full blend; other cities use the EMOS Gaussian snapshot, with the scored
-  EMOS archive supplying calibration outcomes)
-- treat `rolling_origin_v2` as the live-faithful archive: consumers select it
-  exclusively per station/lead (and per method for scorecards) when present,
-  falling back to legacy `rolling_origin` only when that scope has no v2 rows.
-  Serve recalibration, replay, residual calibration, and ship scorecards never
-  mix or double-count the two model versions; explicit source reads remain exact
-  for historical comparisons. Public Coverage, the trading adapter, and the
-  offline edge scan rank live > v2 > v1 before comparing timestamps. Health
-  queries that order by timestamp are explicitly filtered to `source='live'`.
-- fetch Kalshi public market/orderbook data
-- convert forecast distributions into Kalshi bin probabilities
-- apply same-day observed-high and boundary-aware intraday updates, with
-  per-city settlement clocks
-- evaluate YES/NO sides after fees, spread, confidence, and liquidity gates;
-  the live profile additionally gates entries to the favorite band
-  [0.70, 0.97], while research trades the whole price curve
-- enter reservation-first: production entry mode normally rests limits at the
-  reservation price, while profile-scoped guarded taker crosses may capture a
-  displayed whole-contract slice only when exact after-fee point and
-  lower-bound edge still pass; resting fills use a tape-based proxy with no
-  queue-position simulation
-- keep exposure caps and settlement series-scoped, so one city's high can
-  never settle another city's bins; auto-settle uses only durable
-  `cli_settlements.is_final=1` truth after the next-day 06:00 fixed-standard
-  grace window, never a raw live product
-- audit booked settlements with non-mutating `paper-resettle --verify`, including
-  durable mismatch and missing-final records, and reconcile every settled lot
-  against the exchange's own finalized result
-  (`paper_settlement_exchange_checks`, never blocking settlement)
-- record and monitor paper-only trades
-- run walk-forward calibration on either LSTM held-out outcomes or clean
-  archived blend outcomes (SFO); warm/hot cohort blocks and GFS-ensemble
-  sharpening remain SFO-only
-
-Main public interface:
-
-```bash
-python -m sfo_kalshi_quant.cli ...
-```
-
-## Deployment Module
-
-Path: `trading/deploy/aws/`
-
-Optional deployment scripts support a split server runtime:
-
-```text
-/opt/weatheredge/forecaster
-/opt/weatheredge/trading
-```
-
-The sync script copies `forecaster/` and `trading/` into configurable remote
-paths.
-
-## Public Site
-
-The public site is a React + Vite + HeroUI Pro SPA whose source lives at the
-repository root (`src/`, `index.html`, `vite.config.ts`) and is built with
-`bun run build`. The prebuilt app lives at `/opt/weatheredge/webdist` on the
-server. Each refresh cycle, `trading/deploy/aws/publish_forecaster_pages.sh`
-publishes `webdist` plus fresh `trading_signal.json`, `forecast_data.json`,
-`weather_story_data.json`, `strategy_research.json`, and `cities_data.json`
-(per-city forecasts, latest settlement, book activity) to the `gh-pages`
-branch, which GitHub Pages serves at
-`https://jaxsonb04.github.io/weather_edge/`. The site includes a twenty-city
-Coverage grid; SFO is presented as the flagship.
-
-## Deepening Opportunities
-
-Near-term architecture improvements:
-
-- Wrap forecaster project-relative paths in a small config module.
-- Move site data building into named functions with testable interfaces.
-- Add a formal forecast snapshot schema shared by forecaster and trading.
-- Add a stable market snapshot storage module before claiming real PnL edge.
-- Keep paper trading and any future live-order path as separate modules.
+Full source deployment uses a clean exact Git revision, verified off-host
+SQLite backup, captured/quiesced timer policy, installed dependencies/units,
+account cutover validation, seeded artifacts and timer/freshness recovery. The
+deployment deadman handles abandoned sessions. Compatibility tombstones reject
+partial-source sync. See [the deployment runbook](aws_deployment.md) for the
+operational sequence; repository edits alone do not release changes.

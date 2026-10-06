@@ -18,8 +18,9 @@ These are **economically separate paper accounts**, each started with $1,000:
 Both public ledger reconciliations report zero difference. Live execution is
 disabled. Public evidence cannot independently establish AWS service health.
 SSH timed out; the local AWS CLI could not inspect EC2 or Systems Manager because
-credentials were unavailable. No production source, order, timer, account,
-credential, firewall, or environment setting was changed by this investigation.
+credentials were unavailable. No production source, order, timer, account, credential, firewall, or environment
+setting had changed at that initial snapshot. See the later deployment record
+below for subsequent authorized operational changes.
 
 Research ROI peaked at $1,120.82 in the reported account window, then realized
 -$40.944 on September 11 and -$50.002 on September 12. The approximately $90.95
@@ -56,9 +57,9 @@ The 35% stop is a trigger, not a guaranteed fill price or maximum loss. These
 positions exited through multiple fills at worse prices. Exact quote ages,
 available depth, model-veto decisions and forecast revisions at each exit are
 not exposed in the public artifact; AWS journal access is required to attribute
-the overshoot among those mechanisms. These three loss positions have no
-settlement truth/forecast-error values, so the specific weather-model failure
-is **not established**. Disabling stops or calling every stopped trade a
+the overshoot among those mechanisms. The initial public artifact exposed no settlement truth for these positions.
+Subsequent bounded AWS reads established the Atlanta September 11 truth and
+partial-exit failure described below; September 12 truth remains unavailable. Disabling stops or calling every stopped trade a
 forecast failure would be unsupported.
 
 ## Implemented safeguards and evidence corrections
@@ -95,8 +96,9 @@ Deployment and release verification are recorded below.
    sliced. Four pre-fix regressions reproduced a stop changing back to
    `HOLD_MODEL_VETO` or `HOLD_NO_MODEL_READ`; the fixed path continues to respect
    displayed depth and missing quotes. A genuine price recovery can still
-   change the decision. This source-level defect is reproduced, but its exact
-   contribution to the observed Atlanta/Miami losses needs AWS monitor evidence.
+   change the decision. Subsequent AWS monitor evidence confirms the reset caused six vetoed stop
+   attempts in the Atlanta September 11 incident (see below). Its counterfactual
+   dollar impact has not been estimated.
 
 The statistical defect is reproducible: ten dates with seven +1 and three -1
 deltas gave an unclustered p-value near 0.154; duplicating each date over three
@@ -287,3 +289,84 @@ stale-analysis and Research ROI drawdown warnings. Deployment requires restored
 operator access, exact reviewed source, the canonical backup/install gates, and
 post-install paper-account, publication and timer verification. No production
 fix is claimed until those steps complete.
+
+## Release and deployment record (in progress)
+
+PR #121 merged as `195a92433221c7f99665600b0279fed7fbad3a0c` after all
+required checks passed. Final Python 3.13 CI reported 2,935 passed and nine
+skipped; Python 3.12, required Semgrep and Web also passed. Licensed UI setup
+now preserves the pinned dependency versions and the lock-drift guard passed.
+
+Canonical deployment began September 13 at approximately 01:30 UTC from an
+isolated clean main clone. Production access needed the owner's approved
+temporary single-address SSH allowance at both cloud and host firewall layers.
+Existing rules stayed intact; Systems Manager recovery and key-based SSH were
+verified. Both temporary rules must be removed at the end.
+
+Before deployment, both separate paper accounts reconciled. Realized equity
+was $1,053.75 for Live Stability and $1,029.87 for Research ROI; open cost was
+$14.63 and $132.76 respectively. Both had zero pending orders before and during
+quiescence. Backup preflight passed. The full snapshot/restore integrity gate,
+installation, analysis refresh, timer restoration and public verification remain
+in progress; this is not yet a deployment-completion claim.
+
+## Next evidence needed to scale further
+
+1. Measure filled dollars per independent opportunity, separating passive quotes
+   from crossing limit orders. Track queue state, fees, expiry and post-fill
+   price moves in a frozen prospective execution comparison. The 5.84% observed
+   fill ratio is filled/requested contracts, not passive fill probability.
+   Repricing or adding quantity can lose queue priority; increasing requested
+   quantity alone can worsen this ratio without increasing actual turnover.
+   [Order amendment rules](https://docs.kalshi.com/api-reference/orders/amend-order-v2).
+2. Evaluate decision-time probabilities against settlement truth with bracket
+   Brier scores, CRPS, market baselines and calibration by city/lead/probability
+   band. Keep independent accounts, policy eras and root positions distinct,
+   and complete NO/maker replay before attributing executable profits to a
+   forecast improvement. MAE and win rate alone cannot justify more capital.
+   [Proper scoring rules](https://doi.org/10.1198/016214506000001437).
+3. Predeclare subsequent experiments and evaluate consecutive-day block
+   sensitivity. The deployed date grouping handles simultaneous city outcomes,
+   not serial weather dependence or unlimited repeated testing. Any online
+   drift procedure needs an explicit sequential error guarantee.
+   [Stationary bootstrap](https://users.ssc.wisc.edu/~behansen/718/Politis%20Romano.pdf),
+   [time-uniform confidence sequences](https://arxiv.org/abs/1810.08240).
+
+Larger per-trade dollars should require calibrated conservative probabilities,
+positive incremental value after quantity-specific fees/execution costs,
+prospective evidence that survives dependence checks, and available portfolio
+and daily-loss capacity. The quarter-Kelly fraction and $90 ceiling remain
+risk-design choices rather than empirically optimized profit claims.
+[Risk-constrained Kelly](https://www.web.stanford.edu/~boyd/papers/kelly.html).
+
+## Confirmed production incident mechanism
+
+A bounded, indexed, read-only AWS journal inspection at September 13, 01:34 UTC
+linked the three incident positions to eleven stop-loss exit lots. Each exit
+had contemporaneous, verified displayed-depth evidence.
+
+For Atlanta September 11, the first stop at 16:41:04 UTC saw a $38.797 loss,
+beyond the $35 model-veto dollar floor. Only 19.65 contracts could exit because
+that was the available displayed depth, realizing a $6.991 loss. At 16:43:26 the
+monitor used only the remaining position's $32.68 loss and returned
+`HOLD_MODEL_VETO`, although cumulative realized plus unrealized loss was
+$39.671. Six consecutive model vetoes continued through 16:53:26. Stop exits
+resumed at 16:55:34; the final bid was $0.26 versus $0.34 at the first exit.
+This establishes the partial-loss reset as an actual incident mechanism. It
+does not establish how many dollars different executions would have saved.
+
+The exact Atlanta September 11 settlement row records a high of 88°F versus
+the entry forecast of 90.798928°F. The NO position on 88°F-or-below therefore
+would lose at settlement as well: this was not merely a correct forecast
+closed early. The September 12 Atlanta/Miami settlement rows were absent from
+this bounded query, so their forecast-error attribution remains unresolved.
+The stale high model confidence, concentrated position sizes, limited exit
+depth, and forgotten realized slice explain different parts of the failure;
+fixing the bookkeeping cannot guarantee stop prices or eliminate forecast risk.
+
+For the September 12 Atlanta and Miami records, stop exits continued without a
+post-partial model veto. Miami's bid fell from $0.56 to $0.37 between 16:01 and
+16:03 UTC, and only 2.35 of 38 contracts could exit at the first stop. Price
+gaps and available depth therefore explain those stop overshoots in the retained
+records. The entry forecasts were approximately 4, 14 and 20 minutes old; this
+audit did not establish a stale input feed or stalled monitor as the cause.

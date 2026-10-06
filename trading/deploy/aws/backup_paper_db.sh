@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stream-safe deployment gate. `preflight` is read-only and must pass before
-# timers are quiesced. `backup` snapshots the committed WAL state, uploads it,
+# Stream-safe deployment gate. `preflight` reclaims aged local backup artifacts
+# before checking capacity and must pass before timers are quiesced. `backup`
+# snapshots the committed WAL state, uploads it,
 # downloads it to a temporary restore path, and verifies both SQLite integrity
 # and foreign keys before source or schema changes are allowed.
 

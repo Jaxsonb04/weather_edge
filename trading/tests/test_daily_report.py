@@ -5,16 +5,19 @@ import json
 import sqlite3
 import tempfile
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant import report
+from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig
-from sfo_kalshi_quant.forecast import ForecastDataError
-from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, MarketBin
+from sfo_kalshi_quant.forecast import ForecastDataError, SfoForecasterAdapter
+from sfo_kalshi_quant.models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, MarketBin
 from sfo_kalshi_quant.report import _best_signal, build_daily_report
 
 
@@ -31,6 +34,97 @@ def test_report_forecast_freshness_rejects_snapshot_far_in_the_future() -> None:
             forecast,
             StrategyConfig(max_forecast_age_hours=30.0),
         )
+
+
+@pytest.fixture
+def emos_report_inputs(monkeypatch):
+    target = datetime.now(timezone.utc).date() + timedelta(days=1)
+    adapter = Mock(spec=SfoForecasterAdapter)
+    adapter.city = get_city("sfo")
+    adapter.latest_live_forecast.return_value = ForecastSnapshot(
+        target_date=target,
+        predicted_high_f=72.0,
+        fetched_at=datetime.now(timezone.utc).isoformat(),
+        raw={"source": "forecast_emos_daily_high", "emos": {"mu": 72.0, "sigma": 2.5}},
+    )
+    adapter.load_emos_mu_sigma.return_value = {}
+    calibrator = Mock()
+    calibrator.bucket_probabilities.return_value = {}
+    evaluator = Mock()
+    evaluator.rank.return_value = []
+    monkeypatch.setattr(report, "TradeEvaluator", lambda config: evaluator)
+    monkeypatch.setattr(report, "_intraday_for_report", lambda *args: None)
+    monkeypatch.setattr(report, "_ensemble_for_report", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(report, "_event_for_report", lambda *args, **kwargs: (None, None))
+    return target, adapter, calibrator
+
+
+def _build_emos_report(inputs, *, enabled: bool):
+    target, adapter, calibrator = inputs
+    return report.build_target_report(
+        target=target,
+        adapter=adapter,
+        calibrator=calibrator,
+        config=StrategyConfig(emos_distribution_enabled=enabled),
+        side="both",
+        offline_events=None,
+        observed_high=None,
+        no_ensemble=True,
+        ensemble_timeout=1.0,
+        allow_live_market=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("enabled", "emos", "error"),
+    [
+        (False, {"mu": 72.0, "sigma": 2.5}, "requires its matching EMOS distribution"),
+        (True, {}, "missing its matching EMOS distribution"),
+        (True, {"mu": 73.0, "sigma": 2.5}, "distribution disagree"),
+        (True, {"mu": 72.0, "sigma": 0.0}, "invalid matching EMOS distribution"),
+        (True, {"mu": 72.0, "sigma": float("nan")}, "invalid matching EMOS distribution"),
+    ],
+)
+def test_report_rejects_uncoupled_emos_point(emos_report_inputs, enabled, emos, error):
+    _, adapter, calibrator = emos_report_inputs
+    adapter.latest_live_forecast.return_value = replace(
+        adapter.latest_live_forecast.return_value,
+        raw={"source": "forecast_emos_daily_high", "emos": emos},
+    )
+
+    with pytest.raises(ForecastDataError, match=error):
+        _build_emos_report(emos_report_inputs, enabled=enabled)
+
+    calibrator.bucket_probabilities.assert_not_called()
+
+
+@pytest.mark.parametrize("cached_pair", [None, (99.0, 9.0)])
+@pytest.mark.parametrize("intraday_update", [False, True])
+def test_report_uses_point_forecast_emos_pair_before_intraday_update(
+    emos_report_inputs, monkeypatch, cached_pair, intraday_update
+):
+    target, adapter, calibrator = emos_report_inputs
+    adapter.load_emos_mu_sigma.return_value = {target: cached_pair} if cached_pair else {}
+    expected_high = 72.0
+    if intraday_update:
+        intraday = IntradaySnapshot(
+            target_date=target,
+            observed_high_f=75.0,
+            latest_temp_f=75.0,
+            latest_observed_at=datetime.now(timezone.utc).isoformat(),
+            remaining_forecast_high_f=75.0,
+            forecast_fetched_at=datetime.now(timezone.utc).isoformat(),
+        )
+        monkeypatch.setattr(report, "_intraday_for_report", lambda *args: intraday)
+        adapter.apply_intraday_update.return_value = replace(
+            adapter.latest_live_forecast.return_value, predicted_high_f=75.0
+        )
+        expected_high = 75.0
+
+    _build_emos_report(emos_report_inputs, enabled=True)
+
+    assert calibrator.bucket_probabilities.call_args.args[1] == expected_high
+    assert calibrator.bucket_probabilities.call_args.kwargs["emos_mu_sigma"] == (72.0, 2.5)
 
 
 def _write_forecaster_fixture(root: Path, target: date) -> None:
