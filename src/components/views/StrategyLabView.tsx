@@ -38,6 +38,7 @@ import { ResearchNotes } from "../strategy/ResearchNotes";
 import { DailyActivity } from "../strategy/DailyActivity";
 import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice";
 import { ArchivedPerformance } from "../strategy/ArchivedPerformance";
+import { HybridResearchPanel } from "../strategy/HybridResearchPanel";
 
 export function TrackRecordFinding({ s }: { s: StrategyLab }) {
   const t = s.daily_summary?.totals;
@@ -751,6 +752,7 @@ export default function StrategyLabView() {
               />
               <ArchivedPerformance s={s} />
               <ReleaseFindings s={s} />
+              <HybridResearchPanel s={s} />
             </section>
 
             {/* ---- System-wide results and conclusions after profile inspection. ---- */}

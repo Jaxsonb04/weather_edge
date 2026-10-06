@@ -201,3 +201,12 @@ verified backups, account reconciliation, timer recovery, and publication
 verification.
 
 MIT — see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Local compute and cost
+
+V7 supports a six-hour Mac research worker for fresh read-only paper/forecast
+audits and calibration comparisons, with preserved results and job-scoped
+`caffeinate`. AWS continues collection and paper execution. Full local replicas
+use transaction-aware SQLite copying; they do not bypass the durable deployment
+backup gate. See [local compute operations](docs/local_compute.md) for setup,
+verification and the distinction between accrued bills and monthly cost.
