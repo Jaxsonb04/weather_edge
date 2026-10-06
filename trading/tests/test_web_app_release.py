@@ -41,7 +41,8 @@ def test_failed_partial_web_transfer_preserves_complete_active_tree(tmp_path: Pa
     fake_bin.mkdir()
     _executable(
         fake_bin / "bun",
-        "#!/bin/sh\nmkdir -p dist\nprintf 'new index' > dist/index.html\nprintf 'new asset' > dist/new.js\n",
+        "#!/bin/sh\nif [ \"$*\" = 'install --frozen-lockfile' ]; then exit 0; fi\n"
+        "mkdir -p dist\nprintf 'new index' > dist/index.html\nprintf 'new asset' > dist/new.js\n",
     )
     _executable(
         fake_bin / "ssh",

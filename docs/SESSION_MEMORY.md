@@ -1,10 +1,12 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-05 (V7 audit/release; production cutover deferred)
+Last updated: 2026-10-05 (V7 audit/static release; backend cutover deferred)
 
-Last complete production verification: 2026-10-05 19:50 PDT
+Last complete production verification: 2026-10-05 21:49 PDT (bounded read-only verification)
 
-Last public artifact inspection: 2026-10-05 19:52 PDT (all five JSON hashes)
+Last public artifact inspection: 2026-10-05 21:50 PDT (stable manifest and all five JSON hashes)
+
+Last public app verification: 2026-10-05 21:46 PDT (exact Pages success, app and runtime hashes, desktop/mobile canary)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
@@ -49,20 +51,21 @@ operational claim; all production observations below are dated snapshots.
   See `docs/research/2026-10-05-v7-audit.md` and its hashed baselines. The $40/day
   and 5%-daily objectives remain unproven; a proposed October research schedule
   is documented, with no recurring automation installed.
-  Final local source validation passed 3,533 Python 3.13 tests with nine skips,
+  Core V7 local validation passed 3,533 Python 3.13 tests with nine skips,
   211 web tests, build, compilation, icons, health and diff checks. Desktop and
   393/320px browser checks verified retained negative/zero eras, keyboard
   selection, evidence expansion and no overflow/errors. Initial observed assets
   were 224.26 KiB JS and 18.87 KiB CSS; two prior Fast Refresh warnings remain.
   Local Semgrep was unavailable; the required GitHub full gate passed.
-- **Operational snapshot and deliberate deferment:** the host was healthy,
+- **Operational snapshot and deliberate deferment (October 5, 21:49 PDT):** the host was healthy,
   twenty-nine canonical units passed integrity, no unit failed and maintenance
   was absent. All five public artifact hashes matched a stable manifest.
   Installed backend remained September 4 source `2a6432e3`; historical analysis
   also remained September 4 and readiness reported `ANALYSIS_STALE`. Source
   configures twenty cities but verified deployment still covered fifteen.
-  The journal was 30.98 GiB with 20.23 GiB free on a 64 GiB disk; canonical
-  backup verification requires about 31.98 GiB free. No V7 deployment, storage
+  The journal was 31.02 GiB with 20.17 GiB free on a 64 GiB disk; canonical
+  backup verification requires about 32.02 GiB free. All fourteen original
+  timers were enabled and active. No V7 backend deployment, storage
   purchase, retention-policy change or live-row deletion occurred. Preserve the
   deployed archive-only setting during cutover; current-main defaults differ.
   Real-money execution remains disabled. Three Phoenix final-truth warnings
@@ -82,11 +85,28 @@ operational claim; all production observations below are dated snapshots.
   exchanges directories under the installed publisher's exact lock, loads its
   native systemd environment and directly publishes without backend builders.
   Exact Pages success, public asset hashes and all five JSON/manifest hashes are
-  required, with atomic restoration/republication on failure. Focused validation
-  passed 210 tests and independent review; one Linux-only stress check remains
-  for CI. A dated audit link is verified on desktop and 393/320px browsers.
-  Static release remains pending CI and exclusive backend-deploy coordination.
-  This does not satisfy the blocked journal backup/backend cutover gate.
+  required, with atomic restoration/republication on failure. PR #128 merged
+  October 5 at 21:38 PDT as `88d1cb8f0` after exact-candidate CI passed 3,568
+  tests with nine skips on both Python versions, Linux atomic-exchange stress,
+  Semgrep, 211 web tests and licensed build/bundle checks. Static delivery from
+  that revision passed at Pages commit `802333808a052868e57a14be2874820f702f32b8`,
+  successful October 5 at 21:42 PDT. Public desktop and 393/320px canaries
+  verified the dated audit link, V2 zero results, V5 losses, keyboard selection,
+  one visible panel and no page errors or horizontal overflow. The active
+  artifact still correctly says V6. This does not satisfy the blocked journal
+  backup/backend cutover gate; no backend deployment ran concurrently.
+- **Build-dependency incident and correction:** the first static build ran with
+  ignored installed MapLibre 5.24.0 despite source/lockfile pinning 6.4.1. It
+  published a complete tree but did not establish locked-dependency parity. An
+  attempted unit interruption arrived after success and caused no rollback.
+  A subsequent frozen install resolved MapLibre 6.4.1 and retained licensed
+  HeroUI Pro beta.7; all 211 web tests passed. The corrected build then passed
+  guarded publication and public hash verification at the commit above.
+  Future deployment requires a frozen install before build/remote transfer.
+  Focused checks passed 212 tests with one local Linux-only skip; independent
+  review passed 110 with that same skip. A failure regression proves no build,
+  remote call or false success. No paper journal, trading policy, or billing
+  setting changed. The local editable package metadata is now 0.7.0.
 - **Phoenix source check (October 5, 21:20 PDT):** the September 27 post-day
   NWS CLI maximum is missing, and none of twenty-two inspected CLI products
   establishes a numeric final correction. Monthly CF6 contains 97°F, but its
