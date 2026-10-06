@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-05 (V7 release and budget-first backup review; backend cutover deferred)
+Last updated: 2026-10-05 (Mac research offload and unused Lightsail cost investigation; backend cutover deferred)
 
 Last complete production verification: 2026-10-05 21:49 PDT (bounded read-only verification)
 
@@ -12,6 +12,23 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Mac offload and billing snapshot (October 5, 22:41 PDT):** user requested
+  local compute and removal of unused Lightsail. A six-hour local LaunchAgent
+  completed fresh read-only paper/forecast audits and a bias-only comparison,
+  preserving exports/results privately. Job-scoped caffeinate and non-overlap
+  locks are installed. A transaction-aware full paper-database replica started
+  on the Mac; no successful integrity/restore receipt exists yet. AWS disk
+  remained healthy and origin WAL was empty at the bounded transfer check.
+  No AWS timer or trading setting changed. EC2 hourly pricing is unchanged;
+  actual heavy production analysis and durable backup integration remain work.
+  Authenticated bill at 22:31 PDT showed $8.00 accrued, not a monthly forecast.
+  Lightsail charged $1.17 for unused static IPs; inventory showed two unattached
+  allocations and no instances. Approximate forward cost is $7.30/month for
+  both. The old recurring estimate omitted these resources. Irreversible
+  release is waiting for action-time browser-policy confirmation. No paid
+  expansion, commitment, data deletion or backend cutover occurred. See
+  `docs/local_compute.md`; private access/configuration stays in ignored state.
 
 - **V7 audit (October 5, 19:56 PDT paper snapshot):** Live Stability and Research
   ROI V6 remain economically separate paper ledgers, each initially $1,000.
