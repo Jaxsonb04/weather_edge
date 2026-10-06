@@ -183,8 +183,11 @@ model policy and original snapshot identity; provider initialization and hourly
 coverage stay NULL. It never imports old issued-vintage tables from its seed,
 and historical NWP/CLI/EMOS rows retain their reconstructed identity and source.
 The initial seed is imported once. A later changed seed path does not replace
-that imported history or its original receipt. An independent source or
-training-policy change therefore remains a new model-policy cohort.
+that imported history or its original receipt. An implementation or
+training-policy change therefore remains a new model-policy cohort. Git commit
+and dirty-state metadata stay in each immutable lineage row, full policy and
+receipt, but are excluded from the behavior fingerprint: documentation-only
+commits do not fragment otherwise identical forecast cohorts.
 
 Only the documented unauthenticated HTTPS hosts for Open-Meteo and NWS are
 allowed. Redirects, paid endpoints, credentials, retries, AWS writes and orders
@@ -244,3 +247,13 @@ evidence audit and local-compute guards. The allowlisted public research summary
 matches its report SHA-256, and that report binds the current evaluator hash.
 The UI now explicitly says original AWS V7 vintage capture requires guarded
 backend activation, alongside its separate local shadow description.
+
+The final fingerprint correction excludes only `source_commit` and
+`source_dirty` from its hashed policy; actual serving/dependency hashes, seed,
+model selection, method and other behavior policy remain bound. Existing
+collected records were not changed or relabeled. Regression checks show that a
+docs-only commit preserves the cohort while a serving implementation, method,
+model list or seed change rotates it, and that resulting immutable records
+remain compatible with the production issued-vintage evaluator. After this
+narrow correction, **103 tests and 31 subtests passed in 4.18 seconds**. No new
+provider request or AWS action ran for this correction.

@@ -63,6 +63,15 @@ def sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def model_policy_fingerprint(policy):
+    # Git bookkeeping is retained in the immutable lineage and complete policy,
+    # but a documentation commit does not change forecast behavior. Actual
+    # implementation hashes, seed, model configuration and policy remain bound.
+    behavior = {key: value for key, value in policy.items()
+                if key not in ('source_commit', 'source_dirty')}
+    return sha(canonical(behavior).encode())
+
+
 def utc_clock(value):
     stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if stamp.tzinfo is None:
@@ -336,7 +345,7 @@ def collect(seed_path, state, cities, *, maximum_requests=8, client=None, rotate
                 'provider_initialized_at': None, 'constituent_hour_completeness': None,
                 'provider_attribution': 'Weather data by Open-Meteo.com (CC BY 4.0); final CLI reports by NWS',
                 'provider_terms_url': 'https://open-meteo.com/en/terms'}
-            fingerprint = sha(canonical(model_policy).encode())
+            fingerprint = model_policy_fingerprint(model_policy)
             results, forecasts = [], {}
             # Forecast calls have priority so a truth outage cannot suppress a new vintage.
             for city in cities:

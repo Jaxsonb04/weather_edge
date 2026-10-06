@@ -83,7 +83,7 @@ operational claim; all production observations below are dated snapshots.
   no unit failed and no maintenance marker existed. Live execution was disabled
   and dry-run enabled. Source configures twenty cities; this is not proof of
   deployment. See `docs/audits/2026-10-05-hybrid-v7-verification.md`.
-- **Hybrid release validation (October 5):** the final local full suite passed
+- **Hybrid release validation (October 5):** the local full suite passed
   3,658 Python tests with ten skips and 31 subtests. All 216 web tests passed;
   compilation, build, icons, project health and diff checks passed. Lint retains
   two existing Fast Refresh warnings. Observed landing assets remain 224.26 KiB
@@ -97,6 +97,12 @@ operational claim; all production observations below are dated snapshots.
   keyboard reopening, the negative evidence and no horizontal overflow or page
   errors. Exact-candidate CI, integration and guarded static release remain
   pending; no backend cutover or new cloud spend has occurred.
+  A final bookkeeping correction preserves weather model cohorts across
+  documentation-only Git changes while still binding implementation, seed and
+  model-policy changes. Original records remain untouched. The independent
+  combined focused gate passed 103 tests and 31 subtests after this correction;
+  root independently passed 92 affected tests and 31 subtests. Exact final CI
+  remains required before merge.
 
 - **V7 audit (October 5, 19:56 PDT paper snapshot):** Live Stability and Research
   ROI V6 remain economically separate paper ledgers, each initially $1,000.

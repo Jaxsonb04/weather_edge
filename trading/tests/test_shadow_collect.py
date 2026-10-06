@@ -188,6 +188,45 @@ def test_later_seed_replacement_does_not_relabel_imported_history(workspace):
     assert second['seed'] == first['seed']
 
 
+def test_docs_only_git_change_preserves_model_cohort_but_serving_change_rotates_it(workspace, monkeypatch):
+    seed, state, cities = workspace
+    original = shadow.source_identity()
+    first = shadow.collect(seed, state, cities, client=FixtureClient())
+    docs_only = dict(original, source_commit='c' * 40, source_dirty=True)
+    monkeypatch.setattr(shadow, 'source_identity', lambda: docs_only)
+    second = shadow.collect(seed, state, cities, client=FixtureClient())
+    assert second['model_policy_fingerprint_sha256'] == first['model_policy_fingerprint_sha256']
+    assert second['source_commit'] != first['source_commit']
+    serving_change = dict(docs_only, implementation_sha256={'fixture.py': 'd' * 64})
+    monkeypatch.setattr(shadow, 'source_identity', lambda: serving_change)
+    third = shadow.collect(seed, state, cities, client=FixtureClient())
+    assert third['model_policy_fingerprint_sha256'] != second['model_policy_fingerprint_sha256']
+    with sqlite3.connect(state / 'shadow-weather.db') as conn:
+        lineage = {row[0]: json.loads(row[1]) for row in conn.execute(
+            'SELECT snapshot_id,policy_json FROM shadow_forecast_lineage')}
+        assert lineage[first['new_snapshot_ids'][0]]['source_commit'] == original['source_commit']
+        assert lineage[second['new_snapshot_ids'][0]]['source_commit'] == docs_only['source_commit']
+        assert lineage[second['new_snapshot_ids'][0]]['source_dirty'] is True
+        assert conn.execute('SELECT COUNT(*) FROM forecast_emos_live_vintages').fetchone()[0] == 9
+    evaluator_spec = importlib.util.spec_from_file_location('shadow_docs_commit_contract',
+        Path(__file__).resolve().parents[2] / 'scripts/evaluate_v7_ml.py')
+    evaluator = importlib.util.module_from_spec(evaluator_spec)
+    evaluator_spec.loader.exec_module(evaluator)
+    audit = evaluator.audit_issued_vintages(json.loads((state / 'weather-export.json').read_text()))
+    assert audit['exported_vintages'] == 9 and not audit['promotion_eligible']
+
+
+def test_behavior_policy_seed_and_models_remain_bound_to_cohort():
+    original = {'source_commit': 'a' * 40, 'source_dirty': False,
+        'implementation_sha256': {'serving.py': 'b' * 64}, 'seed_sha256': 'c' * 64,
+        'models': ['gfs_seamless'], 'method': 'v7 inverse-variance EMOS'}
+    fingerprint = shadow.model_policy_fingerprint(original)
+    assert shadow.model_policy_fingerprint(dict(original, source_commit='d' * 40, source_dirty=True)) == fingerprint
+    for change in ({'method': 'different serve correction'}, {'models': ['icon_seamless']},
+                   {'seed_sha256': 'e' * 64}, {'implementation_sha256': {'serving.py': 'f' * 64}}):
+        assert shadow.model_policy_fingerprint(dict(original, **change)) != fingerprint
+
+
 def test_source_change_does_not_promote_receipt(workspace, monkeypatch):
     seed, state, cities = workspace
     identity = shadow.source_identity()
