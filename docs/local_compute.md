@@ -177,9 +177,16 @@ snapshot or its AWS runtime identity.
 
 The October 6 refinement requires the two-hour schedule and tighter 300/120-second
 budgets above. The dated October 5 runs retain their original limits and identity;
-they are not evidence that the refined schedule has been installed or run. Its
-private configuration, reinstall and native admission must be independently
-checked after the final source is committed.
+they are not relabeled as runs of the refined schedule. At October 6, 00:14 PDT,
+the private configuration was tightened, the two-hour job independently installed
+and native admission checked. The clean-source `--scheduled` execution completed
+00:15:53 PDT at `18deb2d6b`: eight requests, twelve new vintages (39 retained),
+all four jobs successful, 19.909 wall seconds, 8.14 observed CPU seconds and
+367.8 MiB sampled peak group RSS. Source/input hashes matched, five/two-minute
+limits passed, and AWS export and live execution remained disabled. PR #130
+merged at 00:20:58 PDT; the guarded static app release and public desktop/mobile
+canary passed. The webpage intentionally keeps its reviewed October 5, 23:50
+batch; subsequent private runs require another reviewed snapshot to be published.
 
 ## Network and billing boundary
 
@@ -276,8 +283,10 @@ prove weak, missing, nonfinite or relaxed scheduled limits leave the existing
 plist, state directory and `launchctl` untouched. Runtime regressions prove
 that a subsequently weakened private configuration starts no admission,
 subprocess, network, analysis or state mutation in installed scheduled mode.
-The combined operations/collector/ML check passed 90 tests and 31 subtests;
-local compilation and diff checks passed. Local compilation
+The final affected gate passed 165 tests and 46 subtests. Exact-candidate CI
+passed both Python versions with 3,732 tests, eleven skips and 46 subtests,
+218 web tests, build, browser-observed bundle budgets and zero blocking Semgrep
+findings. Public desktop/iPhone-emulated/320-pixel checks passed. Local compilation
 and the focused suite must pass before installation; the worker must complete a
 bounded real run before its results are called verified.
 

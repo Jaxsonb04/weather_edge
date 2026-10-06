@@ -257,3 +257,38 @@ model list or seed change rotates it, and that resulting immutable records
 remain compatible with the production issued-vintage evaluator. After this
 narrow correction, **103 tests and 31 subtests passed in 4.18 seconds**. No new
 provider request or AWS action ran for this correction.
+
+## October 6 final delivery and remaining operational gates
+
+PR #130 merged at 00:20:58 PDT on exact candidate `18deb2d6b`. Both Python
+versions passed 3,732 tests, eleven skips and 46 subtests; 218 web tests,
+build/bundle checks and Semgrep passed with zero blocking findings. The guarded
+static app release verified Pages commit `30b3eec92a306f93e12ae093ff8a1212c0dc84d7`.
+An independent public audit at 00:25:15 PDT found a stable manifest, all five
+matching artifact hashes and hybrid-summary SHA-256
+`1703ae54f194a9d8135623c59e00cda129604ec7796b22823c91cb488a91597d`.
+Production desktop and iPhone-emulated 390/320-pixel interactions verified V6,
+disabled live execution, dated Mac collection and unchanged negative evidence,
+with no page errors or overflow. Static delivery did not activate the backend.
+
+The local schedule was refined to two hours, revisiting each of twenty cities
+approximately every ten hours while admission passes. Both installation and each
+scheduled invocation require at most 300 wall/120 observed CPU seconds before
+state or work; the sampled RSS, native guards and 96-request UTC-day ceiling
+remain binding. Daily nominal compute maxima are lower than the original
+six-hour schedule. The actual clean-source scheduled run finished 00:15:53 PDT:
+19.909 wall seconds, 8.14 observed CPU seconds, 367.8 MiB sampled RSS, eight
+requests and twelve new forecasts (39 retained). All four jobs and source/input
+checks passed. Later collections stay private; the public batch remains its
+explicitly dated October 5, 23:50 snapshot.
+
+The 00:07 PDT read-only safety check still found backend `2a6432e3` / `exec-v4`
+/ V6, live disabled and dry-run enabled, fourteen active timers, no failed unit
+or maintenance/deadman state, and installed archive-only behavior. Its 31.064-GiB
+journal had 20.093 GiB available, leaving the canonical snapshot-plus-1-GiB gate
+short 11.971 GiB. Full production Strategy offload, complete weather snapshot,
+durable independent restore, guarded V7 activation and any downsize remain
+deferred. No paid resource, retention deletion, hardware/power change, recovery
+bypass, model promotion or live-money enablement occurred. A positive prospective
+net-fill edge and evidence-backed bankroll are still unestablished; thirty
+completed V7 weather dates cannot mature by the October 31 review.

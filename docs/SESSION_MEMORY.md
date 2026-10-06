@@ -1,12 +1,14 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-06 (bounded hybrid implementation, independent V7 audit and ML comparison; backend cutover deferred)
+Last updated: 2026-10-06 (hybrid source merged, two-hour Mac worker enabled and static app verified; backend cutover deferred)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last public artifact inspection: 2026-10-05 23:02 PDT (stable manifest and all five JSON hashes)
+Last backend safety inspection: 2026-10-06 00:07 PDT (source, live flags, units, archive policy and backup capacity)
 
-Last public app verification: 2026-10-05 21:46 PDT (exact Pages success, app and runtime hashes, desktop/mobile canary)
+Last public artifact inspection: 2026-10-06 00:25 PDT (independent stable manifest and all five JSON hashes)
+
+Last public app verification: 2026-10-06 00:26 PDT (guarded static release, exact Pages success, app/runtime hashes and desktop/mobile canary)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
@@ -94,26 +96,31 @@ operational claim; all production observations below are dated snapshots.
   no unit failed and no maintenance marker existed. Live execution was disabled
   and dry-run enabled. Source configures twenty cities; this is not proof of
   deployment. See `docs/audits/2026-10-05-hybrid-v7-verification.md`.
-- **Hybrid release validation (October 5):** the local full suite passed
+- **Hybrid release validation (October 5–6):** the initial local full suite passed
   3,658 Python tests with ten skips and 31 subtests. All 216 web tests passed;
   compilation, build, icons, project health and diff checks passed. Lint retains
   two existing Fast Refresh warnings. Observed landing assets remain 224.26 KiB
   JS and 18.87 KiB CSS, within budget. Semgrep is absent locally; required exact-
-  candidate CI must supply it before merge. Desktop interaction shows the active
+  candidate CI supplied it before merge. Desktop interaction shows the active
   V6 identity, separate Mac collection, both negative model comparisons, 6,656
   cases, 246 dates, zero qualified original historical vintages and $0 live
   allocation. Historical July fixture labels were independently checked:
   they are static climatology/LSTM studies; live forecasts use current city and
   signal feeds. Phone checks at 390 and 320 CSS pixels verified expansion,
   keyboard reopening, the negative evidence and no horizontal overflow or page
-  errors. Exact-candidate CI, integration and guarded static release remain
-  pending; no backend cutover or new cloud spend has occurred.
+  errors. The hybrid source merged in PR #130 at October 6, 00:20:58 PDT, merge
+  `99523304c06e132be18e381d961deafa537314ec`. Exact candidate `18deb2d6b`
+  passed both Python gates (3,732 tests, eleven skips and 46 subtests), 218 web
+  tests, build and browser-observed budgets. Required Semgrep found zero
+  blocking findings. The guarded static release succeeded and verified all
+  app/runtime hashes at Pages `30b3eec92a306f93e12ae093ff8a1212c0dc84d7`.
+  No backend cutover or new cloud resource was made.
   A final bookkeeping correction preserves weather model cohorts across
   documentation-only Git changes while still binding implementation, seed and
   model-policy changes. Original records remain untouched. The independent
   combined focused gate passed 103 tests and 31 subtests after this correction;
   root independently passed 92 affected tests and 31 subtests. Exact final CI
-  remains required before merge.
+  was subsequently satisfied on the final exact candidate.
   A subsequent clean-source integrated run finished October 5, 23:50 PDT at
   `7e39093de`: eight requests, twelve new forecasts (twenty-seven retained),
   20.013 wall seconds, 8.6 observed CPU seconds and 366.8 MiB peak sampled RSS.
@@ -127,7 +134,40 @@ operational claim; all production observations below are dated snapshots.
   Desktop, iPhone-emulated 390-pixel and 320-pixel browser checks verified the
   dated twelve-forecast/eight-request/20-second batch, unchanged historical zero,
   both negative comparisons, expansion and keyboard reopening, with no overflow
-  or page errors. Exact-candidate CI, merge and static publication remain pending.
+  or page errors. Exact-candidate CI, merge and static publication subsequently
+  passed; the published dated batch remains the October 5, 23:50 snapshot.
+
+- **Final hybrid delivery (October 6, 00:26 PDT):** PR #130 is merged; the root
+  checkout was fast-forwarded to the merged source while preserving another
+  existing main worktree. The installed two-hour job's actual clean-source
+  `--scheduled` run completed at 00:15:53 PDT on `18deb2d6b`: eight free
+  requests, twelve new forecasts (39 retained), all four jobs successful,
+  19.909 wall seconds, 8.14 observed CPU seconds and 367.8 MiB sampled peak
+  group RSS. The 300/120-second limits and all source/input identities passed;
+  AWS export was disabled and live allocation remained $0. The public batch
+  intentionally remains its dated earlier clean run; later private collections
+  do not automatically publish. Production desktop and iPhone-emulated mobile
+  checks verified V6 identity, disabled live flag, $0 allocation, the dated
+  collection, 6,656/246/zero historical qualification and both negative
+  challengers, with actual expansion, keyboard reopening and no page errors
+  or horizontal overflow.
+  Independent inspection at 00:25:15 PDT found stable public snapshot
+  `64cd055f16c2d9ccee7d7272`, matching all five hashes, ready status on four
+  runtime artifacts and preserved Strategy research. The dated hybrid summary
+  matched SHA-256 `1703ae54f194a9d8135623c59e00cda129604ec7796b22823c91cb488a91597d`.
+  Runtime enforcement was independently reviewed and tested without a blocker.
+  The full Strategy helper has only fixture validation; complete weather
+  snapshot, durable independent restore, backend activation,
+  source-matched cache import, downsize evidence, positive prospective net-fill
+  edge and any evidence-backed bankroll recommendation remain unresolved.
+  An October 6, 00:07 PDT safety inspection still found clean backend `2a6432e3` /
+  `exec-v4` / V6, live disabled/dry-run enabled, all fourteen timers active,
+  no failed unit/maintenance/deadman state, and installed archive-only default.
+  Journal size was 31.064 GiB, free backup capacity 20.093 GiB, WAL empty;
+  the snapshot-plus-1-GiB gate was short 11.971 GiB. Preserve that deliberate
+  backend deferment under the owner's no-increased-spend constraint. No risky
+  retention deletion, recovery bypass, hardware/power change or live activation
+  occurred. The October 31 review cannot certify 30 completed V7 weather dates.
 
 - **V7 audit (October 5, 19:56 PDT paper snapshot):** Live Stability and Research
   ROI V6 remain economically separate paper ledgers, each initially $1,000.
