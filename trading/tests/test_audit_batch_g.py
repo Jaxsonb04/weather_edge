@@ -953,7 +953,12 @@ def test_deploy_web_app_works_from_arbitrary_cwd_and_space_paths(tmp_path: Path)
     fake_bin.mkdir()
     log = tmp_path / "calls.log"
     for command in ("bun", "ssh"):
-        build_output = "\nmkdir -p dist/assets\nprintf 'fixture app' > dist/index.html\nprintf 'fixture asset' > dist/assets/app.js\n" if command == "bun" else ""
+        build_output = (
+            "\ncase \"$*\" in\n"
+            "  'install --frozen-lockfile') exit 0 ;;\n"
+            "  'run build') mkdir -p dist/assets; printf 'fixture app' > dist/index.html; printf 'fixture asset' > dist/assets/app.js ;;\n"
+            "  *) exit 77 ;;\nesac\n"
+        ) if command == "bun" else ""
         _write_executable(
             fake_bin / command,
             f"#!/bin/sh\nset -e\nprintf '{command} cwd=%s args=' \"$PWD\" >> \"$CALL_LOG\"\nprintf '<%s>' \"$@\" >> \"$CALL_LOG\"\nprintf '\\n' >> \"$CALL_LOG\"\n[ \"${{FAIL_COMMAND:-}}\" != {command} ]\n{build_output}",
@@ -985,14 +990,17 @@ printf '\n' >> "$CALL_LOG"
     assert (build_root / "dist/index.html").read_text() == "fixture app"
     assert (build_root / "dist/assets/app.js").read_text() == "fixture asset"
     calls = log.read_text().splitlines()
-    assert calls[0].startswith(f"bun cwd={build_root} args=<run><build>")
-    assert calls[1].startswith("ssh ")
-    assert "operator key.pem" not in calls[2]
-    assert "<--protect-args>" in calls[2]
-    assert "<deploy@host.example:/srv/weather edge/.web-deploy/" in calls[2]
-    assert "/candidate/>" in calls[2]
+    assert calls[0].startswith(f"bun cwd={build_root} args=<install><--frozen-lockfile>")
+    assert calls[1].startswith(f"bun cwd={build_root} args=<run><build>")
+    assert calls[2].startswith("ssh ")
+    rsync_calls = [call for call in calls if call.startswith("rsync ")]
+    assert len(rsync_calls) == 2
+    assert "operator key.pem" not in rsync_calls[0]
+    assert "<--protect-args>" in rsync_calls[0]
+    assert "<deploy@host.example:/srv/weather edge/.web-deploy/" in rsync_calls[0]
+    assert "/candidate/>" in rsync_calls[0]
     assert not any(":/srv/weather edge/webdist/" in call for call in calls)
-    wrapper_path = calls[2].split("<-e><", 1)[1].split(">", 1)[0]
+    wrapper_path = rsync_calls[0].split("<-e><", 1)[1].split(">", 1)[0]
     assert " " not in wrapper_path
     assert not Path(wrapper_path).exists()
     assert calls[-1].startswith("ssh ")
@@ -1082,7 +1090,11 @@ def test_legacy_rsync_safe_remote_path_proceeds_with_spaced_key(tmp_path: Path) 
     ssh_log = tmp_path / "ssh.jsonl"
     _write_executable(
         fake_bin / "bun",
-        "#!/bin/sh\nset -e\necho built > \"$BUILD_LOG\"\nmkdir -p dist/assets\nprintf 'fixture app' > dist/index.html\nprintf 'fixture asset' > dist/assets/app.js\n",
+        "#!/bin/sh\nset -e\nprintf '%s\\n' \"$*\" >> \"$BUILD_LOG\"\n"
+        "case \"$*\" in\n"
+        "  'install --frozen-lockfile') exit 0 ;;\n"
+        "  'run build') mkdir -p dist/assets; printf 'fixture app' > dist/index.html; printf 'fixture asset' > dist/assets/app.js ;;\n"
+        "  *) exit 77 ;;\nesac\n",
     )
     _write_executable(
         fake_bin / "ssh",
@@ -1106,7 +1118,7 @@ raise SystemExit(19 if 'rsync' in sys.argv[1:] else 0)
         text=True,
     )
     assert result.returncode == 19
-    assert build_log.exists()
+    assert build_log.read_text().splitlines() == ["install --frozen-lockfile", "run build"]
     assert (deployer.parents[3] / "dist/index.html").read_text() == "fixture app"
     calls = [json.loads(line) for line in ssh_log.read_text().splitlines()]
     rsync_call = next(call for call in calls if "rsync" in call)
@@ -1229,7 +1241,7 @@ def test_deploy_uses_ephemeral_keyless_ssh_wrapper() -> None:
 def test_deploy_web_app_failure_never_reports_success(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    _write_executable(fake_bin / "bun", "#!/bin/sh\nexit 23\n")
+    _write_executable(fake_bin / "bun", "#!/bin/sh\nif [ \"$1\" = install ]; then exit 0; fi\nexit 23\n")
     _write_executable(
         fake_bin / "rsync",
         "#!/bin/sh\n[ \"$1\" = --protect-args ] && [ \"$2\" = --version ]\n",
@@ -1246,6 +1258,43 @@ def test_deploy_web_app_failure_never_reports_success(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 23
+    assert "Done" not in result.stdout
+
+
+def test_failed_frozen_install_stops_before_build_or_remote_transfer(tmp_path: Path) -> None:
+    deployer = _isolated_web_deployer(tmp_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    bun_calls = tmp_path / "bun-calls"
+    remote_calls = tmp_path / "remote-calls"
+    _write_executable(
+        fake_bin / "bun",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BUN_CALLS\"\n"
+        "if [ \"$1\" = install ]; then exit 41; fi\n"
+        "mkdir -p dist\nprintf 'would build with stale dependencies' > dist/index.html\n",
+    )
+    _write_executable(
+        fake_bin / "rsync",
+        "#!/bin/sh\nif [ \"$1\" = --protect-args ] && [ \"$2\" = --version ]; then exit 0; fi\n"
+        "echo transferred >> \"$REMOTE_CALLS\"\n",
+    )
+    _write_executable(fake_bin / "ssh", "#!/bin/sh\necho contacted >> \"$REMOTE_CALLS\"\n")
+    key = tmp_path / "key"
+    key.touch()
+    env_file = tmp_path / "env"
+    env_file.write_text(f"EC2_IP=host\nEC2_KEY='{key}'\n")
+
+    result = subprocess.run(
+        ["bash", str(deployer), str(env_file)], cwd=tmp_path,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "BUN_CALLS": str(bun_calls), "REMOTE_CALLS": str(remote_calls)},
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 41
+    assert bun_calls.read_text().splitlines() == ["install --frozen-lockfile"]
+    assert not (deployer.parents[3] / "dist").exists()
+    assert not remote_calls.exists()
     assert "Done" not in result.stdout
 
 

@@ -33,6 +33,8 @@ have separate provenance; a merged fix is not proof of a deployed fix.
 |---|---|
 | Coverage | 20 city markets, with fifteen verified in the October 5 production snapshot |
 | Policy | v7 source revision; the October 5 production baseline was v6 |
+| Website | V7 history/audit UI from `88d1cb8f0`, publicly verified October 5 at 21:46 PDT; locked MapLibre 6.4.1 |
+| Backend cutover | Pending storage approval and canonical verified backup; installed backend remains `2a6432e3` |
 
 At that snapshot, the separate $1,000 initial-capital accounts reported:
 
@@ -49,9 +51,9 @@ balances must not be treated as one bankroll.
 The [v7 audit](docs/research/2026-10-05-v7-audit.md) records the measured baseline,
 release gap, thin fill capture, concentrated losses, stale analysis, and
 reproduced forecast/exit evidence defects. Source corrections require verified
-deployment and prospective validation. v7 starts a separate research paper
-account; v6 and earlier histories keep their original attribution, policy, and
-settlement lifecycle. Strategy Lab shows the policy version in its artifact and
+deployment and prospective validation. At verified backend cutover, v7 starts a
+separate research paper account; v6 and earlier histories keep their original
+attribution, policy, and settlement lifecycle. Strategy Lab shows the policy version in its artifact and
 all published archived profiles, including zero-trade experiments.
 
 The fresh [forecast baseline](docs/research/2026-10-05-v7-forecast-baseline.json)

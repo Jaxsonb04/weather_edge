@@ -92,6 +92,9 @@ printf '%s\n' \
 chmod 700 "$SSH_WRAPPER"
 export WEATHEREDGE_RSYNC_SSH_KEY="$HOST_KEY"
 
+echo "==> installing pinned dependencies"
+bun install --frozen-lockfile
+
 echo "==> building dist"
 bun run build
 

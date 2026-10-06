@@ -135,7 +135,10 @@ Every rsync mode rejects root and noncanonical aliases (repeated/trailing
 slashes or `.`/`..` components) before build; protect-args mode still permits
 spaces within otherwise canonical path components.
 
-V7 web releases transfer into a private, separate staging directory and remove
+V7 web releases first run `bun install --frozen-lockfile`; install failure stops
+before build or remote transfer. Existing ignored `node_modules` must not be
+treated as proof that the manifest's dependency versions are installed.
+Releases transfer into a private, separate staging directory and remove
 all six runtime JSON files from the built app. `web_app_release.py` rejects
 incomplete or altered uploads, probes Linux atomic directory exchange, and
 swaps the complete app under the installed publisher's exact Pages lock. A
