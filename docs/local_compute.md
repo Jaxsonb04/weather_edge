@@ -202,6 +202,16 @@ distinct fatal failure, even if collection otherwise finished or a resource
 guard deferred work; it cannot borrow raw-only success or benign deferral.
 Private failure logs preserve traceback and cause with owner-only permissions.
 
+The installed clean-source repair verification finished October 6, 18:22 PDT
+on `707ad9cf2`. It used 108.714 wall seconds, 52.24 observed CPU seconds and
+370.5 MiB sampled group RSS; eight requests added twelve distributions. All
+four audits and five output/lineage hashes passed. The private store reached
+105 versions across fifteen stations; this is not 105 independent resolved
+outcomes. The two-hour LaunchAgent is enabled, limits remain 300/120 seconds,
+and recurring AWS exports remain off. The webpage retains its explicitly dated
+earlier reviewed batch. These newer timings also show why the initial 20-second
+runs must not be treated as a guaranteed recurring duration.
+
 The October 6 refinement requires the two-hour schedule and tighter 300/120-second
 budgets above. The dated October 5 runs retain their original limits and identity;
 they are not relabeled as runs of the refined schedule. At October 6, 00:14 PDT,

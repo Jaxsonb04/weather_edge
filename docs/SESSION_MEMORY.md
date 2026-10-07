@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-06 (scheduled-run audit: raw-only city onboarding gaps and a reproduced macOS process-exit race; backend cutover deferred)
+Last updated: 2026-10-06 (scheduled-run defects repaired; installed guarded verification passed; new-city onboarding and backend cutover remain unfinished)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
@@ -44,9 +44,9 @@ operational claim; all production observations below are dated snapshots.
   is unknown. Preserve real signaling failures for a live child and descendant
   cleanup rather than broadly ignoring permission errors.
   At 18:13 PDT the idle local job was temporarily disabled for source-repair
-  maintenance, preventing scheduled starts during edits. Restore the reviewed
-  two-hour job after validating a stable source; never leave this deferment
-  implicit.
+  maintenance, preventing scheduled starts during edits. It was re-enabled at
+  18:20 PDT for a clean-source installed verification; the loaded two-hour job
+  is enabled again, with no changed power setting or limit.
   The reviewed repair accepts raw-only collection only with fresh exact
   research/source/clock/export evidence and the collector's exact final stdout
   summary; a post-receipt rotation crash remains rejected. Worker receipts keep
@@ -58,8 +58,16 @@ operational claim; all production observations below are dated snapshots.
   combined gate passed 132 tests and 74 subtests; independent provenance/guard
   validation passed 63 tests and 74 subtests with stable source hashes. The
   collector, model fingerprint, training floor and all resource/request limits
-  are unchanged. Installed-run verification and required merge gates follow
-  this focused validation.
+  are unchanged. The actual installed job completed at 18:22:08 PDT on clean
+  candidate `707ad9cf2`: all four audits succeeded, eight free-provider requests
+  produced twelve new distributions, and the store reached 105 versions and
+  840 members across fifteen stations. The receipt used 108.714 wall seconds,
+  52.24 observed CPU seconds and 370.5 MiB maximum sampled group RSS under
+  300/120-second limits. All five output/lineage hashes and the paired collector
+  export matched; launchd reported exit zero. Recurring AWS exports remain off
+  and live allocation remains $0. This run establishes installed operation,
+  not day-ahead qualification, profitability or new-city onboarding. Required
+  exact-candidate CI remains the merge gate; no AWS deployment is included.
   Fresh public inspection at 18:11 PDT matched all five runtime hashes against
   stable snapshot `fb57f3475d2b9e3fd79051e0`; active policy remains V6, both live
   flags are false and the hybrid artifact still matches its reviewed October 5,
