@@ -2,6 +2,7 @@
 import importlib.util
 import fcntl
 import io
+import errno
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,100 @@ class ExportTests(unittest.TestCase):
 
 
 class GuardTests(unittest.TestCase):
+    def test_pacing_permission_race_reaps_exited_child_and_cleans_group(self):
+        guard = load('guards')
+        process = Mock(pid=999, returncode=0)
+        polls = iter([None])
+        process.poll.side_effect = lambda: next(polls, 0)
+        missing = ProcessLookupError(errno.ESRCH, 'No such process')
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(guard, 'host_snapshot', return_value={}), \
+             patch.object(guard.subprocess, 'Popen', return_value=process), \
+             patch.object(guard, 'process_group_sample', return_value=[(999, 1, .8)]), \
+             patch.object(guard.os, 'killpg', side_effect=[PermissionError(errno.EPERM, 'Operation not permitted'), missing, missing]) as kill:
+            guard.Budget(folder, guard.policy({'limits': {'cpu_seconds': 2}})).run(['unused'], stdout=subprocess.DEVNULL)
+        self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGSTOP, signal.SIGKILL, signal.SIGKILL])
+        process.wait.assert_called_once_with(timeout=5)
+
+    def test_cleanup_permission_race_reaps_child_then_kills_remaining_descendants(self):
+        guard = load('guards')
+        process = Mock(pid=999, returncode=0)
+        process.poll.return_value = 0
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(guard, 'host_snapshot', return_value={}), \
+             patch.object(guard.subprocess, 'Popen', return_value=process), \
+             patch.object(guard.os, 'killpg', side_effect=[PermissionError(errno.EPERM, 'Operation not permitted'), None]) as kill:
+            guard.Budget(folder, guard.policy({})).run(['unused'], stdout=subprocess.DEVNULL)
+        self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGKILL, signal.SIGKILL])
+        self.assertGreaterEqual(process.poll.call_count, 2)
+        process.wait.assert_called_once_with(timeout=5)
+
+    def test_permission_error_for_live_child_is_not_suppressed_and_cleanup_preserves_primary(self):
+        guard = load('guards')
+        for cleanup_fails in (False, True):
+            with self.subTest(cleanup_fails=cleanup_fails), tempfile.TemporaryDirectory() as folder:
+                process = Mock(pid=999, returncode=None)
+                process.poll.return_value = None
+                primary = PermissionError(errno.EPERM, 'pacing denied for live child')
+                cleanup = PermissionError(errno.EPERM, 'cleanup denied for live child')
+                with patch.object(guard, 'host_snapshot', return_value={}), \
+                     patch.object(guard.subprocess, 'Popen', return_value=process), \
+                     patch.object(guard, 'process_group_sample', return_value=[(999, 1, .8)]), \
+                     patch.object(guard.os, 'killpg', side_effect=[primary, cleanup if cleanup_fails else None]), \
+                     self.assertRaises(RuntimeError if cleanup_fails else PermissionError) as raised:
+                    guard.Budget(folder, guard.policy({'limits': {'cpu_seconds': 2}})).run(['unused'], stdout=subprocess.DEVNULL)
+                process.wait.assert_called_once_with(timeout=5)
+                if cleanup_fails:
+                    self.assertIs(raised.exception.__cause__, primary)
+                    self.assertIs(raised.exception.cleanup_error, cleanup)
+                else:
+                    self.assertIs(raised.exception, primary)
+
+    def test_cleanup_failure_is_fatal_after_collector_exit_or_resource_defer(self):
+        guard = load('guards')
+        for mode in ('collector_exit', 'resource_defer'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as folder:
+                process = Mock(pid=999, returncode=1 if mode == 'collector_exit' else None)
+                process.poll.return_value = 1 if mode == 'collector_exit' else None
+                denied = PermissionError(errno.EPERM, 'cleanup denied')
+                with patch.object(guard, 'host_snapshot', return_value={}), \
+                     patch.object(guard.subprocess, 'Popen', return_value=process), \
+                     patch.object(guard, 'process_group_sample', return_value=[(999, 3*1024**3, 0)]), \
+                     patch.object(guard.os, 'killpg', side_effect=denied), \
+                     self.assertRaises(RuntimeError) as raised:
+                    guard.Budget(folder, guard.policy({})).run(['collector'], stdout=subprocess.DEVNULL)
+                self.assertNotIsInstance(raised.exception, guard.Deferred)
+                self.assertNotIsInstance(raised.exception, subprocess.CalledProcessError)
+                self.assertIsInstance(raised.exception.__cause__,
+                    subprocess.CalledProcessError if mode == 'collector_exit' else guard.Deferred)
+                self.assertIs(raised.exception.cleanup_error, denied)
+                process.wait.assert_called_once_with(timeout=5)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'Darwin exited-unreaped group returns EPERM')
+    def test_native_exited_unreaped_child_signal_race_completes_under_budget(self):
+        guard = load('guards')
+        process_class = guard.subprocess.Popen
+        child = None
+        def spawn(*args, **kwargs):
+            nonlocal child
+            child = process_class(*args, **kwargs)
+            return child
+        def race(group):
+            time.sleep(.1)
+            return [(group, 1, .8)]
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(guard, 'host_snapshot', return_value={}), \
+             patch.object(guard.subprocess, 'Popen', side_effect=spawn), \
+             patch.object(guard, 'process_group_sample', side_effect=race):
+            try:
+                guard.Budget(folder, guard.policy({'limits': {'wall_seconds': 3, 'cpu_seconds': 2}})).run(
+                    [sys.executable, '-c', 'import time;time.sleep(.04)'], stdout=subprocess.DEVNULL)
+                self.assertEqual(child.returncode, 0)
+            finally:
+                if child is not None and child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=3)
+
     def test_actual_supervisor_termination_cleans_up_separate_child_session(self):
         guard_dir = Path(__file__).resolve().parents[2] / 'scripts/local_compute'
         for number in (signal.SIGTERM, signal.SIGHUP):
@@ -168,6 +263,123 @@ class GuardTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def gap_fixture(self, worker, state, *, mutate=None, collector_exit=1, audit_failure=False,
+                    stdout_kind='valid', cleanup_failure=False, wrong_command=False):
+        for kind in ('paper', 'weather'):
+            (state / f'{kind}-export.json').write_text('{}')
+        old = {'old': 'verified', 'input_directory': str(state)}
+        (state / 'latest-success.json').write_text(json.dumps(old))
+        identity = {'source_commit': 'a' * 40, 'source_dirty': False, 'source_files_sha256': {}}
+        calls = []
+        def completed(command, **kwargs):
+            calls.append(Path(command[1]).name)
+            if command[1].endswith('shadow_collect.py'):
+                shadow = Path(command[command.index('--state-dir') + 1]);shadow.mkdir(exist_ok=True)
+                weather = shadow / 'weather-export.json';weather.write_text('{"raw_only":true}')
+                receipt = {'schema_version': 1, 'status': 'no_issued_distribution',
+                    'research_identity': 'local-shadow-v7-v1', 'execution_location': 'local_mac',
+                    'source_commit': identity['source_commit'], 'source_dirty': False,
+                    'started_at': datetime.now(timezone.utc).isoformat(),
+                    'finished_at': datetime.now(timezone.utc).isoformat(),
+                    'new_issued_vintages': 0, 'new_snapshot_ids': [],
+                    'http_requests': 8,
+                    'live_orders_enabled': False, 'promotion_eligible': False,
+                    'weather_export_sha256': worker.file_hash(weather)}
+                if mutate: mutate(receipt, weather)
+                (shadow / 'latest-receipt.json').write_text(json.dumps(receipt))
+                final = {key: receipt[key] for key in ('status', 'research_identity',
+                    'new_issued_vintages', 'http_requests', 'live_orders_enabled', 'promotion_eligible')}
+                if stdout_kind == 'mismatch': final['http_requests'] = 7
+                if stdout_kind == 'valid' or stdout_kind == 'mismatch':
+                    kwargs['stdout'].write(json.dumps(final) + '\n')
+                if stdout_kind == 'post_receipt_crash':
+                    kwargs['stdout'].write('Traceback (most recent call last):\nPermissionError: rotation write failed\n')
+                kwargs['stdout'].flush()
+                if cleanup_failure:
+                    guard = load('guards')
+                    primary = subprocess.CalledProcessError(collector_exit, command)
+                    raise guard.GroupCleanupError(PermissionError(errno.EPERM, 'cleanup denied'), primary) from primary
+                raise subprocess.CalledProcessError(collector_exit, ['/bin/ps'] if wrong_command else command)
+            if audit_failure:
+                raise subprocess.CalledProcessError(1, command)
+            Path(command[command.index('--output') + 1]).write_text('{}')
+            if '--lineage-output' in command:
+                Path(command[command.index('--lineage-output') + 1]).write_bytes(b'lineage')
+        config = {'state_dir': str(state), 'offline_export_dir': str(state),
+                  'local_prospective_collection': True, 'shadow_cities': ['sfo']}
+        return config, identity, completed, calls, old
+
+    def test_fresh_valid_raw_only_batch_continues_all_four_audits_and_keeps_gap_explicit(self):
+        worker = load('worker')
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            config, identity, completed, calls, _ = self.gap_fixture(worker, state)
+            with patch.object(worker, 'host_snapshot', return_value={}), patch.object(worker.os, 'nice'), \
+                 patch.object(worker, 'source_identity', return_value=identity), \
+                 patch.object(worker.Budget, 'run', side_effect=completed):
+                self.assertEqual(worker.run(config), 0)
+            self.assertEqual(len(calls), 5)
+            receipt = json.loads((state / 'latest-success.json').read_text())
+            self.assertEqual(receipt['status'], 'complete')
+            self.assertEqual(receipt['local_shadow_status'], 'no_issued_distribution')
+            self.assertEqual(receipt['local_shadow_new_issued_vintages'], 0)
+            self.assertEqual(len(receipt['artifacts']), 5)
+            self.assertFalse(receipt['live_orders_enabled'])
+
+    def test_raw_only_exception_requires_fresh_bound_exact_contract(self):
+        worker = load('worker')
+        changes = [(key, value) for key, value in (
+            ('schema_version', True), ('status', 'complete'), ('research_identity', 'aws'),
+            ('execution_location', 'aws'), ('source_commit', 'b' * 40), ('source_dirty', True),
+            ('source_dirty', 0), ('new_issued_vintages', 1), ('new_issued_vintages', False),
+            ('new_snapshot_ids', ['unverified']), ('new_snapshot_ids', None),
+            ('live_orders_enabled', True), ('promotion_eligible', True),
+            ('started_at', '2020-01-01T00:00:00+00:00'),
+            ('finished_at', '2099-01-01T00:00:00+00:00'),
+            ('finished_at', '2020-01-01T00:00:00'), ('weather_export_sha256', '0' * 64))]
+        for key, value in changes:
+            with self.subTest(key=key, value=value), tempfile.TemporaryDirectory() as folder:
+                state = Path(folder)
+                config, identity, completed, calls, old = self.gap_fixture(worker, state,
+                    mutate=lambda receipt, weather: receipt.update({key: value}))
+                with patch.object(worker, 'host_snapshot', return_value={}), patch.object(worker.os, 'nice'), \
+                     patch.object(worker, 'source_identity', return_value=identity), \
+                     patch.object(worker.Budget, 'run', side_effect=completed):
+                    self.assertEqual(worker.run(config), 1)
+                self.assertEqual(calls, ['shadow_collect.py'])
+                self.assertEqual(json.loads((state / 'latest-success.json').read_text()), old)
+        for collector_exit, audit_failure in ((2, False), (1, True)):
+            with self.subTest(collector_exit=collector_exit, audit_failure=audit_failure), tempfile.TemporaryDirectory() as folder:
+                state = Path(folder)
+                config, identity, completed, calls, old = self.gap_fixture(worker, state,
+                    collector_exit=collector_exit, audit_failure=audit_failure)
+                with patch.object(worker, 'host_snapshot', return_value={}), patch.object(worker.os, 'nice'), \
+                     patch.object(worker, 'source_identity', return_value=identity), \
+                     patch.object(worker.Budget, 'run', side_effect=completed):
+                    self.assertEqual(worker.run(config), 1)
+                self.assertEqual(json.loads((state / 'latest-success.json').read_text()), old)
+                self.assertEqual(len(calls), 2 if audit_failure else 1)
+
+    def test_raw_only_receipt_cannot_borrow_a_crashed_collector_or_failed_cleanup(self):
+        worker = load('worker')
+        variants = [{'stdout_kind': 'missing'}, {'stdout_kind': 'post_receipt_crash'},
+                    {'stdout_kind': 'mismatch'}, {'cleanup_failure': True}, {'wrong_command': True}]
+        for variant in variants:
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as folder:
+                state = Path(folder)
+                config, identity, completed, calls, old = self.gap_fixture(worker, state, **variant)
+                with patch.object(worker, 'host_snapshot', return_value={}), patch.object(worker.os, 'nice'), \
+                     patch.object(worker, 'source_identity', return_value=identity), \
+                     patch.object(worker.Budget, 'run', side_effect=completed):
+                    self.assertEqual(worker.run(config), 1)
+                self.assertEqual(calls, ['shadow_collect.py'])
+                self.assertEqual(json.loads((state / 'latest-success.json').read_text()), old)
+                failure = json.loads((state / 'status.json').read_text())
+                self.assertEqual(failure['status'], 'failed')
+                error = next((state / 'runs').glob('*/error.txt'))
+                self.assertIn('Traceback', error.read_text())
+                self.assertEqual(error.stat().st_mode & 0o777, 0o600)
+
     def test_installed_mode_rejects_later_weakened_config_before_state_or_work(self):
         worker = load('worker')
         for limits in ({'wall_seconds': 1200, 'cpu_seconds': 600},

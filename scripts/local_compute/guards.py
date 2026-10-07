@@ -26,6 +26,19 @@ class Deferred(RuntimeError):
     """A budget or host guard deferred work; successful evidence is preserved."""
 
 
+class GroupCleanupError(RuntimeError):
+    """Owned group cleanup failed; never a benign defer or collector exit."""
+    def __init__(self, cleanup_error, primary_error=None):
+        self.cleanup_error = cleanup_error
+        self.primary_error = primary_error
+        details = type(cleanup_error).__name__
+        if getattr(cleanup_error, 'errno', None) is not None:
+            details += ' errno=' + str(cleanup_error.errno)
+        if primary_error is not None:
+            details += '; original=' + type(primary_error).__name__
+        super().__init__('process-group cleanup failed: ' + details)
+
+
 def policy(config):
     """Only tighter limits may be selected without changing reviewed source."""
     result = dict(DEFAULT_LIMITS)
@@ -117,6 +130,24 @@ def process_group_sample(group):
     return rows
 
 
+def signal_group(process, number):
+    """Recover Darwin's exited-unreaped race only after reaping our child."""
+    try:
+        os.killpg(process.pid, number)
+    except (ProcessLookupError, PermissionError):
+        if process.poll() is None:
+            raise  # A live child never receives a blanket permission exemption.
+        if number != signal.SIGKILL:
+            return False
+        # Reaping the group leader can remove a zombie-only group. Still retry
+        # cleanup: live descendants must be killed even after the leader exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return True
+
+
 class Budget:
     def __init__(self, state, limits):
         self.state = state
@@ -178,22 +209,36 @@ class Budget:
                 # logical core, including descendants even if libraries spawn.
                 should_pause = cpu > (now - started) * self.limits['cpu_fraction'] + 0.25
                 if should_pause != paused:
-                    os.killpg(process.pid, signal.SIGSTOP if should_pause else signal.SIGCONT)
+                    if not signal_group(process, signal.SIGSTOP if should_pause else signal.SIGCONT):
+                        break
                     paused = should_pause
                 time.sleep(0.25)
             if process.returncode:
                 raise subprocess.CalledProcessError(process.returncode, command)
         finally:
             self.cpu_seconds += sum(seen.values())
+            primary_error = sys.exc_info()[1]
             # Kill the entire group on timeout, warning, cancellation or a
             # surviving descendant; never leave a paused worker behind.
             try:
                 if process is not None:
+                    cleanup_error = None
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait(timeout=5)
+                        signal_group(process, signal.SIGKILL)
+                    except BaseException as error:
+                        cleanup_error = error
+                    try:
+                        process.wait(timeout=5)
+                    except BaseException as error:
+                        if cleanup_error is None:
+                            cleanup_error = error
+                        else:
+                            cleanup_error.add_note('child reaping also failed: ' + type(error).__name__)
+                    if cleanup_error is not None:
+                        # Notes alone would retain a benign exit/defer type and
+                        # let callers continue while group cleanup was unproved.
+                        # This distinct fatal error keeps the original cause.
+                        raise GroupCleanupError(cleanup_error, primary_error) from (primary_error or cleanup_error)
             finally:
                 for number, previous in previous_handlers.items():
                     signal.signal(number, previous)

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -107,6 +108,52 @@ def source_identity():
     }
 
 
+def raw_only_shadow_receipt(shadow, source, attempted_at, log_path):
+    """Accept only this attempt's source-bound, unissued collection evidence."""
+    path = shadow / 'latest-receipt.json'
+    if path.stat().st_size > 1024**2 or log_path.stat().st_size > 16 * 1024:
+        raise ValueError('raw-only completion evidence exceeds its bounded receipt/log size')
+    raw = path.read_bytes()
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or type(value.get('schema_version')) is not int
+            or value.get('schema_version') != 1 or value.get('status') != 'no_issued_distribution'
+            or value.get('research_identity') != 'local-shadow-v7-v1'
+            or value.get('execution_location') != 'local_mac'
+            or value.get('live_orders_enabled') is not False or value.get('promotion_eligible') is not False
+            or type(value.get('new_issued_vintages')) is not int or value.get('new_issued_vintages') != 0
+            or type(value.get('new_snapshot_ids')) is not list or value.get('new_snapshot_ids')
+            or type(value.get('http_requests')) is not int or not 0 <= value.get('http_requests') <= 8
+            or value.get('source_commit') != source['source_commit']
+            or type(value.get('source_dirty')) is not bool or value.get('source_dirty') != source['source_dirty']):
+        raise ValueError('raw-only collector exception lacks the exact research receipt contract')
+    clocks = []
+    for key in ('started_at', 'finished_at'):
+        token = value.get(key)
+        if not isinstance(token, str):
+            raise ValueError('raw-only collection requires fresh explicit clocks')
+        stamp = datetime.fromisoformat(token.replace('Z', '+00:00'))
+        if stamp.tzinfo is None:
+            raise ValueError('raw-only collection clocks require timezones')
+        clocks.append(stamp.astimezone(timezone.utc))
+    if not attempted_at <= clocks[0] <= clocks[1] <= datetime.now(timezone.utc):
+        raise ValueError('raw-only receipt is stale, reversed or outside this collection attempt')
+    if value.get('weather_export_sha256') != file_hash(shadow / 'weather-export.json'):
+        raise ValueError('raw-only receipt does not bind the current weather export')
+    # collect() writes its receipt before its final rotation write. main() emits
+    # this single exact summary only after collect returns successfully, so a
+    # post-receipt crash cannot masquerade as raw-only completion.
+    lines = log_path.read_text().splitlines()
+    keys = ('status', 'research_identity', 'new_issued_vintages', 'http_requests',
+            'live_orders_enabled', 'promotion_eligible')
+    if len(lines) != 1:
+        raise ValueError('raw-only child lacks an unambiguous final completion summary')
+    printed = json.loads(lines[0])
+    if (not isinstance(printed, dict) or set(printed) != set(keys)
+            or any(type(printed[key]) is not type(value[key]) or printed[key] != value[key] for key in keys)):
+        raise ValueError('raw-only child completion summary does not match its receipt')
+    return value, hashlib.sha256(raw).hexdigest()
+
+
 def run(config, *, checks_only=False, scheduled=False):
     # Revalidate each installed invocation. Editing private configuration after
     # installation cannot weaken the more frequent background run's ceilings.
@@ -153,15 +200,32 @@ def run(config, *, checks_only=False, scheduled=False):
                     folder = state / 'runs' / clock
                     folder.mkdir(parents=True, mode=0o700)
                 shadow = state / 'prospective'
+                command = [sys.executable, str(REPO / 'scripts/local_compute/shadow_collect.py'),
+                           '--seed-export', str(inputs['weather']), '--state-dir', str(shadow),
+                           '--cities', ','.join(cities), '--maximum-cities', '4',
+                           '--maximum-http-requests', '8'] + \
+                          (['--rotate-registry'] if config.get('shadow_rotate_registry') is True else [])
+                attempted_at = datetime.now(timezone.utc)
+                shadow_value = None
                 with (folder / 'shadow-collection.log').open('w') as log:
-                    budget.run([sys.executable, str(REPO / 'scripts/local_compute/shadow_collect.py'),
-                                '--seed-export', str(inputs['weather']), '--state-dir', str(shadow),
-                                '--cities', ','.join(cities), '--maximum-cities', '4',
-                                '--maximum-http-requests', '8'] +
-                               (['--rotate-registry'] if config.get('shadow_rotate_registry') is True else []),
-                               stdout=log, stderr=subprocess.STDOUT)
+                    try:
+                        budget.run(command, stdout=log, stderr=subprocess.STDOUT)
+                    except subprocess.CalledProcessError as error:
+                        if error.returncode != 1 or error.cmd != command:
+                            raise
+                        # The unchanged collector uses exit 1 for a completed
+                        # raw-only batch. Crashes, stale output and other child
+                        # failures cannot borrow that exception.
+                        log.flush()
+                        shadow_value, shadow_hash = raw_only_shadow_receipt(
+                            shadow, original_source, attempted_at, folder / 'shadow-collection.log')
                 shadow_receipt = shadow / 'latest-receipt.json'
-                receipt['local_shadow_receipt_sha256'] = file_hash(shadow_receipt)
+                if shadow_value is None:
+                    raw = shadow_receipt.read_bytes()
+                    shadow_value, shadow_hash = json.loads(raw), hashlib.sha256(raw).hexdigest()
+                receipt['local_shadow_receipt_sha256'] = shadow_hash
+                receipt['local_shadow_status'] = shadow_value.get('status')
+                receipt['local_shadow_new_issued_vintages'] = shadow_value.get('new_issued_vintages')
                 receipt['local_shadow_scope'] = 'separate Mac weather evidence; no AWS ledger or trading change'
                 inputs['weather'] = shadow / 'weather-export.json'
                 receipt['evidence_mode'] = 'retained_aws_paper_and_local_prospective_weather'
@@ -207,7 +271,9 @@ def run(config, *, checks_only=False, scheduled=False):
             if isinstance(error, Deferred):
                 receipt['reason'] = str(error)
             if folder is not None:
-                (folder / 'error.txt').write_text(str(error) + '\n')
+                failure = folder / 'error.txt'
+                failure.write_text(traceback.format_exc())
+                os.chmod(failure, 0o600)
                 write_json(folder / 'receipt.json', receipt)
             write_json(state / 'status.json', receipt)
             return 0 if status == 'deferred' else 1
