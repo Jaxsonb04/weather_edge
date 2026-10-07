@@ -175,6 +175,33 @@ account identifiers are excluded. A failed pair preserves the prior artifact.
 Future private collections do not automatically change the webpage's dated
 snapshot or its AWS runtime identity.
 
+The October 6 scheduled-run audit found that the five cities absent from the
+retained AWS seed have no matched NWP training dates. The sixty-date training
+minimum still applies. Their valid free-provider responses are preserved as raw
+HTTP evidence, but this collector does not yet convert them into training
+archive rows. They cannot become trained simply by waiting for more scheduled
+runs. A future onboarding path must preserve source, station, forecast lead,
+retrieval clock and final truth provenance without inventing historical
+availability or lowering the training minimum. Raw-only collection is distinct
+from issued distributions, model promotion and trading evidence.
+
+The worker accepts the existing collector's raw-only exit only when the current
+attempt has a fresh exact research receipt, an unchanged source identity, a
+matching weather-export hash and the collector's exact final completion summary.
+A receipt alone is insufficient: collection can fail while writing the rotation
+after that receipt has been saved. The worker records both the raw-only status
+and zero new distributions while continuing the four offline audits. Other
+child failures and stale, malformed or mismatched completion evidence preserve
+the prior successful analysis and remain failures.
+
+On macOS, group signaling after a child exits but before it is reaped can report
+permission denied. The supervisor reaps its known child before recovering only
+that exit race, then retries group cleanup to terminate surviving descendants.
+Permission failures for a live child remain errors. Any unproved cleanup is a
+distinct fatal failure, even if collection otherwise finished or a resource
+guard deferred work; it cannot borrow raw-only success or benign deferral.
+Private failure logs preserve traceback and cause with owner-only permissions.
+
 The October 6 refinement requires the two-hour schedule and tighter 300/120-second
 budgets above. The dated October 5 runs retain their original limits and identity;
 they are not relabeled as runs of the refined schedule. At October 6, 00:14 PDT,

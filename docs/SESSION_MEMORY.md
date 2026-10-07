@@ -1,12 +1,12 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-06 (hybrid source merged, two-hour Mac worker enabled and static app verified; backend cutover deferred)
+Last updated: 2026-10-06 (scheduled-run audit: raw-only city onboarding gaps and a reproduced macOS process-exit race; backend cutover deferred)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
 Last backend safety inspection: 2026-10-06 00:07 PDT (source, live flags, units, archive policy and backup capacity)
 
-Last public artifact inspection: 2026-10-06 00:25 PDT (independent stable manifest and all five JSON hashes)
+Last public artifact inspection: 2026-10-06 18:11 PDT (independent stable manifest and all five JSON hashes)
 
 Last public app verification: 2026-10-06 00:26 PDT (guarded static release, exact Pages success, app/runtime hashes and desktop/mobile canary)
 
@@ -14,6 +14,58 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Scheduled-run audit (October 6, 18:11 PDT):** retained private worker history
+  contained seven complete receipts, one resource-load deferral and four failed
+  attempts; this includes earlier manual executions and is not seven fresh
+  scheduled four-job runs. The last complete analysis finished at 12:19 PDT,
+  using 115.396 wall seconds, 54.46 observed CPU seconds and 369.8 MiB sampled
+  peak RSS under the unchanged 300/120-second ceilings. The current separate Mac
+  store holds 93 immutable distributions, 744 members and 93 lineage rows across
+  fifteen stations and four target dates. The last successful report evaluated
+  84 versions. Three scored identity records represent only two distinct
+  station/lead/target outcomes over one completed weather date. All three are
+  near-end-of-day lead-zero diagnostics, not day-ahead or premarket outcomes;
+  repeated SFO model identities are not independent observations. These do not
+  establish calibration or after-fee profit. Historical challenger scores remain
+  unchanged and negative; no model or bankroll is promoted.
+  Two raw-only batches aborted audits because the collector intentionally
+  exits one when it issues no distribution. The final batch's eight requests
+  returned valid forecast/truth responses: this was not a provider outage.
+  Las Vegas, Minneapolis, San Antonio, New Orleans and Washington DC have zero
+  matched seeded NWP training dates against the unchanged sixty-date minimum.
+  The collector retains their live responses but does not append them to the
+  training archive, so waiting alone cannot onboard these five cities. An
+  explicit source-preserving training/onboarding path remains necessary.
+  Two other attempts reported permission errors after output creation. A native
+  harmless-child reproduction confirmed macOS process-group signaling can
+  return permission denied after a child exits but before it is reaped; the
+  original receipts lack stack frames, so the exact signal in each past attempt
+  is unknown. Preserve real signaling failures for a live child and descendant
+  cleanup rather than broadly ignoring permission errors.
+  At 18:13 PDT the idle local job was temporarily disabled for source-repair
+  maintenance, preventing scheduled starts during edits. Restore the reviewed
+  two-hour job after validating a stable source; never leave this deferment
+  implicit.
+  The reviewed repair accepts raw-only collection only with fresh exact
+  research/source/clock/export evidence and the collector's exact final stdout
+  summary; a post-receipt rotation crash remains rejected. Worker receipts keep
+  zero issuance explicit while all four offline audits can proceed. The
+  supervisor recovers only after reaping its exited child, retries descendant
+  cleanup and raises a fatal cleanup error rather than hiding it behind a
+  collector exit or resource deferral. Owner-only error files now retain
+  traceback and cause. Native operations validation passed 35 tests; root's
+  combined gate passed 132 tests and 74 subtests; independent provenance/guard
+  validation passed 63 tests and 74 subtests with stable source hashes. The
+  collector, model fingerprint, training floor and all resource/request limits
+  are unchanged. Installed-run verification and required merge gates follow
+  this focused validation.
+  Fresh public inspection at 18:11 PDT matched all five runtime hashes against
+  stable snapshot `fb57f3475d2b9e3fd79051e0`; active policy remains V6, both live
+  flags are false and the hybrid artifact still matches its reviewed October 5,
+  23:50 batch. This audit made no AWS mutation, provider request, power-setting
+  change or live activation. Full V7 activation, verified recovery, new-city
+  training and prospective net-fill evidence remain unfinished.
 
 - **Hybrid implementation and authorization (October 5, 23:23 PDT):** in this
   chat the owner authorized designing and implementing bounded Mac/AWS
