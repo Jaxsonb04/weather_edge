@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-10-08T21:22:18+00:00",
+  "generated_at": "2026-10-08T21:32:18+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-10-08T21:22:22+00:00",
+  "market_data_at": "2026-10-08T21:32:22+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -481,6 +481,40 @@
         {
           "action": "BUY_YES",
           "approved": false,
+          "ask": 0.99,
+          "bid": 0.97,
+          "decision": "NO_TRADE",
+          "edge": -0.1595,
+          "edge_lcb": -0.4896,
+          "ensemble_probability": 0.6452,
+          "expected_profit": -0.0,
+          "intraday_probability": 0.6402,
+          "label": "76\u00b0 or below",
+          "market_probability": 0.9561,
+          "model_probability": 0.626,
+          "probability": 0.8405,
+          "probability_lcb": 0.5104,
+          "reasons": [
+            "forecast source spread 20.5F exceeds max 10.0F; point blend is unreliable",
+            "YES price 0.99 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "model/market gap 0.330 exceeds max 0.200",
+            "all-in cost 1.00 meets or exceeds the $1 contract payout",
+            "edge -0.159 below min 0.012",
+            "lower-bound edge -0.490 below min 0.000",
+            "YES lower-bound edge -0.490 is not positive"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": 0.4153,
+          "residual_probability": 0.5702,
+          "side": "YES",
+          "spread": 0.02,
+          "ticker": "KXHIGHTSFO-26OCT08-T77",
+          "trade_quality_score": 32.7
+        },
+        {
+          "action": "BUY_YES",
+          "approved": false,
           "ask": 0.01,
           "bid": 0.0,
           "decision": "NO_TRADE",
@@ -552,40 +586,6 @@
           "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26OCT08-T84",
-          "trade_quality_score": 29.0
-        },
-        {
-          "action": "BUY_YES",
-          "approved": false,
-          "ask": 0.99,
-          "bid": 0.97,
-          "decision": "NO_TRADE",
-          "edge": -0.1595,
-          "edge_lcb": -0.4896,
-          "ensemble_probability": 0.6452,
-          "expected_profit": -0.0,
-          "intraday_probability": 0.6402,
-          "label": "76\u00b0 or below",
-          "market_probability": 0.9561,
-          "model_probability": 0.626,
-          "probability": 0.8405,
-          "probability_lcb": 0.5104,
-          "reasons": [
-            "forecast source spread 20.5F exceeds max 10.0F; point blend is unreliable",
-            "YES price 0.99 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "model/market gap 0.330 exceeds max 0.200",
-            "all-in cost 1.00 meets or exceeds the $1 contract payout",
-            "edge -0.159 below min 0.012",
-            "lower-bound edge -0.490 below min 0.000",
-            "YES lower-bound edge -0.490 is not positive"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": 0.4153,
-          "residual_probability": 0.5702,
-          "side": "YES",
-          "spread": 0.02,
-          "ticker": "KXHIGHTSFO-26OCT08-T77",
           "trade_quality_score": 29.0
         },
         {
@@ -765,7 +765,7 @@
         "p75_f": 76.0773,
         "p90_f": 76.3928
       },
-      "market_data_at": "2026-10-08T21:22:20+00:00",
+      "market_data_at": "2026-10-08T21:32:20+00:00",
       "target_date": "2026-10-08",
       "target_status": "settlement_day",
       "warnings": []
@@ -1283,7 +1283,7 @@
         "p75_f": 69.4737,
         "p90_f": 71.9
       },
-      "market_data_at": "2026-10-08T21:22:22+00:00",
+      "market_data_at": "2026-10-08T21:32:22+00:00",
       "target_date": "2026-10-09",
       "target_status": "upcoming",
       "warnings": []
