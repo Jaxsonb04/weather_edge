@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone
@@ -72,6 +73,111 @@ class ExportTests(unittest.TestCase):
 
 
 class GuardTests(unittest.TestCase):
+    def test_private_signal_diagnostics_preserve_primary_and_cleanup_tracebacks(self):
+        guard = load('guards')
+        process = Mock(pid=999, returncode=None)
+        process.poll.return_value = None
+        def reaped_after_failed_signal(timeout):
+            process.returncode = 0
+            return 0
+        process.wait.side_effect = reaped_after_failed_signal
+        errors = []
+        def denied_signal(group, number):
+            error = PermissionError(errno.EPERM, 'PRIVATE_SIGNAL_FAILURE_' + str(number))
+            errors.append(error)
+            raise error
+        snapshot = {'status': 'complete', 'members': [
+            {'pid': 999, 'ppid': 998, 'pgid': 999, 'state': 'R', 'uid': 501}], 'truncated': False}
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(guard, 'host_snapshot', return_value={}), \
+             patch.object(guard.subprocess, 'Popen', return_value=process), \
+             patch.object(guard, 'process_group_sample', return_value=[(999, 1, .8)]), \
+             patch.object(guard, '_signal_process_snapshot', return_value=snapshot, create=True), \
+             patch.object(guard.os, 'killpg', side_effect=denied_signal), \
+             self.assertRaises(guard.GroupCleanupError) as raised:
+            guard.Budget(folder, guard.policy({'limits': {'cpu_seconds': 2}})).run(['unused'], stdout=None)
+        error = raised.exception
+        self.assertIs(error.__cause__, errors[0])
+        self.assertIs(error.cleanup_error, errors[1])
+        rendered = ''.join(traceback.format_exception(error))
+        for number in (signal.SIGSTOP, signal.SIGKILL):
+            self.assertIn('PRIVATE_SIGNAL_FAILURE_' + str(number), rendered)
+        for expected in ('"phase": "pacing_stop"', '"phase": "cleanup_kill"',
+                         '"signal": "SIGSTOP"', '"signal": "SIGKILL"',
+                         '"child_reaped": false', '"poll_returncode": null', '"state": "R"',
+                         '"child_reaped_after_cleanup": true', '"child_returncode_after_cleanup": 0',
+                         '"group_cleanup_verified": false'):
+            self.assertIn(expected, rendered)
+        self.assertNotIn('PRIVATE_SIGNAL_FAILURE', str(error))
+        self.assertNotIn('"members"', str(error))
+        self.assertEqual(process.returncode, 0)
+        process.wait.assert_called_once_with(timeout=5)
+
+    def test_private_cleanup_diagnostics_preserve_separate_reaping_failure(self):
+        guard = load('guards')
+        process = Mock(pid=999, returncode=1)
+        process.poll.return_value = 1
+        def denied_cleanup(group, number):
+            raise PermissionError(errno.EPERM, 'PRIVATE_CLEANUP_TRACE_SENTINEL')
+        def denied_reaping(timeout):
+            raise subprocess.TimeoutExpired('PRIVATE_REAP_TRACE_SENTINEL', timeout)
+        process.wait.side_effect = denied_reaping
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(guard, 'host_snapshot', return_value={}), \
+             patch.object(guard.subprocess, 'Popen', return_value=process), \
+             patch.object(guard, '_signal_process_snapshot', return_value={'status': 'complete', 'members': []}, create=True), \
+             patch.object(guard.os, 'killpg', side_effect=denied_cleanup), \
+             self.assertRaises(guard.GroupCleanupError) as raised:
+            guard.Budget(folder, guard.policy({})).run(['collector'], stdout=None)
+        self.assertIsInstance(raised.exception.__cause__, subprocess.CalledProcessError)
+        rendered = ''.join(traceback.format_exception(raised.exception))
+        for expected in ('PRIVATE_CLEANUP_TRACE_SENTINEL', 'PRIVATE_REAP_TRACE_SENTINEL',
+                         'denied_cleanup', 'denied_reaping', '"attempt": 2', '"child_reaped": true'):
+            self.assertIn(expected, rendered)
+        self.assertNotIsInstance(raised.exception, guard.Deferred)
+        self.assertNotIn('PRIVATE_', str(raised.exception))
+
+    def test_failed_private_snapshot_never_replaces_live_signal_failure(self):
+        guard = load('guards')
+        process = Mock(pid=999, returncode=None)
+        process.poll.return_value = None
+        denied = PermissionError(errno.EPERM, 'signal denied')
+        with patch.object(guard, '_signal_process_snapshot', side_effect=TimeoutError('PRIVATE_PS_ERROR'), create=True), \
+             patch.object(guard.os, 'killpg', side_effect=denied), \
+             self.assertRaises(PermissionError) as raised:
+            guard.signal_group(process, signal.SIGCONT, phase='pacing_resume')
+        self.assertIs(raised.exception, denied)
+        rendered = ''.join(traceback.format_exception(raised.exception))
+        self.assertIn('"phase": "pacing_resume"', rendered)
+        self.assertIn('"child_reaped": false', rendered)
+        self.assertIn('"snapshot_error_type": "TimeoutError"', rendered)
+        self.assertNotIn('PRIVATE_PS_ERROR', rendered)
+        process.poll.assert_called_once_with()
+
+    def test_successful_signal_has_no_diagnostic_process_scan(self):
+        guard = load('guards')
+        process = Mock(pid=999, returncode=None)
+        with patch.object(guard.os, 'killpg'), \
+             patch.object(guard, '_signal_process_snapshot', create=True) as scan:
+            self.assertTrue(guard.signal_group(process, signal.SIGSTOP))
+        scan.assert_not_called()
+        process.poll.assert_not_called()
+
+    def test_private_process_snapshot_filters_group_and_bounds_metadata(self):
+        guard = load('guards')
+        lines = ['100 1 100 S 501', '999 998 999 R 501']
+        lines += [f'{1000 + i} 999 999 Z 501' for i in range(64)]
+        completed = subprocess.CompletedProcess([], 0, '\n'.join(lines))
+        with patch.object(guard.subprocess, 'run', return_value=completed) as run:
+            result = guard._signal_process_snapshot(999)
+        self.assertEqual(result['status'], 'complete')
+        self.assertTrue(result['truncated'])
+        self.assertEqual(len(result['members']), 64)
+        self.assertTrue(all(member['pgid'] == 999 for member in result['members']))
+        self.assertEqual(set(result['members'][0]), {'pid', 'ppid', 'pgid', 'state', 'uid'})
+        self.assertEqual(run.call_args.kwargs['timeout'], 1)
+        self.assertEqual(run.call_args.args[0], ['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,uid='])
+
     def test_pacing_permission_race_reaps_exited_child_and_cleans_group(self):
         guard = load('guards')
         process = Mock(pid=999, returncode=0)

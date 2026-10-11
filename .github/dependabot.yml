@@ -18,6 +18,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # These libraries share peer/version contracts. Review each family together
+    # rather than creating isolated updates with incompatible package versions.
+    groups:
+      tiptap:
+        patterns:
+          - "@tiptap/*"
+      heroui:
+        patterns:
+          - "@heroui/*"
 
   - package-ecosystem: github-actions
     directory: "/"

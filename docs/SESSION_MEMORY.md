@@ -1,12 +1,12 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-06 (scheduled-run defects repaired; installed guarded verification passed; new-city onboarding and backend cutover remain unfinished)
+Last updated: 2026-10-11 (repository/PR consistency audit; later Mac signaling failures and larger recovery gap verified)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last backend safety inspection: 2026-10-06 00:07 PDT (source, live flags, units, archive policy and backup capacity)
+Last backend safety inspection: 2026-10-11 11:01 PDT (source, live flags, units, archive policy and backup capacity)
 
-Last public artifact inspection: 2026-10-06 18:11 PDT (independent stable manifest and all five JSON hashes)
+Last public artifact inspection: 2026-10-11 10:58 PDT (independent stable manifest, all five JSON hashes and deployed static assets)
 
 Last public app verification: 2026-10-06 00:26 PDT (guarded static release, exact Pages success, app/runtime hashes and desktop/mobile canary)
 
@@ -14,6 +14,62 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Repository and operational consistency audit (October 11):** the owner
+  authorized cleaning the repository and resolving every open PR before the
+  next research stage. All eight obsolete worktrees were clean ancestors of
+  current main; their ignored trading data was moved into private recovery
+  storage before removal. Twenty-six obsolete local branch names were removed;
+  all five unique branch heads and seven dependency PR heads were preserved in
+  verified private Git bundles. Attribution and meaningful research history
+  remain recoverable. PR dispositions and validation belong in
+  `docs/audits/2026-10-11-repo-consistency.md`.
+  The fresh backend snapshot at 11:01 PDT still has clean `2a6432e3`, exec-v4,
+  Research ROI V6, live execution off and dry-run on, fourteen active application
+  timers, zero failed units and archive-only retention. Its paper database is
+  now 34.55 GiB with 16.71 GiB free: canonical backup is short **18.84 GiB**.
+  All non-paper allocated bytes together are smaller than this gap; ordinary
+  cleanup cannot satisfy it while preserving the journal. There is no spare
+  mounted/block disk. Billing and transfer allowance were not queried again;
+  the October 5 billing figures below remain a dated snapshot. No cloud
+  resource, retention, provider, paid-query or real-money change was made.
+  Public snapshot `5a18dd005895a4dbc33b5b75` at 10:58 PDT passed all five
+  runtime hashes and three static-asset byte comparisons. It reports fifteen
+  deployed cities, V6, both live flags false and stale September 5 analysis.
+  The reviewed hybrid summary still explicitly represents its October 5,
+  23:50 PDT batch; it is not the latest private Mac store. This artifact audit
+  is not a fresh interactive browser canary or a V7 backend deployment.
+  The latest complete Mac analysis (October 10, 15:41 PDT) retained **489**
+  immutable distributions and **3,912** members across fifteen stations. Its
+  151 scored identity records represent **139 unique station/lead/date
+  outcomes over five dates**: 59 lead-zero, 47 day-ahead and 33 lead-two.
+  The latest single-model cohort contains 137 records, including 46 day-ahead.
+  Missing original provider initialization, hour completeness and training
+  availability receipts still prevent promotion; these diagnostics do not
+  establish after-fee profit. The fixed historical ML comparison remains
+  negative and unpromoted. All five cold cities still have zero seeded NWP
+  training rows; waiting alone does not onboard them. Four older final-truth
+  gaps remain explicit rather than imputed.
+  Since the October 6 repair, retained folders contain 42 complete batches,
+  two failures and one deferred batch. Earlier pre-admission deferrals are not
+  fully journaled, so this is not a complete schedule success rate. Every
+  complete batch has all five expected artifact hashes. The latest complete
+  batch used 111.516 wall seconds, 53.84 observed CPU seconds and about 380 MiB
+  sampled RSS on clean `7460b6b4`; zero issuance was explicitly accepted with
+  the raw-only evidence contract. October 9, 13:20 PDT and October 10, 09:36 PDT
+  failed with process-group signaling permission errors and fatal cleanup
+  errors after output creation. Existing traces do not identify the exact
+  signal or OS cause. Lightweight native fixtures reproduce only the already
+  handled exited-and-reapable case; the later failures remain unresolved.
+  Last-success evidence was preserved, and no worker descendants remained at
+  inspection. The October 11, 09:42 PDT attempt correctly deferred for AC
+  power; a separate fresh admission also rejected competing load. The idle
+  local LaunchAgent was temporarily unloaded at 11:06:55 PDT for source
+  maintenance, preserving its plist, enabled preference and two-hour schedule.
+  The 300/120-second limits, half-core pacing, one numerical thread, 2-GiB RSS,
+  native power/thermal/load guards and 8/96 request ceilings remain unchanged.
+  Recurring AWS exports remain off, live allocation remains $0, and new-city
+  onboarding, safe recovery and full V7 activation remain separate next work.
 
 - **Scheduled-run audit (October 6, 18:11 PDT):** retained private worker history
   contained seven complete receipts, one resource-load deferral and four failed

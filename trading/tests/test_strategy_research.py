@@ -3506,6 +3506,118 @@ def test_paper_card_monitor_reads_are_order_scoped(tmp_path, monkeypatch):
     assert all("row_number()" not in statement for statement in monitor_reads)
 
 
+@pytest.mark.parametrize("newer_research_positions", [13, 31])
+def test_profile_monitor_health_survives_public_activity_and_position_caps(
+    tmp_path, newer_research_positions,
+):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    now = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
+    opened = now - timedelta(hours=2)
+    quiet_mark = now - timedelta(minutes=1)
+    target = "2026-10-12"
+
+    quiet_id = store.record_paper_order(target, _approved_decision(), risk_profile="live")
+    assert quiet_id is not None
+    ids = [quiet_id]
+    for index in range(newer_research_positions):
+        ids.append(_seed_profile_order(
+            store, target,
+            replace(_approved_decision(), ticker=f"KXHIGHTSFO-BUSY-{index}"),
+            profile="research-target",
+        ))
+    for index, order_id in enumerate(ids):
+        order = store.open_paper_order(order_id)
+        assert order is not None
+        store.record_monitor_snapshot(
+            order, side="YES", action="HOLD", reason="inside exit bands",
+            market_status="active", live_bid=0.60, exit_fee_per_contract=0.01,
+            net_exit_per_contract=0.59, unrealized_pnl=1.0, unrealized_roi=0.1,
+        )
+        with store.connect() as conn:
+            conn.execute("UPDATE paper_orders SET created_at=? WHERE id=?",
+                         ((opened + timedelta(seconds=index)).isoformat(), order_id))
+            conn.execute("UPDATE paper_monitor_snapshots SET created_at=? WHERE order_id=?",
+                         ((quiet_mark + timedelta(seconds=index)).isoformat(), order_id))
+
+    before = db_path.read_bytes()
+    paper = strategy_paper_card_module._paper_payload(db_path)
+    profile = strategy_profiles_module._profile_paper_payload(paper, "live")
+    alerts = _strategy_alerts(paper=profile, entry_block_reason=None, now=now)
+
+    assert len(paper["recent_monitor_actions"]) <= 12
+    assert len(paper["open_positions"]) <= 30
+    assert not any(row["risk_profile"] == "live" for row in paper["recent_monitor_actions"])
+    assert profile["summary"]["latest_monitor_action_at"] == quiet_mark.isoformat()
+    assert profile["summary"]["latest_opened_at"] == opened.isoformat()
+    assert profile["summary"]["marked_open_positions"] == 1
+    assert profile["summary"]["hidden_open_positions"] == int(newer_research_positions > 30)
+    assert "monitor-not-recording" not in {row["code"] for row in alerts}
+    assert "open-positions-unmarked" not in {row["code"] for row in alerts}
+    assert db_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("quiet_inspections", "expected_monitor_code", "expected_marked"),
+    [
+        ([], "monitor-not-recording", 0),
+        ([(60, None)], "monitor-stale", 0),
+        ([(1, None)], None, 0),
+        ([(60, 0.60), (1, None)], None, 1),
+    ],
+    ids=["missing", "stale", "unpriced", "unpriced-after-priced"],
+)
+def test_profile_monitor_health_keeps_real_warnings_and_last_priced_mark(
+    tmp_path, quiet_inspections, expected_monitor_code, expected_marked,
+):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    now = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
+    opened = now - timedelta(hours=2)
+    target = "2026-10-12"
+    quiet_id = store.record_paper_order(target, _approved_decision(), risk_profile="live")
+    assert quiet_id is not None
+    busy_id = _seed_profile_order(
+        store, target, replace(_approved_decision(), ticker="KXHIGHTSFO-BUSY"),
+        profile="research-target",
+    )
+    for order_id, inspections in (
+        (quiet_id, quiet_inspections), (busy_id, [(0, 0.60)]),
+    ):
+        with store.connect() as conn:
+            conn.execute("UPDATE paper_orders SET created_at=? WHERE id=?",
+                         (opened.isoformat(), order_id))
+        order = store.open_paper_order(order_id)
+        assert order is not None
+        for minutes_ago, bid in inspections:
+            snapshot_id = store.record_monitor_snapshot(
+                order, side="YES", action="HOLD", reason="inspection",
+                market_status="active", live_bid=bid,
+            )
+            with store.connect() as conn:
+                conn.execute("UPDATE paper_monitor_snapshots SET created_at=? WHERE id=?",
+                             ((now - timedelta(minutes=minutes_ago)).isoformat(), snapshot_id))
+
+    before = db_path.read_bytes()
+    paper = strategy_paper_card_module._paper_payload(db_path)
+    profile = strategy_profiles_module._profile_paper_payload(paper, "live")
+    codes = {row["code"] for row in _strategy_alerts(
+        paper=profile, entry_block_reason=None, now=now,
+    )}
+    expected_at = (
+        (now - timedelta(minutes=quiet_inspections[-1][0])).isoformat()
+        if quiet_inspections else None
+    )
+    assert profile["summary"]["latest_monitor_action_at"] == expected_at
+    assert profile["summary"]["marked_open_positions"] == expected_marked
+    assert ("open-positions-unmarked" in codes) == (expected_marked == 0)
+    assert codes.intersection({"monitor-not-recording", "monitor-stale"}) == (
+        {expected_monitor_code} if expected_monitor_code else set()
+    )
+    assert paper["profile_monitor_health"]["research-target"]["latest_monitor_action_at"] == now.isoformat()
+    assert db_path.read_bytes() == before
+
+
 def _settlement_alerts(target_date: str, *, now: datetime):
     """Run _strategy_alerts against a single unresolved past target on an
     injected clock, isolating the settlement branch (no open positions)."""
