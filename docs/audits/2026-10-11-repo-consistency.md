@@ -5,7 +5,7 @@ This audit separates merged source, installed backend, published artifacts and
 private Mac evidence. Real-money allocation remains $0. Additional AWS charges,
 hardware/power changes and sustained intensive Mac computation remain forbidden.
 
-## Pull request decisions
+## First cleanup PR #133: pull request decisions
 
 | PR | Decision and reason |
 |---|---|
@@ -33,7 +33,7 @@ This uses the patch level already introduced by earlier merged updates rather
 than merging the isolated 3.28 updates. Installed peer contracts, the lock diff
 and the affected web checks are the verification boundary.
 
-The final graph has eight exact direct pins and twenty-one targeted transitive
+That initial cleanup graph has eight exact direct pins and twenty-one targeted transitive
 overrides: all **29 locked and installed editor packages** resolve 3.27.4,
 with zero exact editor-peer violations. All 43 installed editor peer contracts
 checked by the dependency audit pass; the thirteen ProseMirror dependencies also satisfy
@@ -115,6 +115,57 @@ Primary contracts: [HeroUI 3.2.2 release](https://heroui.com/en/docs/react/relea
 [tagged React package](https://raw.githubusercontent.com/heroui-inc/heroui/v3.2.2/packages/react/package.json),
 [Pro beta.10 requirements](https://heroui.pro/docs/react/releases/beta-10),
 and [Bun semver API](https://bun.sh/docs/runtime/semver).
+
+### Security correction before final landing
+
+The follow-up push exposed two real dependency alerts created immediately
+after PR #133 merged. GitHub's reviewed advisories identify
+`GHSA-cp6q-959q-f8rh` (prototype-derived executable DOM attributes, fixed in
+3.30.4) and `GHSA-j95f-988m-3j2f` (quadratic Markdown attribute parsing, fixed
+in 3.30.5). Keeping the coherent 3.27.4 family would retain vulnerable core.
+The final follow-up therefore moves all eight direct pins and twenty-one
+overrides together to the minimum common patched release **3.30.5**, rather
+than merging #134's incomplete 3.31.4 update. HeroUI remains paired at 3.2.2.
+
+A small native probe against installed 3.27.4 reproduced the prototype issue:
+an own JSON `__proto__` key became the attribute object's prototype and exposed
+an inherited data canary. A functional regression now checks the real
+`mergeAttributes` helper and ProseMirror DOM serializer for preserved safe
+attributes and absence of inherited canary/event-handler attributes. It
+passes on 3.30.5. This is a real vulnerable-version correction; it is not a
+claim that the current SPA exposes an editor or accepts hostile documents.
+The parser fix relies on the maintainer's patched-version contract, without
+running CPU-intensive attack payloads on the Mac. Final installed-peer,
+frozen-install, web/browser and CI checks must cover this security candidate;
+the earlier 220-test HeroUI-only validation is a separate candidate.
+
+The first patched graph passed peer bounds and the prototype regression but
+failed real list/blockquote commands: root ProseMirror model 1.25.12 and seven
+nested 1.25.9 copies produced incompatible `Fragment` classes. All eight
+declared model ranges admit 1.25.12. One exact `prosemirror-model` override
+unifies the lock; seven proven obsolete ignored install directories also had
+to be removed because frozen install retained them. Other dependencies and
+all licensed files were preserved. Five focused editor tests now pass,
+including one-version lock coherence and actual independent StarterKit
+editors exercising bullet list, ordered list and blockquote commands.
+The required guard also checks all thirteen actual pm dependency bounds, so
+a future family update cannot silently force model below its new minimum.
+It checks thirty-five UI peers plus thirteen pm dependencies with zero
+failures on the corrected installation.
+The corrected graph passes all **223 web tests in 46 files**, including those
+five dependency/security/editor-command regressions. All eight installed model
+consumers resolve the same physical 1.25.12 package; no unrelated lock entry
+changed during the security correction. Final CI and landing evidence belong
+in [PR #139](https://github.com/Jaxsonb04/weather_edge/pull/139).
+The final rebuilt candidate also passes lint, build, static bundle limits and
+fresh desktop/mobile screenshots, DOM and menu/search/theme interactions with
+zero page errors or overflow. The thirteen expanded guard fixtures pass,
+including undersized model, missing pm metadata and missing dependency cases.
+The final browser and preview server were stopped after verification.
+
+Primary security evidence: [attribute prototype advisory](https://github.com/advisories/GHSA-cp6q-959q-f8rh),
+[Markdown parser advisory](https://github.com/advisories/GHSA-j95f-988m-3j2f),
+and [Tiptap 3.30.5 release](https://github.com/ueberdosis/tiptap/releases/tag/v3.30.5).
 
 ## Workspace preservation
 

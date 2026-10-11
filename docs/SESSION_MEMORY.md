@@ -108,6 +108,27 @@ operational claim; all production observations below are dated snapshots.
   Licensed artifact hashes are unchanged. Negative metadata fixtures reject
   the prior baseline and incomplete updates; final required CI and merge
   evidence remain in the follow-up PR. No dependency release was deployed.
+  A later push exposed two actual core dependency alerts created after #133
+  landed: `GHSA-cp6q-959q-f8rh` (fixed 3.30.4) and
+  `GHSA-j95f-988m-3j2f` (fixed 3.30.5). The final follow-up moves all eight
+  direct editor pins and twenty-one overrides together to **3.30.5**, the
+  minimum common patched release. The earlier 3.27.4 alignment is historical,
+  not the final security baseline. A native probe reproduced the older
+  prototype issue, and a new real helper/DOM-serializer regression passes
+  against 3.30.5. Final candidate evidence belongs in PR #139; it must pass
+  required checks before landing. This still does not deploy the AWS backend.
+  Actual editor commands then caught duplicate ProseMirror model classes that
+  peer/version bounds alone missed. All model ranges allow 1.25.12; one exact
+  override unifies it. Seven obsolete ignored installed copies were narrowly
+  removed before frozen reinstall. Five focused editor tests pass, including
+  real list/blockquote commands and the prototype regression. CI now also
+  checks thirteen pm dependency bounds alongside thirty-five UI peer contracts.
+  The corrected installed graph passes **223 web tests in 46 files**, and all
+  eight model consumers resolve the same physical 1.25.12 package. Licensed
+  hashes and the existing security overrides remain unchanged.
+  The final security candidate also passes build, static budgets and fresh
+  desktop/mobile DOM/screenshots/interactions without page errors or overflow.
+  All thirteen expanded guard fixtures pass; preview/browser processes stopped.
   The final checks-only schedule verification at **11:38 PDT** on clean
   `92f75c9d5` passed native admission, remained loaded and idle, started no
   batch and preserved all prior evidence. The OS signaling cause remains open.

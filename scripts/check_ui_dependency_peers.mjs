@@ -23,6 +23,7 @@ function resolvePeerManifest(packageDirectory, name) {
 export function auditUiPeerContracts(root = process.cwd()) {
   const failures = [];
   let checked = 0;
+  let dependenciesChecked = 0;
   for (const name of [
     "@heroui-pro/react", "@heroui/react", "@heroui/styles",
     "react-dom", "@types/react-dom",
@@ -44,12 +45,25 @@ export function auditUiPeerContracts(root = process.cwd()) {
       }
     }
   }
-  return { checked, failures };
+  // The explicit model override must continue to meet pm's dependency bounds
+  // when the editor family advances; peer checks alone cannot verify this.
+  const pmDirectory = realpathSync(resolve(root, "node_modules", "@tiptap/pm"));
+  const pm = readManifest(join(pmDirectory, "package.json"));
+  const dependencies = Object.entries(pm.dependencies ?? {});
+  if (!dependencies.length) failures.push("@tiptap/pm: dependency metadata missing");
+  for (const [name, range] of dependencies) {
+    dependenciesChecked += 1;
+    const installed = resolvePeerManifest(pmDirectory, name);
+    if (!installed || !semver.satisfies(installed.version, range)) {
+      failures.push(`@tiptap/pm@${pm.version} requires ${name}@${range}; found ${installed?.version ?? "missing"}`);
+    }
+  }
+  return { checked, dependenciesChecked, failures };
 }
 
 if (import.meta.main) {
-  const { checked, failures } = auditUiPeerContracts();
+  const { checked, dependenciesChecked, failures } = auditUiPeerContracts();
   for (const failure of failures) console.error(failure);
-  console.log(`UI dependency peers: ${checked} checked, ${failures.length} failures`);
+  console.log(`UI dependency contracts: ${checked} peers, ${dependenciesChecked} pm dependencies, ${failures.length} failures`);
   process.exitCode = failures.length ? 1 : 0;
 }
