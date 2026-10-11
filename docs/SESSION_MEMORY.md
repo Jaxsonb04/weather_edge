@@ -29,6 +29,9 @@ operational claim; all production observations below are dated snapshots.
   Attribution and meaningful research history remain recoverable. PR
   dispositions and validation belong in
   `docs/audits/2026-10-11-repo-consistency.md`.
+  Final installed-package inspection also found the older mixed Tiptap patch
+  versions had exact peer conflicts; the cleanup aligns the editor family at
+  3.27.4 and groups future updates rather than retaining that hidden mismatch.
   The fresh backend snapshot at 11:01 PDT still has clean `2a6432e3`, exec-v4,
   Research ROI V6, live execution off and dry-run on, fourteen active application
   timers, zero failed units and archive-only retention. Its paper database is

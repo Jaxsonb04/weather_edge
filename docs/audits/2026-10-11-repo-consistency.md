@@ -12,7 +12,7 @@ hardware/power changes and sustained intensive Mac computation remain forbidden.
 | #116 | Close as superseded/deferred. The historical ML report is retained with its dated attribution; V7 has guarded chronological evaluation. Archive the unique WeatherKit probes rather than merge an older unrestricted experiment. |
 | #52 | Close after selectively porting its useful per-profile monitor-health correction. Main already contains the evolved EMOS, point-in-time approval, truth and settlement safety fixes. Do not replace those with the old draft. |
 | #106 | Integrate the pinned setup-chrome 2.2.0 commit in the consolidated cleanup release; close the original as superseded. Preserve Dependabot authorship and sign-off. |
-| #60 | Integrate marked 18.0.6 in the consolidated cleanup release; resolve stale-base conflicts while retaining MapLibre 6.4.1 and all other current pins. Preserve Dependabot authorship and sign-off; close the original as superseded. |
+| #60 | Integrate marked 18.0.6 in the consolidated cleanup release; resolve stale-base conflicts while retaining MapLibre 6.4.1 and unrelated pins. Preserve Dependabot authorship and sign-off; close the original as superseded. |
 | #104 | Discard this incomplete setuptools major update: it changes the build and input manifests to 84 while leaving the hashed production lock at 83. Keep the currently coherent 83 toolchain. |
 | #63 | Discard the isolated HeroUI styles update: React 3.2.1 still requires styles 3.2.1, so it would introduce a second styles version. Review coupled HeroUI updates together. |
 | #62 | Discard the isolated underline update: its 3.28 core requirement conflicts with the current 3.27 core. |
@@ -23,6 +23,39 @@ Future version updates group `@tiptap/*` and `@heroui/*` by family. Existing
 security-alert/update settings are unchanged; no broad ignore rule or
 security-alert suppression is introduced. Grouping is a review aid,
 not proof that a generated update satisfies every peer contract.
+
+Final installed-package inspection also exposed a pre-existing editor mismatch:
+link and suggestion 3.27.4 require exact core/pm 3.27.4, while the other direct
+editor packages still resolved 3.27.1. The retained dependency correction must
+align the complete editor family at **3.27.4**, including optional-menu peers;
+keeping those already mismatched versions would not satisfy this cleanup.
+This uses the patch level already introduced by earlier merged updates rather
+than merging the isolated 3.28 updates. Installed peer contracts, the lock diff
+and the affected web checks are the verification boundary.
+
+The final graph has eight exact direct pins and twenty-one targeted transitive
+overrides: all **29 locked and installed editor packages** resolve 3.27.4,
+with zero exact editor-peer violations. All 43 installed peer contracts checked
+by the dependency audit pass; the thirteen ProseMirror dependencies also satisfy
+the new pm package's ranges. No unrelated lock entry changed, and the existing
+DOMPurify/PostCSS/tar security overrides are intact. Future family updates must
+move the direct pins and overrides together; grouping alone cannot guarantee
+that. Two version-derived regression tests enforce manifest/override/lock
+coherence without hard-coding this release. Both reject an isolated copy of
+the prior mixed-version candidate and pass against the corrected graph.
+The aligned candidate passed frozen installation, lint, all 218 existing web
+tests and a new production build; the two added coherence tests separately
+passed. All 546 licensed HeroUI files remain byte-identical. Rebuilt-candidate
+desktop/mobile screenshots, DOM reads and mobile menu/navigation checks passed
+without page errors or overflow, preserving explicit local AWS placeholders.
+There is no direct editor flow in the current SPA, so this verifies dependency
+contracts and the actual app rather than claiming an unexercised editor feature.
+The browser and preview server were stopped after verification.
+
+Primary package contracts: [Tiptap 3.27.4 release](https://github.com/ueberdosis/tiptap/releases/tag/v3.27.4),
+[tagged React manifest](https://raw.githubusercontent.com/ueberdosis/tiptap/v3.27.4/packages/react/package.json),
+[tagged StarterKit manifest](https://raw.githubusercontent.com/ueberdosis/tiptap/v3.27.4/packages/starter-kit/package.json),
+and [Bun overrides documentation](https://bun.sh/docs/pm/overrides).
 
 Primary references: [setup-chrome 2.2.0 release](https://github.com/browser-actions/setup-chrome/releases/tag/v2.2.0),
 [marked 18.0.6 fixes](https://github.com/markedjs/marked/releases/tag/v18.0.6),
@@ -135,7 +168,7 @@ warning is expected and is not production evidence.
 Web validation passed **218 tests in 45 files** with a single worker, lint with
 the same two existing Fast Refresh warnings, and the production build. The
 frozen install changed only marked; all 546 installed licensed HeroUI artifact
-hashes stayed unchanged. A final complete web rerun after the README correction
+hashes stayed unchanged at the first dependency candidate. A complete web rerun after the README correction
 passed all 218 tests in 24.96 seconds. Served candidate checks at desktop
 1440×900 and mobile 390×844 verified explicit AWS-authority placeholders,
 withheld balances/profiles, and working mobile navigation. Separate ordinary
