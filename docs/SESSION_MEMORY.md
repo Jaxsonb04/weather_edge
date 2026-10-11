@@ -1,12 +1,12 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-11 (repository/PR consistency audit; later Mac signaling failures and larger recovery gap verified)
+Last updated: 2026-10-11 (V7 priorities, recent-loss investigation, attributed city training and final-report recovery; guarded cutover preparation)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last backend safety inspection: 2026-10-11 11:01 PDT (source, live flags, units, archive policy and backup capacity)
+Last backend safety inspection: 2026-10-11 13:31 PDT (fresh source, live flags, profile/city scope, units and journal/capacity; accounting at 13:03–13:05 PDT)
 
-Last public artifact inspection: 2026-10-11 10:58 PDT (independent stable manifest, all five JSON hashes and deployed static assets)
+Last public artifact inspection: 2026-10-11 13:05 PDT (independent stable manifest and all five runtime JSON hashes; no static release)
 
 Last public app verification: 2026-10-11 (read-only existing public app: desktop/mobile DOM, interactions and screenshots; last guarded static release October 6, 00:26 PDT)
 
@@ -14,6 +14,116 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **Owner scope (October 11):** verify and complete five-city attributed training,
+  missing final reports, budget-compatible recovery and V7 activation across the
+  two active paper profiles, then gather realistic prospective evidence before
+  selecting real capital. The owner wants activation today and better results.
+  Real-money trading, increased AWS spending, retention deletion, weakened risk
+  or promotion gates, and sustained intensive Mac work remain unauthorized.
+  A same-day profit improvement cannot be demonstrated from a new policy era.
+- **Fresh production snapshot (13:03–13:05 PDT):** AWS remains clean September 4
+  backend `2a6432e3`, exec-v4, Research ROI V6 and fifteen deployed cities. No V7
+  append-only weather-vintage/member tables exist there. Fourteen application
+  timers are present, zero units failed and canonical-unit integrity passed.
+  Live execution is off and dry-run on. Public snapshot
+  `25a091e1d77fad165df2e45f` passed all five runtime hashes against an unchanged
+  manifest; historical analysis is still September 4. Fresh publication is not
+  fresh analysis. Source main includes merged PR #139 at `604d3382c`; that UI
+  dependency/security release has not been deployed to AWS.
+- **Recent paper losses:** October 5–10 completed PDT booking dates lost $38.21
+  in Live Stability and $19.6772 in Research ROI V6. Their separate realized
+  ledger equities at the audit are $1,033.29 and $1,001.16, each from its own
+  $1,000 paper account. October 11 is partial: +$1.82 and +$1.22. Never combine
+  these capitals or borrow V6 results for V7. Live's recent Dallas, Atlanta and
+  Austin attribution is −$13.95, −$12.54 and −$8.02. V6's full retained winners
+  earned $513.7007 while losers cost $512.5426. A 71.90% win rate barely clears
+  its 71.85% observed payout break-even rate. Fees are included, not subtracted
+  twice. Bounded monitor traces show normal stops vetoed by still-high model
+  probabilities, followed by worse catastrophic exits; the model reads were
+  minutes old. No avoided-dollar claim or recent partial-loss-memory incident
+  is established by the nine sampled roots. Full sanitized evidence is in
+  `docs/audits/2026-10-11-v7-priorities.md`.
+- **Five-city training actually collected:** Las Vegas, Minneapolis, San Antonio,
+  New Orleans and Washington DC now each have 120 matched final-truth dates at
+  leads 1 and 2 with eight named models: 9,600 reconstructed NWP rows and
+  600 attributed final observations in the transferable bundle. Fourteen
+  original NWS finals retain their source/clocks, with matching independent
+  IEM corroboration appended from retained responses using zero new GETs.
+  These data are in the separate Mac store. Root independently verified counts, final-truth joins,
+  raw-evidence references and zero FK errors. Current retrieval clocks, raw
+  hashes, station/model scope and provider attribution are preserved; original
+  initialization/availability remains unknown. These are training values, not
+  originally issued historical vintages, AWS evidence or paper profit. AWS
+  onboarding requires the separate guarded import after safe cutover.
+- **Final reports recovered:** the four older Mac gaps have original archived
+  NWS text/hashes: Los Angeles October 5 = 101°F; Austin October 6 = 90°F;
+  Denver October 6/7 = 87/81°F. Two exposed a parser defect: valid record-high
+  tokens `101R` and `87R` were rejected. Both parsers now accept only an official
+  optional R flag on a complete integer token; missing/malformed/fractional
+  values stay rejected. Retained raw reports replayed with zero new GETs.
+  Phoenix September 27 remains explicit M in its archive; the three AWS paper
+  positions must remain unresolved. A fresh 13:33 PDT AWS indexed audit found
+  464/465 final station/dates for September 10–October 10, with Phoenix the
+  sole gap; the four Mac recoveries were already final in AWS. One additional
+  native-guarded GET retrieved the original Phoenix report: it truly contains
+  MAXIMUM MM, not a rejected numeric record flag. Record/normal/last-year
+  columns cannot substitute. No numeric final exists to settle those positions.
+  Houston uses KHOU (October 10 = 86°F), not KIAH. Initial historical recovery used eighteen bounded free GETs,
+  within eight per batch and the shared 96/day ceiling. No paid provider used.
+- **Recovery/cutover preparation:** the fresh journal is 34.63 GiB with 16.62 GiB
+  free, short 19.01 GiB for canonical backup plus margin. An opt-in compressed
+  S3/offhost restore path is implemented and under exact-candidate validation:
+  shared installed-worker lock and configuration hash, exact bucket/prefix/
+  region plus hash-bound 24-hour operator evidence of existing 35-day retention
+  and enabled versioning (no IAM expansion), 8-GiB hard archive
+  ceiling, encrypted/versioned durable S3, independently downloaded manifest,
+  raw/compressed hashes, full SQLite integrity/FK checks, FileVault and native
+  Mac guards, frozen source identity immediately before transfer. Sampling
+  suggests about 4.72 GiB compressed but does not guarantee that size. Current
+  AWS billing/egress evidence is unavailable: CLI SSO expired, production role
+  denied Free Tier access, and user sign-in is pending. No policy is fabricated,
+  no cloud write/deployment has occurred and no paid expansion is authorized.
+  An opt-in SHA-pinned raw-replayed weather-only bundle import runs while
+  maintenance holds every producer and refuses conflicts before timer recovery.
+  Installed archive-only behavior must be explicitly preserved at cutover:
+  its old default is archive-only while current source defaults bounded-delete.
+- **V7/prospective boundary:** V7 source already changes correctness for both
+  active profiles. Live Stability retains its economic ledger with a fresh
+  evidence cohort; Research ROI gets a new V7 account while V6 filled exposure
+  settles. Archived generations remain entry-frozen. New source links decisions
+  to exact content-verified immutable served vintages with a compact allowlisted
+  receipt; missing initialization, hour completeness, truth-publication and
+  serving-code provenance stays explicit and unqualified. No admission gate is
+  relaxed. At least thirty completed independent prospective weather dates in
+  one account/policy plus realistic net fills, fees, gross losses, exposure and
+  positive uncertainty evidence are needed before capital selection. The
+  present evidence does not support an initial real-money bankroll; live $0.
+  The full local gate passed 3,847 tests, ten skips, 74 subtests and compilation;
+  local Semgrep is unavailable and required exact-candidate CI remains a gate.
+  Final affected validation passed 195 tests including all 137 deployment-shell
+  cases; an independent review recomputed the loss/fee/position conclusions.
+  First-candidate CI passed Python 3.12/3.13 with 3,854 tests each, twelve skips,
+  74 subtests, zero Semgrep findings and Web 223 tests/all build gates. Later
+  destination/control binding passed fifty helper tests independently; verify
+  required CI on the exact final candidate before merge/deployment.
+- **Local operation:** clean candidate `2e1acd9c0` actually issued fifteen fresh
+  local distributions and 120 named members for all five new cities, using
+  ten free GETs in two batches. Including the Phoenix raw-report check, shared UTC-day usage is now 29/96. These are
+  prospective local weather observations, not AWS paper trades or promotion
+  evidence. Maximum measured batch RSS was 360 MiB; wall/CPU stayed within
+  native guards. The same two-hour LaunchAgent is restored, enabled and idle,
+  with its original plist and limits. Checks-only admission passed: 300 wall/
+  120 CPU seconds, half-core, one numeric thread, 2-GiB RSS, native power/
+  thermal/load and eight GETs/run, 96/shared UTC day. Earlier unexplained macOS
+  process-group signal failures remain open; newer diagnostics preserve exact
+  failure phase/signal rather than hiding errors. Recurring AWS exports remain
+  off. Prior receipts and dated decisions follow in the retained snapshots.
+
+## Prior Session Brief Snapshots (through October 11, 11:38 PDT)
+
+These retained observations are historical snapshots. The compact Session Brief
+above supersedes their operational status; preserve their evidence and attribution.
 
 - **Repository and operational consistency audit (October 11):** the owner
   authorized cleaning the repository and resolving every open PR before the

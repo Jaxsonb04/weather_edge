@@ -807,6 +807,73 @@ snapshots if this gate refuses a deploy.
 Without a bucket, the local ring buffer remains authoritative and cleanup skips
 unuploaded files.
 
+An existing host whose journal no longer fits a second raw copy may use the
+reviewed compressed/offhost recovery gate. Set
+`SFO_DATABASE_BACKUP_MODE=offhost`,
+`SFO_DATABASE_BACKUP_LOCAL_PYTHON` to an existing Python >=3.11, and
+`SFO_DATABASE_BACKUP_OFFHOST_POLICY` to an owner-only file beneath `.local`, and
+`SFO_DATABASE_BACKUP_LOCAL_COMPUTE_CONFIG` to the installed worker configuration.
+Each offhost invocation holds the actual configured worker state’s `worker.lock`
+and binds/rechecks the configuration SHA in its restore receipt. Temporarily
+unload the existing two-hour LaunchAgent throughout source maintenance and full
+deployment, then restore the same plist and enabled preference.
+The default remains the same-volume backup. The optional path validates its
+interpreter, fresh operator policy and native Mac admission before stopping any
+service, and refuses if the raw restore is not on the FileVault-protected home
+volume. It keeps the same dead-man, quiescence, encrypted S3 retention,
+independent checksum/full-integrity/foreign-key restore and pre-transfer
+source checks. It never deletes journal rows or changes cloud capacity.
+
+The private policy is an operator receipt from an actual account/billing audit;
+do not invent or infer free allowances from old snapshots. It contains:
+
+```json
+{
+  "verified_month": "YYYY-MM",
+  "verified_free_egress_bytes": 0,
+  "monthly_egress_budget_bytes": 0,
+  "max_compressed_bytes": 0,
+  "no_incremental_spend_verified": false,
+  "cost_evidence_file": "absolute private evidence file path",
+  "cost_evidence_sha256": "SHA-256 of that evidence file",
+  "verified_backup_bucket": "actual verified private bucket",
+  "verified_backup_prefix": "actual verified snapshot prefix",
+  "verified_backup_region": "actual verified AWS region",
+  "verified_snapshot_retention_days": 0,
+  "verified_bucket_versioning": "unverified",
+  "controls_verified_at": "actual UTC control-inspection clock"
+}
+```
+
+The zero/false example intentionally refuses. Set positive numbers only from
+fresh evidence after other usage and a safety margin. No-increase-spend proof
+must cover compressed storage for the entire retention period, request costs
+and transfers, including a billing-month boundary. Exact bucket/prefix/region
+must match runtime configuration and bucket location. The existing operator
+session must verify enabled versioning and 35-day snapshot retention within
+the last 24 hours; bind those read-only control snapshots in the same hashed
+evidence file. The instance role does not gain control-read/admin permissions.
+Missing/stale control evidence or target drift refuses before upload.
+The hard compressed
+ceiling must be 1 MiB–8 GiB; both verified allowance and monthly backup budget
+must cover **twice** that ceiling. Every failed attempt retains its reservation
+in `.local/offhost-backup/egress-budget.json`. Raw database bytes + the archive
+ceiling + 20 GiB must fit on the Mac; archive ceiling + 1 GiB must fit on EC2.
+The existing Mac manual resource ceilings are unchanged. An oversized archive,
+resource deferral or any proof failure aborts before source transfer and restores
+the captured runtime through the existing recovery path.
+
+The S3 object has a `.sqlite3.gz` suffix; its `.manifest.json` binds the raw and
+compressed SHA-256, byte counts, source identity, source candidate and S3 object
+version/encryption. A recovery downloads both, verifies the compressed digest,
+decompresses into a separate owner-only file, verifies the raw digest, and runs
+full `PRAGMA integrity_check` and `PRAGMA foreign_key_check` before use. The Mac
+gate does this independently on every deployment. Its restored raw file is
+temporary, while the encrypted S3 object retains the existing 35-day lifecycle.
+The raw snapshot is unavailable to the AWS historical-analysis helper, so that
+optional refresh is explicitly deferred. The backup receipt is recovery
+evidence; it is not forecast qualification or profitable-paper-trade evidence.
+
 Health and finality checks:
 
 ```bash

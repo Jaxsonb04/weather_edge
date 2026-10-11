@@ -176,14 +176,64 @@ Future private collections do not automatically change the webpage's dated
 snapshot or its AWS runtime identity.
 
 The October 6 scheduled-run audit found that the five cities absent from the
-retained AWS seed have no matched NWP training dates. The sixty-date training
-minimum still applies. Their valid free-provider responses are preserved as raw
-HTTP evidence, but this collector does not yet convert them into training
-archive rows. They cannot become trained simply by waiting for more scheduled
-runs. A future onboarding path must preserve source, station, forecast lead,
-retrieval clock and final truth provenance without inventing historical
-availability or lowering the training minimum. Raw-only collection is distinct
-from issued distributions, model promotion and trading evidence.
+retained AWS seed had no matched NWP training dates. The October 11 onboarding
+repair adds `scripts/local_compute/shadow_history.py`, which uses the same
+native 300/120-second limits, shared worker/collector locks and durable 8/run,
+96/UTC-day request counter. Each attempt covers at most four cities. Only the
+free previous-runs Open-Meteo and IEM CLI archive hosts are additionally allowed
+by this helper; normal live collection keeps its original two-host allowlist.
+Responses, exact request/retrieval clocks and hashes remain immutable. Previous-
+runs training requires all 24 distinct finite hourly values in each station's
+fixed-standard climate day, named models, explicit Fahrenheit units and the
+requested lead. It never substitutes analysis/current-run temperatures.
+
+The actual October 11 private Mac onboarding retained 9,600 reconstructed NWP
+rows: Las Vegas, Minneapolis, San Antonio, New Orleans and Washington DC each
+have 120 matched finalized weather dates at both lead one and lead two, with
+eight models per day. This exceeds the unchanged sixty-date training minimum.
+The canonical source remains `openmeteo_previous_runs`; retrieval clocks are
+October 11, and original model initialization/decision-time availability remain
+unknown. Reconstructed training does not become an original issued forecast or
+AWS execution evidence. A separate append-only lineage binds every new row to
+its raw response. The normal collector now also preserves first-observed daily
+inputs under `local_shadow_live_daily`; it never merges them into the canonical
+previous-runs source or replaces a retained archive row.
+
+Example bounded onboarding (an existing seeded private shadow store is required):
+
+```bash
+.venv-dev/bin/python scripts/local_compute/shadow_history.py \
+  --state-dir .local/v7-offload/research \
+  --forecasts lv,min,satx,nola --truth lv,min,satx,nola \
+  --start 2026-06-10 --end 2026-10-07 --year 2026
+```
+
+Use a second attempt for Washington DC. Do not repeat completed provider calls
+merely to repair a parser. `--retained-truth dc` reparses the exact retained
+annual IEM response with zero HTTP calls. Explicit `M`/null CLI maxima remain
+missing; other malformed numeric values fail closed. Finalized retained truth
+cannot be overwritten by a conflicting archive value. IEM atomic archive
+finality retains the existing two-fixed-standard-day stability rule and never
+invents an old receipt/publication time.
+
+Exact archived NWS CLI products can strengthen atomic truth via `--products
+city:YYYY-MM-DD:exact-IEM-product-ID`; `--retained-products` reparses an already
+retained text response without another GET. The helper requires the registered
+office/station, exact climate date, completed day, a numeric observed maximum
+and no interim `AS OF` marker. October 11 recovered all four older Mac gaps:
+Los Angeles October 5, Austin October 6 and Denver October 6–7. Two valid maxima
+were record highs marked `101R` and `87R`; both CLI parsers now accept NWS's
+official record flag while rejecting unknown suffixes, decimals and missing
+values. Phoenix September 27 remains missing (`M`) in the newly retrieved IEM
+CLI archive; no CF6 substitution or inferred settlement was made. Eighteen GETs
+were used for the five-city history, older-gap raw reports and Phoenix check,
+with no attempt exceeding eight and no daily ceiling increase.
+
+This establishes local training coverage and source-attributed weather recovery.
+Production onboarding requires the separately validated reconstruction bundle
+and guarded import after the backend recovery/cutover gates. New issued weather
+forecasts, realistic paper fills, after-fee profit and model/bankroll promotion
+remain separate evidence requirements.
 
 The worker accepts the existing collector's raw-only exit only when the current
 attempt has a fresh exact research receipt, an unchanged source identity, a

@@ -1,8 +1,16 @@
 import io
 from unittest.mock import patch
+import pytest
 
 from sfo_kalshi_quant import settlement
 from sfo_kalshi_quant.settlement import fetch_recent_clisfo_settlements, parse_clisfo
+
+
+@pytest.mark.parametrize('token,expected', [('101R', 101), ('87R', 87), ('-4R', -4),
+    ('101X', None), ('101.5', None), ('MM', None), ('9999', None)])
+def test_official_record_flag_is_numeric_but_malformed_maximum_is_not(token, expected):
+    text = 'TEMPERATURE (F)\n MAXIMUM ' + token + ' 1259 PM\n'
+    assert parse_clisfo(text).max_temperature_f == expected
 
 
 def test_parse_maximum_temperature_from_clisfo_like_text():
