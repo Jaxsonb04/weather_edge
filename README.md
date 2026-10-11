@@ -24,19 +24,20 @@ an equivalent real order would fill.
 
 ## Current evidence and v7
 
-The **October 5, 2026, 19:52 PDT production snapshot** still ran backend revision
+The **October 11, 2026, 11:01 PDT backend snapshot** still ran backend revision
 `2a6432e3`, with fifteen city markets. The current source registry covers twenty.
 Repository source, installed backend, SPA assets, and generated runtime data
 have separate provenance; a merged fix is not proof of a deployed fix.
 
 | Area | Source capability and observed deployment |
 |---|---|
-| Coverage | 20 city markets, with fifteen verified in the October 5 production snapshot |
-| Policy | v7 source revision; the October 5 production baseline was v6 |
-| Website | V7 history/audit UI from `88d1cb8f0`, publicly verified October 5 at 21:46 PDT; locked MapLibre 6.4.1 |
-| Backend cutover | Pending storage approval and canonical verified backup; installed backend remains `2a6432e3` |
+| Coverage | 20 city markets, with fifteen deployed cities verified October 11 |
+| Policy | v7 source; October 11 production still used v6 with live execution disabled |
+| Website | V7 history/audit and hybrid research UI; October 11 manifest and all five runtime hashes matched; locked MapLibre 6.4.1 |
+| Backend cutover | Pending canonical verified recovery within existing cost limits; installed backend remains `2a6432e3` |
 
-At that snapshot, the separate $1,000 initial-capital accounts reported:
+At the older **October 5, 19:52 PDT account snapshot**, the separate $1,000
+initial-capital accounts reported:
 
 | Paper account | Realized P&L | Return on initial capital |
 |---|---:|---:|
@@ -62,12 +63,24 @@ records 125,170 NWP member rows and 10,642 source-separated scored cases. Its
 decision-time availability remains unestablished. The dated incident reports,
 unassigned losses, and older ML challenger are retained alongside the audit.
 
-The research objectives are **5% daily return on initial capital** and **$40/day
-by October 31**. They are targets to evaluate, not achieved results or promised
-returns. Increasing capital, requested size, or activity does not create an
-edge or displayed liquidity. Scaling requires account-scoped net P&L after
-fees, calibrated probabilities, realizable execution, drawdown evidence, and
-chronological holdout validation.
+The current objective is to gather meaningful evidence for or against
+profitability, without a preset bankroll or daily profit target. Earlier
+percentage/dollar targets remain historical research assumptions, not current
+requirements or achieved returns. October 31 is an engineering and evidence
+review date; readiness depends on the evidence. Increasing capital, requested
+size, or activity does not create an edge or displayed liquidity. Scaling
+requires account-scoped net P&L after fees, calibrated probabilities, realizable
+execution, drawdown evidence, and chronological holdout validation. Live
+allocation remains **$0 until the owner explicitly authorizes real money**.
+
+The bounded Mac worker supports separate prospective weather research. As of
+October 10, its store held 489 immutable forecast distributions; 139 unique
+station/lead/date outcomes covered five completed dates, including day-ahead
+diagnostics. This is not net trading profit or a promoted model. Five cities
+still need training-history onboarding. Two later process-signaling failures
+remain under investigation. See the [October 11 consistency audit](docs/audits/2026-10-11-repo-consistency.md)
+and [session memory](docs/SESSION_MEMORY.md) for the dated operational limits
+and remaining recovery work.
 
 ## Forecasting and trading path
 

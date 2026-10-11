@@ -135,6 +135,42 @@ def _paper_book_summary(journal: _PaperJournalProjection) -> dict[str, float]:
     }
 
 
+def _profile_monitor_health(
+    journal: _PaperJournalProjection,
+    monitor_rows: list[dict[str, Any]],
+    monitor_marks: dict[int, dict[str, Any]],
+    decision_marks: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Summarize valid open positions before public activity/list caps apply."""
+    latest_by_order = {int(row["order_id"]): row for row in monitor_rows}
+    health: dict[str, dict[str, Any]] = {}
+    for row in journal.open_root_rows:
+        profile = _row_risk_profile(row)
+        if profile is None:
+            continue
+        summary = health.setdefault(profile, {
+            "latest_opened_at": None,
+            "latest_monitor_action_at": None,
+            "marked_open_positions": 0,
+        })
+        inspection = latest_by_order.get(int(row["id"]))
+        for key, value in (
+            ("latest_opened_at", row.get("created_at")),
+            ("latest_monitor_action_at", inspection.get("created_at") if inspection else None),
+        ):
+            stamp = _parse_timestamp(value)
+            previous = _parse_timestamp(summary[key])
+            if stamp is not None and (previous is None or stamp > previous):
+                summary[key] = value
+        # Match the card's positive sell-bid marking rule, including its
+        # existing decision-mark fallback; no extra valuation/query is needed.
+        mark = _position_mark_for(row, monitor_marks, decision_marks)
+        bid = _to_float(mark.get("bid"), None) if mark else None
+        if bid is not None and math.isfinite(bid) and bid > 0:
+            summary["marked_open_positions"] += 1
+    return health
+
+
 def _paper_profile_rows(journal: _PaperJournalProjection) -> list[dict[str, Any]]:
     profiles: dict[str, dict[str, Any]] = {}
 
@@ -285,6 +321,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "pending_limit_orders": [],
         "closed_positions": [],
         "recent_monitor_actions": [],
+        "profile_monitor_health": {},
         "diagnostics": _empty_paper_diagnostics(),
         "profiles": [],
         "research_daily_target": {
@@ -399,7 +436,11 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
                 }
                 for row in monitor_rows
                 if int(row["order_id"]) in valid_roots
-            ][:12]
+            ]
+        profile_monitor_health = _profile_monitor_health(
+            journal, monitor_rows, monitor_marks, decision_marks,
+        )
+        monitor_rows = monitor_rows[:12]
         scanning_profiles = _latest_scanning_profiles(conn)
         profile_rows = _paper_profile_rows(journal)
 
@@ -531,6 +572,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
         "pending_limit_orders": pending_limit_orders,
         "closed_positions": closed_positions,
         "recent_monitor_actions": action_rows,
+        "profile_monitor_health": profile_monitor_health,
         "duplicate_open_groups": duplicate_groups,
         "diagnostics": _paper_diagnostics(journal),
         "profiles": profile_rows,

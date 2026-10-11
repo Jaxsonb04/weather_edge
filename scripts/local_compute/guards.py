@@ -6,11 +6,13 @@ fan, charging, clock, or power-management setting is changed.
 """
 import os
 import math
+import json
 import re
 import signal
 import subprocess
 import sys
 import time
+import traceback
 
 THREAD_ENV = {name: '1' for name in (
     'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
@@ -28,15 +30,23 @@ class Deferred(RuntimeError):
 
 class GroupCleanupError(RuntimeError):
     """Owned group cleanup failed; never a benign defer or collector exit."""
-    def __init__(self, cleanup_error, primary_error=None):
+    def __init__(self, cleanup_error, primary_error=None, reaping_error=None):
         self.cleanup_error = cleanup_error
         self.primary_error = primary_error
+        self.reaping_error = reaping_error
         details = type(cleanup_error).__name__
         if getattr(cleanup_error, 'errno', None) is not None:
             details += ' errno=' + str(cleanup_error.errno)
         if primary_error is not None:
             details += '; original=' + type(primary_error).__name__
         super().__init__('process-group cleanup failed: ' + details)
+        # The worker writes formatted tracebacks only to its private error.txt.
+        # Chaining the primary error alone loses the independent cleanup stack;
+        # keep these notes out of str(error), which also enters the run receipt.
+        for phase, error in (('group cleanup', cleanup_error), ('child reaping', reaping_error)):
+            if error is not None:
+                self.add_note('Private ' + phase + ' traceback:\n' + ''.join(
+                    traceback.format_exception(error, chain=False)))
 
 
 def policy(config):
@@ -130,12 +140,45 @@ def process_group_sample(group):
     return rows
 
 
-def signal_group(process, number):
+def _signal_process_snapshot(group):
+    """Bounded, command-free process metadata for a failed signal only."""
+    result = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,uid='],
+                            text=True, capture_output=True, check=True, timeout=1)
+    members = []
+    for line in result.stdout.splitlines():
+        pid, ppid, pgid, state, uid = line.split()
+        if int(pgid) == group:
+            members.append({'pid': int(pid), 'ppid': int(ppid), 'pgid': int(pgid),
+                            'state': state, 'uid': int(uid)})
+    return {'status': 'complete', 'members': members[:64], 'truncated': len(members) > 64}
+
+
+def _annotate_signal_error(error, process, number, phase, attempt, before, polled):
+    """Private evidence gathering cannot convert a failed signal to success."""
+    context = {'signal': signal.Signals(number).name, 'phase': phase,
+               'attempt': attempt, 'child_pid': process.pid,
+               'returncode_before': before if isinstance(before, int) else None,
+               'poll_returncode': polled if isinstance(polled, int) else None,
+               'child_reaped': polled is not None}
+    try:
+        context['process_group'] = _signal_process_snapshot(process.pid)
+    except Exception as snapshot_error:
+        # Do not replace the original exception or copy subprocess arguments,
+        # native stderr, environment values or paths into diagnostic metadata.
+        context['process_group'] = {'status': 'unavailable',
+                                    'snapshot_error_type': type(snapshot_error).__name__}
+    error.add_note('Private local signal diagnostics: ' + json.dumps(context, sort_keys=True))
+
+
+def signal_group(process, number, *, phase='unspecified'):
     """Recover Darwin's exited-unreaped race only after reaping our child."""
+    before = process.returncode
     try:
         os.killpg(process.pid, number)
-    except (ProcessLookupError, PermissionError):
-        if process.poll() is None:
+    except (ProcessLookupError, PermissionError) as error:
+        polled = process.poll()
+        if polled is None:
+            _annotate_signal_error(error, process, number, phase, 1, before, polled)
             raise  # A live child never receives a blanket permission exemption.
         if number != signal.SIGKILL:
             return False
@@ -145,6 +188,9 @@ def signal_group(process, number):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError as retry_error:
+            _annotate_signal_error(retry_error, process, number, phase, 2, before, polled)
+            raise
     return True
 
 
@@ -209,7 +255,8 @@ class Budget:
                 # logical core, including descendants even if libraries spawn.
                 should_pause = cpu > (now - started) * self.limits['cpu_fraction'] + 0.25
                 if should_pause != paused:
-                    if not signal_group(process, signal.SIGSTOP if should_pause else signal.SIGCONT):
+                    if not signal_group(process, signal.SIGSTOP if should_pause else signal.SIGCONT,
+                                        phase='pacing_stop' if should_pause else 'pacing_resume'):
                         break
                     paused = should_pause
                 time.sleep(0.25)
@@ -223,22 +270,32 @@ class Budget:
             try:
                 if process is not None:
                     cleanup_error = None
+                    reaping_error = None
+                    child_wait_completed = False
                     try:
-                        signal_group(process, signal.SIGKILL)
+                        signal_group(process, signal.SIGKILL, phase='cleanup_kill')
                     except BaseException as error:
                         cleanup_error = error
                     try:
                         process.wait(timeout=5)
+                        child_wait_completed = True
                     except BaseException as error:
                         if cleanup_error is None:
                             cleanup_error = error
                         else:
-                            cleanup_error.add_note('child reaping also failed: ' + type(error).__name__)
+                            reaping_error = error
                     if cleanup_error is not None:
                         # Notes alone would retain a benign exit/defer type and
                         # let callers continue while group cleanup was unproved.
                         # This distinct fatal error keeps the original cause.
-                        raise GroupCleanupError(cleanup_error, primary_error) from (primary_error or cleanup_error)
+                        failure = GroupCleanupError(cleanup_error, primary_error, reaping_error)
+                        failure.add_note('Private cleanup outcome: ' + json.dumps({
+                            'group_cleanup_verified': False,
+                            'child_reaped_after_cleanup': child_wait_completed,
+                            'child_returncode_after_cleanup': process.returncode
+                                if isinstance(process.returncode, int) else None,
+                        }, sort_keys=True))
+                        raise failure from (primary_error or cleanup_error)
             finally:
                 for number, previous in previous_handlers.items():
                     signal.signal(number, previous)
