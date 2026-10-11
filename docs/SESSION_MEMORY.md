@@ -4,7 +4,7 @@ Last updated: 2026-10-11 (V7 priorities, recent-loss investigation, attributed c
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last backend safety inspection: 2026-10-11 13:05 PDT (fresh source, live flags, units, journal/capacity and public accounting)
+Last backend safety inspection: 2026-10-11 13:31 PDT (fresh source, live flags, profile/city scope, units and journal/capacity; accounting at 13:03–13:05 PDT)
 
 Last public artifact inspection: 2026-10-11 13:05 PDT (independent stable manifest and all five runtime JSON hashes; no static release)
 
@@ -63,7 +63,13 @@ operational claim; all production observations below are dated snapshots.
   optional R flag on a complete integer token; missing/malformed/fractional
   values stay rejected. Retained raw reports replayed with zero new GETs.
   Phoenix September 27 remains explicit M in its archive; the three AWS paper
-  positions must remain unresolved. Total bounded free GETs so far today: 18,
+  positions must remain unresolved. A fresh 13:33 PDT AWS indexed audit found
+  464/465 final station/dates for September 10–October 10, with Phoenix the
+  sole gap; the four Mac recoveries were already final in AWS. One additional
+  native-guarded GET retrieved the original Phoenix report: it truly contains
+  MAXIMUM MM, not a rejected numeric record flag. Record/normal/last-year
+  columns cannot substitute. No numeric final exists to settle those positions.
+  Houston uses KHOU (October 10 = 86°F), not KIAH. Initial historical recovery used eighteen bounded free GETs,
   within eight per batch and the shared 96/day ceiling. No paid provider used.
 - **Recovery/cutover preparation:** the fresh journal is 34.63 GiB with 16.62 GiB
   free, short 19.01 GiB for canonical backup plus margin. An opt-in compressed
@@ -95,14 +101,18 @@ operational claim; all production observations below are dated snapshots.
   local Semgrep is unavailable and required exact-candidate CI remains a gate.
   Final affected validation passed 195 tests including all 137 deployment-shell
   cases; an independent review recomputed the loss/fee/position conclusions.
-- **Local operation:** the idle two-hour LaunchAgent was temporarily unloaded
-  for this source maintenance; plist, enabled preference and 300/120-second,
-  half-core, one-thread, 2-GiB, native power/thermal/load and 8/96 request limits
-  remain unchanged. Restore it from frozen reviewed source before ending work.
-  Earlier unexplained macOS process-group signal failures remain open; newer
-  diagnostics preserve exact failure phase/signal rather than hiding errors.
-  Recurring AWS exports remain off. Prior detailed receipts and dated decisions
-  follow in the retained snapshot section below.
+- **Local operation:** clean candidate `2e1acd9c0` actually issued fifteen fresh
+  local distributions and 120 named members for all five new cities, using
+  ten free GETs in two batches. Including the Phoenix raw-report check, shared UTC-day usage is now 29/96. These are
+  prospective local weather observations, not AWS paper trades or promotion
+  evidence. Maximum measured batch RSS was 360 MiB; wall/CPU stayed within
+  native guards. The same two-hour LaunchAgent is restored, enabled and idle,
+  with its original plist and limits. Checks-only admission passed: 300 wall/
+  120 CPU seconds, half-core, one numeric thread, 2-GiB RSS, native power/
+  thermal/load and eight GETs/run, 96/shared UTC day. Earlier unexplained macOS
+  process-group signal failures remain open; newer diagnostics preserve exact
+  failure phase/signal rather than hiding errors. Recurring AWS exports remain
+  off. Prior receipts and dated decisions follow in the retained snapshots.
 
 ## Prior Session Brief Snapshots (through October 11, 11:38 PDT)
 

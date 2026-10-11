@@ -177,3 +177,50 @@ cost policy has been fabricated and no AWS mutation has occurred. Archive-only
 pruning must be made explicit before cutover because the installed and current
 source defaults differ. Both active paper profiles will use V7 correctness;
 archived profiles remain entry-frozen and V6 filled exposure must settle.
+
+## Fresh prospective collection and scheduler restoration
+
+On clean candidate `2e1acd9c0`, the five newly trained cities actually issued
+fifteen original local distributions with 120 named model members. Two native
+guarded/shared-worker-locked batches used eight and two GETs; the shared UTC-day
+counter is 28/96. Batch wall times were 5.158/2.072 seconds, CPU 0.69/0.73
+seconds and peak RSS 264.7/360 MiB. Exact source/lineage/resource receipts remain
+private. These are prospective local weather observations, separate from AWS
+paper trading and unqualified for promotion; provider initialization and
+original hourly completeness remain unknown.
+
+The same existing LaunchAgent was restored from its preserved plist, with its
+enabled preference and 7,200-second interval intact, RunAtLoad false and idle.
+A separate native checks-only invocation admitted the original scheduled limits:
+300 seconds wall, 120 CPU seconds, half-core, one numeric thread and 2-GiB RSS.
+No credential, power setting or resource ceiling changed.
+
+At 13:31 PDT, a fresh read-only AWS check confirmed unchanged backend
+`2a6432e3`, no V7 weather evidence tables, no failed units, canonical-unit
+integrity, no maintenance marker, `live,research` paper scope and `all` cities.
+Live execution remained off/dry-run on; paper placement remained enabled for
+both active profiles. Journal size was 34.64 GiB with 16.60 GiB free. The backup
+and deployment blocker therefore remains real; local collection and source
+verification are not a completed AWS cutover.
+
+At 13:33 PDT, an independent authoritative weather check found 464 of 465
+required final numeric observations for the fifteen deployed stations over
+September 10–October 10. Every station/date lookup used the canonical primary
+index; the unresolved-position lookup used the lifecycle index. The sole gap
+was Phoenix September 27, with exactly three unresolved paper positions.
+All four reports recovered in the separate Mac store were already final on
+AWS from earlier IEM ingestion. Houston October 10 is complete at its actual
+settlement station KHOU (86°F); KIAH is not the settlement station. No additional
+production settlement backlog was found. AWS retains no raw/finality receipt
+for its absent Phoenix row; the original archived NWS text is checked separately.
+
+A final one-GET native/shared-lock check retrieved the original Phoenix report
+at 13:34 PDT. It correctly identifies September 27, station CLIPHX and issuance
+after the completed climate day, but its observed `MAXIMUM` is genuinely `MM`.
+Minimum and average are also missing. Adjacent record (113°F), normal (97°F)
+and prior-year (87°F) columns are not the observed settlement high. The 4,176-byte
+raw report SHA256 is
+`7d978c821876218c6b137c9ae323eb00bae8fb10bfbda9f14110512d6086354c`.
+The parser correctly refused numeric settlement and retained the partial/failure
+receipt. Shared UTC-day collection is now 29/96. This unresolved external truth
+gap must stay explicit until a genuine corrected final observation is available.
