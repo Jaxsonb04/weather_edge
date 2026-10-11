@@ -91,6 +91,47 @@ operational claim; all production observations below are dated snapshots.
   native power/thermal/load guards and 8/96 request ceilings remain unchanged.
   Recurring AWS exports remain off, live allocation remains $0, and new-city
   onboarding, safe recovery and full V7 activation remain separate next work.
+  PR #133 merged at **11:37 PDT** with both Python gates (3,750 tests each),
+  zero Semgrep findings and 220 web tests passing on the exact final candidate;
+  its merge tree `92f75c9d5` is identical. Five newly generated dependency PRs
+  (#134–#138) were then reviewed, privately bundled and closed. Four have
+  incomplete/incompatible dependency contracts; the optional tailwind-merge
+  bump is deferred rather than classified as broken. This second review found
+  existing Pro beta.7 requires HeroUI React/Styles >=3.2.2. The minimal follow-up
+  pins that pair at 3.2.2 and retains the older compatible React Aria line;
+  it does not adopt the incomplete 3.2.6/beta.10 upgrades. Actual installed UI
+  peers now have a required CI guard after licensed setup, alongside existing
+  editor coherence checks. React runtime/type version updates are grouped.
+  The corrected follow-up passes all 76 inspected Pro/HeroUI/editor peer
+  contracts and the required guard's 35 UI/runtime/type contracts, frozen
+  installation, lint, 220 web tests, build and desktop/mobile interactions.
+  Licensed artifact hashes are unchanged. Negative metadata fixtures reject
+  the prior baseline and incomplete updates; final required CI and merge
+  evidence remain in the follow-up PR. No dependency release was deployed.
+  A later push exposed two actual core dependency alerts created after #133
+  landed: `GHSA-cp6q-959q-f8rh` (fixed 3.30.4) and
+  `GHSA-j95f-988m-3j2f` (fixed 3.30.5). The final follow-up moves all eight
+  direct editor pins and twenty-one overrides together to **3.30.5**, the
+  minimum common patched release. The earlier 3.27.4 alignment is historical,
+  not the final security baseline. A native probe reproduced the older
+  prototype issue, and a new real helper/DOM-serializer regression passes
+  against 3.30.5. Final candidate evidence belongs in PR #139; it must pass
+  required checks before landing. This still does not deploy the AWS backend.
+  Actual editor commands then caught duplicate ProseMirror model classes that
+  peer/version bounds alone missed. All model ranges allow 1.25.12; one exact
+  override unifies it. Seven obsolete ignored installed copies were narrowly
+  removed before frozen reinstall. Five focused editor tests pass, including
+  real list/blockquote commands and the prototype regression. CI now also
+  checks thirteen pm dependency bounds alongside thirty-five UI peer contracts.
+  The corrected installed graph passes **223 web tests in 46 files**, and all
+  eight model consumers resolve the same physical 1.25.12 package. Licensed
+  hashes and the existing security overrides remain unchanged.
+  The final security candidate also passes build, static budgets and fresh
+  desktop/mobile DOM/screenshots/interactions without page errors or overflow.
+  All thirteen expanded guard fixtures pass; preview/browser processes stopped.
+  The final checks-only schedule verification at **11:38 PDT** on clean
+  `92f75c9d5` passed native admission, remained loaded and idle, started no
+  batch and preserved all prior evidence. The OS signaling cause remains open.
 
 - **Scheduled-run audit (October 6, 18:11 PDT):** retained private worker history
   contained seven complete receipts, one resource-load deferral and four failed
