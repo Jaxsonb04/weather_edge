@@ -35,8 +35,8 @@ and the affected web checks are the verification boundary.
 
 The final graph has eight exact direct pins and twenty-one targeted transitive
 overrides: all **29 locked and installed editor packages** resolve 3.27.4,
-with zero exact editor-peer violations. All 43 installed peer contracts checked
-by the dependency audit pass; the thirteen ProseMirror dependencies also satisfy
+with zero exact editor-peer violations. All 43 installed editor peer contracts
+checked by the dependency audit pass; the thirteen ProseMirror dependencies also satisfy
 the new pm package's ranges. No unrelated lock entry changed, and the existing
 DOMPurify/PostCSS/tar security overrides are intact. Future family updates must
 move the direct pins and overrides together; grouping alone cannot guarantee
@@ -62,6 +62,59 @@ Primary references: [setup-chrome 2.2.0 release](https://github.com/browser-acti
 and [Dependabot grouping reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#groups).
 Marked's patch includes a backtracking fix; the action release adds Linux arm64
 support. Actual retained changes still require the repository's required gates.
+
+### PRs generated after the first cleanup landed
+
+PR #133 merged at 11:37 PDT after its exact final candidate `3f883c78d` passed
+both Python gates (3,750 tests each), Semgrep and all 220 web tests. Its merge
+tree `92f75c9d5` matched that tested candidate. Dependabot immediately opened
+five more PRs, which were also reviewed and closed:
+
+| PR | Decision and reason |
+|---|---|
+| #134 | Discard as incomplete: eight direct Tiptap packages advance to 3.31.4 while twenty-one overrides remain 3.27.4. Both coherence tests fail. |
+| #135 | Discard as incomplete: HeroUI 3.2.6 requires newer date/React Aria peers than this lock supplies, despite the original web gate passing. |
+| #136 | Discard as incomplete: Pro beta.10 requires newer coupled packages; licensed setup changes the pins and fails the required guard before tests/build. |
+| #137 | Discard as incompatible: React DOM 19.3.0 with React 19.2.7 prevents all 46 web suites from loading; React type peers also disagree. |
+| #138 | Defer this optional tailwind-merge version update. Current 3.6.0 satisfies the retained component contracts. This PR is not classified as broken or a security fix. |
+
+Their five exact heads and review metadata were preserved in another verified
+private bundle before closure. This review also found a separate older gap:
+licensed Pro beta.7 requires HeroUI React and Styles **at least 3.2.2**, while
+the retained pair was 3.2.1. The smallest correction pins both exactly at
+**3.2.2**, retaining Pro beta.7, React 19.2.7 and React Aria Components 1.19.0.
+React Aria becomes 3.50.0 and shared React types 3.36.0, both already present
+in the previous graph. Older duplicate entries disappear; the editor family
+and security overrides remain unchanged.
+
+The CI guard now reads the actual installed peer contracts after licensed
+setup, including Pro, HeroUI, Styles, React DOM and React DOM types. This
+closes a gap in mocked component tests: a passing page suite alone did not
+reject #135's unsatisfied peers. React runtime and type updates are grouped
+together, with security-update settings and weekly version checks preserved.
+The guard uses Bun's built-in semver API and adds no dependency.
+
+The corrected installed graph passes all **76 checked Pro/HeroUI/editor peer
+contracts**, including Pro's twenty-nine requirements. The required guard
+checks thirty-five actual UI/runtime/type peers. Private metadata fixtures
+reject the old 3.2.1 baseline, #135's three undersized peers, #137's runtime and
+type mismatches, licensed stubs and missing required peers. Nested peers take
+precedence; missing optional peers are allowed. Resolution skips invalid
+`node_modules/node_modules` searches and follows the consuming package's real
+path for symlinked installs, matching normal Node lookup.
+All 546 licensed file hashes are unchanged. Frozen installation, lint,
+**220 tests in 46 files**, build and served desktop/mobile checks pass. Mobile
+navigation, search and theme transitions were exercised with DOM readback;
+no horizontal overflow or page errors occurred. Static landing graph is
+217.05 KiB JavaScript / 18.88 KiB CSS against 300/40 KiB limits. The main chunk
+grew, so this is a compatibility repair, not a performance improvement;
+the required browser-observed CI budget still applies. Preview/browser
+processes were stopped. No new application interface or AWS release occurred.
+
+Primary contracts: [HeroUI 3.2.2 release](https://heroui.com/en/docs/react/releases/v3-2-2),
+[tagged React package](https://raw.githubusercontent.com/heroui-inc/heroui/v3.2.2/packages/react/package.json),
+[Pro beta.10 requirements](https://heroui.pro/docs/react/releases/beta-10),
+and [Bun semver API](https://bun.sh/docs/runtime/semver).
 
 ## Workspace preservation
 
@@ -114,6 +167,11 @@ load, without changing run-folder count or last-success evidence. The original
 two-hour interval, Background/nice/low-I/O settings, job-scoped caffeinate,
 request ceilings and resource/admission limits are unchanged. No full
 weather/ML batch bypassed native AC/load admission to manufacture success.
+A later installed checks-only verification at **11:38 PDT**, on clean merged
+`92f75c9d5`, passed native admission with the same loaded, idle schedule. It
+started no batch and changed neither retained run count nor last-success
+evidence. The earlier admission deferrals are dated observations, not a claim
+that the final check still required AC power or rejected competing load.
 
 ## Dated operational evidence
 
@@ -195,10 +253,13 @@ weakening the test; its five focused copy tests then passed. Required gates
 must pass on the corrected final head before merge; no administrative bypass
 is permitted.
 
-Both Python 3.12 and 3.13 gates on candidate `49606cd88` passed **3,750 tests,
-twelve skips and 74 subtests**; required Semgrep reported **zero findings,
-zero blocking**. The corrected final candidate must rerun all three required
-gates. The final head, checks and merge disposition are retained in the linked
-consolidated PR; the sole working checkout is to return to clean main only
-after those checks pass. Source changes in this audit do not constitute an
-AWS backend deployment or replace public runtime authority.
+Both Python 3.12 and 3.13 gates on the final PR #133 candidate `3f883c78d`
+passed **3,750 tests, twelve skips and 74 subtests**; required Semgrep reported
+**zero findings, zero blocking**, and the web gate passed all 220 tests and
+both bundle checks. PR #133 merged without bypass at 11:37 PDT; the exact
+merged tree matched the tested candidate, and its main push gates also passed.
+The minimal UI peer follow-up requires the same gates on its own final head
+before merge. Its exact head/check/merge record belongs in its PR. The sole
+working checkout returns to clean main after landing. Source changes in this
+audit do not constitute an AWS backend deployment or replace public runtime
+authority.

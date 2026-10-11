@@ -99,6 +99,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify installed UI peer contracts
+        run: bun run deps:check
+
       - name: Lint
         run: bun run lint
 
