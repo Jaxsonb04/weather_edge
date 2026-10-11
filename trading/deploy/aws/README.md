@@ -835,12 +835,26 @@ do not invent or infer free allowances from old snapshots. It contains:
   "max_compressed_bytes": 0,
   "no_incremental_spend_verified": false,
   "cost_evidence_file": "absolute private evidence file path",
-  "cost_evidence_sha256": "SHA-256 of that evidence file"
+  "cost_evidence_sha256": "SHA-256 of that evidence file",
+  "verified_backup_bucket": "actual verified private bucket",
+  "verified_backup_prefix": "actual verified snapshot prefix",
+  "verified_backup_region": "actual verified AWS region",
+  "verified_snapshot_retention_days": 0,
+  "verified_bucket_versioning": "unverified",
+  "controls_verified_at": "actual UTC control-inspection clock"
 }
 ```
 
 The zero/false example intentionally refuses. Set positive numbers only from
-fresh evidence after other usage and a safety margin. The hard compressed
+fresh evidence after other usage and a safety margin. No-increase-spend proof
+must cover compressed storage for the entire retention period, request costs
+and transfers, including a billing-month boundary. Exact bucket/prefix/region
+must match runtime configuration and bucket location. The existing operator
+session must verify enabled versioning and 35-day snapshot retention within
+the last 24 hours; bind those read-only control snapshots in the same hashed
+evidence file. The instance role does not gain control-read/admin permissions.
+Missing/stale control evidence or target drift refuses before upload.
+The hard compressed
 ceiling must be 1 MiB–8 GiB; both verified allowance and monthly backup budget
 must cover **twice** that ceiling. Every failed attempt retains its reservation
 in `.local/offhost-backup/egress-budget.json`. Raw database bytes + the archive

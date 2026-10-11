@@ -74,7 +74,9 @@ operational claim; all production observations below are dated snapshots.
 - **Recovery/cutover preparation:** the fresh journal is 34.63 GiB with 16.62 GiB
   free, short 19.01 GiB for canonical backup plus margin. An opt-in compressed
   S3/offhost restore path is implemented and under exact-candidate validation:
-  shared installed-worker lock and configuration hash, 8-GiB hard archive
+  shared installed-worker lock and configuration hash, exact bucket/prefix/
+  region plus hash-bound 24-hour operator evidence of existing 35-day retention
+  and enabled versioning (no IAM expansion), 8-GiB hard archive
   ceiling, encrypted/versioned durable S3, independently downloaded manifest,
   raw/compressed hashes, full SQLite integrity/FK checks, FileVault and native
   Mac guards, frozen source identity immediately before transfer. Sampling
@@ -101,6 +103,10 @@ operational claim; all production observations below are dated snapshots.
   local Semgrep is unavailable and required exact-candidate CI remains a gate.
   Final affected validation passed 195 tests including all 137 deployment-shell
   cases; an independent review recomputed the loss/fee/position conclusions.
+  First-candidate CI passed Python 3.12/3.13 with 3,854 tests each, twelve skips,
+  74 subtests, zero Semgrep findings and Web 223 tests/all build gates. Later
+  destination/control binding passed fifty helper tests independently; verify
+  required CI on the exact final candidate before merge/deployment.
 - **Local operation:** clean candidate `2e1acd9c0` actually issued fifteen fresh
   local distributions and 120 named members for all five new cities, using
   ten free GETs in two batches. Including the Phoenix raw-report check, shared UTC-day usage is now 29/96. These are

@@ -224,3 +224,25 @@ raw report SHA256 is
 The parser correctly refused numeric settlement and retained the partial/failure
 receipt. Shared UTC-day collection is now 29/96. This unresolved external truth
 gap must stay explicit until a genuine corrected final observation is available.
+
+## Final cost-evidence binding review
+
+The first committed candidate `4a813ba7b` passed required CI: Python 3.12 and
+3.13 each passed 3,854 tests with twelve skips and 74 subtests; Semgrep reported
+zero findings; Web passed 223 tests, dependency/lint/build and both bundle gates.
+A subsequent final review tightened the optional recovery policy so evidence
+for one destination cannot authorize another. It now binds the exact bucket,
+prefix and region, enabled versioning, 35-day retention and UTC operator control
+inspection within 24 hours. Remote target/location checks run before backup,
+before both uploads and again at cutover; changed cost evidence cannot promote
+a receipt. The existing instance role lacks lifecycle/versioning-control reads,
+so those controls require hash-bound evidence from the existing operator
+session, without expanding IAM. Live object encryption/version/size checks
+remain independent. No-increase-spend evidence must cover storage, requests
+and transfers for the entire retention period, including a billing-month boundary.
+The hardened helper passed fifty tests independently; exact final-candidate CI
+is required before merging or deploying. The local schedule was temporarily
+unloaded again during this final source maintenance, then restored from the
+same preserved plist after the clean reviewed commit. A second native
+checks-only invocation admitted the original scheduled limits; the restored
+job is idle with its 7,200-second interval intact.

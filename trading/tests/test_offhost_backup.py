@@ -113,13 +113,23 @@ def policy(tmp_path):
     return {"verified_month": "2026-10", "verified_free_egress_bytes": 4 * 1024**3,
             "monthly_egress_budget_bytes": 4 * 1024**3, "max_compressed_bytes": 1024**3,
             "no_incremental_spend_verified": True, "cost_evidence_file": str(evidence),
-            "cost_evidence_sha256": backup.file_hash(evidence)}
+            "cost_evidence_sha256": backup.file_hash(evidence),
+            "verified_backup_bucket": "fixture-backups", "verified_backup_prefix": "database-snapshots",
+            "verified_backup_region": "us-west-2", "verified_snapshot_retention_days": 35,
+            "verified_bucket_versioning": "Enabled",
+            "controls_verified_at": backup.datetime.now(backup.timezone.utc).isoformat()}
 
 
 @pytest.mark.parametrize("change", [
     {"verified_month": "2026-09"}, {"no_incremental_spend_verified": False},
     {"verified_free_egress_bytes": 1}, {"max_compressed_bytes": True},
     {"max_compressed_bytes": 9 * 1024**3}, {"cost_evidence_sha256": "0" * 64},
+    {"verified_backup_bucket": None}, {"verified_backup_prefix": "other/../snapshots"},
+    {"verified_backup_region": None}, {"verified_snapshot_retention_days": None},
+    {"verified_snapshot_retention_days": True}, {"verified_snapshot_retention_days": 1},
+    {"verified_bucket_versioning": "Suspended"}, {"controls_verified_at": "2026-10-11T00:00:00"},
+    {"controls_verified_at": "2026-10-10T00:00:00-07:00"},
+    {"controls_verified_at": "2020-10-11T00:00:00Z"}, {"controls_verified_at": "2999-10-11T00:00:00Z"},
 ])
 def test_policy_refuses_unverified_cost_stale_month_and_insufficient_allowance(tmp_path, change):
     value = {**policy(tmp_path), **change}
@@ -170,10 +180,22 @@ from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ['OFFHOST_TEST_S3'])
 fault = os.environ.get('OFFHOST_TEST_FAULT', '')
+with (root / '.aws-actions').open('a') as log:
+    log.write(json.dumps(args) + '\\n')
 if args[:2] == ['s3api', 'head-object']:
     path = root / args[args.index('--key')+1]
     print(json.dumps({'ServerSideEncryption': None if fault == 'sse' else 'AES256',
                       'VersionId': 'fixture-version-1', 'ContentLength': path.stat().st_size}))
+elif args[:2] == ['s3api', 'get-bucket-location']:
+    location_reads = sum(json.loads(line)[:2] == ['s3api', 'get-bucket-location']
+                         for line in (root / '.aws-actions').read_text().splitlines())
+    changed = (fault == 'region-drift' and os.environ.get('OFFHOST_TEST_STAGE') == 'backup'
+               or fault == 'preupload-region-drift' and location_reads >= 3
+               or fault == 'premanifest-region-drift' and location_reads >= 4)
+    region = 'us-east-1' if changed else 'us-west-2'
+    print(json.dumps({'LocationConstraint': region}))
+elif args[:2] == ['sts', 'get-caller-identity']:
+    print('{}')
 elif args[:2] == ['s3', 'cp']:
     src, dst = args[2:4]
     if src.startswith('s3://'):
@@ -198,6 +220,11 @@ elif args[:2] == ['s3', 'cp']:
     value["verified_month"] = backup.datetime.now(backup.timezone.utc).strftime("%Y-%m")
     if fault == "policy":
         value["no_incremental_spend_verified"] = False
+    if fault == "missing-retention":
+        del value["verified_snapshot_retention_days"]
+    if fault in ("bucket", "prefix", "region"):
+        value[{"bucket": "verified_backup_bucket", "prefix": "verified_backup_prefix", "region": "verified_backup_region"}[fault]] = {
+            "bucket": "other-backups", "prefix": "other-prefix", "region": "us-east-1"}[fault]
     cost_policy = tmp_path / "policy.json"
     cost_policy.write_text(json.dumps(value))
     compute_state = tmp_path / "research-worker"
@@ -225,17 +252,24 @@ elif args[:2] == ['s3', 'cp']:
                 if fault == "lineage" and action == "assert-lineage":
                     with sqlite3.connect(source) as conn:
                         conn.execute("UPDATE parent SET id=3")
+                if fault == "bucket-drift" and action == "backup":
+                    config.write_text(config.read_text().replace("fixture-backups", "other-backups"))
                 code = stdin.read().replace(b"/etc/weatheredge.env", str(config).encode()).replace(
                     b"/run/weatheredge-deploy-maintenance", str(marker).encode())
                 result = subprocess.run([sys.executable, "-", "--remote-action", action,
-                                         "--payload", json.dumps(payload)], input=code,
-                                        stdout=stdout, stderr=stderr)
+                                        "--payload", json.dumps(payload)], input=code,
+                                        stdout=stdout, stderr=stderr,
+                                        env={**os.environ, "OFFHOST_TEST_STAGE": action})
             else:
                 events.append("independent-restore")
                 result = subprocess.run(command, stdout=stdout, stderr=stderr,
                                         env={**os.environ, "WEATHEREDGE_LOCAL_BUDGET_ACTIVE": "1"})
                 if fault == "compute-change":
                     compute_config.write_text(json.dumps({"state_dir": str(compute_state), "changed": True}))
+                if fault == "cutover-target-drift":
+                    config.write_text(config.read_text().replace("fixture-backups", "other-backups"))
+                if fault == "control-evidence-change":
+                    Path(value["cost_evidence_file"]).write_text('{"changed": true}')
             result.check_returncode()
 
         def receipt(self):
@@ -302,6 +336,51 @@ def test_invalid_cost_policy_refuses_before_any_remote_action(tmp_path, monkeypa
     assert events == []
     assert not receipt.exists()
     assert not list(store.iterdir())
+
+
+def test_missing_retention_evidence_refuses_before_any_remote_action(tmp_path, monkeypatch):
+    receipt, events, failure, store = run_orchestration(tmp_path, monkeypatch, "missing-retention", "preflight")
+    assert isinstance(failure, ValueError)
+    assert events == []
+    assert not receipt.exists()
+    assert not list(store.iterdir())
+
+
+@pytest.mark.parametrize("fault", ["bucket", "prefix", "region", "bucket-drift", "region-drift", "preupload-region-drift"])
+def test_operator_target_mismatch_or_backup_drift_refuses_before_any_upload(tmp_path, monkeypatch, fault):
+    receipt, events, failure, store = run_orchestration(tmp_path, monkeypatch, fault)
+    assert failure is not None
+    assert not receipt.exists()
+    assert "independent-restore" not in events
+    actions = [json.loads(line) for line in (store / ".aws-actions").read_text().splitlines()] if (store / ".aws-actions").exists() else []
+    assert not any(action[:2] == ["s3", "cp"] for action in actions)
+    assert not list(store.rglob("*.gz"))
+
+
+def test_region_is_rechecked_before_manifest_upload(tmp_path, monkeypatch):
+    receipt, events, failure, store = run_orchestration(tmp_path, monkeypatch, "premanifest-region-drift")
+    assert failure is not None
+    assert "independent-restore" not in events
+    assert not receipt.exists()
+    assert len(list(store.rglob("*.gz"))) == 1  # Unverified archive remains durable.
+    assert not list(store.rglob("*.manifest.json"))
+
+
+@pytest.mark.parametrize("fault", ["cutover-target-drift", "control-evidence-change"])
+def test_cutover_target_or_control_evidence_drift_cannot_promote_receipt(tmp_path, monkeypatch, fault):
+    receipt, events, failure, _ = run_orchestration(tmp_path, monkeypatch, fault)
+    assert failure is not None
+    assert "independent-restore" in events
+    assert not receipt.exists()
+
+
+@pytest.mark.parametrize("constraint,expected_region", [(None, "us-east-1"), ("EU", "eu-west-1"), ("us-west-2", "us-west-2")])
+def test_bucket_region_lookup_normalizes_aws_legacy_location_values(tmp_path, monkeypatch, constraint, expected_region):
+    value = policy(tmp_path)
+    value["verified_backup_region"] = expected_region
+    monkeypatch.setattr(backup, "remote_config", lambda: ("fixture-aws", "fixture-backups", "database-snapshots"))
+    monkeypatch.setattr(backup.subprocess, "check_output", lambda *a, **k: json.dumps({"LocationConstraint": constraint}))
+    assert backup.verified_remote_config({"backup_target": value}) == ("fixture-aws", "fixture-backups", "database-snapshots")
 
 
 @pytest.mark.parametrize("fault", ["compute-lock", "compute-config"])

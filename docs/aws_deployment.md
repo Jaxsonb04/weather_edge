@@ -301,7 +301,14 @@ shared `worker.lock` and binds the configuration hash to its recovery receipt.
 Keep the two-hour LaunchAgent temporarily unloaded throughout source maintenance
 and full deployment, then restore its existing plist and enabled preference.
 A private `SFO_DATABASE_BACKUP_OFFHOST_POLICY` must bind current-month
-verified free egress and no-increase-spend evidence by SHA-256. Without that
+verified free egress and no-increase-spend evidence by SHA-256. That evidence
+must cover retained compressed storage and request/transfer costs, including
+retention that crosses a billing month. The policy names the exact bucket,
+prefix and region, plus operator-read evidence no older than 24 hours that
+versioning is enabled and the existing snapshot retention is 35 days. The
+instance role does not gain lifecycle/versioning-control read permissions;
+those control snapshots come from the existing operator session. Remote target
+and region checks run before upload and before source transfer. Without that
 evidence the deploy refuses before quiescing. This is an alternative recovery
 implementation, not a bypass or a permission to add spending.
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import gzip
 import hashlib
@@ -115,6 +115,36 @@ def verify_archive(archive, restored, expected):
             "raw_sha256": digest.hexdigest(), "raw_bytes": total}
 
 
+def verified_backup_target(value):
+    """Bind the operator's existing bucket-control evidence to this destination.
+
+    The instance role cannot read lifecycle/versioning configuration. These
+    controls therefore require a fresh signed-in operator audit in the already
+    hash-bound private evidence file; object version/encryption stay live checks.
+    """
+    bucket = value.get("verified_backup_bucket")
+    prefix = value.get("verified_backup_prefix")
+    region = value.get("verified_backup_region")
+    if (not isinstance(bucket, str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket)
+            or not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", prefix)
+            or prefix != prefix.strip("/") or any(part in ("", ".", "..") for part in prefix.split("/"))
+            or not isinstance(region, str) or not re.fullmatch(r"[a-z]{2}(?:-[a-z0-9]+){2,3}", region)
+            or type(value.get("verified_snapshot_retention_days")) is not int
+            or value["verified_snapshot_retention_days"] != 35
+            or value.get("verified_bucket_versioning") != "Enabled"):
+        raise ValueError("exact backup destination and existing 35-day retention/versioning evidence are required")
+    try:
+        observed = datetime.fromisoformat(value["controls_verified_at"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("backup control evidence requires a recent UTC observation") from None
+    now = datetime.now(timezone.utc)
+    if observed.tzinfo is None or observed.utcoffset() != timedelta(0) or not timedelta(0) <= now - observed <= timedelta(hours=24):
+        raise ValueError("backup control evidence requires a UTC observation within the last 24 hours")
+    return {key: value[key] for key in (
+        "verified_backup_bucket", "verified_backup_prefix", "verified_backup_region",
+        "verified_snapshot_retention_days", "verified_bucket_versioning", "controls_verified_at")}
+
+
 def validate_policy(value, month):
     maximum = value.get("max_compressed_bytes")
     free = value.get("verified_free_egress_bytes")
@@ -130,6 +160,7 @@ def validate_policy(value, month):
             or Path(evidence).stat().st_size > 1024**2
             or file_hash(evidence) != value.get("cost_evidence_sha256")):
         raise ValueError("private current cost-evidence hash is missing or changed")
+    verified_backup_target(value)
     return maximum
 
 
@@ -214,6 +245,23 @@ def remote_config():
     return aws, bucket, prefix
 
 
+def verified_remote_config(payload):
+    target = verified_backup_target(payload.get("backup_target") or {})
+    aws, bucket, prefix = remote_config()
+    if (bucket != target["verified_backup_bucket"] or prefix != target["verified_backup_prefix"]):
+        raise ValueError("configured backup destination differs from verified operator evidence")
+    location = json.loads(subprocess.check_output(
+        [aws, "s3api", "get-bucket-location", "--bucket", bucket],
+        text=True, timeout=30, stderr=subprocess.DEVNULL))
+    if "LocationConstraint" not in location:
+        raise ValueError("backup bucket region could not be verified")
+    region = location["LocationConstraint"]
+    region = "us-east-1" if region is None else ("eu-west-1" if region == "EU" else region)
+    if region != target["verified_backup_region"]:
+        raise ValueError("backup bucket region differs from verified operator evidence")
+    return aws, bucket, prefix
+
+
 def require_quiescence(payload):
     if not Path("/run/weatheredge-deploy-maintenance").is_file():
         raise ValueError("deployment maintenance marker is required")
@@ -239,10 +287,9 @@ def remote_main(action, payload):
     source = Path(payload["database"])
     if not re.fullmatch(r"/[A-Za-z0-9._/-]+", str(source)) or ".." in source.parts:
         raise ValueError("database path is not conservative")
-    aws, bucket, prefix = remote_config()
+    aws, bucket, prefix = verified_remote_config(payload)
     if action == "preflight":
         subprocess.run([aws, "sts", "get-caller-identity"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        subprocess.run([aws, "s3api", "get-bucket-location", "--bucket", bucket], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         if source.is_symlink() or not source.is_file():
             raise ValueError("backup source must be a regular non-symlink database")
         # Preflight precedes quiescence, so a healthy active writer may have a
@@ -271,6 +318,8 @@ def remote_main(action, payload):
                 metadata.update({"object_uri": f"s3://{bucket}/{key}", "database": str(source),
                                  "deploy_id": token, "candidate_sha": payload["candidate_sha"],
                                  "created_at": datetime.now(timezone.utc).isoformat()})
+                if verified_remote_config(payload) != (aws, bucket, prefix):
+                    raise ValueError("configured backup destination changed before upload")
                 subprocess.run([aws, "s3", "cp", str(archive), metadata["object_uri"],
                                 "--sse", "AES256", "--only-show-errors"], check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
@@ -278,6 +327,8 @@ def remote_main(action, payload):
                 metadata.update({"archive_version_id": proof["VersionId"], "sse": proof["ServerSideEncryption"]})
                 manifest = Path(folder) / "snapshot.manifest.json"
                 write_json(manifest, metadata)
+                if verified_remote_config(payload) != (aws, bucket, prefix):
+                    raise ValueError("configured backup destination changed before manifest upload")
                 subprocess.run([aws, "s3", "cp", str(manifest), metadata["object_uri"] + ".manifest.json",
                                 "--sse", "AES256", "--only-show-errors"], check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
@@ -404,7 +455,8 @@ def local_main(args, compute_config_sha):
     if len(units) != 14:
         raise ValueError("canonical quiescence allowlist requires review")
     payload = {"database": args.database, "maximum": maximum, "deploy_id": args.deploy_id,
-               "candidate_sha": args.candidate_sha, "units": all_units}
+               "candidate_sha": args.candidate_sha, "units": all_units,
+               "backup_target": verified_backup_target(value)}
     with tempfile.TemporaryDirectory(prefix=".offhost-check-", dir=state) as temporary:
         folder = Path(temporary)
         if args.mode == "assert-lineage":
@@ -449,6 +501,7 @@ def local_main(args, compute_config_sha):
         call_remote(args, "assert-lineage", payload, budget, folder)
         if file_hash(args.policy) != policy_sha:
             raise ValueError("private cost policy changed during recovery verification")
+        validate_policy(value, month)
         if file_hash(Path(args.local_compute_config).expanduser().resolve()) != compute_config_sha:
             raise ValueError("local compute configuration changed during recovery verification")
         write_json(args.receipt, {"verified": True, "deploy_id": args.deploy_id,
