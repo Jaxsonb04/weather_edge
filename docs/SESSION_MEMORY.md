@@ -8,7 +8,7 @@ Last backend safety inspection: 2026-10-11 11:01 PDT (source, live flags, units,
 
 Last public artifact inspection: 2026-10-11 10:58 PDT (independent stable manifest, all five JSON hashes and deployed static assets)
 
-Last public app verification: 2026-10-06 00:26 PDT (guarded static release, exact Pages success, app/runtime hashes and desktop/mobile canary)
+Last public app verification: 2026-10-11 (read-only existing public app: desktop/mobile DOM, interactions and screenshots; last guarded static release October 6, 00:26 PDT)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
@@ -21,8 +21,13 @@ operational claim; all production observations below are dated snapshots.
   current main; their ignored trading data was moved into private recovery
   storage before removal. Twenty-six obsolete local branch names were removed;
   all five unique branch heads and seven dependency PR heads were preserved in
-  verified private Git bundles. Attribution and meaningful research history
-  remain recoverable. PR dispositions and validation belong in
+  verified private Git bundles. Sixteen unique remote heads were also bundled;
+  twenty-one obsolete remote branches were deleted and seven closed dependency
+  branches were already removed by the provider. All nine old open PRs were
+  resolved: useful dependency commits and the unique monitor-health correction
+  are consolidated in PR #133, while superseded/incompatible drafts are closed.
+  Attribution and meaningful research history remain recoverable. PR
+  dispositions and validation belong in
   `docs/audits/2026-10-11-repo-consistency.md`.
   The fresh backend snapshot at 11:01 PDT still has clean `2a6432e3`, exec-v4,
   Research ROI V6, live execution off and dry-run on, fourteen active application
@@ -38,7 +43,12 @@ operational claim; all production observations below are dated snapshots.
   deployed cities, V6, both live flags false and stale September 5 analysis.
   The reviewed hybrid summary still explicitly represents its October 5,
   23:50 PDT batch; it is not the latest private Mac store. This artifact audit
-  is not a fresh interactive browser canary or a V7 backend deployment.
+  is separate from the later read-only desktop/mobile browser check, which
+  verified V6, live $0, the dated batch, offline challengers and keyboard
+  disclosure behavior without overflow or page errors. The newly built local
+  dependency candidate separately showed explicit AWS-authority placeholders,
+  withheld stale balances and working mobile navigation. Neither browser check
+  is a V7 backend deployment or publication of the new dependency candidate.
   The latest complete Mac analysis (October 10, 15:41 PDT) retained **489**
   immutable distributions and **3,912** members across fifteen stations. Its
   151 scored identity records represent **139 unique station/lead/date
@@ -66,6 +76,14 @@ operational claim; all production observations below are dated snapshots.
   power; a separate fresh admission also rejected competing load. The idle
   local LaunchAgent was temporarily unloaded at 11:06:55 PDT for source
   maintenance, preserving its plist, enabled preference and two-hour schedule.
+  It was restored at **11:18:38 PDT**, loaded and idle with RunAtLoad false and
+  no immediate run. Source code was frozen at reviewed `49606cd88`; only a
+  README copy correction was dirty at restoration. Installed `--scheduled
+  --checks-only` correctly deferred for competing load, with no new run folder,
+  changed last-success receipt, provider call or full job. New private
+  diagnostics retain the separate primary/cleanup/reaping stacks and exact
+  failed signal/phase/process facts, while all live-child and cleanup failures
+  stay fatal. This repairs lost diagnostic evidence, not the unproven OS cause.
   The 300/120-second limits, half-core pacing, one numerical thread, 2-GiB RSS,
   native power/thermal/load guards and 8/96 request ceilings remain unchanged.
   Recurring AWS exports remain off, live allocation remains $0, and new-city

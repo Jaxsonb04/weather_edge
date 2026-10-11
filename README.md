@@ -31,7 +31,7 @@ have separate provenance; a merged fix is not proof of a deployed fix.
 
 | Area | Source capability and observed deployment |
 |---|---|
-| Coverage | 20 city markets in source; fifteen deployed cities verified October 11 |
+| Coverage | 20 city markets, with fifteen deployed cities verified October 11 |
 | Policy | v7 source; October 11 production still used v6 with live execution disabled |
 | Website | V7 history/audit and hybrid research UI; October 11 manifest and all five runtime hashes matched; locked MapLibre 6.4.1 |
 | Backend cutover | Pending canonical verified recovery within existing cost limits; installed backend remains `2a6432e3` |

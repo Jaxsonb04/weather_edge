@@ -73,9 +73,14 @@ phase and reaping state. Live-child signaling errors remain fatal; diagnostics
 must not be described as a proven reliability repair.
 
 The idle local schedule was unloaded at 11:06:55 PDT for source maintenance.
-Its plist and enabled preference were preserved. Restoration and final
-validation are recorded below after completion; no full weather/ML batch may
-bypass native AC/load admission to manufacture a successful receipt.
+Its plist and enabled preference were preserved. It was restored at
+**11:18:38 PDT**, loaded and idle with no immediate run. Code was frozen at
+reviewed `49606cd88`; only the README copy correction was dirty at restoration.
+The installed scheduled checks-only path correctly deferred for competing
+load, without changing run-folder count or last-success evidence. The original
+two-hour interval, Background/nice/low-I/O settings, job-scoped caffeinate,
+request ceilings and resource/admission limits are unchanged. No full
+weather/ML batch bypassed native AC/load admission to manufacture success.
 
 ## Dated operational evidence
 
@@ -130,6 +135,37 @@ warning is expected and is not production evidence.
 Web validation passed **218 tests in 45 files** with a single worker, lint with
 the same two existing Fast Refresh warnings, and the production build. The
 frozen install changed only marked; all 546 installed licensed HeroUI artifact
-hashes stayed unchanged. Desktop/mobile behavior verification, exact required
-CI, PR resolution, schedule restoration and clean-main inspection are being
-recorded before the cleanup is declared complete.
+hashes stayed unchanged. A final complete web rerun after the README correction
+passed all 218 tests in 24.96 seconds. Served candidate checks at desktop
+1440×900 and mobile 390×844 verified explicit AWS-authority placeholders,
+withheld balances/profiles, and working mobile navigation. Separate ordinary
+public-app checks at those viewports and 320 CSS-pixel width verified V6,
+live $0, dated hybrid numbers and click/Space/Enter disclosure behavior with
+correct `aria-expanded`. Both sets had zero page errors and no horizontal
+overflow. These are actual browser viewport checks, not a physical-phone test;
+the public observation concerns the existing deployment, not the newly built
+dependency candidate. Screenshots, DOM results and logs remain private. The
+browser session and preview server were stopped.
+
+All nine original open PRs are closed with the dispositions above. Their useful
+changes are retained in [the consolidated cleanup PR #133](https://github.com/Jaxsonb04/weather_edge/pull/133).
+Twenty-one obsolete remote branches were removed with exact-head leases;
+seven closed dependency branches were already absent. Only main, gh-pages and
+the active cleanup branch remained before landing. All eight obsolete
+worktrees and twenty-six obsolete local branches were removed with the
+preservation described above.
+
+The first CI candidate caught a README coverage-copy assertion after the
+documentation changed during local web validation (217/218 passed). The README
+was corrected to retain the expected `20 city markets,` wording without
+weakening the test; its five focused copy tests then passed. Required gates
+must pass on the corrected final head before merge; no administrative bypass
+is permitted.
+
+Both Python 3.12 and 3.13 gates on candidate `49606cd88` passed **3,750 tests,
+twelve skips and 74 subtests**; required Semgrep reported **zero findings,
+zero blocking**. The corrected final candidate must rerun all three required
+gates. The final head, checks and merge disposition are retained in the linked
+consolidated PR; the sole working checkout is to return to clean main only
+after those checks pass. Source changes in this audit do not constitute an
+AWS backend deployment or replace public runtime authority.
