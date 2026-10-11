@@ -290,6 +290,53 @@ repeating it before upload adds no proof after verified byte equality. A failed
 check never promotes a snapshot or permits deployment. Sanitized phase messages
 go to stderr so operators can follow progress through the long read.
 
+When the authoritative journal exceeds the free space for a second raw copy,
+the opt-in `SFO_DATABASE_BACKUP_MODE=offhost` path uses
+`backup_paper_db_offhost.py`. It requires local Python 3.11 or newer **before any
+remote action**, native Mac power/thermal/load admission, the existing manual
+20-minute wall/10-minute CPU/2-GiB memory limits, and a FileVault-protected home
+volume. `SFO_DATABASE_BACKUP_LOCAL_COMPUTE_CONFIG` must name the installed
+worker configuration; each offhost operation holds that worker state directory’s
+shared `worker.lock` and binds the configuration hash to its recovery receipt.
+Keep the two-hour LaunchAgent temporarily unloaded throughout source maintenance
+and full deployment, then restore its existing plist and enabled preference.
+A private `SFO_DATABASE_BACKUP_OFFHOST_POLICY` must bind current-month
+verified free egress and no-increase-spend evidence by SHA-256. Without that
+evidence the deploy refuses before quiescing. This is an alternative recovery
+implementation, not a bypass or a permission to add spending.
+
+After the same timer/service quiescence, the helper checkpoints the committed
+WAL and streams frozen physical SQLite bytes into a compressed file bounded at
+at most 8 GiB plus the existing 1-GiB operating margin. It uploads to the same
+35-day S3 snapshot prefix with AES256, verifies object encryption/version/size,
+and uploads the source identity, raw/compressed checksums and sizes as an
+encrypted manifest. The Mac independently downloads that manifest and object
+through the instance role, restores the full raw database, and checks SHA-256,
+full SQLite integrity and foreign keys. The temporary Mac restore is removed
+after verification. The durable S3 object and owner-only receipt remain.
+
+Failed attempts retain a worst-case outbound reservation of twice the hard
+compressed ceiling, including protocol/receipt overhead; retries cannot reuse
+an optimistic allowance. The frozen database device/inode/size/mtime/ctime and
+empty-WAL state are rechecked after verification and immediately before source
+transfer. Any change refuses the deploy and uses the existing pre-transfer
+recovery. No journal retention, IAM permission or bucket control is changed.
+Because no raw snapshot exists on AWS, this mode explicitly defers the optional
+historical Strategy Lab analysis-cache rebuild. It does not treat that deferred
+analysis as new V7 performance evidence.
+
+For a separately validated onboarding history bundle, set
+`SFO_DEPLOY_HISTORY_BUNDLE` to its private local file,
+`SFO_DEPLOY_HISTORY_BUNDLE_SHA256` to its exact content SHA256, and
+`SFO_DEPLOY_HISTORY_LOCAL_PYTHON` to the existing native development Python.
+The option verifies source attribution by replaying retained raw responses
+before any SSH and again after installation. It transfers only the four
+reviewed helper files plus the owner-only bundle, and imports reconstructed
+training/final observations into `forecaster/weather.db` while maintenance
+still holds every producer. Conflicts or a changed pin refuse before timer
+restoration. Issued forecast evidence, Mac identities and paper accounts are
+never imported. Omitting the option retains the normal deployment flow.
+
 The source revision, main branch and clean checkout are rechecked after backup
 and after source transfer. Stop concurrent source edits for deployment; these
 checks detect persistent changes but are not an immutable source export.

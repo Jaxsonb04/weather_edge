@@ -1136,6 +1136,8 @@ elif 'install_systemd_notimers.sh' in command:
     delay = float(os.environ['FAKE_INSTALL_SECONDS'] or 0)
     if delay:
         time.sleep(delay)
+elif 'shadow_history_bundle.py' in command and ' import ' in command:
+    raise SystemExit(int(os.environ.get('FAKE_HISTORY_IMPORT_STATUS', '0')))
 elif 'restore' in args:
     counter = Path(os.environ['FAKE_RESTORE_COUNTER'])
     attempts = (int(counter.read_text()) if counter.exists() else 0) + 1
@@ -1215,10 +1217,178 @@ elif 'restore' in args:
     return result, actions
 
 
+@pytest.mark.parametrize('invalid', ['missing-bundle', 'missing-pin', 'invalid-pin', 'symlink'])
+def test_history_import_invalid_options_reject_before_any_remote_action(tmp_path: Path, invalid: str) -> None:
+    path = tmp_path / 'history.json'
+    path.write_text('{}')
+    if invalid == 'symlink':
+        link = tmp_path / 'history-link.json'
+        link.symlink_to(path)
+        path = link
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (),
+        SFO_DEPLOY_HISTORY_BUNDLE='' if invalid == 'missing-bundle' else str(path),
+        SFO_DEPLOY_HISTORY_BUNDLE_SHA256=(
+            '' if invalid == 'missing-pin' else 'unsafe; command' if invalid == 'invalid-pin' else 'a' * 64),
+    )
+    assert result.returncode != 0
+    assert 'regular local bundle' in result.stderr
+    assert actions == []
+
+
+def test_history_import_bad_raw_bundle_rejects_before_any_remote_action(tmp_path: Path) -> None:
+    path = tmp_path / 'history.json'
+    path.write_text(json.dumps({'content_sha256': 'a' * 64}))
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (), SFO_DEPLOY_HISTORY_BUNDLE=str(path),
+        SFO_DEPLOY_HISTORY_BUNDLE_SHA256='a' * 64,
+        SFO_DEPLOY_HISTORY_LOCAL_PYTHON=sys.executable,
+    )
+    assert result.returncode != 0
+    assert 'verification failed before any remote action' in result.stderr
+    assert actions == []
+
+
+@pytest.mark.parametrize('failure', ['', 'first-verify', 'second-verify', 'remote-import'])
+def test_history_import_runs_under_maintenance_before_timer_recovery(
+    tmp_path: Path, failure: str,
+) -> None:
+    path = tmp_path / 'history bundle.json'
+    path.write_text('{}')
+    interpreter = tmp_path / 'history-python'
+    _write_executable(interpreter, f'#!{sys.executable}\n' + '''
+import os, sys
+from pathlib import Path
+if sys.argv[1] == '-c':
+    raise SystemExit(0)
+assert sys.argv[2] == 'verify'
+assert sys.argv[sys.argv.index('--expected-sha256') + 1] == 'a' * 64
+assert sys.argv[sys.argv.index('--bundle') + 1] == os.environ['SFO_DEPLOY_HISTORY_BUNDLE']
+counter = Path(os.environ['ACTION_LOG'] + '.history-verify')
+count = (int(counter.read_text()) if counter.exists() else 0) + 1
+counter.write_text(str(count))
+with open(os.environ['ACTION_LOG'], 'a') as stream:
+    stream.write('history-local-verify|' + str(count) + '\\n')
+if os.environ['HISTORY_TEST_FAILURE'] == ('first-verify' if count == 1 else 'second-verify'):
+    raise SystemExit(9)
+''')
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, tuple(TIMERS), SFO_DEPLOY_HISTORY_BUNDLE=str(path),
+        SFO_DEPLOY_HISTORY_BUNDLE_SHA256='a' * 64,
+        SFO_DEPLOY_HISTORY_LOCAL_PYTHON=str(interpreter),
+        HISTORY_TEST_FAILURE=failure,
+        FAKE_HISTORY_IMPORT_STATUS='42' if failure == 'remote-import' else '0',
+    )
+    assert actions[0] == 'history-local-verify|1'
+    if failure == 'first-verify':
+        assert result.returncode != 0
+        assert actions == ['history-local-verify|1']
+        return
+    install = _action_index(actions, lambda line: 'install_systemd_notimers.sh' in line)
+    account = _action_index(actions, lambda line: 'validate_account_cutover.py' in line)
+    second_verify = actions.index('history-local-verify|2')
+    assert install < account < second_verify
+    if failure == 'second-verify':
+        assert result.returncode != 0
+        assert not any('shadow_history_bundle.py' in line for line in actions)
+    else:
+        helper_copy = _action_index(actions, lambda line: line.startswith('rsync|') and 'shadow_history_bundle.py' in line)
+        for name in ('shadow_history.py', 'shadow_collect.py', 'guards.py'):
+            assert str(ROOT / 'scripts/local_compute' / name) in actions[helper_copy]
+        assert actions[helper_copy].endswith('ec2.example:/opt/weatheredge/scripts/local_compute/')
+        bundle_copy = _action_index(actions, lambda line: line.startswith('rsync|') and str(path) in line)
+        assert '--chmod=F600' in actions[bundle_copy]
+        assert '/.local/deploy-history/' in actions[bundle_copy]
+        imported = _action_index(actions, lambda line: line.startswith('ssh|') and 'shadow_history_bundle.py' in line)
+        assert second_verify < helper_copy < bundle_copy < imported
+        assert "--db '/opt/weatheredge/forecaster/weather.db'" in actions[imported]
+        assert "--expected-sha256 '" + 'a' * 64 + "' --apply" in actions[imported]
+    if failure:
+        assert result.returncode != 0
+        assert not any(line.startswith('restore|') for line in actions)
+        assert not any("--phase 'post-install'" in line for line in actions)
+        assert not any('refresh_strategy_analysis_cache.sh' in line for line in actions)
+    else:
+        assert result.returncode == 0, result.stderr
+        ready = _action_index(actions, lambda line: "--phase 'post-install'" in line)
+        restore = _action_index(actions, lambda line: line.startswith('restore|'))
+        assert imported < ready < restore
+
+
 def _canonical_scheduler_timers() -> list[str]:
     text = (AWS_DIR / "check_scheduler_health.sh").read_text(encoding="utf-8")
     block = text.split("CANONICAL_TIMERS=(", 1)[1].split("\n)", 1)[0]
     return [line.strip().strip('"') for line in block.splitlines() if line.strip()]
+
+
+def test_offhost_backup_missing_policy_rejects_before_remote_action(tmp_path: Path) -> None:
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (), SFO_DATABASE_BACKUP_MODE="offhost",
+        SFO_DATABASE_BACKUP_OFFHOST_POLICY=str(tmp_path / "missing-policy.json"),
+    )
+    assert result.returncode != 0
+    assert "private current cost policy" in result.stderr
+    assert actions == []
+
+
+def test_offhost_backup_missing_worker_config_rejects_before_remote_action(tmp_path: Path) -> None:
+    policy = tmp_path / "cost-policy.json"
+    policy.write_text("{}")
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, (), SFO_DATABASE_BACKUP_MODE="offhost",
+        SFO_DATABASE_BACKUP_OFFHOST_POLICY=str(policy),
+        SFO_DATABASE_BACKUP_LOCAL_COMPUTE_CONFIG=str(tmp_path / "missing-worker.json"),
+    )
+    assert result.returncode != 0
+    assert "installed local compute config" in result.stderr
+    assert actions == []
+
+
+@pytest.mark.parametrize("lineage_failure", [False, True])
+def test_offhost_deploy_requires_verified_restore_and_lineage_before_first_transfer(
+    tmp_path: Path, lineage_failure: bool,
+) -> None:
+    policy = tmp_path / "cost-policy.json"
+    policy.write_text("{}")
+    worker_config = tmp_path / "worker-config.json"
+    worker_config.write_text('{"state_dir": "fixture"}')
+    interpreter = tmp_path / "offhost-python"
+    _write_executable(interpreter, f"#!{sys.executable}\n" + '''
+import os, sys
+if sys.argv[1] == '-c':
+    raise SystemExit(0)
+mode = sys.argv[2]
+assert '--local-compute-config' in sys.argv
+with open(os.environ['ACTION_LOG'], 'a') as stream:
+    stream.write('offhost|' + mode + '\\n')
+if mode == 'preflight':
+    print('WEATHEREDGE_DATABASE_PRESENT=1')
+elif mode == 'backup':
+    print('WEATHEREDGE_OFFHOST_BACKUP_VERIFIED=1')
+elif mode == 'assert-lineage' and os.environ['OFFHOST_LINEAGE_FAILURE'] == '1':
+    raise SystemExit(9)
+''')
+    result, actions = _run_full_sync_with_capture(
+        tmp_path, tuple(TIMERS), SFO_DATABASE_BACKUP_MODE="offhost",
+        SFO_DATABASE_BACKUP_LOCAL_PYTHON=str(interpreter),
+        SFO_DATABASE_BACKUP_OFFHOST_POLICY=str(policy),
+        SFO_DATABASE_BACKUP_LOCAL_COMPUTE_CONFIG=str(worker_config),
+        OFFHOST_LINEAGE_FAILURE="1" if lineage_failure else "0",
+    )
+    preflight = actions.index("offhost|preflight")
+    quiesce = _action_index(actions, lambda line: "bash -s quiesce" in line)
+    restored = actions.index("offhost|backup")
+    lineage = actions.index("offhost|assert-lineage")
+    assert preflight < quiesce < restored < lineage
+    if lineage_failure:
+        assert result.returncode != 0
+        assert not any(line.startswith("rsync|") for line in actions)
+        assert any(line.startswith("restore|") for line in actions)
+    else:
+        assert result.returncode == 0, result.stderr
+        assert lineage < _action_index(actions, lambda line: line.startswith("rsync|"))
+        assert not any("refresh_strategy_analysis_cache.sh" in line for line in actions)
+        assert "analysis deferred" in result.stderr
 
 
 def _release_canonical_timers() -> list[str]:

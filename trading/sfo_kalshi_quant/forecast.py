@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
@@ -30,6 +31,89 @@ from .settlement_truth import (
 
 class ForecastDataError(RuntimeError):
     pass
+
+
+_ISSUED_EMOS_LINEAGE_QUERY = (
+    "SELECT * FROM forecast_emos_live_vintages WHERE station_id=? "
+    "AND target_date=? AND recorded_at=? AND predicted_high_f=? "
+    "AND sigma_f=? AND method=? AND legacy_lead_days=? LIMIT 2"
+)
+
+
+def _issued_emos_lineage(conn: sqlite3.Connection, *, station_id: str,
+                         target: date, row: tuple) -> dict:
+    """Link this exact served row to retained content-addressed evidence.
+
+    A later or merely similar forecast is never substituted. This receipt is
+    diagnostic only: the provider initialization, original hourly completeness,
+    training-truth publication clocks and serving-code identity are not supplied
+    by the existing vintage writer, so linkage cannot qualify live promotion.
+    """
+    missing = {"schema_version": 1, "status": "unavailable"}
+    if row[7] != "live":
+        return {**missing, "reason": "not_an_original_live_serve"}
+    if not all(_table_exists(conn, table) for table in (
+        "forecast_emos_live_vintages", "nwp_live_forecast_members"
+    )):
+        return {**missing, "reason": "immutable_vintage_tables_absent"}
+    try:
+        stamp = datetime.fromisoformat(str(row[4]).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            raise ValueError("missing timezone")
+        clock = stamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
+    except ValueError:
+        return {**missing, "reason": "serve_clock_invalid"}
+    cursor = conn.execute(
+        _ISSUED_EMOS_LINEAGE_QUERY,
+        (station_id, target.isoformat(), clock, row[0], row[1], row[5], row[6]),
+    )
+    columns = [item[0] for item in cursor.description]
+    matches = cursor.fetchall()
+    if len(matches) != 1:
+        return {**missing, "reason": (
+            "ambiguous_exact_vintage" if matches else "exact_vintage_missing"
+        )}
+    payload = dict(zip(columns, matches[0]))
+    snapshot_id = payload.pop("snapshot_id")
+    member_columns = ("model", "predicted_high_f", "used_in_fit",
+                      "complete_hour_count", "aggregation_basis")
+    members = [dict(zip(member_columns, values)) for values in conn.execute(
+        "SELECT model,predicted_high_f,used_in_fit,complete_hour_count,aggregation_basis "
+        "FROM nwp_live_forecast_members WHERE snapshot_id=? ORDER BY model LIMIT 65",
+        (snapshot_id,),
+    )]
+    if not members or len(members) > 64:
+        return {**missing, "reason": "vintage_members_missing_or_unbounded"}
+    canonical = lambda value: json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    try:
+        content_hash = hashlib.sha256(canonical({**payload, "members": members})).hexdigest()
+    except (TypeError, ValueError):
+        return {**missing, "reason": "vintage_content_invalid"}
+    if content_hash != snapshot_id:
+        return {**missing, "reason": "vintage_content_hash_mismatch"}
+    # Keep the decision journal compact. The append-only weather tables retain
+    # named members and full fit/control payloads; these hashes bind that exact
+    # content without copying it into every city/profile scan context.
+    return {
+        "schema_version": 1, "status": "linked_unqualified",
+        "snapshot_id": snapshot_id, "content_hash_verified": True,
+        "station_id": station_id, "target_date": target.isoformat(),
+        "recorded_at": payload["recorded_at"], "retrieved_at": payload["retrieved_at"],
+        "source": payload["source"], "training_days": payload["training_days"],
+        "training_truth_end": payload["training_truth_end"],
+        "training_digest_sha256": payload["training_digest_sha256"],
+        "fit_params_sha256": hashlib.sha256(payload["fit_params_json"].encode()).hexdigest(),
+        "serve_policy_sha256": hashlib.sha256(payload["serve_policy_json"].encode()).hexdigest(),
+        "members_sha256": hashlib.sha256(canonical(members)).hexdigest(),
+        "member_count": len(members),
+        "missing_provenance": ["provider_initialized_at", "original_hourly_completeness",
+                               "training_truth_publication_clocks", "serving_code_identity"] + (
+            ["verified_retrieval_clock"] if payload["retrieved_at"] is None else []
+        ),
+        "promotion_eligible": False,
+    }
 
 
 def matching_emos_distribution(
@@ -540,18 +624,31 @@ class SfoForecasterAdapter:
                 }
                 if "station_id" not in columns:
                     return None
+                # Keep the mutable serve row and its immutable evidence lookup
+                # in one read snapshot, even if a refresh commits concurrently.
+                conn.execute("BEGIN")
                 rows = conn.execute(query, (self.station_id, target.isoformat())).fetchall()
+                if not rows:
+                    return None
+                row = max(
+                    rows,
+                    key=lambda candidate: (
+                        forecast_source_precedence(str(candidate[7])),
+                        str(candidate[4]),
+                    ),
+                )
+                try:
+                    lineage = _issued_emos_lineage(
+                        conn, station_id=self.station_id, target=target, row=row
+                    )
+                except sqlite3.Error:
+                    # Optional evidence from an incompatible/partial schema
+                    # cannot change existing forecast admission. It remains an
+                    # explicit gap and cannot be used to approve promotion.
+                    lineage = {"schema_version": 1, "status": "unavailable",
+                               "reason": "immutable_vintage_schema_incompatible"}
         except sqlite3.Error as exc:
             raise ForecastDataError(f"Could not read {self.weather_db}: {exc}") from exc
-        if not rows:
-            return None
-        row = max(
-            rows,
-            key=lambda candidate: (
-                forecast_source_precedence(str(candidate[7])),
-                str(candidate[4]),
-            ),
-        )
         mu, sigma, n_models, model_spread, fetched_at, method, lead_days, _source = row
         return ForecastSnapshot(
             target_date=target,
@@ -566,6 +663,7 @@ class SfoForecasterAdapter:
             ),
             raw={
                 "source": "forecast_emos_daily_high",
+                "issued_forecast_lineage": lineage,
                 "emos": {
                     "mu": float(mu),
                     "sigma": float(sigma),

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from datetime import date, datetime
 
 from .._util import (
     _drop_none,
@@ -320,6 +322,68 @@ def _ask_levels_payload(levels: object) -> list[list[float]] | None:
         return None
 
 
+def _issued_forecast_lineage_payload(raw: object) -> dict[str, object] | None:
+    """Allow only a bounded v1 receipt, never arbitrary provider raw fields."""
+    if not isinstance(raw, dict) or "issued_forecast_lineage" not in raw:
+        return None
+    value = raw["issued_forecast_lineage"]
+    invalid = {"schema_version": 1, "status": "unavailable",
+               "reason": "invalid_lineage_receipt"}
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        return invalid
+    reasons = {
+        "not_an_original_live_serve", "immutable_vintage_tables_absent", "serve_clock_invalid",
+        "ambiguous_exact_vintage", "exact_vintage_missing", "vintage_members_missing_or_unbounded",
+        "vintage_content_invalid", "vintage_content_hash_mismatch", "immutable_vintage_schema_incompatible",
+    }
+    if value.get("status") == "unavailable":
+        reason = value.get("reason")
+        return ({"schema_version": 1, "status": "unavailable", "reason": reason}
+                if isinstance(reason, str) and reason in reasons else invalid)
+    hashes = ("snapshot_id", "training_digest_sha256", "fit_params_sha256",
+              "serve_policy_sha256", "members_sha256")
+    if (value.get("status") != "linked_unqualified" or value.get("content_hash_verified") is not True
+            or value.get("promotion_eligible") is not False
+            or "retrieved_at" not in value
+            or any(not isinstance(value.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", value[key]) for key in hashes)
+            or not isinstance(value.get("station_id"), str) or not re.fullmatch(r"[A-Z0-9]{3,8}", value["station_id"])
+            or value.get("source") not in ("openmeteo_current_forecast", "unverified_input")
+            or type(value.get("training_days")) is not int or not 1 <= value["training_days"] <= 1_000_000
+            or type(value.get("member_count")) is not int or not 1 <= value["member_count"] <= 64):
+        return invalid
+    try:
+        for key in ("target_date", "training_truth_end"):
+            if not isinstance(value.get(key), str) or len(value[key]) != 10:
+                return invalid
+            date.fromisoformat(value[key])
+        clocks = {}
+        for key in ("recorded_at", "retrieved_at"):
+            stamp = value.get(key)
+            if key == "retrieved_at" and stamp is None:
+                continue
+            if not isinstance(stamp, str) or len(stamp) > 64:
+                return invalid
+            clocks[key] = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            if clocks[key].tzinfo is None:
+                return invalid
+        if "retrieved_at" in clocks and clocks["retrieved_at"] > clocks["recorded_at"]:
+            return invalid
+    except ValueError:
+        return invalid
+    missing = ["provider_initialized_at", "original_hourly_completeness",
+               "training_truth_publication_clocks", "serving_code_identity"]
+    if value["retrieved_at"] is None:
+        missing.append("verified_retrieval_clock")
+    if value.get("missing_provenance") != missing:
+        return invalid
+    keys = ("schema_version", "status", *hashes, "content_hash_verified", "station_id", "target_date",
+            "recorded_at", "retrieved_at", "source", "training_days", "training_truth_end", "member_count",
+            "promotion_eligible")
+    receipt = {key: value[key] for key in keys}
+    receipt["missing_provenance"] = missing
+    return receipt
+
+
 def _forecast_diagnostics_payload(forecast: ForecastSnapshot | None) -> dict[str, object] | None:
     if forecast is None:
         return None
@@ -348,6 +412,10 @@ def _forecast_diagnostics_payload(forecast: ForecastSnapshot | None) -> dict[str
             "fresh_station_count": forecast.fresh_station_count,
             "max_calls_per_day": forecast.max_calls_per_day,
             "calls_used_today": forecast.calls_used_today,
+            # This compact allowlisted receipt links every decision context to
+            # the exact immutable served vintage. Other raw provider details
+            # remain excluded. Missing provenance never becomes approval.
+            "issued_forecast_lineage": _issued_forecast_lineage_payload(forecast.raw),
             "raw_feature_keys": sorted(forecast.raw.keys()) if isinstance(forecast.raw, dict) else None,
         }
     )

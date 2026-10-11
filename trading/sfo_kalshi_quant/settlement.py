@@ -118,9 +118,11 @@ def _parse_report_date(text: str) -> date | None:
 
 def _parse_max_temperature(text: str) -> int | None:
     patterns = [
-        r"MAXIMUM\s+(-?\d{1,3})\b",
-        r"MAX TEMP(?:ERATURE)?\s+(-?\d{1,3})\b",
-        r"\bMAX\s+(-?\d{1,3})\b",
+        # NWS R marks a record set/tied, while MM remains missing. Match the
+        # whole observed token rather than truncating an unknown suffix/decimal.
+        r"MAXIMUM\s+(-?\d{1,3})R?(?=\s|$)",
+        r"MAX TEMP(?:ERATURE)?\s+(-?\d{1,3})R?(?=\s|$)",
+        r"\bMAX\s+(-?\d{1,3})R?(?=\s|$)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)

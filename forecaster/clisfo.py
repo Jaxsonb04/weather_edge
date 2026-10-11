@@ -123,13 +123,16 @@ def _parse_max_temperature(text: str) -> int | None:
     temp_header = re.search(r"TEMPERATURE\s*\(F\)", text, flags=re.IGNORECASE)
     if temp_header:
         window = text[temp_header.end(): temp_header.end() + 600]
-        anchored = re.search(r"MAXIMUM\s+(-?\d{1,3})\b", window, flags=re.IGNORECASE)
+        # NWS appends R to an observed value when a record was set or tied.
+        # It is a flag on the number, not missing truth. Require a complete
+        # token so a malformed/fractional value cannot be truncated to integer.
+        anchored = re.search(r"MAXIMUM\s+(-?\d{1,3})R?(?=\s|$)", window, flags=re.IGNORECASE)
         if anchored:
             return int(anchored.group(1))
     for pattern in (
-        r"MAXIMUM\s+(-?\d{1,3})\b",
-        r"MAX TEMP(?:ERATURE)?\s+(-?\d{1,3})\b",
-        r"\bMAX\s+(-?\d{1,3})\b",
+        r"MAXIMUM\s+(-?\d{1,3})R?(?=\s|$)",
+        r"MAX TEMP(?:ERATURE)?\s+(-?\d{1,3})R?(?=\s|$)",
+        r"\bMAX\s+(-?\d{1,3})R?(?=\s|$)",
     ):
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:

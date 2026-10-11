@@ -47,7 +47,7 @@ MAX_TABLE_ROWS = 250_000
 MAX_RUNTIME_SECONDS = 300
 ALLOWED_HOSTS = {'api.open-meteo.com', 'forecast.weather.gov'}
 USER_AGENT = 'WeatherEdge-disclosed-student-paper-research/0.7 (https://github.com/Jaxsonb04/weather_edge)'
-SOURCE_FILES = ('scripts/local_compute/shadow_collect.py', 'forecaster/cities.py',
+SOURCE_FILES = ('scripts/local_compute/shadow_collect.py', 'scripts/local_compute/shadow_history.py', 'forecaster/cities.py',
     'forecaster/emos_forecast.py', 'forecaster/live_forecast_evidence.py',
     'forecaster/postproc_models.py', 'forecaster/emos_recalibration.py',
     'forecaster/truth_store.py', 'forecaster/city_truth.py', 'forecaster/nwp_archive.py',
@@ -106,19 +106,20 @@ class PublicOnlyRedirects(HTTPRedirectHandler):
         raise ValueError('public redirects are disabled by the fixed request budget')
 
 
-def validate_url(url):
+def validate_url(url, allowed_hosts=None):
     parsed = urlsplit(url)
-    if (parsed.scheme != 'https' or parsed.hostname not in ALLOWED_HOSTS
+    if (parsed.scheme != 'https' or parsed.hostname not in (ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
             or parsed.username is not None or parsed.password is not None
             or parsed.port not in (None, 443)):
         raise ValueError('only the two documented unauthenticated public providers are allowed')
 
 
 class PublicClient:
-    def __init__(self, state, maximum, *, now=None, opener=None):
+    def __init__(self, state, maximum, *, now=None, opener=None, allowed_hosts=None):
         if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= MAXIMUM_HTTP_REQUESTS:
             raise ValueError('HTTP request ceiling must be 1..8')
         self.maximum, self.used = maximum, 0
+        self.allowed_hosts = ALLOWED_HOSTS if allowed_hosts is None else frozenset(allowed_hosts)
         self.day = (now or datetime.now(timezone.utc)).date().isoformat()
         self.counter = state / 'public-http-budget.json'
         self.deadline = time.monotonic() + MAX_RUNTIME_SECONDS
@@ -134,7 +135,7 @@ class PublicClient:
         self.opener = opener
 
     def get(self, url):
-        validate_url(url)
+        validate_url(url, self.allowed_hosts)
         if self.used >= self.maximum or time.monotonic() >= self.deadline:
             raise RuntimeError('bounded public request/run allowance exhausted')
         saved = json.loads(self.counter.read_text()) if self.counter.exists() else {}
@@ -149,7 +150,7 @@ class PublicClient:
         started = datetime.now(timezone.utc).isoformat(timespec='microseconds')
         request = Request(url, headers={'User-Agent': USER_AGENT, 'Accept': 'application/json,text/plain'})
         with self.opener.open(request, timeout=15) as response:
-            validate_url(response.geturl())
+            validate_url(response.geturl(), self.allowed_hosts)
             raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ValueError('public response exceeded the fixed byte limit')
@@ -173,15 +174,62 @@ def ensure_schema(conn):
         research_identity TEXT NOT NULL, execution_location TEXT NOT NULL,
         model_policy_fingerprint_sha256 TEXT NOT NULL, lineage_sha256 TEXT NOT NULL,
         source_commit TEXT NOT NULL, source_dirty INTEGER NOT NULL, policy_json TEXT NOT NULL)''')
-    for table in ('shadow_http_evidence', 'shadow_forecast_lineage'):
+    conn.execute('''CREATE TABLE IF NOT EXISTS shadow_training_lineage (
+        history_id TEXT PRIMARY KEY, evidence_id TEXT NOT NULL REFERENCES shadow_http_evidence(evidence_id),
+        station_id TEXT NOT NULL, target_date TEXT NOT NULL, model TEXT NOT NULL, lead_days INTEGER NOT NULL,
+        source TEXT NOT NULL, row_sha256 TEXT NOT NULL, imported_at TEXT NOT NULL,
+        availability_scope TEXT NOT NULL, provider_initialized_at TEXT, is_original_vintage INTEGER NOT NULL CHECK(is_original_vintage=0))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS shadow_truth_lineage (
+        truth_id TEXT PRIMARY KEY, evidence_id TEXT NOT NULL REFERENCES shadow_http_evidence(evidence_id),
+        station_id TEXT NOT NULL, local_date TEXT NOT NULL, max_temperature_f INTEGER NOT NULL,
+        retrieved_at TEXT NOT NULL, source TEXT NOT NULL, finality_basis TEXT NOT NULL,
+        archived_product_id TEXT)''')
+    for table in ('shadow_http_evidence', 'shadow_forecast_lineage', 'shadow_training_lineage', 'shadow_truth_lineage'):
         for operation in ('UPDATE', 'DELETE'):
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_reject_{operation.lower()} "
                          f"BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'shadow evidence is append-only'); END")
-        key = 'evidence_id' if table == 'shadow_http_evidence' else 'snapshot_id'
+        key = {'shadow_http_evidence': 'evidence_id', 'shadow_forecast_lineage': 'snapshot_id',
+               'shadow_training_lineage': 'history_id', 'shadow_truth_lineage': 'truth_id'}[table]
         conn.execute(f'CREATE TRIGGER IF NOT EXISTS {table}_reject_replacement BEFORE INSERT ON {table} '
                      f'WHEN EXISTS(SELECT 1 FROM {table} WHERE {key}=NEW.{key}) '
                      "BEGIN SELECT RAISE(ABORT, 'shadow evidence is append-only'); END")
     conn.commit()
+
+
+def save_training_row(conn, row, evidence_id, imported_at, scope):
+    """Append an attributable training value without replacing retained history.
+
+    Current retrieval never becomes a historical publication/availability time.
+    These archive values cannot populate immutable issued-distribution tables.
+    """
+    prior = conn.execute('SELECT * FROM nwp_model_forecasts WHERE station_id=? AND target_date=? '
+        'AND model=? AND lead_days=? AND source=?', (row[0], row[1], row[2], row[3], row[6])).fetchone()
+    if prior is not None:
+        return 0
+    row_hash = sha(canonical(row).encode())
+    history_id = sha(canonical([evidence_id, row_hash, scope]).encode())
+    conn.execute('INSERT INTO nwp_model_forecasts VALUES (?,?,?,?,?,?,?)', row)
+    conn.execute('INSERT INTO shadow_training_lineage VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        (history_id, evidence_id, row[0], row[1], row[2], row[3], row[6], row_hash,
+         imported_at, scope, None, 0))
+    return 1
+
+
+def archive_live_training(conn, city, forecasts, evidence_id, retrieved_at):
+    """Retain first observed named daily inputs as their own training source."""
+    today = utc_clock(retrieved_at).astimezone(city.fixed_standard_timezone()).date()
+    imported_at = datetime.now(timezone.utc).isoformat(timespec='microseconds')
+    written = 0
+    with conn:
+        for target, members in forecasts.items():
+            lead = (target - today).days
+            if lead not in (0, 1, 2):
+                continue
+            for model, value in members.items():
+                written += save_training_row(conn, (city.nws_station_id, target.isoformat(), model,
+                    lead, value, retrieved_at, 'local_shadow_live_daily'), evidence_id, imported_at,
+                    'first observed local daily forecast; provider initialization/hour completeness unknown')
+    return written
 
 
 def seed_history(conn, seed_path):
@@ -242,6 +290,7 @@ def save_http(conn, provider, city, raw, metadata):
                   metadata['retrieved_at'], metadata['url'], metadata['sha256'],
                   metadata['bytes'], raw.decode('utf-8', errors='replace')))
     conn.commit()
+    return identity
 
 
 def model_payload(payload, city, retrieved_at):
@@ -290,7 +339,8 @@ def bounded_export(conn, captured_at):
     output = {'captured_at': captured_at, 'research_identity': IDENTITY,
               'execution_location': 'local_mac', 'live_orders_enabled': False}
     for table in ('nwp_model_forecasts', 'cli_settlements', 'forecast_emos_daily_high',
-                  'forecast_emos_live_vintages', 'nwp_live_forecast_members', 'shadow_forecast_lineage'):
+                  'forecast_emos_live_vintages', 'nwp_live_forecast_members', 'shadow_forecast_lineage',
+                  'shadow_training_lineage', 'shadow_truth_lineage'):
         columns = [row[1] for row in conn.execute(f'PRAGMA table_info({table})')]
         rows = [dict(zip(columns, values)) for values in conn.execute(f'SELECT * FROM {table} LIMIT ?', (MAX_TABLE_ROWS + 1,))]
         if len(rows) > MAX_TABLE_ROWS:
@@ -356,8 +406,11 @@ def collect(seed_path, state, cities, *, maximum_requests=8, client=None, rotate
                     'models': ','.join(nwp_archive.NWP_MODELS)})
                 try:
                     raw, meta = client.get('https://api.open-meteo.com/v1/forecast?' + params)
-                    save_http(conn, 'open_meteo', city, raw, meta)
+                    evidence_id = save_http(conn, 'open_meteo', city, raw, meta)
                     forecasts[city.slug] = model_payload(json.loads(raw), city, meta['retrieved_at'])
+                    training_rows = archive_live_training(conn, city, forecasts[city.slug], evidence_id, meta['retrieved_at'])
+                    results.append({'city': city.slug, 'stage': 'training', 'new_rows': training_rows,
+                                    'source': 'local_shadow_live_daily', 'original_vintages': False})
                 except Exception as error:
                     results.append({'city': city.slug, 'stage': 'forecast', 'error_type': type(error).__name__})
             for city in cities:

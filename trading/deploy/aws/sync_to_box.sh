@@ -38,6 +38,16 @@ LOCAL_FORECASTER_DIR="${LOCAL_FORECASTER_DIR:-$WEATHEREDGE_ROOT/forecaster}"
 FORECASTER_EXCLUDES="$SCRIPT_DIR/forecaster-runtime.rsync-filter"
 QUIESCE_HELPER="$SCRIPT_DIR/disable_systemd_timers.sh"
 BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db.sh"
+OFFHOST_BACKUP_HELPER="$SCRIPT_DIR/backup_paper_db_offhost.py"
+DATABASE_BACKUP_MODE="${SFO_DATABASE_BACKUP_MODE:-same-volume}"
+OFFHOST_BACKUP_PYTHON="${SFO_DATABASE_BACKUP_LOCAL_PYTHON:-python3}"
+OFFHOST_BACKUP_POLICY="${SFO_DATABASE_BACKUP_OFFHOST_POLICY:-}"
+OFFHOST_BACKUP_COMPUTE_CONFIG="${SFO_DATABASE_BACKUP_LOCAL_COMPUTE_CONFIG:-}"
+HISTORY_BUNDLE="${SFO_DEPLOY_HISTORY_BUNDLE:-}"
+HISTORY_BUNDLE_SHA256="${SFO_DEPLOY_HISTORY_BUNDLE_SHA256:-}"
+HISTORY_LOCAL_PYTHON="${SFO_DEPLOY_HISTORY_LOCAL_PYTHON:-python3}"
+HISTORY_HELPER_DIR="$WEATHEREDGE_ROOT/scripts/local_compute"
+HISTORY_HELPER="$HISTORY_HELPER_DIR/shadow_history_bundle.py"
 SYSTEMD_VERIFY_HELPER="$SCRIPT_DIR/verify_systemd_unit_integrity.sh"
 INSTALL_SYSTEMD_HELPER="$SCRIPT_DIR/install_systemd.sh"
 DEADMAN_HELPER="$SCRIPT_DIR/deploy_deadman.sh"
@@ -97,12 +107,13 @@ if (( DEADMAN_ENABLED == 1 && DEADMAN_TICK_WAIT_SECONDS == 0 )); then
   echo "warning: SFO_DEPLOY_DEADMAN_TICK_WAIT_SECONDS=0; arming will not wait for a box-side trigger to actually run the payload, so 'cron and systemd work on that box' goes back to being an assumption." >&2
 fi
 
-# Audit F-07: this script deliberately needs NO local interpreter. It used to
+# Audit F-07: the default deploy needs NO local interpreter. It used to
 # stamp build provenance by importing two package constants, and discovering
 # Xcode's Python 3.9 at that point -- roughly 90 lines after production timers
 # were already quiesced -- stranded the box mid-deploy with every writer
 # stopped. Those constants are now read literally from source further down, so
-# there is nothing left to resolve and nothing left to fail on.
+# there is nothing left to resolve and nothing left to fail on. Explicit
+# offhost backup/history options validate their interpreters before any SSH.
 DEPLOY_MAINTENANCE_MARKER="/run/weatheredge-deploy-maintenance"
 SSH_OPTS=(
   -i "$HOST_KEY"
@@ -182,6 +193,49 @@ fi
 # Deploy identity for the box-side dead-man. Bash builtins plus `date`, so the
 # audit F-07 rule that this script needs no local interpreter still holds.
 DEPLOY_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+OFFHOST_BACKUP_RECEIPT="$WEATHEREDGE_ROOT/.local/offhost-backup/$DEPLOY_ID.json"
+case "$DATABASE_BACKUP_MODE" in
+  same-volume) ;;
+  offhost)
+    # Validate the optional local interpreter before ANY remote action. The
+    # default same-volume path retains its deliberate no-local-Python contract.
+    if [[ ! -f "$OFFHOST_BACKUP_HELPER" || ! -f "$OFFHOST_BACKUP_POLICY" || ! -f "$OFFHOST_BACKUP_COMPUTE_CONFIG" ]] \
+      || ! "$OFFHOST_BACKUP_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+      echo "Offhost backup requires its reviewed helper, private current cost policy, installed local compute config and local Python >=3.11." >&2
+      exit 1
+    fi
+    ;;
+  *) echo "SFO_DATABASE_BACKUP_MODE must be same-volume or offhost" >&2; exit 1 ;;
+esac
+verify_history_bundle() {
+  "$HISTORY_LOCAL_PYTHON" "$HISTORY_HELPER" verify \
+    --bundle "$HISTORY_BUNDLE" --expected-sha256 "$HISTORY_BUNDLE_SHA256"
+}
+if [[ -n "$HISTORY_BUNDLE" || -n "$HISTORY_BUNDLE_SHA256" ]]; then
+  if [[ ! "$HISTORY_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || [[ ! -f "$HISTORY_BUNDLE" || -L "$HISTORY_BUNDLE" ]]; then
+    echo "History import requires a regular local bundle and its exact lowercase content SHA256." >&2
+    exit 1
+  fi
+  for history_file in shadow_history_bundle.py shadow_history.py shadow_collect.py guards.py; do
+    if [[ ! -f "$HISTORY_HELPER_DIR/$history_file" ]]; then
+      echo "History import helper is missing: $history_file" >&2
+      exit 1
+    fi
+  done
+  if ! "$HISTORY_LOCAL_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
+    || ! verify_history_bundle; then
+    echo "History bundle verification failed before any remote action; local Python >=3.11 and exact raw source attribution are required." >&2
+    exit 1
+  fi
+fi
+offhost_backup() {
+  "$OFFHOST_BACKUP_PYTHON" "$OFFHOST_BACKUP_HELPER" "$1" \
+    --policy "$OFFHOST_BACKUP_POLICY" --receipt "$OFFHOST_BACKUP_RECEIPT" \
+    --database "$REMOTE_DB" --target "$REMOTE_USER@$HOST_IP" --key "$HOST_KEY" \
+    --deploy-id "$DEPLOY_ID" --candidate-sha "$SOURCE_SHA" \
+    --local-compute-config "$OFFHOST_BACKUP_COMPUTE_CONFIG"
+}
 DEADMAN_DEPLOY_HOST="$(hostname -s 2>/dev/null || echo unknown)"
 if [[ ! "$DEADMAN_DEPLOY_HOST" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
   DEADMAN_DEPLOY_HOST="unknown"
@@ -584,10 +638,14 @@ verify_deploy_source_unchanged() {
 # streamed for preflight and backup so an old remote source tree cannot weaken
 # the deployment gate.
 REMOTE_DB="$REMOTE_BASE/trading/data/paper_trading.db"
-preflight_output="$(
-  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-    bash -s preflight "$REMOTE_DB" < "$BACKUP_HELPER"
-)"
+if [[ "$DATABASE_BACKUP_MODE" == "offhost" ]]; then
+  preflight_output="$(offhost_backup preflight)"
+else
+  preflight_output="$(
+    ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      bash -s preflight "$REMOTE_DB" < "$BACKUP_HELPER"
+  )"
+fi
 if [[ -n "$preflight_output" ]]; then
   printf '%s\n' "$preflight_output"
 fi
@@ -931,26 +989,37 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "sudo install -o root -g root -m 600 /dev/null '$DEPLOY_MAINTENANCE_MARKER'"
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" bash -s quiesce < "$QUIESCE_HELPER"
 
-backup_output="$(
-  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
-    bash -s backup "$REMOTE_DB" < "$BACKUP_HELPER"
-)"
+if [[ "$DATABASE_BACKUP_MODE" == "offhost" ]]; then
+  backup_output="$(offhost_backup backup)"
+else
+  backup_output="$(
+    ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+      bash -s backup "$REMOTE_DB" < "$BACKUP_HELPER"
+  )"
+fi
 printf '%s\n' "$backup_output"
 deadman_abort_if_revoked
 ANALYSIS_DB_SNAPSHOT="$(
   sed -n 's/^WEATHEREDGE_BACKUP_SNAPSHOT=//p' <<<"$backup_output" | tail -n 1
 )"
-if [[ ! "$ANALYSIS_DB_SNAPSHOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+if [[ "$DATABASE_BACKUP_MODE" == "offhost" ]]; then
+  if ! grep -qx 'WEATHEREDGE_OFFHOST_BACKUP_VERIFIED=1' <<<"$backup_output"; then
+    echo "Offhost backup did not prove its encrypted independent recovery gate" >&2
+    exit 1
+  fi
+elif [[ ! "$ANALYSIS_DB_SNAPSHOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
   echo "verified backup did not return a conservative absolute snapshot path" >&2
   exit 1
 fi
-IFS='/' read -r -a ANALYSIS_DB_COMPONENTS <<<"${ANALYSIS_DB_SNAPSHOT#/}"
-for component in "${ANALYSIS_DB_COMPONENTS[@]}"; do
-  if [[ "$component" == "." || "$component" == ".." ]]; then
-    echo "verified backup snapshot must not contain '.' or '..' path components" >&2
-    exit 1
-  fi
-done
+if [[ -n "$ANALYSIS_DB_SNAPSHOT" ]]; then
+  IFS='/' read -r -a ANALYSIS_DB_COMPONENTS <<<"${ANALYSIS_DB_SNAPSHOT#/}"
+  for component in "${ANALYSIS_DB_COMPONENTS[@]}"; do
+    if [[ "$component" == "." || "$component" == ".." ]]; then
+      echo "verified backup snapshot must not contain '.' or '..' path components" >&2
+      exit 1
+    fi
+  done
+fi
 
 verify_deploy_source_unchanged "backup verification"
 
@@ -962,6 +1031,11 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 # The box-side dead-man is told the same thing, with no timers at all: from here
 # until the install is verified it may never enable one, only record and alert.
 deadman_abort_if_revoked
+if [[ "$DATABASE_BACKUP_MODE" == "offhost" ]]; then
+  # No artifact age/reuse exception: the verified DB must still be byte-frozen
+  # from this deployment's checkpoint until the first source transfer.
+  offhost_backup assert-lineage
+fi
 deadman_phase mixed
 PRE_TRANSFER_RECOVERY_ARMED=0
 trap - EXIT HUP INT TERM
@@ -1110,8 +1184,40 @@ ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
 ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && .venv/bin/python deploy/aws/validate_account_cutover.py --db '$REMOTE_DB'"
 
-# From this point onward the transferred source and account cutover have passed
-# their gates and producer restoration may begin. Any later exit must either
+# The optional historical bundle contains reconstructed training and retained
+# source receipts only. Copy this explicit helper allowlist, never the Mac
+# worker's state, credentials, issued vintages or paper ledger. Revalidate the
+# ignored bundle after the long backup/install; the remote importer validates
+# the same pin again and requires the root-owned maintenance marker. Any
+# failure here retains mixed-phase quiescence before timer recovery is armed.
+if [[ -n "$HISTORY_BUNDLE" ]]; then
+  deadman_abort_if_revoked
+  verify_history_bundle
+  HISTORY_REMOTE_DIR="$REMOTE_BASE/.local/deploy-history/$DEPLOY_ID"
+  deadman_abort_if_revoked
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "install -d -m 700 '$HISTORY_REMOTE_DIR' && install -d -m 755 '$REMOTE_BASE/scripts/local_compute'"
+  deadman_abort_if_revoked
+  rsync -av \
+    -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
+    -- \
+    "$HISTORY_HELPER_DIR/shadow_history_bundle.py" \
+    "$HISTORY_HELPER_DIR/shadow_history.py" \
+    "$HISTORY_HELPER_DIR/shadow_collect.py" \
+    "$HISTORY_HELPER_DIR/guards.py" \
+    "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/scripts/local_compute/"
+  deadman_abort_if_revoked
+  rsync -av --chmod=F600 \
+    -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
+    -- "$HISTORY_BUNDLE" "$REMOTE_USER@$HOST_IP:$HISTORY_REMOTE_DIR/history.json"
+  verify_deploy_source_unchanged "history helper transfer"
+  deadman_abort_if_revoked
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+    "'$REMOTE_BASE/trading/.venv/bin/python' '$REMOTE_BASE/scripts/local_compute/shadow_history_bundle.py' import --db '$REMOTE_BASE/forecaster/weather.db' --bundle '$HISTORY_REMOTE_DIR/history.json' --expected-sha256 '$HISTORY_BUNDLE_SHA256' --apply"
+fi
+
+# The transferred source, account cutover and requested historical import have
+# passed their gates and producer restoration may begin. Any later exit must either
 # restore the exact captured timer policy and release maintenance, or quiesce
 # the host again while retaining the marker. This prevents a split-brain state
 # where timers run but the independent scheduler watchdog remains suppressed.
@@ -1202,7 +1308,9 @@ deadman_phase post-install ${ENABLED_TIMERS[@]+"${ENABLED_TIMERS[@]}"}
 # any producer or freshness check is restored. The helper reads the immutable,
 # integrity-checked deploy snapshot instead of the live journal.
 ANALYSIS_CACHE_REFRESHED=0
-if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
+if [[ "$DATABASE_BACKUP_MODE" == "offhost" ]]; then
+  echo "Historical Strategy Lab analysis deferred: verified recovery snapshot is offhost." >&2
+elif ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
   "cd '$REMOTE_BASE/trading' && SFO_STRATEGY_ANALYSIS_DB_PATH='$ANALYSIS_DB_SNAPSHOT' bash deploy/aws/refresh_strategy_analysis_cache.sh"; then
   ANALYSIS_CACHE_REFRESHED=1
 else
