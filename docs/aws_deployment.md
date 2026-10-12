@@ -303,7 +303,9 @@ and full deployment, then restore its existing plist and enabled preference.
 A private `SFO_DATABASE_BACKUP_OFFHOST_POLICY` must bind current-month
 verified free egress and no-increase-spend evidence by SHA-256. That evidence
 must cover retained compressed storage and request/transfer costs, including
-retention that crosses a billing month. The policy names the exact bucket,
+retention that crosses a billing month and any additional noncurrent-version
+retention after current expiration. Free outbound transfer does not establish
+free storage or request costs. The policy names the exact bucket,
 prefix and region, plus operator-read evidence no older than 24 hours that
 versioning is enabled and the existing snapshot retention is 35 days. The
 instance role does not gain lifecycle/versioning-control read permissions;

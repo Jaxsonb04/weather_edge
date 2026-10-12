@@ -246,3 +246,74 @@ unloaded again during this final source maintenance, then restored from the
 same preserved plist after the clean reviewed commit. A second native
 checks-only invocation admitted the original scheduled limits; the restored
 job is idle with its 7,200-second interval intact.
+
+## Signed-in billing and activation preflight (21:48–21:57 PDT)
+
+The owner completed AWS console sign-in and authorized continued work. The
+existing console session can read billing and backup controls; the separate
+expired CLI SSO session was not renewed or substituted with broader access.
+Read-only production inspection still found September 4 backend source,
+paper-only live/research scope, real execution off/dry-run on, zero failed units,
+no maintenance marker, a 34.82-GiB journal and 16.37 GiB free. No AWS service,
+configuration, database or bucket was changed during this audit.
+
+All three decision-reporting indexes exactly match current definitions and all
+retention indexes are present. Deployment should take their no-op paths rather
+than need another journal-sized index build. Canonical weather schemas are
+compatible, and indexed reads found no conflicts with the planned 9,600 NWP and
+600 final-observation imports. The pinned bundle reverified by raw replay with
+120 matched dates at both leads for each of the five stations. These are still
+prepared local training data, not completed AWS onboarding.
+
+Exact merged-main `a1c2d6e32` passed required CI: 3,878 tests on both Python
+versions, twelve skips, 74 subtests, zero Semgrep findings, and Web 223 tests with
+all build/budget gates. Independent read-only reviews passed fifty recovery
+tests and 54 account/lifecycle tests. No new source or migration blocker was
+found. Keep paper placement off during a future source cutover and initial
+forecaster refresh; restore existing placement flags only after verifying fresh
+V7 rows across all twenty cities. Existing paid weather coverage need not expand.
+
+Fresh signed-in billing shows $16.59 estimated month-to-date charges, including
+$1.44 S3 storage at $0.026/GB-month. Active credits and remaining credit are zero;
+the Free Tier API reports Glue/KMS allowances, not an applicable S3 storage
+allowance. Internet transfer out is 32.756 GB under the existing 100-GB global
+monthly free tier. Its remaining allowance does not cover S3 storage or request
+charges. Backup bucket location matches its configured region, versioning is
+Enabled, and the snapshot prefix has current expiration at 35 days plus seven
+noncurrent days. A storage-cost estimate must cover the additional noncurrent
+period and lifecycle timing, not stop at the nominal current expiration.
+Exact destination/control/billing evidence and its SHA256 remain in private
+operator state; no resource or account identifiers are recorded here.
+
+No verified zero-extra-spend path satisfies the existing durable recovery gate.
+An old snapshot or a Mac-only replica cannot substitute for the frozen current
+source, and already-released Lightsail savings cannot be counted again as a new
+offset. The operator receipt correctly keeps `no_incremental_spend_verified`
+false. The owner was asked to authorize up to $1 total incremental charges for
+one bounded compressed backup/restore and cutover, with no instance/disk upgrade;
+that exception is pending. It is not authorization until the owner answers.
+Native Mac admission also currently defers for competing load; FileVault remains
+On and resource ceilings remain unchanged. No upload, independent full restore
+or AWS V7 activation has been performed. Keep the existing paper runtime intact
+until every applicable gate can pass.
+
+An independent same-transaction, read-only financial audit at 21:57 PDT
+reconciled all ten retained accounts with zero lifecycle cash mismatches. Every
+order's recorded entry fee matched cost minus entry price within rounding
+tolerance. Live Stability has realized ledger equity $1,034.8985, available cash
+$985.3585 and $49.54 open cost basis across four lots; V6 has $998.1081,
+$925.8681 and $72.24 across ten lots. Neither has resting reservations. These
+are separate paper accounts, each with its own $1,000 opening and exactly one
+opening event; no V7 account exists yet. Market marks and marked equity are not
+established by these realized-cash reconciliations.
+
+October 5–10 results remain unchanged. October 11 is still partial: Live
++$3.43 across four resolved lots with $0.35 associated entry/exit fees; V6
+−$1.83 across four lots with $0.22 fees, comprising $1.22 positive and $3.05
+negative P&L. Fees are included in those results. V6's new loss is a Philadelphia
+NO position closed at 14:25 PDT for −$3.05; the separate Live position in the
+same market exited earlier for +$1.04. This is observed exit-timing divergence,
+not evidence of an avoidable loss or a V7 improvement. Phoenix September 27's
+three original positions remain unresolved with their original execution/account
+attribution. Exact baseline hashes for all 3,473 orders and 8,335 ledger rows
+are retained privately for a later cutover comparison.

@@ -847,8 +847,10 @@ do not invent or infer free allowances from old snapshots. It contains:
 
 The zero/false example intentionally refuses. Set positive numbers only from
 fresh evidence after other usage and a safety margin. No-increase-spend proof
-must cover compressed storage for the entire retention period, request costs
-and transfers, including a billing-month boundary. Exact bucket/prefix/region
+must cover compressed storage for the entire retention period, including any
+additional noncurrent-version period after current expiration, request costs
+and transfers, including a billing-month boundary. Free outbound transfer alone
+does not cover billable storage or requests. Exact bucket/prefix/region
 must match runtime configuration and bucket location. The existing operator
 session must verify enabled versioning and 35-day snapshot retention within
 the last 24 hours; bind those read-only control snapshots in the same hashed
