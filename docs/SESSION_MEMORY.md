@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-11 (V7 priorities, recent-loss investigation, attributed city training and final-report recovery; guarded cutover preparation)
+Last updated: 2026-10-11 (V7 priorities, signed-in billing/control audit and guarded cutover deferment)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last backend safety inspection: 2026-10-11 13:31 PDT (fresh source, live flags, profile/city scope, units and journal/capacity; accounting at 13:03–13:05 PDT)
+Last backend safety inspection: 2026-10-11 21:48–21:57 PDT (source, live flags, units, indexes, history conflicts, journal/capacity and independent financial reconciliation)
 
 Last public artifact inspection: 2026-10-11 13:05 PDT (independent stable manifest and all five runtime JSON hashes; no static release)
 
@@ -29,15 +29,16 @@ operational claim; all production observations below are dated snapshots.
   Live execution is off and dry-run on. Public snapshot
   `25a091e1d77fad165df2e45f` passed all five runtime hashes against an unchanged
   manifest; historical analysis is still September 4. Fresh publication is not
-  fresh analysis. Source main includes merged PR #139 at `604d3382c`; that UI
-  dependency/security release has not been deployed to AWS.
+  fresh analysis. Source main now includes merged PR #145 at `a1c2d6e32`; its
+  exact merged-source CI passed, but backend and UI releases remain undeployed.
 - **Recent paper losses:** October 5–10 completed PDT booking dates lost $38.21
   in Live Stability and $19.6772 in Research ROI V6. Their separate realized
-  ledger equities at the audit are $1,033.29 and $1,001.16, each from its own
-  $1,000 paper account. October 11 is partial: +$1.82 and +$1.22. Never combine
+  ledger equities at 21:57 PDT are $1,034.8985 and $998.1081, each from its own
+  $1,000 paper account. October 11 is partial: +$3.43 and −$1.83. Never combine
   these capitals or borrow V6 results for V7. Live's recent Dallas, Atlanta and
   Austin attribution is −$13.95, −$12.54 and −$8.02. V6's full retained winners
-  earned $513.7007 while losers cost $512.5426. A 71.90% win rate barely clears
+  at the earlier 13:03 PDT snapshot earned $513.7007 while losers cost
+  $512.5426. That snapshot's 71.90% win rate barely clears
   its 71.85% observed payout break-even rate. Fees are included, not subtracted
   twice. Bounded monitor traces show normal stops vetoed by still-high model
   probabilities, followed by worse catastrophic exits; the model reads were
@@ -71,8 +72,8 @@ operational claim; all production observations below are dated snapshots.
   columns cannot substitute. No numeric final exists to settle those positions.
   Houston uses KHOU (October 10 = 86°F), not KIAH. Initial historical recovery used eighteen bounded free GETs,
   within eight per batch and the shared 96/day ceiling. No paid provider used.
-- **Recovery/cutover preparation:** the fresh journal is 34.63 GiB with 16.62 GiB
-  free, short 19.01 GiB for canonical backup plus margin. An opt-in compressed
+- **Recovery/cutover preparation:** the 21:48 PDT journal is 34.82 GiB with
+  16.37 GiB free, still short for canonical backup plus margin. An opt-in compressed
   S3/offhost restore path is implemented and under exact-candidate validation:
   shared installed-worker lock and configuration hash, exact bucket/prefix/
   region plus hash-bound 24-hour operator evidence of existing 35-day retention
@@ -80,10 +81,19 @@ operational claim; all production observations below are dated snapshots.
   ceiling, encrypted/versioned durable S3, independently downloaded manifest,
   raw/compressed hashes, full SQLite integrity/FK checks, FileVault and native
   Mac guards, frozen source identity immediately before transfer. Sampling
-  suggests about 4.72 GiB compressed but does not guarantee that size. Current
-  AWS billing/egress evidence is unavailable: CLI SSO expired, production role
-  denied Free Tier access, and user sign-in is pending. No policy is fabricated,
-  no cloud write/deployment has occurred and no paid expansion is authorized.
+  suggests about 4.72 GiB compressed but does not guarantee that size. After the
+  owner signed in, actual billing/control reads at 21:49–21:54 PDT found no
+  active credits or applicable S3 free storage, $16.59 month-to-date charges,
+  and billable S3 storage at $0.026/GB-month. Internet transfer out is 32.756 GB
+  under the 100-GB global monthly allowance; free transfer does not make retained
+  storage or requests free. Existing snapshot versioning is Enabled, with
+  35-day current expiration plus seven noncurrent days; cost evidence must cover
+  both periods. Under the owner's existing $0-extra-spend limit, the recovery
+  gate correctly remains closed. A concrete up-to-$1 total backup/cutover
+  exception was requested and remains unanswered, not implicitly approved.
+  No cost policy is fabricated and no AWS write or deployment has occurred.
+  The Mac native admission also currently defers for competing load; its limits
+  remain intact. Full independent restore has not run.
   An opt-in SHA-pinned raw-replayed weather-only bundle import runs while
   maintenance holds every producer and refuses conflicts before timer recovery.
   Installed archive-only behavior must be explicitly preserved at cutover:
@@ -99,14 +109,16 @@ operational claim; all production observations below are dated snapshots.
   one account/policy plus realistic net fills, fees, gross losses, exposure and
   positive uncertainty evidence are needed before capital selection. The
   present evidence does not support an initial real-money bankroll; live $0.
-  The full local gate passed 3,847 tests, ten skips, 74 subtests and compilation;
-  local Semgrep is unavailable and required exact-candidate CI remains a gate.
-  Final affected validation passed 195 tests including all 137 deployment-shell
-  cases; an independent review recomputed the loss/fee/position conclusions.
-  First-candidate CI passed Python 3.12/3.13 with 3,854 tests each, twelve skips,
-  74 subtests, zero Semgrep findings and Web 223 tests/all build gates. Later
-  destination/control binding passed fifty helper tests independently; verify
-  required CI on the exact final candidate before merge/deployment.
+  Exact merged-main CI at `a1c2d6e32` passed Python 3.12/3.13 with 3,878 tests
+  each, twelve skips, 74 subtests, zero Semgrep findings and Web 223 tests/all
+  build gates. Independent reviews recomputed loss/fee/position conclusions,
+  passed fifty recovery tests and 54 account/lifecycle cases. Fresh AWS indexes
+  match current reporting definitions and all retention indexes exist, avoiding
+  another full-size index build. The pinned five-city bundle has no AWS history
+  conflicts and reverified locally. During a future guarded deployment, stage
+  paper placement off until fresh V7 forecaster rows for all twenty cities are
+  verified, then restore the existing paper flags. Preserve real-live off/dry-run
+  on and all archived account attribution.
 - **Local operation:** clean candidate `2e1acd9c0` actually issued fifteen fresh
   local distributions and 120 named members for all five new cities, using
   ten free GETs in two batches. Including the Phoenix raw-report check, shared UTC-day usage is now 29/96. These are
