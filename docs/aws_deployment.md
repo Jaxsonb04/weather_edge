@@ -346,6 +346,31 @@ still holds every producer. Conflicts or a changed pin refuse before timer
 restoration. Issued forecast evidence, Mac identities and paper accounts are
 never imported. Omitting the option retains the normal deployment flow.
 
+The owner confirmed a $40 total AWS budget per calendar month on October 12,
+including existing infrastructure, and authorized one recovery/cutover attempt
+up to $1 inside that cap. The optional `spend_mode=authorized-one-attempt` policy
+keeps `no_incremental_spend_verified=false` and requires a hash-bound actual
+owner answer, an all-in cost estimate, and fresh whole-account monthly baseline
+upper bounds covering every month in the retained-storage horizon. Each baseline
+plus the full authorized attempt allowance must fit the monthly budget. Neither
+the helper nor an AWS forecast imposes a hard cap on the eventual AWS invoice;
+missing or excessive estimates refuse before an upload.
+
+This path writes one gzip directly into at most two encrypted parts, each no
+larger than 4 GiB, using conditional single PUTs with automatic SDK retries
+disabled. There is no incomplete multipart upload to retain indefinitely after
+a failure. The manifest binds ordered part hashes, sizes and version IDs. The
+independent restore concatenates version-pinned streamed parts and retains the
+same full gzip/raw checksum, integrity, foreign-key and frozen-lineage gates.
+Existing lifecycle rules and IAM permissions remain unchanged. A 45-day minimum
+cost horizon covers 35 current days, seven noncurrent days and a timing margin.
+
+The canonical private reservation ledger retains the entire one-attempt
+authorization after success, failure or an ambiguous response, across deploy IDs
+and month rollover. A repeated answer hash cannot fund another attempt. The
+default zero-increment backup policy remains available and unchanged. Fixture
+tests do not establish actual restore runtime or current budget feasibility.
+
 The source revision, main branch and clean checkout are rechecked after backup
 and after source transfer. Stop concurrent source edits for deployment; these
 checks detect persistent changes but are not an immutable source export.

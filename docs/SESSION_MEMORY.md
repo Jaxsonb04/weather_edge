@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-11 (V7 priorities, signed-in billing/control audit and guarded cutover deferment)
+Last updated: 2026-10-12 (confirmed $40 total monthly AWS budget; one recovery attempt up to $1 authorized)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
@@ -15,12 +15,22 @@ operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **Owner scope (October 11):** verify and complete five-city attributed training,
+- **Owner scope (October 12):** verify and complete five-city attributed training,
   missing final reports, budget-compatible recovery and V7 activation across the
   two active paper profiles, then gather realistic prospective evidence before
   selecting real capital. The owner wants activation today and better results.
-  Real-money trading, increased AWS spending, retention deletion, weakened risk
-  or promotion gates, and sustained intensive Mac work remain unauthorized.
+  The owner explicitly approved the proposed one recovery/cutover attempt up
+  to $1 and confirmed a new **$40 total AWS budget per calendar month**, including
+  existing infrastructure, storage and backups. This supersedes the previous
+  zero-increment spending restriction. The recovery allowance belongs inside
+  the monthly cap, not on top of it. Persist it across failed attempts and month
+  rollover; another paid attempt needs a new authorization. Do not deploy or add
+  charges based only on month-to-date headroom: verify the projected full month
+  and each month of retained backup storage. The last verified forecast was
+  $54.50 on October 5, so the $40 cap is not yet proved feasible. October 12's
+  console session has expired; fresh billing sign-in is pending. Real-money
+  trading, retention deletion, weakened risk or promotion gates, and sustained
+  intensive Mac work remain unauthorized.
   A same-day profit improvement cannot be demonstrated from a new policy era.
 - **Fresh production snapshot (13:03–13:05 PDT):** AWS remains clean September 4
   backend `2a6432e3`, exec-v4, Research ROI V6 and fifteen deployed cities. No V7
@@ -88,10 +98,14 @@ operational claim; all production observations below are dated snapshots.
   under the 100-GB global monthly allowance; free transfer does not make retained
   storage or requests free. Existing snapshot versioning is Enabled, with
   35-day current expiration plus seven noncurrent days; cost evidence must cover
-  both periods. Under the owner's existing $0-extra-spend limit, the recovery
-  gate correctly remains closed. A concrete up-to-$1 total backup/cutover
-  exception was requested and remains unanswered, not implicitly approved.
-  No cost policy is fabricated and no AWS write or deployment has occurred.
+  both periods. The October 11 zero-extra-spend deferment is superseded by the
+  October 12 explicit one-attempt approval and $40 total monthly cap. The prepared
+  bounded-spend path uses conditional single-PUT parts and a persistent full-cap
+  reservation; it cannot leave incomplete multipart uploads outside the verified
+  lifecycle. Fresh whole-account projections must fit $40 in every retained-
+  storage month, including the full $1 allowance. No cost policy is fabricated
+  and no AWS write or deployment has occurred. Latest read-only AWS source
+  inspection at October 12, 20:29 PDT still found exec-v4 and no V7 tables.
   The Mac native admission also currently defers for competing load; its limits
   remain intact. Full independent restore has not run.
   An opt-in SHA-pinned raw-replayed weather-only bundle import runs while
