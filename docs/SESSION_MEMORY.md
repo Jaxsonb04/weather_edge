@@ -169,7 +169,7 @@ operational claim; all production observations below are dated snapshots.
   power still defers admission; unplugging during work stops it at the next
   native power check. AWS paper trading continues independently. Explicit
   manual recovery has separate authorization and the same native guards.
-  Focused validation passed 146 tests and 74 subtests, including actual child
+  Focused validation passed 147 tests and 74 subtests, including actual child
   cancellation on owner pause and simulated power loss. No weather API or AWS
   mutation was used for switch verification. The older scheduled SIGSTOP
   permission failure remains a separate unresolved incident; this switch does

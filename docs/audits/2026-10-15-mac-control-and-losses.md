@@ -12,7 +12,7 @@ idle and reports an unfinished stop rather than claiming success. Reinstall
 preserves the saved pause. An explicit manual maintenance/restore command remains
 separate from scheduled work and requires its existing native resource admission.
 
-Focused validation passed 146 tests and 74 subtests, bytecode compilation and
+Focused validation passed 147 tests and 74 subtests, bytecode compilation and
 diff checks. Real owned-child fixtures verified cleanup after pause and after a
 simulated mid-run loss of AC power. Native app clicks verified on/off, including
 an unloaded-job bootout returning macOS code 3; only that operation accepts it,

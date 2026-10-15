@@ -60,6 +60,11 @@ class Control:
                                   disabled_result.stdout))
         loaded = launchctl('print', self.service).returncode == 0
         running = worker_running(self.state)
+        receipt = self.state / 'status.json'
+        if receipt.exists() and receipt.stat().st_size > 1024**2:
+            raise ValueError('worker status exceeds its bounded size; stop state is unverified')
+        cleanup_unverified = (receipt.exists() and
+                              json.loads(receipt.read_text()).get('error_type') == 'GroupCleanupError')
         paused = self.marker.exists() or disabled
         enabled = not paused and loaded
         if paused:
@@ -68,8 +73,10 @@ class Control:
             message = 'ON — research is running.' if running else 'ON — waiting for the next scheduled run.'
         else:
             message = 'OFF — research schedule is not loaded.'
+        if cleanup_unverified:
+            message = 'Child cleanup is unverified. Schedule ' + ('OFF.' if paused else 'ON.')
         return {'enabled': enabled, 'paused': paused, 'loaded': loaded,
-                'running': running, 'message': message}
+                'running': running, 'cleanup_unverified': cleanup_unverified, 'message': message}
 
     def off(self, *, wait_seconds=15):
         staged = self.marker.with_suffix('.tmp')
@@ -87,6 +94,8 @@ class Control:
         # unloading the caffeinate wrapper. A timeout never claims work stopped.
         launchctl('bootout', self.service)
         result = self.status()
+        if result['cleanup_unverified']:
+            raise RuntimeError('Schedule is off, but child cleanup failed. An operator must verify the remaining process.')
         if result['loaded'] or result['running'] or not result['paused']:
             raise RuntimeError('Schedule pause could not be verified; reopen the control to check.')
         return result
@@ -98,6 +107,8 @@ class Control:
         if plistlib.loads(self.plist.read_bytes()) != expected:
             raise ValueError('installed schedule differs; reinstall it before turning research on')
         current = self.status()
+        if current['cleanup_unverified']:
+            raise RuntimeError('Child cleanup is unverified; an operator must check before resuming research.')
         if current['enabled']:
             return current
         if worker_running(self.state) and self.marker.exists():

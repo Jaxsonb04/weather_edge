@@ -816,7 +816,9 @@ reviewed compressed/offhost recovery gate. Set
 Each offhost invocation holds the actual configured worker state’s `worker.lock`
 and binds/rechecks the configuration SHA in its restore receipt. Temporarily
 unload the existing two-hour LaunchAgent throughout source maintenance and full
-deployment, then restore the same plist and enabled preference.
+deployment, then preserve the same plist and the owner's saved on/off preference.
+WeatherEdge Control's OFF marker must remain off after maintenance; do not
+silently re-enable it. See `docs/local_compute.md`.
 The default remains the same-volume backup. The optional path validates its
 interpreter, fresh operator policy and native Mac admission before stopping any
 service, and refuses if the raw restore is not on the FileVault-protected home

@@ -299,7 +299,9 @@ volume. `SFO_DATABASE_BACKUP_LOCAL_COMPUTE_CONFIG` must name the installed
 worker configuration; each offhost operation holds that worker state directory’s
 shared `worker.lock` and binds the configuration hash to its recovery receipt.
 Keep the two-hour LaunchAgent temporarily unloaded throughout source maintenance
-and full deployment, then restore its existing plist and enabled preference.
+and full deployment, then preserve its existing plist and the owner's saved
+on/off preference. WeatherEdge Control's OFF marker must remain off; do not
+silently re-enable it after maintenance. See `docs/local_compute.md`.
 A private `SFO_DATABASE_BACKUP_OFFHOST_POLICY` must bind current-month
 verified free egress and no-increase-spend evidence by SHA-256. That evidence
 must cover retained compressed storage and request/transfer costs, including

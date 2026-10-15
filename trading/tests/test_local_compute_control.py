@@ -113,6 +113,17 @@ def test_failed_resume_keeps_owner_pause(controlled):
     assert control.marker.exists() and service['disabled'] and not service['loaded']
 
 
+def test_failed_child_cleanup_is_never_claimed_as_stopped_or_resumed(controlled):
+    _, control, service = controlled
+    (control.state / 'status.json').write_text(json.dumps({'status': 'failed', 'error_type': 'GroupCleanupError'}))
+    with pytest.raises(RuntimeError, match='child cleanup failed'):
+        control.off()
+    assert control.marker.exists() and service['disabled'] and not service['loaded']
+    assert control.status()['cleanup_unverified']
+    with pytest.raises(RuntimeError, match='Child cleanup is unverified'):
+        control.on()
+
+
 def test_schedule_installer_preserves_owner_pause(controlled):
     module, control, service = controlled
     control.off()
