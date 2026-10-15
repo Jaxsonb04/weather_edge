@@ -64,9 +64,52 @@ or establish what undeployed V7 would have earned. No risk thresholds or
 promotion gates were relaxed. Real-money allocation remains zero.
 
 The confirmed AWS limit remains $40 total per calendar month, with the approved
-one-attempt $1 recovery allowance inside that total. The last verified billing
-snapshot, October 12, was $17.55 month-to-date and a $43.37 full-month forecast,
-above the cap before recovery. The October 15 console requires sign-in again;
-the owner has been asked to refresh it. No budget-fit estimate or cost policy
-is fabricated. V7 activation and prospective bankroll qualification remain
-unfinished. The owner's Mac OFF preference must survive subsequent maintenance.
+one-attempt $1 recovery allowance inside that total. After fresh owner sign-in,
+October 15 billing shows $21.23 month-to-date. Its summary forecasts $49.84 and
+Budgets forecasts $44.19; both exceed $40 before recovery. The existing
+whole-account monthly COST budget was changed from $28 to $40 and independently
+read back through the API and console. Notifications were preserved and there
+are zero budget actions. This is an alert budget, not a hard invoice cap.
+
+The existing server still bills $0.04/hour, gp3 $0.096/GB-month, with standard
+CPU credits and no elastic IP allocation. Fresh existing S3 controls retain
+35-day snapshots plus seven noncurrent days and 90-day journals plus thirty
+noncurrent days; versioning is Enabled. Daily standard-storage metrics were
+144.66, 144.73, 117.29 and 89.41 decimal GB on October 11–14. Existing lifecycle
+expiration explains a declining footprint; this task did not delete retention.
+
+A same-memory, same-disk Spot proposal uses an explicit $0.018/hour ceiling,
+standard CPU credits, retained 8-GB temporary boot storage, existing IPv4/S3,
+the approved $1 attempt and a reserve. Its conditional October estimate is:
+
+| Proposed October component | USD |
+| --- | ---: |
+| Already billed | 21.23 |
+| Unbilled usage and bounded transition allowance | 1.25 |
+| Up to 400 remaining Spot hours | 7.20 |
+| Remaining original 64-GB gp3 storage | 3.31 |
+| Remaining IPv4 | 2.00 |
+| Existing S3 storage and requests, remaining month | 2.85 |
+| Retained temporary 8-GB boot volume | 0.42 |
+| Previously approved single recovery attempt | 1.00 |
+| Contingency | 0.50 |
+| **Conditional total** | **39.76** |
+
+The original on-demand server must stop no later than 18:00 PDT October 15 for
+this estimate; recompute it if that deadline is missed. Existing S3's remaining
+storage envelope assumes at most 200 decimal GB, separate from new backup
+storage covered by the $1 attempt. This is a planning estimate, not an actual
+spend policy or guarantee. A full later 31-day month under these assumptions
+is about $31.03. The current-zone Spot quote was $0.0178/hour when read.
+
+Owner acceptance of Spot interruption and missed paper/forecast cycles is
+pending. The proposed old server would remain stopped if cutover failed, with
+the original journal disk retained for rollback. Final recovery, cost, capacity,
+source identity and runtime checks remain mandatory; no infrastructure change
+or shutdown has been executed or scheduled. The Mac is currently on battery,
+so its native admission blocks independent recovery until connected to AC.
+The background switch remains OFF through any explicit manual maintenance.
+
+Mac control PR #153 merged at `1b3c40b4a` and exact merged-main Python 3.12/3.13
+and Web CI passed. No budget-fit policy is fabricated. V7 activation and
+prospective bankroll qualification remain unfinished.
