@@ -39,10 +39,27 @@ operational claim; all production observations below are dated snapshots.
   zero units failed and no maintenance marker exists. The paper database is
   37.29 GiB with 13.53 GiB free; local canonical backup still cannot fit.
   No source cutover, S3 backup upload or history import has occurred. Source
-  main includes bounded recovery PR #147, merged at `4a089719c`; its exact
-  candidate `eed028d82` passed all required Python 3.12/3.13 and Web CI checks.
+  main includes bounded recovery PR #147 at `4a089719c` and Mac control PR #153
+  at `1b3c40b4a`. The exact merged-main Python 3.12/3.13 and Web checks passed
+  for `1b3c40b4a`; this is source validation, not an AWS backend release.
   Latest public artifact verification remains the dated October 11 snapshot;
   fresh publication must not be presented as fresh historical analysis.
+- **Current cost/recovery decision (October 15, about 15:00 PDT):** current
+  hosting remains the same 4-GiB ARM server at $0.04/hour, one 64-GiB gp3
+  volume and standard CPU credits; there is no elastic IP allocation to remove.
+  Existing S3 lifecycle/versioning was freshly verified unchanged. Daily
+  standard-storage bytes declined from 144.73 billion on October 12 to 89.41
+  billion on October 14 under existing lifecycle expiration; no retention was
+  deleted by this task. A same-memory Spot proposal, capped at $0.018/hour and
+  reusing the existing journal disk, estimates $39.76 for October if the old
+  server stops by 18:00 PDT today, and about $31.03 for a full later 31-day month.
+  It includes retained temporary boot storage, existing S3, IPv4, the approved
+  $1 attempt and a reserve. It is a conditional planning estimate, not verified
+  spend-policy evidence. Owner acceptance of interruption/collection gaps and
+  keeping the old server stopped after a failed cutover is pending; do not
+  launch Spot or schedule shutdown based only on this proposal. The Mac is
+  actually on battery, so the one bounded independent restore also awaits AC.
+  Background research remains OFF even if manual maintenance proceeds.
 - **Latest loss update (October 15, 14:27 PDT):** a fresh bounded, query-only
   same-transaction AWS audit found October 12–14 completed PDT P&L of −$3.64
   for Live Stability and −$31.2722 for Research ROI V6, with $1.10 and $3.21
