@@ -51,8 +51,8 @@ Indexed bounded traces of ten losing close lots, eight logical roots, confirm:
   a recent read does not establish accurate underlying weather probabilities.
 - Denver October 14: the model still assigned about 91% while a $0.39 bid
   triggered a normal-stop veto. V6 later closed two lots at $0.21 and $0.24,
-  losing $11.55 in the same logical position. These UTC closes booked October
-  13 in PDT; target date is not accounting booking date.
+  losing $11.55 in the same logical position. Both closes booked shortly after
+  midnight PDT on October 14.
 - Houston October 13: V6 paid $0.70 for 63.96 NO contracts, then closed 24 at
   $0.46 and 39.96 at $0.45 under normal stops, losing $16.87 after exit fees.
   This was a concentrated position loss, not two independent trades and not a
