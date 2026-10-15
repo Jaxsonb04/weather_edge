@@ -52,8 +52,12 @@ operational claim; all production observations below are dated snapshots.
   Both independently match opening cash plus retained realized order P&L;
   this includes still-open partial-expired filled lots in cost basis, and
   zero outstanding reservations. Full market marks remain unavailable. These
-  are paper outcomes under the installed old policy, not V7 results. The
-  October 11 all-account/order-lifecycle reconciliation remains the last full
+  are paper outcomes under the installed old policy, not V7 results. New
+  indexed traces reproduce model-veto then catastrophic-stop exits in Boston
+  and Denver. Research V6's Houston October 13 logical position lost $16.87
+  across two close lots; Denver October 14 lost $11.55 across two lots. These
+  observed exits do not quantify avoidable loss or prove a V7 counterfactual.
+  The October 11 all-account/order-lifecycle reconciliation remains the last full
   reconciliation; this latest bounded summary is not a replacement for it.
 - **Recent paper losses:** October 5–10 completed PDT booking dates lost $38.21
   in Live Stability and $19.6772 in Research ROI V6. Their separate realized
