@@ -171,8 +171,9 @@ def run(config, *, checks_only=False, scheduled=False):
                    'purpose': 'offline diagnostics; no policy promotion or profit inference',
                    'python_version': sys.version, 'live_orders_enabled': False}
         folder = None
-        budget = Budget(state, limits)
+        budget = Budget(state, limits, cancellation_file=state / 'background-paused' if scheduled else None)
         try:
+            budget.check_cancelled()
             receipt['host_at_start'] = host_snapshot(state, limits)
             if checks_only:
                 print(json.dumps({'status': 'admitted', 'host': receipt['host_at_start'], 'limits': limits}))

@@ -58,6 +58,10 @@ def main():
     os.chmod(path, 0o600)
     subprocess.run(['launchctl', 'bootout', f'gui/{os.getuid()}/{label}'],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if (state / 'background-paused').exists():
+        subprocess.run(['launchctl', 'disable', f'gui/{os.getuid()}/{label}'], check=True)
+        print('Updated bounded research schedule; owner switch remains off.')
+        return
     subprocess.run(['launchctl', 'enable', f'gui/{os.getuid()}/{label}'], check=True)
     subprocess.run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(path)], check=True)
     print('Installed bounded research schedule: every two hours; no immediate run.')

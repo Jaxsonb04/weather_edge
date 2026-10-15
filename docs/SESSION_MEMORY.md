@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-12 (confirmed $40 total monthly AWS budget; one recovery attempt up to $1 authorized)
+Last updated: 2026-10-15 (owner Mac background switch installed and off; $40 monthly AWS cap retained)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last backend safety inspection: 2026-10-11 21:48–21:57 PDT (source, live flags, units, indexes, history conflicts, journal/capacity and independent financial reconciliation)
+Last backend safety inspection: 2026-10-15 14:15 PDT (read-only source, flags, units, maintenance, disk and V7 table checks; last independent financial reconciliation October 11)
 
 Last public artifact inspection: 2026-10-11 13:05 PDT (independent stable manifest and all five runtime JSON hashes; no static release)
 
@@ -32,15 +32,33 @@ operational claim; all production observations below are dated snapshots.
   trading, retention deletion, weakened risk or promotion gates, and sustained
   intensive Mac work remain unauthorized.
   A same-day profit improvement cannot be demonstrated from a new policy era.
-- **Fresh production snapshot (13:03–13:05 PDT):** AWS remains clean September 4
-  backend `2a6432e3`, exec-v4, Research ROI V6 and fifteen deployed cities. No V7
-  append-only weather-vintage/member tables exist there. Fourteen application
-  timers are present, zero units failed and canonical-unit integrity passed.
-  Live execution is off and dry-run on. Public snapshot
-  `25a091e1d77fad165df2e45f` passed all five runtime hashes against an unchanged
-  manifest; historical analysis is still September 4. Fresh publication is not
-  fresh analysis. Source main now includes merged PR #145 at `a1c2d6e32`; its
-  exact merged-source CI passed, but backend and UI releases remain undeployed.
+- **Latest production snapshot (October 15, 14:15 PDT):** AWS remains clean
+  September 4 backend `2a6432e3`, exec-v4 and fifteen deployed cities, with no V7
+  weather-vintage/member tables. Both paper placement flags remain on; real
+  execution is off and dry-run on. Canonical integrity passed for all 29 units,
+  zero units failed and no maintenance marker exists. The paper database is
+  37.29 GiB with 13.53 GiB free; local canonical backup still cannot fit.
+  No source cutover, S3 backup upload or history import has occurred. Source
+  main includes bounded recovery PR #147, merged at `4a089719c`; its exact
+  candidate `eed028d82` passed all required Python 3.12/3.13 and Web CI checks.
+  Latest public artifact verification remains the dated October 11 snapshot;
+  fresh publication must not be presented as fresh historical analysis.
+- **Latest loss update (October 15, 14:27 PDT):** a fresh bounded, query-only
+  same-transaction AWS audit found October 12–14 completed PDT P&L of −$3.64
+  for Live Stability and −$31.2722 for Research ROI V6, with $1.10 and $3.21
+  included fees. October 5–14 totals are −$38.42 and −$52.7794 respectively.
+  October 15 is partial: +$2.19 and +$3.48. Realized ledger equities are
+  $1,033.4485 and $970.3159, each from a separate $1,000 opening account.
+  Both independently match opening cash plus retained realized order P&L;
+  this includes still-open partial-expired filled lots in cost basis, and
+  zero outstanding reservations. Full market marks remain unavailable. These
+  are paper outcomes under the installed old policy, not V7 results. New
+  indexed traces reproduce model-veto then catastrophic-stop exits in Boston
+  and Denver. Research V6's Houston October 13 logical position lost $16.87
+  across two close lots; Denver October 14 lost $11.55 across two lots. These
+  observed exits do not quantify avoidable loss or prove a V7 counterfactual.
+  The October 11 all-account/order-lifecycle reconciliation remains the last full
+  reconciliation; this latest bounded summary is not a replacement for it.
 - **Recent paper losses:** October 5–10 completed PDT booking dates lost $38.21
   in Live Stability and $19.6772 in Research ROI V6. Their separate realized
   ledger equities at 21:57 PDT are $1,034.8985 and $998.1081, each from its own
@@ -106,8 +124,10 @@ operational claim; all production observations below are dated snapshots.
   storage month, including the full $1 allowance. No cost policy is fabricated
   and no AWS write or deployment has occurred. Latest read-only AWS source
   inspection at October 12, 20:29 PDT still found exec-v4 and no V7 tables.
-  The Mac native admission also currently defers for competing load; its limits
-  remain intact. Full independent restore has not run.
+  A bounded native supervisor probe on October 12 passed actual pause/resume
+  and cleanup signals after AC power was connected; it did not prove a full
+  database restore. Fresh native admission remains required. Full independent
+  restore has not run.
   An opt-in SHA-pinned raw-replayed weather-only bundle import runs while
   maintenance holds every producer and refuses conflicts before timer recovery.
   Installed archive-only behavior must be explicitly preserved at cutover:
@@ -133,18 +153,27 @@ operational claim; all production observations below are dated snapshots.
   paper placement off until fresh V7 forecaster rows for all twenty cities are
   verified, then restore the existing paper flags. Preserve real-live off/dry-run
   on and all archived account attribution.
-- **Local operation:** clean candidate `2e1acd9c0` actually issued fifteen fresh
-  local distributions and 120 named members for all five new cities, using
-  ten free GETs in two batches. Including the Phoenix raw-report check, shared UTC-day usage is now 29/96. These are
-  prospective local weather observations, not AWS paper trades or promotion
-  evidence. Maximum measured batch RSS was 360 MiB; wall/CPU stayed within
-  native guards. The same two-hour LaunchAgent is restored, enabled and idle,
-  with its original plist and limits. Checks-only admission passed: 300 wall/
-  120 CPU seconds, half-core, one numeric thread, 2-GiB RSS, native power/
-  thermal/load and eight GETs/run, 96/shared UTC day. Earlier unexplained macOS
-  process-group signal failures remain open; newer diagnostics preserve exact
-  failure phase/signal rather than hiding errors. Recurring AWS exports remain
-  off. Prior receipts and dated decisions follow in the retained snapshots.
+- **Local operation (owner switch, October 15):** the owner requested an easy
+  way to stop Mac background research while using battery power. WeatherEdge
+  Control is installed in the user's Applications folder with a Desktop
+  shortcut and Turn Off / Turn On buttons. Both buttons were driven through
+  the native UI and verified against launchd and the shared worker lock. The
+  final saved preference is **OFF**, LaunchAgent unloaded/disabled and worker
+  idle. Keep this preference across source maintenance, reinstall and reboot;
+  do not silently restore the old enabled schedule. The control app exits after
+  use and adds no background monitor. Turning on resumes the existing two-hour
+  schedule with no immediate run, 300-second wall / 120-second CPU ceiling,
+  half-core, one numeric thread, 2-GiB RSS and all native resource gates intact.
+  Scheduled work checks the private pause marker before work and during child
+  supervision, cleaning up the owned child session before unload. Battery
+  power still defers admission; unplugging during work stops it at the next
+  native power check. AWS paper trading continues independently. Explicit
+  manual recovery has separate authorization and the same native guards.
+  Focused validation passed 147 tests and 74 subtests, including actual child
+  cancellation on owner pause and simulated power loss. No weather API or AWS
+  mutation was used for switch verification. The older scheduled SIGSTOP
+  permission failure remains a separate unresolved incident; this switch does
+  not claim to repair it. See `docs/local_compute.md` for operation.
 
 ## Prior Session Brief Snapshots (through October 11, 11:38 PDT)
 
