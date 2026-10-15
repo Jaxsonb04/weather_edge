@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import traceback
+from pathlib import Path
 
 THREAD_ENV = {name: '1' for name in (
     'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
@@ -195,14 +196,20 @@ def signal_group(process, number, *, phase='unspecified'):
 
 
 class Budget:
-    def __init__(self, state, limits):
+    def __init__(self, state, limits, *, cancellation_file=None):
         self.state = state
         self.limits = limits
         self.started = time.monotonic()
         self.cpu_seconds = 0.0
         self.maximum_rss_bytes = 0
+        self.cancellation_file = Path(cancellation_file) if cancellation_file is not None else None
+
+    def check_cancelled(self):
+        if self.cancellation_file is not None and self.cancellation_file.exists():
+            raise Deferred('background research turned off by owner')
 
     def run(self, command, *, stdout, stderr=None, stdin=None, timeout=None):
+        self.check_cancelled()
         remaining = self.limits['wall_seconds'] - (time.monotonic() - self.started)
         if remaining <= 0:
             raise Deferred('whole-run wall-time budget exhausted')
@@ -235,6 +242,7 @@ class Budget:
             if cancelled:
                 raise Deferred('local computation cancelled by supervisor termination')
             while process.poll() is None:
+                self.check_cancelled()
                 now = time.monotonic()
                 if now - started > child_limit:
                     raise Deferred('job wall-time budget exhausted')

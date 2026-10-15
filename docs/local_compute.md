@@ -131,14 +131,41 @@ scikit-learn; no new dependency installation is necessary:
   --config .local/v7-offload/worker-config.json
 ```
 
+The installed **WeatherEdge Control** app in the user's Applications folder,
+with a Desktop shortcut, provides **Turn Off** and **Turn On** buttons. It shows
+the actual schedule/worker state and exits after use; the control app does not
+introduce another background process. Turn Off records a private durable pause,
+disables the LaunchAgent across restarts, requests cooperative cancellation of
+the active scheduled job and verifies the worker is idle before unloading it.
+If cleanup has not finished, it reports that explicitly instead of claiming
+everything stopped. Reinstalling the schedule preserves this owner pause.
+Turn On validates the installed bounded schedule and resumes it without an
+immediate run. Existing AC, thermal, load, memory, CPU and provider gates remain
+in force; unplugging during work triggers cleanup at the next native power
+check. Plugging back in leaves the saved on/off preference unchanged.
+
+Install or rebuild the control app, then inspect or change the switch:
+
+```bash
+.venv-dev/bin/python scripts/local_compute/control.py \
+  --config .local/v7-offload/worker-config.json install-app
+.venv-dev/bin/python scripts/local_compute/control.py \
+  --config .local/v7-offload/worker-config.json status
+# Replace status with off or on to change the saved preference.
+```
+
+The switch affects the scheduled Mac research worker. AWS paper trading runs
+independently. An explicitly invoked manual maintenance/restore command retains
+its separate authorization and resource checks.
+
 Status and receipts live under the configured private state directory. Every
 successful result binds Python version, source commit/file hashes, input hashes,
 output/lineage hashes and observed resource use. Failures preserve the previous
-success. Disable this exact local job with:
+success. Pause this exact local job with:
 
 ```bash
-launchctl disable "gui/$(id -u)/com.weatheredge.v7.local-research"
-launchctl bootout "gui/$(id -u)/com.weatheredge.v7.local-research"
+.venv-dev/bin/python scripts/local_compute/control.py \
+  --config .local/v7-offload/worker-config.json off
 ```
 
 The original six-hour schedule with 20-minute wall and ten-minute CPU budgets
