@@ -196,6 +196,31 @@ elif args[:2] == ['s3api', 'get-bucket-location']:
     print(json.dumps({'LocationConstraint': region}))
 elif args[:2] == ['sts', 'get-caller-identity']:
     print('{}')
+elif args[:2] == ['s3api', 'put-object']:
+    if '--generate-cli-skeleton' in args:
+        print(json.dumps({} if fault == 'paid-no-capability' else {'IfNoneMatch': '', 'ServerSideEncryption': ''}))
+        sys.exit(0)
+    assert os.environ.get('AWS_MAX_ATTEMPTS') == '1'
+    assert args[args.index('--server-side-encryption')+1] == 'AES256'
+    assert args[args.index('--if-none-match')+1] == '*'
+    path = root / args[args.index('--key')+1]
+    path.parent.mkdir(parents=True,exist_ok=True)
+    if path.exists():
+        sys.exit(1)
+    shutil.copyfile(args[args.index('--body')+1],path)
+    if (fault == 'paid-ambiguous' or fault == 'paid-second-part-ambiguous' and path.name.endswith('0002')
+            or fault == 'paid-manifest-ambiguous' and path.name.endswith('.manifest.json')):
+        sys.exit(1)
+    print('{}')
+elif args[:2] == ['s3api', 'get-object']:
+    assert args[args.index('--version-id')+1] == 'fixture-version-1'
+    assert os.environ.get('AWS_MAX_ATTEMPTS') == '1'
+    raw = (root / args[args.index('--key')+1]).read_bytes()
+    if fault == 'paid-corrupt':
+        raw = bytes([raw[0]^1])+raw[1:]
+    with os.fdopen(os.dup(int(args[-1].rsplit('/',1)[1])), 'wb') as body:
+        body.write(raw)
+    print(json.dumps({'ContentLength':len(raw)}))
 elif args[:2] == ['s3', 'cp']:
     src, dst = args[2:4]
     if src.startswith('s3://'):
@@ -216,7 +241,7 @@ elif args[:2] == ['s3', 'cp']:
     aws.chmod(0o700)
     config = tmp_path / "weatheredge.env"
     config.write_text(f"SFO_ARCHIVE_S3_BUCKET=fixture-backups\nSFO_ARCHIVE_AWS_CLI={aws}\n")
-    value = policy(tmp_path)
+    value = paid_policy(tmp_path) if fault.startswith("paid") else policy(tmp_path)
     value["verified_month"] = backup.datetime.now(backup.timezone.utc).strftime("%Y-%m")
     if fault == "policy":
         value["no_incremental_spend_verified"] = False
@@ -256,6 +281,10 @@ elif args[:2] == ['s3', 'cp']:
                     config.write_text(config.read_text().replace("fixture-backups", "other-backups"))
                 code = stdin.read().replace(b"/etc/weatheredge.env", str(config).encode()).replace(
                     b"/run/weatheredge-deploy-maintenance", str(marker).encode())
+                if fault.startswith("paid"):
+                    code = code.replace(b"PART_BYTES = 4 * GIB", b"PART_BYTES = 192")
+                if fault == "paid-wrong-version" and action == "download":
+                    payload["metadata"]["parts"][0]["version_id"] = "other-version"
                 result = subprocess.run([sys.executable, "-", "--remote-action", action,
                                         "--payload", json.dumps(payload)], input=code,
                                         stdout=stdout, stderr=stderr,
@@ -279,6 +308,7 @@ elif args[:2] == ['s3', 'cp']:
     monkeypatch.setenv("OFFHOST_TEST_FAULT", fault)
     monkeypatch.setitem(sys.modules, "guards", SimpleNamespace(
         Budget=FixtureBudget, host_snapshot=lambda *args: {}, policy=lambda value: {}))
+    monkeypatch.setattr(backup, "REPO", tmp_path)
     monkeypatch.setattr(backup, "require_encrypted_local_restore", lambda *args: None)
     monkeypatch.setattr(sys, "argv", [str(HELPER), mode, "--policy", str(cost_policy),
                         "--receipt", str(receipt), "--database", str(source), "--target", "fixture",
@@ -398,3 +428,188 @@ def test_changed_compute_configuration_cannot_promote_backup_receipt(tmp_path, m
     assert "local compute configuration changed" in str(failure)
     assert "independent-restore" in events
     assert not receipt.exists()
+
+
+# Paid-policy fixtures are synthetic and cannot authorize an actual upload.
+def paid_policy(tmp_path):
+    value = policy(tmp_path)
+    answer = tmp_path / "owner-answer.fixture.txt"
+    answer.write_text("Synthetic fixture: one backup/cutover attempt up to 100 cents.")
+    value.update({"spend_mode": "authorized-one-attempt", "no_incremental_spend_verified": False,
+                  "authorized_incremental_spend_cents": 100,
+                  "verified_all_in_cost_upper_bound_cents": 40, "authorized_backup_attempts": 1,
+                  "spend_authorization_id": "fixture-owner-answer-20261012",
+                  "spend_authorization_evidence_file": str(answer),
+                  "spend_authorization_evidence_sha256": backup.file_hash(answer),
+                  "verified_noncurrent_retention_days": 7, "verified_cost_horizon_days": 45,
+                  "verified_storage_rate_microusd_per_gb_month": 26000,
+                  "authorized_monthly_aws_budget_cents": 4000,
+                  "monthly_costs_verified_at": backup.datetime.now(backup.timezone.utc).isoformat(),
+                  "verified_monthly_aws_baseline_upper_bounds_cents": {
+                      (backup.datetime.now(backup.timezone.utc) + backup.timedelta(days=offset)).strftime("%Y-%m"): 3500
+                      for offset in range(46)}})
+    return value
+
+
+def test_explicit_paid_mode_keeps_no_increment_claim_false(tmp_path):
+    value = paid_policy(tmp_path)
+    assert backup.validate_policy(value, "2026-10") == value["max_compressed_bytes"]
+    assert value["no_incremental_spend_verified"] is False
+    del value["spend_mode"]
+    with pytest.raises(ValueError, match="no-increase-spend"):
+        backup.validate_policy(value, "2026-10")
+
+
+@pytest.mark.parametrize("change", [
+    {"spend_mode": "paid"}, {"no_incremental_spend_verified": True},
+    {"authorized_incremental_spend_cents": 101}, {"authorized_incremental_spend_cents": True},
+    {"authorized_incremental_spend_cents": 0}, {"authorized_incremental_spend_cents": 100.0},
+    {"verified_all_in_cost_upper_bound_cents": 101}, {"verified_all_in_cost_upper_bound_cents": 0},
+    {"verified_all_in_cost_upper_bound_cents": float("nan")},
+    {"verified_all_in_cost_upper_bound_cents": True}, {"verified_all_in_cost_upper_bound_cents": 1},
+    {"authorized_backup_attempts": 2}, {"authorized_backup_attempts": True},
+    {"verified_noncurrent_retention_days": 0}, {"verified_cost_horizon_days": 42},
+    {"verified_storage_rate_microusd_per_gb_month": True},
+    {"verified_storage_rate_microusd_per_gb_month": 0},
+    {"spend_authorization_id": ""}, {"spend_authorization_evidence_file": None},
+    {"spend_authorization_evidence_sha256": "0" * 64},
+])
+def test_paid_policy_refuses_missing_answer_false_bounds_or_retention(tmp_path, change):
+    with pytest.raises(ValueError):
+        backup.validate_policy({**paid_policy(tmp_path), **change}, "2026-10")
+
+
+@pytest.mark.parametrize("change", [
+    {"authorized_monthly_aws_budget_cents": 4001},
+    {"authorized_monthly_aws_budget_cents": True},
+    {"authorized_monthly_aws_budget_cents": 0},
+    {"verified_monthly_aws_baseline_upper_bounds_cents": {}},
+    {"verified_monthly_aws_baseline_upper_bounds_cents": None},
+    {"monthly_costs_verified_at": "invalid"},
+    {"monthly_costs_verified_at": "2020-01-01T00:00:00Z"},
+    {"monthly_costs_verified_at": "2100-01-01T00:00:00Z"},
+    {"verified_cost_horizon_days": 91},
+])
+def test_paid_attempt_refuses_missing_stale_or_expanded_monthly_budget(tmp_path, change):
+    with pytest.raises(ValueError):
+        backup.validate_policy({**paid_policy(tmp_path), **change}, "2026-10")
+
+
+@pytest.mark.parametrize("baseline", [3901, 5450, True, -1, 3500.0])
+def test_paid_attempt_cannot_fit_by_ignoring_existing_aws_costs(tmp_path, baseline):
+    value = paid_policy(tmp_path)
+    month = backup.datetime.now(backup.timezone.utc).strftime("%Y-%m")
+    value["verified_monthly_aws_baseline_upper_bounds_cents"][month] = baseline
+    with pytest.raises(ValueError, match="month's budget"):
+        backup.validate_policy(value, "2026-10")
+
+
+def test_current_month_headroom_cannot_hide_next_month_cost_overrun(tmp_path):
+    value = paid_policy(tmp_path)
+    months = value["verified_monthly_aws_baseline_upper_bounds_cents"]
+    del months[max(months)]
+    with pytest.raises(ValueError, match="month's budget"):
+        backup.validate_policy(value, "2026-10")
+
+
+def test_paid_reservation_survives_failure_changed_id_and_utc_month_rollover(tmp_path):
+    value = paid_policy(tmp_path)
+    maximum = backup.validate_policy(value, "2026-10")
+    ledger = tmp_path / "egress.json"
+    backup.reserve_egress(ledger, value, "2026-10", maximum, deploy_id="20261012-fixture-first")
+    first = json.loads(ledger.read_text())
+    record = first["paid_authorizations"][value["spend_authorization_id"]]
+    assert record["reserved_cost_cents"] == 100
+    assert record["estimated_upper_bound_cents"] == 40
+    assert record["reserved_attempts"] == 1
+    # A successful or failed invocation gets no paid retry under this answer.
+    for month, identity in (("2026-10", value["spend_authorization_id"]),
+                            ("2026-11", value["spend_authorization_id"]),
+                            ("2026-11", "fixture-changed-authorization-id")):
+        changed = {**value, "verified_month": month, "spend_authorization_id": identity}
+        with pytest.raises(ValueError, match="already reserved"):
+            backup.reserve_egress(ledger, changed, month, maximum, deploy_id="20261101-fixture-second")
+        assert json.loads(ledger.read_text()) == first
+    # An ordinary zero-cost reservation in a new month must not erase paid state.
+    free = {**policy(tmp_path), "verified_month": "2026-11"}
+    backup.reserve_egress(ledger, free, "2026-11", maximum)
+    assert json.loads(ledger.read_text())["paid_authorizations"] == first["paid_authorizations"]
+    with pytest.raises(ValueError, match="already reserved"):
+        backup.reserve_egress(ledger, value, "2026-11", maximum, deploy_id="20261101-fixture-third")
+
+
+def test_direct_part_compression_is_one_gzip_and_keeps_aggregate_hard_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "PART_BYTES", 1024)
+    source = database(tmp_path / "source.db")
+    with sqlite3.connect(source) as conn:
+        conn.execute("CREATE TABLE incompressible (payload BLOB)")
+        conn.execute("INSERT INTO incompressible VALUES (?)", (bytes(range(256))*3 + os.urandom(1000),))
+    original = source.read_bytes()
+    metadata, paths = backup.compress_snapshot_parts(source, tmp_path, 4096)
+    joined = b"".join(path.read_bytes() for path in paths)
+    assert 1 < len(paths) <= 2
+    assert all(path.stat().st_size <= 1024 for path in paths)
+    assert metadata["compressed_bytes"] == len(joined)
+    assert metadata["compressed_sha256"] == hashlib.sha256(joined).hexdigest()
+    assert gzip.decompress(joined) == original
+    assert source.read_bytes() == original
+    for number, (part, path) in enumerate(zip(metadata["parts"], paths, strict=True), 1):
+        assert part["part_number"] == number
+        assert part["compressed_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert not (tmp_path / "snapshot.sqlite3.gz").exists()
+
+
+def test_part_compression_refuses_whole_archive_over_limit_before_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "PART_BYTES", 64)
+    source = database(tmp_path / "source.db")
+    with pytest.raises(ValueError, match="hard byte ceiling"):
+        backup.compress_snapshot_parts(source, tmp_path, 32)
+
+
+def test_paid_orchestration_uses_only_conditional_single_puts_and_pinned_part_gets(tmp_path, monkeypatch):
+    receipt, events, failure, store = run_orchestration(tmp_path, monkeypatch, "paid")
+    assert failure is None, failure
+    saved = json.loads(receipt.read_text())
+    assert saved["verified"] is True
+    metadata = saved["metadata"]
+    assert metadata["format"] == "single-put-parts-v1"
+    assert len(metadata["parts"]) == 2
+    assert sum(p["compressed_bytes"] for p in metadata["parts"]) == metadata["compressed_bytes"]
+    assert saved["checks"]["integrity_check"] == saved["checks"]["foreign_key_check"] == "ok"
+    actions = [json.loads(line) for line in (store / ".aws-actions").read_text().splitlines()]
+    puts = [a for a in actions if a[:2] == ["s3api", "put-object"] and "--body" in a]
+    gets = [a for a in actions if a[:2] == ["s3api", "get-object"]]
+    assert len(puts) == 3  # Two <=4-GiB parts and their manifest.
+    assert len(gets) == 2
+    assert all(a[a.index("--if-none-match")+1] == "*" for a in puts)
+    assert all(a[a.index("--version-id")+1] == "fixture-version-1" for a in gets)
+    assert not any(a[:2] == ["s3", "cp"] and not a[2].startswith("s3://") for a in actions)
+    ledger = json.loads((tmp_path / ".local/offhost-backup/egress-budget.json").read_text())
+    assert len(ledger["paid_authorizations"]) == 1
+    assert not list(tmp_path.glob(".compressed-deploy-*"))
+
+
+@pytest.mark.parametrize("fault", ["paid-ambiguous", "paid-second-part-ambiguous",
+                                    "paid-manifest-ambiguous", "paid-wrong-version", "paid-corrupt"])
+def test_paid_partial_or_ambiguous_failures_keep_cost_reservation_without_receipt(tmp_path, monkeypatch, fault):
+    receipt, events, failure, store = run_orchestration(tmp_path, monkeypatch, fault)
+    assert failure is not None
+    assert not receipt.exists()
+    ledger = json.loads((tmp_path / ".local/offhost-backup/egress-budget.json").read_text())
+    assert len(ledger["paid_authorizations"]) == 1
+    assert next(iter(ledger["paid_authorizations"].values()))["reserved_cost_cents"] == 100
+    assert not list(tmp_path.glob(".compressed-deploy-*"))
+    actions = [json.loads(line) for line in (store / ".aws-actions").read_text().splitlines()]
+    assert not any("multipart" in " ".join(a) for a in actions)
+    if fault == "paid-ambiguous":
+        assert sum(a[:2] == ["s3api", "put-object"] and "--body" in a for a in actions) == 1
+        assert "download" not in events
+
+
+def test_paid_preflight_does_not_consume_authorization_and_refuses_old_cli(tmp_path, monkeypatch):
+    receipt, events, failure, store = run_orchestration(tmp_path, monkeypatch, "paid-no-capability", "preflight")
+    assert failure is not None
+    assert not receipt.exists()
+    assert not (tmp_path / ".local/offhost-backup/egress-budget.json").exists()
+    actions = [json.loads(line) for line in (store / ".aws-actions").read_text().splitlines()]
+    assert not any("--body" in a for a in actions)

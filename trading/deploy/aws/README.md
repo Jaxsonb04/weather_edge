@@ -876,6 +876,30 @@ The raw snapshot is unavailable to the AWS historical-analysis helper, so that
 optional refresh is explicitly deferred. The backup receipt is recovery
 evidence; it is not forecast qualification or profitable-paper-trade evidence.
 
+On October 12 the owner approved one recovery/cutover attempt up to $1 inside
+a **$40 total AWS budget per calendar month**. For that explicit exception,
+`spend_mode=authorized-one-attempt` requires the actual owner-answer file/hash,
+stable authorization ID, `authorized_incremental_spend_cents` (at most 100),
+`authorized_backup_attempts=1`, and an all-in estimate in
+`verified_all_in_cost_upper_bound_cents`. Keep
+`no_incremental_spend_verified=false`; paid storage is never represented as free.
+
+Also provide `authorized_monthly_aws_budget_cents` (at most 4000),
+`monthly_costs_verified_at` (UTC, within 24 hours), and
+`verified_monthly_aws_baseline_upper_bounds_cents`, a map from billing month
+(`YYYY-MM`) to the whole-account existing-cost upper estimate. Every month in
+the cost horizon must have an estimate, and that estimate plus the entire
+attempt allowance must fit the monthly cap. A current balance below $40 alone
+does not qualify. Cost evidence must cover the verified seven noncurrent days,
+at least 45 total days, and actual storage rates, requests, taxes and failures.
+
+The paid path uses direct bounded gzip parts and conditional single PUTs with
+SDK retries disabled. It avoids incomplete multipart storage outside lifecycle
+and independently downloads each pinned version for the full restore. The
+canonical private ledger retains the entire authorized attempt after any result
+and across month rollover; another attempt needs a new actual owner answer.
+The software enforces operation/byte/reservation limits, not an AWS invoice cap.
+
 Health and finality checks:
 
 ```bash

@@ -27,6 +27,7 @@ import tempfile
 
 GIB = 1024**3
 MAX_COMPRESSED_BYTES = 8 * GIB
+PART_BYTES = 4 * GIB
 CHUNK = 1024**2
 REPO = Path(__file__).resolve().parents[3] if __file__ != "<stdin>" else None
 
@@ -89,6 +90,144 @@ def compress_snapshot(source, archive, maximum):
             "compressed_sha256": file_hash(archive)}
 
 
+class CompressedParts:
+    """Write one gzip directly to bounded parts without a second gzip copy."""
+    def __init__(self, folder, maximum):
+        self.folder, self.maximum = Path(folder), maximum
+        self.total = 0
+        self.digest = hashlib.sha256()
+        self.parts, self.paths = [], []
+        self.stream = None
+        self.part_bytes = 0
+        self.part_digest = None
+
+    def finish_part(self):
+        if self.stream is not None:
+            self.stream.close()
+            self.parts.append({"part_number": len(self.parts) + 1,
+                               "compressed_bytes": self.part_bytes,
+                               "compressed_sha256": self.part_digest.hexdigest()})
+            self.stream = None
+
+    def write(self, data):
+        if self.total + len(data) > self.maximum:
+            raise ValueError("compressed backup exceeds hard byte ceiling")
+        self.digest.update(data)
+        self.total += len(data)
+        remaining = memoryview(data)
+        while remaining:
+            if self.stream is None:
+                path = self.folder / f"snapshot.part-{len(self.paths) + 1:04d}"
+                self.stream = path.open("xb")
+                os.chmod(path, 0o600)
+                self.paths.append(path)
+                self.part_bytes, self.part_digest = 0, hashlib.sha256()
+            chunk = remaining[:PART_BYTES - self.part_bytes]
+            self.stream.write(chunk)
+            self.part_digest.update(chunk)
+            self.part_bytes += len(chunk)
+            remaining = remaining[len(chunk):]
+            if self.part_bytes == PART_BYTES:
+                self.finish_part()
+        return len(data)
+
+    def tell(self):
+        return self.total
+
+
+def compress_snapshot_parts(source, folder, maximum):
+    identity = source_identity(source)
+    raw_digest, raw_bytes = hashlib.sha256(), 0
+    writer = CompressedParts(folder, maximum)
+    try:
+        with Path(source).open("rb") as incoming:
+            with gzip.GzipFile(fileobj=writer, mode="wb", compresslevel=1, mtime=0) as compressor:
+                while chunk := incoming.read(CHUNK):
+                    raw_digest.update(chunk)
+                    raw_bytes += len(chunk)
+                    compressor.write(chunk)
+    finally:
+        writer.finish_part()
+    assert_identity(source, identity)
+    if raw_bytes != identity["bytes"]:
+        raise ValueError("source byte count changed during backup")
+    return ({"source_identity": identity, "raw_sha256": raw_digest.hexdigest(),
+             "raw_bytes": raw_bytes, "compressed_bytes": writer.total,
+             "compressed_sha256": writer.digest.hexdigest(),
+             "format": "single-put-parts-v1", "parts": writer.parts}, writer.paths)
+
+
+def conditional_single_put(aws, bucket, key, path):
+    # Single PUT plus one SDK attempt: an ambiguous response cannot cause an
+    # automatic second version or leave a multipart upload outside lifecycle.
+    subprocess.run([aws, "s3api", "put-object", "--bucket", bucket, "--key", key,
+                    "--body", str(path), "--server-side-encryption", "AES256",
+                    "--if-none-match", "*"], check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=600,
+                   env={**os.environ, "AWS_MAX_ATTEMPTS": "1"})
+    return encrypted_object(aws, bucket, key, Path(path).stat().st_size)
+
+
+def verified_parts(metadata, bucket, prefix):
+    parts = metadata.get("parts")
+    base = metadata.get("object_uri", "")
+    if (metadata.get("format") != "single-put-parts-v1"
+            or not base.startswith(f"s3://{bucket}/{prefix}/paper_trading-")
+            or not base.endswith(".sqlite3.gz") or not isinstance(parts, list)
+            or not 1 <= len(parts) <= 2):
+        raise ValueError("bounded single-PUT part manifest is invalid")
+    total = 0
+    for number, part in enumerate(parts, 1):
+        if (not isinstance(part, dict) or part.get("part_number") != number
+                or part.get("object_uri") != base + f".part-{number:04d}"
+                or type(part.get("compressed_bytes")) is not int
+                or not 0 < part["compressed_bytes"] <= PART_BYTES
+                or not isinstance(part.get("compressed_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", part["compressed_sha256"])
+                or not isinstance(part.get("version_id"), str)
+                or part["version_id"] in ("", "null") or part.get("sse") != "AES256"):
+            raise ValueError("ordered encrypted single-PUT part proof is invalid")
+        total += part["compressed_bytes"]
+    if total != metadata.get("compressed_bytes") or total > MAX_COMPRESSED_BYTES:
+        raise ValueError("part sizes differ from the bounded whole gzip")
+    return parts
+
+
+def stream_pinned_part(aws, bucket, key, part):
+    # get-object JSON is discarded separately from its binary body. Linux's
+    # inherited descriptor path lets the AWS CLI stream its body into our pipe.
+    encrypted_object(aws, bucket, key, part["compressed_bytes"], part["version_id"])
+    read_fd, write_fd = os.pipe()
+    try:
+        process = subprocess.Popen([aws, "s3api", "get-object", "--bucket", bucket,
+                                    "--key", key, "--version-id", part["version_id"],
+                                    f"/proc/self/fd/{write_fd}"], pass_fds=(write_fd,),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   env={**os.environ, "AWS_MAX_ATTEMPTS": "1"})
+    except BaseException:
+        os.close(read_fd)
+        raise
+    finally:
+        os.close(write_fd)
+    total, digest = 0, hashlib.sha256()
+    try:
+        with os.fdopen(read_fd, "rb") as incoming:
+            while chunk := incoming.read(CHUNK):
+                total += len(chunk)
+                if total > part["compressed_bytes"]:
+                    raise ValueError("single-PUT part download exceeds pinned size")
+                digest.update(chunk)
+                sys.stdout.buffer.write(chunk)
+        if process.wait(timeout=30):
+            raise ValueError("pinned part download failed")
+        if total != part["compressed_bytes"] or digest.hexdigest() != part["compressed_sha256"]:
+            raise ValueError("pinned part checksum or size differs from manifest")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+
 def verify_archive(archive, restored, expected):
     if (Path(archive).stat().st_size != expected["compressed_bytes"]
             or file_hash(archive) != expected["compressed_sha256"]):
@@ -145,41 +284,129 @@ def verified_backup_target(value):
         "verified_snapshot_retention_days", "verified_bucket_versioning", "controls_verified_at")}
 
 
+def matching_private_evidence(path, expected):
+    return (isinstance(path, str) and Path(path).is_file()
+            and Path(path).stat().st_size <= 1024**2 and file_hash(path) == expected)
+
+
+def validate_monthly_budget(value, attempt_cap, days):
+    """Require fresh whole-account estimates for every retained-storage month."""
+    cap = value.get("authorized_monthly_aws_budget_cents")
+    baselines = value.get("verified_monthly_aws_baseline_upper_bounds_cents")
+    now = datetime.now(timezone.utc)
+    try:
+        observed = datetime.fromisoformat(value["monthly_costs_verified_at"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("fresh whole-account monthly AWS cost evidence is required") from None
+    if (observed.tzinfo is None or observed.utcoffset() != timedelta(0)
+            or not timedelta(0) <= now - observed <= timedelta(hours=24)
+            or type(cap) is not int or not 0 < cap <= 4000
+            or not isinstance(baselines, dict)):
+        raise ValueError("fresh whole-account AWS estimates within the 40-dollar monthly cap are required")
+    months = {(now + timedelta(days=offset)).strftime("%Y-%m") for offset in range(days + 1)}
+    for month in months:
+        baseline = baselines.get(month)
+        if type(baseline) is not int or baseline < 0 or baseline + attempt_cap > cap:
+            raise ValueError("existing AWS costs plus the entire recovery allowance exceed a retained-storage month's budget")
+
+
+def validate_spend_policy(value, maximum):
+    """Validate truthful operator evidence; this cannot cap the AWS invoice.
+
+    The paid branch authorizes one attempt only. Its all-in upper estimate must
+    include every retained version, request/retry cost, taxes and failure cleanup
+    in the operator's hash-bound evidence, rather than relabeling paid use free.
+    """
+    mode = value.get("spend_mode", "zero-increment")
+    if mode == "zero-increment":
+        if value.get("no_incremental_spend_verified") is not True:
+            raise ValueError("current-month no-increase-spend evidence is required")
+        return None
+    if mode != "authorized-one-attempt" or value.get("no_incremental_spend_verified") is not False:
+        raise ValueError("explicit one-attempt paid mode requires a false no-increment claim")
+    cap = value.get("authorized_incremental_spend_cents")
+    estimate = value.get("verified_all_in_cost_upper_bound_cents")
+    days = value.get("verified_cost_horizon_days")
+    rate = value.get("verified_storage_rate_microusd_per_gb_month")
+    if (type(cap) is not int or not 0 < cap <= 100
+            or type(estimate) is not int or not 0 < estimate <= cap
+            or type(value.get("authorized_backup_attempts")) is not int
+            or value["authorized_backup_attempts"] != 1
+            or type(value.get("verified_noncurrent_retention_days")) is not int
+            or value["verified_noncurrent_retention_days"] != 7
+            or type(days) is not int or not 45 <= days <= 90
+            or type(rate) is not int or rate <= 0):
+        raise ValueError("one paid attempt requires a verified all-in estimate within a maximum 100-cent authorization")
+    # Conservative decimal GB and a bounded manifest allowance. This is merely
+    # a storage lower bound; the operator estimate must also cover all other
+    # charges, failure states and actual lifecycle controls in private evidence.
+    numerator = (maximum + 1024**2) * rate * days
+    denominator = 10**9 * 30 * 10000
+    storage_cents = (numerator + denominator - 1) // denominator
+    if estimate <= storage_cents:
+        raise ValueError("all-in paid estimate must cover storage plus other charge margin")
+    validate_monthly_budget(value, cap, days)
+    authorization = value.get("spend_authorization_id")
+    if (not isinstance(authorization, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{7,99}", authorization)
+            or not matching_private_evidence(value.get("spend_authorization_evidence_file"),
+                                             value.get("spend_authorization_evidence_sha256"))):
+        raise ValueError("actual owner-answer evidence and a stable authorization identity are required")
+    return {"authorization_id": authorization,
+            "authorization_evidence_sha256": value["spend_authorization_evidence_sha256"],
+            "authorized_cap_cents": cap, "estimated_upper_bound_cents": estimate,
+            "reserved_cost_cents": cap, "reserved_attempts": 1}
+
+
 def validate_policy(value, month):
     maximum = value.get("max_compressed_bytes")
     free = value.get("verified_free_egress_bytes")
     monthly = value.get("monthly_egress_budget_bytes")
     if (value.get("verified_month") != month
-            or value.get("no_incremental_spend_verified") is not True
             or any(type(number) is not int or number <= 0 for number in (maximum, free, monthly))
             or maximum > MAX_COMPRESSED_BYTES or maximum < 1024**2
             or 2 * maximum > min(free, monthly)):
-        raise ValueError("current-month no-increase-spend and free-egress evidence is required")
-    evidence = value.get("cost_evidence_file")
-    if (not isinstance(evidence, str) or not Path(evidence).is_file()
-            or Path(evidence).stat().st_size > 1024**2
-            or file_hash(evidence) != value.get("cost_evidence_sha256")):
+        raise ValueError("current-month verified free-egress evidence is required")
+    if not matching_private_evidence(value.get("cost_evidence_file"), value.get("cost_evidence_sha256")):
         raise ValueError("private current cost-evidence hash is missing or changed")
     verified_backup_target(value)
+    validate_spend_policy(value, maximum)
     return maximum
 
 
-def reserve_egress(path, policy, month, maximum):
-    # The full 2x reservation includes protocol/receipt overhead. Failed attempts
-    # keep it; retrying cannot silently reuse an optimistic remaining allowance.
+def reserve_egress(path, policy, month, maximum, *, deploy_id=None):
+    # Reserve before any upload. Failed attempts retain both egress and the
+    # entire authorized cost cap; one answer cannot silently fund a retry.
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.with_suffix(".lock").open("a") as lock:
         os.chmod(lock.name, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
         saved = json.loads(path.read_text()) if path.exists() else {}
+        if not isinstance(saved, dict):
+            raise ValueError("existing backup reservation is invalid")
         used = saved.get("reserved_bytes", 0) if saved.get("month") == month else 0
-        if type(used) is not int or used < 0:
-            raise ValueError("existing egress reservation is invalid")
+        paid = saved.get("paid_authorizations", {})
+        if type(used) is not int or used < 0 or not isinstance(paid, dict):
+            raise ValueError("existing backup reservation is invalid")
         if used + 2 * maximum > min(policy["verified_free_egress_bytes"], policy["monthly_egress_budget_bytes"]):
             raise ValueError("verified free egress reservation exhausted")
+        reservation = validate_spend_policy(policy, maximum)
+        if reservation is not None:
+            if (not isinstance(deploy_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{8,100}", deploy_id)):
+                raise ValueError("paid attempt requires its deployment identity")
+            authorization = reservation["authorization_id"]
+            if (authorization in paid
+                    or any(not isinstance(entry, dict)
+                           or entry.get("authorization_evidence_sha256") == reservation["authorization_evidence_sha256"]
+                           for entry in paid.values())):
+                raise ValueError("owner-authorized paid backup attempt already reserved; explicit new authorization required")
+            paid[authorization] = {**reservation, "deploy_id": deploy_id,
+                                   "cost_evidence_sha256": policy["cost_evidence_sha256"],
+                                   "reserved_at": datetime.now(timezone.utc).isoformat()}
         write_json(path, {"month": month, "reserved_bytes": used + 2 * maximum,
-                          "failed_attempts_keep_reservation": True})
+                          "failed_attempts_keep_reservation": True,
+                          "paid_authorizations": paid})
 
 
 def require_encrypted_local_restore(state):
@@ -287,8 +514,16 @@ def remote_main(action, payload):
     source = Path(payload["database"])
     if not re.fullmatch(r"/[A-Za-z0-9._/-]+", str(source)) or ".." in source.parts:
         raise ValueError("database path is not conservative")
+    if payload.get("single_put_parts"):
+        os.environ["AWS_MAX_ATTEMPTS"] = "1"
     aws, bucket, prefix = verified_remote_config(payload)
     if action == "preflight":
+        if payload.get("single_put_parts"):
+            capabilities = json.loads(subprocess.check_output(
+                [aws, "s3api", "put-object", "--generate-cli-skeleton", "input"],
+                text=True, timeout=30, stderr=subprocess.DEVNULL))
+            if "IfNoneMatch" not in capabilities or "ServerSideEncryption" not in capabilities:
+                raise ValueError("installed AWS CLI lacks conditional single-PUT support")
         subprocess.run([aws, "sts", "get-caller-identity"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         if source.is_symlink() or not source.is_file():
             raise ValueError("backup source must be a regular non-symlink database")
@@ -310,7 +545,10 @@ def remote_main(action, payload):
             with tempfile.TemporaryDirectory(prefix=".compressed-deploy-", dir=source.parent) as folder:
                 os.chmod(folder, 0o700)
                 archive = Path(folder) / "snapshot.sqlite3.gz"
-                metadata = compress_snapshot(source, archive, payload["maximum"])
+                if payload.get("single_put_parts"):
+                    metadata, part_paths = compress_snapshot_parts(source, folder, payload["maximum"])
+                else:
+                    metadata = compress_snapshot(source, archive, payload["maximum"])
                 token = payload["deploy_id"]
                 if not re.fullmatch(r"[A-Za-z0-9-]{8,100}", token):
                     raise ValueError("deploy identity is invalid")
@@ -318,21 +556,34 @@ def remote_main(action, payload):
                 metadata.update({"object_uri": f"s3://{bucket}/{key}", "database": str(source),
                                  "deploy_id": token, "candidate_sha": payload["candidate_sha"],
                                  "created_at": datetime.now(timezone.utc).isoformat()})
-                if verified_remote_config(payload) != (aws, bucket, prefix):
-                    raise ValueError("configured backup destination changed before upload")
-                subprocess.run([aws, "s3", "cp", str(archive), metadata["object_uri"],
-                                "--sse", "AES256", "--only-show-errors"], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
-                proof = encrypted_object(aws, bucket, key, metadata["compressed_bytes"])
-                metadata.update({"archive_version_id": proof["VersionId"], "sse": proof["ServerSideEncryption"]})
+                if payload.get("single_put_parts"):
+                    for part, path in zip(metadata["parts"], part_paths, strict=True):
+                        if verified_remote_config(payload) != (aws, bucket, prefix):
+                            raise ValueError("configured backup destination changed before part upload")
+                        part_key = key + f".part-{part['part_number']:04d}"
+                        proof = conditional_single_put(aws, bucket, part_key, path)
+                        part.update({"object_uri": f"s3://{bucket}/{part_key}",
+                                     "version_id": proof["VersionId"], "sse": proof["ServerSideEncryption"]})
+                    verified_parts(metadata, bucket, prefix)
+                else:
+                    if verified_remote_config(payload) != (aws, bucket, prefix):
+                        raise ValueError("configured backup destination changed before upload")
+                    subprocess.run([aws, "s3", "cp", str(archive), metadata["object_uri"],
+                                    "--sse", "AES256", "--only-show-errors"], check=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
+                    proof = encrypted_object(aws, bucket, key, metadata["compressed_bytes"])
+                    metadata.update({"archive_version_id": proof["VersionId"], "sse": proof["ServerSideEncryption"]})
                 manifest = Path(folder) / "snapshot.manifest.json"
                 write_json(manifest, metadata)
                 if verified_remote_config(payload) != (aws, bucket, prefix):
                     raise ValueError("configured backup destination changed before manifest upload")
-                subprocess.run([aws, "s3", "cp", str(manifest), metadata["object_uri"] + ".manifest.json",
-                                "--sse", "AES256", "--only-show-errors"], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
-                encrypted_object(aws, bucket, key + ".manifest.json", manifest.stat().st_size)
+                if payload.get("single_put_parts"):
+                    conditional_single_put(aws, bucket, key + ".manifest.json", manifest)
+                else:
+                    subprocess.run([aws, "s3", "cp", str(manifest), metadata["object_uri"] + ".manifest.json",
+                                    "--sse", "AES256", "--only-show-errors"], check=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
+                    encrypted_object(aws, bucket, key + ".manifest.json", manifest.stat().st_size)
                 require_quiescence(payload)
                 assert_identity(source, metadata["source_identity"])
                 print(json.dumps(metadata))
@@ -341,6 +592,13 @@ def remote_main(action, payload):
         expected_prefix = f"s3://{bucket}/{prefix}/paper_trading-"
         if not metadata["object_uri"].startswith(expected_prefix) or not metadata["object_uri"].endswith(".sqlite3.gz"):
             raise ValueError("backup object is outside configured durable prefix")
+        if action == "download" and payload.get("single_put_parts"):
+            parts = verified_parts(metadata, bucket, prefix)
+            if metadata["compressed_bytes"] > payload["maximum"]:
+                raise ValueError("whole gzip exceeds reserved compressed ceiling")
+            for part in parts:
+                stream_pinned_part(aws, bucket, part["object_uri"].split("/", 3)[3], part)
+            return
         suffix = ".manifest.json" if action == "manifest" else ""
         key = metadata["object_uri"].split("/", 3)[3] + suffix
         proof = encrypted_object(aws, bucket, key,
@@ -456,7 +714,8 @@ def local_main(args, compute_config_sha):
         raise ValueError("canonical quiescence allowlist requires review")
     payload = {"database": args.database, "maximum": maximum, "deploy_id": args.deploy_id,
                "candidate_sha": args.candidate_sha, "units": all_units,
-               "backup_target": verified_backup_target(value)}
+               "backup_target": verified_backup_target(value),
+               "single_put_parts": validate_spend_policy(value, maximum) is not None}
     with tempfile.TemporaryDirectory(prefix=".offhost-check-", dir=state) as temporary:
         folder = Path(temporary)
         if args.mode == "assert-lineage":
@@ -477,7 +736,7 @@ def local_main(args, compute_config_sha):
             print("WEATHEREDGE_DATABASE_PRESENT=1")
             print("compressed offhost backup preflight passed")
             return
-        reserve_egress(state / "egress-budget.json", value, month, maximum)
+        reserve_egress(REPO / ".local/offhost-backup/egress-budget.json", value, month, maximum, deploy_id=args.deploy_id)
         metadata = call_remote(args, "backup", payload, budget, folder)
         payload["metadata"] = metadata
         downloaded_manifest = call_remote(args, "manifest", payload, budget, folder)
