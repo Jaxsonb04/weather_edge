@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-10-31T04:22:18+00:00",
+  "generated_at": "2026-10-31T04:32:18+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-10-31T04:22:22+00:00",
+  "market_data_at": "2026-10-31T04:32:22+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -176,34 +176,36 @@
     "best_signal": {
       "action": "BUY_NO",
       "approved": false,
-      "ask": 0.62,
-      "bid": 0.61,
+      "ask": 1.0,
+      "bid": 0.99,
       "decision": "NO_TRADE",
-      "edge": 0.1031,
-      "edge_lcb": -0.0568,
-      "ensemble_probability": 0.8387,
+      "edge": 0.0,
+      "edge_lcb": -0.04,
+      "ensemble_probability": 1.0,
       "expected_profit": 0.0,
-      "intraday_probability": null,
-      "label": "66\u00b0 to 67\u00b0",
+      "intraday_probability": 1.0,
+      "label": "61\u00b0 or below",
       "market_available": true,
-      "market_probability": 0.6351,
-      "model_probability": 0.8358,
-      "probability": 0.7431,
-      "probability_lcb": 0.5832,
+      "market_probability": 1.0,
+      "model_probability": 1.0,
+      "probability": 1.0,
+      "probability_lcb": 0.96,
       "reasons": [
-        "NO price 0.62 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-        "model/market gap 0.201 exceeds max 0.200",
-        "lower-bound edge -0.057 below min 0.000"
+        "nonfinal-certainty gate: NO probability 1.000 >= 0.99 rests on a raw nonfinal station observation; the official integer report can settle a degree away (audit MD-01)",
+        "NO ask is not tradeable",
+        "all-in cost 1.00 meets or exceeds the $1 contract payout",
+        "edge 0.000 below min 0.012",
+        "lower-bound edge -0.040 below min 0.000"
       ],
       "recommended_contracts": 0.0,
       "recommended_spend": 0.0,
-      "remaining_heat_risk": null,
-      "residual_probability": 0.8346,
+      "remaining_heat_risk": 0.0956,
+      "residual_probability": 1.0,
       "side": "NO",
       "spread": 0.01,
-      "target_date": "2026-10-31",
-      "ticker": "KXHIGHTSFO-26OCT31-B66.5",
-      "trade_quality_score": 55.8
+      "target_date": "2026-10-30",
+      "ticker": "KXHIGHTSFO-26OCT30-T62",
+      "trade_quality_score": 53.7
     },
     "target_count": 2
   },
@@ -750,7 +752,7 @@
         "p75_f": 68.9949,
         "p90_f": 69.3101
       },
-      "market_data_at": "2026-10-31T04:22:20+00:00",
+      "market_data_at": "2026-10-31T04:32:20+00:00",
       "target_date": "2026-10-30",
       "target_status": "settlement_day",
       "warnings": []
@@ -784,7 +786,7 @@
         "side": "NO",
         "spread": 0.01,
         "ticker": "KXHIGHTSFO-26OCT31-B66.5",
-        "trade_quality_score": 55.8
+        "trade_quality_score": 53.2
       },
       "decisions": [
         {
@@ -815,7 +817,7 @@
           "side": "NO",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26OCT31-B66.5",
-          "trade_quality_score": 55.8
+          "trade_quality_score": 53.2
         },
         {
           "action": "BUY_NO",
@@ -1254,7 +1256,7 @@
         "p75_f": 66.3205,
         "p90_f": 67.1205
       },
-      "market_data_at": "2026-10-31T04:22:22+00:00",
+      "market_data_at": "2026-10-31T04:32:22+00:00",
       "target_date": "2026-10-31",
       "target_status": "upcoming",
       "warnings": []
