@@ -14,6 +14,22 @@ def _as_float(value: Any, default: float = 0.0) -> float:
     return float(value)
 
 
+def _optional_settlement_value(value: Any) -> float | None:
+    """Kalshi's settled number, or None when it is missing or not numeric.
+
+    Kalshi has finalized some events with the winning bracket label in
+    ``expiration_value`` (for example ``"70° to 71°"``) instead of the observed
+    high. A label is not a temperature, so it must not stop the whole scan.
+    """
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 @dataclass(frozen=True)
 class ForecastSnapshot:
     target_date: date
@@ -179,7 +195,6 @@ class MarketBin:
 
     @classmethod
     def from_kalshi(cls, payload: dict[str, Any]) -> "MarketBin":
-        expiration_value = payload.get("expiration_value")
         return cls(
             ticker=payload["ticker"],
             event_ticker=payload["event_ticker"],
@@ -196,7 +211,7 @@ class MarketBin:
             yes_ask_size=_as_float(payload.get("yes_ask_size_fp")),
             status=payload.get("status", "unknown"),
             result=payload.get("result", ""),
-            expiration_value=_as_float(expiration_value, None) if expiration_value not in (None, "") else None,
+            expiration_value=_optional_settlement_value(payload.get("expiration_value")),
             raw=payload,
         )
 

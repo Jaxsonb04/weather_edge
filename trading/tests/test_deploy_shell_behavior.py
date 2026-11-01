@@ -251,6 +251,9 @@ def _invoke_paper_scan_with_placement_flags(
 import json, os, sys
 with open(os.environ['PAPER_SCAN_CALL_LOG'], 'a', encoding='utf-8') as handle:
     handle.write(json.dumps(sys.argv[1:]) + '\\n')
+failing = os.environ.get('PAPER_SCAN_FAIL_PROFILE')
+if failing and sys.argv[sys.argv.index('--risk-profile') + 1] == failing:
+    sys.exit(3)
 """,
     )
     env = {
@@ -444,6 +447,27 @@ def test_paper_scan_rejects_invalid_profile_csv_before_any_dispatch(
     assert result.returncode != 0
     assert "invalid paper risk profile: bogus" in result.stderr
     assert calls == []
+
+
+def test_paper_scan_failed_profile_does_not_skip_later_profiles(
+    tmp_path: Path,
+) -> None:
+    # Oct 27: a live-profile crash under `set -e` stopped the research scan for
+    # five days. Every profile must still run, and the unit must still fail.
+    result, calls = _invoke_paper_scan_with_placement_flags(
+        tmp_path,
+        PAPER_SCAN_FAIL_PROFILE="live",
+        PAPER_PLACE_LIVE="1",
+        PAPER_PLACE_RESEARCH_TARGET="1",
+    )
+
+    assert result.returncode == 3
+    assert "paper scan profile=live failed with status 3" in result.stderr
+    assert [call[call.index("--risk-profile") + 1] for call in calls] == ["live", "research"]
+    # The failed live scan may not have recorded the shared context, so the
+    # research scan records it instead of skipping.
+    assert "--skip-context-snapshots" not in calls[1]
+    assert "--place-research-target" in calls[1]
 
 
 def test_paper_scan_preserves_validated_order_and_ignores_empty_tokens(
