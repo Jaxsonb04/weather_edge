@@ -201,6 +201,8 @@ def allocate_portfolio(
     # basket of hedged bins is grown-optimal rather than a stack of independent
     # per-bin Kelly bets. Opt-in; a strict no-op when disabled or without a ladder.
     if joint_kelly_enabled and bin_yes_probs:
+        # Trim only (audit 2026-11-01): the resize may lower a leg to its hedged
+        # full-Kelly share but never raises it above its per-leg size.
         selected = _joint_resize_directional(
             selected,
             bin_yes_probs,
@@ -290,12 +292,31 @@ def _joint_resize_directional(
         # trader clamps contracts to the displayed ask at the execution gate
         # (paper._clamp_to_displayed_ask); a resting maker quote's fill is
         # gated by future traded volume, not the ask displayed at entry. The
-        # worst-case-loss cap below and the shared-account per-position cap at
-        # placement remain the binding risk ceilings.
+        # per-leg ceiling just below, the worst-case-loss cap and the
+        # shared-account per-position cap at placement remain the binding
+        # risk ceilings.
+        #
+        # Trim only, never grow (audit 2026-11-01). The solver is FULL Kelly on
+        # the raw point probabilities, capped only by the day's remaining
+        # directional budget across every city. None of the per-leg sizer's
+        # controls reach it (fractional Kelly, the LCB-weighted sizing
+        # probability, the posterior trust multiplier, the uncertainty clamp,
+        # the position-risk cap; risk.py), so letting it raise a leg turned a
+        # zero-edge_lcb live NO sized at 6 contracts into 93 (placed at 34, the
+        # $30 account clamp) and made a leg's size depend on how much budget
+        # the cities scanned before it had left. The per-leg size already
+        # carries all of that scaling, so it is the ceiling: the joint step
+        # only trims a leg whose hedged full-Kelly share is smaller still.
+        if joint_spend >= leg.spend - 1e-9:
+            resized.append(leg)
+            continue
         new_decision = _scale_decision(decision, joint_spend)
         if new_decision is None:
             resized.append(leg)  # keep the original rather than drop a selected leg
             continue
+        # Journal the lever that set the size: the joint solve, not the per-leg
+        # Kelly budget or cap the decision was stamped with.
+        new_decision = replace(new_decision, binding_constraint="joint_kelly")
         resized.append(_portfolio_leg(new_decision, sleeve=leg.sleeve, growth_score=leg.growth_score))
 
     candidate = [*others, *resized]
