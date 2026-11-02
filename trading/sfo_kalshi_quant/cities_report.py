@@ -18,12 +18,47 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from ._util import _table_exists
+from .account import LIVE_STABILITY_ACCOUNT_ID
 from .cities import CITIES, CityConfig, city_for_market_ticker
-from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT, normalize_risk_profile_name
+from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT
 from .emos_sources import forecast_source_precedence
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .models import ForecastSnapshot
+from .profile_identity import published_profile_key
+from .research_policy import TARGET_POLICY
 from .settlement_day import settlement_today
+from .strategy_lab.profiles import ARCHIVED_PROFILES
+
+
+# One public book per economic paper account, keyed by the canonical published
+# identity every other public report uses (profile_identity). Only the two
+# active accounts fill the ``live``/``research`` slots the site has always
+# read; each archived ledger keeps a book of its own under ``archived``.
+_ACTIVE_BOOK_ACCOUNTS = {
+    "live": {
+        "status": "ACTIVE",
+        "profile_key": "live",
+        "account_id": LIVE_STABILITY_ACCOUNT_ID,
+    },
+    "research": {
+        "status": "ACTIVE",
+        "profile_key": "research-target",
+        "account_id": TARGET_POLICY.account_id,
+        "research_policy_version": TARGET_POLICY.policy_version,
+    },
+}
+_ACTIVE_BOOK_SLOTS = {
+    account["profile_key"]: slot for slot, account in _ACTIVE_BOOK_ACCOUNTS.items()
+}
+# The identity is all-or-nothing across these columns, so every one is read and
+# grouped on. Research orders all carry risk_profile='research'; without them,
+# every research era collapsed into one book.
+_IDENTITY_COLUMNS = (
+    "account_id",
+    "research_sleeve",
+    "research_policy_version",
+    "policy_fingerprint",
+)
 
 
 def _target_status(target: str, today: date) -> str:
@@ -194,6 +229,7 @@ def _empty_city_book() -> dict:
     return {
         "live": _empty_profile_book(),
         "research": _empty_profile_book(),
+        "archived": {},
         "decisions_24h": 0,
         "approved_24h": 0,
     }
@@ -221,10 +257,21 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
             books[city.slug]["approved_24h"] += int(approved)
 
     if _table_exists(conn, "paper_orders"):
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)")}
+        # A database that predates an identity column reads it as NULL, which
+        # the canonical identity resolves to the matching legacy ledger.
+        identity_select = ", ".join(
+            column if column in columns else f"NULL AS {column}"
+            for column in _IDENTITY_COLUMNS
+        )
+        identity_group = "".join(
+            f", {column}" for column in _IDENTITY_COLUMNS if column in columns
+        )
         order_rows = conn.execute(
-            """
+            f"""
             SELECT market_ticker,
-                   COALESCE(risk_profile, 'live') AS risk_profile,
+                   risk_profile,
+                   {identity_select},
                    -- Open and resting split the same way the Strategy Lab
                    -- splits them (``paper_card._project_paper_journal``), so
                    -- the Overview cannot say 22 positions while the Lab says
@@ -269,12 +316,16 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
                          WHEN status = 'PAPER_SETTLED' THEN realized_pnl ELSE 0
                        END), 0) AS settled_pnl
             FROM paper_orders
-            GROUP BY market_ticker, COALESCE(risk_profile, 'live')
+            GROUP BY market_ticker, risk_profile{identity_group}
             """
         ).fetchall()
         for (
             ticker,
             raw_profile,
+            account_id,
+            research_sleeve,
+            research_policy_version,
+            policy_fingerprint,
             open_count,
             resting_count,
             exposure,
@@ -284,27 +335,50 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
             city = city_for_market_ticker(ticker)
             if city is None:
                 continue
-            try:
-                profile = normalize_risk_profile_name(str(raw_profile))
-            except ValueError:
+            profile = published_profile_key(
+                raw_profile,
+                account_id=account_id,
+                research_sleeve=research_sleeve,
+                research_policy_version=research_policy_version,
+                policy_fingerprint=policy_fingerprint,
+            )
+            city_book = books[city.slug]
+            if profile in _ACTIVE_BOOK_SLOTS:
+                profile_book = city_book[_ACTIVE_BOOK_SLOTS[profile]]
+            elif profile in ARCHIVED_PROFILES:
+                profile_book = city_book["archived"].setdefault(
+                    profile, _empty_profile_book()
+                )
+            else:
+                # A partial, crossed or unrecognised identity ("unknown")
+                # proves no account, so it is published in no book.
                 continue
-            if profile not in ("live", "research"):
-                continue
-            profile_book = books[city.slug][profile]
             profile_book["open_positions"] += int(open_count)
             profile_book["resting_orders"] += int(resting_count)
             profile_book["open_exposure"] += float(exposure)
             profile_book["settled_orders"] += int(settled_count)
             profile_book["settled_pnl"] += float(pnl)
         for city_book in books.values():
-            for profile in ("live", "research"):
-                city_book[profile]["open_exposure"] = round(
-                    float(city_book[profile]["open_exposure"]),
+            archived = city_book["archived"]
+            for profile_book in (
+                city_book["live"],
+                city_book["research"],
+                *archived.values(),
+            ):
+                profile_book["open_exposure"] = round(
+                    float(profile_book["open_exposure"]),
                     2,
                 )
-                city_book[profile]["settled_pnl"] = round(
-                    float(city_book[profile]["settled_pnl"]),
+                profile_book["settled_pnl"] = round(
+                    float(profile_book["settled_pnl"]),
                     2,
+                )
+            for profile_book in archived.values():
+                # The Strategy Lab's archived-account labels, per city.
+                profile_book["status"] = (
+                    "ARCHIVED_SETTLING"
+                    if profile_book["open_positions"] or profile_book["resting_orders"]
+                    else "ARCHIVED"
                 )
     return books
 
@@ -370,17 +444,24 @@ def build_cities_data(
         "generated_at": generated_at.isoformat(timespec="seconds"),
         "city_count": len(cities_payload),
         "cities_with_live_forecasts": len(fresh),
+        "book_accounts": {
+            slot: dict(account) for slot, account in _ACTIVE_BOOK_ACCOUNTS.items()
+        },
         "note": (
             "Paper-trading research only. Forecasts are EMOS-calibrated "
             "multi-model NWP Gaussians per settlement station; once a "
             "settlement day is under way its predicted_high_f also carries the "
             "observed high-so-far update the trading path serves, with the "
             "pre-update mean kept as predicted_high_f_pre_intraday. Every "
-            "market settles on its own NWS Climatological Report. The live and "
-            "research books are economically separate paper accounts and are "
-            "never summed; open_positions counts filled contracts and "
-            "resting_orders counts unfilled limit orders, matching the "
-            "Strategy Lab."
+            "market settles on its own NWS Climatological Report. Each book is "
+            "one economically separate paper account and books are never "
+            "summed: books.live is only the active Live Stability account and "
+            "books.research only the active research account (book_accounts "
+            "names both), while each archived ledger (legacy live, earlier "
+            "research versions, motion and the old research shadow) keeps its "
+            "own book under books.archived. open_positions counts filled "
+            "contracts and resting_orders counts unfilled limit orders, "
+            "matching the Strategy Lab."
         ),
         "cities": cities_payload,
     }
