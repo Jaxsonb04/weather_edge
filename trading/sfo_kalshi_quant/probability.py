@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
@@ -499,14 +500,46 @@ def _normalize_weather_probabilities(
 # turned down, the expected further rise is capped at the hour's climatological
 # remaining heat, so the distribution converges on the observed maximum.
 #
-# The gate opens at 14:00 on the station's fixed-standard settlement clock: the
-# climatological remaining heat is below 1F from then on, and it is the clock
-# and hour of the default same-day entry cutoff, so every pre-cutoff scan (SFO's
-# civil-clock summer afternoons included) keeps the forecast-centred path.
+# The gate opens at 14:00 on the station's fixed-standard settlement clock, or
+# at the same-day entry cutoff when that is set later: the climatological
+# remaining heat is below 1F from 14:00 on, and no same-day scan that can still
+# admit an entry (SFO's civil-clock summer afternoons included) is priced on
+# the capped model. See _post_peak_earliest_standard_hour.
 POST_PEAK_EARLIEST_STANDARD_HOUR = 14.0
-# A 1F drop exceeds the 0.9F rounding of a whole-degree-C reading, so readings
-# of mixed precision around the peak cannot fake a cooling trend.
-POST_PEAK_MIN_DROP_F = 1.0
+# PAPER_SAME_DAY_ENTRY_CUTOFF_HOUR and its default, parsed exactly as
+# _cli/scan.py and monitor.py parse them (whole hours on the same
+# fixed-standard clock, clamped to 0-23, a bad value falls back to 14).
+_SAME_DAY_ENTRY_CUTOFF_ENV = "PAPER_SAME_DAY_ENTRY_CUTOFF_HOUR"
+_DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
+# The newest reading must sit at least 2F below the maximum. Either reading can
+# be a whole-degree-C report rounded by up to 0.9F, and the two can round in
+# opposite directions, so two readings one whole-degree-C step apart (14C =
+# 57.2F, 13C = 55.4F) differ by 1.8F while the temperature hovers at its peak.
+# A 2F gap is more than one step: two whole-degree-C readings open the gate
+# only after a true drop of more than 1.8F, and a precise maximum against a
+# whole-degree-C newest reading (or the reverse) only after one of about 1.1F.
+#
+# Accepted false positive: a real dip of 2F or more once the gate's hour has
+# passed (a passing shower or cloud deck) on a day that then re-warms past its
+# maximum opens the gate for as long as the dip lasts, and the bins above the
+# maximum are priced too low meanwhile. exits.decide_exit vetoes a NO stop on
+# this model probability alone (audit F3), so during such a dip the stop on a
+# NO above the maximum can be held as HOLD_MODEL_VETO toward the catastrophic
+# floor. Deploy this only together with, or after, F3's model-vs-market limit
+# on that veto.
+POST_PEAK_MIN_DROP_F = 2.0
+
+
+def _post_peak_earliest_standard_hour() -> float:
+    """The later of 14:00 and the configured same-day entry cutoff, so moving
+    the cutoff later moves this gate with it."""
+
+    raw = os.getenv(_SAME_DAY_ENTRY_CUTOFF_ENV, str(_DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR))
+    try:
+        cutoff_hour = min(23, max(0, int(raw)))
+    except ValueError:
+        cutoff_hour = _DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR
+    return max(POST_PEAK_EARLIEST_STANDARD_HOUR, float(cutoff_hour))
 
 
 def _is_past_peak_and_cooling(
@@ -514,8 +547,8 @@ def _is_past_peak_and_cooling(
     observed_high_f: float,
     standard_timezone: tzinfo,
 ) -> bool:
-    """True once the newest reading sits clearly below the day's maximum after
-    the fixed-standard cutoff.
+    """True once the newest reading sits at least POST_PEAK_MIN_DROP_F below
+    the day's maximum at or after the fixed-standard cutoff.
 
     ``latest_observed_at`` is the newest reading's time or, until audit F1
     lands, the time of the maximum; both are no later than now, so the gate
@@ -529,7 +562,7 @@ def _is_past_peak_and_cooling(
     standard_hour = _local_decimal_hour(
         intraday.latest_observed_at, standard_timezone, fixed_standard=True
     )
-    return standard_hour is not None and standard_hour >= POST_PEAK_EARLIEST_STANDARD_HOUR
+    return standard_hour is not None and standard_hour >= _post_peak_earliest_standard_hour()
 
 
 def _intraday_probability_model(
@@ -596,9 +629,18 @@ def _intraday_probability_model(
     )
     boundary_gap_f = _upper_boundary_gap(markets, observed_high_f)
 
-    # Past the peak, remaining_heat_risk is measured from the capped mean, so at
-    # most the hour's climatological remaining heat, not the forecast's full gap
-    # above the maximum, can trigger this boost.
+    # Past the peak, remaining_heat_risk is measured from the capped mean, so the
+    # forecast's gap above the maximum no longer triggers this boost, but the
+    # 0.6F spread floor can. From 16:00 standard the floor replaces the table's
+    # 0.45F/0.30F, so with the mean at the maximum (forecast at or below it) the
+    # 0.20 branch fires once the maximum is within about 0.77F of its bin's
+    # continuous top edge, not 0.58F/0.38F. The wider spread is the
+    # observation-error model moving some mass from the reached bin to the one
+    # above; the boost, lifting the intraday weight from 0.65 to 0.80, pulls part
+    # of it back, as the intraday leg is tighter around the maximum than the
+    # conditioned EMOS leg. test_nov01_post_peak_cooling pins a case: 21:10 EST,
+    # max 57.8F, EMOS 57.0F moves 57-58 from 0.894 to 0.843 and 59-60 from 0.096
+    # to 0.151 (0.170 without the boost).
     blend_weight = _intraday_blend_weight(local_hour, config)
     if (
         remaining_heat_risk is not None
