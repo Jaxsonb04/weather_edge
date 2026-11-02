@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Iterable
 
-from ._util import _table_exists
+from ._util import _parse_timestamp, _table_exists
 from .cities import CityConfig, get_city
 from .config import DEFAULT_FORECASTER_ROOT, SFO_TZ, intraday_timezone_for_city
 from .emos_sources import (
@@ -337,9 +337,18 @@ class SfoForecasterAdapter:
                 )
                 official_row = None
                 if _table_exists(conn, "nws_daily_high_ground_truth"):
+                    # Older daily-high tables may lack last_observed_at.
+                    official_columns = {
+                        row[1]
+                        for row in conn.execute("PRAGMA table_info(nws_daily_high_ground_truth)")
+                    }
+                    last_observed_column = (
+                        "last_observed_at" if "last_observed_at" in official_columns else "NULL"
+                    )
                     official_row = conn.execute(
-                        """
-                        SELECT high_f, high_observed_at, observation_count, is_complete, source
+                        f"""
+                        SELECT high_f, {last_observed_column}, observation_count,
+                               is_complete, source
                         FROM nws_daily_high_ground_truth
                         WHERE station_id = ? AND local_date = ? AND high_f IS NOT NULL
                         """,
@@ -403,7 +412,11 @@ class SfoForecasterAdapter:
             official_high = _maybe_float(official_row[0])
             if official_high is not None:
                 observed_high_f = official_high
-                latest_observed_at = official_row[1] or latest_observed_at
+                # The latest observation is the newest reading behind either
+                # source. high_observed_at only records when the maximum was
+                # first reached; it stops advancing after the peak or along a
+                # plateau, which made a current feed look stale to the heartbeat.
+                latest_observed_at = _later_timestamp(latest_observed_at, official_row[1])
                 observation_count = int(official_row[2] or observation_count)
                 # This table is derived from station observations.  A finished
                 # calendar day does not turn those observations into the final
@@ -1016,6 +1029,18 @@ def _maybe_int(value: object) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _later_timestamp(current: str | None, candidate: object) -> str | None:
+    """Return the later of two ISO timestamps, keeping ``current`` on a tie."""
+
+    candidate_at = _parse_timestamp(candidate)
+    if candidate_at is None:
+        return current
+    current_at = _parse_timestamp(current)
+    if current_at is None or candidate_at > current_at:
+        return str(candidate)
+    return current
 
 
 def _json_or_empty(value: object) -> dict:
