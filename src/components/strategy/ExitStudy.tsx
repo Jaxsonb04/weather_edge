@@ -17,7 +17,7 @@ interface Row {
   key: string;
   label: string;
   resolved: number;
-  wins: number;
+  wins: number | null;
   hitRate: number;
   roi: number | null;
 }
@@ -28,8 +28,12 @@ function rows(byReason: Record<string, ExitReasonStats | undefined>): Row[] {
     const stats = byReason[key];
     const resolved = stats?.resolved ?? 0;
     if (!stats || resolved <= 0) return [];
-    const wins = stats.wins ?? 0;
-    const hitRate = typeof stats.hit_rate === "number" ? stats.hit_rate : wins / resolved;
+    // The share is read off the counts printed beside it. The runtime's
+    // hit_rate leaves flat outcomes out of its denominator, so pairing it with
+    // "wins of resolved" would not add up (267 of 269 is 99.3%, not 99.6%).
+    const wins = typeof stats.wins === "number" ? stats.wins : null;
+    const hitRate = wins != null ? wins / resolved : typeof stats.hit_rate === "number" ? stats.hit_rate : null;
+    if (hitRate == null) return [];
     return [{
       key,
       label: EXIT_LABELS[key] ?? key.replace(/_/g, " "),
@@ -81,7 +85,11 @@ export function ExitStudy({ s }: { s: StrategyLab }) {
               <div className="mb-1.5 flex items-baseline justify-between gap-3 text-xs">
                 <span className="font-medium text-foreground">{row.label}</span>
                 <span className="tnum text-muted">
-                  {row.wins.toLocaleString()} of {row.resolved.toLocaleString()} ·{" "}
+                  {row.wins != null && (
+                    <>
+                      {row.wins.toLocaleString()} of {row.resolved.toLocaleString()} ·{" "}
+                    </>
+                  )}
                   <span className="font-semibold text-foreground">{percent(row.hitRate, 1)}</span>
                   {row.roi != null && (
                     <span className={row.roi >= 0 ? "text-success" : "text-danger"}> · ROI {percent(row.roi, 1, "always")}</span>

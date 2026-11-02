@@ -31,6 +31,16 @@ describe("ExitStudy", () => {
     expect(screen.getByText("0%", { selector: "strong" })).toBeInTheDocument();
   });
 
+  it("states each share from the counts beside it, flat outcomes included", () => {
+    // Take-profit has 267 wins, 1 loss and 1 flat outcome. The runtime's
+    // 99.63% hit rate leaves the flat one out, which beside "267 of 269"
+    // would not add up.
+    render(<ExitStudy s={lab} />);
+    expect(screen.getByText(/267 of 269/)).toBeInTheDocument();
+    expect(screen.getByText("99.3%")).toBeInTheDocument();
+    expect(screen.queryByText("99.6%")).not.toBeInTheDocument();
+  });
+
   it("never renders a dollar sum pooled across separate accounts", () => {
     const { container } = render(<ExitStudy s={lab} />);
     expect(container.textContent).not.toMatch(/\$/);

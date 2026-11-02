@@ -351,6 +351,11 @@ details > summary::-webkit-details-marker { display: none; }
     animation: none;
   }
   .live-dot::before { animation: none; }
+  /* HeroUI's loading shimmer sweeps on pseudo-elements its own CSS never stops. */
+  .skeleton--shimmer::before,
+  .skeleton--shimmer::after {
+    animation: none;
+  }
   .reveal,
   .reveal.is-in,
   .pop,

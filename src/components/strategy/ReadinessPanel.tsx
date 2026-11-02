@@ -70,7 +70,9 @@ function DeferredVerdict({ r, live }: { r: RealMoneyReadiness; live: boolean | u
         <div className="flex flex-wrap items-center gap-2">
           <span className={`text-2xl font-semibold tracking-tight ${ready ? "text-success" : "text-warning"}`}>{status}</span>
           <Chip size="sm" variant="soft" color={live ? "danger" : "default"}>
-            <Chip.Label>{live ? "Live orders enabled" : "Live orders disabled"}</Chip.Label>
+            <Chip.Label>
+              {live === true ? "Live orders enabled" : live === false ? "Live orders disabled" : "Live-order flag not published"}
+            </Chip.Label>
           </Chip>
         </div>
         {(age ?? !deployDeferred) && <p className="text-sm text-muted">{age ?? reasons[0]}</p>}

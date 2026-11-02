@@ -226,12 +226,14 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
                     Couldn't load the model diagnostics: {diagError}
                   </p>
                 ) : (
-                  <div className="skeleton--shimmer relative grid gap-4 overflow-hidden lg:grid-cols-2" aria-hidden="true">
+                  <>
                     <p role="status" aria-live="polite" className="sr-only">Loading diagnostics…</p>
-                    <Skeleton animationType="none" className="h-28 rounded-3xl lg:col-span-2" />
-                    <Skeleton animationType="none" className="h-72 rounded-3xl" />
-                    <Skeleton animationType="none" className="h-72 rounded-3xl" />
-                  </div>
+                    <div className="skeleton--shimmer relative grid gap-4 overflow-hidden lg:grid-cols-2" aria-hidden="true">
+                      <Skeleton animationType="none" className="h-28 rounded-3xl lg:col-span-2" />
+                      <Skeleton animationType="none" className="h-72 rounded-3xl" />
+                      <Skeleton animationType="none" className="h-72 rounded-3xl" />
+                    </div>
+                  </>
                 )}
               </div>
             </Tabs.Panel>

@@ -24,4 +24,11 @@ describe("named motion fallbacks", () => {
     expect(city).toContain("motion-reduce:transition-none");
     expect(city).toContain("motion-reduce:hover:translate-y-0");
   });
+
+  it("stops the loading shimmer sweep under reduced motion", () => {
+    // HeroUI animates the shimmer on pseudo-elements and never stops it itself.
+    const css = read("src/index.css");
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toMatch(/\.skeleton--shimmer::before,\s*\.skeleton--shimmer::after\s*\{\s*animation: none;/);
+  });
 });

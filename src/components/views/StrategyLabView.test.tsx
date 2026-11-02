@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { StrategyLab } from "../../lib/strategy";
@@ -14,6 +14,43 @@ vi.mock("../ui/Reveal", () => ({
 import { AnalysisFreshness, LabNotices, LabStatusChips, PolicyLineage, ReleaseFindings } from "./StrategyLabView";
 import { AccountCards } from "../strategy/AccountCards";
 import { ReadinessPanel } from "../strategy/ReadinessPanel";
+import { useHashSub } from "../../lib/useHashRoute";
+
+describe("Lab tab deep links", () => {
+  const tabs = ["accounts", "research", "archive", "system"] as const;
+  const go = (hash: string) =>
+    act(() => {
+      window.history.replaceState(null, "", hash);
+      window.dispatchEvent(new Event("hashchange"));
+    });
+
+  it("follows hash navigation between tabs while the Lab stays open", () => {
+    window.history.replaceState(null, "", "#/lab/research");
+    const { result } = renderHook(() => useHashSub("lab", tabs, "accounts"));
+    expect(result.current[0]).toBe("research");
+
+    go("#/lab/system");
+    expect(result.current[0]).toBe("system");
+    go("#/lab");
+    expect(result.current[0]).toBe("accounts");
+
+    // Leaving the Lab is not a tab change.
+    go("#/lab/archive");
+    go("#/overview");
+    expect(result.current[0]).toBe("archive");
+
+    // Choosing a tab rewrites the hash without a hashchange (no jump to the top).
+    const onHash = vi.fn();
+    window.addEventListener("hashchange", onHash);
+    act(() => result.current[1]("research"));
+    window.removeEventListener("hashchange", onHash);
+    expect(result.current[0]).toBe("research");
+    expect(window.location.hash).toBe("#/lab/research");
+    expect(onHash).not.toHaveBeenCalled();
+
+    window.history.replaceState(null, "", "/");
+  });
+});
 
 const twoAccounts = {
   available: true,

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Chip } from "@heroui/react/chip";
 import { Tabs } from "@heroui/react/tabs";
 import { Skeleton } from "@heroui/react/skeleton";
@@ -30,6 +30,7 @@ import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice
 import { ArchivedPerformance } from "../strategy/ArchivedPerformance";
 import { HybridResearchPanel } from "../strategy/HybridResearchPanel";
 import { mergedAlerts, policyMarker } from "../../lib/lab-format";
+import { useHashSub } from "../../lib/useHashRoute";
 
 type LabTab = "accounts" | "research" | "archive" | "system";
 const LAB_TABS: { id: LabTab; label: string }[] = [
@@ -40,11 +41,7 @@ const LAB_TABS: { id: LabTab; label: string }[] = [
 ];
 
 /** `#/lab/research` opens that tab; anything else opens Accounts. */
-function initialTab(): LabTab {
-  if (typeof window === "undefined") return "accounts";
-  const sub = window.location.hash.replace(/^#\/?/, "").split(/[?#]/)[0].split("/")[1];
-  return LAB_TABS.some((tab) => tab.id === sub) ? (sub as LabTab) : "accounts";
-}
+const LAB_TAB_IDS = LAB_TABS.map((tab) => tab.id);
 
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -349,21 +346,10 @@ function sharedStart(s: StrategyLab): number | null {
 
 export default function StrategyLabView() {
   const { data: s, error } = useStrategyLab();
-  const [tab, setTab] = useState<LabTab>(initialTab);
+  const [tab, selectTab] = useHashSub("lab", LAB_TAB_IDS, "accounts");
   const publicationUnavailable = !!s && !s.available;
   const start = s ? sharedStart(s) : null;
   const pair = !!s && activeProfiles(s).length >= 2;
-
-  const selectTab = (key: LabTab) => {
-    setTab(key);
-    // replaceState keeps the tab linkable without a hashchange (which would
-    // scroll the page to the top on every switch).
-    try {
-      window.history.replaceState(null, "", `#/lab/${key}`);
-    } catch {
-      // Sandboxed frames can refuse history writes; the tab still switches.
-    }
-  };
 
   return (
     <>
