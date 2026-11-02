@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from dataclasses import asdict, is_dataclass, replace
 from datetime import date, datetime, timezone
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -481,8 +483,20 @@ def _event_for_report(
             replace(event, markets=markets, raw={**event.raw, "fetched_at": fetched_at}),
             None,
         )
-    except URLError as exc:
-        return None, f"Live prediction market lookup failed: {exc}"
+    except (URLError, OSError, HTTPException) as exc:
+        # An outage costs this target its live ladder, not the whole publication
+        # cycle. Exhausted retries arrive as KalshiUnavailable (an OSError, not a
+        # URLError) and a garbled status line as an unconverted HTTPException.
+        # The exception text can name the venue or its host, so it goes to the
+        # operator log and the public artifact gets a fixed warning.
+        print(
+            f"warning: live market lookup failed for {target.isoformat()} ({exc})",
+            file=sys.stderr,
+        )
+        return (
+            None,
+            "Live prediction market lookup failed; using probability-only fallback ladder.",
+        )
 
 
 def _target_status(target: date, today: date) -> str:
