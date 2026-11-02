@@ -1,0 +1,1 @@
+import{On as e,Wn as t}from"./offline-Cby2vGQ4.js";function n(n,r){return e(n,(e,n)=>t(typeof r==`function`?r(n)??``:r??``,e??``)??``)}function r(e,t,n){return typeof e==`function`?e({...n??{},className:t}):t}export{n,r as t};
