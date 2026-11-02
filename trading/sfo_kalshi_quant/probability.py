@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import datetime, timedelta, tzinfo
 from typing import Iterable
 
 from .config import SFO_TZ, StrategyConfig
@@ -489,6 +489,49 @@ def _normalize_weather_probabilities(
     ]
 
 
+# Post-peak cooling (audit F2, 2026-11-01). The forecast-centred mean below
+# kept the day's forecast high as the expected final high all evening, so on a
+# warm-model day it stayed above the station maximum long after the peak:
+# Boston peaked at 57.0F at 15:53 EST and was 48F and falling at 21:10, yet the
+# EMOS mean of 59.0F centred the intraday model on 59 with a 0.30F spread,
+# priced the never-reached 59-60 bin at 0.856 and vetoed the stop on a NO in
+# the reached 57-58 bin. Once the day is past its peak and the temperature has
+# turned down, the expected further rise is capped at the hour's climatological
+# remaining heat, so the distribution converges on the observed maximum.
+#
+# The gate opens at 14:00 on the station's fixed-standard settlement clock: the
+# climatological remaining heat is below 1F from then on, and it is the clock
+# and hour of the default same-day entry cutoff, so every pre-cutoff scan (SFO's
+# civil-clock summer afternoons included) keeps the forecast-centred path.
+POST_PEAK_EARLIEST_STANDARD_HOUR = 14.0
+# A 1F drop exceeds the 0.9F rounding of a whole-degree-C reading, so readings
+# of mixed precision around the peak cannot fake a cooling trend.
+POST_PEAK_MIN_DROP_F = 1.0
+
+
+def _is_past_peak_and_cooling(
+    intraday: IntradaySnapshot,
+    observed_high_f: float,
+    standard_timezone: tzinfo,
+) -> bool:
+    """True once the newest reading sits clearly below the day's maximum after
+    the fixed-standard cutoff.
+
+    ``latest_observed_at`` is the newest reading's time or, until audit F1
+    lands, the time of the maximum; both are no later than now, so the gate
+    never opens before the cutoff.
+    """
+
+    if intraday.latest_temp_f is None:
+        return False
+    if observed_high_f - intraday.latest_temp_f < POST_PEAK_MIN_DROP_F:
+        return False
+    standard_hour = _local_decimal_hour(
+        intraday.latest_observed_at, standard_timezone, fixed_standard=True
+    )
+    return standard_hour is not None and standard_hour >= POST_PEAK_EARLIEST_STANDARD_HOUR
+
+
 def _intraday_probability_model(
     markets: list[MarketBin],
     predicted_high_f: float,
@@ -524,8 +567,21 @@ def _intraday_probability_model(
     mean_final_high_f = max(observed_high_f, predicted_high_f)
     if intraday.remaining_forecast_high_f is not None:
         mean_final_high_f = max(mean_final_high_f, intraday.remaining_forecast_high_f)
+    post_peak = _is_past_peak_and_cooling(intraday, observed_high_f, standard_timezone)
+    if post_peak:
+        # A cap, never a lift: a mean already within the hour's remaining heat of
+        # the maximum is left as it is.
+        mean_final_high_f = min(mean_final_high_f, observed_high_f + climatology_upside_f)
 
-    sigma_f = _intraday_sigma_f(local_hour, climatology_upside_f, config)
+    # Centred on a raw nonfinal maximum after the peak, the spread must cover the
+    # raw-to-official error (MD-01: raw 87.8F settled at 87F), not the late-day
+    # table's 0.30-0.45F remaining-heat spread.
+    sigma_f = _intraday_sigma_f(
+        local_hour,
+        climatology_upside_f,
+        config,
+        floor_f=NONFINAL_OBSERVED_HIGH_SIGMA_F if post_peak else 0.0,
+    )
     probabilities = _conditioned_normal_final_high_probabilities(
         markets,
         observed_high_f=observed_high_f,
@@ -540,6 +596,9 @@ def _intraday_probability_model(
     )
     boundary_gap_f = _upper_boundary_gap(markets, observed_high_f)
 
+    # Past the peak, remaining_heat_risk is measured from the capped mean, so at
+    # most the hour's climatological remaining heat, not the forecast's full gap
+    # above the maximum, can trigger this boost.
     blend_weight = _intraday_blend_weight(local_hour, config)
     if (
         remaining_heat_risk is not None
@@ -639,6 +698,8 @@ def _upper_boundary_gap(markets: list[MarketBin], observed_high_f: float) -> flo
 def _local_decimal_hour(
     observed_at: str | None,
     standard_timezone: tzinfo = SFO_TZ,
+    *,
+    fixed_standard: bool = False,
 ) -> float | None:
     if not observed_at:
         return None
@@ -647,6 +708,10 @@ def _local_decimal_hour(
     except ValueError:
         return None
     local = observed_dt.astimezone(standard_timezone)
+    if fixed_standard:
+        # SFO's tables read civil Pacific time; drop any daylight offset so the
+        # hour reads on the station's fixed-standard settlement clock.
+        local -= local.dst() or timedelta(0)
     return local.hour + local.minute / 60.0
 
 
@@ -679,6 +744,8 @@ def _intraday_sigma_f(
     local_hour: float | None,
     climatology_upside_f: float,
     config: StrategyConfig,
+    *,
+    floor_f: float = 0.0,
 ) -> float:
     if local_hour is None:
         base = 0.95
@@ -698,7 +765,7 @@ def _intraday_sigma_f(
         base = 0.45
     else:
         base = 0.30
-    sigma = max(base, 0.45 * climatology_upside_f)
+    sigma = max(base, 0.45 * climatology_upside_f, floor_f)
     return max(config.intraday_min_sigma_f, min(config.intraday_max_sigma_f, sigma))
 
 
