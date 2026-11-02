@@ -841,6 +841,16 @@ def register_paper_commands(sub) -> None:
             "rewritten. Use this to backfill exchange verdicts."
         ),
     )
+    resettle_exchange.add_argument(
+        "--restate",
+        action="store_true",
+        help=(
+            "Dry run: list each settled lot whose booked high disagrees with "
+            "the current final CLI truth, and the outcome and P&L restating it "
+            "would book, totalled per account. Writes nothing and calls no "
+            "exchange; restating booked P&L needs the owner's approval."
+        ),
+    )
     resettle.add_argument(
         "--exchange-max-fetches",
         type=int,

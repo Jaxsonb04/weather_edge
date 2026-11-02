@@ -6408,6 +6408,133 @@ class PaperStore:
             "missing_truth": missing_truth,
         }
 
+    def recheck_paper_settlements(
+        self,
+        settlements,
+        *,
+        intervals: dict[str, tuple[str, str]],
+        record: bool = False,
+    ) -> dict:
+        """Re-check booked settlements against the current final truth.
+
+        On the settle timer ``verify_paper_settlements`` checks a lot against
+        the value it was just settled from, so it says MATCH by construction.
+        A final can still change afterwards: ``forecaster/city_truth.py`` lets
+        a later final replace an earlier one, and the nightly IEM backfill
+        exists to pick up corrected finals. This is the later look.
+
+        It reports every settled lot in ``intervals`` whose booked high
+        disagrees with its final in ``settlements``, with the outcome and P&L
+        that final would book. Without ``record`` it writes nothing. With
+        ``record`` it only escalates: a lot's existing verification row that
+        disagrees becomes MISMATCH. It never writes a first row (a new row
+        clears SETTLEMENT_VERIFICATION_REQUIRED, which is the owner-approved
+        sweep's call), never clears a MISMATCH or MISSING_FINAL, and skips a
+        date ``settlements`` lacks instead of downgrading its row. Orders, P&L
+        and the ledger are never touched.
+        """
+
+        truth = normalize_settlement_truth(settlements)
+        checked_at = _now()
+        checked = 0
+        missing_final = 0
+        drift: list[dict] = []
+        clauses = []
+        params: list[str] = []
+        for series, (lower, upper) in intervals.items():
+            clauses.append("(o.market_ticker LIKE ? AND o.target_date BETWEEN ? AND ?)")
+            params.extend((f"{series}-%", lower, upper))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = (
+                conn.execute(
+                    "SELECT o.id, o.market_ticker, o.target_date, o.label, o.action, "
+                    "o.side, o.strike_type, o.floor_strike, o.cap_strike, "
+                    "o.contracts, o.cost_per_contract, o.settlement_high_f, "
+                    "o.realized_pnl, COALESCE(o.account_id, ?) AS account_id, "
+                    "v.verification_status AS recorded_status, "
+                    "v.final_high_f AS recorded_final_high_f "
+                    "FROM paper_orders o LEFT JOIN paper_settlement_verifications v "
+                    "ON v.order_id = o.id WHERE o.status='PAPER_SETTLED' "
+                    "AND o.settled_at IS NOT NULL AND o.settlement_high_f IS NOT NULL "
+                    f"AND ({' OR '.join(clauses)}) ORDER BY o.target_date, o.id",
+                    (SHARED_ACCOUNT_ID, *params),
+                ).fetchall()
+                if clauses
+                else []
+            )
+            for row in rows:
+                final_high = settlement_for_market(
+                    truth, str(row["market_ticker"]), str(row["target_date"])
+                )
+                if final_high is None:
+                    missing_final += 1
+                    continue
+                checked += 1
+                booked_high = _integer_settlement_high_f(row["settlement_high_f"])
+                final_high = _integer_settlement_high_f(final_high)
+                if booked_high == final_high:
+                    continue
+                recorded = row["recorded_status"]
+                flagged = (
+                    record
+                    and recorded is not None
+                    and (
+                        recorded != "MISMATCH"
+                        or row["recorded_final_high_f"] is None
+                        or float(row["recorded_final_high_f"]) != final_high
+                    )
+                )
+                if flagged:
+                    conn.execute(
+                        "UPDATE paper_settlement_verifications SET checked_at=?, "
+                        "booked_high_f=?, final_high_f=?, "
+                        "verification_status='MISMATCH' WHERE order_id=?",
+                        (checked_at, booked_high, final_high, int(row["id"])),
+                    )
+                side = _row_side(row)
+                resolved_yes = _row_resolves_yes(row, final_high)
+                restated_pnl = settled_position_pnl(
+                    float(row["contracts"]),
+                    float(row["cost_per_contract"]),
+                    resolved_yes if side == "YES" else not resolved_yes,
+                )
+                booked_pnl = (
+                    None if row["realized_pnl"] is None else float(row["realized_pnl"])
+                )
+                drift.append(
+                    {
+                        "order_id": int(row["id"]),
+                        "account_id": str(row["account_id"]),
+                        "market_ticker": str(row["market_ticker"]),
+                        "target_date": str(row["target_date"]),
+                        "side": side,
+                        "contracts": float(row["contracts"]),
+                        "booked_high_f": booked_high,
+                        "final_high_f": final_high,
+                        "recorded_status": None if recorded is None else str(recorded),
+                        "flagged": flagged,
+                        "booked_realized_pnl": booked_pnl,
+                        "restated_resolved_yes": resolved_yes,
+                        "restated_realized_pnl": restated_pnl,
+                        "pnl_delta": (
+                            None if booked_pnl is None else restated_pnl - booked_pnl
+                        ),
+                    }
+                )
+            standing = conn.execute(
+                "SELECT COUNT(*) FROM paper_settlement_verifications "
+                "WHERE verification_status='MISMATCH'"
+            ).fetchone()[0]
+        return {
+            "checked": checked,
+            "missing_final": missing_final,
+            "drift": drift,
+            "flagged": sum(row["flagged"] for row in drift),
+            "unverified": sum(row["recorded_status"] is None for row in drift),
+            "standing_mismatches": int(standing),
+        }
+
     def close_paper_order(
         self,
         order_id: int,
