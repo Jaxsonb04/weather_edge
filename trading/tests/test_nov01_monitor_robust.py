@@ -6,6 +6,10 @@ field, a missing key, a null market, an undecodable body) escaped the lookup
 and left the paper monitor before its exit loop, so no stop or take-profit ran
 for any position in any paper account until that market left the open book.
 
+The same failure reached the exit loop itself: MarketBin parses the NO bid
+size only when an exit reads its depth, and ``float()`` accepts "nan" and
+"inf", so a NaN bid passed the lookup and failed later in the fee maths.
+
 These tests drive the real KalshiPublicClient end to end (get_json ->
 get_markets / get_market -> MarketBin.from_kalshi); only urllib's urlopen is
 replaced, so nothing touches the network.
@@ -177,12 +181,12 @@ def _body(payload) -> _Response:
     return _Response(json.dumps(payload).encode())
 
 
-def _fake_urlopen(bad_market, requests: list[str]):
+def _fake_urlopen(bad_market, requests: list[str], readable=READABLE_MARKETS):
     def urlopen(request, timeout=None):
         requests.append(request.full_url)
         url = urlparse(request.full_url)
         path = url.path.rsplit("/trade-api/v2/", 1)[-1]
-        markets = {**READABLE_MARKETS, BAD_TICKER: bad_market}
+        markets = {**readable, BAD_TICKER: bad_market}
         if path == "markets":
             rows = [markets[ticker] for ticker in parse_qs(url.query)["tickers"][0].split(",")]
             if any(row is UNDECODABLE for row in rows):
@@ -233,11 +237,13 @@ def _seed_two_account_book(db_path):
     return store, ids
 
 
-def _run_monitor(db_path, bad_market):
+def _run_monitor(db_path, bad_market, readable=READABLE_MARKETS):
     requests: list[str] = []
     out, err = StringIO(), StringIO()
     with (
-        patch.object(kalshi_module, "urlopen", _fake_urlopen(bad_market, requests)),
+        patch.object(
+            kalshi_module, "urlopen", _fake_urlopen(bad_market, requests, readable)
+        ),
         redirect_stdout(out),
         redirect_stderr(err),
     ):
@@ -308,6 +314,86 @@ def test_one_unreadable_market_does_not_stop_exits_in_either_account(
     # its own more than once per pass.
     singles = Counter(url for url in requests if "/markets/" in url)
     assert singles and max(singles.values()) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "problem", "quote_read"),
+    [
+        # MarketBin parses the NO bid size only when an exit reads its depth,
+        # so these fail inside the exit loop, after the stop has fired.
+        ("no_bid_size_fp", "n/a", "ValueError: could not convert string to float: 'n/a'", True),
+        ("no_bid_size_fp", {"size": "50"}, "TypeError", True),
+        # float() accepts these, so they pass MarketBin.from_kalshi. An
+        # infinite size used to close the whole lot against depth Kalshi never
+        # showed, and a NaN bid used to end the pass in the exit-fee maths.
+        ("no_bid_size_fp", "Infinity", "inf is not a finite size", True),
+        ("no_bid_dollars", "NaN", "NO bid nan is not a finite number", False),
+    ],
+    ids=["text_no_bid_size", "object_no_bid_size", "infinite_no_bid_size", "nan_no_bid"],
+)
+def test_one_bad_field_on_a_stopping_no_lot_does_not_stop_the_other_accounts_exits(
+    tmp_path, field, value, problem, quote_read
+):
+    db_path = tmp_path / "paper.db"
+    store, ids = _seed_two_account_book(db_path)
+    # Only the Research ROI V6 NO market is malformed. The market the other
+    # tests make unreadable is healthy here, so its lot must close as well.
+    readable = {
+        **READABLE_MARKETS,
+        RESEARCH_TICKER: {**READABLE_MARKETS[RESEARCH_TICKER], field: value},
+    }
+
+    code, out, err, _ = _run_monitor(db_path, _healthy_bad_market(), readable)
+
+    # The Live Stability lot is inspected after the bad NO lot, in the other
+    # account, and still takes its catastrophic stop on this pass.
+    for key in ("live", "unreadable"):
+        assert _order(store, ids[key])[0] == "PAPER_CLOSED", key
+        assert _snapshots(store, ids[key])[-1][0] == "CLOSE_STOP_LOSS", key
+    assert "paper monitor inspected 3, closed 2" in out
+
+    assert _order(store, ids["research"])[0] == "PAPER_FILLED"
+    snapshots = _snapshots(store, ids["research"])
+    assert len(snapshots) == 1
+    action, reason, live_bid, market_status = snapshots[0]
+    assert action == "HOLD_UNREADABLE_MARKET"
+    assert problem in reason
+    assert market_status == "active"
+    if quote_read:
+        # The stop fired; only the close waits for a usable displayed size.
+        assert reason.startswith("catastrophic NO stop-loss")
+        assert live_bid == pytest.approx(0.18)
+    else:
+        assert live_bid is None
+    with store.connect() as conn:
+        actions = {row[0] for row in conn.execute("SELECT action FROM paper_monitor_snapshots")}
+    assert "FETCH_FAILED" not in actions
+
+    assert code == 1
+    assert RESEARCH_TICKER in err and problem in err
+
+
+def test_a_bug_while_reading_exit_depth_still_stops_the_pass(tmp_path):
+    # Only bad market data is held per lot. Any other error raised while an
+    # exit reads its depth is a bug in this process: the pass must stop at
+    # once and fail, and must not be recorded as a hold.
+    db_path = tmp_path / "paper.db"
+    store, ids = _seed_two_account_book(db_path)
+
+    def broken_no_bid_size(self):
+        raise RuntimeError("bug while reading depth")
+
+    with patch.object(MarketBin, "no_bid_size", property(broken_no_bid_size)):
+        code, out, err, _ = _run_monitor(db_path, _healthy_bad_market())
+
+    assert code == 1
+    assert "bug while reading depth" in err
+    assert "paper monitor inspected" not in out
+    assert _order(store, ids["research"])[0] == "PAPER_FILLED"
+    assert _snapshots(store, ids["research"]) == []
+    with store.connect() as conn:
+        actions = {row[0] for row in conn.execute("SELECT action FROM paper_monitor_snapshots")}
+    assert "HOLD_UNREADABLE_MARKET" not in actions
 
 
 def test_unreadable_lot_is_managed_again_once_its_market_reads(tmp_path):

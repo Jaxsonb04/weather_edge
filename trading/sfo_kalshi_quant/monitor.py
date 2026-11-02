@@ -128,6 +128,9 @@ def _monitor_market_lookup(
 
     A market whose payload cannot be parsed comes back as its exception, like
     a failed request, so it holds only its own positions (audit F13).
+    MarketBin parses the NO bid size only when it is read, and ``float()``
+    accepts "nan" and "inf", so the exit loop checks the bid and displayed
+    size it uses as well.
     """
 
     clock = clock or (lambda: datetime.now(UTC))
@@ -411,6 +414,18 @@ def run_paper_monitor(
     # lots share its ticker/side. New-entry uniqueness remains a separate guard.
     depth_consumed: dict[tuple[str, str, str], float] = {}
     unreadable_markets: dict[str, str] = {}
+
+    def hold_unreadable_market(row, side: str, *, error: str, reason: str, **quote) -> None:
+        # Kalshi served data for this lot's market that cannot be used. It is
+        # not a network blip, so it is not FETCH_FAILED: hold only this lot,
+        # keep the error for audit, manage the rest of the book, and exit
+        # non-zero after the loop so the failure still alerts (audit F13).
+        store.record_monitor_snapshot(
+            row, side=side, action="HOLD_UNREADABLE_MARKET", reason=reason, **quote
+        )
+        print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
+        unreadable_markets.setdefault(str(row["market_ticker"]), error)
+
     closed = 0
     inspected = 0
     for row in rows:
@@ -462,18 +477,11 @@ def run_paper_monitor(
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
             continue
         if isinstance(market_or_error, (KeyError, TypeError, ValueError)):
-            exc = market_or_error
-            # Kalshi served this market in a form the client cannot parse. It is
-            # not a network blip, so it is not FETCH_FAILED: hold only this lot,
-            # keep the error for audit, manage the rest of the book, and exit
-            # non-zero after the loop so the failure still alerts.
-            error = f"{type(exc).__name__}: {exc}"
-            reason = f"market payload unreadable ({error})"
-            store.record_monitor_snapshot(
-                row, side=side, action="HOLD_UNREADABLE_MARKET", reason=reason
+            # The client could not build this market from Kalshi's payload.
+            error = f"{type(market_or_error).__name__}: {market_or_error}"
+            hold_unreadable_market(
+                row, side, error=error, reason=f"market payload unreadable ({error})"
             )
-            print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
-            unreadable_markets[str(row["market_ticker"])] = error
             continue
         market = market_or_error
 
@@ -489,6 +497,19 @@ def run_paper_monitor(
             continue
 
         live_bid = market.side_bid(side)
+        if not math.isfinite(live_bid):
+            # float() accepts "nan" and "inf", so such a bid passes
+            # MarketBin.from_kalshi. A NaN would fail in the exit-fee maths
+            # below and end the pass for every account (audit F13).
+            error = f"{side} bid {live_bid!r} is not a finite number"
+            hold_unreadable_market(
+                row,
+                side,
+                error=error,
+                reason=f"market payload unreadable ({error})",
+                market_status=market.status,
+            )
+            continue
         if live_bid <= 0:
             store.record_monitor_snapshot(
                 row,
@@ -714,7 +735,33 @@ def run_paper_monitor(
             str(row["market_ticker"]),
             side,
         )
-        displayed_bid_size = market.side_bid_size(side)
+        try:
+            displayed_bid_size = market.side_bid_size(side)
+            if not math.isfinite(displayed_bid_size):
+                raise ValueError(f"{displayed_bid_size!r} is not a finite size")
+        except (KeyError, TypeError, ValueError) as exc:
+            # MarketBin parses the NO bid size only now, so a malformed size
+            # fails here, after the exit has fired, not in the market lookup.
+            # A NaN or infinite size is not displayed liquidity either. Defer
+            # only this close, as when no size is displayed (EX-02).
+            problem = f"{type(exc).__name__}: {exc}"
+            hold_unreadable_market(
+                row,
+                side,
+                error=f"displayed {side} bid size: {problem}",
+                reason=(
+                    f"{reason}; close deferred: displayed {side} bid size "
+                    f"unreadable ({problem})"
+                ),
+                market_status=market.status,
+                live_bid=live_bid,
+                exit_fee_per_contract=exit_fee,
+                net_exit_per_contract=net_exit,
+                unrealized_pnl=pnl_dollars,
+                unrealized_roi=pnl_pct,
+                model_read=model_read_info,
+            )
+            continue
         prior_consumed = depth_consumed.get(depth_key, 0.0)
         bid_size = max(0.0, displayed_bid_size - prior_consumed)
         if bid_size <= 0:
@@ -815,7 +862,7 @@ def run_paper_monitor(
         print(
             color.red(
                 f"error: {len(unreadable_markets)} market(s) could not be read; "
-                f"their positions were held: {details}"
+                f"the positions that needed them were held: {details}"
             ),
             file=sys.stderr,
         )

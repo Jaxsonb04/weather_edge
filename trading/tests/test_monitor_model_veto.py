@@ -1414,12 +1414,17 @@ def test_paper_monitor_default_no_can_veto_past_old_45_pct_floor():
 
 
 def test_monitor_surfaces_a_non_network_error_instead_of_silent_hold():
-    """A programming/auth error must propagate (loud, non-zero exit), not be
-    masked as a benign FETCH_FAILED HOLD that leaves every position unmanaged."""
+    """A programming error must stop the pass (loud, non-zero exit) and write
+    no snapshot, not be masked as a FETCH_FAILED or any other HOLD that leaves
+    every position unmanaged.
+
+    Malformed market data (KeyError, TypeError, ValueError) is different: it
+    holds only the lots on that market, as test_nov01_monitor_robust.py pins.
+    """
 
     class _BrokenClient:
         def get_market(self, ticker):
-            raise ValueError("unexpected bug")
+            raise RuntimeError("unexpected bug")
 
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "paper.db"
@@ -1429,9 +1434,10 @@ def test_monitor_surfaces_a_non_network_error_instead_of_silent_hold():
         with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _BrokenClient), redirect_stderr(err):
             code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
         assert code == 1  # surfaced, not swallowed
+        assert "unexpected bug" in err.getvalue()
         with store.connect() as conn:
             actions = [r[0] for r in conn.execute("SELECT action FROM paper_monitor_snapshots").fetchall()]
-        assert "FETCH_FAILED" not in actions
+        assert actions == []  # no hold of any kind was recorded
 
 
 def test_monitor_holds_open_position_on_transient_kalshi_unavailable():
