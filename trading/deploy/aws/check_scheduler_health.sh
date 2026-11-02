@@ -3,7 +3,8 @@
 #
 # This process may start only the bounded Strategy Lab refresh and operational
 # publisher. It never starts paper scan/monitor/settlement services and never
-# changes trading configuration.
+# changes trading configuration. It reads the paper decision journal read-only,
+# as the application user.
 set -euo pipefail
 
 INTERNAL_MODE="${1:-}"
@@ -18,6 +19,8 @@ if (( TEST_MODE == 1 )); then
   FINAL_HEALTH_CHECK="${SFO_SCHEDULER_FINAL_HEALTH_CHECK:-/bin/true}"
   PROPAGATION_WAITER="${SFO_SCHEDULER_PROPAGATION_WAITER:-/bin/true}"
   REPAIR_STATE_DIR="${SFO_SCHEDULER_REPAIR_STATE_DIR:-/tmp/weatheredge-scheduler-health}"
+  # Empty skips the paper scan freshness check, like the helpers above.
+  PAPER_DB="${SFO_SCHEDULER_PAPER_DB:-}"
 else
   DEPLOY_MAINTENANCE_MARKER="/run/weatheredge-deploy-maintenance"
   SYSTEMCTL=(/bin/systemctl)
@@ -55,6 +58,7 @@ TRADING_DIR="${SFO_TRADING_ROOT:-$BASE_DIR/trading}"
 if (( TEST_MODE == 0 )); then
   FINAL_HEALTH_CHECK="$TRADING_DIR/deploy/aws/check_forecast_db_freshness.sh"
   PROPAGATION_WAITER="$TRADING_DIR/deploy/aws/wait_for_publication_manifest.sh"
+  PAPER_DB="${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}"
 fi
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB="${SFO_FORECAST_DB:-$FORECASTER_DIR/weather.db}"
@@ -85,6 +89,12 @@ PROPAGATION_TIMEOUT_SECONDS="${SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS:-420}"
 # outage still surfaces one cooldown later (~15-20 minutes), while an isolated
 # CDN lag resolves silently.
 PROPAGATION_FAILURE_THRESHOLD="${SFO_SCHEDULER_PROPAGATION_FAILURE_THRESHOLD:-2}"
+# Every paper risk profile the scan unit runs (same variables and default as
+# run_paper_scan_profiles.sh) must have journaled a decision within this many
+# minutes. Scans run every five minutes, so 20 tolerates two or three failed
+# ticks and still fails a scan that keeps failing or hangs.
+SCAN_MAX_AGE_MINUTES="${SFO_SCHEDULER_SCAN_MAX_AGE_MINUTES:-20}"
+SCAN_PROFILES="${PAPER_RISK_PROFILES:-${PAPER_RISK_PROFILE:-live}}"
 if (( TEST_MODE == 1 )); then
   FLOCK_BIN="${SFO_SCHEDULER_FLOCK_BIN:-flock}"
 else
@@ -165,6 +175,7 @@ validate_configuration() {
   validate_number SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES "$OPERATIONAL_MAX_MINUTES"
   validate_number SFO_PUBLICATION_MAX_PUBLIC_OPERATIONAL_AGE_MINUTES "$PUBLIC_OPERATIONAL_MAX_MINUTES"
   validate_number SFO_PUBLICATION_MAX_STRATEGY_AGE_MINUTES "$STRATEGY_MAX_MINUTES"
+  validate_number SFO_SCHEDULER_SCAN_MAX_AGE_MINUTES "$SCAN_MAX_AGE_MINUTES"
   validate_integer SFO_DISK_USAGE_MAX_PERCENT "$DISK_MAX_PERCENT"
   validate_integer SFO_SCHEDULER_VALIDATION_LOCK_WAIT_SECONDS "$VALIDATION_LOCK_WAIT_SECONDS"
   validate_integer SFO_SCHEDULER_REPAIR_COOLDOWN_SECONDS "$REPAIR_COOLDOWN_SECONDS"
@@ -379,6 +390,142 @@ if (( EUID == 0 )); then
     exit 1
   fi
 fi
+
+# A oneshot scan that fails or hangs leaves its timer "active", so the timer
+# loop above kept passing while every scan failed from Oct 27 to Nov 1 (audit
+# F5). Require each configured paper profile, a separate paper account, to have
+# journaled a decision inside the window instead. Per profile, because one can
+# fail while the other keeps scanning and the unit's single Result cannot say
+# which; by age, so a failed tick or two does not fail health but a hang does. Rows
+# from before a deploy quiesce or a reboot only count as stale once the scan
+# timer has been active for a full window. The read runs as the application
+# user (root must never create the WAL side files) and outside the artifact
+# lock, and fails before any publication repair, like a timer error.
+if [[ -n "$PAPER_DB" ]]; then
+  if ! scan_timer_active_since="$(
+    "${SYSTEMCTL[@]}" show --property=ActiveEnterTimestampMonotonic --value \
+      sfo-kalshi-paper-scan.timer
+  )"; then
+    echo "scheduler health blocked: paper scan timer state is unreadable" >&2
+    exit 1
+  fi
+  scan_status=0
+  (
+    cd "$TRADING_DIR"
+    run_as_app "$PYTHON_BIN" - "$PAPER_DB" "$SCAN_PROFILES" \
+      "$SCAN_MAX_AGE_MINUTES" "$scan_timer_active_since" <<'PY'
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from sfo_kalshi_quant.config import normalize_risk_profile_name
+
+db_path, profiles_csv, max_minutes, timer_active_since = sys.argv[1:]
+now = datetime.now(timezone.utc)
+window = timedelta(minutes=float(max_minutes))
+expected = []
+for raw in profiles_csv.split(","):
+    if not raw.strip():
+        continue
+    try:
+        profile = normalize_risk_profile_name(raw)
+    except ValueError:
+        print(f"invalid paper risk profile: {raw.strip()}", file=sys.stderr)
+        raise SystemExit(2)
+    if profile not in expected:
+        expected.append(profile)
+if not expected:
+    print("no paper risk profile is configured", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def parse_utc(value):
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def profiles_with_recent_decisions():
+    found = set()
+    if not Path(db_path).is_file():
+        return found
+    conn = sqlite3.connect(
+        Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30
+    )
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='decision_snapshots'"
+        ).fetchone():
+            return found
+        # Walk back from the newest row and stop at the window edge, so a
+        # profile that stopped long ago never reads the whole journal.
+        for created_at, profile in conn.execute(
+            "SELECT created_at, risk_profile FROM decision_snapshots "
+            "ORDER BY id DESC"
+        ):
+            moment = parse_utc(created_at)
+            if moment is None:
+                continue
+            if now - moment > window:
+                break
+            found.add(str(profile or "").strip().lower())
+            if found.issuperset(expected):
+                break
+    finally:
+        conn.close()
+    return found
+
+
+try:
+    recent = profiles_with_recent_decisions()
+except sqlite3.Error as exc:
+    print(f"paper decision journal is unreadable: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+stale = [profile for profile in expected if profile not in recent]
+if not stale:
+    raise SystemExit(0)
+
+# systemd stamps unit transitions in CLOCK_MONOTONIC microseconds; 0 or an
+# unreadable value means no grace.
+try:
+    activated_us = int(timer_active_since)
+except ValueError:
+    activated_us = 0
+if activated_us > 0:
+    active_for = timedelta(
+        microseconds=time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000 - activated_us
+    )
+    if timedelta(0) <= active_for < window:
+        print(
+            "paper scan freshness deferred: sfo-kalshi-paper-scan.timer has been "
+            f"active for {active_for.total_seconds() / 60:.1f} of {max_minutes} "
+            f"minutes (start-up grace); no decision yet from {', '.join(stale)}"
+        )
+        raise SystemExit(0)
+for profile in stale:
+    print(
+        f"paper scan profile={profile} recorded no decision in the last "
+        f"{max_minutes} minutes",
+        file=sys.stderr,
+    )
+raise SystemExit(3)
+PY
+  ) || scan_status=$?
+  if (( scan_status == 3 )); then
+    echo "scheduler health failed: paper scans stopped recording decisions" >&2
+    exit 1
+  fi
+  if (( scan_status != 0 )); then
+    echo "scheduler health blocked: paper scan freshness check failed (status=$scan_status)" >&2
+    exit 1
+  fi
+fi
+
 run_as_app /bin/mkdir -p "$(/usr/bin/dirname "$ARTIFACT_LOCK")"
 validation_status=0
 validation_output="$(
