@@ -15,6 +15,8 @@ function formatTime(iso: string | null | undefined): string | null {
   });
 }
 
+/** Shown only when the Strategy artifact is behind or its freshness unknown:
+    live book state is withheld, and the artifact's time is given. */
 export function StrategyPublicationNotice({ generatedAt }: { generatedAt?: string }) {
   const { strategy, manifest, error } = usePublication();
   if (strategy.state === "fresh") return null;
@@ -28,28 +30,24 @@ export function StrategyPublicationNotice({ generatedAt }: { generatedAt?: strin
     <div
       role={stale ? "alert" : "status"}
       aria-live={stale ? undefined : "polite"}
-      className={`flex items-start gap-3 rounded-xl px-4 py-3 ring-1 ${
-        stale ? "bg-danger-soft ring-danger/30" : "bg-surface-secondary ring-border/70"
-      }`}
+      className={`fade-in flex items-start gap-3 rounded-2xl px-4 py-3 ${stale ? "bg-warning-soft" : "bg-surface-secondary"}`}
     >
       <Icon
-        icon={stale ? "solar:danger-triangle-bold" : "solar:info-circle-bold"}
-        className={`mt-0.5 size-4 shrink-0 ${stale ? "text-danger" : "text-warning"}`}
+        icon={stale ? "solar:clock-circle-linear" : "solar:info-circle-linear"}
+        className={`mt-0.5 size-4 shrink-0 ${stale ? "text-warning" : "text-muted"}`}
         aria-hidden="true"
       />
-      <div className="text-sm leading-relaxed">
-        <p className="font-semibold text-foreground">
+      <p className="text-sm leading-relaxed text-muted">
+        <span className="font-semibold text-foreground">
           {stale ? "Strategy Lab data is behind." : "Current Strategy Lab status unavailable."}
-        </p>
-        <p className="text-muted">
-          Open positions, pending limits, and current candidate counts aren't shown until the feed catches up.
-          {formatted && timestamp && (
-            <>
-              {" "}Artifact generated <time dateTime={timestamp}>{formatted}</time>.
-            </>
-          )}
-        </p>
-      </div>
+        </span>{" "}
+        Open positions, pending limits, and current candidate counts aren't shown until it catches up.
+        {formatted && timestamp && (
+          <>
+            {" "}Generated <time dateTime={timestamp}>{formatted}</time>.
+          </>
+        )}
+      </p>
     </div>
   );
 }

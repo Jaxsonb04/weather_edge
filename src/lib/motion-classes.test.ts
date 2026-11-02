@@ -12,7 +12,10 @@ describe("named motion fallbacks", () => {
     "src/components/views/StrategyLabView.tsx",
   ])("disables named spinner/ping animation in %s", (path) => {
     const source = read(path);
-    expect(source.match(/animate-(?:spin|ping)[^"]*/g)?.every((classes) => classes.includes("motion-reduce:animate-none"))).toBe(true);
+    // Spinners were replaced by skeletons in the redesign; any that remain (or
+    // return) must still carry a reduced-motion fallback.
+    const named = source.match(/animate-(?:spin|ping)[^"]*/g) ?? [];
+    expect(named.every((classes) => classes.includes("motion-reduce:animate-none"))).toBe(true);
   });
 
   it("disables named width and hover-transform transitions", () => {
@@ -20,5 +23,12 @@ describe("named motion fallbacks", () => {
     const city = read("src/components/overview/CityGrid.tsx");
     expect(city).toContain("motion-reduce:transition-none");
     expect(city).toContain("motion-reduce:hover:translate-y-0");
+  });
+
+  it("stops the loading shimmer sweep under reduced motion", () => {
+    // HeroUI animates the shimmer on pseudo-elements and never stops it itself.
+    const css = read("src/index.css");
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toMatch(/\.skeleton--shimmer::before,\s*\.skeleton--shimmer::after\s*\{\s*animation: none;/);
   });
 });

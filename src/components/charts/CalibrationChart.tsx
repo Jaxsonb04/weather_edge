@@ -1,15 +1,18 @@
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
+import { useReducedMotion } from "motion/react";
 import { LineChart } from "@heroui-pro/react/line-chart";
 import { Widget } from "@heroui-pro/react/widget";
 import { calibrationSeries, pct, type TradingSignal } from "../../lib/data";
 
 export function CalibrationChart({ signal }: { signal: TradingSignal }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const series = calibrationSeries(signal);
   const calibration = signal.calibration;
   return (
     <Widget className="h-full w-full">
-      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
-        <div>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Probability calibration</Widget.Title>
           <Widget.Description>
             Reliability over {calibration?.n ?? 0} settled days · Brier skill {pct(calibration?.brier_skill, 1)}
@@ -25,8 +28,8 @@ export function CalibrationChart({ signal }: { signal: TradingSignal }) {
           <LineChart.Grid vertical={false} />
           <LineChart.XAxis dataKey="predicted" tickMargin={8} tickFormatter={(v: number) => `${v}%`} />
           <LineChart.YAxis width={40} tickFormatter={(v: number) => `${v}%`} domain={[0, 100]} />
-          <LineChart.Line dataKey="ideal" name="Ideal" stroke="var(--color-muted)" strokeWidth={1.5} strokeDasharray="4 4" dot={false} type="linear" />
-          <LineChart.Line dataKey="observed" name="Observed" stroke="var(--series-market)" strokeWidth={2.5} type="monotone" />
+          <LineChart.Line isAnimationActive={!reduceMotion} dataKey="ideal" name="Ideal" stroke="var(--color-muted)" strokeWidth={1.5} strokeDasharray="4 4" dot={false} type="linear" />
+          <LineChart.Line isAnimationActive={!reduceMotion} dataKey="observed" name="Observed" stroke="var(--series-market)" strokeWidth={2.5} type="monotone" />
           <LineChart.Tooltip
             content={({ active, payload }) => {
               if (!active || !payload?.length) return null;
@@ -49,7 +52,7 @@ export function CalibrationChart({ signal }: { signal: TradingSignal }) {
           />
         </LineChart>
         {!!calibration?.warnings?.length && (
-          <div className="mt-3 rounded-xl bg-warning/8 px-3 py-2 text-xs leading-relaxed text-muted ring-1 ring-warning/20">
+          <div className="mt-3 rounded-xl bg-warning-soft px-3 py-2 text-xs leading-relaxed text-muted">
             <span className="font-medium text-warning">Published calibration warning:</span>{" "}
             {calibration.warnings.join(" ")}
           </div>

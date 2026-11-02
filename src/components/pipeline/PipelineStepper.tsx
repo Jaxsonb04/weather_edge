@@ -1,25 +1,21 @@
-import { Card } from "@heroui/react/card";
 import { Stepper } from "@heroui-pro/react/stepper";
 import { Icon } from "@iconify/react/offline";
-import { Reveal } from "../ui/Reveal";
 
 const STEPS = [
-  { title: "Serve forecast", desc: "Published method and member count come directly from the runtime artifact", icon: "solar:cloud-bold" },
-  { title: "Post-process", desc: "NWP/EMOS calibration → predictive distribution (μ, σ)", icon: "solar:graph-up-bold" },
-  { title: "Price the bins", desc: "Distribution → market bracket probabilities → fee-aware edge", icon: "solar:tag-price-bold" },
-  { title: "Gate & size", desc: "Edge LCB · liquidity · spread · freshness — before any paper order", icon: "solar:shield-check-bold" },
+  { title: "Serve forecast", desc: "Method and member count from the runtime", icon: "solar:cloud-linear" },
+  { title: "Calibrate", desc: "EMOS turns members into a distribution (μ, σ)", icon: "solar:graph-up-linear" },
+  { title: "Price brackets", desc: "Bracket probabilities, then fee-aware edge", icon: "solar:tag-price-linear" },
+  { title: "Gate and size", desc: "Edge bound, liquidity, spread, freshness", icon: "solar:shield-check-linear" },
 ];
 
 export function PipelineStepper() {
   return (
-    <Reveal>
-      <Card variant="secondary" className="overflow-x-auto rounded-2xl">
-        <Card.Content className="p-5 sm:p-6">
-          <Stepper defaultStep={STEPS.length} orientation="horizontal" className="min-w-[640px]">
+    <div className="overflow-x-auto">
+          <Stepper defaultStep={STEPS.length} orientation="horizontal" className="min-w-[600px]">
             {STEPS.map((s, i) => (
               <Stepper.Step key={i}>
                 <Stepper.Indicator>
-                  <Icon icon={s.icon} className="size-4" />
+                  <Icon icon={s.icon} className="size-4" aria-hidden="true" />
                 </Stepper.Indicator>
                 <Stepper.Content>
                   <Stepper.Title className="text-sm font-semibold">{s.title}</Stepper.Title>
@@ -29,8 +25,6 @@ export function PipelineStepper() {
               </Stepper.Step>
             ))}
           </Stepper>
-        </Card.Content>
-      </Card>
-    </Reveal>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { BarChart } from "@heroui-pro/react/bar-chart";
+import { useReducedMotion } from "motion/react";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { cohortSeries, type TradingSignal } from "../../lib/data";
@@ -6,12 +7,14 @@ import { cohortSeries, type TradingSignal } from "../../lib/data";
 /** Per-temperature-regime skill — the honest story that the model is razor-sharp
     on cold days and humbled on rare hot ones. */
 export function CohortChart({ signal }: { signal: TradingSignal }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const series = cohortSeries(signal);
   if (!series.length) return null;
   return (
     <Widget className="h-full w-full">
       <Widget.Header>
-        <div>
+        <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Skill by temperature regime</Widget.Title>
           <Widget.Description>Ranked-probability skill vs climatology, per settled cohort</Widget.Description>
         </div>
@@ -21,7 +24,7 @@ export function CohortChart({ signal }: { signal: TradingSignal }) {
           <BarChart.Grid horizontal={false} />
           <BarChart.XAxis type="number" tickFormatter={(v: number) => `${v}%`} domain={[0, 100]} />
           <BarChart.YAxis type="category" dataKey="name" width={108} tickMargin={6} />
-          <BarChart.Bar dataKey="skill" name="RPS skill" fill="var(--accent)" radius={[0, 6, 6, 0]} barSize={18} />
+          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="skill" name="RPS skill" fill="var(--accent)" radius={[0, 6, 6, 0]} barSize={18} />
           <BarChart.Tooltip
             content={({ active, payload, label }) => {
               if (!active || !payload?.length) return null;

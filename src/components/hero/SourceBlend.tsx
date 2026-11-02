@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { Tooltip } from "@heroui/react/tooltip";
-import { Icon } from "@iconify/react/offline";
+import { InfoTip } from "../ui/InfoTip";
 import { f1, num, type Target } from "../../lib/data";
 
 const SOURCE_META: Record<string, { label: string; color: string }> = {
@@ -40,14 +39,14 @@ export function SourceBlend({ target }: { target: Target }) {
   const wide = spread > SOURCE_SPREAD_GATE_F;
 
   return (
-    <div className="space-y-2.5">
+    <div className="flex flex-col gap-2.5">
       {entries.map(([k, meta], i) => {
         const v = sources[k];
         const left = ((v - lo) / (hi - lo)) * 100;
         return (
           <div key={k} className="flex items-center gap-3">
             <span className="w-20 shrink-0 text-xs text-muted">{meta.label}</span>
-            <div className="relative h-1.5 flex-1 rounded-full bg-foreground/10">
+            <div className="relative h-1.5 flex-1 rounded-full bg-default">
               <span
                 className={`pop absolute top-1/2 size-2.5 -translate-y-1/2 rounded-full ring-2 ring-surface ${mounted ? "is-in" : ""}`}
                 style={{ left: `${left}%`, marginLeft: "-5px", background: meta.color, transitionDelay: `${0.1 + i * 0.08}s` }}
@@ -57,25 +56,14 @@ export function SourceBlend({ target }: { target: Target }) {
           </div>
         );
       })}
-      <Tooltip delay={0}>
-        <button
-          type="button"
-          aria-label={`Source spread ${f1(spread)}. What is the spread gate?`}
-          className={`flex w-fit items-center gap-1.5 pt-1 text-xs ${wide ? "text-warning" : "text-muted"}`}
-        >
-          <span className="tnum font-medium">Source spread {f1(spread)}</span>
-          {wide && <span>· over {SOURCE_SPREAD_GATE_F}° gate threshold</span>}
-          <Icon icon="solar:info-circle-bold" className="size-3.5 opacity-70" />
-        </button>
-        <Tooltip.Content showArrow placement="top" className="max-w-[15rem]">
-          <Tooltip.Arrow />
-          <p className="text-xs">
-            Disagreement is measured after each source's known standing offset is
-            removed. When what is left exceeds {SOURCE_SPREAD_GATE_F}°F, the paper engine
-            refuses to size a new position.
-          </p>
-        </Tooltip.Content>
-      </Tooltip>
+      <div className={`flex w-fit items-center gap-1 pt-1 text-xs ${wide ? "text-warning" : "text-muted"}`}>
+        <span className="tnum font-medium">Source spread {f1(spread)}</span>
+        {wide && <span>· over the {SOURCE_SPREAD_GATE_F}° gate</span>}
+        <InfoTip label="the source spread gate">
+          Disagreement is measured after each source's known standing offset is removed. When what is left exceeds{" "}
+          {SOURCE_SPREAD_GATE_F}°F, the paper engine refuses to size a new position.
+        </InfoTip>
+      </div>
     </div>
   );
 }

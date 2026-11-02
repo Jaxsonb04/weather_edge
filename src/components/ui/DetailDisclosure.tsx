@@ -6,13 +6,14 @@ interface DetailDisclosureProps {
   id: string;
   icon: string;
   title: string;
-  note: string;
+  note?: string;
   children: ReactNode;
   defaultExpanded?: boolean;
   className?: string;
 }
 
-/** Shared progressive-disclosure shell for dense operational evidence. */
+/** Progressive disclosure for secondary evidence. HeroUI's Accordion animates
+    the panel height itself (and honours reduced motion). */
 export function DetailDisclosure({
   id,
   icon,
@@ -31,19 +32,17 @@ export function DetailDisclosure({
     >
       <Accordion.Item id={id}>
         <Accordion.Heading>
-          <Accordion.Trigger className="group flex min-h-16 w-full touch-manipulation items-center gap-3 px-4 py-3 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]">
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-secondary text-accent">
-              <Icon icon={icon} className="size-4.5" aria-hidden="true" />
-            </span>
+          <Accordion.Trigger className="group flex min-h-14 w-full touch-manipulation items-center gap-3 px-4 py-3 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]">
+            <Icon icon={icon} className="size-5 shrink-0 text-[color:var(--accent-text)]" aria-hidden="true" />
             <span className="min-w-0 flex-1">
-              <span className="block font-display text-sm font-semibold text-foreground">{title}</span>
-              <span className="mt-0.5 block text-xs leading-relaxed text-muted">{note}</span>
+              <span className="block text-sm font-medium text-foreground">{title}</span>
+              {note && <span className="mt-0.5 block text-xs text-muted">{note}</span>}
             </span>
             <Accordion.Indicator aria-hidden="true" />
           </Accordion.Trigger>
         </Accordion.Heading>
         <Accordion.Panel>
-          <Accordion.Body className="space-y-6 px-4 pb-4 pt-3 sm:px-5">{children}</Accordion.Body>
+          <Accordion.Body className="flex flex-col gap-6 px-4 pb-5 pt-2 sm:px-5">{children}</Accordion.Body>
         </Accordion.Panel>
       </Accordion.Item>
     </Accordion>

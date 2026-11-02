@@ -5,7 +5,7 @@ export type ThemeMode = "dark" | "light";
 type ThemePreference = ThemeMode | "system";
 
 /** Must stay in step with the two media-scoped tags in index.html. */
-const THEME_COLOR = { dark: "#14151a", light: "#f5f5f5" } as const;
+const THEME_COLOR = { dark: "#0b0f14", light: "#f7f9fb" } as const;
 
 function applyMode(mode: ThemeMode) {
   document.documentElement.classList.toggle("dark", mode === "dark");

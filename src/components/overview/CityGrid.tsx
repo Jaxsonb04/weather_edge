@@ -13,7 +13,7 @@ import {
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
 
-const GRID = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
+const GRID = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5";
 const DOT_TONE: Record<string, string> = {
   success: "bg-success",
   warning: "bg-warning",
@@ -123,18 +123,16 @@ function CityCard({
       type="button"
       aria-pressed={isActive}
       onClick={onSelect}
-      className={`flex h-full w-full flex-col gap-2.5 rounded-2xl p-3.5 text-left ring-1 transition-[box-shadow,transform,background-color] duration-200 hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none motion-reduce:hover:translate-y-0 ${
+      className={`flex h-full w-full cursor-pointer flex-col gap-3 rounded-2xl p-4 text-left shadow-surface transition-[transform,background-color] duration-200 ease-out hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none motion-reduce:hover:translate-y-0 ${
         isActive
-          ? "bg-accent-soft ring-2 ring-accent"
-          : "bg-surface ring-border/70 hover:ring-border"
+          ? "bg-surface ring-2 ring-accent"
+          : "bg-surface hover:bg-surface-hover"
       }`}
     >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="truncate font-display text-sm font-semibold text-foreground">{city.name ?? "—"}</p>
-            <p className="font-mono text-[10px] uppercase tracking-wider text-muted">
-              {city.station_id ?? "—"}
-            </p>
+            <p className="truncate text-sm font-semibold text-foreground">{city.name ?? "—"}</p>
+            <p className="text-xs text-muted">{city.station_id ?? "—"}</p>
           </div>
           <span
             role="img"
@@ -149,7 +147,7 @@ function CityCard({
             {fc && display ? (
               <>
                 <span
-                  className="tnum font-display text-3xl font-bold leading-none"
+                  className="tnum text-3xl font-semibold leading-none tracking-tight"
                   style={{ color: tempColor(display.highF) }}
                 >
                   {Math.round(display.highF)}°
@@ -157,32 +155,30 @@ function CityCard({
                 {/* Sigma belongs to the EMOS issue, so it moves to the line
                     below whenever the intraday update has replaced the high. */}
                 {preLockHighF == null && typeof fc.sigma_f === "number" && (
-                  <span className="tnum font-mono text-[11px] text-muted">±{round1(fc.sigma_f)}°</span>
+                  <span className="tnum text-xs text-muted">±{round1(fc.sigma_f)}°</span>
                 )}
               </>
             ) : (
-              <span className="font-display text-3xl font-bold leading-none text-muted">—</span>
+              <span className="text-3xl font-semibold leading-none text-muted">—</span>
             )}
           </div>
-          <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
+          <p className="mt-1.5 text-xs text-muted">
             {fc
-              ? `${shortDateUTC(fc.target_date)} · ${
-                  // "—-model EMOS" is worse than saying nothing about the member
-                  // count, so drop the prefix entirely when it is missing.
-                  fc.n_models == null ? "EMOS" : `${fc.n_models}-model EMOS`
-                }${preLockHighF == null ? "" : " + intraday"}`
+              ? preLockHighF == null
+                ? // "—-model EMOS" is worse than nothing, so the count drops out when missing.
+                  `${shortDateUTC(fc.target_date)} · ${fc.n_models == null ? "EMOS" : `${fc.n_models}-model EMOS`}`
+                : // An intraday-updated high is never labelled as the plain N-model forecast.
+                  `${shortDateUTC(fc.target_date)} · intraday`
               : "no current forecast"}
           </p>
           {fc && preLockHighF != null && (
-            <p className="mt-1 text-[10px] leading-snug text-muted">
-              {`Intraday-updated · EMOS issue ${round1(preLockHighF)}°${
-                typeof fc.sigma_f === "number" ? ` ±${round1(fc.sigma_f)}°` : ""
-              }`}
+            <p className="tnum text-xs text-muted">
+              {`EMOS issue ${round1(preLockHighF)}°${typeof fc.sigma_f === "number" ? ` ±${round1(fc.sigma_f)}°` : ""}`}
             </p>
           )}
         </div>
 
-        <div className="mt-auto space-y-1 border-t border-border/50 pt-2 text-[11px] leading-snug text-muted">
+        <div className="mt-auto flex flex-col gap-0.5 border-t border-separator pt-2.5 text-xs leading-snug text-muted">
           <p>
             {settled ? (
               <>
@@ -205,17 +201,13 @@ function CityCard({
               </p>
             </>
           ) : (
-            <p className="tnum">{scans.toLocaleString()} decision evaluations/24h</p>
+            <p className="tnum">{scans.toLocaleString()} evaluations · 24h</p>
           )}
         </div>
 
         {city.has_full_blend && (
-          <span
-            className={`self-start rounded px-1.5 py-0.5 font-mono text-[10px] font-medium text-[color:var(--accent-text)] ${
-              isActive ? "bg-accent/15" : "bg-accent-soft"
-            }`}
-          >
-            flagship · blend-capable
+          <span className="self-start rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-[color:var(--accent-text)]">
+            Flagship
           </span>
         )}
     </button>
@@ -224,9 +216,8 @@ function CityCard({
 
 function EmptyNote() {
   return (
-    <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
-      Multi-city data not yet published — the twenty-city coverage artifact will appear here on the
-      next pipeline run.
+    <p className="rounded-2xl bg-surface-secondary px-4 py-8 text-center text-sm text-muted">
+      City coverage is not published yet. It appears after the next pipeline run.
     </p>
   );
 }
@@ -238,13 +229,10 @@ function ErrorNote({ detail }: { detail?: string | null }) {
   return (
     <div
       role="alert"
-      className="rounded-2xl border border-dashed border-danger/40 px-4 py-8 text-center"
+      className="rounded-2xl bg-danger-soft px-4 py-8 text-center"
     >
-      <p className="text-sm text-muted">
-        Couldn't load city coverage — the twenty-city artifact did not load in this session.
-        Reload the page to try again.
-      </p>
-      {detail && <p className="mt-2 font-mono text-[11px] text-muted">{detail}</p>}
+      <p className="text-sm text-muted">Couldn't load city coverage. Reload the page to try again.</p>
+      {detail && <p className="mt-2 text-xs text-muted">{detail}</p>}
     </div>
   );
 }
@@ -258,7 +246,7 @@ interface CityGridProps {
   intradayLock?: IntradayLock | null;
 }
 
-/** The twenty-city coverage grid, now the primary navigator: each card is a
+/** The city coverage grid, the primary navigator: each card is a
     button that sets the active city; the selected card is clearly marked. Cards
     lead with the next calibrated high, with settlement + book activity quiet
     underneath. */
@@ -269,8 +257,8 @@ export function CityGrid({ data, error, selected, onSelect, intradayLock = null 
     if (error) return <ErrorNote detail={error} />;
     return (
       <div className={GRID} aria-hidden="true">
-        {Array.from({ length: 20 }).map((_, i) => (
-          <Skeleton key={i} className="h-44 rounded-2xl" />
+        {Array.from({ length: 10 }).map((_, i) => (
+          <Skeleton key={i} className="h-40 rounded-2xl" />
         ))}
       </div>
     );

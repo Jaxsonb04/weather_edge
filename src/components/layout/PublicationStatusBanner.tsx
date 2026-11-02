@@ -26,6 +26,8 @@ function publicationAge(iso: string | null, now: number): string | null {
   return `${hours}h${remainder ? ` ${remainder}m` : ""} ago`;
 }
 
+/** One slim line under the header when the publication pipeline is behind or
+    its status cannot be read. Silent while the feed is current. */
 export function PublicationStatusBanner() {
   // Use the manifest-driven pipeline freshness (not the load-gated `operational`,
   // which stays "unknown" on routes that never fetch cities_data.json — e.g. the
@@ -40,33 +42,33 @@ export function PublicationStatusBanner() {
     const generated = publicationTime(operational.generatedAt);
     const age = publicationAge(operational.generatedAt, now);
     return (
-      <div role="alert" className="border-b border-danger/35 bg-danger-soft text-foreground">
-        <div className="mx-auto flex w-full max-w-6xl items-start gap-3 px-5 py-3 sm:px-8">
-          <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
-          <div className="text-sm leading-relaxed">
-            <p className="font-semibold">Published data is behind</p>
-            <p className="text-muted">
-              Current published prediction-market and open-position data is hidden until the feed catches up.
+      <div role="alert" className="fade-in border-b border-separator bg-warning-soft">
+        <div className="mx-auto flex w-full max-w-6xl items-start gap-2.5 px-4 py-2.5 text-sm sm:px-6 lg:px-8">
+          <Icon icon="solar:clock-circle-linear" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+          <p className="leading-relaxed text-foreground">
+            <span className="font-semibold">Data delayed.</span>{" "}
+            <span className="text-muted">
+              Live market and position figures are hidden until the next publication.
               {generated && (
                 <>
-                  {" "}Last operational publication: <time dateTime={operational.generatedAt ?? undefined}>{generated}</time>
+                  {" "}Last published <time dateTime={operational.generatedAt ?? undefined}>{generated}</time>
                   {age ? ` (${age})` : ""}.
                 </>
               )}
-            </p>
-          </div>
+            </span>
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div role="status" aria-live="polite" className="border-b border-border/70 bg-surface-secondary text-foreground">
-      <div className="mx-auto flex w-full max-w-6xl items-start gap-3 px-5 py-2.5 sm:px-8">
-        <Icon icon="solar:info-circle-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
-        <p className="text-sm leading-relaxed text-muted">
-          <span className="font-medium text-foreground">Current status unavailable.</span>{" "}
-          Published prediction-market and position data isn't being shown for this deployment.
+    <div role="status" aria-live="polite" className="fade-in border-b border-separator bg-surface-secondary">
+      <div className="mx-auto flex w-full max-w-6xl items-start gap-2.5 px-4 py-2.5 text-sm sm:px-6 lg:px-8">
+        <Icon icon="solar:info-circle-linear" className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden="true" />
+        <p className="leading-relaxed text-muted">
+          <span className="font-semibold text-foreground">Status unavailable.</span>{" "}
+          Live market and position figures aren't shown for this deployment.
         </p>
       </div>
     </div>

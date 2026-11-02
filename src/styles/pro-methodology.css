@@ -3,6 +3,9 @@
 /* Imports are layered: an unlayered Pro sheet outranks every @layer, so
    Tailwind utilities written on a Pro slot would silently do nothing. */
 @import "@heroui/styles/components/accordion.css" layer(components);
+/* Evidence is split into HeroUI Tabs; the list container scrolls through ScrollShadow. */
+@import "@heroui/styles/components/scroll-shadow.css" layer(components);
+@import "@heroui/styles/components/tabs.css" layer(components);
 @import "@heroui-pro/react/css/components/area-chart.css" layer(components);
 @import "@heroui-pro/react/css/components/bar-chart.css" layer(components);
 @import "@heroui-pro/react/css/components/chart-tooltip.css" layer(components);

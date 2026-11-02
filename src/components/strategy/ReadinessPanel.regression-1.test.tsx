@@ -77,7 +77,23 @@ describe("ReadinessPanel progressive detail", () => {
 
     render(<ReadinessPanel s={strategy} />);
 
-    expect(screen.getByText("ANALYSIS NOT REFRESHED")).toBeInTheDocument();
+    expect(screen.getByText("Analysis not refreshed")).toBeInTheDocument();
     expect(screen.getByText(/does not mean the checks newly failed/i)).toBeInTheDocument();
+  });
+
+  it("never calls live orders disabled when the artifact omits the flag", () => {
+    const readiness = { available: false, ready: false, status: "ANALYSIS_STALE", reason: "Historical analysis is stale." };
+    const cases: Array<[boolean | undefined, string]> = [
+      [undefined, "Live-order flag not published"],
+      [false, "Live orders disabled"],
+      [true, "Live orders enabled"],
+    ];
+    for (const [flag, label] of cases) {
+      const strategy = { live_orders_enabled: flag, real_money_readiness: readiness } as unknown as StrategyLab;
+      const { unmount } = render(<ReadinessPanel s={strategy} />);
+      expect(screen.getByText(label)).toBeInTheDocument();
+      if (flag === undefined) expect(screen.queryByText("Live orders disabled")).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });

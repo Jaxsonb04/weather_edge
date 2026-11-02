@@ -1,8 +1,6 @@
 import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
 import { LinkButton } from "../ui/LinkButton";
-import { Reveal } from "../ui/Reveal";
-import { DotPattern } from "../magicui/DotPattern";
 import { ForecastDial } from "./ForecastDial";
 import { CitySelect } from "../overview/CitySelect";
 import type { City, Target } from "../../lib/data";
@@ -15,59 +13,53 @@ interface HeroProps {
   onSelectCity: (slug: string) => void;
 }
 
+/** Overview opener: what the project is in one heading and one sentence, with
+    the selected city's forecast beside it. The city count is read from the
+    published coverage artifact, never assumed. */
 export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }: HeroProps) {
-  const cityCount = cities.length || 20;
+  const cityCount = cities.length;
   return (
-    <header className="overview-intro hero-glow relative overflow-hidden border-b border-border/60">
-      <DotPattern />
-      <div className="relative mx-auto grid w-full max-w-6xl gap-8 px-5 py-10 sm:px-8 sm:py-16 lg:grid-cols-[1.08fr_0.92fr] lg:gap-12 lg:py-20">
-        <div className="flex flex-col justify-center">
-          <Reveal immediate className="overview-enter mb-5 flex flex-wrap items-center gap-3">
-            <Chip size="sm" variant="soft" color="warning">
-              <Chip.Label>Paper-trading research</Chip.Label>
+    <header className="mx-auto w-full max-w-6xl px-4 pb-12 pt-10 sm:px-6 sm:pt-16 lg:px-8">
+      <div className="grid gap-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14">
+        <div className="flex min-w-0 flex-col gap-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip size="sm" variant="soft" color="accent">
+              <Chip.Label>Paper research</Chip.Label>
             </Chip>
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">Station-aligned · EMOS</span>
-          </Reveal>
-
-          <Reveal immediate delay={0.08} className="overview-enter">
-            <h1 id="overview-page-title" tabIndex={-1} className="scroll-mt-24 font-display text-[2.4rem] font-bold leading-[1.06] tracking-tight text-balance focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)] sm:text-5xl">
-              Daily highs.<br /><span className="temp-text">{cityCount} city markets.</span>
-            </h1>
-          </Reveal>
-
-          <Reveal immediate delay={0.16} className="overview-enter">
-            <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted">
-              Station-aligned forecasts and calibrated probabilities for prediction markets.
-              San Francisco leads our research across {cityCount} city markets.
-            </p>
-            <div className="overview-rule mt-5 h-px w-16" aria-hidden="true" />
-            <p className="mt-3 max-w-xl text-xs leading-relaxed text-muted">Paper decisions are gated by fees, liquidity, and risk.</p>
-          </Reveal>
-
-          <Reveal immediate delay={0.24} className="overview-enter mt-6 flex flex-wrap items-center gap-3">
-            <LinkButton href="#/lab" external={false} variant="primary" className="gap-2">
-              Strategy Lab <Icon icon="solar:arrow-right-bold" className="size-4" aria-hidden="true" />
+            <Chip size="sm" variant="soft">
+              <Chip.Label>Settled on official NWS reports</Chip.Label>
+            </Chip>
+          </div>
+          <h1
+            id="overview-page-title"
+            tabIndex={-1}
+            className="scroll-mt-24 text-balance text-4xl font-semibold leading-[1.05] tracking-tight text-foreground focus:outline-none sm:text-5xl"
+          >
+            Daily high forecasts{cityCount > 0 ? <> for <span className="text-[color:var(--accent-text)]">{cityCount} U.S.&nbsp;cities</span></> : null}
+          </h1>
+          <p className="max-w-xl text-pretty text-base leading-relaxed text-muted">
+            Calibrated probabilities for each city's high, checked against its official climate report and tested
+            with paper trades in prediction markets.
+          </p>
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <LinkButton href="#/lab" external={false} variant="primary">
+              Open the Strategy Lab <Icon icon="solar:arrow-right-linear" aria-hidden="true" />
             </LinkButton>
-            <LinkButton href="#/methodology" external={false} variant="outline" className="gap-2">
-              <Icon icon="solar:graph-up-bold" className="size-4" aria-hidden="true" /> Methodology
+            <LinkButton href="#/methodology" external={false} variant="tertiary">
+              How it works
             </LinkButton>
-          </Reveal>
+          </div>
         </div>
 
-        <Reveal immediate delay={0.28} className="overview-enter overview-instrument flex items-center">
-          <div className="w-full">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1">
-              <div>
-                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-muted">Forecast desk</p>
-                <p className="mt-0.5 text-xs text-muted">Choose any of the {cityCount} station-aligned city markets.</p>
-              </div>
-              {cities.length > 0 && (
-                <CitySelect cities={cities} selected={selectedCity} onSelect={onSelectCity} />
-              )}
+        <div className="flex min-w-0 flex-col gap-3">
+          {cities.length > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-foreground">Forecast</p>
+              <CitySelect cities={cities} selected={selectedCity} onSelect={onSelectCity} />
             </div>
-            <ForecastDial key={activeCity?.slug ?? "sfo"} targets={targets} city={activeCity} />
-          </div>
-        </Reveal>
+          )}
+          <ForecastDial key={activeCity?.slug ?? "sfo"} targets={targets} city={activeCity} />
+        </div>
       </div>
     </header>
   );

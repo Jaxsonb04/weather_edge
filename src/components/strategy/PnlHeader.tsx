@@ -36,7 +36,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
       <Card className="rounded-2xl ring-1 ring-border/70">
         <Card.Content className="p-2 sm:p-3">
           <KPIGroup className="flex-wrap">
-            <Kpi icon="solar:dollar-minimalistic-bold" title="Realized P&L" hint="all time">
+            <Kpi icon="solar:dollar-minimalistic-linear" title="Realized P&L" hint="all time">
               {allTimePnl == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className={`font-display text-2xl font-semibold ${pnlTone}`}
@@ -46,7 +46,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:calendar-bold" title="Weekly realized P&L" hint="Live Stability · Mon 00:00 PT">
+            <Kpi icon="solar:calendar-linear" title="Weekly realized P&L" hint="Live Stability · Mon 00:00 PT">
               {weeklyPnl == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className={`font-display text-2xl font-semibold ${weeklyPnl >= 0 ? "text-success" : "text-danger"}`}
@@ -56,7 +56,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:wallet-bold" title="Realized equity" hint={`from ${money(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 1000, { digits: 0, sign: "negative-only" })}`}>
+            <Kpi icon="solar:wallet-linear" title="Realized equity" hint={`from ${money(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 1000, { digits: 0, sign: "negative-only" })}`}>
               {realizedEquity == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className="font-display text-2xl font-semibold"
@@ -66,7 +66,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:chart-2-bold" title="Weekly return" hint={weeklyHint}>
+            <Kpi icon="solar:chart-2-linear" title="Weekly return" hint={weeklyHint}>
               {weekly?.weekly_realized_return == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className={`font-display text-2xl font-semibold ${weekly.weekly_realized_return >= weekly.target_return ? "text-success" : weekly.weekly_realized_return < 0 ? "text-danger" : "text-foreground"}`}
@@ -76,7 +76,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:pie-chart-2-bold" title="ROI" hint="on resolved capital">
+            <Kpi icon="solar:pie-chart-2-linear" title="ROI" hint="on resolved capital">
               {account?.roi_on_resolved_capital == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className={`font-display text-2xl font-semibold ${account.roi_on_resolved_capital >= 0 ? "text-success" : "text-danger"}`}
@@ -86,7 +86,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:graph-up-bold" title="Marked equity" hint={account?.mark_coverage?.replaceAll("_", " ") ?? "mark coverage unknown"}>
+            <Kpi icon="solar:graph-up-linear" title="Marked equity" hint={account?.mark_coverage?.replaceAll("_", " ") ?? "mark coverage unknown"}>
               {account?.marked_equity == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className="font-display text-2xl font-semibold"

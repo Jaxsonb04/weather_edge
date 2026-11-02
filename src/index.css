@@ -14,6 +14,9 @@
 /* CitySelect renders above the fold, so item sizing and its selected marker
    must be available before the lazy Overview detail chunk is requested. */
 @import "@heroui/styles/components/list-box-item.css" layer(components);
+/* InfoTip popovers carry the explanations that used to sit on screen as prose,
+   on every route, so their sheet ships with the shell. */
+@import "@heroui/styles/components/popover.css" layer(components);
 @import "@heroui/styles/components/select.css" layer(components);
 @import "@heroui/styles/components/separator.css" layer(components);
 @import "@heroui/styles/components/skeleton.css" layer(components);
@@ -38,53 +41,53 @@
   src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
 }
 
-@font-face {
-  font-family: "Space Grotesk Variable";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 300 700;
-  src: url("@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2") format("woff2-variations");
-}
-
 /* Drive the `dark:` variant from an explicit .dark class so the theme toggle
    controls the whole instrument regardless of OS preference. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ---------------------------------------------------------------------------
-   THEME — "operational instrument"
-   Retint the brand by overriding a single token: --accent. The Pro chart
-   palette (--chart-1..5), focus ring, links and soft chips all derive from it.
-   The temperature ramp is a separate semantic scale for temp-specific data.
+   THEME: "Clear sky"
+   A calm instrument: a cool near-white canvas (light) or a deep ink-navy one
+   (dark), white raised surfaces, one cerulean accent, Inter throughout.
+   Retinting is still one token: --accent drives buttons, soft chips, the
+   Segment indicator, focus and the Pro chart palette (--chart-1..5).
+
+   Layer trap: HeroUI's variables live in a cascade layer, so these unlayered
+   :root values win in BOTH modes. Everything set here is restated in .dark.
+   Contrast figures below were measured with an oklch -> sRGB -> WCAG script.
 --------------------------------------------------------------------------- */
 :root {
-  /* bright-gold instrument readout — the brand accent (both modes). A cleaner,
-     more luminous gold than the old muddy/brown-leaning tone: higher chroma +
-     lightness and a hue nudged toward pure gold. Retinting the whole system
-     (Pro chart palette, focus ring, links, soft chips, model series) is a
-     single-token change; everything below derives from it. */
-  --accent: oklch(0.8 0.16 86);
-  --accent-foreground: oklch(0.22 0.03 70);
+  /* Canvas and surfaces: a faint cool tint keeps white panels from glaring. */
+  --background: oklch(0.982 0.003 247);
+  --foreground: oklch(0.21 0.02 258);
+  --surface: oklch(1 0 0);
+  --surface-secondary: oklch(0.966 0.004 247);
+  --surface-tertiary: oklch(0.948 0.005 247);
+  --overlay: oklch(1 0 0);
+  --default: oklch(0.945 0.005 250);
+  --default-foreground: var(--foreground);
+  --segment: oklch(1 0 0);
+  --segment-foreground: var(--foreground);
+  --border: oklch(0.915 0.006 250);
+  --separator: oklch(0.93 0.005 250);
+  --field-background: var(--surface);
+  --field-foreground: var(--foreground);
 
-  /* AA-contrast accent for small text on a light surface, and the source of the
-     focus ring below. Sits inside the sRGB gamut at this lightness (max chroma
-     at L 0.50 / hue 84 is 0.103), reads 5.3–6.1:1 on the three light canvases,
-     and still clears 4.5:1 when it sits on --accent-soft (4.87:1 over
-     --surface-secondary). Overridden to the bright accent in dark mode below. */
-  --accent-text: oklch(0.5 0.1 84);
+  /* Cerulean accent. White on it reads 4.95:1, so filled buttons stay AA. */
+  --accent: oklch(0.54 0.105 232);
+  --accent-foreground: oklch(1 0 0);
+  /* Accent as small text on light canvases: 6.1:1 on --surface-secondary. */
+  --accent-text: oklch(0.47 0.095 234);
+  /* Focus ring: the accent clears the 3:1 non-text floor on every canvas. */
+  --focus: var(--accent);
 
-  /* Keyboard focus ring. HeroUI derives --focus from --accent, and the bright
-     gold is only 1.64–1.73:1 against the light canvases — SC 1.4.11 wants 3:1.
-     The AA accent is the same hue at 5.3–6.1:1. Dark mode keeps --accent. */
-  --focus: var(--accent-text);
+  /* Secondary text: 5.4:1 on --surface-secondary, 6.0:1 on --surface. */
+  --muted: oklch(0.5 0.02 258);
 
-  /* STATUS colours — LIGHT canvas. HeroUI's light defaults are display tints
-     (#17c964 / #f5a524 / #ff383c → 1.8–3.6:1 as text), but on this site every
-     P&L figure, ROI, hit-rate tone, edge value and warning banner is
-     status-coloured TEXT. Re-cut at ~L 0.50 on the same hues so they clear
-     4.5:1 on all three light canvases — --surface (#fff), --background
-     (#f5f5f5) and --surface-secondary (#efeff0). Worst case is the last one:
-     5.13 success, 5.11 warning, 5.32 danger.
-     The bright display values are restored in .dark below. */
+  /* STATUS colours, LIGHT canvas. HeroUI's light defaults are display tints
+     (1.8-3.6:1 as text), but every P&L figure, ROI and warning on this site is
+     status-coloured TEXT, so they are re-cut near L 0.50 on the same hues:
+     5.3-5.5:1 on --surface-secondary. Bright display values return in .dark. */
   --success: oklch(0.49 0.13 150.8);
   --warning: oklch(0.51 0.108 72.3);
   --danger: oklch(0.52 0.2 25.7);
@@ -93,66 +96,69 @@
   --success-foreground: var(--snow);
   --warning-foreground: var(--snow);
 
-  /* Secondary text. HeroUI's light --muted (#71717a) is 4.20:1 on
-     --surface-secondary and 4.43:1 on --background; text-muted carries most of
-     the prose on every route, so it is re-cut to 5.2–6.0:1. */
-  --muted: oklch(0.5 0.014 286);
-
-  /* SERIES palette — for comparison series (model vs market / observed).
-     Deliberately separate from the TEMPERATURE ramp; an indigo so it never reads
-     as either "cold" (blue) or part of the thermal ramp. */
+  /* SERIES palette for comparison charts (model vs market). Violet sits apart
+     from both the accent and the thermal ramp; 3.9:1 as a mark on the canvas. */
   --series-model: var(--accent);
-  --series-market: oklch(0.64 0.13 286);
+  --series-market: oklch(0.6 0.12 295);
 
-  /* THERMAL ramp — a tight cool→warm→hot progression (NO green/cyan). Gradients
-     interpolate in oklab (see .temp-text / tempColor) so the midpoint is a muted
-     neutral, not a rainbow sweep. --temp-mild is a neutral steel used only as a
-     categorical source color, never in the gradient.
-     These are the LIGHT-canvas values. The ramp is not decoration: it colours
-     the 5.5rem dial, the text-3xl/5xl city highs and the gradient headline, so
-     every point of the 48→86 °F ramp — including the near-neutral cold→warm
-     midpoint — has to clear the 3:1 large-text floor. Measured worst point is
-     3.15:1 on --surface-secondary, 3.62:1 on --surface. The lighter display
-     ramp is restored in .dark below; --temp-hot already passed and is shared. */
+  /* THERMAL ramp, cool -> warm -> hot (no green/cyan). It colours only large
+     temperature figures (3:1 large-text floor) and small data marks; gradients
+     interpolate in oklab so the midpoint is a muted neutral. */
   --temp-cold: oklch(0.62 0.14 252);
   --temp-mild: oklch(0.63 0.035 248);
   --temp-warm: oklch(0.62 0.13 74);
   --temp-hot: oklch(0.6 0.21 30);
 
-  --font-display: "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  /* One family: the old display face is retired; `font-display` maps to Inter. */
+  --font-display: var(--font-sans);
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  /* Motion vocabulary for everything this app adds (HeroUI parts keep their own). */
+  --ease-enter: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --duration-enter: 260ms;
 }
 
 .dark {
-  --accent: oklch(0.85 0.16 88);
-  --accent-foreground: oklch(0.2 0.03 70);
-  /* bright gold already clears AA on the dark canvas */
+  --background: oklch(0.165 0.014 258);
+  --foreground: oklch(0.968 0.004 250);
+  --surface: oklch(0.205 0.016 258);
+  --surface-secondary: oklch(0.238 0.016 258);
+  --surface-tertiary: oklch(0.265 0.016 258);
+  --overlay: oklch(0.225 0.016 258);
+  --default: oklch(0.262 0.016 258);
+  --default-foreground: var(--foreground);
+  --segment: oklch(0.34 0.018 258);
+  --segment-foreground: var(--foreground);
+  --border: oklch(0.3 0.016 258);
+  --separator: oklch(0.27 0.014 258);
+  --field-background: oklch(0.238 0.016 258);
+  --field-foreground: var(--foreground);
+
+  /* Sky accent for the dark canvas: 9.2:1 on --surface; dark ink text on it. */
+  --accent: oklch(0.78 0.105 222);
+  --accent-foreground: oklch(0.2 0.035 240);
   --accent-text: var(--accent);
   --focus: var(--accent);
-  /* a touch deeper + cooler than the default dark canvas, for an instrument feel */
-  --background: oklch(0.142 0.006 264);
 
-  /* The light block above re-cuts the status palette, the secondary text colour
-     and the cool/warm end of the thermal ramp for a near-white canvas. Those
-     declarations are unlayered, so they would also win here — restore HeroUI's
-     dark values (and our own display ramp) verbatim. Dark mode already passes
-     contrast everywhere; nothing in this group is a new value. */
-  --muted: oklch(70.5% 0.015 286.067);
+  --muted: oklch(0.73 0.018 255);
+
+  /* HeroUI's bright dark-mode status tints, except danger: its stock value is
+     only 4.0:1 on this deeper surface, so it is lifted to 4.9:1. */
   --success: oklch(0.7329 0.1935 150.81);
   --success-foreground: var(--eclipse);
   --warning: oklch(0.8203 0.1388 76.34);
   --warning-foreground: var(--eclipse);
-  --danger: oklch(0.594 0.1967 24.63);
+  --danger: oklch(0.64 0.19 24.6);
+
+  --series-market: oklch(0.72 0.11 295);
+
   --temp-cold: oklch(0.68 0.13 252);
   --temp-mild: oklch(0.72 0.035 248);
   --temp-warm: oklch(0.81 0.14 74);
 
-  /* Card/surface edge. In light mode HeroUI's native --surface-shadow is a real
-     drop shadow; in dark mode it resolves to a transparent inset, which would
-     leave Cards with no edge once decorative ring-1 utilities are removed at the
-     call sites. One inset hairline replaces the seven ad hoc border opacities
-     previously in use, so every surface reads with the same edge weight. */
+  /* HeroUI's dark --surface-shadow is transparent, which leaves panels with no
+     edge on this canvas; one inset hairline gives every surface the same edge. */
   --surface-shadow: 0 0 0 1px oklch(1 0 0 / 0.06) inset;
 }
 
@@ -162,6 +168,7 @@
   --color-temp-mild: var(--temp-mild);
   --color-temp-warm: var(--temp-warm);
   --color-temp-hot: var(--temp-hot);
+  --color-series-market: var(--series-market);
   --font-display: var(--font-display);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
@@ -184,7 +191,8 @@
     @apply bg-background text-foreground antialiased;
     margin: 0;
     font-family: var(--font-sans);
-    font-feature-settings: "ss01", "cv01", "tnum";
+    /* Inter: single-storey a off, open digits, tabular figures by default. */
+    font-feature-settings: "cv11", "ss01", "tnum";
   }
   /* Tabular numerals wherever numbers carry meaning. */
   .tnum {
@@ -196,119 +204,104 @@
   .font-mono {
     font-family: var(--font-mono);
   }
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 24%, transparent);
+  }
 }
 
 /* ---------------------------------------------------------------------------
-   Atmosphere — gradient wordmark, ambient hero glow, instrument grid, grain.
-   Compositor-friendly; mask/opacity only.
+   Motion. Entrances are CSS (keyframes and IntersectionObserver-toggled
+   transitions) so content always settles visible, even in a backgrounded or
+   headless tab where requestAnimationFrame never fires. Interaction-driven
+   swaps (tabs, segments, account switches) use motion/react. Every rule here
+   has a reduced-motion path at the bottom of this block.
 --------------------------------------------------------------------------- */
-.temp-text {
-  background: linear-gradient(100deg in oklab, var(--temp-cold), var(--temp-warm) 52%, var(--temp-hot));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+
+/* Route change: the incoming view rises 8px and fades in. */
+@keyframes route-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.route-enter {
+  animation: route-enter var(--duration-enter) var(--ease-enter) both;
 }
 
-.hero-glow {
-  background-image:
-    radial-gradient(58rem 28rem at 78% -22%, color-mix(in oklch, var(--temp-hot) 18%, transparent), transparent 60%),
-    radial-gradient(50rem 26rem at -6% -12%, color-mix(in oklch, var(--temp-cold) 16%, transparent), transparent 56%);
+/* Skeleton -> content: loaded regions fade in over their placeholder's slot. */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.fade-in {
+  animation: fade-in 220ms var(--ease-enter) both;
 }
 
-.grid-lines {
-  background-image:
-    linear-gradient(to right, color-mix(in oklch, var(--color-border) 65%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklch, var(--color-border) 65%, transparent) 1px, transparent 1px);
-  background-size: 58px 58px;
-  mask-image: radial-gradient(62rem 42rem at 50% 0%, black, transparent 76%);
-}
-
-/* Fine film grain over the whole page for tactile depth. */
-.grain::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-/* Live pulse for the "data fresh" indicator. */
-@keyframes pulse-ring {
-  0% { transform: scale(0.9); opacity: 0.7; }
-  70% { transform: scale(2.2); opacity: 0; }
-  100% { opacity: 0; }
-}
-.pulse-dot::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 9999px;
-  background: currentColor;
-  animation: pulse-ring 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .pulse-dot::before { animation: none; }
-}
-
-/* Scroll-reveal — CSS-driven (toggled by IntersectionObserver) so it settles
-   even when the tab is backgrounded, unlike rAF-gated JS animation. */
+/* Scroll reveal, toggled by an IntersectionObserver (see Reveal.tsx). */
 .reveal {
   opacity: 0;
-  transform: translateY(12px);
+  transform: translateY(10px);
   transition:
-    opacity 0.36s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 320ms var(--ease-enter),
+    transform 320ms var(--ease-enter);
 }
 .reveal.is-in {
   opacity: 1;
   transform: none;
 }
 
-/* Above-the-fold reveals start visible in React. A finite CSS entrance gives
-   them actual motion without a frame callback or a hidden-content JS gate. */
-@keyframes overview-enter {
-  from { opacity: 0; transform: translateY(18px); }
-  to { opacity: 1; transform: none; }
+/* Live indicator: one soft ring for "data arriving now". */
+@keyframes live-ring {
+  0% { transform: scale(0.9); opacity: 0.6; }
+  70% { transform: scale(2.4); opacity: 0; }
+  100% { opacity: 0; }
 }
-.overview-enter {
-  animation: overview-enter 680ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-.overview-enter:focus-within { animation: none; }
-.overview-rule {
-  background: linear-gradient(to right, var(--temp-cold), var(--accent), transparent);
-  transform-origin: left;
-  animation: overview-rule 800ms 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-@keyframes overview-rule {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
-}
-.overview-intro > .magic-dot-pattern {
-  animation: overview-atmosphere 1000ms ease-out both;
-}
-@keyframes overview-atmosphere {
-  from { opacity: 0; }
-  to { opacity: 0.22; }
+.live-dot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: live-ring 2.4s var(--ease-enter) infinite;
 }
 
-/* The menu uses the same HeroUI backdrop tokens as the Pro command palette.
-   Animate only the panel's transform/opacity; blur remains static. */
-.menu-mark { position: relative; display: block; width: 20px; height: 20px; }
+/* Pop-in for small marks (forecast source dots). */
+.pop {
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    opacity 400ms ease,
+    transform 500ms var(--ease-enter);
+}
+.pop.is-in {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Navigation pill that slides under the active route (TopBar). */
+.nav-indicator {
+  transition:
+    transform 320ms var(--ease-enter),
+    width 320ms var(--ease-enter),
+    opacity 200ms ease;
+}
+
+/* Hamburger mark: two bars that meet into one when the menu is open. */
+.menu-mark { position: relative; display: block; width: 18px; height: 18px; }
 .menu-mark > span {
   position: absolute;
   left: 0;
-  top: 9px;
-  width: 20px;
+  top: 8px;
+  width: 18px;
   height: 1.5px;
   border-radius: 1px;
   background: currentColor;
   transform: translateY(-3px);
-  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 220ms var(--ease-enter);
 }
 .menu-mark > span + span { transform: translateY(3px); }
-.menu-mark.is-open > span { transform: none; }
+.menu-mark.is-open > span:first-child { transform: rotate(45deg); }
+.menu-mark.is-open > span + span { transform: rotate(-45deg); }
+
+/* Mobile menu sheet: the panel drops in, its rows follow. */
 .mobile-menu-container {
   padding: 12px;
   padding-top: max(12px, env(safe-area-inset-top));
@@ -316,19 +309,19 @@
   transform-origin: top center;
 }
 .mobile-menu-dialog {
-  max-width: 36rem;
+  max-width: 32rem;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 20px;
 }
-.mobile-menu-container[data-entering] { animation: menu-panel-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.mobile-menu-container[data-entering] { animation: menu-panel-in 320ms var(--ease-enter) both; }
 .mobile-menu-container[data-exiting] { animation: menu-panel-out 160ms ease-in both; }
-.mobile-menu-container[data-entering] .mobile-menu-item { animation: menu-item-in 240ms ease-out both; }
-.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(1) { animation-delay: 40ms; }
-.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(2) { animation-delay: 80ms; }
-.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(3) { animation-delay: 120ms; }
+.mobile-menu-container[data-entering] .mobile-menu-item { animation: menu-item-in 240ms var(--ease-enter) both; }
+.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(1) { animation-delay: 30ms; }
+.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(2) { animation-delay: 60ms; }
+.mobile-menu-container[data-entering] .mobile-menu-item:nth-child(3) { animation-delay: 90ms; }
 @keyframes menu-panel-in {
-  from { opacity: 0; transform: translateY(-14px) scale(0.985); }
+  from { opacity: 0; transform: translateY(-12px) scale(0.985); }
   to { opacity: 1; transform: none; }
 }
 @keyframes menu-panel-out {
@@ -342,27 +335,27 @@
 @media (min-width: 640px) {
   .mobile-menu-container { padding: 20px 32px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .overview-enter, .overview-rule, .overview-intro > .magic-dot-pattern,
-  .mobile-menu-container[data-entering], .mobile-menu-container[data-exiting],
-  .mobile-menu-container[data-entering] .mobile-menu-item { animation: none; }
-  .menu-mark > span { transition: none; }
-}
 
-/* Pop-in for small marks (source dots, indicators). */
-.pop {
-  opacity: 0;
-  transform: scale(0.4);
-  transition:
-    opacity 0.5s ease,
-    transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.pop.is-in {
-  opacity: 1;
-  transform: scale(1);
-}
+/* Disclosure chevrons rotate with their native <details> state. */
+.disclosure-chevron { transition: transform 200ms var(--ease-enter); }
+details[open] > summary .disclosure-chevron { transform: rotate(180deg); }
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
+  .route-enter,
+  .fade-in,
+  .mobile-menu-container[data-entering],
+  .mobile-menu-container[data-exiting],
+  .mobile-menu-container[data-entering] .mobile-menu-item {
+    animation: none;
+  }
+  .live-dot::before { animation: none; }
+  /* HeroUI's loading shimmer sweeps on pseudo-elements its own CSS never stops. */
+  .skeleton--shimmer::before,
+  .skeleton--shimmer::after {
+    animation: none;
+  }
   .reveal,
   .reveal.is-in,
   .pop,
@@ -371,42 +364,20 @@
     transform: none;
     transition: none;
   }
+  .nav-indicator,
+  .menu-mark > span,
+  .disclosure-chevron {
+    transition: none;
+  }
 }
 
-/* Recharts: let strokes/areas inherit our themed easing on first draw. */
+/* Recharts: strokes and dots may sit on the plot edge without clipping. */
 .recharts-surface { overflow: visible; }
-
-/* Magic UI details share the instrument's own palette. The beam runs once
-   when a forecast/selection appears, and never captures a pointer event. */
-.magic-dot-pattern {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  color: var(--muted);
-  opacity: 0.22;
-  mask-image: linear-gradient(to bottom, black, transparent 95%);
-}
-.magic-border-beam {
-  position: absolute;
-  inset: 0;
-  border: 1px solid transparent;
-  border-radius: inherit;
-  pointer-events: none;
-  z-index: 2;
-  mask-image: linear-gradient(transparent, transparent), linear-gradient(black, black);
-  mask-composite: intersect;
-  mask-clip: padding-box, border-box;
-}
-.magic-border-beam-light {
-  position: absolute;
-  width: 100px;
-  aspect-ratio: 1;
-  background: linear-gradient(to left, var(--accent), var(--temp-cold), transparent);
-}
-@media (prefers-reduced-motion: reduce) {
-  .magic-border-beam { display: none; }
-}
 
 button, summary { touch-action: manipulation; }
 button, a, summary { -webkit-tap-highlight-color: transparent; }
-[id] { scroll-margin-top: 6rem; }
+/* Hash and skip-link targets clear the sticky header. Scoped to landmarks and
+   headings: React Aria gives every tab an id, and a 6rem margin on a tab inside
+   the tab bar's horizontal scroller made keyboard tab switching scroll the page
+   until the focused tab sat under the header. */
+:where(main, section, h1, h2, h3)[id] { scroll-margin-top: 6rem; }

@@ -106,7 +106,7 @@ describe("ProfileDashboard publication truthfulness", () => {
   it("withholds current profile status and candidate counts when stale", async () => {
     await renderDashboard("2026-07-07T12:00:00Z");
 
-    expect(screen.queryByText("running")).not.toBeInTheDocument();
+    expect(screen.queryByText(/running/)).not.toBeInTheDocument();
     expect(screen.getByText("Candidates now").parentElement).toHaveTextContent("Unavailable");
     expect(screen.queryByText("Alpha position")).not.toBeInTheDocument();
   });
@@ -114,7 +114,7 @@ describe("ProfileDashboard publication truthfulness", () => {
   it("shows current profile state while Strategy Lab publication is fresh", async () => {
     await renderDashboard("2026-07-09T11:59:00Z");
 
-    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.getByText(/running/)).toBeInTheDocument();
     expect(screen.getByText("Candidates now").parentElement).toHaveTextContent("2");
     expect(screen.getByText("Alpha position")).toBeInTheDocument();
   });
@@ -133,9 +133,27 @@ describe("ProfileDashboard publication truthfulness", () => {
 
     await renderDashboard("2026-07-09T11:59:00Z", withHistory);
 
-    const history = screen.getByText("Live Stability — P&L contribution");
-    const positions = screen.getByRole("heading", { name: "Positions & execution log" });
+    const history = screen.getByText("Cumulative P&L");
+    const positions = screen.getByRole("heading", { name: "Positions" });
     expect(history.compareDocumentPosition(positions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // The combined daily series sums separate paper accounts (and archived ones);
+  // an account without its own history must say so rather than borrow it.
+  it("never plots the combined all-account series for an account without its own history", async () => {
+    const strategyWithCombined = {
+      ...strategy,
+      daily_summary: {
+        starting_bankroll: 1000,
+        days: [{ date: "2026-07-01", cumulative_realized: 999, closing_equity: 1999, realized_pnl: 999 }],
+      },
+    } as unknown as StrategyLab;
+
+    await renderDashboard("2026-07-09T11:59:00Z", profile, strategyWithCombined);
+
+    expect(screen.getByText("No daily history published for this account.")).toBeInTheDocument();
+    expect(screen.queryByText("Cumulative P&L")).not.toBeInTheDocument();
+    expect(screen.queryByText(/999/)).not.toBeInTheDocument();
   });
 
   it("keeps all published monthly closed positions together and initially shows five", async () => {

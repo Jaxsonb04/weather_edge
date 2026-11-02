@@ -1,4 +1,5 @@
 import { BarChart } from "@heroui-pro/react/bar-chart";
+import { useReducedMotion } from "motion/react";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { f1, marketModelSeries, type Target } from "../../lib/data";
@@ -6,13 +7,15 @@ import { f1, marketModelSeries, type Target } from "../../lib/data";
 /** The engine's core view: where the model's bin probabilities diverge from the
     market-implied ones — i.e. where the edge (if any) lives. */
 export function EdgeChart({ target }: { target: Target }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const series = marketModelSeries(target);
   const mc = target.market_consensus;
   if (!series.length || !mc) return null;
   return (
     <Widget className="w-full">
-      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
-        <div>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Model vs market — bin probabilities</Widget.Title>
           <Widget.Description>
             model high {f1(mc.model_high_f)} · market implies {f1(mc.implied_high_f)} · modal bin {mc.modal_bin_label}
@@ -28,8 +31,8 @@ export function EdgeChart({ target }: { target: Target }) {
           <BarChart.Grid vertical={false} />
           <BarChart.XAxis dataKey="label" tickMargin={8} interval={0} />
           <BarChart.YAxis width={40} tickFormatter={(v: number) => `${v}%`} />
-          <BarChart.Bar dataKey="model" name="Model" fill="var(--accent)" radius={[4, 4, 0, 0]} barSize={14} />
-          <BarChart.Bar dataKey="market" name="Market" fill="var(--series-market)" radius={[4, 4, 0, 0]} barSize={14} />
+          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="model" name="Model" fill="var(--accent)" radius={[4, 4, 0, 0]} barSize={14} />
+          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="market" name="Market" fill="var(--series-market)" radius={[4, 4, 0, 0]} barSize={14} />
           <BarChart.Tooltip
             content={({ active, payload }) => {
               if (!active || !payload?.length) return null;

@@ -1,3 +1,4 @@
+import { useReducedMotion } from "motion/react";
 import {
   Bar,
   BarChart,
@@ -21,15 +22,17 @@ const AXIS_TICK = { fill: "var(--color-muted)", fontSize: 12 };
 /** Model vs market probability per candidate signal — points off the dashed
     diagonal are the brackets where the book disagrees with the crowd. */
 export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[]; targetDate?: string }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const yes = points.filter((p) => p.side === "YES");
   const no = points.filter((p) => p.side !== "YES");
   return (
     <Widget className="h-full w-full">
       <Widget.Header>
-        <div>
-          <Widget.Title>Model vs market, per candidate</Widget.Title>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <Widget.Title>Model vs market</Widget.Title>
           <Widget.Description>
-            {points.length} latest candidates{targetDate ? ` · target ${targetDate}` : ""} · off the diagonal = disagreement
+            {points.length} current candidates{targetDate ? ` · target ${targetDate}` : ""} · off the line means disagreement
           </Widget.Description>
         </div>
         <Widget.Legend>
@@ -44,7 +47,7 @@ export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[
         >
           <ResponsiveContainer width="100%" height={260}>
             <ScatterChart margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-              <CartesianGrid stroke="var(--color-border)" strokeOpacity={0.5} vertical={false} />
+              <CartesianGrid stroke="var(--color-separator)" vertical={false} />
               <XAxis
                 type="number"
                 dataKey="x"
@@ -99,8 +102,8 @@ export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[
                   );
                 }}
               />
-              <Scatter data={yes} fill="var(--accent)" fillOpacity={0.65} shape="circle" />
-              <Scatter data={no} fill="var(--series-market)" fillOpacity={0.65} shape="circle" />
+              <Scatter isAnimationActive={!reduceMotion} data={yes} fill="var(--accent)" fillOpacity={0.65} shape="circle" />
+              <Scatter isAnimationActive={!reduceMotion} data={no} fill="var(--series-market)" fillOpacity={0.65} shape="circle" />
             </ScatterChart>
           </ResponsiveContainer>
         </div>
@@ -112,17 +115,19 @@ export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[
 
 /** Average model-minus-market edge grouped by 20¢ market-price buckets. */
 export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const data = buckets.map((b) => ({ range: `${b.range}¢`, edge: Math.round(b.avg_edge * 1000) / 10, count: b.count }));
   return (
     <Widget className="h-full w-full">
       <Widget.Header>
-        <div>
-          <Widget.Title>Average edge by market price</Widget.Title>
-          <Widget.Description>Where in the price ladder this book's disagreements sit</Widget.Description>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <Widget.Title>Edge by market price</Widget.Title>
+          <Widget.Description>Average model minus market, in 20¢ price buckets</Widget.Description>
         </div>
         <Widget.Legend>
-          <Widget.LegendItem color="var(--color-success)">model above market</Widget.LegendItem>
-          <Widget.LegendItem color="var(--color-danger)">model below market</Widget.LegendItem>
+          <Widget.LegendItem color="var(--accent)">model above market</Widget.LegendItem>
+          <Widget.LegendItem color="var(--series-market)">model below market</Widget.LegendItem>
         </Widget.Legend>
       </Widget.Header>
       <Widget.Content>
@@ -132,7 +137,7 @@ export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
         >
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-              <CartesianGrid stroke="var(--color-border)" strokeOpacity={0.5} vertical={false} />
+              <CartesianGrid stroke="var(--color-separator)" vertical={false} />
               <XAxis dataKey="range" tick={AXIS_TICK} stroke="var(--color-border)" tickMargin={8} />
               <YAxis width={44} tickFormatter={(v: number) => `${v}%`} tick={AXIS_TICK} stroke="var(--color-border)" />
               <ReferenceLine y={0} stroke="var(--color-muted)" strokeWidth={1.25} />
@@ -145,7 +150,7 @@ export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
                     <ChartTooltip>
                       <ChartTooltip.Header>{label} market price</ChartTooltip.Header>
                       <ChartTooltip.Item>
-                        <ChartTooltip.Indicator color={row.edge >= 0 ? "var(--color-success)" : "var(--color-danger)"} />
+                        <ChartTooltip.Indicator color={row.edge >= 0 ? "var(--accent)" : "var(--series-market)"} />
                         <ChartTooltip.Label>Avg edge</ChartTooltip.Label>
                         <ChartTooltip.Value>{row.edge >= 0 ? "+" : ""}{row.edge}%</ChartTooltip.Value>
                       </ChartTooltip.Item>
@@ -157,9 +162,9 @@ export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
                   );
                 }}
               />
-              <Bar dataKey="edge" name="Avg edge" radius={[4, 4, 0, 0]} barSize={28}>
+              <Bar isAnimationActive={!reduceMotion} dataKey="edge" name="Avg edge" radius={[4, 4, 0, 0]} barSize={28}>
                 {data.map((d) => (
-                  <Cell key={d.range} fill={d.edge >= 0 ? "var(--color-success)" : "var(--color-danger)"} fillOpacity={0.75} />
+                  <Cell key={d.range} fill={d.edge >= 0 ? "var(--accent)" : "var(--series-market)"} fillOpacity={0.85} />
                 ))}
               </Bar>
             </BarChart>

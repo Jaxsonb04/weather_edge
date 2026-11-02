@@ -1,7 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Button } from "@heroui/react/button";
 import { Modal } from "@heroui/react/modal";
+import { Tooltip } from "@heroui/react/tooltip";
+import { buttonVariants } from "@heroui/styles";
 import { Icon } from "@iconify/react/offline";
-import { LinkButton } from "../ui/LinkButton";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
 import type { ThemeMode } from "../../lib/theme";
 
@@ -16,28 +18,80 @@ interface TopBarProps {
   liveUrl: string;
 }
 
-const iconButton =
-  "inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-muted transition-colors duration-200 hover:bg-default hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] active:bg-default-hover";
-
-const routeDescriptions = {
-  overview: "Forecasts, stations & market signals",
-  methodology: "Models, calibration & evidence",
-  lab: "Paper accounts & position history",
+const routeDescriptions: Record<Route, string> = {
+  overview: "Today's forecasts by city",
+  methodology: "How the forecast is built",
+  lab: "Paper accounts and trades",
 };
 
-export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpenChange, route, repoUrl, liveUrl }: TopBarProps) {
+/** The three routes as a pill group; one indicator slides under the current
+    route (a CSS transform transition, so it never waits on a frame callback). */
+function PrimaryNav({ route }: { route: Route }) {
+  const navRef = useRef<HTMLElement>(null);
+  const [pill, setPill] = useState<{ x: number; w: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
+      setPill(active ? { x: active.offsetLeft, w: active.offsetWidth } : null);
+    };
+    measure();
+    // Webfont swaps and zoom change link widths after the first measurement.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(nav);
+    return () => observer?.disconnect();
+  }, [route]);
+
+  return (
+    <nav
+      ref={navRef}
+      aria-label="Primary navigation"
+      className="relative hidden items-center rounded-full bg-default/70 p-1 md:flex"
+    >
+      <span
+        aria-hidden="true"
+        className="nav-indicator absolute left-0 top-1 h-[calc(100%-0.5rem)] rounded-full bg-segment shadow-surface"
+        style={{
+          width: pill?.w ?? 0,
+          transform: `translateX(${pill?.x ?? 0}px)`,
+          opacity: pill ? 1 : 0,
+        }}
+      />
+      {ROUTES.map((item) => (
+        <a
+          key={item.id}
+          href={`#/${item.id}`}
+          aria-current={route === item.id ? "page" : undefined}
+          className={`relative z-10 rounded-full px-4 py-1.5 text-sm font-medium no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
+            route === item.id ? "text-foreground" : "text-muted hover:text-foreground"
+          }`}
+        >
+          {item.label}
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpenChange, route, repoUrl }: TopBarProps) {
+  // The menu is a phone affordance; close it if the window grows to the
+  // width where the inline navigation appears.
   useEffect(() => {
     if (!menuOpen) return;
-    const desktop = window.matchMedia("(min-width: 1024px)");
+    const desktop = window.matchMedia("(min-width: 768px)");
     const closeOnDesktop = () => { if (desktop.matches) onMenuOpenChange(false); };
     closeOnDesktop();
     desktop.addEventListener("change", closeOnDesktop);
     return () => desktop.removeEventListener("change", closeOnDesktop);
   }, [menuOpen, onMenuOpenChange]);
 
+  const themeLabel = mode === "dark" ? "Switch to light theme" : "Switch to dark theme";
+
   return (
-    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-5 sm:px-8">
+    <header className="sticky top-0 z-40 border-b border-separator bg-background/80 backdrop-blur-xl">
+      <div className="mx-auto flex h-15 w-full max-w-6xl items-center gap-2 px-4 sm:px-6 lg:px-8">
         {/* aria-controls is conditional because the mobile <nav> it names only
             exists while the menu is open; a reference to a missing id is broken. */}
         <button
@@ -46,87 +100,75 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
           aria-expanded={menuOpen}
           aria-haspopup="dialog"
           aria-controls={menuOpen ? "mobile-navigation" : undefined}
-          className={`${iconButton} -ml-2 lg:hidden`}
+          className={buttonVariants({ variant: "ghost", isIconOnly: true, className: "-ml-2 md:hidden" })}
           onClick={() => onMenuOpenChange(!menuOpen)}
         >
           <span className={`menu-mark ${menuOpen ? "is-open" : ""}`} aria-hidden="true"><span /><span /></span>
         </button>
 
-        <a href="#/overview" aria-label="WeatherEdge overview" className="flex min-w-0 items-center gap-2.5 no-underline">
+        <a href="#/overview" aria-label="WeatherEdge overview" className="mr-2 flex min-w-0 items-center gap-2.5 rounded-lg no-underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)]">
           <img
             src={`${import.meta.env.BASE_URL}favicon.svg`}
             alt=""
             aria-hidden="true"
             className="size-7 shrink-0 rounded-lg"
           />
-          <span className="hidden font-display text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
-            Weather<span className="temp-text">Edge</span>
+          <span className="hidden text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
+            WeatherEdge
           </span>
         </a>
 
-        <nav aria-label="Primary navigation" className="ml-5 hidden items-center gap-1 lg:flex">
-          {ROUTES.map((item) => (
-            <a
-              key={item.id}
-              href={`#/${item.id}`}
-              aria-current={route === item.id ? "page" : undefined}
-              className={`rounded-lg px-3 py-2 text-sm no-underline transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
-                route === item.id ? "bg-default text-foreground" : "text-muted hover:text-foreground"
-              }`}
-            >
-              {item.label}
-            </a>
-          ))}
-        </nav>
+        <PrimaryNav route={route} />
 
-        <div className="ml-auto flex min-w-0 items-center gap-1 sm:gap-1.5">
-          <button type="button" className={`${iconButton} lg:hidden`} aria-label="Open command palette" onClick={onOpenCommand}>
-            <Icon icon="solar:magnifer-bold" className="size-4" aria-hidden="true" />
-          </button>
+        <div className="ml-auto flex min-w-0 items-center gap-1">
           <button
             type="button"
-            className="hidden h-10 cursor-pointer items-center gap-2 rounded-lg border border-border bg-transparent px-3 text-muted transition-colors duration-200 hover:bg-default hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] lg:inline-flex"
             onClick={onOpenCommand}
+            className="hidden h-9 cursor-pointer items-center gap-2 rounded-full bg-default/70 pl-3 pr-1.5 text-sm text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] md:inline-flex"
           >
-            <Icon icon="solar:magnifer-bold" className="size-4" aria-hidden="true" />
-            <span className="text-sm">Search</span>
-            <kbd className="rounded border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
+            <Icon icon="solar:magnifer-linear" className="size-4" aria-hidden="true" />
+            <span>Search</span>
+            <kbd className="rounded-full bg-surface px-2 py-0.5 font-sans text-xs text-muted">⌘K</kbd>
           </button>
-
-          <button
-            type="button"
-            className={iconButton}
-            onClick={onToggleTheme}
-            aria-label={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            title={mode === "dark" ? "Light mode" : "Dark mode"}
-          >
-            <Icon icon={mode === "dark" ? "solar:sun-2-bold" : "solar:moon-stars-bold"} className="size-4" aria-hidden="true" />
-          </button>
-
-          <LinkButton href={liveUrl} variant="ghost" size="sm" className="hidden min-h-10 gap-1.5 sm:inline-flex">
-            <Icon icon="solar:square-top-down-bold" className="size-4" aria-hidden="true" /> Live
-          </LinkButton>
-          <LinkButton
+          <Tooltip delay={600}>
+            <Button isIconOnly variant="ghost" aria-label="Open command palette" className="md:hidden" onPress={onOpenCommand}>
+              <Icon icon="solar:magnifer-linear" aria-hidden="true" />
+            </Button>
+            <Tooltip.Content>Search</Tooltip.Content>
+          </Tooltip>
+          <Tooltip delay={600}>
+            <Button isIconOnly variant="ghost" aria-label={themeLabel} onPress={onToggleTheme}>
+              <Icon icon={mode === "dark" ? "solar:sun-2-linear" : "solar:moon-linear"} aria-hidden="true" />
+            </Button>
+            <Tooltip.Content>{mode === "dark" ? "Light mode" : "Dark mode"}</Tooltip.Content>
+          </Tooltip>
+          <a
             href={repoUrl}
+            target="_blank"
+            rel="noreferrer"
             aria-label="WeatherEdge source on GitHub"
-            variant="primary"
-            size="sm"
-            className="min-h-10 gap-1.5"
+            className={buttonVariants({ variant: "ghost", className: "gap-1.5 px-2.5" })}
           >
-            <Icon icon="solar:code-square-bold" className="size-4" aria-hidden="true" /> <span className="hidden sm:inline">Source</span>
-          </LinkButton>
+            <Icon icon="solar:code-square-linear" aria-hidden="true" />
+            <span className="hidden sm:inline">Source</span>
+          </a>
         </div>
       </div>
 
       {/* Keep the overlay mounted so React Aria can finish its exit animation
           and restore focus. Its portal also escapes the sticky header's blur. */}
       <Modal>
-        <Modal.Backdrop isOpen={menuOpen} onOpenChange={onMenuOpenChange} variant="blur" className="mobile-menu-backdrop">
+        <Modal.Backdrop isOpen={menuOpen} onOpenChange={onMenuOpenChange} variant="blur">
           <Modal.Container placement="top" size="lg" className="mobile-menu-container">
             <Modal.Dialog className="mobile-menu-dialog">
-              <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-                <Modal.Heading className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Navigation</Modal.Heading>
-                <button type="button" aria-label="Close menu" className={iconButton} onClick={() => onMenuOpenChange(false)}>
+              <div className="flex items-center justify-between gap-3 px-4 pt-3">
+                <Modal.Heading className="text-sm font-medium text-muted">Navigation</Modal.Heading>
+                <button
+                  type="button"
+                  aria-label="Close menu"
+                  className={buttonVariants({ variant: "ghost", isIconOnly: true })}
+                  onClick={() => onMenuOpenChange(false)}
+                >
                   <span className="menu-mark is-open" aria-hidden="true"><span /><span /></span>
                 </button>
               </div>
@@ -144,26 +186,27 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
                               event.preventDefault();
                             }
                           }}
-                          className={`group flex min-h-16 items-center gap-3 rounded-xl px-4 py-3 no-underline transition-colors duration-150 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
+                          className={`flex min-h-14 items-center gap-3 rounded-2xl px-3 py-2.5 no-underline transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
                             route === item.id ? "bg-accent-soft text-[color:var(--accent-text)]" : "text-foreground hover:bg-default"
                           }`}
                         >
                           <Icon icon={item.icon} className="size-5 shrink-0" aria-hidden="true" />
                           <span className="min-w-0 flex-1">
                             <span className="block text-sm font-medium">{item.label}</span>
-                            <span className="mt-0.5 block text-xs leading-relaxed text-muted" aria-hidden="true">{routeDescriptions[item.id]}</span>
+                            <span className="block text-xs text-muted" aria-hidden="true">{routeDescriptions[item.id]}</span>
                           </span>
-                          <Icon icon="solar:arrow-right-bold" className="size-4 shrink-0 text-muted transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transition-none" aria-hidden="true" />
                         </a>
                       </li>
                     ))}
                   </ul>
-                  <div className="mt-2 grid grid-cols-2 gap-1 border-t border-border/60 pt-2">
-                    <a href={liveUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-2 py-2 text-xs text-muted no-underline transition-colors hover:bg-default focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[color:var(--focus)]">
-                      <Icon icon="solar:square-top-down-bold" className="size-4 shrink-0" aria-hidden="true" /> Live dashboard
-                    </a>
-                    <a href={repoUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-2 py-2 text-xs text-muted no-underline transition-colors hover:bg-default focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[color:var(--focus)]">
-                      <Icon icon="solar:code-square-bold" className="size-4 shrink-0" aria-hidden="true" /> Source on GitHub
+                  <div className="mt-1 border-t border-separator pt-1">
+                    <a
+                      href={repoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex min-h-11 items-center gap-3 rounded-2xl px-3 text-sm text-muted no-underline transition-colors hover:bg-default focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[color:var(--focus)]"
+                    >
+                      <Icon icon="solar:code-square-linear" className="size-5 shrink-0" aria-hidden="true" /> Source on GitHub
                     </a>
                   </div>
                 </nav>

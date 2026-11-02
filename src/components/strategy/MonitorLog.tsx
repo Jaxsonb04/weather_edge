@@ -3,7 +3,7 @@ import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { cents, money, type MonitorAction, type StrategyLab } from "../../lib/strategy";
 import { pct } from "../../lib/data";
 
-const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
+const HEAD = "text-xs font-medium text-muted";
 
 const STATUS_META: Record<string, { label: string; color: "success" | "danger" | "warning" | "default" }> = {
   CLOSE_TAKE_PROFIT: { label: "Take-profit", color: "success" },
@@ -49,7 +49,7 @@ export function MonitorLog({
   const rows = collapseActions(rowsProp ?? s.paper_trading?.recent_monitor_actions ?? []);
   if (!rows.length) {
     return emptyNote ? (
-      <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">{emptyNote}</p>
+      <p className="rounded-2xl bg-surface-secondary px-4 py-8 text-center text-sm text-muted">{emptyNote}</p>
     ) : null;
   }
 
@@ -61,7 +61,7 @@ export function MonitorLog({
       accessorKey: "time",
       allowsSorting: true,
       cell: (d) => (
-        <span className="tnum font-mono text-xs text-muted">{d.time ? d.time.slice(5, 16).replace("T", " ") : "—"}</span>
+        <span className="tnum whitespace-nowrap text-xs text-muted">{d.time ? d.time.slice(5, 16).replace("T", " ") : "—"}</span>
       ),
     },
     {
@@ -72,7 +72,7 @@ export function MonitorLog({
       cell: (d) => (
         <div className="flex items-center gap-2">
           <span className="font-medium text-foreground">{d.label}</span>
-          <span className="rounded bg-foreground/8 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase text-muted">{d.side}</span>
+          <span className="text-xs font-semibold text-muted">{d.side}</span>
         </div>
       ),
     },
@@ -84,7 +84,7 @@ export function MonitorLog({
             header: "Book",
             headerClassName: HEAD,
             cell: (d) => (
-              <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"}`}>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-default text-muted"}`}>
                 {d.risk_profile}
               </span>
             ),

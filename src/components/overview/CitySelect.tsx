@@ -15,7 +15,7 @@ export function CitySelect({ cities, selected, onSelect }: CitySelectProps) {
   return (
     <Select
       variant="secondary"
-      className="w-full sm:w-[13.5rem]"
+      className="w-[12rem] max-w-[60vw]"
       selectedKey={selected}
       onSelectionChange={(key) => key != null && onSelect(String(key))}
       placeholder="Jump to a city"

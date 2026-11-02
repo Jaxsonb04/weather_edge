@@ -63,7 +63,7 @@ export function BelowFoldBoundary({
   }, []);
 
   return (
-    <div className={ready ? undefined : "relative min-h-[72rem]"} aria-busy={!ready}>
+    <div className={ready ? undefined : "relative min-h-[64rem]"} aria-busy={!ready}>
       {ready ? (
         <Suspense fallback={<BelowFoldSkeleton />}>
           <OverviewBelowFold
@@ -91,8 +91,16 @@ export function BelowFoldBoundary({
 
 function BelowFoldSkeleton() {
   return (
-    <div role="status" aria-label="Loading overview instruments" className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8">
-      <div className="h-[72rem] animate-pulse rounded-2xl bg-surface-secondary motion-reduce:animate-none" />
+    <div role="status" aria-label="Loading overview instruments" className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8">
+      <div className="skeleton--shimmer relative flex flex-col gap-4 overflow-hidden">
+        <div className="h-6 w-40 rounded-full bg-surface-tertiary/70" />
+        <div className="h-28 rounded-2xl bg-surface-tertiary/70" />
+        <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          {Array.from({ length: 10 }).map((_, index) => (
+            <div key={index} className="h-32 rounded-2xl bg-surface-tertiary/70" />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -109,11 +117,11 @@ export function OverviewView({ data }: { data: DashboardData }) {
     // points aria-labelledby at it — so this branch has to publish the same id
     // rather than leaving that reference dangling.
     return (
-      <div className="mx-auto grid min-h-[60vh] w-full max-w-6xl content-center gap-4 px-5 sm:px-8">
+      <div className="mx-auto grid min-h-[60vh] w-full max-w-6xl content-center gap-4 px-4 sm:px-6 lg:px-8">
         <h1
           id="overview-page-title"
           tabIndex={-1}
-          className="scroll-mt-24 text-center font-display text-3xl font-bold tracking-tight text-balance focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)] sm:text-4xl"
+          className="scroll-mt-24 text-balance text-center text-3xl font-semibold tracking-tight focus:outline-none sm:text-4xl"
         >
           WeatherEdge overview
         </h1>

@@ -44,14 +44,14 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                     <Chip size="sm" variant="soft" color={decision.decision === "TRADE" ? "success" : "warning"}>
                       <Chip.Label>{decision.decision.replace(/_/g, " ")}</Chip.Label>
                     </Chip>
-                    <Chip size="sm" variant="soft" className="font-mono">
+                    <Chip size="sm" variant="soft">
                       <Chip.Label>{decision.side}</Chip.Label>
                     </Chip>
                   </div>
-                  <Sheet.Heading className="mt-2 font-display text-xl">{decision.label}</Sheet.Heading>
-                  <p className="font-mono text-xs text-muted">{decision.ticker}</p>
+                  <Sheet.Heading className="mt-2 text-xl font-semibold tracking-tight">{decision.label}</Sheet.Heading>
+                  <p className="text-xs text-muted">{decision.ticker}</p>
                 </Sheet.Header>
-                <Sheet.Body className="space-y-5">
+                <Sheet.Body className="flex flex-col gap-5">
                   <div className="grid grid-cols-3 gap-3">
                     <Stat label="Model" value={pct(decision.model_probability)} />
                     <Stat label="Market" value={pct(decision.market_probability)} />
@@ -67,19 +67,19 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                   </div>
 
                   <div>
-                    <p className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">
+                    <p className="mb-2 text-xs font-medium text-muted">
                       Gate trace
                     </p>
-                    <ul className="space-y-2">
+                    <ul className="flex flex-col gap-2">
                       {(decision.reasons ?? []).map((r, i) => (
-                        <li key={i} className="flex gap-2 rounded-lg bg-surface-secondary p-2.5 text-xs text-muted ring-1 ring-border/40">
-                          <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
+                        <li key={i} className="flex gap-2 rounded-xl bg-surface-secondary p-2.5 text-xs text-muted">
+                          <Icon icon="solar:shield-warning-linear" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
                           <span>{r}</span>
                         </li>
                       ))}
                       {!decision.reasons?.length && (
                         <li className="flex gap-2 text-xs text-success">
-                          <Icon icon="solar:shield-check-bold" className="size-4" aria-hidden="true" /> All gates passed.
+                          <Icon icon="solar:shield-check-linear" className="size-4" aria-hidden="true" /> All gates passed.
                         </li>
                       )}
                     </ul>
@@ -98,7 +98,7 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                         setCopyResult({ ticker: decision.ticker, outcome: copied ? "success" : "error" });
                       }}
                     >
-                      <Icon icon="solar:copy-bold" className="size-4" aria-hidden="true" />
+                      <Icon icon="solar:copy-linear" className="size-4" aria-hidden="true" />
                       <span>{copyOutcome === "success" ? "Copied ticker" : "Copy ticker"}</span>
                     </Button>
                     <p role="status" aria-live="polite" className={copyOutcome === "error" ? "mt-2 text-xs text-danger" : "sr-only"}>

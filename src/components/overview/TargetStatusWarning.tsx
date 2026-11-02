@@ -7,8 +7,8 @@ export function TargetStatusWarning({ targets }: { targets: Target[] }) {
   const currentCount = selectCurrentTargets(targets).length;
 
   return (
-    <div role="alert" className="flex items-start gap-3 rounded-xl bg-danger-soft px-4 py-3 text-sm ring-1 ring-danger/30">
-      <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
+    <div role="alert" className="flex items-start gap-3 rounded-2xl bg-danger-soft px-4 py-3 text-sm">
+      <Icon icon="solar:danger-triangle-linear" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
       <p className="leading-relaxed text-muted">
         <span className="font-semibold text-foreground">
           {pastDue.length} past-due prediction-market target{pastDue.length === 1 ? "" : "s"} detected.

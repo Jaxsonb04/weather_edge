@@ -1,7 +1,7 @@
 import { Skeleton } from "@heroui/react/skeleton";
 import { describeMethod, useCitiesData, type City } from "../../lib/data";
 
-const TH = "px-3 py-2 text-left font-mono text-[10px] font-semibold uppercase tracking-wider text-muted";
+const TH = "px-3 py-2 text-left text-xs font-medium text-muted";
 const TD = "px-3 py-2.5 align-top";
 
 /** The artifact's own method tag in plain English. The local variant fell
@@ -33,23 +33,23 @@ function CityRow({ city }: { city: City }) {
   const method = city.forecasts?.find((f) => f?.method)?.method;
   const models = modelCount(city);
   return (
-    <tr className={flagship ? "bg-accent-soft" : "odd:bg-foreground/[0.02]"}>
+    <tr className={flagship ? "bg-accent-soft" : undefined}>
       <th scope="row" className={`${TD} text-left`}>
         <span className="flex items-center gap-2">
           <span className="font-medium text-foreground">{city.name ?? "—"}</span>
           {flagship && (
-            <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-wide text-[color:var(--accent-text)]">
-              flagship
+            <span className="rounded-full bg-surface px-2 py-0.5 text-xs font-medium text-[color:var(--accent-text)]">
+              Flagship
             </span>
           )}
         </span>
       </th>
-      <td className={`${TD} font-mono text-[11px] uppercase tracking-wider text-muted`}>
+      <td className={`${TD} text-muted`}>
         {city.station_id ?? "—"}
       </td>
       <td className={`${TD} text-muted`}>
         <span className="text-foreground">{methodLabel(method)}</span>
-        {flagship && <span className="text-muted"> · blend-capable; optional SFO evidence</span>}
+        {flagship && <span className="text-muted"> · plus optional SFO evidence</span>}
       </td>
       <td className={`${TD} text-right tnum text-muted`}>{models ?? "—"}</td>
       <td className={`${TD} text-muted`}>{settlementLabel(city.settlement_source)}</td>
@@ -59,9 +59,8 @@ function CityRow({ city }: { city: City }) {
 
 function EmptyNote() {
   return (
-    <p className="rounded-2xl border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted">
-      Per-city method table appears once the twenty-city coverage artifact is published on the next
-      pipeline run.
+    <p className="rounded-2xl bg-surface-secondary px-4 py-8 text-center text-sm text-muted">
+      The station matrix appears once the coverage artifact is published.
     </p>
   );
 }
@@ -78,13 +77,13 @@ export function CityMethodTable() {
   if (!cities.length) return <EmptyNote />;
 
   return (
-    <div className="overflow-x-auto rounded-2xl bg-surface-secondary/70 ring-1 ring-border/70">
+    <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-collapse text-sm">
         <caption className="sr-only">
           Production forecasting method, ensemble size, and settlement report per city
         </caption>
         <thead>
-          <tr className="border-b border-border/60">
+          <tr className="border-b border-separator">
             <th scope="col" className={TH}>City</th>
             <th scope="col" className={TH}>Station</th>
             <th scope="col" className={TH}>Method</th>
@@ -92,7 +91,7 @@ export function CityMethodTable() {
             <th scope="col" className={TH}>Settlement report</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-border/40">
+        <tbody className="divide-y divide-separator">
           {cities.map((c) => (
             <CityRow key={c.slug ?? c.series_ticker ?? c.name} city={c} />
           ))}

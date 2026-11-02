@@ -1,72 +1,88 @@
-import { Card } from "@heroui/react/card";
 import { KPI } from "@heroui-pro/react/kpi";
 import { KPIGroup } from "@heroui-pro/react/kpi-group";
-import { Icon } from "@iconify/react/offline";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
-import { Reveal } from "../ui/Reveal";
+import { InfoTip } from "../ui/InfoTip";
+import { SectionHeading } from "../ui/SectionHeading";
 import { fixtureCoverage, skillStatus, type ForecastData, type TradingSignal } from "../../lib/data";
 
 interface Metric {
-  icon: string;
   title: string;
   value: number | null;
   kind: "pct" | "count" | "temp";
+  unit?: string;
+  /** Visible caption: only the static-fixture figures carry one, so their
+      provenance is never one tap away from a live-looking number. */
   hint?: string;
 }
 
 export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signal: TradingSignal }) {
   const c = signal.calibration;
-  // The last two KPIs come from the committed `forecast_data.json` study
-  // fixture, not from the running pipeline: the σ below is the held-out LSTM
-  // residual, several degrees wider than the operational EMOS σ the dial
-  // publishes. Date them so neither reads as a live number.
+  // History and the LSTM sigma come from the committed `forecast_data.json`
+  // study fixture, not the running pipeline; the sigma is the held-out LSTM
+  // residual, wider than the operational EMOS sigma the forecast card shows.
   const coverage = fixtureCoverage(forecast);
   const fixtureHint = coverage ? `static fixture · ${coverage}` : "static fixture";
   const metrics: Metric[] = [
-    { icon: "solar:target-bold", title: "Brier skill", value: c?.brier_skill ?? null, kind: "pct", hint: "SFO vs climatology" },
-    { icon: "solar:ranking-bold", title: "Rank-prob. skill", value: c?.ranked_probability_skill ?? null, kind: "pct", hint: "SFO ordered bins" },
-    { icon: "solar:radar-2-bold", title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct", hint: "SFO modal bracket" },
-    // `calibration.n` counts settlement DAYS, not markets: each day scores the
-    // whole six-market ladder, so the bin count is 6x this. "Bin" also collides
-    // with the market-bracket sense used everywhere else on the site.
-    { icon: "solar:checklist-minimalistic-bold", title: "Settled days", value: c?.n ?? null, kind: "count", hint: "SFO scored settlement days" },
-    { icon: "solar:calendar-bold", title: "History", value: forecast.n_years ?? null, kind: "count", hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} KSFO days · ${fixtureHint}` },
-    { icon: "solar:graph-new-bold", title: "LSTM study σ", value: forecast.lstm_sigma ?? null, kind: "temp", hint: forecast.lstm_sigma_days ? `SFO held-out residual · ${forecast.lstm_sigma_days} days · ${fixtureHint}` : `SFO held-out residual · ${fixtureHint}` },
+    { title: "Brier skill", value: c?.brier_skill ?? null, kind: "pct" },
+    { title: "Rank-prob. skill", value: c?.ranked_probability_skill ?? null, kind: "pct" },
+    { title: "Top-bin accuracy", value: c?.top_bin_accuracy ?? null, kind: "pct" },
+    // `calibration.n` counts settlement DAYS; each scores the whole ladder.
+    { title: "Settled days", value: c?.n ?? null, kind: "count" },
+    {
+      title: "History",
+      value: forecast.n_years ?? null,
+      kind: "count",
+      unit: "yrs",
+      hint: `${forecast.n_days_observed?.toLocaleString() ?? "—"} KSFO days · ${fixtureHint}`,
+    },
+    {
+      title: "LSTM study σ",
+      value: forecast.lstm_sigma ?? null,
+      kind: "temp",
+      unit: "°F",
+      hint: forecast.lstm_sigma_days
+        ? `SFO held-out residual · ${forecast.lstm_sigma_days} days · ${fixtureHint}`
+        : `SFO held-out residual · ${fixtureHint}`,
+    },
   ];
 
   return (
-    <Reveal immediate className="-mt-9 sm:-mt-12">
-      <Card className="rounded-2xl">
-        <Card.Content className="p-2 sm:p-3">
-          <KPIGroup className="flex-wrap">
-            {metrics.map((m, i) => (
-              <div key={m.title} className="contents">
-                {i > 0 && <KPIGroup.Separator />}
-                <Metric m={m} />
-              </div>
-            ))}
-          </KPIGroup>
-        </Card.Content>
-      </Card>
-    </Reveal>
+    <section aria-labelledby="skill-title" className="min-w-0">
+      <SectionHeading
+        id="skill-title"
+        title="Forecast skill"
+        sub="San Francisco, scored on held-out settlement days"
+        info={
+          <InfoTip label="forecast skill" title="Reading these scores">
+            Brier and ranked-probability skill compare the probability ladder with climatology; higher is better.
+            Top-bin accuracy is how often the most likely bracket settled. History and the LSTM σ come from a
+            committed study fixture, not the live pipeline.
+          </InfoTip>
+        }
+      />
+      <KPIGroup className="grid grid-cols-2 gap-px bg-separator sm:grid-cols-3 lg:grid-cols-6">
+        {metrics.map((m) => (
+          <MetricTile key={m.title} m={m} />
+        ))}
+      </KPIGroup>
+    </section>
   );
 }
 
-function Metric({ m }: { m: Metric }) {
+function MetricTile({ m }: { m: Metric }) {
   const isPct = m.kind === "pct";
   return (
-    <KPI className="min-w-[9.5rem] flex-1 bg-transparent px-3 py-2 ring-0">
-      <KPI.Header className="gap-1.5">
-        <Icon icon={m.icon} className="size-3.5 text-accent" aria-hidden="true" />
+    <KPI className="min-w-0 bg-surface">
+      <KPI.Header>
         <KPI.Title className="text-xs">{m.title}</KPI.Title>
       </KPI.Header>
-      <KPI.Content className="mt-1">
+      <KPI.Content className="content-start items-start">
         <div className="flex items-baseline gap-1">
           {m.value == null ? (
-            <span className="font-display text-2xl font-semibold">—</span>
+            <span className="text-2xl font-semibold tracking-tight">—</span>
           ) : (
             <AnimatedNumber
-              className="font-display text-2xl font-semibold"
+              className="text-2xl font-semibold tracking-tight"
               value={m.value}
               format={
                 isPct
@@ -75,15 +91,12 @@ function Metric({ m }: { m: Metric }) {
               }
             />
           )}
-          {m.kind === "temp" && <span className="text-sm text-muted">°F</span>}
-          {m.kind === "count" && m.title === "History" && <span className="text-sm text-muted">yrs</span>}
+          {m.unit && <span className="text-sm text-muted">{m.unit}</span>}
         </div>
         {isPct && m.value != null && (
-          // Decorative magnitude cue only — AnimatedNumber above already states
-          // the value in text. KPI.Progress hardcodes aria-label="Progress" on
-          // its inner bar and spreads extra props onto the wrapper, so the only
-          // way to stop three identically-named progressbars is to hide the
-          // whole subtree from assistive tech.
+          // Decorative magnitude cue only; the number above states the value.
+          // KPI.Progress names its inner bar "Progress", so the subtree is
+          // hidden rather than announcing several identically named bars.
           <KPI.Progress
             aria-hidden="true"
             className="mt-2"
@@ -91,7 +104,7 @@ function Metric({ m }: { m: Metric }) {
             status={skillStatus(m.value * 100)}
           />
         )}
-        {m.hint && <p className="mt-1.5 text-[11px] text-muted">{m.hint}</p>}
+        {m.hint && <p className="mt-1.5 text-xs text-muted [grid-column:1/-1]">{m.hint}</p>}
       </KPI.Content>
     </KPI>
   );

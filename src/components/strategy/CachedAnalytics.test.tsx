@@ -9,7 +9,6 @@ vi.mock("../ui/Reveal", () => ({
   Reveal: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-import { SelectivityFinding } from "../views/StrategyLabView";
 
 const strategy = {
   daily_summary: {
@@ -53,14 +52,10 @@ describe("cached decision analytics labels", () => {
     expect(screen.queryByText(/gap was across/i)).not.toBeInTheDocument();
   });
 
-  // The headline selectivity claim reads as a live measurement, so it is the
-  // one surface a cached-count marker must not be missing from.
-  it("marks the selectivity finding's survival rate as cached", () => {
-    render(<SelectivityFinding s={strategy} />);
-    expect(screen.getByText("Cached counts")).toBeInTheDocument();
-    expect(
-      screen.getByText(/come from the last deploy-time analysis and stop at/i),
-    ).toBeInTheDocument();
+  // The selectivity claim now lives only in the gate filter, which must carry
+  // the cached marker and never fall back to "this window" wording.
+  it("never words cached gate counts as a live window", () => {
+    render(<GateFunnel s={strategy} />);
     expect(screen.getByText(/gate evaluations in the window ending 2026-09-01/i)).toBeInTheDocument();
     expect(screen.queryByText(/gate evaluations this window/i)).not.toBeInTheDocument();
   });
