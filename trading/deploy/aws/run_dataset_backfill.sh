@@ -4,6 +4,7 @@ set -euo pipefail
 TRADING_DIR="${SFO_TRADING_ROOT:-/opt/weatheredge/trading}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB_PATH="${SFO_DATASET_DB:-${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}}"
+STATE_DIR="${SFO_DATASET_STATE_DIR:-$(dirname "$DB_PATH")/.dataset-state}"
 # `lamp` is deliberately absent: NOMADS stopped serving /pub/data/nccf/com/lamp
 # (the whole product tree answers HTTP 403, not just individual cycles), so it
 # has never written a row while spending ~1,300 requests a night that pushed
@@ -33,6 +34,57 @@ DATASET_SERVICE_TIMEOUT_SECONDS=2700
 DATASET_SERVICE_HEADROOM_SECONDS=2100
 MAX_LOCK_RETRY_BUDGET_SECONDS=$((DATASET_SERVICE_TIMEOUT_SECONDS - DATASET_SERVICE_HEADROOM_SECONDS))
 SQLITE_BUSY_TIMEOUT_MILLISECONDS=30000
+
+# sfo-dataset-backfill.service runs this script with a `-` prefix so a failed
+# night cannot skip the forecaster maintenance after it, then runs it again with
+# --report-status as ExecStartPost to fail the unit with this run's own result.
+# Under systemd a run records "running" first and its result last, keyed by the
+# unit's INVOCATION_ID, so a record from an earlier run can neither pass nor
+# fail a later one and a run that dies early still fails the unit. Run by hand,
+# nothing is recorded and the exit status is the result.
+RUN_STATUS_FILE="$STATE_DIR/last-run-status"
+
+if [[ "${1:-}" == "--report-status" ]]; then
+  recorded=""
+  if [[ -n "${INVOCATION_ID:-}" && -r "$RUN_STATUS_FILE" ]]; then
+    recorded="$(<"$RUN_STATUS_FILE")"
+  fi
+  read -r recorded_invocation recorded_status <<< "$recorded"
+  if [[ -z "${INVOCATION_ID:-}" || "$recorded_invocation" != "$INVOCATION_ID" ]]; then
+    echo "ERROR: dataset backfill recorded no status for this unit run" >&2
+    exit 1
+  fi
+  if [[ ! "$recorded_status" =~ ^(0|[1-9][0-9]{0,2})$ ]] || (( recorded_status > 255 )); then
+    echo "ERROR: dataset backfill did not finish in this unit run" >&2
+    exit 1
+  fi
+  if (( recorded_status != 0 )); then
+    echo "ERROR: dataset backfill exited $recorded_status; forecaster maintenance still ran" >&2
+  fi
+  exit "$recorded_status"
+fi
+if (( $# > 0 )); then
+  echo "usage: run_dataset_backfill.sh [--report-status]" >&2
+  exit 2
+fi
+
+record_run_status() {
+  printf '%s %s\n' "$INVOCATION_ID" "$1" >"$RUN_STATUS_FILE" || true
+}
+
+# bash can run an EXIT trap with status 0 when a signal ends the script, so only
+# a nonzero exit is recorded here; success is recorded once the run completes.
+record_failed_run() {
+  if (( $1 != 0 )); then
+    record_run_status "$1"
+  fi
+}
+
+if [[ -n "${INVOCATION_ID:-}" ]]; then
+  mkdir -p "$STATE_DIR"
+  record_run_status running
+  trap 'record_failed_run "$?"' EXIT
+fi
 
 if [[ ! "$LOCK_RETRY_ATTEMPTS" =~ ^[1-9][0-9]?$ ]] ||
   (( 10#$LOCK_RETRY_ATTEMPTS > MAX_LOCK_RETRY_ATTEMPTS )); then
@@ -174,7 +226,6 @@ cd "$TRADING_DIR"
 # data hole survives. Only a source that fails on consecutive runs represents a
 # real outage worth failing the unit for.
 FAILURE_THRESHOLD="${SFO_DATASET_SOURCE_FAILURE_THRESHOLD:-2}"
-STATE_DIR="${SFO_DATASET_STATE_DIR:-$(dirname "$DB_PATH")/.dataset-state}"
 
 if [[ ! "$FAILURE_THRESHOLD" =~ ^[1-9][0-9]?$ ]]; then
   echo "SFO_DATASET_SOURCE_FAILURE_THRESHOLD must be a canonical integer from 1 to 99" >&2
@@ -313,4 +364,7 @@ fi
 
 if (( ${#sustained_failures[@]} > 0 || research_failed > 0 )); then
   exit 1
+fi
+if [[ -n "${INVOCATION_ID:-}" ]]; then
+  record_run_status 0
 fi
