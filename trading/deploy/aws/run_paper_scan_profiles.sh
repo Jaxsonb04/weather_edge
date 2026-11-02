@@ -98,10 +98,15 @@ for raw_profile in "${profiles[@]}"; do
   canonical_profiles+=("$profile")
 done
 
-profile_index=0
+# Each profile is an economically separate account, so one profile's failure
+# must not silently skip the others (a live-profile crash on Oct 27 stopped the
+# research scan for five days under `set -e`). Run every profile, then fail the
+# unit with the first nonzero status so systemd still reports the crash.
+scan_status=0
+context_recorded=0
 for profile in "${canonical_profiles[@]}"; do
   skip_context=0
-  if (( profile_index > 0 )); then
+  if (( context_recorded > 0 )); then
     skip_context=1
   fi
 
@@ -140,17 +145,27 @@ for profile in "${canonical_profiles[@]}"; do
       ;;
   esac
   # Forecast/probability/market context is identical across profiles in one
-  # scan; only the first profile's first command records it.
+  # scan; the first profile that completes records it. A profile that failed
+  # may not have, so the next one records it instead of skipping.
   if (( skip_context > 0 )); then
     args+=(--skip-context-snapshots)
   fi
-  profile_index=$((profile_index + 1))
 
   echo "running portfolio paper scan profile=$profile db=$DB_PATH"
   # Retry inside the flock, so a retried attempt still cannot interleave with a
   # second scan process. Invoked via `bash <path>` rather than executing the
   # script directly, matching the units' `/usr/bin/env bash` style so the
   # deploy does not have to carry an exec bit for a new file.
+  profile_status=0
   bash "$SCRIPT_DIR/retry_on_sqlite_lock.sh" \
-    "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}"
+    "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}" || profile_status=$?
+  if (( profile_status == 0 )); then
+    context_recorded=1
+  else
+    echo "paper scan profile=$profile failed with status $profile_status; continuing with the remaining profiles" >&2
+    if (( scan_status == 0 )); then
+      scan_status=$profile_status
+    fi
+  fi
 done
+exit "$scan_status"
