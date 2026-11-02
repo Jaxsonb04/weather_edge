@@ -125,6 +125,9 @@ def _monitor_market_lookup(
     bounds every returned quote's age conservatively; missing tickers get their
     own fallback request-start time. Stamping later at execution would hide the
     time spent fetching other markets or processing earlier positions.
+
+    A market whose payload cannot be parsed comes back as its exception, like
+    a failed request, so it holds only its own positions (audit F13).
     """
 
     clock = clock or (lambda: datetime.now(UTC))
@@ -156,6 +159,11 @@ def _monitor_market_lookup(
             if observed_at_by_ticker is not None:
                 observed_at_by_ticker[ticker] = observed_at
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+            resolved[ticker] = exc
+        except (KeyError, TypeError, ValueError) as exc:
+            # Malformed data for ONE market (a bracket label in a numeric
+            # field, a missing key, a null market, a non-UTF-8 body) must not
+            # abort the pass and block every exit in every account.
             resolved[ticker] = exc
     return resolved
 
@@ -402,6 +410,7 @@ def run_paper_monitor(
     # one account, a single fetched top bid is finite even when retained legacy
     # lots share its ticker/side. New-entry uniqueness remains a separate guard.
     depth_consumed: dict[tuple[str, str, str], float] = {}
+    unreadable_markets: dict[str, str] = {}
     closed = 0
     inspected = 0
     for row in rows:
@@ -445,11 +454,26 @@ def run_paper_monitor(
         ):
             exc = market_or_error
             # Genuinely transient network failures: hold this position and move on.
-            # Non-network exceptions (e.g. a programming bug) now propagate instead
-            # of being swallowed into a phantom HOLD across the whole book.
+            # Other exceptions (e.g. a programming bug) still propagate instead of
+            # being swallowed into a phantom HOLD across the whole book; only
+            # unparseable market data is held per lot, just below.
             reason = f"market fetch failed ({type(exc).__name__})"
             store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
+            continue
+        if isinstance(market_or_error, (KeyError, TypeError, ValueError)):
+            exc = market_or_error
+            # Kalshi served this market in a form the client cannot parse. It is
+            # not a network blip, so it is not FETCH_FAILED: hold only this lot,
+            # keep the error for audit, manage the rest of the book, and exit
+            # non-zero after the loop so the failure still alerts.
+            error = f"{type(exc).__name__}: {exc}"
+            reason = f"market payload unreadable ({error})"
+            store.record_monitor_snapshot(
+                row, side=side, action="HOLD_UNREADABLE_MARKET", reason=reason
+            )
+            print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
+            unreadable_markets[str(row["market_ticker"])] = error
             continue
         market = market_or_error
 
@@ -782,6 +806,20 @@ def run_paper_monitor(
             f"filled {filled} resting limits, expired {expired} stale limits"
         )
     )
+    if unreadable_markets:
+        # Every readable position was managed above. Fail the run so systemd's
+        # OnFailure alert fires on every tick while a held lot stays unreadable.
+        details = "; ".join(
+            f"{ticker} ({error})" for ticker, error in unreadable_markets.items()
+        )
+        print(
+            color.red(
+                f"error: {len(unreadable_markets)} market(s) could not be read; "
+                f"their positions were held: {details}"
+            ),
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
